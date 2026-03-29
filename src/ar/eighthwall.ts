@@ -136,6 +136,30 @@ export class EighthWallProvider implements ARProvider {
     const { position, rotation, distance } = results[0]
     return { position, rotation, distance }
   }
+
+  /**
+   * Sample feature points at a `gridSize×gridSize` grid of screen coordinates.
+   * Skips edges (starts at 1/(gridSize+1)) so border probes don't miss the
+   * scene on portrait phones where the camera feed doesn't reach the edge.
+   */
+  featurePoints(gridSize = 6): Array<{ x: number; y: number; z: number }> {
+    const pts: Array<{ x: number; y: number; z: number }> = []
+    const step = 1 / (gridSize + 1)
+    for (let r = 1; r <= gridSize; r++) {
+      for (let c = 1; c <= gridSize; c++) {
+        const results = XR8.XrController.hitTest(c * step, r * step, ['FEATURE_POINT'])
+        if (results?.length) pts.push(results[0].position)
+      }
+    }
+    return pts
+  }
+
+  getPose(): Pose {
+    return {
+      position: { ...this.latestPose.position },
+      rotation: { ...this.latestPose.rotation },
+    }
+  }
 }
 
 /** Waits for the XR8 global to be available, then returns a provider instance */

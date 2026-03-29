@@ -11,7 +11,7 @@
  * For the WebXR provider, hitTest() is synchronous but returns null —
  * the caller must pass an async hitTestFn override in that case.
  */
-import type { ARProvider } from '../ar/provider'
+import type { ARProvider, Pose } from '../ar/provider'
 import type { RawDetection } from '../inference/prompt'
 
 const DEDUP_RADIUS_M = 0.3
@@ -34,6 +34,8 @@ export interface ResolveOptions {
   provider: ARProvider
   /** Pass WebXRProvider.hitTestAsync when using WebXR */
   asyncHitTest?: AsyncHitTestFn
+  /** Current camera pose — used to estimate world pos when hit test returns nothing */
+  cameraPose?: Pose
 }
 
 /**
@@ -70,7 +72,26 @@ export async function resolveDetections(
       }
     }
 
-    if (!hitPos) continue
+    if (!hitPos) {
+      // SLAM hit test had no feature points yet — estimate position 2 m in front of
+      // the camera using the quaternion to derive the forward direction.
+      if (opts.cameraPose) {
+        const p = opts.cameraPose.position
+        const q = opts.cameraPose.rotation
+        // Rotate the -Z world axis by the camera quaternion to get forward vector.
+        // forward = q * (0,0,-1) * q^-1 (simplified)
+        const fx = 2 * (q.x * q.z + q.w * q.y)
+        const fy = 2 * (q.y * q.z - q.w * q.x)
+        const fz = 1 - 2 * (q.x * q.x + q.y * q.y)
+        const DEPTH = 2.0 // metres
+        hitPos = { x: p.x + fx * DEPTH, y: p.y + fy * DEPTH, z: p.z - fz * DEPTH }
+        hitRot = q
+        console.warn(`[resolver] Hit test miss for "${det.label}" — using estimated pos`, hitPos)
+      } else {
+        console.warn(`[resolver] Hit test miss for "${det.label}" and no camera pose — skipping`)
+        continue
+      }
+    }
 
     results.push({
       label: det.label,

@@ -55,7 +55,9 @@ app.post('/infer', async (c) => {
 
   try {
     const buffer = await imageFile.arrayBuffer()
+    console.log(`[infer] Received image: ${buffer.byteLength} bytes`)
     const detections = await engine.infer(new Uint8Array(buffer))
+    console.log(`[infer] Returning ${detections.length} detections:`, JSON.stringify(detections))
     return c.json(detections)
   } catch (err) {
     console.error('[infer error]', err)

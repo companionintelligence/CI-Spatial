@@ -76,17 +76,21 @@ async function main() {
     overlay.setStatus('Capturing…')
     try {
       const { blob, pose, timestamp } = await capture.capture()
+      console.log(`[main] Captured blob: ${blob.size} bytes, type=${blob.type}, pose=`, pose)
       overlay.setStatus('Analysing…')
 
       const thumbnail = await capture.captureThumbnail(blob)
       const rawDets = await router.infer(blob)
+      console.log(`[main] Raw detections (${rawDets.length}):`, JSON.stringify(rawDets))
 
       overlay.setStatus(`${rawDets.length} object${rawDets.length === 1 ? '' : 's'} detected`)
 
       const worldDets = await resolveDetections(rawDets, timestamp, {
         provider,
         asyncHitTest,
+        cameraPose: pose,
       })
+      console.log(`[main] World detections (${worldDets.length}):`, JSON.stringify(worldDets))
 
       // Build thumbnail map keyed by label (best-effort)
       const thumbMap = new Map<string, string>()

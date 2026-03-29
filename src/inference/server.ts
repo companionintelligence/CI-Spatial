@@ -26,6 +26,7 @@ export async function inferViaServer(imageBlob: Blob): Promise<RawDetection[]> {
   }
 
   const json = (await response.json()) as unknown
+  console.log('[server-client] Raw /infer response:', JSON.stringify(json).slice(0, 500))
   if (Array.isArray(json)) return json.filter((d): d is RawDetection => isDetection(d))
 
   // Some responses wrap in { detections: [...] }

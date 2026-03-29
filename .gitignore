@@ -44,6 +44,3 @@ temp/
 outputs/
 exports/
 renders/
-
-ci-xr-scan-web/public/models/
-ci-xr-scan-web/server/models/

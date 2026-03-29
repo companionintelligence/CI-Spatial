@@ -44,4 +44,15 @@ export interface ARProvider {
    * Must not be called before `start()` resolves.
    */
   hitTest(x: number, y: number): HitResult | null
+
+  /**
+   * Sample SLAM feature-point world positions at a `gridSize×gridSize` grid
+   * of normalised screen coordinates.  Returns all positions that resolve
+   * against the live SLAM map.  Empty array on platforms without feature-
+   * point access or before SLAM initialises.
+   */
+  featurePoints(gridSize?: number): Array<{ x: number; y: number; z: number }>
+
+  /** Return the current camera pose without blocking. */
+  getPose(): Pose
 }

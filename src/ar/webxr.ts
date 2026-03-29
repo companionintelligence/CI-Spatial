@@ -110,6 +110,19 @@ export class WebXRProvider implements ARProvider {
     return new Promise((resolve) => this.captureQueue.push(resolve))
   }
 
+  featurePoints(_gridSize?: number): Array<{ x: number; y: number; z: number }> {
+    // WebXR does not expose SLAM feature points — return empty so the point
+    // cloud stays empty and the exporter falls back to detection-only export.
+    return []
+  }
+
+  getPose(): Pose {
+    return {
+      position: { ...this.latestPose.position },
+      rotation: { ...this.latestPose.rotation },
+    }
+  }
+
   hitTest(x: number, y: number): HitResult | null {
     // WebXR hit-test must happen inside a frame callback.
     // This synchronous call returns the result from the most recent frame
