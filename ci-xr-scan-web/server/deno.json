@@ -1,0 +1,11 @@
+{
+  "nodeModulesDir": "auto",
+  "imports": {
+    "hono": "npm:hono@^4.7.0",
+    "hono/cors": "npm:hono@^4.7.0/cors",
+    "hono/logger": "npm:hono@^4.7.0/logger",
+    "onnxruntime-node": "npm:onnxruntime-node@^1.21.0",
+    "jimp": "npm:jimp@^1.6.0"
+  },
+  "allowScripts": ["npm:onnxruntime-node@1.24.3"]
+}
