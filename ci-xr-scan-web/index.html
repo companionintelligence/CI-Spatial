@@ -41,6 +41,9 @@
         inset: 0;
         width: 100%;
         height: 100%;
+        /* XR8 does NOT resize the canvas itself; eighthwall.ts sets canvas.width/
+           height to the physical pixel size before XR8.run(), so the canvas
+           intrinsic size matches the viewport and no object-fit scaling is needed. */
         touch-action: none;
       }
 
@@ -179,10 +182,49 @@
         justify-content: center;
         backdrop-filter: blur(4px);
       }
+
+      /* Start screen — shown until user taps the button; grants iOS motion permission */
+      #start-screen {
+        position: fixed;
+        inset: 0;
+        z-index: 20;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 20px;
+        background: rgba(0, 0, 0, 0.75);
+        backdrop-filter: blur(10px);
+      }
+
+      #start-ar-btn {
+        padding: 16px 52px;
+        font-size: 17px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        color: #000;
+        background: #fff;
+        border: none;
+        border-radius: 50px;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+        transition: transform 0.1s, opacity 0.1s;
+      }
+
+      #start-ar-btn:active {
+        transform: scale(0.94);
+        opacity: 0.85;
+      }
     </style>
   </head>
   <body>
     <canvas id="camerafeed"></canvas>
+
+    <!-- Start screen: must be a real button so Safari grants iOS motion permission from the click handler -->
+    <div id="start-screen">
+      <button id="start-ar-btn">Start AR</button>
+    </div>
+
     <div id="ar-overlay">
       <div id="status-bar">
         <span id="status-text">Initialising…</span>

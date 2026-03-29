@@ -108,7 +108,31 @@ async function main() {
 
   panel.mount()
 
-  // ── 5. Start AR ────────────────────────────────────────────────────────────
+  // ── 5. Start AR — permission must be requested in the button click handler ───
+  // Safari iOS 13+ requires DeviceOrientationEvent/DeviceMotionEvent.requestPermission()
+  // to be called synchronously inside a click handler, with NO awaits before it.
+  // A real <button> click event is the only reliable trigger for this in Safari.
+  overlay.setStatus('Press Start AR to begin')
+  await new Promise<void>((resolve) => {
+    const startBtn = document.getElementById('start-ar-btn') as HTMLButtonElement
+    startBtn.addEventListener('click', async () => {
+      // ↓ Initiate BEFORE any await — this preserves the user-gesture context in Safari
+      type PermAPI = { requestPermission?(): Promise<string> }
+      const p1 = (DeviceOrientationEvent as unknown as PermAPI).requestPermission?.()
+      const p2 = (DeviceMotionEvent as unknown as PermAPI).requestPermission?.()
+
+      // Hide the start screen immediately
+      document.getElementById('start-screen')?.remove()
+
+      try {
+        await Promise.all([p1, p2].filter(Boolean))
+      } catch {
+        console.warn('[main] Motion/orientation permission denied — SLAM may not track')
+      }
+      resolve()
+    }, { once: true })
+  })
+
   overlay.setStatus('Starting AR…')
   await provider.start(canvas)
   overlay.setStatus('Ready — tap capture to scan')
@@ -139,8 +163,7 @@ function setupStatusOverlay() {
   }
 }
 
-function waitForXR8(timeoutMs: number): Promise<boolean> {
-  return new Promise((resolve) => {
+function waitForXR8(timeoutMs: number): Promise<boolean> {  return new Promise((resolve) => {
     if (typeof (window as unknown as Record<string, unknown>)['XR8'] !== 'undefined') {
       resolve(true)
       return
@@ -161,4 +184,8 @@ function bucket(p: { x: number; y: number; z: number }): string {
   return `${p.x.toFixed(1)},${p.y.toFixed(1)},${p.z.toFixed(1)}`
 }
 
-main().catch(console.error)
+main().catch((e: unknown) => {
+  console.error('[main]', e)
+  const el = document.getElementById('status-text')
+  if (el) el.textContent = `Error: ${e instanceof Error ? e.message : String(e)}`
+})

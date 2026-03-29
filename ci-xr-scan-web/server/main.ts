@@ -16,8 +16,8 @@ import { logger } from 'hono/logger'
 import { InferenceEngine } from './inference.ts'
 
 const PORT = Number(Deno.env.get('PORT') ?? 8000)
-// Allow the Tailscale origin (HTTPS because Vite uses self-signed SSL)
-const ALLOWED_ORIGIN = Deno.env.get('ALLOWED_ORIGIN') ?? 'https://liam-mbp.capybara-ulmer.ts.net:5173'
+// Allow any port on the Tailscale hostname + localhost (dev flexibility)
+const ALLOWED_ORIGIN_PREFIX = Deno.env.get('ALLOWED_ORIGIN_PREFIX') ?? 'https://liam-mbp.capybara-ulmer.ts.net'
 
 const engine = new InferenceEngine()
 let engineReady = false
@@ -30,7 +30,14 @@ const app = new Hono()
 app.use(logger())
 app.use(
   cors({
-    origin: [ALLOWED_ORIGIN, 'https://localhost:5173'],
+    // Accept any port on the tailscale hostname OR any localhost port.
+    // This handles Vite starting on :5173, :5174, etc.
+    origin: (origin) => {
+      if (!origin) return origin  // same-origin / curl tests
+      if (origin.startsWith(ALLOWED_ORIGIN_PREFIX)) return origin
+      if (origin.startsWith('https://localhost:') || origin === 'https://localhost') return origin
+      return ''
+    },
     allowMethods: ['POST', 'OPTIONS'],
     allowHeaders: ['Content-Type'],
   }),
@@ -57,6 +64,6 @@ app.post('/infer', async (c) => {
 })
 
 console.log(`[server] listening on :${PORT}`)
-console.log(`[server] CORS origin: ${ALLOWED_ORIGIN}`)
+console.log(`[server] CORS origin prefix: ${ALLOWED_ORIGIN_PREFIX}`)
 
 Deno.serve({ port: PORT }, app.fetch)

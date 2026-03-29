@@ -30,7 +30,10 @@ export class InferenceRouter {
   /** Call once at startup — determines path and pre-warms the worker if able */
   async init(onProgress?: ProgressCallback): Promise<void> {
     this.onProgress = onProgress ?? null
-    this.useWorker = typeof navigator !== 'undefined' && 'gpu' in navigator
+    // iOS Safari 17+ exposes navigator.gpu but running a 1.5 GB ONNX model on
+    // device is impractical (OOM, load time). Always use the server path on iOS.
+    const isIOS = typeof navigator !== 'undefined' && /iPad|iPhone|iPod/.test(navigator.userAgent)
+    this.useWorker = !isIOS && typeof navigator !== 'undefined' && 'gpu' in navigator
 
     if (this.useWorker) {
       this.worker = new Worker(new URL('./webgpu.worker.ts', import.meta.url), { type: 'module' })

@@ -20,10 +20,6 @@ declare const XR8: {
   stop(): void
   loadChunk(name: string): Promise<void>
   GlTextureRenderer: { pipelineModule(): object }
-  Threejs: {
-    pipelineModule(): object
-    xrScene(): { scene: THREE.Scene; camera: THREE.Camera; renderer: THREE.WebGLRenderer } | null
-  }
   XrController: {
     pipelineModule(): object
     hitTest(
@@ -41,16 +37,6 @@ declare const XR8: {
     pipelineModule(opts: { luminance: boolean }): object
   }
   XrConfig: { device(): { ANY: unknown } }
-}
-
-// Minimal Three.js type references (full types come from @types/three)
-declare namespace THREE {
-  interface Scene {}
-  interface Camera {
-    position: { x: number; y: number; z: number }
-    quaternion: { x: number; y: number; z: number; w: number }
-  }
-  interface WebGLRenderer {}
 }
 
 export class EighthWallProvider implements ARProvider {
@@ -76,29 +62,35 @@ export class EighthWallProvider implements ARProvider {
 
     XR8.addCameraPipelineModules([
       XR8.GlTextureRenderer.pipelineModule(), // draws camera feed to canvas
-      XR8.Threejs.pipelineModule(), // creates Three.js GL scene
-      XR8.XrController.pipelineModule(), // enables SLAM 6-DoF tracking
+      XR8.XrController.pipelineModule(), // enables SLAM 6-DoF tracking + pose
       XR8.CameraPixelArray.pipelineModule({ luminance: false }), // RGBA pixel array
       {
         name: 'ci-scan-capture',
 
-        onProcessCpu({ processGpuResult }: { processGpuResult: Record<string, unknown> }) {
-          // Update pose from the Three.js camera (most accurate after SLAM update)
-          const xrScene = XR8.Threejs.xrScene?.()
-          if (xrScene?.camera) {
-            const { camera } = xrScene
+        onProcessCpu({ processGpuResult, processCpuResult }: {
+          processGpuResult: Record<string, unknown>
+          processCpuResult: Record<string, unknown>
+        }) {
+          // XrController provides camera pose via processCpuResult.reality
+          const reality = (processCpuResult as Record<string, Record<string, unknown>>)?.reality
+          if (reality?.rotation && reality?.position) {
             self.latestPose = {
-              position: { ...camera.position },
-              rotation: { ...camera.quaternion },
+              position: reality.position as { x: number; y: number; z: number },
+              rotation: reality.rotation as { x: number; y: number; z: number; w: number },
             }
           }
 
           // Only do the expensive pixel copy when a capture is pending
           if (self.captureQueue.length === 0) return
 
+          console.log('[capture] onProcessCpu triggered, processGpuResult keys:', Object.keys(processGpuResult))
           const pa = (processGpuResult as { camerapixelarray?: { pixels: Uint8Array; rows: number; cols: number } })
             .camerapixelarray
-          if (!pa?.pixels) return
+          console.log('[capture] camerapixelarray:', pa ? `${pa.cols}×${pa.rows} px${pa.pixels?.length}` : 'undefined')
+          if (!pa?.pixels) {
+            console.warn('[capture] No pixel data in processGpuResult — capture will retry next frame')
+            return
+          }
 
           const { pixels, rows: height, cols: width } = pa
           // Copy immediately — the underlying buffer is reused next frame
@@ -117,6 +109,13 @@ export class EighthWallProvider implements ARProvider {
         },
       },
     ])
+
+    // XR8 does not resize the canvas itself — it uses canvas.width/canvas.height
+    // as the GL viewport.  Set them to the physical pixel size of the screen so
+    // GlTextureRenderer renders at full device resolution, not the default 300×150.
+    const dpr = window.devicePixelRatio || 1
+    canvas.width = Math.round(window.innerWidth * dpr)
+    canvas.height = Math.round(window.innerHeight * dpr)
 
     XR8.run({ canvas, allowedDevices: XR8.XrConfig.device().ANY })
   }

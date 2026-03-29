@@ -54,11 +54,17 @@ export class AROverlay {
     })
 
     if (this.use8thWall) {
-      // Hook into the 8th Wall pipeline so pin positions update every render frame
+      // Hook into the 8th Wall pipeline so pin positions update every render frame.
+      // XR8.Threejs may not exist if the Threejs pipeline module is not loaded;
+      // guard with 'as any' to avoid a TypeError rather than relying on TS types.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const threejs = (XR8 as unknown as Record<string, unknown>).Threejs as
+        | { xrScene?(): { camera: THREE.Camera } | null }
+        | undefined
       XR8.addCameraPipelineModule({
         name: 'ci-scan-overlay-tick',
         onRender: () => {
-          const xrScene = XR8.Threejs.xrScene?.()
+          const xrScene = threejs?.xrScene?.()
           if (xrScene?.camera) this.tickPins(xrScene.camera as THREE.Camera)
         },
       })

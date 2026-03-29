@@ -8,7 +8,9 @@
 import { parseDetections } from './prompt'
 import type { RawDetection } from './prompt'
 
-const SERVER_URL = 'http://liam-mbp.capybara-ulmer.ts.net:8000'
+// Empty string = same origin, proxied through Vite dev server (no mixed content).
+// Vite forwards /infer and /health to http://localhost:8000.
+const SERVER_URL = ''
 
 export async function inferViaServer(imageBlob: Blob): Promise<RawDetection[]> {
   const form = new FormData()
