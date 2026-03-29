@@ -1,5 +1,9 @@
 /**
  * Side panel — full object manifest with 3D positions + export controls.
+ * Supports:
+ *   - Close button inside the panel header
+ *   - Select / deselect individual detections (highlighted in AR overlay)
+ *   - Inline edit of label + description
  */
 import type { DetectionStore, StoredDetection } from '../scene/store'
 
@@ -34,8 +38,30 @@ export class SidePanel {
   }
 
   mount(): void {
+    // ── Panel header (title + close button) ───────────────────────────────
+    const panelHeader = document.createElement('div')
+    panelHeader.id = 'panel-header'
+    panelHeader.style.cssText = `
+      display:flex;align-items:center;justify-content:space-between;
+      padding:16px 14px 10px;border-bottom:1px solid rgba(255,255,255,0.08);
+      flex-shrink:0;
+    `
+    panelHeader.innerHTML = `<span style="color:#fff;font-size:15px;font-weight:700;">Detections</span>`
+    const closeBtn = document.createElement('button')
+    closeBtn.setAttribute('aria-label', 'Close panel')
+    closeBtn.style.cssText = `
+      background:none;border:none;color:rgba(255,255,255,0.4);
+      font-size:18px;cursor:pointer;padding:0 2px;line-height:1;
+    `
+    closeBtn.textContent = '✕'
+    closeBtn.addEventListener('click', () => this.setOpen(false))
+    panelHeader.appendChild(closeBtn)
+    this.panel.insertBefore(panelHeader, this.content)
+
+    // ── Toggle button (outside panel) ──────────────────────────────────────
     this.toggle.addEventListener('click', () => this.setOpen(!this.isOpen))
 
+    // ── Footer buttons ─────────────────────────────────────────────────────
     const exportBtn = document.createElement('button')
     exportBtn.className = 'panel-btn-primary'
     exportBtn.textContent = '⬇ Export .glb'
@@ -48,21 +74,19 @@ export class SidePanel {
     clearBtn.addEventListener('click', async () => { await this.store.clear() })
     this.footer.appendChild(clearBtn)
 
-    this.store.subscribe((dets) => this.render(dets))
-    this.render(this.store.detections)
+    this.store.subscribe((dets, selected) => this.render(dets, selected))
+    this.render(this.store.detections, this.store.selected)
   }
 
   setOpen(open: boolean): void {
     this.isOpen = open
     this.panel.classList.toggle('open', open)
-    // Update badge
     const count = this.store.detections.size
     this.toggle.setAttribute('data-count', count > 0 ? String(count) : '')
   }
 
-  private render(dets: Map<string, StoredDetection>): void {
+  private render(dets: Map<string, StoredDetection>, selected: Set<string>): void {
     const count = dets.size
-    // Update toggle badge
     this.toggle.setAttribute('data-count', count > 0 ? String(count) : '')
 
     if (count === 0) {
@@ -76,42 +100,49 @@ export class SidePanel {
       return
     }
 
-    const sorted = [...dets.values()].sort((a, b) => b.confidence - a.confidence)
+    const sorted = [...dets.entries()].sort(([, a], [, b]) => b.confidence - a.confidence)
     this.content.innerHTML = ''
 
+    const selCount = selected.size
     const header = document.createElement('div')
-    header.style.cssText = 'padding:14px 16px 8px;display:flex;align-items:baseline;justify-content:space-between;'
+    header.style.cssText = 'padding:10px 14px 6px;display:flex;align-items:baseline;justify-content:space-between;'
     header.innerHTML = `
       <span style="color:rgba(255,255,255,0.5);font-size:11px;text-transform:uppercase;letter-spacing:0.08em;">
-        ${count} Object${count === 1 ? '' : 's'}
+        ${count} Object${count === 1 ? '' : 's'}${selCount > 0 ? ` · ${selCount} sel.` : ''}
       </span>
       <span style="color:rgba(255,255,255,0.25);font-size:10px;">X · Y · Z</span>`
     this.content.appendChild(header)
 
-    for (const det of sorted) {
-      this.content.appendChild(this.buildCard(det))
+    for (const [key, det] of sorted) {
+      this.content.appendChild(this._buildCard(key, det, selected.has(key)))
     }
   }
 
-  private buildCard(det: StoredDetection): HTMLElement {
+  private _buildCard(key: string, det: StoredDetection, isSelected: boolean): HTMLElement {
     const color = categoryColor(det.label)
     const conf = Math.round(det.confidence * 100)
     const p = det.worldPos
 
     const card = document.createElement('div')
+    card.dataset['key'] = key
     card.style.cssText = `
       display:grid;grid-template-columns:auto 1fr auto;
       gap:10px;padding:10px 14px;
       border-bottom:1px solid rgba(255,255,255,0.06);
       align-items:start;
       transition:background 0.15s;
+      ${isSelected ? 'background:rgba(79,195,247,0.08);border-left:2px solid #4fc3f7;padding-left:12px;' : ''}
     `
-    card.addEventListener('pointerenter', () => { card.style.background = 'rgba(255,255,255,0.04)' })
-    card.addEventListener('pointerleave', () => { card.style.background = '' })
+    card.addEventListener('pointerenter', () => {
+      if (!isSelected) card.style.background = 'rgba(255,255,255,0.04)'
+    })
+    card.addEventListener('pointerleave', () => {
+      if (!isSelected) card.style.background = ''
+    })
 
-    // Thumbnail or colour swatch
+    // Thumbnail / colour swatch — tap to select/deselect
     const imgWrap = document.createElement('div')
-    imgWrap.style.cssText = 'width:44px;height:44px;border-radius:8px;overflow:hidden;flex-shrink:0;'
+    imgWrap.style.cssText = 'width:44px;height:44px;border-radius:8px;overflow:hidden;flex-shrink:0;cursor:pointer;'
     if (det.thumbnailDataUrl) {
       const img = document.createElement('img')
       img.src = det.thumbnailDataUrl
@@ -121,23 +152,43 @@ export class SidePanel {
       imgWrap.style.cssText += `background:${color}22;display:flex;align-items:center;justify-content:center;`
       imgWrap.innerHTML = `<span style="width:12px;height:12px;border-radius:50%;background:${color};box-shadow:0 0 8px ${color};"></span>`
     }
+    imgWrap.addEventListener('click', () => this.store.toggleSelect(key))
 
-    // Label + description
+    // Label + description + edit controls
     const info = document.createElement('div')
     info.style.cssText = 'min-width:0;'
 
     const row1 = document.createElement('div')
-    row1.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:2px;'
-    row1.innerHTML = `
-      <span style="width:7px;height:7px;border-radius:50%;background:${color};flex-shrink:0;"></span>
-      <span style="color:#fff;font-size:14px;font-weight:700;">${det.label}</span>
-      <span style="color:${color};font-size:11px;">${conf}%</span>`
+    row1.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:2px;flex-wrap:wrap;'
+
+    const dot = document.createElement('span')
+    dot.style.cssText = `width:7px;height:7px;border-radius:50%;background:${color};flex-shrink:0;`
+
+    const labelEl = document.createElement('span')
+    labelEl.style.cssText = 'color:#fff;font-size:14px;font-weight:700;'
+    labelEl.textContent = det.label
+
+    const confEl = document.createElement('span')
+    confEl.style.cssText = `color:${color};font-size:11px;`
+    confEl.textContent = `${conf}%`
+
+    const editBtn = document.createElement('button')
+    editBtn.textContent = '✏'
+    editBtn.title = 'Edit label & description'
+    editBtn.style.cssText = `
+      background:none;border:none;color:rgba(255,255,255,0.25);
+      font-size:11px;cursor:pointer;padding:0 2px;margin-left:auto;
+      transition:color 0.15s;flex-shrink:0;
+    `
+    editBtn.addEventListener('pointerenter', () => { editBtn.style.color = '#4fc3f7' })
+    editBtn.addEventListener('pointerleave', () => { editBtn.style.color = 'rgba(255,255,255,0.25)' })
+
+    row1.append(dot, labelEl, confEl, editBtn)
 
     const desc = document.createElement('p')
     desc.style.cssText = 'color:rgba(255,255,255,0.5);font-size:12px;line-height:1.4;margin:0 0 5px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;'
     desc.textContent = det.description
 
-    // 3D position badge
     const posBadge = document.createElement('div')
     posBadge.style.cssText = `
       display:inline-flex;gap:4px;
@@ -154,22 +205,77 @@ export class SidePanel {
       <span style="color:#ffcc80;">${fmtCoord(p.z)}</span>
     `
 
-    info.append(row1, desc, posBadge)
+    // Inline edit form
+    const editForm = document.createElement('div')
+    editForm.style.cssText = 'display:none;margin-top:8px;'
+    const safeLabel = det.label.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    const safeDesc = det.description.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    editForm.innerHTML = `
+      <input type="text" value="${safeLabel}" placeholder="Label"
+        style="width:100%;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);
+               border-radius:6px;color:#fff;font-size:12px;padding:5px 8px;margin-bottom:5px;
+               outline:none;box-sizing:border-box;" />
+      <textarea placeholder="Description" rows="2"
+        style="width:100%;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);
+               border-radius:6px;color:#fff;font-size:12px;padding:5px 8px;resize:none;
+               outline:none;font-family:inherit;box-sizing:border-box;">${safeDesc}</textarea>
+      <div style="display:flex;gap:6px;margin-top:5px;">
+        <button class="edit-save" style="flex:1;padding:5px;background:#4fc3f7;color:#000;border:none;
+          border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;">Save</button>
+        <button class="edit-cancel" style="flex:1;padding:5px;background:rgba(255,255,255,0.08);
+          color:rgba(255,255,255,0.6);border:none;border-radius:6px;font-size:12px;cursor:pointer;">Cancel</button>
+      </div>
+    `
 
-    // Confidence ring on right
+    editBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const show = editForm.style.display === 'none'
+      editForm.style.display = show ? 'block' : 'none'
+      if (show) editForm.querySelector<HTMLInputElement>('input')?.focus()
+    })
+
+    editForm.querySelector<HTMLButtonElement>('.edit-save')!.addEventListener('click', async (e) => {
+      e.stopPropagation()
+      const newLabel = (editForm.querySelector<HTMLInputElement>('input')!.value || det.label).trim()
+      const newDesc = (editForm.querySelector<HTMLTextAreaElement>('textarea')!.value || det.description).trim()
+      editForm.style.display = 'none'
+      await this.store.updateDetection(key, { label: newLabel, description: newDesc })
+    })
+
+    editForm.querySelector<HTMLButtonElement>('.edit-cancel')!.addEventListener('click', (e) => {
+      e.stopPropagation()
+      editForm.style.display = 'none'
+    })
+
+    info.append(row1, desc, posBadge, editForm)
+
+    // Confidence ring / select indicator on right
     const ring = document.createElement('div')
-    ring.title = `Confidence: ${conf}%`
-    ring.style.cssText = 'flex-shrink:0;padding-top:2px;'
+    ring.title = isSelected ? 'Deselect' : `${conf}% — tap to select`
+    ring.style.cssText = 'flex-shrink:0;padding-top:2px;cursor:pointer;'
     const r = 12, stroke = 2.5, circ = 2 * Math.PI * (r - stroke / 2)
-    ring.innerHTML = `
-      <svg width="${r * 2}" height="${r * 2}" viewBox="0 0 ${r * 2} ${r * 2}">
-        <circle cx="${r}" cy="${r}" r="${r - stroke / 2}"
-          fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="${stroke}"/>
-        <circle cx="${r}" cy="${r}" r="${r - stroke / 2}"
-          fill="none" stroke="${color}" stroke-width="${stroke}"
-          stroke-dasharray="${circ}" stroke-dashoffset="${circ * (1 - conf / 100)}"
-          stroke-linecap="round" transform="rotate(-90 ${r} ${r})"/>
-      </svg>`
+
+    if (isSelected) {
+      ring.innerHTML = `
+        <svg width="${r * 2}" height="${r * 2}" viewBox="0 0 ${r * 2} ${r * 2}">
+          <circle cx="${r}" cy="${r}" r="${r - stroke / 2}" fill="#4fc3f7" stroke="#4fc3f7" stroke-width="${stroke}"/>
+          <text x="${r}" y="${r + 4}" text-anchor="middle" fill="#000" font-size="10" font-weight="bold">✓</text>
+        </svg>`
+    } else {
+      ring.innerHTML = `
+        <svg width="${r * 2}" height="${r * 2}" viewBox="0 0 ${r * 2} ${r * 2}">
+          <circle cx="${r}" cy="${r}" r="${r - stroke / 2}"
+            fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="${stroke}"/>
+          <circle cx="${r}" cy="${r}" r="${r - stroke / 2}"
+            fill="none" stroke="${color}" stroke-width="${stroke}"
+            stroke-dasharray="${circ}" stroke-dashoffset="${circ * (1 - conf / 100)}"
+            stroke-linecap="round" transform="rotate(-90 ${r} ${r})"/>
+        </svg>`
+    }
+    ring.addEventListener('click', (e) => {
+      e.stopPropagation()
+      this.store.toggleSelect(key)
+    })
 
     card.append(imgWrap, info, ring)
     return card

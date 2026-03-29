@@ -195,7 +195,7 @@ export async function exportToGLB(data: ExportData): Promise<void> {
     scene.add(group)
   }
 
-  // ── 5. Pack as GLB and trigger download ────────────────────────────────────
+  // ── 5. Pack as GLB, trigger local download, and upload to server ──────────
   const exporter = new GLTFExporter()
   const buffer = await new Promise<ArrayBuffer>((resolve, reject) => {
     exporter.parse(
@@ -214,11 +214,41 @@ export async function exportToGLB(data: ExportData): Promise<void> {
   })
 
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-  triggerDownload(buffer, `room-scan-${ts}.glb`)
+  const filename = `room-scan-${ts}.glb`
+  triggerDownload(buffer, filename)
   console.log(
     `[export] GLB: ${(buffer.byteLength / 1024).toFixed(0)} KB,`,
     `${pointCloud.count} pts, ${poseHistory.length} poses, ${store.detections.size} objects`,
   )
+
+  // Upload to server (non-blocking)
+  void uploadToServer(buffer, filename, store)
+}
+
+/**
+ * POST the GLB to the Deno server's /upload-scan endpoint so it is persisted
+ * in the scans/ folder and available in the 3D viewer.
+ */
+async function uploadToServer(buffer: ArrayBuffer, filename: string, store: DetectionStore): Promise<void> {
+  try {
+    const metadata = JSON.stringify({
+      detectionCount: store.detections.size,
+      labels: [...store.detections.values()].map(d => d.label),
+      exportedAt: new Date().toISOString(),
+    })
+    const form = new FormData()
+    form.append('file', new Blob([buffer], { type: 'model/gltf-binary' }), filename)
+    form.append('metadata', metadata)
+    const resp = await fetch('/upload-scan', { method: 'POST', body: form })
+    if (resp.ok) {
+      const { filename: saved } = await resp.json() as { filename: string }
+      console.log(`[export] Uploaded to server: ${saved}`)
+    } else {
+      console.warn(`[export] Server upload failed: ${resp.status}`)
+    }
+  } catch (err) {
+    console.warn('[export] Server upload error:', err)
+  }
 }
 
 function triggerDownload(buffer: ArrayBuffer, filename: string): void {

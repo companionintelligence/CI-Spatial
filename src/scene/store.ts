@@ -21,7 +21,7 @@ export interface Session {
   detections: Map<string, StoredDetection>
 }
 
-type ChangeListener = (detections: Map<string, StoredDetection>) => void
+type ChangeListener = (detections: Map<string, StoredDetection>, selected: Set<string>) => void
 
 const DB_NAME = 'ci-xr-scan'
 const STORE_NAME = 'sessions'
@@ -31,6 +31,7 @@ export class DetectionStore {
   readonly sessionId: string
   readonly startedAt: number
   private _detections: Map<string, StoredDetection> = new Map()
+  private _selected: Set<string> = new Set()
   private listeners: Set<ChangeListener> = new Set()
   private db: IDBDatabase | null = null
 
@@ -48,6 +49,10 @@ export class DetectionStore {
     return this._detections
   }
 
+  get selected(): Set<string> {
+    return this._selected
+  }
+
   /** Add or update detections; persists to IndexedDB and notifies listeners */
   async upsert(incoming: Map<string, WorldDetection>, thumbnails: Map<string, string>): Promise<void> {
     for (const [key, det] of incoming) {
@@ -61,9 +66,39 @@ export class DetectionStore {
     await this.persist()
   }
 
+  /** Patch an existing detection's mutable fields (label, description) */
+  async updateDetection(key: string, patch: Partial<Pick<StoredDetection, 'label' | 'description'>>): Promise<void> {
+    const det = this._detections.get(key)
+    if (!det) return
+    this._detections.set(key, { ...det, ...patch })
+    this.notify()
+    await this.persist()
+  }
+
+  /** Toggle visual selection for a detection key */
+  toggleSelect(key: string): void {
+    if (this._selected.has(key)) {
+      this._selected.delete(key)
+    } else {
+      this._selected.add(key)
+    }
+    this.notify()
+  }
+
+  selectAll(): void {
+    for (const key of this._detections.keys()) this._selected.add(key)
+    this.notify()
+  }
+
+  deselectAll(): void {
+    this._selected.clear()
+    this.notify()
+  }
+
   /** Clear this session's detections and re-persist */
   async clear(): Promise<void> {
     this._detections.clear()
+    this._selected.clear()
     this.notify()
     await this.persist()
   }
@@ -103,6 +138,7 @@ export class DetectionStore {
     const record = sessions.find((s) => s.sessionId === sessionId)
     if (!record) return false
     this._detections = new Map(record.detections as Array<[string, StoredDetection]>)
+    this._selected.clear()
     this.notify()
     return true
   }
@@ -119,7 +155,7 @@ export class DetectionStore {
   }
 
   private notify(): void {
-    this.listeners.forEach((fn) => fn(this._detections))
+    this.listeners.forEach((fn) => fn(this._detections, this._selected))
   }
 
   private async persist(): Promise<void> {

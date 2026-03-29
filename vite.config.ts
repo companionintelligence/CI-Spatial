@@ -2,6 +2,7 @@ import { defineConfig } from 'vite'
 import basicSsl from '@vitejs/plugin-basic-ssl'
 import fs from 'node:fs'
 import os from 'node:os'
+import path from 'node:path'
 
 const HOSTNAME = 'liam-mbp.capybara-ulmer.ts.net'
 
@@ -31,6 +32,14 @@ if (tsCert) {
 
 export default defineConfig({
   plugins: tsCert ? [] : [basicSsl()],
+  build: {
+    rollupOptions: {
+      input: {
+        main: path.resolve(process.cwd(), 'index.html'),
+        viewer: path.resolve(process.cwd(), 'viewer.html'),
+      },
+    },
+  },
   server: {
     host: '0.0.0.0',
     port: 5173,
@@ -45,6 +54,8 @@ export default defineConfig({
     proxy: {
       '/infer': 'http://localhost:8000',
       '/health': 'http://localhost:8000',
+      '/upload-scan': 'http://localhost:8000',
+      '/scans': 'http://localhost:8000',
     },
   },
   worker: {
