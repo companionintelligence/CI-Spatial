@@ -8,6 +8,7 @@
  *   4. Init inference router (WebGPU worker or Deno server path)
  *   5. Start AR session
  *   6. Wire capture button → infer → resolve → store → UI update loop
+ *   7. Wire auto-capture toggle → pose-delta-based automated capture
  */
 import { createEighthWallProvider } from './ar/eighthwall'
 import { createWebXRProvider, WebXRProvider } from './ar/webxr'
@@ -15,13 +16,19 @@ import type { ARProvider, Pose } from './ar/provider'
 import { RoomScanner } from './ar/scanner'
 import { PointCloud } from './scene/pointcloud'
 import { CaptureModule } from './capture/capture'
+import { AutoCapture } from './capture/auto-capture'
+import { ScanQualityMonitor } from './capture/quality-monitor'
 import { InferenceRouter } from './inference/router'
 import { resolveDetections, mergeDetections } from './spatial/resolver'
 import { DetectionStore } from './scene/store'
+import { ProjectStore } from './project/project-store'
 import { AROverlay } from './ui/overlay'
 import { SidePanel } from './ui/panel'
 import { SessionHistory } from './ui/history'
 import { exportToGLB } from './export/gltf'
+import { exportSessionSummary } from './export/summary'
+import { GeoTracker } from './geo/geo-tracker'
+import { RtcBroadcaster } from './rtc/broadcaster'
 import * as THREE from 'three'
 
 async function main() {
@@ -31,9 +38,19 @@ async function main() {
   // ── 1. Store + scan accumulators ────────────────────────────────────────────
   const store = new DetectionStore()
   await store.open()
+  const projectStore = new ProjectStore()
+  await projectStore.open()
+  const qualityMonitor = new ScanQualityMonitor()
+  const geoTracker = new GeoTracker()
   const pointCloud = new PointCloud(0.05)   // 5 cm voxel deduplication grid
   const poseHistory: Pose[] = []
   const scanner = new RoomScanner()
+  let captureCount = 0    // total successful captures this session
+
+  // Start geo tracker early (GPS needs time to acquire a fix)
+  void geoTracker.start().then((fix) => {
+    if (fix?.address) overlay.setStatus(`📍 ${fix.address}`)
+  })
 
   // ── 2. Inference router ────────────────────────────────────────────────────
   const router = new InferenceRouter()
@@ -72,7 +89,12 @@ async function main() {
 
   // ── 4. UI ──────────────────────────────────────────────────────────────────
   const arOverlay = new AROverlay(store, use8thWall, provider)
-  const panel = new SidePanel(store, () => exportToGLB({ store, pointCloud, poseHistory }))
+  const panel = new SidePanel(
+    store,
+    () => exportToGLB({ store, pointCloud, poseHistory, geoFix: geoTracker.snapshot() ?? undefined }),
+    () => exportSessionSummary({ store, pointCloud, poseHistory, captureCount, geoFix: geoTracker.snapshot() ?? undefined }),
+    (action) => requestServerProcessing(action, store),
+  )
   const history = new SessionHistory(store)
 
   const capture = new CaptureModule(provider)
@@ -80,10 +102,9 @@ async function main() {
     ? (x: number, y: number) => (provider as WebXRProvider).hitTestAsync(x, y)
     : undefined
 
-  arOverlay.mount(async () => {
+  // Shared capture handler used by both the manual button and auto-capture
+  async function doCapture() {
     if (!provider.isTracking()) {
-      // Show a nudge but still allow capture — the resolver will fall back
-      // to the estimated position if the pose is not yet valid.
       overlay.setStatus('Tracking not ready — move camera slowly over a surface')
     }
     overlay.setStatus('Capturing…')
@@ -91,6 +112,13 @@ async function main() {
       const { blob, pose, timestamp } = await capture.capture()
       console.log(`[main] Captured blob: ${blob.size} bytes, type=${blob.type}, pose=`, pose)
       overlay.setStatus('Analysing…')
+
+      // Async frame quality analysis (non-blocking — updates overlay on next tick)
+      void qualityMonitor.analyseFrame(blob).then(({ lowLight, reflective }) => {
+        updateQualityOverlay(qualityMonitor.tick(provider, pointCloud))
+        if (lowLight)   overlay.setStatus('⚠ Low light — add more lighting')
+        if (reflective) overlay.setStatus('⚠ Reflective surface detected')
+      })
 
       const thumbnail = await capture.captureThumbnail(blob)
       const rawDets = await router.infer(blob)
@@ -119,6 +147,10 @@ async function main() {
       })
       console.log(`[main] World detections (${worldDets.length}):`, JSON.stringify(worldDets))
 
+      // Tag each resolved detection with the current capture index
+      const currentCaptureIdx = captureCount + 1  // will increment after
+      for (const wd of worldDets) wd.captureIndex = currentCaptureIdx
+
       // Build thumbnail map keyed by label (best-effort)
       const thumbMap = new Map<string, string>()
       for (const wd of worldDets) {
@@ -130,6 +162,7 @@ async function main() {
 
       showInferDialog(worldDets)
 
+      captureCount++
       overlay.setStatus(
         `${store.detections.size} object${store.detections.size === 1 ? '' : 's'} · ${pointCloud.count} pts`,
       )
@@ -138,10 +171,38 @@ async function main() {
       console.error('[capture]', e)
     }
     overlay.setProgress(null)
-  })
+  }
+
+  arOverlay.mount(doCapture)
 
   panel.mount()
   history.mount()
+
+  // ── Auto-capture ───────────────────────────────────────────────────────────
+  const autoCapture = new AutoCapture(provider, doCapture)
+  autoCapture.onStatusChange = (status) => {
+    const btn = document.getElementById('auto-capture-btn') as HTMLButtonElement | null
+    if (!btn) return
+    btn.classList.toggle('active', status.enabled)
+    btn.title = status.enabled
+      ? `Auto-capture ON · ${status.captureCount} captures`
+      : 'Enable auto-capture'
+    const countEl = document.getElementById('auto-capture-count')
+    if (countEl) countEl.textContent = status.enabled ? `${status.captureCount}` : ''
+    // Visual: pulse the capture button ring when in-flight
+    const captureBtn = document.getElementById('capture-btn')
+    if (captureBtn) captureBtn.classList.toggle('auto-busy', status.inFlight)
+  }
+
+  const autoCaptureBtn = document.getElementById('auto-capture-btn')
+  autoCaptureBtn?.addEventListener('click', () => {
+    autoCapture.toggle()
+    if (autoCapture.enabled) {
+      overlay.setStatus('Auto-capture ON — move camera to scan')
+    } else {
+      overlay.setStatus(`Auto-capture OFF · ${autoCapture.captureCount} auto captures`)
+    }
+  })
 
   // ── 5. Start AR — permission must be requested in the button click handler ───
   // Safari iOS 13+ requires DeviceOrientationEvent/DeviceMotionEvent.requestPermission()
@@ -171,6 +232,27 @@ async function main() {
   overlay.setStatus('Starting AR…')
   await provider.start(canvas)
   overlay.setStatus('Move camera to initialise tracking…')
+
+  // ── WebRTC live-feed broadcaster (optional) ───────────────────────────────
+  const broadcaster = new RtcBroadcaster('default')
+  broadcaster.onStatus = ({ state, message }) => {
+    const badge = document.getElementById('rtc-stream-badge')
+    if (badge) {
+      badge.textContent = state === 'streaming' ? '● LIVE' : state === 'error' ? '✕ RTC' : '◌ RTC'
+      badge.style.color = state === 'streaming' ? '#66bb6a' : state === 'error' ? '#ef9a9a' : 'rgba(255,255,255,0.4)'
+    }
+    if (state === 'error') overlay.setStatus(`RTC: ${message}`)
+  }
+  const streamBtn = document.getElementById('rtc-stream-btn') as HTMLButtonElement | null
+  streamBtn?.addEventListener('click', () => {
+    if (streamBtn.classList.contains('active')) {
+      broadcaster.stop()
+      streamBtn.classList.remove('active')
+    } else {
+      void broadcaster.start(canvas)
+      streamBtn.classList.add('active')
+    }
+  })
   overlay.setProgress(null)
 
   // ── 6. Continuous SLAM point-cloud accumulation ──────────────────────────────
@@ -185,6 +267,11 @@ async function main() {
         overlay.setStatus('Tracking — tap to capture')
       }
     }
+    // Update quality overlay on every scanner tick
+    const snap = qualityMonitor.tick(provider, pointCloud)
+    updateQualityOverlay(snap)
+    if (snap.trackingLost) overlay.setStatus('Tracking lost — move slowly')
+    else if (snap.driftRisk === 'high') overlay.setStatus('⚠ Moving too fast — slow down')
   })
   console.log('[main] Room scanner started')
 }
@@ -211,6 +298,38 @@ function setupStatusOverlay() {
       }
     },
   }
+}
+
+function updateQualityOverlay(snap: import('./capture/quality-monitor').QualitySnapshot): void {
+  const overlay = document.getElementById('quality-overlay')
+  if (!overlay) return
+
+  const coverageFill = overlay.querySelector<HTMLElement>('#quality-coverage-fill')
+  const coverageText = overlay.querySelector<HTMLElement>('#quality-coverage-text')
+  const driftBadge   = overlay.querySelector<HTMLElement>('#quality-drift-badge')
+  const lightBadge   = overlay.querySelector<HTMLElement>('#quality-light-badge')
+  const reflBadge    = overlay.querySelector<HTMLElement>('#quality-refl-badge')
+  const missingText  = overlay.querySelector<HTMLElement>('#quality-missing')
+
+  if (coverageFill) {
+    const pct = Math.round(snap.coverageScore * 100)
+    coverageFill.style.width = `${pct}%`
+    coverageFill.style.background = pct >= 80 ? '#66bb6a' : pct >= 50 ? '#ffa726' : '#ef5350'
+  }
+  if (coverageText) coverageText.textContent = snap.coverageText
+
+  if (driftBadge) {
+    driftBadge.style.display = snap.driftRisk !== 'low' ? 'flex' : 'none'
+    driftBadge.textContent = snap.driftRisk === 'high' ? '⚡ Fast' : '↗ Speed'
+  }
+  if (lightBadge) lightBadge.style.display = snap.lowLight ? 'flex' : 'none'
+  if (reflBadge)  reflBadge.style.display  = snap.reflectiveSurface ? 'flex' : 'none'
+  if (missingText) {
+    missingText.style.display = snap.missingAreas > 0 ? 'block' : 'none'
+    missingText.textContent = `${snap.missingAreas} area${snap.missingAreas === 1 ? '' : 's'} missing`
+  }
+
+  overlay.style.display = 'flex'
 }
 
 function waitForXR8(timeoutMs: number): Promise<boolean> {  return new Promise((resolve) => {
@@ -272,6 +391,50 @@ function showInferDialog(dets: Array<{ label: string; description: string; confi
 function hideInferDialog(): void {
   document.getElementById('infer-dialog')?.classList.remove('visible')
   if (_inferDialogTimer) { clearTimeout(_inferDialogTimer); _inferDialogTimer = null }
+}
+
+/**
+ * Send a request to the server's /process-scan endpoint.
+ * The server-side scan list must contain scans from the current session;
+ * if no matching filename is passed we request processing on the newest scan.
+ */
+async function requestServerProcessing(action: string, store: DetectionStore): Promise<void> {
+  const overlay = setupStatusOverlay()
+  overlay.setStatus(`Processing: ${action}…`)
+  try {
+    // Find the newest scan for this session on the server
+    const listResp = await fetch('/scans')
+    if (!listResp.ok) throw new Error(`/scans returned ${listResp.status}`)
+    const list = await listResp.json() as Array<{ filename: string }>
+    const filename = list[0]?.filename ?? ''
+
+    const resp = await fetch('/process-scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename, action, sessionId: store.sessionId }),
+    })
+    if (!resp.ok) throw new Error(`/process-scan returned ${resp.status}`)
+    const result = await resp.json() as { action: string; result: string }
+    overlay.setStatus(`Done: ${result.action}`)
+    console.log('[process]', result)
+    showProcessingResult(result)
+  } catch (err) {
+    overlay.setStatus('Processing failed')
+    console.error('[process]', err)
+  }
+}
+
+function showProcessingResult(result: { action: string; result: string }): void {
+  const dialog = document.getElementById('infer-dialog')
+  const body   = document.getElementById('infer-dialog-body')
+  const title  = document.getElementById('infer-dialog-title')
+  if (!dialog || !body || !title) return
+
+  title.textContent = `Server: ${result.action}`
+  body.innerHTML = `<div style="color:rgba(255,255,255,0.8);font-size:13px;line-height:1.6;white-space:pre-wrap;">${result.result}</div>`
+  dialog.classList.add('visible')
+  if (_inferDialogTimer) clearTimeout(_inferDialogTimer)
+  _inferDialogTimer = setTimeout(() => hideInferDialog(), 15_000)
 }
 
 main().catch((e: unknown) => {

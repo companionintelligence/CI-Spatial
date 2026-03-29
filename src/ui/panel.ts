@@ -30,6 +30,8 @@ export class SidePanel {
   constructor(
     private readonly store: DetectionStore,
     private readonly onExport: () => void,
+    private readonly onSummary?: () => void,
+    private readonly onProcess?: (action: string) => void,
   ) {
     this.panel = document.getElementById('side-panel')!
     this.content = document.getElementById('panel-content')!
@@ -67,6 +69,36 @@ export class SidePanel {
     exportBtn.textContent = '⬇ Export .glb'
     exportBtn.addEventListener('click', this.onExport)
     this.footer.appendChild(exportBtn)
+
+    if (this.onSummary) {
+      const summaryBtn = document.createElement('button')
+      summaryBtn.className = 'panel-btn-ghost'
+      summaryBtn.textContent = '📄 Export Summary'
+      summaryBtn.addEventListener('click', this.onSummary)
+      this.footer.appendChild(summaryBtn)
+    }
+
+    if (this.onProcess) {
+      const processWrap = document.createElement('div')
+      processWrap.style.cssText = 'display:flex;flex-direction:column;gap:4px;'
+      const label = document.createElement('div')
+      label.style.cssText = 'color:rgba(255,255,255,0.3);font-size:10px;text-transform:uppercase;letter-spacing:0.08em;padding:4px 0 2px;'
+      label.textContent = 'Server Processing'
+      processWrap.appendChild(label)
+      const actions: [string, string][] = [
+        ['floor-plan', '🗺 Generate Floor Plan'],
+        ['scene-description', '✍ Scene Description'],
+        ['object-count', '📊 Object Report'],
+      ]
+      for (const [action, btnLabel] of actions) {
+        const btn = document.createElement('button')
+        btn.className = 'panel-btn-ghost'
+        btn.textContent = btnLabel
+        btn.addEventListener('click', () => this.onProcess!(action))
+        processWrap.appendChild(btn)
+      }
+      this.footer.appendChild(processWrap)
+    }
 
     const clearBtn = document.createElement('button')
     clearBtn.className = 'panel-btn-ghost'

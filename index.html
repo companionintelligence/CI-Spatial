@@ -104,6 +104,93 @@
       }
       #history-btn:active { background: rgba(255, 255, 255, 0.15); }
 
+      /* ── Auto-capture button ── */
+      #auto-capture-btn {
+        pointer-events: all;
+        position: absolute;
+        right: 16px;
+        bottom: 260px;
+        width: 48px;
+        height: 48px;
+        border-radius: 50%;
+        border: 2px solid rgba(255, 255, 255, 0.35);
+        background: rgba(0, 0, 0, 0.6);
+        color: #fff;
+        font-size: 16px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        backdrop-filter: blur(8px);
+        transition: border-color 0.2s, background 0.2s;
+        position: absolute;
+      }
+      #auto-capture-btn:active { background: rgba(255, 255, 255, 0.15); }
+      #auto-capture-btn.active {
+        background: rgba(79, 195, 247, 0.25);
+        border-color: #4fc3f7;
+        color: #4fc3f7;
+      }
+      /* Pulsing ring when auto-capture is in-flight */
+      #capture-btn.auto-busy::after {
+        content: '';
+        position: absolute;
+        inset: -8px;
+        border-radius: 50%;
+        border: 2px solid #4fc3f7;
+        animation: auto-ring 1s ease-out infinite;
+        pointer-events: none;
+      }
+      @keyframes auto-ring {
+        0%   { transform: scale(1);   opacity: 0.8; }
+        100% { transform: scale(1.5); opacity: 0; }
+      }
+      #auto-capture-count {
+        position: absolute;
+        top: -4px;
+        right: -4px;
+        min-width: 17px;
+        height: 17px;
+        border-radius: 9px;
+        background: #4fc3f7;
+        color: #000;
+        font-size: 10px;
+        font-weight: 800;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0 3px;
+        display: none;
+      }
+      #auto-capture-btn.active #auto-capture-count { display: flex; }
+
+      /* ── Desktop viewer link ── */
+      #viewer-link {
+        pointer-events: all;
+        position: absolute;
+        right: 16px;
+        bottom: 320px;
+        width: 48px;
+        height: 48px;
+        border-radius: 50%;
+        border: 2px solid rgba(255, 255, 255, 0.35);
+        background: rgba(0, 0, 0, 0.6);
+        color: rgba(255, 255, 255, 0.7);
+        font-size: 16px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        backdrop-filter: blur(8px);
+        text-decoration: none;
+        transition: border-color 0.2s, background 0.2s, color 0.2s;
+      }
+      #viewer-link:hover, #viewer-link:active {
+        background: rgba(79, 195, 247, 0.18);
+        border-color: #4fc3f7;
+        color: #4fc3f7;
+      }
+
       /* Full-screen backdrop + slide-in drawer */
       #history-drawer {
         pointer-events: none;
@@ -441,6 +528,39 @@
       <button id="capture-btn" aria-label="Capture"></button>
       <button id="panel-toggle" aria-label="Detections" data-count="">☰</button>
       <button id="history-btn" aria-label="Session history">🕒</button>
+      <button id="auto-capture-btn" aria-label="Auto-capture" title="Enable auto-capture">
+        📷
+        <span id="auto-capture-count"></span>
+      </button>
+      <a href="/viewer.html" id="viewer-link" aria-label="Open 3D Viewer" title="Desktop 3D Viewer">🖥</a>
+      <button id="rtc-stream-btn" aria-label="Stream to viewer" title="Stream live to desktop viewer"
+        style="position:absolute;bottom:20px;left:50%;transform:translateX(-100px);
+               background:rgba(0,0,0,0.55);border:1px solid rgba(255,255,255,0.2);
+               border-radius:22px;padding:6px 14px;color:rgba(255,255,255,0.6);
+               font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;z-index:20;">
+        <span id="rtc-stream-badge" style="font-size:10px;">◌ RTC</span> Stream
+      </button>
+
+      <!-- Scan quality overlay — top-right corner, shown once scanning starts -->
+      <div id="quality-overlay" style="display:none;position:absolute;top:16px;right:16px;flex-direction:column;gap:6px;pointer-events:none;z-index:10;">
+        <!-- Coverage bar -->
+        <div style="background:rgba(0,0,0,0.7);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,0.12);border-radius:10px;padding:8px 12px;min-width:150px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;">
+            <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:600;letter-spacing:0.05em;text-transform:uppercase;">Coverage</span>
+            <span id="quality-coverage-text" style="font-size:11px;color:rgba(255,255,255,0.7);"></span>
+          </div>
+          <div style="height:5px;background:rgba(255,255,255,0.12);border-radius:3px;overflow:hidden;">
+            <div id="quality-coverage-fill" style="height:100%;width:0%;border-radius:3px;transition:width 0.5s ease,background 0.5s ease;background:#ef5350;"></div>
+          </div>
+        </div>
+        <!-- Warning badges -->
+        <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+          <div id="quality-drift-badge" style="display:none;align-items:center;gap:4px;background:rgba(255,152,0,0.85);border-radius:6px;padding:4px 8px;font-size:11px;font-weight:700;color:#000;"></div>
+          <div id="quality-light-badge" style="display:none;align-items:center;gap:4px;background:rgba(33,33,33,0.9);border:1px solid rgba(255,255,255,0.2);border-radius:6px;padding:4px 8px;font-size:11px;font-weight:700;color:#fff;">🌑 Low light</div>
+          <div id="quality-refl-badge"  style="display:none;align-items:center;gap:4px;background:rgba(79,195,247,0.85);border-radius:6px;padding:4px 8px;font-size:11px;font-weight:700;color:#000;">✦ Reflective</div>
+        </div>
+        <div id="quality-missing" style="display:none;text-align:right;font-size:10px;color:rgba(255,180,0,0.85);font-weight:600;"></div>
+      </div>
       <div id="side-panel">
         <div id="panel-content"></div>
         <div id="panel-footer"></div>

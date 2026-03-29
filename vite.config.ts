@@ -55,7 +55,15 @@ export default defineConfig({
       '/infer': 'http://localhost:8000',
       '/health': 'http://localhost:8000',
       '/upload-scan': 'http://localhost:8000',
+      '/upload-summary': 'http://localhost:8000',
       '/scans': 'http://localhost:8000',
+      '/process-scan': 'http://localhost:8000',
+      '/projects': 'http://localhost:8000',
+      '/scan-locations': 'http://localhost:8000',
+      '/rtc-signal': {
+        target: 'ws://localhost:8000',
+        ws: true,
+      },
     },
   },
   worker: {

@@ -1,24 +1,30 @@
 /**
  * GLTF exporter — converts a complete room scan session into a .glb download.
  *
- * Scene graph structure:
- *   Scene: "room-scan"
- *     Node: "point-cloud"   — THREE.Points with SLAM feature positions
- *     Node: "camera-path"   — THREE.Line showing the trajectory walked
- *     Node: "floor-plane"   — estimated horizontal floor quad
- *     Group: "detections"
- *       Node: "<label>"     — semi-transparent box at each object's world pos
- *                             extras: { label, confidence, description, … }
+ * Scene graph hierarchy (glTF "extras" carry machine-readable metadata):
  *
- * All metadata is stored in node.userData which GLTFExporter writes to `extras`.
+ *   Scene "room-scan"
+ *     Group "Floor_Ground"                  ← one group per floor
+ *       Group "Room_Unknown"                ← one group per room
+ *         Node  "point-cloud"               ← SLAM feature points (THREE.Points)
+ *         Node  "camera-path"               ← capture trajectory (THREE.Line)
+ *         Node  "floor-plane"               ← estimated horizontal quad
+ *         Group "detections"
+ *           Node  "<safe-label>_NNN"        ← semantic object box
+ *                 extras: { objectType, class, roomName, floorName,
+ *                           confidence, dimensions, sourceScanIds, … }
+ *
+ * All metadata lives in node.userData which GLTFExporter writes to `extras`.
  */
 import * as THREE from 'three'
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js'
 import type { DetectionStore } from '../scene/store'
 import type { PointCloud } from '../scene/pointcloud'
 import type { Pose } from '../ar/provider'
+import type { ScanEntry } from '../project/project-store'
+import type { GeoFix } from '../geo/geo-tracker'
 
-// Distinct colours per semantic category (HSL hue wheel)
+// Per-category colour palette (used for detection boxes and semantic view)
 const LABEL_COLORS: Record<string, number> = {
   chair:    0x4fc3f7,
   table:    0x81c784,
@@ -34,6 +40,9 @@ const LABEL_COLORS: Record<string, number> = {
   bookcase: 0xc5e1a5,
   lamp:     0xfff176,
   plant:    0x66bb6a,
+  wall:     0x78909c,
+  floor:    0x546e7a,
+  ceiling:  0x90a4ae,
   default:  0xb0bec5,
 }
 
@@ -45,30 +54,73 @@ function labelColor(label: string): number {
   return LABEL_COLORS.default
 }
 
+/** Infer a broad semantic class from the VLM label string */
+function inferClass(label: string): string {
+  const l = label.toLowerCase()
+  if (/wall|floor|ceiling|stair|column|ramp/.test(l)) return 'architecture'
+  if (/door|window/.test(l)) return 'opening'
+  if (/chair|sofa|couch|bed|desk|table|shelf|lamp|plant/.test(l)) return 'furniture'
+  if (/sink|toilet|tub|shower|countertop|cabinet/.test(l)) return 'fixture'
+  if (/monitor|tv|laptop|appliance/.test(l)) return 'electronics'
+  if (/outlet|switch|vent|light/.test(l)) return 'infrastructure'
+  return 'object'
+}
+
 export interface ExportData {
   store: DetectionStore
   pointCloud: PointCloud
   poseHistory: Pose[]
+  scanEntry?: ScanEntry   // project/floor/room assignment (optional)
+  geoFix?: GeoFix         // GPS/bearing/address at time of export (optional)
 }
 
 export async function exportToGLB(data: ExportData): Promise<void> {
-  const { store, pointCloud, poseHistory } = data
+  const { store, pointCloud, poseHistory, scanEntry, geoFix } = data
   const scene = new THREE.Scene()
   scene.name = 'room-scan'
 
   const bb = pointCloud.count > 0 ? pointCloud.boundingBox() : null
   const floorY = pointCloud.count > 0 ? pointCloud.estimateFloorY() : 0
+  const floorName  = scanEntry?.floorId  ? `Floor_${scanEntry.floorId.slice(-4)}`  : 'Floor_Ground'
+  const roomName   = scanEntry?.roomId   ? `Room_${scanEntry.roomId.slice(-4)}`    : 'Room_Unknown'
+  const scanName   = scanEntry?.name     ?? `scan-${store.sessionId.slice(-6)}`
 
   scene.userData = {
-    generator: 'ci-xr-scan',
-    version: '2.0',
-    capturedAt: new Date().toISOString(),
-    pointCount: pointCloud.count,
-    detectionCount: store.detections.size,
-    poseCount: poseHistory.length,
-    boundingBox: bb,
+    generator:       'ci-xr-scan',
+    version:         '2.0',
+    capturedAt:      new Date().toISOString(),
+    sessionId:       store.sessionId,
+    scanName,
+    floorName,
+    roomName,
+    projectId:       scanEntry?.projectId ?? null,
+    pointCount:      pointCloud.count,
+    detectionCount:  store.detections.size,
+    poseCount:       poseHistory.length,
+    boundingBox:     bb,
     floorY,
+    // ── Geo metadata ─────────────────────────────────────────────────────────
+    geoLat:          geoFix?.lat          ?? null,
+    geoLng:          geoFix?.lng          ?? null,
+    geoAccuracy:     geoFix?.accuracy     ?? null,
+    geoAltitudeM:    geoFix?.altitudeM    ?? null,
+    geoBearing:      geoFix?.bearing      ?? null,
+    geoAddress:      geoFix?.address      ?? null,
+    geoDisplayAddress: geoFix?.displayAddress ?? null,
+    geoFixedAt:      geoFix?.fixedAt      ?? null,
   }
+
+  // ── Hierarchy: Scene > Floor group > Room group >Content ────────────────────
+  const floorGroup = new THREE.Group()
+  floorGroup.name = floorName
+  floorGroup.userData = { type: 'floor', floorName }
+
+  const roomGroup = new THREE.Group()
+  roomGroup.name = roomName
+  roomGroup.userData = { type: 'room', roomName, floorName, scanName }
+
+  floorGroup.add(roomGroup)
+  scene.add(floorGroup)
 
   // ── 1. Point cloud ──────────────────────────────────────────────────────────
   if (pointCloud.count > 0) {
@@ -91,8 +143,8 @@ export async function exportToGLB(data: ExportData): Promise<void> {
     const mat = new THREE.PointsMaterial({ vertexColors: true, size: 0.035, sizeAttenuation: true })
     const cloud = new THREE.Points(geo, mat)
     cloud.name = 'point-cloud'
-    cloud.userData = { type: 'slam_feature_points', count: pointCloud.count }
-    scene.add(cloud)
+    cloud.userData = { type: 'slam_feature_points', count: pointCloud.count, roomName, floorName }
+    roomGroup.add(cloud)
   }
 
   // ── 2. Camera trajectory ────────────────────────────────────────────────────
@@ -109,8 +161,8 @@ export async function exportToGLB(data: ExportData): Promise<void> {
     const pathMat = new THREE.LineBasicMaterial({ color: 0xffeb3b })
     const path = new THREE.Line(pathGeo, pathMat)
     path.name = 'camera-path'
-    path.userData = { type: 'camera_trajectory', poseCount: poseHistory.length }
-    scene.add(path)
+    path.userData = { type: 'camera_trajectory', poseCount: poseHistory.length, roomName, floorName }
+    roomGroup.add(path)
   }
 
   // ── 3. Estimated floor plane ────────────────────────────────────────────────
@@ -133,66 +185,70 @@ export async function exportToGLB(data: ExportData): Promise<void> {
     )
     floor.name = 'floor-plane'
     floor.userData = {
-      type: 'estimated_floor',
-      y: floorY,
-      widthM: roomW,
-      depthM: roomD,
+      objectType: 'estimated_floor', tag: 'floor',
+      roomName, floorName,
+      y: floorY, widthM: roomW, depthM: roomD,
     }
-    scene.add(floor)
+    roomGroup.add(floor)
   }
 
-  // ── 4. Detected objects as labelled boxes ───────────────────────────────────
+  // ── 4. Detected objects as labelled, metadata-rich boxes ─────────────────────
   if (store.detections.size > 0) {
-    const group = new THREE.Group()
-    group.name = 'detections'
+    const detectionsGroup = new THREE.Group()
+    detectionsGroup.name = 'detections'
+    detectionsGroup.userData = { type: 'detections', roomName, floorName }
 
+    let objIndex = 0
     for (const [, det] of store.detections) {
-      // Estimate box dimensions from the VLM bounding box (0-1 normalised)
-      // and a rough scene scale of ~4m width × 3m height for a typical room.
+      objIndex++
       const [x1, y1, x2, y2] = det.bbox
-      const bw = Math.max((x2 - x1) * 3.5, 0.25)  // metres
+      const bw = Math.max((x2 - x1) * 3.5, 0.25)
       const bh = Math.max((y2 - y1) * 3.0, 0.20)
       const bd = bw * 0.75
 
       const boxGeo = new THREE.BoxGeometry(bw, bh, bd)
-      const boxMat = new THREE.MeshBasicMaterial({
+      const boxMat = new THREE.MeshStandardMaterial({
         color: labelColor(det.label),
         transparent: true,
         opacity: 0.30,
-        wireframe: false,
+        roughness: 0.9,
       })
       const mesh = new THREE.Mesh(boxGeo, boxMat)
       mesh.position.set(det.worldPos.x, det.worldPos.y, det.worldPos.z)
       mesh.quaternion.set(det.worldRot.x, det.worldRot.y, det.worldRot.z, det.worldRot.w)
-      mesh.name = det.label.replace(/[^a-z0-9_-]/gi, '_')
 
-      // Wireframe overlay for cleaner visualisation
-      const wireGeo = boxGeo.clone()
-      const wireMat = new THREE.MeshBasicMaterial({
-        color: labelColor(det.label),
-        wireframe: true,
-        opacity: 0.8,
-        transparent: true,
-      })
-      const wire = new THREE.Mesh(wireGeo, wireMat)
-      mesh.add(wire)
+      const safeName = det.label.replace(/[^a-zA-Z0-9]/g, '_').replace(/^_+/, '') || 'Object'
+      mesh.name = `${safeName}_${String(objIndex).padStart(3, '0')}`
+
+      mesh.add(new THREE.Mesh(boxGeo.clone(),
+        new THREE.MeshBasicMaterial({ color: labelColor(det.label), wireframe: true, transparent: true, opacity: 0.8 })))
 
       mesh.userData = {
-        label: det.label,
-        confidence: det.confidence,
-        description: det.description,
-        thumbnailDataUrl: det.thumbnailDataUrl ?? null,
-        captureTimestamp: det.captureTimestamp,
-        worldPos: det.worldPos,
-        worldRot: det.worldRot,
-        bbox: det.bbox,
-        estimatedSizeM: { w: bw, h: bh, d: bd },
+        objectId:           mesh.name,
+        objectType:         'detection',
+        class:              inferClass(det.label),
+        label:              det.label,
+        tag:                det.label.toLowerCase().replace(/\s+/g, '_'),
+        roomName,
+        floorName,
+        confidence:         det.confidence,
+        description:        det.description,
+        thumbnailDataUrl:   det.thumbnailDataUrl ?? null,
+        captureTimestamp:   det.captureTimestamp,
+        worldPos:           det.worldPos,
+        worldRot:           det.worldRot,
+        bbox:               det.bbox,
+        dimensions:         { w: bw, h: bh, d: bd },
+        sourceScanIds:      [store.sessionId],
+        reviewedByUser:     false,
+        ignored:            false,
+        structuralCategory: inferClass(det.label) === 'architecture' ? 'structural' : 'non-structural',
       }
 
-      group.add(mesh)
+      detectionsGroup.add(mesh)
     }
 
-    scene.add(group)
+    roomGroup.add(detectionsGroup)
   }
 
   // ── 5. Pack as GLB, trigger local download, and upload to server ──────────
@@ -222,19 +278,33 @@ export async function exportToGLB(data: ExportData): Promise<void> {
   )
 
   // Upload to server (non-blocking)
-  void uploadToServer(buffer, filename, store)
+  void uploadToServer(buffer, filename, store, geoFix)
 }
 
 /**
  * POST the GLB to the Deno server's /upload-scan endpoint so it is persisted
  * in the scans/ folder and available in the 3D viewer.
  */
-async function uploadToServer(buffer: ArrayBuffer, filename: string, store: DetectionStore): Promise<void> {
+async function uploadToServer(
+  buffer: ArrayBuffer,
+  filename: string,
+  store: DetectionStore,
+  geoFix?: GeoFix,
+): Promise<void> {
   try {
     const metadata = JSON.stringify({
       detectionCount: store.detections.size,
       labels: [...store.detections.values()].map(d => d.label),
       exportedAt: new Date().toISOString(),
+      capturedAt: new Date().toISOString(),
+      sessionId:  store.sessionId,
+      // Geo fields — written flat so the server can index them for /scan-locations
+      geoLat:     geoFix?.lat          ?? null,
+      geoLng:     geoFix?.lng          ?? null,
+      geoBearing: geoFix?.bearing      ?? null,
+      geoAddress: geoFix?.address      ?? null,
+      geoDisplayAddress: geoFix?.displayAddress ?? null,
+      geoFixedAt: geoFix?.fixedAt      ?? null,
     })
     const form = new FormData()
     form.append('file', new Blob([buffer], { type: 'model/gltf-binary' }), filename)

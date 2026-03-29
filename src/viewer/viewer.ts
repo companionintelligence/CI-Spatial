@@ -6,6 +6,9 @@
  *
  * Features:
  *   - Sidebar scan list (newest first)
+ *   - Sidebar edit tab with semantic tagging (via SceneEditor)
+ *   - Top toolbar for view mode switching (solid / points / wireframe / semantic)
+ *   - Floating object inspector on click
  *   - Three.js scene with ambient + directional lights, grid helper
  *   - OrbitControls for mouse/touch navigation
  *   - HTML label overlays for detected objects (from node.userData.label)
@@ -15,6 +18,9 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { SceneEditor, SEMANTIC_TAGS, type ViewMode } from './editor'
+import { GeoMap, type ScanLocationEntry } from './geomap'
+import { LiveFeed } from './livefeed'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -40,8 +46,13 @@ let labels: Label3D[] = []
 let labelsVisible = true
 let currentPointCloud: THREE.Points | null = null
 let cloudVisible = true
+let detectionBoundsObjects: THREE.Object3D[] = []
+let detectionBoundsVisible = false
 const labelContainer = document.getElementById('viewport')!
 const loader = new GLTFLoader()
+const editor = new SceneEditor()
+const geoMap = new GeoMap()
+const liveFeed = new LiveFeed('default')
 
 // ─── Renderer setup ───────────────────────────────────────────────────────────
 
@@ -65,6 +76,39 @@ function initRenderer(): void {
 
   onResize()
   window.addEventListener('resize', onResize)
+
+  // Mount geomap drawer and wire scan-select back to sidebar
+  geoMap.mount(document.getElementById('main-area')!)
+  geoMap.onScanSelect = (filename: string) => {
+    const item = document.querySelector<HTMLElement>(`.scan-item[data-filename="${filename}"]`)
+    item?.click()
+  }
+
+  // Mount live-feed panel
+  liveFeed.mount(document.getElementById('main-area')!)
+  liveFeed.onStatus = ({ state }) => {
+    const btn = document.getElementById('btn-livefeed')!
+    btn.classList.toggle('active', state === 'live')
+    btn.textContent = state === 'live' ? '📡 Live ●' : '📡 Live'
+  }
+  liveFeed.onMeta = (_meta) => {
+    // Future: live scan-update feed (detection counts, progress, etc.)
+  }
+
+  // Click-to-pick for semantic editor
+  canvas.addEventListener('click', (e) => {
+    if (!scene) return
+    const rect = canvas.getBoundingClientRect()
+    const ndx = ((e.clientX - rect.left) / rect.width) * 2 - 1
+    const ndy = -((e.clientY - rect.top) / rect.height) * 2 + 1
+    const obj = editor.pick(ndx, ndy, camera)
+    if (obj) {
+      showInspector(obj)
+      syncEditPanel(obj)
+    } else {
+      hideInspector()
+    }
+  })
 }
 
 function onResize(): void {
@@ -99,7 +143,6 @@ function updateLabels(): void {
     v.copy(label.position)
     v.project(camera)
 
-    // Cull labels behind the camera or outside viewport
     if (v.z > 1) {
       label.el.style.display = 'none'
       continue
@@ -118,10 +161,82 @@ function updateLabels(): void {
   }
 }
 
+// ─── Inspector panel ──────────────────────────────────────────────────────────
+
+function showInspector(obj: THREE.Object3D): void {
+  const panel = document.getElementById('inspector-panel')!
+  const title = document.getElementById('inspector-title')!
+  const body  = document.getElementById('inspector-body')!
+
+  const data = editor.getInspectorData(obj)
+  title.textContent = data.name || obj.name || '(unnamed)'
+
+  const confColor = (data.confidence ?? 0) >= 0.8 ? '#66bb6a' : (data.confidence ?? 0) >= 0.5 ? '#ffa726' : '#ef9a9a'
+  body.innerHTML = [
+    data.tag  ? rowHtml('Tag', `<span style="background:rgba(79,195,247,0.18);color:#4fc3f7;padding:1px 6px;border-radius:4px;font-weight:700;">${data.tag}</span>`) : '',
+    data.aiLabel ? rowHtml('Label', escHtml(data.aiLabel)) : '',
+    data.confidence !== undefined ? rowHtml('Conf', `<span class="inspector-confidence" style="background:${confColor}22;color:${confColor};">${Math.round(data.confidence * 100)}%</span>`) : '',
+    data.worldPos   ? rowHtml('Pos', `${data.worldPos.x}, ${data.worldPos.y}, ${data.worldPos.z}`) : '',
+    data.dimensions ? rowHtml('Size', `${data.dimensions.w}×${data.dimensions.h}×${data.dimensions.d}m`) : '',
+    data.roomName   ? rowHtml('Room', escHtml(data.roomName)) : '',
+    data.floorName  ? rowHtml('Floor', escHtml(data.floorName)) : '',
+    data.description ? `<div style="font-size:10.5px;color:rgba(255,255,255,0.45);line-height:1.5;margin-top:4px;padding-top:4px;border-top:1px solid rgba(255,255,255,0.06);">${escHtml(data.description)}</div>` : '',
+    data.notes ? `<div style="font-size:10.5px;color:rgba(255,255,255,0.4);line-height:1.5;font-style:italic;margin-top:4px;">"${escHtml(data.notes)}"</div>` : '',
+  ].filter(Boolean).join('')
+
+  panel.classList.add('visible')
+}
+
+function rowHtml(label: string, value: string): string {
+  return `<div class="inspector-row"><span class="inspector-label">${label}</span><span class="inspector-value">${value}</span></div>`
+}
+
+function escHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
+function hideInspector(): void {
+  document.getElementById('inspector-panel')?.classList.remove('visible')
+}
+
+// ─── Edit panel sync ──────────────────────────────────────────────────────────
+
+function syncEditPanel(obj: THREE.Object3D): void {
+  const noSel   = document.getElementById('edit-no-selection')!
+  const selInfo = document.getElementById('edit-selected-info')!
+  const nameEl  = document.getElementById('edit-obj-name')!
+  const metaEl  = document.getElementById('edit-obj-meta')!
+  const notesEl = document.getElementById('edit-notes') as HTMLTextAreaElement
+
+  noSel.style.display   = 'none'
+  selInfo.style.display = 'block'
+
+  const data    = editor.getInspectorData(obj)
+  const tagInfo = editor.getTagInfo(obj)
+
+  nameEl.textContent = data.name
+  metaEl.innerHTML = [
+    data.confidence !== undefined ? `Confidence: ${Math.round(data.confidence * 100)}%` : '',
+    data.roomName  ? `Room: ${data.roomName}` : '',
+    data.floorName ? `Floor: ${data.floorName}` : '',
+  ].filter(Boolean).join('<br>')
+
+  notesEl.value = tagInfo?.notes ?? data.notes ?? ''
+
+  // Update tag chips
+  const grid = document.getElementById('tag-grid')!
+  grid.querySelectorAll<HTMLElement>('.tag-chip').forEach(chip => {
+    chip.classList.toggle('active', chip.dataset['tag'] === (tagInfo?.tag ?? data.tag))
+  })
+
+  // Auto-switch to Edit tab
+  switchSidebarTab('edit')
+}
+
 // ─── Scan list ────────────────────────────────────────────────────────────────
 
 async function loadScanList(): Promise<void> {
-  const listEl = document.getElementById('scan-list')!
+  const listEl  = document.getElementById('scan-list')!
   const emptyEl = document.getElementById('scan-list-empty')!
 
   try {
@@ -133,7 +248,7 @@ async function loadScanList(): Promise<void> {
 
     if (scans.length === 0) {
       listEl.innerHTML = `
-        <div id="scan-list-empty" style="padding:40px 16px;text-align:center;color:rgba(255,255,255,0.3);font-size:13px;line-height:1.6;">
+        <div id="scan-list-empty" style="padding:32px 14px;text-align:center;color:rgba(255,255,255,0.25);font-size:12px;line-height:1.6;">
           No scans uploaded yet.<br>Export a .glb from the AR app.
         </div>`
       return
@@ -147,14 +262,28 @@ async function loadScanList(): Promise<void> {
     // Auto-load the first (newest) scan
     const first = listEl.querySelector<HTMLElement>('.scan-item')
     first?.click()
+
+    // Fetch geo locations and populate map (non-critical, fire-and-forget)
+    void loadGeoLocations()
   } catch (err) {
     emptyEl.textContent = `Error loading scans: ${err instanceof Error ? err.message : String(err)}`
   }
 }
 
-function buildScanItem(scan: ScanEntry): HTMLElement {
-  const item = document.createElement('div')
+async function loadGeoLocations(): Promise<void> {
+  try {
+    const resp = await fetch('/scan-locations')
+    if (!resp.ok) return
+    const locations = await resp.json() as ScanLocationEntry[]
+    const countEl = document.getElementById('geomap-count')
+    if (countEl) countEl.textContent = locations.length > 0 ? `${locations.length} mapped` : ''
+    await geoMap.updatePins(locations)
+  } catch { /* geomap is non-critical */ }
+}
+
+function buildScanItem(scan: ScanEntry): HTMLElement {  const item = document.createElement('div')
   item.className = 'scan-item'
+  item.dataset['filename'] = scan.filename
 
   const date = new Date(scan.uploadedAt)
   const isToday = date.toDateString() === new Date().toDateString()
@@ -182,6 +311,7 @@ function buildScanItem(scan: ScanEntry): HTMLElement {
 async function loadScan(filename: string): Promise<void> {
   showLoading(true)
   clearLabels()
+  hideInspector()
   document.getElementById('viewer-placeholder')!.style.display = 'none'
 
   try {
@@ -205,25 +335,26 @@ async function loadScan(filename: string): Promise<void> {
 
     scene.add(gltf.scene)
 
+    // Wire editor to new scene (populates tags from userData)
+    editor.setScene(scene)
+
     // Extract metadata and build label overlays
     const meta = gltf.scene.userData as Record<string, unknown>
-    const labelNodes: Array<{ name: string; pos: THREE.Vector3; userData: Record<string, unknown> }> = []
 
     gltf.scene.traverse((obj) => {
       const ud = obj.userData as Record<string, unknown>
       if (ud['label'] && obj instanceof THREE.Mesh) {
         const wp = new THREE.Vector3()
         obj.getWorldPosition(wp)
-        labelNodes.push({ name: String(ud['label']), pos: wp, userData: ud })
+        createLabel(String(ud['label']), wp, `${Math.round((ud['confidence'] as number ?? 0) * 100)}%`)
       }
       if (obj instanceof THREE.Points) {
         currentPointCloud = obj
       }
     })
 
-    for (const n of labelNodes) {
-      createLabel(n.name, n.pos, `${Math.round((n.userData['confidence'] as number ?? 0) * 100)}%`)
-    }
+    // Build wireframe + sparse-point overlays for detected objects
+    buildDetectionBounds(gltf.scene)
 
     // Fit camera to bounding box
     fitCamera(gltf.scene)
@@ -235,14 +366,19 @@ async function loadScan(filename: string): Promise<void> {
       meta['pointCount'] ? `☁ ${meta['pointCount']} points` : null,
       meta['detectionCount'] ? `📍 ${meta['detectionCount']} objects` : null,
       meta['capturedAt'] ? `📅 ${new Date(String(meta['capturedAt'])).toLocaleDateString()}` : null,
+      meta['scanName'] ? `🏷 ${meta['scanName']}` : null,
     ].filter(Boolean).join('<br>')
     hud.innerHTML = stats || 'Scan loaded'
 
+    // Restore current view mode
+    editor.setMode(editor.mode)
+
   } catch (err) {
     console.error('[viewer] Load error:', err)
-    document.getElementById('viewer-placeholder')!.style.display = 'flex'
-    ;(document.getElementById('viewer-placeholder')! as HTMLElement).querySelector('div:last-child')!.textContent =
-      `Failed to load scan: ${err instanceof Error ? err.message : String(err)}`
+    const ph = document.getElementById('viewer-placeholder')!
+    ph.style.display = 'flex'
+    const lastChild = ph.querySelector('div:last-child')
+    if (lastChild) lastChild.textContent = `Failed to load: ${err instanceof Error ? err.message : String(err)}`
   } finally {
     showLoading(false)
   }
@@ -262,11 +398,69 @@ function clearLabels(): void {
   for (const { el } of labels) el.remove()
   labels = []
   currentPointCloud = null
+  clearDetectionBounds()
+}
+
+// ─── Detection bounds overlay ─────────────────────────────────────────────────
+
+const _boundEdgeMat = new THREE.LineBasicMaterial({
+  color: 0x4fc3f7,
+  transparent: true,
+  opacity: 0.75,
+})
+const _boundPtMat = new THREE.PointsMaterial({
+  color: 0x80deea,
+  size: 0.025,
+  sizeAttenuation: true,
+  transparent: true,
+  opacity: 0.85,
+})
+
+function buildDetectionBounds(root: THREE.Object3D): void {
+  root.traverse((obj) => {
+    if (!(obj instanceof THREE.Mesh)) return
+    const ud = obj.userData as Record<string, unknown>
+    if (!ud['label']) return
+
+    // Edge geometry — creased boundaries of the detected surface
+    const edges = new THREE.EdgesGeometry(obj.geometry, 15)
+    const wire = new THREE.LineSegments(edges, _boundEdgeMat.clone())
+    wire.renderOrder = 2
+    wire.visible = detectionBoundsVisible
+    obj.add(wire)
+    detectionBoundsObjects.push(wire)
+
+    // Sparse vertex cloud — sample up to 200 points from the mesh
+    const pos = obj.geometry.attributes['position']
+    if (pos instanceof THREE.BufferAttribute) {
+      const step = Math.max(1, Math.floor(pos.count / 200))
+      const verts: number[] = []
+      for (let i = 0; i < pos.count; i += step) {
+        verts.push(pos.getX(i), pos.getY(i), pos.getZ(i))
+      }
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3))
+      const pts = new THREE.Points(geo, _boundPtMat.clone())
+      pts.renderOrder = 2
+      pts.visible = detectionBoundsVisible
+      obj.add(pts)
+      detectionBoundsObjects.push(pts)
+    }
+  })
+}
+
+function clearDetectionBounds(): void {
+  for (const obj of detectionBoundsObjects) {
+    if (obj.parent) obj.removeFromParent()
+  }
+  detectionBoundsObjects = []
+  detectionBoundsVisible = false
+  const btn = document.getElementById('btn-toggle-bounds')
+  if (btn) { btn.style.opacity = '0.4'; btn.classList.remove('active-hud') }
 }
 
 function showLoading(visible: boolean): void {
-  const el = document.getElementById('loading-overlay')!
-  el.classList.toggle('visible', visible)
+  document.getElementById('loading-overlay')!.classList.toggle('visible', visible)
 }
 
 function fitCamera(object: THREE.Object3D): void {
@@ -284,6 +478,75 @@ function fitCamera(object: THREE.Object3D): void {
   controls.target.copy(center)
   controls.update()
 }
+
+function switchSidebarTab(name: string): void {
+  document.querySelectorAll('.sidebar-tab').forEach(btn => {
+    const el = btn as HTMLButtonElement
+    el.classList.toggle('active', el.dataset['tab'] === name)
+  })
+  document.querySelectorAll('.sidebar-panel').forEach(panel => {
+    const el = panel as HTMLElement
+    el.classList.toggle('active', el.id === `tab-${name}`)
+  })
+}
+
+// ─── Sidebar tab switching ────────────────────────────────────────────────────
+
+document.querySelectorAll('.sidebar-tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    switchSidebarTab((btn as HTMLButtonElement).dataset['tab']!)
+  })
+})
+
+// ─── Tag chip setup (Edit panel) ─────────────────────────────────────────────
+
+const tagGrid = document.getElementById('tag-grid')!
+for (const tag of SEMANTIC_TAGS) {
+  const chip = document.createElement('button')
+  chip.className = 'tag-chip'
+  chip.textContent = tag
+  chip.dataset['tag'] = tag
+  chip.addEventListener('click', () => {
+    const obj = editor.selectedObject
+    if (!obj) return
+    editor.tagObject(obj, tag)
+    tagGrid.querySelectorAll('.tag-chip').forEach(c => c.classList.remove('active'))
+    chip.classList.add('active')
+    // Refresh inspector if visible
+    if (document.getElementById('inspector-panel')!.classList.contains('visible')) {
+      showInspector(obj)
+    }
+  })
+  tagGrid.appendChild(chip)
+}
+
+// Save notes button
+document.getElementById('edit-save-notes')?.addEventListener('click', () => {
+  const obj = editor.selectedObject
+  if (!obj) return
+  const notes = (document.getElementById('edit-notes') as HTMLTextAreaElement).value
+  const existing = editor.getTagInfo(obj)
+  if (existing) {
+    editor.tagObject(obj, existing.tag, { ...existing, notes })
+  } else {
+    editor.tagObject(obj, 'unknown', { notes })
+  }
+})
+
+// ─── Top toolbar: view mode buttons ──────────────────────────────────────────
+
+document.querySelectorAll<HTMLButtonElement>('.mode-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const mode = btn.dataset['mode'] as ViewMode
+    editor.setMode(mode)
+    document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'))
+    btn.classList.add('active')
+    // Toggle point-cloud visibility based on mode
+    if (currentPointCloud) {
+      currentPointCloud.visible = mode === 'points' || mode === 'solid' || mode === 'semantic'
+    }
+  })
+})
 
 // ─── HUD button wiring ────────────────────────────────────────────────────────
 
@@ -308,8 +571,42 @@ document.getElementById('btn-toggle-labels')!.addEventListener('click', () => {
   btn.style.opacity = labelsVisible ? '1' : '0.4'
 })
 
+document.getElementById('btn-flush-tags')!.addEventListener('click', () => {
+  editor.flushTags()
+  const btn = document.getElementById('btn-flush-tags')!
+  btn.textContent = '✓ Saved'
+  btn.style.color = '#66bb6a'
+  setTimeout(() => {
+    btn.textContent = '💾 Save Tags'
+    btn.style.color = ''
+  }, 2000)
+})
+
+document.getElementById('inspector-close')!.addEventListener('click', hideInspector)
+
+document.getElementById('btn-toggle-bounds')!.addEventListener('click', () => {
+  detectionBoundsVisible = !detectionBoundsVisible
+  for (const obj of detectionBoundsObjects) obj.visible = detectionBoundsVisible
+  const btn = document.getElementById('btn-toggle-bounds')!
+  btn.style.opacity = detectionBoundsVisible ? '1' : '0.4'
+  btn.classList.toggle('active-hud', detectionBoundsVisible)
+})
+
+document.getElementById('btn-geomap')!.addEventListener('click', () => {
+  geoMap.toggle()
+  const isOpen = document.getElementById('geomap-drawer')?.classList.contains('geomap-open')
+  document.getElementById('btn-geomap')!.classList.toggle('active', !!isOpen)
+})
+
+document.getElementById('btn-livefeed')!.addEventListener('click', () => {
+  liveFeed.toggle()
+  // Auto-connect to signaling server the first time the panel is opened
+  if (liveFeed.isOpen) liveFeed.connect()
+})
+
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
 initRenderer()
 startRenderLoop()
 void loadScanList()
+

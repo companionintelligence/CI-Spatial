@@ -17,8 +17,520 @@
 
       #app {
         display: flex;
+        flex-direction: column;
         width: 100%; height: 100%;
       }
+
+      /* ── Top toolbar ── */
+      #top-toolbar {
+        height: 44px;
+        background: rgba(0,0,0,0.5);
+        backdrop-filter: blur(12px);
+        border-bottom: 1px solid rgba(255,255,255,0.08);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 12px;
+        flex-shrink: 0;
+        z-index: 20;
+      }
+
+      #top-toolbar-title {
+        font-size: 13px;
+        font-weight: 700;
+        color: #fff;
+        margin-right: 8px;
+      }
+
+      .toolbar-sep {
+        width: 1px;
+        height: 24px;
+        background: rgba(255,255,255,0.1);
+        margin: 0 4px;
+      }
+
+      .mode-btn {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        padding: 5px 10px;
+        border-radius: 7px;
+        border: 1px solid rgba(255,255,255,0.1);
+        background: transparent;
+        color: rgba(255,255,255,0.55);
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.15s;
+        white-space: nowrap;
+      }
+      .mode-btn:hover { background: rgba(255,255,255,0.07); color: #fff; }
+      .mode-btn.active {
+        background: rgba(79,195,247,0.15);
+        border-color: rgba(79,195,247,0.4);
+        color: #4fc3f7;
+      }
+
+      #toolbar-spacer { flex: 1; }
+
+      #back-link {
+        font-size: 12px;
+        color: rgba(255,255,255,0.4);
+        text-decoration: none;
+        padding: 5px 10px;
+        border-radius: 6px;
+        transition: color 0.15s;
+      }
+      #back-link:hover { color: #4fc3f7; }
+
+      /* ── Main layout ── */
+      #main-area {
+        display: flex;
+        flex: 1;
+        overflow: hidden;
+      }
+
+      /* ── Sidebar ── */
+      #sidebar {
+        width: 260px;
+        min-width: 200px;
+        height: 100%;
+        background: rgba(255,255,255,0.03);
+        border-right: 1px solid rgba(255,255,255,0.07);
+        display: flex;
+        flex-direction: column;
+        flex-shrink: 0;
+      }
+
+      /* ── Sidebar tabs ── */
+      #sidebar-tabs {
+        display: flex;
+        border-bottom: 1px solid rgba(255,255,255,0.07);
+      }
+
+      .sidebar-tab {
+        flex: 1;
+        padding: 10px 6px;
+        background: transparent;
+        border: none;
+        color: rgba(255,255,255,0.35);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        cursor: pointer;
+        transition: color 0.15s, background 0.15s;
+      }
+      .sidebar-tab:hover { color: rgba(255,255,255,0.7); }
+      .sidebar-tab.active {
+        color: #4fc3f7;
+        border-bottom: 2px solid #4fc3f7;
+        margin-bottom: -1px;
+      }
+
+      .sidebar-panel { display: none; flex: 1; flex-direction: column; overflow: hidden; }
+      .sidebar-panel.active { display: flex; }
+
+      /* ── Scan list panel ── */
+      #scan-list {
+        flex: 1;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      .scan-item {
+        padding: 11px 14px;
+        border-bottom: 1px solid rgba(255,255,255,0.05);
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      .scan-item:hover { background: rgba(255,255,255,0.04); }
+      .scan-item.active { background: rgba(79,195,247,0.09); border-left: 2px solid #4fc3f7; }
+
+      .scan-name {
+        font-size: 12px;
+        font-weight: 600;
+        color: #fff;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        margin-bottom: 3px;
+      }
+
+      .scan-meta {
+        font-size: 10px;
+        color: rgba(255,255,255,0.3);
+      }
+
+      #scan-list-empty {
+        padding: 32px 14px;
+        text-align: center;
+        color: rgba(255,255,255,0.25);
+        font-size: 12px;
+        line-height: 1.6;
+      }
+
+      /* ── Edit panel ── */
+      #edit-panel-content {
+        flex: 1;
+        overflow-y: auto;
+        padding: 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .edit-section {
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.07);
+        border-radius: 10px;
+        padding: 10px;
+      }
+
+      .edit-section-title {
+        font-size: 10px;
+        font-weight: 700;
+        color: rgba(255,255,255,0.35);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-bottom: 8px;
+      }
+
+      .tag-grid {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+      }
+
+      .tag-chip {
+        padding: 3px 8px;
+        border-radius: 5px;
+        border: 1px solid rgba(255,255,255,0.12);
+        background: transparent;
+        color: rgba(255,255,255,0.5);
+        font-size: 10px;
+        cursor: pointer;
+        transition: all 0.12s;
+        white-space: nowrap;
+      }
+      .tag-chip:hover { background: rgba(255,255,255,0.08); color: #fff; }
+      .tag-chip.active {
+        background: rgba(79,195,247,0.18);
+        border-color: rgba(79,195,247,0.5);
+        color: #4fc3f7;
+        font-weight: 700;
+      }
+
+      .no-selection-msg {
+        color: rgba(255,255,255,0.2);
+        font-size: 12px;
+        text-align: center;
+        padding: 24px 8px;
+        line-height: 1.6;
+      }
+
+      /* ── Viewport ── */
+      #viewport {
+        flex: 1;
+        position: relative;
+        overflow: hidden;
+      }
+
+      #viewer-canvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+
+      #viewer-placeholder {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        color: rgba(255,255,255,0.2);
+        font-size: 14px;
+        pointer-events: none;
+      }
+
+      #viewer-placeholder .icon {
+        font-size: 48px;
+        opacity: 0.2;
+      }
+
+      /* ── HUD overlays ── */
+      #hud-controls {
+        position: absolute;
+        bottom: 14px;
+        right: 14px;
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        max-width: 300px;
+      }
+
+      .hud-btn {
+        background: rgba(0,0,0,0.6);
+        backdrop-filter: blur(8px);
+        border: 1px solid rgba(255,255,255,0.12);
+        color: rgba(255,255,255,0.65);
+        font-size: 11px;
+        padding: 6px 11px;
+        border-radius: 7px;
+        cursor: pointer;
+        transition: background 0.15s, color 0.15s;
+      }
+      .hud-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
+
+      #hud-info {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        background: rgba(0,0,0,0.6);
+        backdrop-filter: blur(8px);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 10px;
+        padding: 8px 12px;
+        font-size: 11px;
+        color: rgba(255,255,255,0.55);
+        line-height: 1.7;
+        display: none;
+        max-width: 220px;
+      }
+      #hud-info.visible { display: block; }
+
+      /* ── Object inspector panel (floating, appears on click) ── */
+      #inspector-panel {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        width: 230px;
+        background: rgba(10,12,20,0.92);
+        backdrop-filter: blur(14px);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 12px;
+        padding: 12px;
+        display: none;
+        flex-direction: column;
+        gap: 8px;
+        z-index: 10;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+      }
+      #inspector-panel.visible { display: flex; }
+
+      #inspector-title {
+        font-size: 13px;
+        font-weight: 700;
+        color: #fff;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      #inspector-close {
+        position: absolute;
+        top: 8px; right: 8px;
+        background: transparent;
+        border: none;
+        color: rgba(255,255,255,0.4);
+        font-size: 14px;
+        cursor: pointer;
+        padding: 2px 6px;
+        border-radius: 4px;
+      }
+      #inspector-close:hover { color: #fff; }
+
+      .inspector-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 8px;
+        font-size: 11px;
+      }
+
+      .inspector-label {
+        color: rgba(255,255,255,0.35);
+        white-space: nowrap;
+        min-width: 64px;
+      }
+
+      .inspector-value {
+        color: rgba(255,255,255,0.8);
+        text-align: right;
+        word-break: break-all;
+        font-family: 'SF Mono', 'Fira Code', monospace;
+        font-size: 10.5px;
+      }
+
+      .inspector-confidence {
+        display: inline-block;
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-size: 10px;
+        font-weight: 700;
+        font-family: inherit;
+      }
+
+      #inspector-tag-row {
+        display: flex;
+        gap: 4px;
+        flex-wrap: wrap;
+        margin-top: 2px;
+      }
+
+      /* ── HTML label overlays ── */
+      .label3d {
+        position: absolute;
+        pointer-events: none;
+        background: rgba(0,0,0,0.72);
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 6px;
+        padding: 3px 8px;
+        font-size: 10px;
+        font-weight: 600;
+        color: #fff;
+        white-space: nowrap;
+        transform: translate(-50%, -100%) translateY(-6px);
+        backdrop-filter: blur(4px);
+      }
+
+      #loading-overlay {
+        position: absolute;
+        inset: 0;
+        background: rgba(10,12,20,0.8);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        gap: 12px;
+        font-size: 14px;
+        color: rgba(255,255,255,0.6);
+      }
+      #loading-overlay.visible { display: flex; }
+
+      @keyframes spin { to { transform: rotate(360deg); } }
+      .spinner {
+        width: 26px; height: 26px;
+        border: 3px solid rgba(255,255,255,0.1);
+        border-top-color: #4fc3f7;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+
+      <!-- Top toolbar: view mode switcher -->
+      <div id="top-toolbar">
+        <span id="top-toolbar-title">CI XR Scan</span>
+        <div class="toolbar-sep"></div>
+        <button class="mode-btn active" id="mode-solid"   data-mode="solid">   ◼ Solid</button>
+        <button class="mode-btn"        id="mode-points"  data-mode="points">  ☁ Points</button>
+        <button class="mode-btn"        id="mode-wire"    data-mode="wireframe">⬡ Wire</button>
+        <button class="mode-btn"        id="mode-semantic" data-mode="semantic">🏷 Semantic</button>
+        <div id="toolbar-spacer"></div>
+        <button class="mode-btn" id="btn-geomap">🗺 Map</button>
+        <button class="mode-btn" id="btn-livefeed">📡 Live</button>
+        <a href="/" id="back-link">← AR App</a>
+      </div>
+
+      <div id="main-area">
+
+        <!-- Sidebar with tabs: Scans | Edit -->
+        <div id="sidebar">
+          <div id="sidebar-tabs">
+            <button class="sidebar-tab active" data-tab="scans">Scans</button>
+            <button class="sidebar-tab"        data-tab="edit">Edit</button>
+          </div>
+
+          <!-- Scans panel -->
+          <div class="sidebar-panel active" id="tab-scans">
+            <div id="scan-list">
+              <div id="scan-list-empty">Loading scans…</div>
+            </div>
+          </div>
+
+          <!-- Edit panel -->
+          <div class="sidebar-panel" id="tab-edit">
+            <div id="edit-panel-content">
+              <div class="no-selection-msg" id="edit-no-selection">
+                Click an object in the viewport to select it, then assign a semantic tag.
+              </div>
+
+              <!-- Inspector: shown when an object is selected -->
+              <div id="edit-selected-info" style="display:none;">
+                <div class="edit-section">
+                  <div class="edit-section-title">Selected Object</div>
+                  <div id="edit-obj-name" style="font-size:13px;font-weight:700;color:#fff;margin-bottom:6px;word-break:break-all;"></div>
+                  <div id="edit-obj-meta" style="font-size:11px;color:rgba(255,255,255,0.4);line-height:1.7;"></div>
+                </div>
+
+                <div class="edit-section">
+                  <div class="edit-section-title">Semantic Tag</div>
+                  <div class="tag-grid" id="tag-grid"></div>
+                </div>
+
+                <div class="edit-section">
+                  <div class="edit-section-title">Notes</div>
+                  <textarea id="edit-notes"
+                    placeholder="Add notes about this object…"
+                    style="width:100%;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:#fff;font-size:12px;padding:8px;resize:vertical;min-height:64px;outline:none;font-family:inherit;"
+                  ></textarea>
+                  <button id="edit-save-notes"
+                    style="margin-top:6px;width:100%;padding:6px;background:rgba(79,195,247,0.15);border:1px solid rgba(79,195,247,0.3);border-radius:6px;color:#4fc3f7;font-size:11px;font-weight:700;cursor:pointer;">
+                    Save Notes
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Viewport -->
+        <div id="viewport">
+          <canvas id="viewer-canvas"></canvas>
+
+          <div id="viewer-placeholder">
+            <div class="icon">🏠</div>
+            <div>Select a scan from the list to view it</div>
+            <div style="font-size:12px;opacity:0.6;">Mouse: rotate · Scroll: zoom · Right-click: pan</div>
+          </div>
+
+          <!-- Scene info HUD -->
+          <div id="hud-info"></div>
+
+          <!-- Floating object inspector -->
+          <div id="inspector-panel">
+            <button id="inspector-close">✕</button>
+            <div id="inspector-title">—</div>
+            <div id="inspector-body"></div>
+          </div>
+
+          <!-- Bottom-right HUD buttons -->
+          <div id="hud-controls">
+            <button class="hud-btn" id="btn-reset-camera">⟳ Reset</button>
+            <button class="hud-btn" id="btn-toggle-cloud">☁ Cloud</button>
+            <button class="hud-btn" id="btn-toggle-labels">🏷 Labels</button>
+            <button class="hud-btn" id="btn-toggle-bounds" style="opacity:0.4">⬡ Bounds</button>
+            <button class="hud-btn" id="btn-flush-tags">💾 Save Tags</button>
+          </div>
+
+          <div id="loading-overlay">
+            <div class="spinner"></div>
+            <span>Loading scan…</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/viewer/viewer.ts"></script>
+  </body>
+</html>
+
 
       /* ── Sidebar ── */
       #sidebar {

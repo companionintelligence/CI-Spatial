@@ -26,6 +26,8 @@ export interface WorldDetection {
   worldPos: { x: number; y: number; z: number }
   worldRot: { x: number; y: number; z: number; w: number }
   captureTimestamp: number
+  /** Sequential index of the capture event that produced this detection (1-based) */
+  captureIndex?: number
 }
 
 /** Async hit-test override for WebXR (which needs a frame context) */
