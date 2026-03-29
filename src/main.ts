@@ -113,6 +113,12 @@ async function main() {
       console.log(`[main] Captured blob: ${blob.size} bytes, type=${blob.type}, pose=`, pose)
       overlay.setStatus('Analysing…')
 
+      // Show indeterminate analysis progress bar
+      const progFill = document.getElementById('progress-bar-fill')
+      const progWrap = document.getElementById('progress-bar-wrap')
+      if (progFill) progFill.classList.add('analyzing')
+      if (progWrap) progWrap.classList.add('visible')
+
       // Async frame quality analysis (non-blocking — updates overlay on next tick)
       void qualityMonitor.analyseFrame(blob).then(({ lowLight, reflective }) => {
         updateQualityOverlay(qualityMonitor.tick(provider, pointCloud))
@@ -122,7 +128,10 @@ async function main() {
 
       const thumbnail = await capture.captureThumbnail(blob)
       const rawDets = await router.infer(blob)
-      console.log(`[main] Raw detections (${rawDets.length}):`, JSON.stringify(rawDets))
+
+      // Hide analysis bar once inference completes
+      if (progFill) progFill.classList.remove('analyzing')
+      if (progWrap) progWrap.classList.remove('visible')
 
       overlay.setStatus(`${rawDets.length} object${rawDets.length === 1 ? '' : 's'} detected`)
 
@@ -236,23 +245,31 @@ async function main() {
   // ── WebRTC live-feed broadcaster (optional) ───────────────────────────────
   const broadcaster = new RtcBroadcaster('default')
   broadcaster.onStatus = ({ state, message }) => {
-    const badge = document.getElementById('rtc-stream-badge')
-    if (badge) {
-      badge.textContent = state === 'streaming' ? '● LIVE' : state === 'error' ? '✕ RTC' : '◌ RTC'
-      badge.style.color = state === 'streaming' ? '#66bb6a' : state === 'error' ? '#ef9a9a' : 'rgba(255,255,255,0.4)'
+    const btn = document.getElementById('rtc-stream-btn') as HTMLButtonElement | null
+    if (btn) {
+      // Only show the badge while actively streaming
+      btn.style.display = state === 'streaming' ? 'flex' : 'none'
     }
     if (state === 'error') overlay.setStatus(`RTC: ${message}`)
   }
   const streamBtn = document.getElementById('rtc-stream-btn') as HTMLButtonElement | null
   streamBtn?.addEventListener('click', () => {
-    if (streamBtn.classList.contains('active')) {
-      broadcaster.stop()
-      streamBtn.classList.remove('active')
-    } else {
-      void broadcaster.start(canvas)
-      streamBtn.classList.add('active')
-    }
+    // Clicking the LIVE badge stops the stream
+    broadcaster.stop()
   })
+
+  // Wire the panel "Start Live Stream" button
+  if (panel.streamButton) {
+    panel.streamButton.addEventListener('click', () => {
+      if (broadcaster.isRunning) {
+        broadcaster.stop()
+        panel.streamButton!.textContent = '📡 Start Live Stream'
+      } else {
+        void broadcaster.start(canvas)
+        panel.streamButton!.textContent = '📡 Stop Stream'
+      }
+    })
+  }
   overlay.setProgress(null)
 
   // ── 6. Continuous SLAM point-cloud accumulation ──────────────────────────────

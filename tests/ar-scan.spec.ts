@@ -275,3 +275,171 @@ test.describe('AR flow (simulated)', () => {
     expect(statusText).toBeTruthy()
   })
 })
+
+// ── UI layout positions ────────────────────────────────────────────────────────
+
+test.describe('UI element positions', () => {
+  test('status bar is in the top-left quadrant', async ({ page }) => {
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
+    const box = await page.locator('#status-bar').boundingBox()
+    expect(box).toBeTruthy()
+    if (box) {
+      const vw = page.viewportSize()?.width ?? 400
+      const vh = page.viewportSize()?.height ?? 800
+      // left half, top half
+      expect(box.x).toBeLessThan(vw / 2)
+      expect(box.y).toBeLessThan(vh / 2)
+    }
+  })
+
+  test('quality overlay is in the bottom-right quadrant', async ({ page }) => {
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
+    // Make it visible to check position
+    await page.evaluate(() => {
+      const el = document.getElementById('quality-overlay')
+      if (el) el.style.display = 'flex'
+    })
+    const box = await page.locator('#quality-overlay').boundingBox()
+    expect(box).toBeTruthy()
+    if (box) {
+      const vw = page.viewportSize()?.width ?? 400
+      const vh = page.viewportSize()?.height ?? 800
+      // right half, bottom half
+      expect(box.x).toBeGreaterThan(vw / 2)
+      expect(box.y).toBeGreaterThan(vh / 2)
+    }
+  })
+
+  test('infer-dialog is in the top-left quadrant when visible', async ({ page }) => {
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
+    await page.evaluate(() => {
+      const el = document.getElementById('infer-dialog')
+      if (el) { el.classList.add('visible'); el.style.pointerEvents = 'all' }
+    })
+    const box = await page.locator('#infer-dialog').boundingBox()
+    expect(box).toBeTruthy()
+    if (box) {
+      const vw = page.viewportSize()?.width ?? 400
+      // left half
+      expect(box.x).toBeLessThan(vw / 2)
+    }
+  })
+
+  test('RTC stream badge is hidden by default', async ({ page }) => {
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
+    const display = await page.locator('#rtc-stream-btn').evaluate((el) => window.getComputedStyle(el).display)
+    expect(display).toBe('none')
+  })
+
+  test('RTC stream badge is in the bottom-left when shown', async ({ page }) => {
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
+    await page.evaluate(() => {
+      const el = document.getElementById('rtc-stream-btn') as HTMLElement | null
+      if (el) el.style.display = 'flex'
+    })
+    const box = await page.locator('#rtc-stream-btn').boundingBox()
+    expect(box).toBeTruthy()
+    if (box) {
+      const vw = page.viewportSize()?.width ?? 400
+      const vh = page.viewportSize()?.height ?? 800
+      // left half, bottom half
+      expect(box.x).toBeLessThan(vw / 2)
+      expect(box.y).toBeGreaterThan(vh / 2)
+    }
+  })
+
+  test('history drawer z-index is higher than side panel', async ({ page }) => {
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
+    const [drawerZ, panelZ] = await page.evaluate(() => {
+      const drawer = document.getElementById('history-drawer')!
+      const panel  = document.getElementById('side-panel')!
+      return [
+        parseInt(window.getComputedStyle(drawer).zIndex) || 0,
+        parseInt(window.getComputedStyle(panel).zIndex)  || 0,
+      ]
+    })
+    expect(drawerZ).toBeGreaterThan(panelZ)
+  })
+
+  test('side panel has z-index above ar-overlay buttons', async ({ page }) => {
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
+    const panelZ = await page.evaluate(() => {
+      const panel = document.getElementById('side-panel')!
+      return parseInt(window.getComputedStyle(panel).zIndex) || 0
+    })
+    expect(panelZ).toBeGreaterThan(0)
+  })
+})
+
+// ── Analyzing progress bar ─────────────────────────────────────────────────────
+
+test.describe('Progress bar (analyzing)', () => {
+  test('progress bar wrap exists in DOM', async ({ page }) => {
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
+    await expect(page.locator('#progress-bar-wrap')).toBeAttached()
+    await expect(page.locator('#progress-bar-fill')).toBeAttached()
+  })
+
+  test('progress bar fill has analyzing CSS class when manually set', async ({ page }) => {
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
+    await page.evaluate(() => {
+      const fill = document.getElementById('progress-bar-fill')
+      const wrap = document.getElementById('progress-bar-wrap')
+      fill?.classList.add('analyzing')
+      wrap?.classList.add('visible')
+    })
+    await expect(page.locator('#progress-bar-fill')).toHaveClass(/analyzing/)
+    await expect(page.locator('#progress-bar-wrap')).toHaveClass(/visible/)
+  })
+})
+
+// ── Viewer page new controls ───────────────────────────────────────────────────
+
+test.describe('Viewer new controls', () => {
+  test('live feed button is present in viewer toolbar', async ({ page }) => {
+    await page.goto(`${BASE_URL}/viewer.html`, { waitUntil: 'domcontentloaded' })
+    await expect(page.locator('#btn-livefeed')).toBeVisible()
+  })
+
+  test('bounds toggle button is present', async ({ page }) => {
+    await page.goto(`${BASE_URL}/viewer.html`, { waitUntil: 'domcontentloaded' })
+    await expect(page.locator('#btn-toggle-bounds')).toBeVisible()
+  })
+
+  test('geomap button is present', async ({ page }) => {
+    await page.goto(`${BASE_URL}/viewer.html`, { waitUntil: 'domcontentloaded' })
+    await expect(page.locator('#btn-geomap')).toBeVisible()
+  })
+
+  test('clicking live feed button shows live feed panel', async ({ page }) => {
+    await page.goto(`${BASE_URL}/viewer.html`, { waitUntil: 'domcontentloaded' })
+    // Panel should not be visible initially
+    const initialDisplay = await page.locator('#livefeed-panel').evaluate(
+      (el) => window.getComputedStyle(el).display
+    )
+    expect(initialDisplay).toBe('none')
+    await page.locator('#btn-livefeed').click()
+    // After click the panel should be shown
+    const afterDisplay = await page.locator('#livefeed-panel').evaluate(
+      (el) => window.getComputedStyle(el).display
+    )
+    expect(afterDisplay).not.toBe('none')
+  })
+
+  test('bounds button starts with reduced opacity (off)', async ({ page }) => {
+    await page.goto(`${BASE_URL}/viewer.html`, { waitUntil: 'domcontentloaded' })
+    const opacity = await page.locator('#btn-toggle-bounds').evaluate(
+      (el) => (el as HTMLElement).style.opacity
+    )
+    expect(parseFloat(opacity)).toBeLessThan(1)
+  })
+
+  test('clicking bounds button toggles opacity to 1 (on)', async ({ page }) => {
+    await page.goto(`${BASE_URL}/viewer.html`, { waitUntil: 'domcontentloaded' })
+    await page.locator('#btn-toggle-bounds').click()
+    const opacity = await page.locator('#btn-toggle-bounds').evaluate(
+      (el) => (el as HTMLElement).style.opacity
+    )
+    expect(parseFloat(opacity)).toBe(1)
+  })
+})

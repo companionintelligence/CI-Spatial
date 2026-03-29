@@ -26,6 +26,9 @@ export class SidePanel {
   private footer: HTMLElement
   private toggle: HTMLButtonElement
   private isOpen = false
+  private _streamBtn: HTMLButtonElement | null = null
+
+  get streamButton(): HTMLButtonElement | null { return this._streamBtn }
 
   constructor(
     private readonly store: DetectionStore,
@@ -105,6 +108,13 @@ export class SidePanel {
     clearBtn.textContent = 'Clear session'
     clearBtn.addEventListener('click', async () => { await this.store.clear() })
     this.footer.appendChild(clearBtn)
+
+    const streamBtn = document.createElement('button')
+    streamBtn.className = 'panel-btn-ghost'
+    streamBtn.id = 'panel-stream-btn'
+    streamBtn.textContent = '📡 Start Live Stream'
+    this._streamBtn = streamBtn
+    this.footer.appendChild(streamBtn)
 
     this.store.subscribe((dets, selected) => this.render(dets, selected))
     this.render(this.store.detections, this.store.selected)

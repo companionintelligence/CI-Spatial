@@ -255,3 +255,230 @@ test.describe('GET /scans/:filename', () => {
     expect(cors).toBeTruthy()
   })
 })
+
+// ── GET /scan-locations ───────────────────────────────────────────────────────
+
+test.describe('GET /scan-locations', () => {
+  test('returns 200 with JSON array', async ({ request }) => {
+    const resp = await request.get(`${BASE}/scan-locations`)
+    expect(resp.status()).toBe(200)
+    const body = await resp.json() as unknown[]
+    expect(Array.isArray(body)).toBeTruthy()
+  })
+
+  test('entries have expected geo fields when present', async ({ request }) => {
+    const resp = await request.get(`${BASE}/scan-locations`)
+    const body = await resp.json() as Array<Record<string, unknown>>
+    for (const entry of body) {
+      expect(typeof entry['filename']).toBe('string')
+      expect(typeof entry['lat']).toBe('number')
+      expect(typeof entry['lng']).toBe('number')
+      expect(entry['bearing'] === null || typeof entry['bearing'] === 'number').toBeTruthy()
+    }
+  })
+
+  test('does not return zero lat/lng entries', async ({ request }) => {
+    const buf = makeMinimalGlb()
+    await request.post(`${BASE}/upload-scan`, {
+      multipart: {
+        file: { name: 'zero-geo.glb', mimeType: 'model/gltf-binary', buffer: buf },
+        metadata: JSON.stringify({ geoLat: 0, geoLng: 0, detectionCount: 0, labels: [] }),
+      },
+    })
+    const resp = await request.get(`${BASE}/scan-locations`)
+    const body = await resp.json() as Array<Record<string, unknown>>
+    const hasZeroZero = body.some(e => e['lat'] === 0 && e['lng'] === 0)
+    expect(hasZeroZero).toBeFalsy()
+  })
+
+  test('scan with valid coords appears in response', async ({ request }) => {
+    const buf = makeMinimalGlb()
+    const ts = Date.now()
+    await request.post(`${BASE}/upload-scan`, {
+      multipart: {
+        file: { name: `geo-test-${ts}.glb`, mimeType: 'model/gltf-binary', buffer: buf },
+        metadata: JSON.stringify({ geoLat: 37.7749, geoLng: -122.4194, geoAddress: '1 Market St', detectionCount: 2, capturedAt: new Date().toISOString() }),
+      },
+    })
+    const resp = await request.get(`${BASE}/scan-locations`)
+    const body = await resp.json() as Array<Record<string, unknown>>
+    const match = body.find(e => (e['address'] as string | null) === '1 Market St')
+    expect(match).toBeTruthy()
+    expect(match?.['lat']).toBe(37.7749)
+    expect(match?.['lng']).toBe(-122.4194)
+  })
+})
+
+// ── POST /process-scan ────────────────────────────────────────────────────────
+
+test.describe('POST /process-scan', () => {
+  test('object-count returns count string', async ({ request }) => {
+    const { resp: upResp } = await uploadGlb(request as any, 'proc-count')
+    const { filename } = await upResp.json() as { filename: string }
+    const resp = await request.post(`${BASE}/process-scan`, { data: { filename, action: 'object-count' } })
+    expect(resp.status()).toBe(200)
+    const body = await resp.json() as { action: string; result: string; processedAt: string }
+    expect(body.action).toBe('object-count')
+    expect(typeof body.result).toBe('string')
+    expect(typeof body.processedAt).toBe('string')
+  })
+
+  test('scene-description returns description string', async ({ request }) => {
+    const { resp: upResp } = await uploadGlb(request as any, 'proc-desc')
+    const { filename } = await upResp.json() as { filename: string }
+    const resp = await request.post(`${BASE}/process-scan`, { data: { filename, action: 'scene-description' } })
+    const body = await resp.json() as { action: string; result: string }
+    expect(body.action).toBe('scene-description')
+    expect(typeof body.result).toBe('string')
+    expect(body.result.length).toBeGreaterThan(0)
+  })
+
+  test('floor-plan returns a string response', async ({ request }) => {
+    const { resp: upResp } = await uploadGlb(request as any, 'proc-floor')
+    const { filename } = await upResp.json() as { filename: string }
+    const resp = await request.post(`${BASE}/process-scan`, { data: { filename, action: 'floor-plan' } })
+    const body = await resp.json() as { action: string; result: string }
+    expect(body.action).toBe('floor-plan')
+    expect(typeof body.result).toBe('string')
+  })
+
+  test('mesh-cleanup returns recommendations', async ({ request }) => {
+    const resp = await request.post(`${BASE}/process-scan`, { data: { filename: 'x.glb', action: 'mesh-cleanup' } })
+    const body = await resp.json() as { result: string }
+    expect(body.result).toContain('Mesh Cleanup')
+  })
+
+  test('room-segment returns suggestions', async ({ request }) => {
+    const resp = await request.post(`${BASE}/process-scan`, { data: { filename: 'x.glb', action: 'room-segment' } })
+    const body = await resp.json() as { result: string }
+    expect(body.result).toContain('Room Segmentation')
+  })
+
+  test('unknown action returns message not 500', async ({ request }) => {
+    const resp = await request.post(`${BASE}/process-scan`, { data: { filename: 'x.glb', action: 'not-a-real-action' } })
+    expect(resp.status()).toBe(200)
+    const body = await resp.json() as { result: string }
+    expect(body.result).toContain('Unknown action')
+  })
+
+  test('missing action field returns 400', async ({ request }) => {
+    const resp = await request.post(`${BASE}/process-scan`, { data: { filename: 'x.glb' } })
+    expect(resp.status()).toBe(400)
+  })
+
+  test('processedAt is a valid ISO timestamp', async ({ request }) => {
+    const resp = await request.post(`${BASE}/process-scan`, { data: { filename: 'x.glb', action: 'mesh-cleanup' } })
+    const body = await resp.json() as { processedAt: string }
+    expect(isNaN(Date.parse(body.processedAt))).toBeFalsy()
+  })
+})
+
+// ── WebSocket /rtc-signal ────────────────────────────────────────────────────
+
+test.describe('GET /rtc-signal (WebSocket)', () => {
+  test('upgrades to WebSocket for phone role', async ({ page }) => {
+    await page.goto(`${BASE}`, { waitUntil: 'domcontentloaded' })
+    const opened = await page.evaluate(async (base: string) => {
+      const wsUrl = base.replace(/^https/, 'wss').replace(/^http/, 'ws')
+      return new Promise<boolean>((resolve) => {
+        const ws = new WebSocket(`${wsUrl}/rtc-signal?role=phone&room=pw-open-${Date.now()}`)
+        ws.onopen = () => { ws.close(); resolve(true) }
+        ws.onerror = () => resolve(false)
+        setTimeout(() => resolve(false), 3000)
+      })
+    }, BASE)
+    expect(opened).toBeTruthy()
+  })
+
+  test('phone and viewer both receive peer-ready when both connect', async ({ page }) => {
+    await page.goto(`${BASE}`, { waitUntil: 'domcontentloaded' })
+    const room = `pw-ready-${Date.now()}`
+    const result = await page.evaluate(async ({ base, room }: { base: string; room: string }) => {
+      const wsUrl = base.replace(/^https/, 'wss').replace(/^http/, 'ws')
+      return new Promise<{ phoneReady: boolean; viewerReady: boolean }>((resolve) => {
+        let phoneReady = false, viewerReady = false
+        const phone  = new WebSocket(`${wsUrl}/rtc-signal?role=phone&room=${room}`)
+        const viewer = new WebSocket(`${wsUrl}/rtc-signal?role=viewer&room=${room}`)
+        phone.onmessage  = (e) => { const m = JSON.parse(e.data as string); if (m.type === 'peer-ready') phoneReady = true }
+        viewer.onmessage = (e) => { const m = JSON.parse(e.data as string); if (m.type === 'peer-ready') viewerReady = true }
+        setTimeout(() => { phone.close(); viewer.close(); resolve({ phoneReady, viewerReady }) }, 2500)
+      })
+    }, { base: BASE, room })
+    expect(result.phoneReady).toBeTruthy()
+    expect(result.viewerReady).toBeTruthy()
+  })
+
+  test('messages relay from phone to viewer', async ({ page }) => {
+    await page.goto(`${BASE}`, { waitUntil: 'domcontentloaded' })
+    const room = `pw-relay-${Date.now()}`
+    const relayed = await page.evaluate(async ({ base, room }: { base: string; room: string }) => {
+      const wsUrl = base.replace(/^https/, 'wss').replace(/^http/, 'ws')
+      return new Promise<boolean>((resolve) => {
+        const phone  = new WebSocket(`${wsUrl}/rtc-signal?role=phone&room=${room}`)
+        const viewer = new WebSocket(`${wsUrl}/rtc-signal?role=viewer&room=${room}`)
+        viewer.onmessage = (e) => {
+          const m = JSON.parse(e.data as string)
+          if (m.type === 'offer') resolve(true)
+        }
+        phone.onopen = () => setTimeout(() => phone.send(JSON.stringify({ type: 'offer', sdp: 'v=0' })), 600)
+        setTimeout(() => resolve(false), 3500)
+      })
+    }, { base: BASE, room })
+    expect(relayed).toBeTruthy()
+  })
+
+  test('disconnecting phone sends peer-left to viewer', async ({ page }) => {
+    await page.goto(`${BASE}`, { waitUntil: 'domcontentloaded' })
+    const room = `pw-leave-${Date.now()}`
+    const gotLeft = await page.evaluate(async ({ base, room }: { base: string; room: string }) => {
+      const wsUrl = base.replace(/^https/, 'wss').replace(/^http/, 'ws')
+      return new Promise<boolean>((resolve) => {
+        const phone  = new WebSocket(`${wsUrl}/rtc-signal?role=phone&room=${room}`)
+        const viewer = new WebSocket(`${wsUrl}/rtc-signal?role=viewer&room=${room}`)
+        viewer.onmessage = (e) => {
+          const m = JSON.parse(e.data as string)
+          if (m.type === 'peer-left' && m.role === 'phone') resolve(true)
+        }
+        // Disconnect phone after both are connected
+        setTimeout(() => phone.close(), 800)
+        setTimeout(() => resolve(false), 3500)
+      })
+    }, { base: BASE, room })
+    expect(gotLeft).toBeTruthy()
+  })
+})
+
+// ── POST /upload-summary ──────────────────────────────────────────────────────
+
+test.describe('POST /upload-summary', () => {
+  test('saves a markdown summary and returns filename', async ({ request }) => {
+    const content = `# Scan Summary\n\nTest run at ${new Date().toISOString()}`
+    const resp = await request.post(`${BASE}/upload-summary`, {
+      multipart: {
+        file: { name: 'test-summary.md', mimeType: 'text/markdown', buffer: Buffer.from(content) },
+      },
+    })
+    expect(resp.status()).toBe(200)
+    const body = await resp.json() as { filename: string }
+    expect(body.filename.endsWith('.md')).toBeTruthy()
+  })
+
+  test('returns 400 when no file', async ({ request }) => {
+    const resp = await request.post(`${BASE}/upload-summary`, {
+      multipart: { data: 'not-a-file' },
+    })
+    expect(resp.status()).toBe(400)
+  })
+
+  test('sanitises filename in returned path', async ({ request }) => {
+    const resp = await request.post(`${BASE}/upload-summary`, {
+      multipart: {
+        file: { name: '../evil/path.md', mimeType: 'text/markdown', buffer: Buffer.from('# x') },
+      },
+    })
+    expect(resp.status()).toBe(200)
+    const body = await resp.json() as { filename: string }
+    expect(body.filename).not.toContain('/')
+    expect(body.filename).not.toContain('..')
+  })
+})

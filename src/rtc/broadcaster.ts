@@ -36,6 +36,7 @@ export class RtcBroadcaster {
   }
 
   set onStatus(fn: StatusCallback) { this._onStatus = fn }
+  get isRunning(): boolean { return this._running }
 
   /** Start streaming the given canvas (or fall back to getUserMedia if null) */
   async start(canvas?: HTMLCanvasElement | null): Promise<void> {
