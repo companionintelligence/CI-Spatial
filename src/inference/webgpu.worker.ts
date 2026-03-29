@@ -29,6 +29,7 @@
  *   { type: 'progress', stage: string, pct: number }   (during model load)
  */
 
+// @ts-expect-error — transformers@3 re-exports from .js files with no companion .d.ts
 import { env, pipeline, RawImage } from '@huggingface/transformers'
 import { SPATIAL_DETECTION_PROMPT, parseDetections } from './prompt'
 import type { RawDetection } from './prompt'

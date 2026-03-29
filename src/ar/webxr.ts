@@ -123,6 +123,11 @@ export class WebXRProvider implements ARProvider {
     }
   }
 
+  isTracking(): boolean {
+    // WebXR is considered tracking as soon as the session is active
+    return this.session !== null
+  }
+
   hitTest(x: number, y: number): HitResult | null {
     // WebXR hit-test must happen inside a frame callback.
     // This synchronous call returns the result from the most recent frame

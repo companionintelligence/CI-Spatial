@@ -11,7 +11,9 @@
  */
 import { createEighthWallProvider } from './ar/eighthwall'
 import { createWebXRProvider, WebXRProvider } from './ar/webxr'
-import type { ARProvider } from './ar/provider'
+import type { ARProvider, Pose } from './ar/provider'
+import { RoomScanner } from './ar/scanner'
+import { PointCloud } from './scene/pointcloud'
 import { CaptureModule } from './capture/capture'
 import { InferenceRouter } from './inference/router'
 import { resolveDetections, mergeDetections } from './spatial/resolver'
@@ -24,9 +26,12 @@ async function main() {
   const canvas = document.getElementById('camerafeed') as HTMLCanvasElement
   const overlay = setupStatusOverlay()
 
-  // ── 1. Store ────────────────────────────────────────────────────────────────
+  // ── 1. Store + scan accumulators ────────────────────────────────────────────
   const store = new DetectionStore()
   await store.open()
+  const pointCloud = new PointCloud(0.05)   // 5 cm voxel deduplication grid
+  const poseHistory: Pose[] = []
+  const scanner = new RoomScanner()
 
   // ── 2. Inference router ────────────────────────────────────────────────────
   const router = new InferenceRouter()
@@ -65,7 +70,7 @@ async function main() {
 
   // ── 4. UI ──────────────────────────────────────────────────────────────────
   const arOverlay = new AROverlay(store, use8thWall)
-  const panel = new SidePanel(store, () => exportToGLB(store))
+  const panel = new SidePanel(store, () => exportToGLB({ store, pointCloud, poseHistory }))
 
   const capture = new CaptureModule(provider)
   const asyncHitTest = !use8thWall && provider instanceof WebXRProvider
@@ -73,6 +78,11 @@ async function main() {
     : undefined
 
   arOverlay.mount(async () => {
+    if (!provider.isTracking()) {
+      // Show a nudge but still allow capture — the resolver will fall back
+      // to the estimated position if the pose is not yet valid.
+      overlay.setStatus('Tracking not ready — move camera slowly over a surface')
+    }
     overlay.setStatus('Capturing…')
     try {
       const { blob, pose, timestamp } = await capture.capture()
@@ -101,8 +111,9 @@ async function main() {
       const merged = mergeDetections(store.detections, worldDets)
       await store.upsert(merged, thumbMap)
 
-      overlay.setStatus(`Scan complete — ${store.detections.size} object${store.detections.size === 1 ? '' : 's'}`)
-      void pose // pose stored in worldDets; kept here for future raw-JSON export
+      overlay.setStatus(
+        `${store.detections.size} object${store.detections.size === 1 ? '' : 's'} · ${pointCloud.count} pts`,
+      )
     } catch (e) {
       overlay.setStatus('Capture failed — try again')
       console.error('[capture]', e)
@@ -139,8 +150,23 @@ async function main() {
 
   overlay.setStatus('Starting AR…')
   await provider.start(canvas)
-  overlay.setStatus('Ready — tap capture to scan')
+  overlay.setStatus('Move camera to initialise tracking…')
   overlay.setProgress(null)
+
+  // ── 6. Continuous SLAM point-cloud accumulation ──────────────────────────────
+  scanner.start(provider, (frame) => {
+    const added = pointCloud.add(frame.points)
+    if (frame.points.length > 0) poseHistory.push(frame.pose)
+    if (added > 0) {
+      const statsEl = document.getElementById('scan-stats')
+      if (statsEl) statsEl.textContent = `${pointCloud.count} pts`
+      // First points arriving means SLAM has locked — update status once
+      if (pointCloud.count === added) {
+        overlay.setStatus('Tracking — tap to capture')
+      }
+    }
+  })
+  console.log('[main] Room scanner started')
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

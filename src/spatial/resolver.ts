@@ -20,6 +20,8 @@ export interface WorldDetection {
   label: string
   confidence: number
   description: string
+  /** Normalised [x1,y1,x2,y2] bounding box from VLM inference */
+  bbox: [number, number, number, number]
   worldPos: { x: number; y: number; z: number }
   worldRot: { x: number; y: number; z: number; w: number }
   captureTimestamp: number
@@ -97,6 +99,7 @@ export async function resolveDetections(
       label: det.label,
       confidence: det.confidence,
       description: det.description,
+      bbox: det.bbox,
       worldPos: hitPos,
       worldRot: hitRot,
       captureTimestamp: timestamp,

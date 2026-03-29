@@ -55,4 +55,10 @@ export interface ARProvider {
 
   /** Return the current camera pose without blocking. */
   getPose(): Pose
+
+  /**
+   * Returns true once the AR runtime has locked on and tracking is stable.
+   * Hit-tests and captures before this point may return unreliable results.
+   */
+  isTracking(): boolean
 }
