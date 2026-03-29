@@ -20,9 +20,11 @@ const PORT = Number(Deno.env.get('PORT') ?? 8000)
 const ALLOWED_ORIGIN_PREFIX = Deno.env.get('ALLOWED_ORIGIN_PREFIX') ?? 'https://liam-mbp.capybara-ulmer.ts.net'
 
 const engine = new InferenceEngine()
-let engineReady = false
-engine.load().then(() => { engineReady = true }).catch((e) => {
-  console.error('[server] Model load failed — /infer will return 503 until models are present:', e.message)
+const engineLoadPromise = engine.load().then(() => {
+  console.log('[server] Model sessions ready')
+}).catch((e) => {
+  console.error('[server] Model load failed:', e.message)
+  throw e
 })
 
 const app = new Hono()
@@ -46,7 +48,8 @@ app.use(
 app.get('/health', (c) => c.json({ status: 'ok', model: engine.modelId }))
 
 app.post('/infer', async (c) => {
-  if (!engineReady) return c.json({ error: 'Model not loaded — place model files in server/models/ and restart' }, 503)
+  // Wait for ONNX sessions to finish loading (large models take several seconds on first start)
+  try { await engineLoadPromise } catch { return c.json({ error: 'Model failed to load — check server/logs' }, 503) }
   const form = await c.req.formData()
   const imageFile = form.get('image')
   if (!imageFile || !(imageFile instanceof File)) {

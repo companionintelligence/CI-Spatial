@@ -45,12 +45,14 @@ export class EighthWallProvider implements ARProvider {
     position: { x: 0, y: 0, z: 0 },
     rotation: { x: 0, y: 0, z: 0, w: 1 },
   }
-  /** True once the SLAM WASM map has received its first frame — hit-tests are unsafe before this */
   private _slamReady = false
-  /** Latest SLAM world points from the reality GPU result — fresher than grid hit-tests */
   private _latestWorldPoints: Array<{ x: number; y: number; z: number }> = []
   private _lastTrackingStatus = ''
   private _diagLogged = false
+  /** Camera vertical field-of-view in degrees (from intrinsics, else 60° default) */
+  private _fovY = 60
+  /** Viewport aspect ratio at XR8.run() time */
+  private _aspect = 9 / 16
 
   async start(canvas: HTMLCanvasElement): Promise<void> {
     // Wait for xr.js to finish loading if it hasn't yet
@@ -73,61 +75,55 @@ export class EighthWallProvider implements ARProvider {
       {
         name: 'ci-scan-capture',
 
-        onProcessCpu({ processGpuResult, processCpuResult }: {
-          processGpuResult: Record<string, unknown>
-          processCpuResult: Record<string, unknown>
-        }) {
-          // Log keys once on first frame to see the real structure on this xr.js build
+        // onUpdate runs AFTER all module onProcessCpu hooks, so processCpuResult
+        // is fully populated (XrController has written its reality pose into it).
+        // This is the correct place to read SLAM pose in this xr.js build.
+        onUpdate({ processCpuResult }: { processCpuResult: Record<string, unknown> }) {
+          const reality = (processCpuResult as Record<string, Record<string, unknown>>)?.reality
+          if (!reality) return
+
           if (!self._diagLogged) {
             self._diagLogged = true
-            console.log('[8thwall] processGpuResult keys:', Object.keys(processGpuResult))
-            console.log('[8thwall] processCpuResult keys:', Object.keys(processCpuResult))
-            const gpuR = (processGpuResult as Record<string, Record<string, unknown>>)?.reality
-            const cpuR = (processCpuResult as Record<string, Record<string, unknown>>)?.reality
-            console.log('[8thwall] processGpuResult.reality:', gpuR ? JSON.stringify(Object.keys(gpuR)) : 'absent')
-            console.log('[8thwall] processCpuResult.reality:', cpuR ? JSON.stringify(Object.keys(cpuR)) : 'absent')
+            console.log('[8thwall] onUpdate reality keys:', JSON.stringify(Object.keys(reality)))
           }
 
-          // XrController writes to processCpuResult.reality; processGpuResult.reality is
-          // the texture renderer's GPU context with a different structure.
-          // We check both so the code works across xr.js build variants.
-          const cpuReality = (processCpuResult as Record<string, Record<string, unknown>>)?.reality
-          const gpuReality = (processGpuResult as Record<string, Record<string, unknown>>)?.reality
-          const reality = (cpuReality?.position ? cpuReality : gpuReality?.position ? gpuReality : null)
-
-          if (reality?.rotation && reality?.position) {
+          if (reality.position && reality.rotation) {
             self.latestPose = {
               position: reality.position as { x: number; y: number; z: number },
               rotation: reality.rotation as { x: number; y: number; z: number; w: number },
             }
 
-            // Log tracking status transitions
             const status = (reality.trackingStatus as string | undefined) ?? 'UNKNOWN'
             if (status !== self._lastTrackingStatus) {
               console.log('[8thwall] trackingStatus:', status)
               self._lastTrackingStatus = status
             }
 
-            // SLAM is safe to use as soon as we receive a pose (even LIMITED tracking)
             if (!self._slamReady) {
-              console.log('[8thwall] SLAM ready — first pose received')
+              console.log('[8thwall] SLAM ready — first pose received via onUpdate')
               self._slamReady = true
             }
 
-            // Harvest world points directly from the reality object rather than
-            // firing expensive grid hit-tests.  The format is either:
-            //   reality.worldPoints = [{x,y,z}, ...]
-            //   reality.worldPoints = { points: Float32Array, numPoints: number }
+            // Camera intrinsics → vertical FOV
+            const intr = reality.intrinsics as Record<string, unknown> | null | undefined
+            if (intr) {
+              const fy = (intr['fy'] as number | undefined)
+                ?? (intr['focalLength'] as Record<string, number> | undefined)?.y
+              const imgH = (intr['height'] as number | undefined) ?? canvas.height
+              if (fy && imgH) {
+                self._fovY = 2 * Math.atan(imgH / (2 * fy)) * (180 / Math.PI)
+              }
+            }
+
+            // Harvest world points
             const wp = reality.worldPoints as Record<string, unknown> | null | undefined
             if (wp) {
               const newPts: Array<{ x: number; y: number; z: number }> = []
               if (Array.isArray(wp)) {
-                // Array-of-objects format
                 for (const p of wp as Array<{ x?: number; y?: number; z?: number }>) {
                   if (typeof p?.x === 'number') newPts.push({ x: p.x, y: p.y ?? 0, z: p.z ?? 0 })
                 }
               } else if (wp.points instanceof Float32Array || Array.isArray(wp.points)) {
-                // Flat packed-float format: [x0,y0,z0, x1,y1,z1, ...]
                 const flat = wp.points as ArrayLike<number>
                 for (let i = 0; i + 2 < flat.length; i += 3) {
                   newPts.push({ x: flat[i], y: flat[i + 1], z: flat[i + 2] })
@@ -136,7 +132,11 @@ export class EighthWallProvider implements ARProvider {
               if (newPts.length > 0) self._latestWorldPoints = newPts
             }
           }
+        },
 
+        onProcessCpu({ processGpuResult }: {
+          processGpuResult: Record<string, unknown>
+        }) {
           // Only do the expensive pixel copy when a capture is pending
           if (self.captureQueue.length === 0) return
 
@@ -173,6 +173,7 @@ export class EighthWallProvider implements ARProvider {
     const dpr = window.devicePixelRatio || 1
     canvas.width = Math.round(window.innerWidth * dpr)
     canvas.height = Math.round(window.innerHeight * dpr)
+    this._aspect = window.innerWidth / window.innerHeight
 
     XR8.run({ canvas, allowedDevices: XR8.XrConfig.device().ANY })
 
@@ -246,6 +247,14 @@ export class EighthWallProvider implements ARProvider {
 
   isTracking(): boolean {
     return this._slamReady
+  }
+
+  getCameraFovY(): number {
+    return this._fovY
+  }
+
+  getCameraAspect(): number {
+    return this._aspect
   }
 }
 

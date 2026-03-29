@@ -3,7 +3,7 @@
  *
  * Model files must be present at:
  *   server/models/LiquidAI/LFM2.5-VL-1.6B-ONNX/
- *     onnx/embed_tokens.onnx          (fp32, ~537MB)
+ *     onnx/embed_tokens_fp16.onnx     (fp16, + .onnx_data shard)
  *     onnx/embed_images_fp16.onnx     (+ .onnx_data shard)
  *     onnx/decoder_q4.onnx            (+ .onnx_data shard)
  *
@@ -20,11 +20,17 @@ import type { RawDetection } from './prompt.ts'
 // Re-export shared types used by main.ts
 export type { RawDetection }
 
-const MODEL_DIR = new URL('./models/LiquidAI/LFM2.5-VL-1.6B-ONNX/onnx/', import.meta.url).pathname
-const TOKENIZER_DIR = new URL('./models/LiquidAI/LFM2.5-VL-1.6B-ONNX/', import.meta.url).pathname
+const MODEL_DIR = new URL(
+  Deno.env.get('MODEL_DIR') ?? './public/models/LiquidAI/LFM2.5-VL-1.6B-ONNX/onnx/',
+  import.meta.url,
+).pathname
+const TOKENIZER_DIR = new URL(
+  Deno.env.get('TOKENIZER_DIR') ?? './public/models/LiquidAI/LFM2.5-VL-1.6B-ONNX/',
+  import.meta.url,
+).pathname
 
-// Max new tokens to generate (the JSON response is typically ~200 tokens)
-const MAX_NEW_TOKENS = 512
+// Max new tokens to generate. Each object ~100 chars ≈ 80 tokens; 8 objects ≈ 640 tokens.
+const MAX_NEW_TOKENS = 1024
 
 // ─── Prompt token IDs (pre-computed offline for the fixed detection prompt) ───
 // Full prompt: <bos><im_start>user\n<image_start><image×256><image_end>{PROMPT}<im_end>\n<im_start>assistant\n
@@ -108,7 +114,7 @@ export class InferenceEngine {
     }
 
     const [et, ei, dec] = await Promise.all([
-      ort.InferenceSession.create(`${MODEL_DIR}embed_tokens.onnx`, opts),
+      ort.InferenceSession.create(`${MODEL_DIR}embed_tokens_fp16.onnx`, opts),
       ort.InferenceSession.create(`${MODEL_DIR}embed_images_fp16.onnx`, opts),
       ort.InferenceSession.create(`${MODEL_DIR}decoder_q4.onnx`, opts),
     ])

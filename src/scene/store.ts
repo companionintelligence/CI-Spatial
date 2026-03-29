@@ -96,6 +96,28 @@ export class DetectionStore {
     }))
   }
 
+  /** Load a specific session from IndexedDB into this store (replaces current view) */
+  async loadSession(sessionId: string): Promise<boolean> {
+    if (!this.db) return false
+    const sessions = await getAllSessions(this.db)
+    const record = sessions.find((s) => s.sessionId === sessionId)
+    if (!record) return false
+    this._detections = new Map(record.detections as Array<[string, StoredDetection]>)
+    this.notify()
+    return true
+  }
+
+  /** Delete a session from IndexedDB */
+  async deleteSession(sessionId: string): Promise<void> {
+    if (!this.db) return
+    await idbDelete(this.db, sessionId)
+    // If we just deleted the current session, clear current view
+    if (sessionId === this.sessionId) {
+      this._detections.clear()
+      this.notify()
+    }
+  }
+
   private notify(): void {
     this.listeners.forEach((fn) => fn(this._detections))
   }
@@ -143,6 +165,15 @@ function getAllSessions(db: IDBDatabase): Promise<
     const tx = db.transaction(STORE_NAME, 'readonly')
     const req = tx.objectStore(STORE_NAME).getAll()
     req.onsuccess = () => resolve(req.result as Array<{ sessionId: string; startedAt: number; detections: unknown[] }>)
+    req.onerror = () => reject(req.error)
+  })
+}
+
+function idbDelete(db: IDBDatabase, sessionId: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite')
+    const req = tx.objectStore(STORE_NAME).delete(sessionId)
+    req.onsuccess = () => resolve()
     req.onerror = () => reject(req.error)
   })
 }

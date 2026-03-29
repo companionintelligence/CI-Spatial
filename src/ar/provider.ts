@@ -61,4 +61,16 @@ export interface ARProvider {
    * Hit-tests and captures before this point may return unreliable results.
    */
   isTracking(): boolean
+
+  /**
+   * Vertical field-of-view in degrees for the AR camera.
+   * Used to reconstruct a Three.js PerspectiveCamera from the SLAM pose
+   * when the Threejs pipeline module is not loaded.
+   */
+  getCameraFovY(): number
+
+  /**
+   * Viewport aspect ratio (width / height) at the time XR was started.
+   */
+  getCameraAspect(): number
 }

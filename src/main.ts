@@ -20,7 +20,9 @@ import { resolveDetections, mergeDetections } from './spatial/resolver'
 import { DetectionStore } from './scene/store'
 import { AROverlay } from './ui/overlay'
 import { SidePanel } from './ui/panel'
+import { SessionHistory } from './ui/history'
 import { exportToGLB } from './export/gltf'
+import * as THREE from 'three'
 
 async function main() {
   const canvas = document.getElementById('camerafeed') as HTMLCanvasElement
@@ -69,8 +71,9 @@ async function main() {
   }
 
   // ── 4. UI ──────────────────────────────────────────────────────────────────
-  const arOverlay = new AROverlay(store, use8thWall)
+  const arOverlay = new AROverlay(store, use8thWall, provider)
   const panel = new SidePanel(store, () => exportToGLB({ store, pointCloud, poseHistory }))
+  const history = new SessionHistory(store)
 
   const capture = new CaptureModule(provider)
   const asyncHitTest = !use8thWall && provider instanceof WebXRProvider
@@ -95,10 +98,24 @@ async function main() {
 
       overlay.setStatus(`${rawDets.length} object${rawDets.length === 1 ? '' : 's'} detected`)
 
+      // Snapshot a Three.js camera from the current SLAM pose for frustum raycasting.
+      // This gives the resolver a proper projection matrix at the moment of capture.
+      let captureCamera: THREE.PerspectiveCamera | undefined
+      if (use8thWall && provider.isTracking()) {
+        const p = provider.getPose()
+        captureCamera = new THREE.PerspectiveCamera(
+          provider.getCameraFovY(), provider.getCameraAspect(), 0.01, 1000,
+        )
+        captureCamera.position.set(p.position.x, p.position.y, p.position.z)
+        captureCamera.quaternion.set(p.rotation.x, p.rotation.y, p.rotation.z, p.rotation.w)
+        captureCamera.updateMatrixWorld(true)
+      }
+
       const worldDets = await resolveDetections(rawDets, timestamp, {
         provider,
         asyncHitTest,
         cameraPose: pose,
+        captureCamera,
       })
       console.log(`[main] World detections (${worldDets.length}):`, JSON.stringify(worldDets))
 
@@ -111,6 +128,8 @@ async function main() {
       const merged = mergeDetections(store.detections, worldDets)
       await store.upsert(merged, thumbMap)
 
+      showInferDialog(worldDets)
+
       overlay.setStatus(
         `${store.detections.size} object${store.detections.size === 1 ? '' : 's'} · ${pointCloud.count} pts`,
       )
@@ -122,6 +141,7 @@ async function main() {
   })
 
   panel.mount()
+  history.mount()
 
   // ── 5. Start AR — permission must be requested in the button click handler ───
   // Safari iOS 13+ requires DeviceOrientationEvent/DeviceMotionEvent.requestPermission()
@@ -212,6 +232,46 @@ function waitForXR8(timeoutMs: number): Promise<boolean> {  return new Promise((
 
 function bucket(p: { x: number; y: number; z: number }): string {
   return `${p.x.toFixed(1)},${p.y.toFixed(1)},${p.z.toFixed(1)}`
+}
+
+let _inferDialogTimer: ReturnType<typeof setTimeout> | null = null
+
+function showInferDialog(dets: Array<{ label: string; description: string; confidence: number; worldPos: { x: number; y: number; z: number } }>): void {
+  const dialog = document.getElementById('infer-dialog')
+  const body   = document.getElementById('infer-dialog-body')
+  const close  = document.getElementById('infer-dialog-close')
+  if (!dialog || !body) return
+
+  if (!close?.dataset['bound']) {
+    close?.addEventListener('click', () => hideInferDialog())
+    if (close) close.dataset['bound'] = '1'
+  }
+
+  if (dets.length === 0) return
+
+  body.innerHTML = dets.map((d) => {
+    const conf = Math.round(d.confidence * 100)
+    const p = d.worldPos
+    return `
+      <div style="display:flex;flex-direction:column;gap:2px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.06);">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <span style="color:#fff;font-size:13px;font-weight:700;">${d.label}</span>
+          <span style="color:rgba(255,255,255,0.4);font-size:11px;font-family:monospace;">${conf}%</span>
+        </div>
+        <p style="color:rgba(255,255,255,0.55);font-size:12px;line-height:1.4;margin:0;">${d.description}</p>
+        <span style="color:rgba(255,255,255,0.25);font-size:10px;font-family:monospace;">(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})</span>
+      </div>`
+  }).join('')
+
+  dialog.classList.add('visible')
+
+  if (_inferDialogTimer) clearTimeout(_inferDialogTimer)
+  _inferDialogTimer = setTimeout(() => hideInferDialog(), 9000)
+}
+
+function hideInferDialog(): void {
+  document.getElementById('infer-dialog')?.classList.remove('visible')
+  if (_inferDialogTimer) { clearTimeout(_inferDialogTimer); _inferDialogTimer = null }
 }
 
 main().catch((e: unknown) => {

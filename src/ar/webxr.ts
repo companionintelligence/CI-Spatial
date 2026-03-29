@@ -128,6 +128,14 @@ export class WebXRProvider implements ARProvider {
     return this.session !== null
   }
 
+  getCameraFovY(): number {
+    return 60
+  }
+
+  getCameraAspect(): number {
+    return window.innerWidth / window.innerHeight
+  }
+
   hitTest(x: number, y: number): HitResult | null {
     // WebXR hit-test must happen inside a frame callback.
     // This synchronous call returns the result from the most recent frame

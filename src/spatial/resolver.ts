@@ -11,6 +11,7 @@
  * For the WebXR provider, hitTest() is synchronous but returns null —
  * the caller must pass an async hitTestFn override in that case.
  */
+import * as THREE from 'three'
 import type { ARProvider, Pose } from '../ar/provider'
 import type { RawDetection } from '../inference/prompt'
 
@@ -38,6 +39,12 @@ export interface ResolveOptions {
   asyncHitTest?: AsyncHitTestFn
   /** Current camera pose — used to estimate world pos when hit test returns nothing */
   cameraPose?: Pose
+  /**
+   * Three.js PerspectiveCamera built from the capture-time SLAM pose + intrinsics.
+   * When provided, the resolver casts a proper frustum ray from the camera through
+   * the bbox NDC and samples multiple points along it for higher-accuracy placement.
+   */
+  captureCamera?: THREE.PerspectiveCamera
 }
 
 /**
@@ -60,18 +67,53 @@ export async function resolveDetections(
     let hitPos: { x: number; y: number; z: number } | null = null
     let hitRot = { x: 0, y: 0, z: 0, w: 1 }
 
-    // Try synchronous 8th Wall path first
-    const syncHit = opts.provider.hitTest(cx, cy)
-    if (syncHit) {
-      hitPos = syncHit.position
-      hitRot = syncHit.rotation
-    } else if (opts.asyncHitTest) {
-      // WebXR async path
-      const asyncHit = await opts.asyncHitTest(cx, cy)
-      if (asyncHit) {
-        hitPos = asyncHit.position
-        hitRot = asyncHit.rotation
+    // --- Frustum raycast strategy ---
+    // When we have the capture-time camera, the bbox center in image space
+    // (0-1) maps to NDC as: ndcX = cx*2-1, ndcY = -(cy*2-1).
+    // We cast a THREE.Raycaster ray from the camera through that NDC point,
+    // then sample along the ray at several depths to find SLAM feature points.
+    // This is more accurate than passing cx/cy directly to hitTest, especially
+    // when the captured image aspect differs from the display.
+    if (opts.captureCamera) {
+      const cam   = opts.captureCamera
+      const ndc   = new THREE.Vector2(cx * 2 - 1, -(cy * 2 - 1))
+      const ray   = new THREE.Raycaster()
+      ray.setFromCamera(ndc, cam)
+
+      // Convert the ray origin + direction back to normalised screen coords in
+      // XR8-space (XR8 hitTest uses display-normalised 0-1, Y down).
+      // We sample a few depths and pick the first that returns a SLAM hit.
+      const depths = [1.0, 1.5, 2.0, 2.5, 3.0]
+      for (const depth of depths) {
+        const worldPt = ray.ray.origin.clone().addScaledVector(ray.ray.direction, depth)
+        // Project back to screen NDC to get the x/y for hitTest
+        const screenNDC = worldPt.clone().project(cam)
+        const hx = (screenNDC.x + 1) / 2
+        const hy = (-screenNDC.y + 1) / 2
+        if (hx < 0 || hx > 1 || hy < 0 || hy > 1) continue
+        const syncHit = opts.provider.hitTest(hx, hy)
+        if (syncHit) {
+          hitPos = syncHit.position
+          hitRot = syncHit.rotation
+          break
+        }
       }
+
+      // If ray-sampled hitTest yielded nothing, fall back to bbox-center hitTest
+      if (!hitPos) {
+        const syncHit = opts.provider.hitTest(cx, cy)
+        if (syncHit) { hitPos = syncHit.position; hitRot = syncHit.rotation }
+      }
+    } else {
+      // No camera available — simple bbox-centre hit test
+      const syncHit = opts.provider.hitTest(cx, cy)
+      if (syncHit) { hitPos = syncHit.position; hitRot = syncHit.rotation }
+    }
+
+    // WebXR async fallback (no sync hitTest support)
+    if (!hitPos && opts.asyncHitTest) {
+      const asyncHit = await opts.asyncHitTest(cx, cy)
+      if (asyncHit) { hitPos = asyncHit.position; hitRot = asyncHit.rotation }
     }
 
     if (!hitPos) {
