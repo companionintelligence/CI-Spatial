@@ -292,9 +292,8 @@ test.describe('UI element positions', () => {
     }
   })
 
-  test('quality overlay is in the bottom-right quadrant', async ({ page }) => {
+  test('quality overlay is in the top-left HUD panel', async ({ page }) => {
     await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
-    // Make it visible to check position
     await page.evaluate(() => {
       const el = document.getElementById('quality-overlay')
       if (el) el.style.display = 'flex'
@@ -304,9 +303,9 @@ test.describe('UI element positions', () => {
     if (box) {
       const vw = page.viewportSize()?.width ?? 400
       const vh = page.viewportSize()?.height ?? 800
-      // right half, bottom half
-      expect(box.x).toBeGreaterThan(vw / 2)
-      expect(box.y).toBeGreaterThan(vh / 2)
+      // left half, top half — inside the HUD panel
+      expect(box.x).toBeLessThan(vw / 2)
+      expect(box.y).toBeLessThan(vh / 2)
     }
   })
 
