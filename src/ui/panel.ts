@@ -6,6 +6,7 @@
  *   - Inline edit of label + description
  */
 import type { DetectionStore, StoredDetection } from '../scene/store'
+import type { InferMode } from '../inference/router'
 
 const CATEGORY_COLORS: Record<string, string> = {
   chair: '#4fc3f7', table: '#81c784', sofa: '#ff8a65', couch: '#ff8a65',
@@ -27,6 +28,8 @@ export class SidePanel {
   private toggle: HTMLButtonElement
   private isOpen = false
   private _streamBtn: HTMLButtonElement | null = null
+  private _aiServerBtn: HTMLButtonElement | null = null
+  private _aiWebGPUBtn: HTMLButtonElement | null = null
 
   get streamButton(): HTMLButtonElement | null { return this._streamBtn }
 
@@ -35,6 +38,8 @@ export class SidePanel {
     private readonly onExport: () => void,
     private readonly onSummary?: () => void,
     private readonly onProcess?: (action: string) => void,
+    private readonly onInferMode?: (mode: InferMode) => void,
+    private _currentInferMode: InferMode = 'server',
   ) {
     this.panel = document.getElementById('side-panel')!
     this.content = document.getElementById('panel-content')!
@@ -116,6 +121,50 @@ export class SidePanel {
     this._streamBtn = streamBtn
     this.footer.appendChild(streamBtn)
 
+    // ── AI Engine settings ─────────────────────────────────────────────────
+    if (this.onInferMode) {
+      const aiWrap = document.createElement('div')
+      aiWrap.style.cssText = 'display:flex;flex-direction:column;gap:4px;padding-top:4px;border-top:1px solid rgba(255,255,255,0.06);'
+
+      const aiLabel = document.createElement('div')
+      aiLabel.style.cssText = 'color:rgba(255,255,255,0.3);font-size:10px;text-transform:uppercase;letter-spacing:0.08em;padding:4px 0 2px;'
+      aiLabel.textContent = 'AI Engine'
+      aiWrap.appendChild(aiLabel)
+
+      const aiRow = document.createElement('div')
+      aiRow.style.cssText = 'display:flex;gap:4px;'
+
+      const mkToggle = (label: string, mode: InferMode): HTMLButtonElement => {
+        const btn = document.createElement('button')
+        btn.dataset['mode'] = mode
+        btn.style.cssText = `
+          flex:1;padding:7px 0;border-radius:8px;border:none;font-size:12px;font-weight:600;
+          cursor:pointer;transition:background 0.15s,color 0.15s;
+        `
+        btn.textContent = label
+        btn.addEventListener('click', () => {
+          this.onInferMode!(mode)
+          this._setAIMode(mode)
+        })
+        return btn
+      }
+
+      this._aiServerBtn = mkToggle('🖥 Server', 'server')
+      this._aiWebGPUBtn = mkToggle('⚡ WebGPU', 'webgpu')
+      aiRow.appendChild(this._aiServerBtn)
+      aiRow.appendChild(this._aiWebGPUBtn)
+      aiWrap.appendChild(aiRow)
+
+      const aiNote = document.createElement('div')
+      aiNote.id = 'ai-engine-note'
+      aiNote.style.cssText = 'font-size:10px;color:rgba(255,255,255,0.25);padding:2px 0;'
+      aiNote.textContent = 'Server uses all machine cores'
+      aiWrap.appendChild(aiNote)
+
+      this.footer.appendChild(aiWrap)
+      this._setAIMode(this._currentInferMode)
+    }
+
     this.store.subscribe((dets, selected) => this.render(dets, selected))
     this.render(this.store.detections, this.store.selected)
   }
@@ -125,6 +174,22 @@ export class SidePanel {
     this.panel.classList.toggle('open', open)
     const count = this.store.detections.size
     this.toggle.setAttribute('data-count', count > 0 ? String(count) : '')
+  }
+
+  /** Update the AI engine toggle to reflect the current active mode. */
+  updateInferMode(mode: InferMode): void {
+    this._currentInferMode = mode
+    this._setAIMode(mode)
+  }
+
+  private _setAIMode(mode: InferMode): void {
+    this._currentInferMode = mode
+    const on  = 'background:rgba(255,255,255,0.92);color:#000;'
+    const off = 'background:rgba(255,255,255,0.07);color:rgba(255,255,255,0.55);'
+    if (this._aiServerBtn)  this._aiServerBtn .style.cssText  += mode === 'server'  ? on : off
+    if (this._aiWebGPUBtn)  this._aiWebGPUBtn .style.cssText  += mode === 'webgpu'  ? on : off
+    const note = document.getElementById('ai-engine-note')
+    if (note) note.textContent = mode === 'server' ? 'Server uses all machine cores' : 'On-device — no data leaves your phone'
   }
 
   private render(dets: Map<string, StoredDetection>, selected: Set<string>): void {

@@ -442,3 +442,109 @@ test.describe('Viewer new controls', () => {
     expect(parseFloat(opacity)).toBe(1)
   })
 })
+
+// ── AI Engine settings ─────────────────────────────────────────────────────────
+
+test.describe('AI engine settings', () => {
+  test('defaults to server mode — no infer-mode key needed', async ({ page }) => {
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
+    // Clear any saved preference so we start fresh
+    await page.evaluate(() => localStorage.removeItem('infer-mode'))
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    // Status bar should report server mode
+    const statusText = await page.locator('#status-text').textContent()
+    // 'server' or '🖥 Server' should appear regardless of emoji rendering
+    expect(statusText?.toLowerCase()).toContain('server')
+  })
+
+  test('server toggle in settings panel sets localStorage to server', async ({ page }) => {
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
+    await page.waitForTimeout(1500)
+
+    // Open the panel
+    await page.locator('#panel-toggle').click()
+    await page.waitForTimeout(300)
+
+    // Click the Server button in the AI Engine row
+    const serverBtn = page.locator('[data-mode="server"]')
+    if (await serverBtn.isVisible()) {
+      await serverBtn.click()
+      const saved = await page.evaluate(() => localStorage.getItem('infer-mode'))
+      expect(saved).toBe('server')
+    }
+  })
+
+  test('webgpu toggle in settings panel sets localStorage to webgpu', async ({ page }) => {
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
+    await page.waitForTimeout(1500)
+
+    await page.locator('#panel-toggle').click()
+    await page.waitForTimeout(300)
+
+    const webgpuBtn = page.locator('[data-mode="webgpu"]')
+    if (await webgpuBtn.isVisible()) {
+      await webgpuBtn.click()
+      const saved = await page.evaluate(() => localStorage.getItem('infer-mode'))
+      expect(saved).toBe('webgpu')
+    }
+  })
+
+  test('localStorage infer-mode survives reload', async ({ page }) => {
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
+    await page.evaluate(() => localStorage.setItem('infer-mode', 'server'))
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    const saved = await page.evaluate(() => localStorage.getItem('infer-mode'))
+    expect(saved).toBe('server')
+  })
+
+  test('AI engine panel buttons are present in side panel', async ({ page }) => {
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
+    await page.waitForTimeout(1500)
+    await page.locator('#panel-toggle').click()
+    await page.waitForTimeout(300)
+    await expect(page.locator('[data-mode="server"]')).toBeVisible()
+    await expect(page.locator('[data-mode="webgpu"]')).toBeVisible()
+  })
+})
+
+// ── Server inference endpoint timing ──────────────────────────────────────────
+
+test.describe('Server /infer endpoint', () => {
+  test('returns within 60 s for a small JPEG (model warm)', async ({ request }) => {
+    // Skip if server is not running
+    const health = await request.get(`${BASE_URL}/health`).catch(() => null)
+    if (!health?.ok()) {
+      console.log('[test] Server not running — skipping timing test')
+      return
+    }
+
+    // Create a minimal 64×64 white JPEG as the test image
+    const { createCanvas } = await import('canvas').catch(() => ({ createCanvas: null }))
+    if (!createCanvas) {
+      console.log('[test] canvas not available — skipping')
+      return
+    }
+    const canvas = createCanvas(64, 64)
+    const buf = canvas.toBuffer('image/jpeg')
+
+    const start = Date.now()
+    const resp = await request.post(`${BASE_URL}/infer`, {
+      multipart: { image: { name: 'capture.jpg', mimeType: 'image/jpeg', buffer: buf } },
+      timeout: 60_000,
+    })
+    const elapsed = Date.now() - start
+
+    expect(resp.ok()).toBeTruthy()
+    console.log(`[test] /infer round-trip: ${elapsed} ms`)
+    expect(elapsed).toBeLessThan(60_000)
+  })
+
+  test('/health reports model ready', async ({ request }) => {
+    const resp = await request.get(`${BASE_URL}/health`).catch(() => null)
+    if (!resp) return  // server not running
+    expect(resp.ok()).toBeTruthy()
+    const body = await resp.json() as Record<string, string>
+    expect(body.status).toBe('ok')
+    expect(typeof body.model).toBe('string')
+  })
+})

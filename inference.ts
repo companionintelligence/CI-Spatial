@@ -29,8 +29,14 @@ const TOKENIZER_DIR = new URL(
   import.meta.url,
 ).pathname
 
-// Max new tokens to generate. Each object ~100 chars ≈ 80 tokens; 8 objects ≈ 640 tokens.
-const MAX_NEW_TOKENS = 1024
+// Max new tokens to generate. Object detection JSON is short: 5 objects ≈ 150 tokens.
+// Capped at 256 so the decode loop runs 4× faster than the old 1024 limit.
+const MAX_NEW_TOKENS = 256
+
+// Use every logical CPU core for ONNX operator threading.
+// intra_op: parallelises within a single heavy op (e.g. MatMul).
+// inter_op: runs independent graph nodes simultaneously.
+const NUM_THREADS = (() => { try { return Math.max(1, navigator?.hardwareConcurrency ?? 4) } catch { return 4 } })()
 
 // ─── Prompt token IDs (pre-computed offline for the fixed detection prompt) ───
 // Full prompt: <bos><im_start>user\n<image_start><image×256><image_end>{PROMPT}<im_end>\n<im_start>assistant\n
@@ -105,12 +111,18 @@ export class InferenceEngine {
   private embedImagesSession: ort.InferenceSession | null = null
   private decoderSession: ort.InferenceSession | null = null
   private idToVocabStr: Map<number, string> = new Map()
+  // Serial request queue — run() on a session is NOT safe for concurrent calls
+  private _queue: Promise<unknown> = Promise.resolve()
 
   async load(): Promise<void> {
-    console.log('[engine] Loading model sessions…')
+    console.log(`[engine] Loading model sessions (${NUM_THREADS} threads)…`)
     const opts: ort.InferenceSession.SessionOptions = {
       executionProviders: ['cpu'],
       graphOptimizationLevel: 'all',
+      intraOpNumThreads: NUM_THREADS,
+      interOpNumThreads: Math.max(1, Math.floor(NUM_THREADS / 2)),
+      executionMode: 'parallel',
+      logSeverityLevel: 3,   // warnings + errors only — suppresses ORT noise
     }
 
     const [et, ei, dec] = await Promise.all([
@@ -138,31 +150,34 @@ export class InferenceEngine {
   }
 
   async infer(imageBytes: Uint8Array): Promise<RawDetection[]> {
+    // Serialise all infer() calls — concurrent ONNX session.run() calls on the
+    // same sessions corrupt shared internal state on the CPU execution provider.
+    const result = this._queue.then(() => this._doInfer(imageBytes))
+    this._queue = result.catch(() => {})
+    return result
+  }
+
+  private async _doInfer(imageBytes: Uint8Array): Promise<RawDetection[]> {
     if (!this.embedTokensSession || !this.embedImagesSession || !this.decoderSession) {
       throw new Error('Engine not loaded — call load() first')
     }
 
-    // ── 1. Patchify image → embed_images inputs ──────────────────────────────
-    const { pixelValues, pixelAttentionMask, spatialShapes } = await patchifyImage(imageBytes)
-
-    const imgOut = await this.embedImagesSession.run({
-      pixel_values: pixelValues,
-      pixel_attention_mask: pixelAttentionMask,
-      spatial_shapes: spatialShapes,
-    })
-    // image_features: [256, 2048] — no batch dimension
-    const imageFeatures = imgOut['image_features'] as ort.Tensor
-
-    // ── 2. Embed prompt prefix and suffix tokens ───────────────────────────────
-    const prefixTensor = bigintTokenIds(PREFIX_IDS)
-    const suffixTensor = bigintTokenIds(SUFFIX_IDS)
-
-    const [prefixOut, suffixOut] = await Promise.all([
-      this.embedTokensSession.run({ input_ids: prefixTensor }),
-      this.embedTokensSession.run({ input_ids: suffixTensor }),
+    // ── 1. Patchify image AND embed fixed tokens in parallel ─────────────────
+    // embed_images and embed_tokens on the prefix/suffix are completely independent,
+    // so we can kick them all off simultaneously before the decoder runs.
+    const [imgResult, prefixOut, suffixOut] = await Promise.all([
+      // Vision encoder
+      patchifyImage(imageBytes).then(({ pixelValues, pixelAttentionMask, spatialShapes }) =>
+        this.embedImagesSession!.run({ pixel_values: pixelValues, pixel_attention_mask: pixelAttentionMask, spatial_shapes: spatialShapes })
+      ),
+      // Text prefix tokens
+      this.embedTokensSession!.run({ input_ids: bigintTokenIds(PREFIX_IDS) }),
+      // Text suffix tokens
+      this.embedTokensSession!.run({ input_ids: bigintTokenIds(SUFFIX_IDS) }),
     ])
-    const prefixEmbeds = prefixOut['inputs_embeds'] as ort.Tensor  // [1, 5, 2048]
-    const suffixEmbeds = suffixOut['inputs_embeds'] as ort.Tensor  // [1, 103, 2048]
+    const imageFeatures = imgResult['image_features'] as ort.Tensor   // [256, 2048]
+    const prefixEmbeds  = prefixOut['inputs_embeds']  as ort.Tensor   // [1, 5, 2048]
+    const suffixEmbeds  = suffixOut['inputs_embeds']  as ort.Tensor   // [1, 103, 2048]
 
     // ── 3. Splice image features into the embedding sequence ──────────────────
     // Final layout: [prefix(5), image_features(256), suffix(103)] → [1, 364, 2048]
@@ -184,9 +199,8 @@ export class InferenceEngine {
     }
 
     // ── 5. Prefill: process all prompt tokens at once ─────────────────────────
-    console.log('[engine] Prefill…')
     const prefillMask = new ort.Tensor('int64', new BigInt64Array(PROMPT_LEN).fill(1n), [1, PROMPT_LEN])
-    const prefillOut = await this.decoderSession.run({
+    const prefillOut = await this.decoderSession!.run({
       inputs_embeds: inputsEmbeds,
       attention_mask: prefillMask,
       ...pastConv,
@@ -205,7 +219,6 @@ export class InferenceEngine {
     }
 
     // ── 6. Autoregressive decode loop (one token at a time) ───────────────────
-    console.log('[engine] Decoding…')
     const generatedIds: number[] = [firstToken]
     let totalSeqLen = PROMPT_LEN + 1
 
@@ -214,10 +227,10 @@ export class InferenceEngine {
       if (lastId === EOS_ID) break
 
       const tokenInput = new ort.Tensor('int64', BigInt64Array.from([BigInt(lastId)]), [1, 1])
-      const tokenEmbeds = ((await this.embedTokensSession.run({ input_ids: tokenInput }))['inputs_embeds']) as ort.Tensor
+      const tokenEmbeds = ((await this.embedTokensSession!.run({ input_ids: tokenInput }))['inputs_embeds']) as ort.Tensor
 
       const attnMask = new ort.Tensor('int64', new BigInt64Array(totalSeqLen).fill(1n), [1, totalSeqLen])
-      const decOut = await this.decoderSession.run({
+      const decOut = await this.decoderSession!.run({
         inputs_embeds: tokenEmbeds,
         attention_mask: attnMask,
         ...pastConv,

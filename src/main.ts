@@ -27,7 +27,7 @@ import { SidePanel } from './ui/panel'
 import { SessionHistory } from './ui/history'
 import { exportToGLB } from './export/gltf'
 import { exportSessionSummary } from './export/summary'
-import { GeoTracker } from './geo/geo-tracker'
+import { GeoTracker, type GeoFix } from './geo/geo-tracker'
 import { RtcBroadcaster } from './rtc/broadcaster'
 import * as THREE from 'three'
 
@@ -48,16 +48,23 @@ async function main() {
   let captureCount = 0    // total successful captures this session
 
   // Start geo tracker early (GPS needs time to acquire a fix)
+  // Wire geo indicator chip immediately when first fix arrives
+  geoTracker.onUpdate = (fix) => updateGeoIndicator(fix)
   void geoTracker.start().then((fix) => {
+    if (fix) updateGeoIndicator(fix)
     if (fix?.address) overlay.setStatus(`📍 ${fix.address}`)
   })
 
   // ── 2. Inference router ────────────────────────────────────────────────────
   const router = new InferenceRouter()
-  await router.init((stage, pct) => {
-    overlay.setProgress(pct, stage)
-  })
-  overlay.setStatus(`Inference: ${router.path}`)
+  await router.init(
+    (stage, pct) => { overlay.setProgress(pct, stage) },
+    (mode) => {
+      overlay.setStatus(`AI: ${mode === 'server' ? '🖥 Server' : '⚡ WebGPU'}`)
+      panel.updateInferMode(mode)
+    },
+  )
+  overlay.setStatus(`AI: ${router.path === 'server' ? '🖥 Server' : '⚡ WebGPU'}`)
 
   // ── 3. AR runtime detection ────────────────────────────────────────────────
   let provider: ARProvider
@@ -94,6 +101,11 @@ async function main() {
     () => exportToGLB({ store, pointCloud, poseHistory, geoFix: geoTracker.snapshot() ?? undefined }),
     () => exportSessionSummary({ store, pointCloud, poseHistory, captureCount, geoFix: geoTracker.snapshot() ?? undefined }),
     (action) => requestServerProcessing(action, store),
+    (mode) => {
+      router.setMode(mode)
+      overlay.setStatus(`AI: ${mode === 'server' ? '🖥 Server' : '⚡ WebGPU'}`)
+    },
+    router.path,
   )
   const history = new SessionHistory(store)
 
@@ -186,6 +198,11 @@ async function main() {
 
   panel.mount()
   history.mount()
+
+  // Open the geo-map in the drawer whenever the history button is clicked
+  document.getElementById('history-btn')?.addEventListener('click', () => {
+    initDrawerGeoMap(geoTracker.snapshot())
+  })
 
   // ── Auto-capture ───────────────────────────────────────────────────────────
   const autoCapture = new AutoCapture(provider, doCapture)
@@ -459,3 +476,103 @@ main().catch((e: unknown) => {
   const el = document.getElementById('status-text')
   if (el) el.textContent = `Error: ${e instanceof Error ? e.message : String(e)}`
 })
+
+// ─── Geo indicator (top-right chip) ──────────────────────────────────────────
+
+function updateGeoIndicator(fix: GeoFix): void {
+  const chip    = document.getElementById('geo-chip') as HTMLElement | null
+  const address = document.getElementById('geo-address')
+  const coords  = document.getElementById('geo-coords')
+  const needle  = document.getElementById('compass-needle') as SVGGElement | null
+  if (!chip) return
+
+  chip.style.display = 'flex'
+  if (address) address.textContent = fix.address ?? `${fix.lat.toFixed(4)}, ${fix.lng.toFixed(4)}`
+  if (coords)  coords.textContent  = `${fix.lat.toFixed(5)}, ${fix.lng.toFixed(5)} ±${Math.round(fix.accuracy)}m`
+
+  if (needle && fix.bearing !== null) {
+    needle.style.transform = `rotate(${fix.bearing}deg)`
+  }
+}
+
+// ─── Drawer geo-map (Leaflet, lazy init on first open) ─────────────────────────
+
+type LeafletMap = {
+  setView(latlng: [number, number], zoom: number): LeafletMap
+  invalidateSize(): void
+}
+type LeafletMarker = { setLatLng(latlng: [number, number]): void }
+
+let _geoMap: LeafletMap | null = null
+let _geoMapReady = false
+let _currentMarker: LeafletMarker | null = null
+
+/**
+ * Called by SessionHistory when the drawer opens.
+ * Lazy-creates a Leaflet map, shows the current GPS fix, and plots
+ * all server-side scan locations as markers.
+ */
+function initDrawerGeoMap(fix: GeoFix | null): void {
+  const L = (window as unknown as Record<string, unknown>)['L'] as typeof import('leaflet') | undefined
+  if (!L) return // Leaflet script not yet loaded
+
+  const container = document.getElementById('geo-map')
+  const placeholder = document.getElementById('geo-map-placeholder')
+
+  if (!container) return
+
+  if (!_geoMapReady) {
+    // Determine initial view center
+    const center: [number, number] = fix ? [fix.lat, fix.lng] : [51.505, -0.09]
+    const zoom = fix ? 16 : 3
+
+    // Use a dark tile layer from CartoDB
+    const map = L.map(container, { zoomControl: false, attributionControl: true })
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      attribution: '© <a href="https://www.openstreetmap.org/copyright">OSM</a> © <a href="https://carto.com/">CARTO</a>',
+      subdomains: 'abcd',
+      maxZoom: 20,
+    }).addTo(map)
+    map.setView(center, zoom)
+
+    // Current location marker — custom pulsing dot
+    if (fix) {
+      const icon = L.divIcon({
+        className: '',
+        html: '<div style="width:12px;height:12px;background:#4fc3f7;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 4px rgba(79,195,247,0.3)"></div>',
+        iconSize: [12, 12],
+        iconAnchor: [6, 6],
+      })
+      _currentMarker = L.marker([fix.lat, fix.lng], { icon }).addTo(map) as unknown as LeafletMarker
+    }
+
+    _geoMap = map as unknown as LeafletMap
+    _geoMapReady = true
+
+    if (placeholder) placeholder.style.display = 'none'
+
+    // Fetch + plot all stored scan locations
+    void fetch('/scan-locations').then(async (r) => {
+      if (!r.ok) return
+      const locations = await r.json() as Array<{ lat: number; lng: number; filename: string; address: string | null }>
+      for (const loc of locations) {
+        const scanIcon = L.divIcon({
+          className: '',
+          html: '<div style="width:8px;height:8px;background:#ef5350;border-radius:50%;border:1.5px solid #fff;"></div>',
+          iconSize: [8, 8],
+          iconAnchor: [4, 4],
+        })
+        const marker = L.marker([loc.lat, loc.lng], { icon: scanIcon })
+        marker.bindPopup(`<b>${loc.address ?? loc.filename}</b>`, { maxWidth: 200 })
+        marker.addTo(map)
+      }
+    }).catch(() => {/* server may be off */})
+  } else if (_geoMap) {
+    // Already created — just update current position if we have a fresh fix
+    _geoMap.invalidateSize()
+    if (fix && _currentMarker) {
+      _currentMarker.setLatLng([fix.lat, fix.lng])
+    }
+    if (fix) (_geoMap as LeafletMap).setView([fix.lat, fix.lng], 16)
+  }
+}

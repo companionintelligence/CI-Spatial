@@ -9,6 +9,9 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <!-- Leaflet for geo map in session history drawer -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 
     <!--
       8th Wall Engine binary (OSS, no license key required).
@@ -208,7 +211,7 @@
         left: 0;
         top: 0;
         bottom: 0;
-        width: 300px;
+        width: 390px;
         background: rgba(10, 12, 20, 0.96);
         backdrop-filter: blur(16px);
         -webkit-backdrop-filter: blur(16px);
@@ -222,11 +225,50 @@
         transform: translateX(0);
         transition: transform 0.35s cubic-bezier(0.34, 1.1, 0.64, 1);
       }
+
+      /* Mini geo-map inside the drawer */
+      #geo-map-container {
+        flex-shrink: 0;
+        height: 180px;
+        position: relative;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        background: #0d1117;
+      }
+      #geo-map {
+        width: 100%;
+        height: 100%;
+      }
+      #geo-map-label {
+        position: absolute;
+        top: 8px;
+        left: 10px;
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        color: rgba(255,255,255,0.5);
+        pointer-events: none;
+        z-index: 1;
+        background: rgba(0,0,0,0.45);
+        padding: 2px 7px;
+        border-radius: 4px;
+        backdrop-filter: blur(6px);
+      }
+      #geo-map-placeholder {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        color: rgba(255,255,255,0.2);
+        font-size: 12px;
+        flex-direction: column;
+        gap: 6px;
+      }
       #history-header {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 20px 16px 14px;
+        padding: 16px 16px 12px;
         border-bottom: 1px solid rgba(255, 255, 255, 0.08);
         flex-shrink: 0;
       }
@@ -271,6 +313,70 @@
         width: 1px;
         transform-origin: top left;
         pointer-events: none;
+      }
+
+      /* ── Geo / compass top-right indicator ── */
+      #geo-indicator {
+        pointer-events: none;
+        position: absolute;
+        top: 16px;
+        right: 16px;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 5px;
+        z-index: 12;
+      }
+      #geo-chip {
+        display: none; /* shown by JS when fix is available */
+        align-items: center;
+        gap: 6px;
+        background: rgba(0, 0, 0, 0.55);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        border-radius: 10px;
+        padding: 6px 9px;
+        max-width: 200px;
+      }
+      #compass-ring {
+        position: relative;
+        width: 28px;
+        height: 28px;
+        flex-shrink: 0;
+      }
+      #compass-ring svg {
+        width: 100%;
+        height: 100%;
+      }
+      #compass-needle {
+        transition: transform 0.4s ease-out;
+      }
+      #geo-text {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        min-width: 0;
+        overflow: hidden;
+      }
+      #geo-address {
+        font-size: 10px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.85);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 150px;
+      }
+      #geo-coords {
+        font-size: 9px;
+        color: rgba(255, 255, 255, 0.4);
+        font-family: monospace;
+        white-space: nowrap;
+      }
+      #geo-accuracy {
+        font-size: 9px;
+        color: rgba(255, 255, 255, 0.3);
       }
 
       /* ── Unified top-left HUD panel ── */
@@ -557,6 +663,13 @@
         opacity: 0.85;
       }
 
+      /* Leaflet dark-mode overrides */
+      .leaflet-container { background: #0d1117 !important; font-family: inherit; }
+      .leaflet-control-zoom a { background: rgba(20,22,32,0.9) !important; color: #fff !important; border-color: rgba(255,255,255,0.1) !important; }
+      .leaflet-control-attribution { background: rgba(0,0,0,0.5) !important; color: rgba(255,255,255,0.3) !important; font-size: 9px !important; }
+      .leaflet-control-attribution a { color: rgba(255,255,255,0.4) !important; }
+      .leaflet-control-zoom { display: none; } /* hide zoom in small map */
+
       @keyframes rtc-live-pulse {
         0%, 100% { opacity: 1; transform: scale(1); }
         50%       { opacity: 0.35; transform: scale(0.7); }
@@ -573,7 +686,35 @@
 
     <div id="ar-overlay">
 
-      <!-- ── Unified top-left HUD ── -->
+      <!-- ── Geo / compass top-right ── -->
+      <div id="geo-indicator">
+        <div id="geo-chip">
+          <div id="compass-ring">
+            <svg viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <!-- outer ring -->
+              <circle cx="14" cy="14" r="13" stroke="rgba(255,255,255,0.15)" stroke-width="1.5"/>
+              <!-- cardinal ticks -->
+              <line x1="14" y1="1.5" x2="14" y2="4" stroke="rgba(255,255,255,0.3)" stroke-width="1"/>
+              <line x1="14" y1="24" x2="14" y2="26.5" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
+              <line x1="1.5" y1="14" x2="4" y2="14" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
+              <line x1="24" y1="14" x2="26.5" y2="14" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
+              <!-- needle group: rotated by JS -->
+              <g id="compass-needle" style="transform-origin:14px 14px">
+                <!-- north = red -->
+                <polygon points="14,3 15.4,14 14,12 12.6,14" fill="#ef5350"/>
+                <!-- south = white -->
+                <polygon points="14,25 15.4,14 14,16 12.6,14" fill="rgba(255,255,255,0.4)"/>
+              </g>
+              <!-- N label -->
+              <text x="13" y="11" font-size="4" fill="rgba(255,255,255,0.5)" font-family="sans-serif" font-weight="700">N</text>
+            </svg>
+          </div>
+          <div id="geo-text">
+            <span id="geo-address">—</span>
+            <span id="geo-coords"></span>
+          </div>
+        </div>
+      </div>
       <div id="hud-panel">
 
         <!-- 1. Status + progress bar -->
@@ -643,6 +784,15 @@
         <div id="history-header">
           <span id="history-title">Session History</span>
           <button id="history-close" aria-label="Close history">✕</button>
+        </div>
+        <!-- Mini Leaflet geomap -->
+        <div id="geo-map-container">
+          <div id="geo-map-label">📍 Scan locations</div>
+          <div id="geo-map"></div>
+          <div id="geo-map-placeholder">
+            <span style="font-size:24px;opacity:0.3">🗺</span>
+            <span>Acquiring location…</span>
+          </div>
         </div>
         <div id="history-body"></div>
       </div>
