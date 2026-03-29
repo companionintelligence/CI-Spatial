@@ -44,3 +44,11 @@ temp/
 outputs/
 exports/
 renders/
+
+# Model files — large binaries, download separately via download_models.py
+public/models/
+onnx/
+tokenizer.json
+tokenizer_config.json
+*.onnx
+*.onnx_data
