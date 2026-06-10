@@ -165,6 +165,7 @@ async function main() {
         asyncHitTest,
         cameraPose: pose,
         captureCamera,
+        pointCloud,
       })
       console.log(`[main] World detections (${worldDets.length}):`, JSON.stringify(worldDets))
 

@@ -16,14 +16,28 @@ export interface RawDetection {
   description: string
 }
 
-/**
- * Parse the VLM's text output into a typed detection array.
- * Handles: truncated JSON (model hits token limit mid-array), pixel-space bboxes.
- */
+function prepareDetections(arr: unknown[]): unknown[] {
+  return arr.map((item) => {
+    if (typeof item === 'object' && item !== null) {
+      const d = item as Record<string, unknown>
+      if (typeof d['description'] !== 'string') {
+        d['description'] = typeof d['label'] === 'string' ? `A ${d['label']}` : 'unknown'
+      }
+      if (typeof d['confidence'] !== 'number') {
+        const parsed = parseFloat(String(d['confidence']))
+        d['confidence'] = isNaN(parsed) ? 0.8 : parsed
+      }
+    }
+    return item
+  })
+}
+
 export function parseDetections(text: string): RawDetection[] {
   // 1. Try to parse a well-formed JSON array
   const full = tryParseArray(text)
-  if (full !== null && full.length > 0) return normalizeAllBboxes(full.filter(isValidDetection))
+  if (full !== null && full.length > 0) {
+    return normalizeAllBboxes(prepareDetections(full).filter(isValidDetection))
+  }
 
   // 2. Salvage: model output may be truncated before the closing ']'
   //    Find the first '[' and the last complete '}', close the array there.
@@ -32,7 +46,9 @@ export function parseDetections(text: string): RawDetection[] {
   if (open !== -1 && lastBrace > open) {
     const truncated = text.slice(open, lastBrace + 1) + ']'
     const salvaged = tryParseArray(truncated)
-    if (salvaged !== null && salvaged.length > 0) return normalizeAllBboxes(salvaged.filter(isValidDetection))
+    if (salvaged !== null && salvaged.length > 0) {
+      return normalizeAllBboxes(prepareDetections(salvaged).filter(isValidDetection))
+    }
   }
 
   return []

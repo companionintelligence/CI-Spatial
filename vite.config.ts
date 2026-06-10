@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-const HOSTNAME = 'liam-mbp.capybara-ulmer.ts.net'
+const HOSTNAME = 'liambook.capybara-ulmer.ts.net'
 
 // Tailscale's macOS app (sandboxed CLI) writes certs to the container Data dir.
 // If present, use them — these are Let's Encrypt certs trusted by all devices.

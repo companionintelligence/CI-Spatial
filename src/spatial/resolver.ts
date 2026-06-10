@@ -12,8 +12,9 @@
  * the caller must pass an async hitTestFn override in that case.
  */
 import * as THREE from 'three'
-import type { ARProvider, Pose } from '../ar/provider'
+import type { ARProvider, Pose, HitResult } from '../ar/provider'
 import type { RawDetection } from '../inference/prompt'
+import type { PointCloud } from '../scene/pointcloud'
 
 const DEDUP_RADIUS_M = 0.3
 
@@ -31,9 +32,7 @@ export interface WorldDetection {
 }
 
 /** Async hit-test override for WebXR (which needs a frame context) */
-export type AsyncHitTestFn = (x: number, y: number) => Promise<
-  { position: { x: number; y: number; z: number }; rotation: { x: number; y: number; z: number; w: number } } | null
->
+export type AsyncHitTestFn = (x: number, y: number) => Promise<HitResult | null>
 
 export interface ResolveOptions {
   provider: ARProvider
@@ -44,9 +43,11 @@ export interface ResolveOptions {
   /**
    * Three.js PerspectiveCamera built from the capture-time SLAM pose + intrinsics.
    * When provided, the resolver casts a proper frustum ray from the camera through
-   * the bbox NDC and samples multiple points along it for higher-accuracy placement.
+   * the bbox NDC.
    */
   captureCamera?: THREE.PerspectiveCamera
+  /** Accumulated point cloud from room scanning, used for raycasting fallback */
+  pointCloud?: PointCloud
 }
 
 /**
@@ -54,6 +55,64 @@ export interface ResolveOptions {
  * Returns an array of WorldDetection — may be shorter than `detections`
  * if some hit-tests return no result.
  */
+function ensureValidRotation(q: any): { x: number; y: number; z: number; w: number } {
+  if (!q) return { x: 0, y: 0, z: 0, w: 1 }
+  const lenSq = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w
+  if (lenSq < 0.001) return { x: 0, y: 0, z: 0, w: 1 }
+  const len = Math.sqrt(lenSq)
+  return { x: q.x / len, y: q.y / len, z: q.z / len, w: q.w / len }
+}
+
+function raycastPointCloud(
+  ray: THREE.Raycaster,
+  pointCloud: PointCloud,
+  maxDistanceToRay = 0.25, // 25 cm tolerance
+  minDepth = 0.5,
+  maxDepth = 5.0
+): { position: { x: number; y: number; z: number } } | null {
+  const pts = pointCloud.toFloat32Array()
+  const count = pointCloud.count
+  if (count === 0) return null
+
+  let bestPoint: { x: number; y: number; z: number } | null = null
+  let bestDistToRay = Infinity
+
+  const rayOrigin = ray.ray.origin
+  const rayDir = ray.ray.direction
+
+  for (let i = 0; i < count; i++) {
+    const px = pts[i * 3]
+    const py = pts[i * 3 + 1]
+    const pz = pts[i * 3 + 2]
+
+    // Calculate projection of point onto ray
+    // v = p - origin
+    const vx = px - rayOrigin.x
+    const vy = py - rayOrigin.y
+    const vz = pz - rayOrigin.z
+
+    // depth along the ray (dot product)
+    const depth = vx * rayDir.x + vy * rayDir.y + vz * rayDir.z
+    if (depth < minDepth || depth > maxDepth) continue
+
+    // perpendicular distance to ray
+    // perp = v - depth * dir
+    const perpx = vx - depth * rayDir.x
+    const perpy = vy - depth * rayDir.y
+    const perpz = vz - depth * rayDir.z
+    const distToRay = Math.sqrt(perpx * perpx + perpy * perpy + perpz * perpz)
+
+    if (distToRay < maxDistanceToRay) {
+      if (distToRay < bestDistToRay) {
+        bestDistToRay = distToRay
+        bestPoint = { x: px, y: py, z: pz }
+      }
+    }
+  }
+
+  return bestPoint ? { position: bestPoint } : null
+}
+
 export async function resolveDetections(
   detections: RawDetection[],
   timestamp: number,
@@ -62,6 +121,7 @@ export async function resolveDetections(
   const results: WorldDetection[] = []
 
   for (const det of detections) {
+    console.log(`[resolver] Resolving object "${det.label}" with bbox:`, JSON.stringify(det.bbox))
     const [x1, y1, x2, y2] = det.bbox
     const cx = (x1 + x2) / 2
     const cy = (y1 + y2) / 2
@@ -69,75 +129,89 @@ export async function resolveDetections(
     let hitPos: { x: number; y: number; z: number } | null = null
     let hitRot = { x: 0, y: 0, z: 0, w: 1 }
 
-    // --- Frustum raycast strategy ---
-    // When we have the capture-time camera, the bbox center in image space
-    // (0-1) maps to NDC as: ndcX = cx*2-1, ndcY = -(cy*2-1).
-    // We cast a THREE.Raycaster ray from the camera through that NDC point,
-    // then sample along the ray at several depths to find SLAM feature points.
-    // This is more accurate than passing cx/cy directly to hitTest, especially
-    // when the captured image aspect differs from the display.
-    if (opts.captureCamera) {
-      const cam   = opts.captureCamera
-      const ndc   = new THREE.Vector2(cx * 2 - 1, -(cy * 2 - 1))
-      const ray   = new THREE.Raycaster()
-      ray.setFromCamera(ndc, cam)
-
-      // Convert the ray origin + direction back to normalised screen coords in
-      // XR8-space (XR8 hitTest uses display-normalised 0-1, Y down).
-      // We sample a few depths and pick the first that returns a SLAM hit.
-      const depths = [1.0, 1.5, 2.0, 2.5, 3.0]
-      for (const depth of depths) {
-        const worldPt = ray.ray.origin.clone().addScaledVector(ray.ray.direction, depth)
-        // Project back to screen NDC to get the x/y for hitTest
-        const screenNDC = worldPt.clone().project(cam)
-        const hx = (screenNDC.x + 1) / 2
-        const hy = (-screenNDC.y + 1) / 2
-        if (hx < 0 || hx > 1 || hy < 0 || hy > 1) continue
-        const syncHit = opts.provider.hitTest(hx, hy)
-        if (syncHit) {
-          hitPos = syncHit.position
-          hitRot = syncHit.rotation
-          break
+    // 1. Try synchronous provider hit-testing at centroid (0-1 screen coordinates)
+    const syncHit = opts.provider.hitTest(cx, cy)
+    if (syncHit) {
+      let dist = syncHit.distance
+      if (dist === undefined || isNaN(dist)) {
+        if (opts.cameraPose) {
+          const cp = opts.cameraPose.position
+          const hp = syncHit.position
+          dist = Math.sqrt((cp.x - hp.x) ** 2 + (cp.y - hp.y) ** 2 + (cp.z - hp.z) ** 2)
+        } else {
+          dist = 1.0
         }
       }
-
-      // If ray-sampled hitTest yielded nothing, fall back to bbox-center hitTest
-      if (!hitPos) {
-        const syncHit = opts.provider.hitTest(cx, cy)
-        if (syncHit) { hitPos = syncHit.position; hitRot = syncHit.rotation }
+      if (dist >= 0.3) {
+        hitPos = syncHit.position
+        hitRot = ensureValidRotation(syncHit.rotation)
+        console.log(`[resolver] Centroid hitTest accepted at distance ${dist.toFixed(2)}m:`, JSON.stringify(hitPos))
+      } else {
+        console.warn(`[resolver] Centroid hitTest rejected: too close to camera (${dist.toFixed(3)}m)`)
       }
-    } else {
-      // No camera available — simple bbox-centre hit test
-      const syncHit = opts.provider.hitTest(cx, cy)
-      if (syncHit) { hitPos = syncHit.position; hitRot = syncHit.rotation }
     }
 
-    // WebXR async fallback (no sync hitTest support)
+    // 2. Try asynchronous hit-testing fallback (for WebXR frame context)
     if (!hitPos && opts.asyncHitTest) {
       const asyncHit = await opts.asyncHitTest(cx, cy)
-      if (asyncHit) { hitPos = asyncHit.position; hitRot = asyncHit.rotation }
+      if (asyncHit) {
+        let dist = asyncHit.distance
+        if (dist === undefined || isNaN(dist)) {
+          if (opts.cameraPose) {
+            const cp = opts.cameraPose.position
+            const hp = asyncHit.position
+            dist = Math.sqrt((cp.x - hp.x) ** 2 + (cp.y - hp.y) ** 2 + (cp.z - hp.z) ** 2)
+          } else {
+            dist = 1.0
+          }
+        }
+        if (dist >= 0.3) {
+          hitPos = asyncHit.position
+          hitRot = ensureValidRotation(asyncHit.rotation)
+          console.log(`[resolver] Async hitTest accepted at distance ${dist.toFixed(2)}m:`, JSON.stringify(hitPos))
+        } else {
+          console.warn(`[resolver] Async hitTest rejected: too close to camera (${dist.toFixed(3)}m)`)
+        }
+      }
     }
 
+    // 3. Try raycasting against the accumulated point cloud
+    if (!hitPos && opts.captureCamera && opts.pointCloud) {
+      const cam = opts.captureCamera
+      const ndc = new THREE.Vector2(cx * 2 - 1, -(cy * 2 - 1))
+      const ray = new THREE.Raycaster()
+      ray.setFromCamera(ndc, cam)
+
+      const cloudHit = raycastPointCloud(ray, opts.pointCloud)
+      if (cloudHit) {
+        hitPos = cloudHit.position
+        // Fallback to camera orientation
+        hitRot = ensureValidRotation(opts.cameraPose?.rotation)
+        console.log('[resolver] Point cloud raycast hit:', JSON.stringify(hitPos))
+      }
+    }
+
+    // 4. Fallback: place object 2.0 meters in front of the camera using native Three.js rotation APIs
     if (!hitPos) {
-      // SLAM hit test had no feature points yet — estimate position 2 m in front of
-      // the camera using the quaternion to derive the forward direction.
       if (opts.cameraPose) {
         const p = opts.cameraPose.position
         const q = opts.cameraPose.rotation
-        // Rotate the -Z world axis by the camera quaternion to get forward vector.
-        // forward = q * (0,0,-1) * q^-1 (simplified)
-        const fx = 2 * (q.x * q.z + q.w * q.y)
-        const fy = 2 * (q.y * q.z - q.w * q.x)
-        const fz = 1 - 2 * (q.x * q.x + q.y * q.y)
-        const DEPTH = 2.0 // metres
-        hitPos = { x: p.x + fx * DEPTH, y: p.y + fy * DEPTH, z: p.z - fz * DEPTH }
-        hitRot = q
-        console.warn(`[resolver] Hit test miss for "${det.label}" — using estimated pos`, hitPos)
+        const cameraDir = new THREE.Vector3(0, 0, -1).applyQuaternion(new THREE.Quaternion(q.x, q.y, q.z, q.w))
+        const DEPTH = 2.0
+        hitPos = {
+          x: p.x + cameraDir.x * DEPTH,
+          y: p.y + cameraDir.y * DEPTH,
+          z: p.z + cameraDir.z * DEPTH,
+        }
+        hitRot = ensureValidRotation(q)
+        console.warn(`[resolver] Hit test miss for "${det.label}" — using fallback position in front of camera:`, JSON.stringify(hitPos))
       } else {
         console.warn(`[resolver] Hit test miss for "${det.label}" and no camera pose — skipping`)
         continue
       }
     }
+
+    console.log(`[resolver] Resolved "${det.label}" to worldPos:`, JSON.stringify(hitPos), 'worldRot:', JSON.stringify(hitRot))
 
     results.push({
       label: det.label,

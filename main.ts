@@ -23,7 +23,7 @@ import { logger } from 'hono/logger'
 import { InferenceEngine } from './inference.ts'
 
 const PORT = Number(Deno.env.get('PORT') ?? 8000)
-const ALLOWED_ORIGIN_PREFIX = Deno.env.get('ALLOWED_ORIGIN_PREFIX') ?? 'https://liam-mbp.capybara-ulmer.ts.net'
+const ALLOWED_ORIGIN_PREFIX = Deno.env.get('ALLOWED_ORIGIN_PREFIX') ?? 'https://liambook.capybara-ulmer.ts.net'
 
 const SCANS_DIR    = Deno.env.get('SCANS_DIR')    ?? './scans'
 const SUMMARIES_DIR = Deno.env.get('SUMMARIES_DIR') ?? './summaries'
@@ -32,12 +32,14 @@ for (const dir of [SCANS_DIR, SUMMARIES_DIR]) {
   try { await Deno.mkdir(dir, { recursive: true }) } catch { /* already exists */ }
 }
 
+let modelLoaded = false
 const engine = new InferenceEngine()
 const engineLoadPromise = engine.load().then(() => {
   console.log('[server] Model sessions ready')
+  modelLoaded = true
 }).catch((e) => {
   console.error('[server] Model load failed:', e.message)
-  throw e
+  console.error('[server] Running in server-only mode (VLM inference will be unavailable/fallback to WebGPU)')
 })
 
 const app = new Hono()
@@ -62,7 +64,10 @@ app.get('/health', (c) => c.json({ status: 'ok', model: engine.modelId }))
 
 app.post('/infer', async (c) => {
   // Wait for ONNX sessions to finish loading (large models take several seconds on first start)
-  try { await engineLoadPromise } catch { return c.json({ error: 'Model failed to load — check server/logs' }, 503) }
+  await engineLoadPromise
+  if (!modelLoaded) {
+    return c.json({ error: 'Model failed to load on server — running in server-only mode. Install local models or use WebGPU fallback.' }, 503)
+  }
   const form = await c.req.formData()
   const imageFile = form.get('image')
   if (!imageFile || !(imageFile instanceof File)) {
