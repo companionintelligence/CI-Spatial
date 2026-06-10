@@ -52,3 +52,6 @@ tokenizer.json
 tokenizer_config.json
 *.onnx
 *.onnx_data
+test-results/
+scans/
+summaries/

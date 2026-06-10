@@ -1,308 +1,369 @@
-# CI XR Scan — Architecture
+# CI XR Scan — System Architecture & Trace Documentation
 
-## Overview
-
-CI XR Scan is a mobile-first AR application that scans a room using SLAM, sends camera frames to a vision-language model for object detection, resolves detected objects into 3D world positions, and exports the combined result as a GLTF scene. A companion desktop viewer renders the exported scans without requiring AR hardware.
+CI XR Scan is a mobile-first, privacy-respecting Augmented Reality (AR) application designed to capture, reconstruct, and index physical rooms. It leverages SLAM tracking, frame capture, vision-language models (VLMs), spatial coordinate resolution, and persistent client-server storage.
 
 ---
 
-## System Diagram
+## 1. High-Level System Architecture
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                         iOS / Android Browser                        │
-│                                                                      │
-│  ┌──────────┐   frames   ┌───────────┐  detections  ┌────────────┐  │
-│  │ 8th Wall │──────────▶│  Capture  │─────────────▶│ Inference  │  │
-│  │  SLAM    │  poses     │  Module   │              │  Router    │  │
-│  │ (xr.js)  │──────────▶│           │              │            │  │
-│  └──────────┘            └───────────┘              └─────┬──────┘  │
-│       │ featurePoints()                                   │         │
-│       ▼                                        WebGPU │   │ HTTP    │
-│  ┌──────────┐  points   ┌───────────┐          worker│   │POST     │
-│  │  SLAM    │──────────▶│ PointCloud│                 │   │/infer   │
-│  │ Scanner  │  poses    │  (voxel)  │                 │   ▼         │
-│  └──────────┘           └─────┬─────┘       ┌────────────────────┐ │
-│                               │             │  Deno Inference    │ │
-│  ┌────────────────────────────▼──────────┐  │  Server (:8000)    │ │
-│  │         Spatial Resolver              │  │                    │ │
-│  │  bbox(0-1) → NDC → ray → hitTest()   │  │  onnxruntime-node  │ │
-│  │  → world {x,y,z} via SLAM map        │  │  LFM2.5-VL-1.6B    │ │
-│  └────────────────────────────────────────┘  └────────────────────┘ │
-│                               │                                      │
-│                               ▼                                      │
-│  ┌───────────────────────────────────────────────────────────────┐  │
-│  │                     Detection Store                           │  │
-│  │   Map<key, StoredDetection>  ←→  IndexedDB sessions          │  │
-│  └──────────────────────────────────────────────────────────────┘  │
-│         │             │              │                              │
-│         ▼             ▼              ▼                              │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────┐                      │
-│  │ AR Pins  │  │  Panel   │  │  History     │                      │
-│  │(overlay) │  │ (list)   │  │  Drawer      │                      │
-│  └──────────┘  └──────────┘  └──────────────┘                      │
-│                                     │ export .glb                  │
-│                                     ▼                              │
-│  ┌──────────────────────────────────────────────────────────────┐  │
-│  │                    GLTF Exporter                             │  │
-│  │   point cloud + camera path + floor plane + labelled boxes  │  │
-│  │   → local download (.glb)  +  POST /upload-scan             │  │
-│  └──────────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────────┘
+The following block diagram represents the modular structure of the CI XR Scan system, showing the boundary between client-side components running in the mobile browser and server-side components running on the local host.
 
-               POST /upload-scan ▼       GET /scans ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                   Deno Server  (:8000)                              │
-│   /infer  →  InferenceEngine  →  RawDetection[]                    │
-│   /upload-scan  →  scans/<timestamp>.glb                           │
-│   /scans        →  [{ filename, size, uploadedAt }]                │
-│   /scans/:file  →  serve .glb with CORS headers                    │
-└─────────────────────────────────────────────────────────────────────┘
-                                  │ GET /scans
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│               Desktop 3D Viewer  (/viewer.html)                    │
-│   Three.js scene + OrbitControls + GLTFLoader                      │
-│   sidebar: scan list  →  click → load .glb  → render detection     │
-│   labels as HTML overlays (CSS3DRenderer)                          │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph Mobile Client (HTTPS/Browser)
+        ARProvider[AR Provider Abstraction]
+        EW[8th Wall Provider]
+        XR[WebXR Fallback]
+        Scanner[SLAM Point Scanner]
+        Capture[Capture Module]
+        Router[Inference Router]
+        Resolver[Spatial Resolver]
+        Store[Detection Store]
+        Overlay[AR HUD Overlay]
+        Panel[UI Side Panel]
+        History[History Drawer]
+        Exporter[GLTF Exporter]
+
+        ARProvider --> EW
+        ARProvider --> XR
+        EW --> Scanner
+        Scanner --> PointCloud[(PointCloud Voxel Grid)]
+        Capture --> Router
+        Router --> Resolver
+        Resolver --> Store
+        Store --> IndexedDB[(IndexedDB Store)]
+        Store --> Overlay
+        Store --> Panel
+        Store --> History
+        Exporter --> ClientGLB[Download GLB]
+    end
+
+    subgraph Host Server (Deno + Ollama)
+        Vite[Vite Dev Server/Proxy :5175]
+        Deno[Hono HTTP Backend :8000]
+        Ollama[Ollama VL Engine :11434]
+        Storage[(Scans & Summaries folders)]
+        ProjectsDB[(projects.json)]
+
+        Vite --> Deno
+        Deno --> Ollama
+        Deno --> Storage
+        Deno --> ProjectsDB
+    end
+
+    %% Network Connections
+    Capture -- "POST /infer (proxied)" --> Vite
+    Exporter -- "POST /upload-scan (proxied)" --> Vite
+    Panel -- "POST /process-scan (proxied)" --> Vite
+    History -- "POST /upload-summary (proxied)" --> Vite
 ```
 
 ---
 
-## Components
+## 2. Detailed User Flow
 
-### Frontend (Vite + TypeScript)
+The following sequence diagram traces the user flow from initializing the AR scanner to uploading a finished room scan and summary to the server.
 
-#### `src/main.ts` — Bootstrap
-Orchestrates the full boot sequence:
-1. Opens IndexedDB store
-2. Mounts AR overlay, side panel, history drawer
-3. Detects AR runtime (8th Wall → WebXR fallback)
-4. Initialises inference router (pings `/health` to decide GPU vs server)
-5. Starts AR session (must be initiated from a click handler for iOS motion permission)
-6. Wires capture button → infer → resolve → store → UI loop
-7. Starts the room scanner for continuous point-cloud accumulation
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as User (Mobile Phone)
+    participant UI as Client UI & Overlay
+    participant AR as AR Provider (SLAM)
+    participant Inf as Inference Router
+    participant Res as Spatial Resolver
+    participant Store as Detection Store
+    participant Server as Deno Server (via Vite Proxy)
 
-#### `src/ar/` — AR Runtime Abstraction
-
-| File | Purpose |
-|------|---------|
-| `provider.ts` | `ARProvider` interface — 6-DoF pose, frame capture, hit-test |
-| `eighthwall.ts` | 8th Wall SLAM implementation; reads pose via `onUpdate` hook from `processCpuResult.reality` |
-| `webxr.ts` | WebXR fallback; async hit-test uses `XRSession.requestHitTestSource` |
-| `scanner.ts` | Subscribes to `featurePoints()` each frame to build the point cloud |
-
-**Key design decision**: Pose is read in `onUpdate` (not `onProcessCpu`) because `processCpuResult` is only populated by the time `onUpdate` fires. Reading it in `onProcessCpu` itself gives stale/zero values.
-
-#### `src/capture/capture.ts` — Frame Capture
-Grabs the live camera frame from the AR provider and creates a JPEG blob + thumbnail using a canvas. The pixel array comes from `processGpuResult.camerapixelarray` (filled during `onProcessCpu`).
-
-#### `src/inference/` — Inference Router
-
+    User->>UI: Loads Webapp over HTTPS
+    UI->>Inf: Pings /health to initialize router
+    Inf-->>UI: Mode established (Server or local WebGPU)
+    User->>UI: Taps "Start AR" (Camera Permissions)
+    UI->>AR: Start SLAM Session
+    loop Frame Rate (30-60 FPS)
+        AR->>UI: Update pose, camera intrinsics, and world points
+        UI->>UI: Accumulate points in voxel PointCloud
+        UI->>UI: Update AR HUD overlays & pins
+    end
+    User->>UI: Taps "Capture" Button
+    UI->>AR: Lock camera pose & capture frame
+    UI->>UI: Create JPEG blob & thumbnail
+    UI->>Inf: router.infer(blob)
+    alt WebGPU mode
+        Inf->>Inf: Run on-device ONNX in Web Worker
+    else Server mode (Default)
+        Inf->>Server: POST /infer (image/jpeg)
+        Server->>Server: Ollama: qwen3-vl:4b inference
+        Server-->>Inf: RawDetection[] (JSON bboxes & labels)
+    end
+    Inf-->>UI: RawDetection[]
+    UI->>Res: resolveDetections(RawDetections, pose, PointCloud)
+    Res->>Res: Compute NDC coordinate centroids
+    Res->>Res: Raycast PointCloud & ignore hits closer than 0.3m
+    Res-->>UI: WorldDetection[] (Resolved 3D positions)
+    UI->>Store: upsert(WorldDetections)
+    Store->>Store: Dedup labels within 0.3m radius
+    Store->>Store: Persist session to IndexedDB
+    Store-->>UI: Emit change event (Update UI state)
+    UI->>UI: Render 3D Pins & update Side Panel cards
+    User->>UI: Click "Export Scan / Summary"
+    UI->>UI: Construct Three.js GLB buffer
+    par Trigger download
+        UI->>User: Download GLB / Markdown Summary files
+    and Upload to server
+        UI->>Server: POST /upload-scan (GLB + metadata JSON)
+        UI->>Server: POST /upload-summary (Markdown file)
+        Server-->>UI: 200 OK (Filename persisted)
+    end
+    User->>UI: Taps "Object Count" / "Floor Plan"
+    UI->>Server: POST /process-scan (sessionId & action)
+    Server->>Server: Read metadata.json for sessionId
+    Server-->>UI: JSON processing response
+    UI->>User: Display processing result modal
 ```
-InferenceRouter.init()
-  └─ ping GET /health
-      ├─ 200  →  ServerInferenceClient  (POST JPEG to /infer)
-      └─ fail →  WebGPU worker         (@huggingface/transformers)
+
+### Flow Phase Details
+The end-to-end flow is divided into five stages:
+
+| Stage | Process | Execution | Details |
+|---|---|---|---|
+| **1. Init** | AR & AI Setup | Client-Side | Checks WebGPU support and pings `/health`. Requests camera and motion permissions. |
+| **2. Scan** | Continuous SLAM | Client-Side | Processes feature points, filters out degenerate points, projects 3D pins onto the camera frustum. |
+| **3. Capture** | Object Detection | Hybrid | Grabs frame buffer, encodes JPEG, passes to Local Web Worker (WebGPU) or POSTs to `/infer` (Ollama qwen3-vl). |
+| **4. Resolve** | Spatial Mapping | Client-Side | Resolves pixel-space bounding boxes to 3D coords by casting ray from NDC through camera, filtering distance, and deduping. |
+| **5. Save / Export** | Persistence & Sync | Client-Server | Writes to IndexedDB. Generates `.glb` & `.md`. POSTs files to Deno via Vite proxy, saving files to `scans/` and `summaries/`. |
+
+---
+
+## 3. Data Model
+
+The data model connects ephemeral tracking variables, client-side session records, and server-side metadata-rich scans.
+
+```mermaid
+erDiagram
+    Project ||--o{ Floor : contains
+    Floor ||--o{ Room : contains
+    Room ||--o{ ScanSession : maps_to
+    ScanSession ||--o{ StoredDetection : contains
+    ScanSession ||--|| PointCloud : records
+    ScanSession ||--o{ PoseHistory : logs
+
+    Project {
+        string projectId PK
+        string name
+        string address
+        string notes
+        timestamp createdAt
+        timestamp updatedAt
+    }
+
+    Floor {
+        string floorId PK
+        string name
+        int level
+    }
+
+    Room {
+        string roomId PK
+        string name
+    }
+
+    ScanSession {
+        string sessionId PK
+        timestamp startedAt
+        int captureCount
+        float floorY
+    }
+
+    StoredDetection {
+        string objectId PK
+        string label
+        float confidence
+        string description
+        string thumbnailDataUrl
+        timestamp captureTimestamp
+        json worldPos
+        json worldRot
+        json bbox
+        json dimensions
+        boolean reviewedByUser
+        boolean ignored
+    }
+
+    PointCloud {
+        int pointCount
+        float32array positions
+        float32array colors
+    }
+
+    PoseHistory {
+        timestamp timestamp
+        json position
+        json rotation
+    }
 ```
 
-Both paths return `RawDetection[]` with the same shape:
+### Data Fields Specification
+
+#### StoredDetection
 ```typescript
-{ label: string; confidence: number; description: string; bbox: [x1, y1, x2, y2] }
-```
-
-#### `src/spatial/resolver.ts` — 3D Position
-For each detected bounding box:
-1. Compute NDC from bbox centroid: `(cx*2-1, -(cy*2-1))`
-2. If a `captureCamera` is available: cast `THREE.Raycaster` through NDC, sample 5 depth points (1–3m), run `hitTest()` at each projected screen point, take the median
-3. Otherwise: `hitTest()` at bbox centroid directly
-4. Fall back to 1.5m in front of camera if all hit tests miss
-
-#### `src/scene/store.ts` — Detection Store
-- `Map<string, StoredDetection>` in memory, serialised to IndexedDB on every mutation
-- Key format: `label:x.x,y.y,z.z` (label + quantised world position)
-- Methods: `upsert()`, `clear()`, `loadSession()`, `deleteSession()`, `updateDetection()`, `toggleSelect()`
-- `subscribe()` returns an unsubscribe function; listeners fire synchronously post-mutation
-
-#### `src/scene/pointcloud.ts` — Point Cloud
-Voxel grid deduplication (default 5cm cells). Stores `Float32Array` of (x,y,z) triples. Provides `boundingBox()` and `estimateFloorY()` for the GLTF exporter.
-
-#### `src/export/gltf.ts` — GLTF Exporter
-Builds a Three.js scene graph:
-```
-Scene "room-scan"
-  Points "point-cloud"       — height-colourised SLAM feature points
-  Line "camera-path"         — walk trajectory
-  Mesh "floor-plane"         — estimated horizontal quad
-  Group "detections"
-    Mesh "<label>"           — semi-transparent box at world pos
-      └─ wireframe overlay   — same box in wireframe
-```
-All detection metadata is stored in `node.userData` → `extras` in the GLB.
-
-After generating the `ArrayBuffer`:
-1. Triggers a browser download (`<a download>`)
-2. POSTs the buffer as `multipart/form-data` to `/upload-scan` on the server
-
-#### `src/ui/` — User Interface
-
-| Component | Description |
-|-----------|-------------|
-| `overlay.ts` | `AROverlay` — places HTML pins at 3D world positions each frame via frustum projection from the SLAM camera pose |
-| `panel.ts` | `SidePanel` — slides in from the right; object manifest with thumbnails, confidence rings, 3D coordinates; close button + export/clear footer |
-| `history.ts` | `SessionHistory` — slides in from the left; lists IndexedDB sessions newest-first; per-session detection expansion with inline edit (label, description) and select/deselect |
-
-#### `src/viewer/viewer.ts` — 3D Viewer (Desktop)
-Standalone page (`/viewer.html`) that:
-1. `GET /scans` → renders a sidebar list of saved scans
-2. On click: `GET /scans/:filename` → `GLTFLoader` → scene
-3. Traverses detection nodes, creates `CSS2DObject` label overlays
-4. `OrbitControls` for mouse/touch navigation
-5. Works without any AR hardware or camera
-
----
-
-### Backend (Deno + Hono)
-
-#### `main.ts` — HTTP Server
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Liveness check; returns model ID |
-| `/infer` | POST | Multipart `image` → `RawDetection[]` |
-| `/upload-scan` | POST | Multipart `file` (.glb) + `metadata` (JSON) → saves to `scans/` |
-| `/scans` | GET | Returns `[{ filename, size, uploadedAt }]` |
-| `/scans/:file` | GET | Serves `.glb` with `model/gltf-binary` + CORS headers |
-
-CORS is restricted to the configured Tailscale hostname origin and `localhost`.
-
-#### `inference.ts` — ONNX Inference Engine
-Runs LFM2.5-VL-1.6B-ONNX as three ONNX Runtime sessions:
-1. `embed_tokens_fp16` — maps token IDs to embeddings
-2. `embed_images_fp16` — encodes the 512×512 JPEG into 256 vision tokens
-3. `decoder_q4` — autoregressive decoder with Mamba conv + attention KV cache
-
-The model is loaded lazily; `/infer` awaits `engineLoadPromise` so early requests queue rather than 503-ing.
-
-#### `prompt.ts` — Detection Prompt (Server)
-Builds the system prompt instructing LFM2.5-VL to return a JSON array of `{ label, confidence, description, bbox }`. Includes a robust parser with:
-- **Truncation salvage** — if the JSON is cut off at `MAX_NEW_TOKENS`, finds the last complete `}` and closes the array
-- **Pixel-space normalisation** — auto-detects bbox values > 1 (model sometimes returns pixel coordinates) and divides by the input image dimensions
-
----
-
-## Data Flow: Capture → 3D Pin
-
-```
-[User taps capture]
-       │
-       ▼
-CaptureModule.capture()
-  → canvas.toBlob(JPEG)           # current camera frame
-  → provider.getPose()            # SLAM pose at capture time
-
-       │
-       ▼
-InferenceRouter.infer(blob)
-  → POST /infer (JPEG bytes)
-  → Deno: resize → 512×512 → embed_images → decoder → JSON
-  → parse → RawDetection[]
-
-       │
-       ▼
-resolveDetections(rawDets, timestamp, opts)
-  → for each detection:
-      NDC(cx, cy) = (bbox_cx*2-1,  -(bbox_cy*2-1))
-      ray = captureCamera.Raycaster from NDC
-      hitTest() at sampled screen points
-      → WorldDetection { label, worldPos{x,y,z}, worldRot, ... }
-
-       │
-       ▼
-DetectionStore.upsert(worldDets, thumbMap)
-  → merge with existing (dedup within 0.3m per label)
-  → IndexedDB.put(session)
-  → notify listeners
-
-       │
-       ▼
-AROverlay.onRender()              # each frame
-  → project worldPos → screen via current SLAM camera matrix
-  → position HTML pin element
-```
-
----
-
-## State Management
-
-```
-DetectionStore
-  _detections: Map<key, StoredDetection>
-  selectedKeys: Set<key>           ← UI selection state
-  listeners: Set<fn>               ← synchronous reactive subscribers
-
-Subscribers:
-  AROverlay  — re-projects pins every frame (driven by XR8 pipeline)
-  SidePanel  — re-renders card list on every store change
-  SessionHistory — re-renders sessions list when store changes
-```
-
----
-
-## IndexedDB Schema
-
-```
-Database:  ci-xr-scan  (version 1)
-Store:     sessions  (keyPath: sessionId)
-
-Record: {
-  sessionId:  string          // "session-<timestamp>"
-  startedAt:  number          // Unix ms
-  detections: [key, StoredDetection][]  // Map entries serialised as array
+interface StoredDetection {
+  label: string;              // Class name returned by VLM
+  confidence: number;         // Float [0.0, 1.0]
+  description: string;        // Visual features/description from VLM
+  bbox: [number, number, number, number]; // [x1, y1, x2, y2] normalized bounds
+  worldPos: { x: number; y: number; z: number }; // 3D coordinates relative to SLAM origin
+  worldRot: { x: number; y: number; z: number; w: number }; // Quaternion camera rotation
+  captureTimestamp: number;   // Epoch timestamp of frame capture
+  thumbnailDataUrl?: string;  // Base64 thumbnail data url
+  captureIndex?: number;      // Sequence ID of capture
 }
 ```
 
----
+#### IndexedDB Session Store
+The client-side persistence uses IndexedDB (via a custom wrapper) named `ci-xr-scan`.
+- **Store name**: `sessions`
+- **Key path**: `sessionId` (String formatted as `session-<timestamp>`)
+- **Payload**: `{ sessionId: string, startedAt: number, detections: [string, StoredDetection][] }` (Map entries serialized as an array of tuples).
 
-## inference Model
-
-**LFM2.5-VL-1.6B-ONNX** by LiquidAI  
-[https://huggingface.co/LiquidAI/LFM2.5-VL-1.6B-ONNX](https://huggingface.co/LiquidAI/LFM2.5-VL-1.6B-ONNX)
-
-- Architecture: Liquid Foundation Model (Mamba SSM + Attention hybrid)
-- Quantisation: `embed_tokens_fp16`, `embed_images_fp16`, `decoder_q4`
-- Input: 512×512 JPEG padded to square
-- Output: JSON array of detections (prompted via chat template)
-- Typical latency: 2–8s on Apple M-series (ONNX Runtime CPU EP)
-
----
-
-## HTTPS / Networking
-
-All camera access on iOS requires HTTPS. The setup uses:
-
-1. **Tailscale cert** — Let's Encrypt cert issued by the Tailscale CA for the machine's MagicDNS name. Trusted by all devices on the tailnet without manual certificate installation.
-2. **Vite proxy** — `/infer`, `/health`, `/scans`, `/upload-scan` routes are proxied through Vite so the HTTPS frontend never creates mixed-content requests to the HTTP Deno server.
-3. **CORS** — the Deno server's CORS policy accepts the Tailscale hostname (any port) and `localhost` (any port).
+#### GLB Scene Node Hierarchy (`room-scan`)
+When exporting, the Three.js scene graph is converted to a binary GLTF buffer. The nodes include custom metadata written to `node.userData`, which translates to the GLTF `extras` schema:
+- **Scene Root**: `generator`, `pointCount`, `detectionCount`, `boundingBox`, `floorY`, and optional coordinates (`geoLat`, `geoLng`, `geoBearing`, `geoAddress`).
+- **Floor Group**: Named `Floor_<ID>`, carries `{ type: "floor", floorName }`.
+- **Room Group**: Named `Room_<ID>`, carries `{ type: "room", roomName, floorName, scanName }`.
+- **Point Cloud Node**: Named `point-cloud`, contains raw positions and RGB height-color gradients.
+- **Camera Path Node**: Named `camera-path`, contains the full camera trajectory positions.
+- **Floor Plane Node**: Named `floor-plane`, carries `{ objectType: "estimated_floor", tag: "floor", widthM, depthM }`.
+- **Detections Group**: Named `detections`, contains bounding meshes named `<label>_NNN`.
+  - **Detections Mesh**: Contains box dimensions (`dimensions`), `objectId`, `label`, `class` (e.g. `furniture`), `description`, and `sourceScanIds`.
 
 ---
 
-## Testing
+## 4. Client-Server Model
 
-Tests are written with [Playwright](https://playwright.dev).
+Communication is routed through Vite's dev server proxy to prevent Mixed-Content warnings in browser runtimes.
 
-| Project | Device |
-|---------|--------|
-| `webkit-desktop` | macOS Safari simulation |
-| `webkit-iphone15` | iPhone 15 viewport emulation |
-| `iphone-usb` | Real iPhone over USB + `ios-webkit-debug-proxy` |
+```mermaid
+graph LR
+    subgraph Browser Client
+        UI[AR UI/JS App]
+    end
 
-### 8th Wall Simulator
+    subgraph Vite Dev Server
+        Vite[Vite Proxy :5175]
+    end
 
-The 8th Wall OSS engine includes a desktop simulator that replays pre-recorded SLAM sessions without requiring a physical device. Playwright tests tagged `@simulator` use this to drive captures against a fixed scene, making the inference + resolve + store pipeline fully deterministic and automatable.
+    subgraph Deno HTTP Server
+        Deno[Hono App :8000]
+        Storage[(Local Filesystem scans/ summaries/)]
+        DB[(projects.json)]
+    end
 
-To use:
-1. Record a SLAM session by scanning a room on device; copy the session binary to `public/test-fixtures/slam-replay.bin`
-2. Run Chrome/Edge (not WebKit) — the simulator UI appears automatically when XR8 detects non-mobile
-3. Calls to `captureFrame()` will pull frames from the replay rather than the live camera
+    subgraph VLM Engine
+        Ollama[Ollama :11434 qwen3-vl:4b]
+    end
+
+    UI -- HTTPS POST/GET --> Vite
+    Vite -- HTTP Proxy rewrite --> Deno
+    Deno -- Local IPC --> Storage
+    Deno -- File I/O --> DB
+    Deno -- HTTP API --> Ollama
+```
+
+### API Routes & Interface Specification
+
+| Endpoint | Method | Payload | Success Response (200/201) | CORS Origin Rule | Notes |
+|---|---|---|---|---|---|
+| `/health` | GET | None | `{"status":"ok","model":"..."}` | Allow matched origins | Liveness check; returns active server VLM identifier. |
+| `/infer` | POST | Multipart Form `{ image: File }` | `RawDetection[]` | Allow matched origins | Routes to local Ollama inference engine. |
+| `/upload-scan` | POST | Multipart Form `{ file: File(.glb), metadata?: JSON }` | `{"filename":"...","size":N}` | Allow matched origins | Saves `.glb` to `./scans/` and persists `.json` metadata sidecar. |
+| `/scans` | GET | None | `[{ "filename": string, "size": number, "uploadedAt": string }]` | Allow matched origins | Lists uploaded files sorted by date (newest first). |
+| `/scans/:filename`| GET | Filename parameter | Binary Stream (`model/gltf-binary`) | Allow matched origins | Serves GLB with cache header `public, max-age=3600`. |
+| `/upload-summary` | POST | Multipart Form `{ file: File(.md) }` | `{"filename":"..."}` | Allow matched origins | Saves summary document to `./summaries/`. |
+| `/process-scan` | POST | JSON `{ filename, action, sessionId }` | `{"action":"...","result":"..."}` | Allow matched origins | Triggers actions (e.g. `object-count`, `floor-plan`, `mesh-cleanup`). |
+| `/projects` | GET | None | `Project[]` | Allow matched origins | Lists projects from `projects.json`. |
+| `/projects` | POST | JSON `{ name, address, notes }` | `Project` (201 Created) | Allow matched origins | Creates a new project database entry with a default ground floor. |
+| `/projects/:id` | GET | ID parameter | `Project` | Allow matched origins | Fetches project by ID. |
+| `/projects/:id` | PUT | JSON `Project` | `Project` | Allow matched origins | Updates project by ID. |
+| `/projects/:id` | DELETE| ID parameter | `{"ok":true}` | Allow matched origins | Removes project from repository. |
+| `/rtc-signal` | GET | Query params: `room`, `role` | WebSocket Upgrade (101) | Handled by Deno WebSockets | WebRTC signaling relay between `phone` and `viewer`. |
+
+---
+
+## 5. Deployment Model
+
+CI XR Scan is designed to be self-hosted, running either natively on local developer machines or inside Docker containers.
+
+```mermaid
+graph TD
+    subgraph LAN / Tailnet
+        Device[Mobile Device iOS/Android]
+        Host[Mac Host Machine]
+    end
+
+    subgraph Host Services
+        ViteServ[Vite Dev Server :5175]
+        DenoServ[Deno Hono Server :8000]
+        OllamaServ[Ollama Daemon :11434]
+    end
+
+    Device -- "Tailscale HTTPS (Let's Encrypt Cert)" --> ViteServ
+    ViteServ -- "Local Loopback Proxy (HTTP)" --> DenoServ
+    DenoServ -- "Local API (HTTP)" --> OllamaServ
+```
+
+### Deployment Configuration & Environment Variables
+
+The server configuration behaves dynamically based on local environments:
+
+- `PORT`: Sets Hono's HTTP port (Defaults to `8000`).
+- `ALLOWED_ORIGIN_PREFIX`: Base Tailscale origin for CORS filtering (Defaults to `https://liambook.capybara-ulmer.ts.net`).
+- `SCANS_DIR`: Location where uploaded scan files are saved (Defaults to `./scans`).
+- `SUMMARIES_DIR`: Location where uploaded Markdown summaries are saved (Defaults to `./summaries`).
+- `PROJECTS_FILE`: Persistence path for the projects JSON database (Defaults to `./projects.json`).
+- `INFERENCE_MODE`: AI runtime selection. Set to `onnx` to run Node ONNX sessions, or `ollama` (default) to utilize the local Ollama API.
+- `OLLAMA_HOST`: Address of the local Ollama daemon (Defaults to `http://localhost:11434`).
+- `OLLAMA_MODEL`: Target vision model running in Ollama (Defaults to `qwen3-vl:4b`).
+
+---
+
+## 6. Project Roadmap
+
+The project is structured into three phases, moving from localized single-device capture to a multi-device collaborative room mapping ecosystem.
+
+```mermaid
+gantt
+    title CI XR Scan Milestones
+    dateFormat  YYYY-MM-DD
+    section Phase 1 (Shipped)
+    AR Scanning (SLAM)             :done, 2026-05-01, 2026-05-15
+    Ollama VLM / Local ONNX        :done, 2026-05-15, 2026-05-25
+    Spatial Centroid Raycasting    :done, 2026-05-25, 2026-06-05
+    IndexedDB & GLB Exporters      :done, 2026-06-05, 2026-06-08
+    3D Desktop Viewer              :done, 2026-06-08, 2026-06-10
+    section Phase 2 (Near-Term)
+    Vite proxy improvements        :active, 2026-06-10, 2026-06-12
+    CORS robust networks           :active, 2026-06-10, 2026-06-12
+    Docker container setup         :2026-06-12, 2026-06-15
+    Github Actions CI/CD           :2026-06-15, 2026-06-18
+    section Phase 3 (Medium/Long)
+    QR share links (/view/:id)     :2026-06-20, 2026-06-25
+    Vector/Semantic search         :2026-06-25, 2026-07-02
+    Draco Mesh Compression         :2026-07-02, 2026-07-10
+    Live WebRTC Multi-Device Collab :2026-07-10, 2026-07-25
+```
+
+---
+
+## 7. Shortcomings & Mitigations
+
+The following matrix documents the architectural limitations of the current design and details their respective near-term and long-term mitigations.
+
+| Shortcoming | Impact | Near-Term Mitigation | Long-Term Mitigation |
+|---|---|---|---|
+| **CORS Origin Fragility** | Client uploads fail if accessed on local IP subnets or non-standard hostnames. | Replace starts-with matching with regex allowing localhost, local IPs, and `.ts.net` domains (Done). | Implement token-based authentication session handshakes. |
+| **Silent Backend Failures** | Uncaught route crashes return a generic response or drop connection without logging details. | Register Hono's `app.onError` to log full stack traces, and add handler-entry logs (Done). | Integrate central logger service (Winston / Deno log streams). |
+| **Newest Scan Race Condition** | `/process-scan` processes wrong file if uploads fail or occur out of order. | Implement `sessionId` matching in companion JSON files to lookup scans (Done). | Require explicit `scanId` parameter in API request payloads. |
+| **SLAM Coordinate Drift** | Detections lose alignment over long scanning durations (>10 mins). | Advise user via HUD to return to the origin/loop closure points. | Integrate visual-inertial loop closure (ORB-SLAM / WebXR anchor APIs). |
+| **GLB File Size Overhead** | High point-cloud density leads to files exceeding 1 MB quickly. | Filter degenerate depth targets, voxel downsample to 5cm grid (Done). | Integrate Draco mesh encoder compression into the client export pipeline. |
+| **No Authentication** | Anyone on the LAN/Tailnet can access, view, or delete stored scans. | Namespace uploads behind generated session identifiers. | Implement JWT-based auth gate on all state-modifying endpoints. |

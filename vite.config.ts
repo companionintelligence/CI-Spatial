@@ -52,17 +52,78 @@ export default defineConfig({
     // Proxy the Deno inference server through Vite so the HTTPS page never
     // makes a mixed-content HTTP request to :8000 directly.
     proxy: {
-      '/infer': 'http://localhost:8000',
-      '/health': 'http://localhost:8000',
-      '/upload-scan': 'http://localhost:8000',
-      '/upload-summary': 'http://localhost:8000',
-      '/scans': 'http://localhost:8000',
-      '/process-scan': 'http://localhost:8000',
-      '/projects': 'http://localhost:8000',
-      '/scan-locations': 'http://localhost:8000',
+      '/infer': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        secure: false,
+        configure: (proxy) => {
+          proxy.on('error', (err) => console.error('[vite-proxy-error /infer]', err))
+        }
+      },
+      '/health': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        secure: false,
+        configure: (proxy) => {
+          proxy.on('error', (err) => console.error('[vite-proxy-error /health]', err))
+        }
+      },
+      '/upload-scan': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        secure: false,
+        configure: (proxy) => {
+          proxy.on('error', (err) => console.error('[vite-proxy-error /upload-scan]', err))
+        }
+      },
+      '/upload-summary': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        secure: false,
+        configure: (proxy) => {
+          proxy.on('error', (err) => console.error('[vite-proxy-error /upload-summary]', err))
+        }
+      },
+      '/scans': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        secure: false,
+        configure: (proxy) => {
+          proxy.on('error', (err) => console.error('[vite-proxy-error /scans]', err))
+        }
+      },
+      '/process-scan': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        secure: false,
+        configure: (proxy) => {
+          proxy.on('error', (err) => console.error('[vite-proxy-error /process-scan]', err))
+        }
+      },
+      '/projects': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        secure: false,
+        configure: (proxy) => {
+          proxy.on('error', (err) => console.error('[vite-proxy-error /projects]', err))
+        }
+      },
+      '/scan-locations': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        secure: false,
+        configure: (proxy) => {
+          proxy.on('error', (err) => console.error('[vite-proxy-error /scan-locations]', err))
+        }
+      },
       '/rtc-signal': {
         target: 'ws://localhost:8000',
         ws: true,
+        changeOrigin: true,
+        secure: false,
+        configure: (proxy) => {
+          proxy.on('error', (err) => console.error('[vite-proxy-error ws]', err))
+        }
       },
     },
   },

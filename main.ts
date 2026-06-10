@@ -44,19 +44,43 @@ const engineLoadPromise = engine.load().then(() => {
 
 const app = new Hono()
 
+app.onError((err, c) => {
+  console.error('[server-error]', err)
+  return c.json({ error: err.message }, 500)
+})
+
 app.use(logger())
 app.use(
   cors({
-    // Accept any port on the tailscale hostname OR any localhost port.
-    // This handles Vite starting on :5173, :5174, etc.
     origin: (origin) => {
-      if (!origin) return origin  // same-origin / curl tests
-      if (origin.startsWith(ALLOWED_ORIGIN_PREFIX)) return origin
-      if (origin.startsWith('https://localhost:') || origin === 'https://localhost') return origin
+      console.log(`[server] CORS check: origin=${origin}, prefix=${ALLOWED_ORIGIN_PREFIX}`)
+      if (!origin) return ALLOWED_ORIGIN_PREFIX
+      // Allow localhost
+      if (origin.startsWith('http://localhost:') || origin === 'http://localhost' || origin.startsWith('https://localhost:') || origin === 'https://localhost') {
+        return origin
+      }
+      // Allow 127.0.0.1
+      if (origin.includes('127.0.0.1')) {
+        return origin
+      }
+      // Allow any .ts.net (Tailscale) domain
+      if (origin.includes('.ts.net')) {
+        return origin
+      }
+      // Allow any local network IP origin (e.g. 192.168.x.x, 10.x.x.x, 172.16.x.x)
+      if (/^https?:\/\/(192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?$/.test(origin)) {
+        return origin
+      }
+      // Fallback: check prefix
+      if (origin.startsWith(ALLOWED_ORIGIN_PREFIX)) {
+        return origin
+      }
+      console.warn(`[server] CORS rejected origin: ${origin}`)
       return ''
     },
     allowMethods: ['GET', 'POST', 'OPTIONS'],
     allowHeaders: ['Content-Type'],
+    credentials: true,
   }),
 )
 
@@ -89,14 +113,19 @@ app.post('/infer', async (c) => {
 // ── Scan file storage ─────────────────────────────────────────────────────────
 
 app.post('/upload-scan', async (c) => {
+  console.log('[server] /upload-scan route triggered')
   const form = await c.req.formData()
   const file = form.get('file')
   if (!file || !(file instanceof File)) {
+    console.warn('[server] /upload-scan: Missing file field')
     return c.json({ error: 'Missing file field (expected .glb)' }, 400)
   }
 
-  // Sanitise filename: strip path components, allow only safe chars.
-  const rawName = (file.name || '').replace(/[^a-zA-Z0-9._-]/g, '_').replace(/^[._-]+/, '') || 'scan'
+  // Sanitise filename: strip path components, allow only safe chars, remove double dots.
+  const rawName = (file.name || '')
+    .replace(/[^a-zA-Z0-9._-]/g, '_')
+    .replace(/\.\./g, '__')
+    .replace(/^[._-]+/, '') || 'scan'
   const safeName = rawName.endsWith('.glb') ? rawName : `${rawName}.glb`
   const ts = Date.now()
   // Prefix with timestamp to guarantee uniqueness
@@ -113,6 +142,7 @@ app.post('/upload-scan', async (c) => {
     if (metaRaw && typeof metaRaw === 'string') {
       const metaPath = filePath.replace(/\.glb$/, '.json')
       await Deno.writeTextFile(metaPath, metaRaw)
+      console.log(`[scan] Saved metadata for ${filename}`)
     }
 
     return c.json({ filename, size: buffer.byteLength })
@@ -209,12 +239,17 @@ app.get('/scan-locations', async (c) => {
 })
 
 app.post('/upload-summary', async (c) => {
+  console.log('[server] /upload-summary route triggered')
   const form = await c.req.formData()
   const file = form.get('file')
   if (!file || !(file instanceof File)) {
+    console.warn('[server] /upload-summary: Missing file field')
     return c.json({ error: 'Missing file field (expected .md)' }, 400)
   }
-  const rawName = (file.name || 'summary').replace(/[^a-zA-Z0-9._-]/g, '_')
+  const rawName = (file.name || 'summary')
+    .replace(/[^a-zA-Z0-9._-]/g, '_')
+    .replace(/\.\./g, '__')
+    .replace(/^[._-]+/, '')
   const safeName = rawName.endsWith('.md') ? rawName : `${rawName}.md`
   const filename = `${Date.now()}_${safeName}`
   try {
@@ -230,6 +265,25 @@ app.post('/upload-summary', async (c) => {
 
 // ── Scan processing ───────────────────────────────────────────────────────────
 
+async function findFilenameBySessionId(sessionId: string): Promise<string | null> {
+  if (!sessionId) return null
+  try {
+    for await (const entry of Deno.readDir(SCANS_DIR)) {
+      if (!entry.isFile || !entry.name.endsWith('.json')) continue
+      try {
+        const raw = await Deno.readTextFile(`${SCANS_DIR}/${entry.name}`)
+        const meta = JSON.parse(raw) as Record<string, unknown>
+        if (meta['sessionId'] === sessionId) {
+          return entry.name.replace(/\.json$/, '.glb')
+        }
+      } catch { /* ignore parse error for single file */ }
+    }
+  } catch (err) {
+    console.error('[server] Error scanning directory for sessionId:', err)
+  }
+  return null
+}
+
 app.post('/process-scan', async (c) => {
   const body = await c.req.json().catch(() => ({})) as {
     filename?: string
@@ -240,8 +294,39 @@ app.post('/process-scan', async (c) => {
 
   if (!action) return c.json({ error: 'Missing action' }, 400)
 
+  let targetFilename = filename
+  if (!targetFilename && sessionId) {
+    const found = await findFilenameBySessionId(sessionId)
+    if (found) {
+      targetFilename = found
+      console.log(`[process] Found target file by sessionId="${sessionId}": ${targetFilename}`)
+    }
+  }
+
+  if (!targetFilename) {
+    // Fallback: use the newest scan in the directory
+    try {
+      const scans: Array<{ name: string; mtime: number }> = []
+      for await (const entry of Deno.readDir(SCANS_DIR)) {
+        if (!entry.isFile || !entry.name.endsWith('.glb')) continue
+        const stat = await Deno.stat(`${SCANS_DIR}/${entry.name}`)
+        scans.push({ name: entry.name, mtime: (stat.mtime ?? new Date()).getTime() })
+      }
+      scans.sort((a, b) => b.mtime - a.mtime)
+      if (scans.length > 0) {
+        targetFilename = scans[0].name
+        console.log(`[process] No filename or sessionId match found. Using newest scan globally: ${targetFilename}`)
+      }
+    } catch { /* ignore */ }
+  }
+
+  if (!targetFilename) {
+    console.warn(`[process] Rejecting process-scan: No files available for action="${action}"`)
+    return c.json({ error: 'No scans available on server. Please export a scan first.' }, 400)
+  }
+
   // Prevent path traversal
-  const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_')
+  const safeName = targetFilename.replace(/[^a-zA-Z0-9._-]/g, '_')
   const metaPath = `${SCANS_DIR}/${safeName}`.replace(/\.glb$/, '.json')
 
   // Read stored metadata (.json companion file saved alongside .glb)
@@ -426,11 +511,21 @@ app.get('/rtc-signal', (c) => {
   const notifyReady = () => {
     if (room.phone && room.viewer) {
       const msg = JSON.stringify({ type: 'peer-ready' })
-      try { room.phone.ws.send(msg) } catch { /* closed */ }
-      try { room.viewer.ws.send(msg) } catch { /* closed */ }
+      if (room.phone.ws.readyState === 1) { // WebSocket.OPEN
+        try { room.phone.ws.send(msg) } catch { /* closed */ }
+      }
+      if (room.viewer.ws.readyState === 1) { // WebSocket.OPEN
+        try { room.viewer.ws.send(msg) } catch { /* closed */ }
+      }
     }
   }
-  notifyReady()
+
+  socket.addEventListener('open', () => {
+    notifyReady()
+  })
+  if (socket.readyState === 1) {
+    notifyReady()
+  }
 
   socket.addEventListener('message', (ev) => {
     const other = role === 'phone' ? room.viewer : room.phone

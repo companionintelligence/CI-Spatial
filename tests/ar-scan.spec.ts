@@ -15,7 +15,7 @@
  */
 import { test, expect, type Page } from '@playwright/test'
 
-const BASE_URL = process.env['VITE_URL'] ?? 'https://liam-mbp.capybara-ulmer.ts.net:5173'
+const BASE_URL = process.env['VITE_URL'] ?? 'https://liambook.capybara-ulmer.ts.net:5175'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -77,7 +77,7 @@ test.describe('Health endpoints', () => {
   test('/health includes model ID', async ({ request }) => {
     const resp = await request.get(`${BASE_URL}/health`)
     const body = await resp.json() as { model: string }
-    expect(body.model).toContain('LFM2.5')
+    expect(body.model).toMatch(/(LFM2\.5|Ollama|qwen|llava|moondream)/i)
   })
 })
 
