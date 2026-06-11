@@ -16,7 +16,7 @@
  */
 import { defineConfig, devices } from '@playwright/test'
 
-const BASE_URL = process.env['VITE_URL'] ?? 'https://liambook.capybara-ulmer.ts.net:5175'
+const BASE_URL = process.env['VITE_URL'] ?? 'https://liambook.capybara-ulmer.ts.net:5173'
 
 export default defineConfig({
   testDir: './tests',

@@ -23,6 +23,7 @@ import type { PointCloud } from '../scene/pointcloud'
 import type { Pose } from '../ar/provider'
 import type { ScanEntry } from '../project/project-store'
 import type { GeoFix } from '../geo/geo-tracker'
+import type { ScanQualitySummary } from '../world/types'
 
 // Per-category colour palette (used for detection boxes and semantic view)
 const LABEL_COLORS: Record<string, number> = {
@@ -72,6 +73,7 @@ export interface ExportData {
   poseHistory: Pose[]
   scanEntry?: ScanEntry   // project/floor/room assignment (optional)
   geoFix?: GeoFix         // GPS/bearing/address at time of export (optional)
+  qualitySummary?: ScanQualitySummary
 }
 
 export interface ExportOptions {
@@ -88,7 +90,7 @@ export interface ExportResult {
 }
 
 export async function exportToGLB(data: ExportData, options: ExportOptions = {}): Promise<ExportResult> {
-  const { store, pointCloud, poseHistory, scanEntry, geoFix } = data
+  const { store, pointCloud, poseHistory, scanEntry, geoFix, qualitySummary } = data
   const {
     download = true,
     upload = true,
@@ -117,6 +119,7 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
     pointCount:      pointCloud.count,
     detectionCount:  store.detections.size,
     poseCount:       poseHistory.length,
+    qualitySummary:  qualitySummary ?? null,
     boundingBox:     bb,
     floorY,
     // ── Geo metadata ─────────────────────────────────────────────────────────
@@ -315,7 +318,7 @@ async function uploadToServer(
   data: ExportData,
   autoSaved: boolean,
 ): Promise<string | undefined> {
-  const { store, pointCloud, poseHistory, geoFix } = data
+  const { store, pointCloud, poseHistory, geoFix, qualitySummary } = data
   try {
     const metadata = JSON.stringify({
       detectionCount: store.detections.size,
@@ -327,6 +330,14 @@ async function uploadToServer(
       autoSaved,
       pointCount: pointCloud.count,
       poseCount: poseHistory.length,
+      qualityStatus: qualitySummary?.status ?? null,
+      qualityCoverageScore: qualitySummary?.coverageScore ?? null,
+      qualityMissingAreas: qualitySummary?.missingAreas ?? null,
+      qualityLowLightFrames: qualitySummary?.lowLightFrames ?? null,
+      qualityDriftEvents: qualitySummary?.driftEvents ?? null,
+      qualityReflectiveWarnings: qualitySummary?.reflectiveWarnings ?? null,
+      qualityRecommendations: qualitySummary?.recommendations ?? [],
+      qualitySummary: qualitySummary ?? null,
       // Geo fields — written flat so the server can index them for /scan-locations
       geoLat:     geoFix?.lat          ?? null,
       geoLng:     geoFix?.lng          ?? null,

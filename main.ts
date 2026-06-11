@@ -37,8 +37,12 @@ import { composeYUpTransform, geoToEnu, hasGeoPose } from './src/world/geo.ts'
 import { defaultLayerIndex } from './src/world/layers.ts'
 import type {
   EditPatch,
+  FrameObservation,
   GeoPose,
+  MemberRole,
   ScanManifest,
+  ScanManifestStatus,
+  ScanQualitySummary,
   WorldJob,
   WorldJobType,
   WorldMember,
@@ -53,6 +57,7 @@ const SUMMARIES_DIR = Deno.env.get('SUMMARIES_DIR') ?? './summaries'
 const SESSIONS_DIR = Deno.env.get('SESSIONS_DIR') ?? `${SCANS_DIR}/sessions`
 const WORLDS_DIR = Deno.env.get('WORLDS_DIR') ?? './worlds'
 const MAX_KEYFRAMES_PER_SESSION = 2000
+const WORLD_STRICT_AUTH = Deno.env.get('WORLD_STRICT_AUTH') === '1'
 
 function isAllowedOrigin(origin: string): boolean {
   try {
@@ -325,7 +330,6 @@ function derivedArtifactPaths(filename: string): string[] {
     `${SCANS_DIR}/${base}.lod1.glb`,
     `${SCANS_DIR}/${base}.lod2.glb`,
     `${SCANS_DIR}/${base}.manifest.json`,
-    `${SCANS_DIR}/${base}.json`,
   ]
 }
 
@@ -336,14 +340,15 @@ app.delete('/scans/:filename', async (c) => {
   }
   try {
     const deletedGlb = await removeIfExists(`${SCANS_DIR}/${filename}`)
+    const deletedMetadata = await removeIfExists(scanMetaPath(filename))
     let deletedSidecars = 0
     for (const path of derivedArtifactPaths(filename)) {
       if (await removeIfExists(path)) deletedSidecars += 1
     }
-    if (!deletedGlb && deletedSidecars === 0) return c.json({ error: 'Scan not found' }, 404)
+    if (!deletedGlb && !deletedMetadata && deletedSidecars === 0) return c.json({ error: 'Scan not found' }, 404)
     await removeScanFromWorlds(filename)
     broadcast({ type: 'scan-deleted', filename })
-    return c.json({ ok: true, filename, deleted: { glb: deletedGlb, sidecars: deletedSidecars } })
+    return c.json({ ok: true, filename, deleted: { glb: deletedGlb, metadata: deletedMetadata, sidecars: deletedSidecars } })
   } catch (err) {
     console.error('[scan delete error]', err)
     return c.json({ error: String(err) }, 500)
@@ -380,7 +385,8 @@ app.delete('/scans', async (c) => {
 // On finalize the session is linked to the exported .glb.  This is the raw
 // input a dense-reconstruction stage (photogrammetry / splats) consumes.
 
-const SESSION_ID_RE = /^sess-[a-z0-9-]+$/
+const SESSION_ID_RE = /^(sess|session)-[a-z0-9-]+$/
+const KEYFRAME_FILE_RE = /^kf-\d{5}\.jpg$/
 
 function sessionDir(id: string): string | null {
   return SESSION_ID_RE.test(id) ? `${SESSIONS_DIR}/${id}` : null
@@ -438,6 +444,23 @@ app.post('/sessions/:id/keyframes', async (c) => {
   }
 })
 
+app.get('/sessions/:id/keyframes/:file', async (c) => {
+  const dir = sessionDir(c.req.param('id'))
+  const file = c.req.param('file')
+  if (!dir || !KEYFRAME_FILE_RE.test(file)) return c.json({ error: 'Invalid keyframe path' }, 400)
+  try {
+    const data = await Deno.readFile(`${dir}/${file}`)
+    return new Response(data, {
+      headers: {
+        'Content-Type': 'image/jpeg',
+        'Cache-Control': 'private, max-age=3600',
+      },
+    })
+  } catch {
+    return c.json({ error: 'Keyframe not found' }, 404)
+  }
+})
+
 app.post('/sessions/:id/finalize', async (c) => {
   const dir = sessionDir(c.req.param('id'))
   if (!dir) return c.json({ error: 'Invalid session id' }, 400)
@@ -453,6 +476,7 @@ app.post('/sessions/:id/finalize', async (c) => {
     pointCount?: number
     detectionCount?: number
     poseCount?: number
+    qualitySummary?: ScanQualitySummary
   }
 
   let keyframeCount = 0
@@ -470,6 +494,7 @@ app.post('/sessions/:id/finalize', async (c) => {
     pointCount: body.pointCount ?? null,
     detectionCount: body.detectionCount ?? null,
     poseCount: body.poseCount ?? null,
+    qualitySummary: body.qualitySummary ?? null,
   }
   await Deno.writeTextFile(`${dir}/session.json`, JSON.stringify(record, null, 2))
   console.log(`[session] finalized ${record['sessionId']} — ${keyframeCount} keyframes` +
@@ -600,6 +625,10 @@ function asString(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null
 }
 
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+}
+
 function geoPoseFromMeta(meta: Record<string, unknown>): GeoPose {
   return {
     lat: asNumber(meta['geoLat']),
@@ -614,11 +643,109 @@ function geoPoseFromMeta(meta: Record<string, unknown>): GeoPose {
 }
 
 async function readScanMeta(filename: string): Promise<Record<string, unknown>> {
+  let meta: Record<string, unknown> = {}
   try {
-    return JSON.parse(await Deno.readTextFile(scanMetaPath(filename))) as Record<string, unknown>
+    meta = JSON.parse(await Deno.readTextFile(scanMetaPath(filename))) as Record<string, unknown>
   } catch {
-    return {}
+    meta = {}
   }
+  const session = await readSessionRecordForScan(filename, meta)
+  if (!session) return meta
+  return {
+    ...session,
+    ...meta,
+    keyframeCount: asNumber(meta['keyframeCount']) ?? asNumber(session['keyframeCount']) ?? 0,
+    qualitySummary: meta['qualitySummary'] ?? session['qualitySummary'] ?? null,
+  }
+}
+
+async function readSessionRecordForScan(
+  filename: string,
+  meta: Record<string, unknown>,
+): Promise<Record<string, unknown> | null> {
+  const explicit = asString(meta['sessionId'])
+  const candidates: string[] = explicit ? [explicit] : []
+  try {
+    for await (const entry of Deno.readDir(SESSIONS_DIR)) {
+      if (!entry.isDirectory) continue
+      if (explicit && entry.name !== explicit) continue
+      try {
+        const record = JSON.parse(await Deno.readTextFile(`${SESSIONS_DIR}/${entry.name}/session.json`)) as Record<string, unknown>
+        if (entry.name === explicit || record['glbFilename'] === filename) return record
+      } catch { /* incomplete session dir */ }
+    }
+  } catch { /* sessions dir missing */ }
+
+  for (const sessionId of candidates) {
+    try {
+      return JSON.parse(await Deno.readTextFile(`${SESSIONS_DIR}/${sessionId}/session.json`)) as Record<string, unknown>
+    } catch { /* not found */ }
+  }
+  return null
+}
+
+function qualitySummaryFromMeta(meta: Record<string, unknown>): ScanQualitySummary | null {
+  const embedded = meta['qualitySummary']
+  if (embedded && typeof embedded === 'object') {
+    const summary = embedded as Partial<ScanQualitySummary>
+    if (typeof summary.coverageScore === 'number' && typeof summary.status === 'string') {
+      return {
+        coverageScore: summary.coverageScore,
+        coverageText: summary.coverageText ?? coverageLabel(summary.coverageScore),
+        pointCount: summary.pointCount ?? asNumber(meta['pointCount']) ?? 0,
+        detectionCount: summary.detectionCount ?? asNumber(meta['detectionCount']) ?? 0,
+        poseCount: summary.poseCount ?? asNumber(meta['poseCount']) ?? 0,
+        keyframeCount: summary.keyframeCount ?? asNumber(meta['keyframeCount']) ?? 0,
+        lowLightFrames: summary.lowLightFrames ?? asNumber(meta['qualityLowLightFrames']) ?? 0,
+        driftEvents: summary.driftEvents ?? asNumber(meta['qualityDriftEvents']) ?? 0,
+        reflectiveWarnings: summary.reflectiveWarnings ?? asNumber(meta['qualityReflectiveWarnings']) ?? 0,
+        missingAreas: summary.missingAreas ?? asNumber(meta['qualityMissingAreas']) ?? 0,
+        trackingLost: summary.trackingLost ?? false,
+        status: summary.status === 'needs-rescan' || summary.status === 'needs-review' ? summary.status : 'ready',
+        recommendations: Array.isArray(summary.recommendations)
+          ? summary.recommendations.filter((item): item is string => typeof item === 'string')
+          : asStringArray(meta['qualityRecommendations']),
+        capturedAt: summary.capturedAt ?? asString(meta['capturedAt']) ?? new Date().toISOString(),
+      }
+    }
+  }
+
+  const coverage = asNumber(meta['qualityCoverageScore'])
+  if (coverage === null) return null
+  const pointCount = asNumber(meta['pointCount']) ?? 0
+  const recommendations = asStringArray(meta['qualityRecommendations'])
+  const status = asString(meta['qualityStatus'])
+  return {
+    coverageScore: coverage,
+    coverageText: coverageLabel(coverage),
+    pointCount,
+    detectionCount: asNumber(meta['detectionCount']) ?? 0,
+    poseCount: asNumber(meta['poseCount']) ?? 0,
+    keyframeCount: asNumber(meta['keyframeCount']) ?? 0,
+    lowLightFrames: asNumber(meta['qualityLowLightFrames']) ?? 0,
+    driftEvents: asNumber(meta['qualityDriftEvents']) ?? 0,
+    reflectiveWarnings: asNumber(meta['qualityReflectiveWarnings']) ?? 0,
+    missingAreas: asNumber(meta['qualityMissingAreas']) ?? 0,
+    trackingLost: false,
+    status: status === 'needs-rescan' || status === 'needs-review'
+      ? status
+      : pointCount < 75 || coverage < 0.25 ? 'needs-rescan' : recommendations.length > 0 || coverage < 0.8 ? 'needs-review' : 'ready',
+    recommendations,
+    capturedAt: asString(meta['capturedAt']) ?? new Date().toISOString(),
+  }
+}
+
+function coverageLabel(score: number): string {
+  if (score < 0.25) return 'Low - rescan recommended'
+  if (score < 0.55) return 'Partial - scan more surfaces'
+  if (score < 0.80) return 'Good - review gaps'
+  return 'Excellent'
+}
+
+function scanStatusFromQuality(meta: Record<string, unknown>): ScanManifestStatus {
+  const quality = qualitySummaryFromMeta(meta)
+  if (!quality) return 'ready'
+  return quality.status
 }
 
 async function listStoredScans(): Promise<StoredScanInfo[]> {
@@ -640,7 +767,13 @@ async function listStoredScans(): Promise<StoredScanInfo[]> {
 
 function shouldIncludeInWorld(scan: StoredScanInfo): boolean {
   const geo = geoPoseFromMeta(scan.meta)
-  return scan.size > 512 || hasGeoPose(geo)
+  return scan.size > 512
+    || hasGeoPose(geo)
+    || qualitySummaryFromMeta(scan.meta) !== null
+    || asString(scan.meta['sessionId']) !== null
+    || asNumber(scan.meta['pointCount']) !== null
+    || asNumber(scan.meta['poseCount']) !== null
+    || asNumber(scan.meta['detectionCount']) !== null
 }
 
 function inferWorldOrigin(scans: StoredScanInfo[]): GeoPose {
@@ -665,15 +798,18 @@ function scanManifestFromStored(
   scan: StoredScanInfo,
   origin: GeoPose,
   index: number,
+  slug: string,
 ): ScanManifest {
   const geoPose = geoPoseFromMeta(scan.meta)
+  const scanId = scanIdFor(scan.filename, scan.meta)
+  const qualitySummary = qualitySummaryFromMeta(scan.meta)
   const translation = hasGeoPose(origin) && hasGeoPose(geoPose)
     ? geoToEnu(origin, geoPose)
     : { x: (index % 6) * 3, y: 0, z: Math.floor(index / 6) * 3 }
   const localToWorld = composeYUpTransform(translation, geoPose.bearing, 1)
 
   return {
-    scanId: scanIdFor(scan.filename, scan.meta),
+    scanId,
     sessionId: asString(scan.meta['sessionId']),
     filename: scan.filename,
     name: scanNameFor(scan.filename, scan.meta),
@@ -686,8 +822,11 @@ function scanManifestFromStored(
     pointCount: asNumber(scan.meta['pointCount']),
     detectionCount: asNumber(scan.meta['detectionCount']),
     layerIndex: defaultLayerIndex(scan.meta),
-    frameSetUrl: `/worlds/default/frames/${encodeURIComponent(scanIdFor(scan.filename, scan.meta))}`,
-    status: 'ready',
+    frameSetUrl: asString(scan.meta['sessionId'])
+      ? `/worlds/${encodeURIComponent(safeSlug(slug))}/frames/${encodeURIComponent(scanId)}`
+      : undefined,
+    qualitySummary,
+    status: scanStatusFromQuality(scan.meta),
   }
 }
 
@@ -726,7 +865,7 @@ async function synthesizeWorld(slug: string): Promise<WorldProject> {
       units: 'meters',
       axes: { x: 'east', y: 'up', z: 'north' },
     },
-    scans: source.map((scan, i) => scanManifestFromStored(scan, originGeoPose, i)),
+    scans: source.map((scan, i) => scanManifestFromStored(scan, originGeoPose, i, slug)),
     members: createWorldMembers(),
     jobs: [],
     editPatches: [],
@@ -795,16 +934,34 @@ async function loadWorld(slug: string): Promise<WorldProject> {
 
 async function refreshWorldScans(world: WorldProject): Promise<void> {
   const stored = await listStoredScans()
+  const storedByFilename = new Map(stored.map(scan => [scan.filename, scan]))
+  let changed = false
+
+  world.scans = world.scans.map((scan, index) => {
+    const storedScan = storedByFilename.get(scan.filename)
+    if (!storedScan) return scan
+    const next = scanManifestFromStored(storedScan, world.originGeoPose, index, world.shareSlug)
+    changed = changed
+      || scan.status !== next.status
+      || scan.frameSetUrl !== next.frameSetUrl
+      || JSON.stringify(scan.qualitySummary ?? null) !== JSON.stringify(next.qualitySummary ?? null)
+      || JSON.stringify(scan.layerIndex) !== JSON.stringify(next.layerIndex)
+    return { ...scan, ...next, localToWorld: scan.localToWorld, name: scan.name || next.name }
+  })
+
   const existing = new Set(world.scans.map(scan => scan.filename))
   const additions = stored
     .filter(shouldIncludeInWorld)
     .filter(scan => !existing.has(scan.filename))
     .slice(0, 12)
-  if (additions.length === 0) return
+  if (additions.length === 0) {
+    if (changed) await saveWorld(world)
+    return
+  }
 
   const origin = world.originGeoPose
   const nextIndex = world.scans.length
-  world.scans.push(...additions.map((scan, i) => scanManifestFromStored(scan, origin, nextIndex + i)))
+  world.scans.push(...additions.map((scan, i) => scanManifestFromStored(scan, origin, nextIndex + i, world.shareSlug)))
   await saveWorld(world)
 }
 
@@ -847,6 +1004,63 @@ function shareLinks(c: { req: { url: string; header: (name: string) => string | 
   }
 }
 
+const ROLE_RANK: Record<MemberRole, number> = {
+  scanner: 0,
+  viewer: 1,
+  editor: 2,
+  owner: 3,
+}
+
+function requestToken(c: { req: { query: (name: string) => string | undefined; header: (name: string) => string | undefined } }): string | null {
+  const queryToken = c.req.query('token')
+  if (queryToken) return queryToken
+  const auth = c.req.header('authorization') ?? c.req.header('Authorization')
+  if (!auth) return null
+  const match = auth.match(/^Bearer\s+(.+)$/i)
+  return match?.[1] ?? null
+}
+
+function activeMemberForToken(world: WorldProject, token: string | null): WorldMember | null {
+  if (!token) return null
+  const now = Date.now()
+  return world.members.find((member) => {
+    if (member.token !== token || member.revokedAt) return false
+    if (member.expiresAt && Date.parse(member.expiresAt) <= now) return false
+    return true
+  }) ?? null
+}
+
+function denyUnlessWorldRole(
+  c: { json: (body: unknown, status?: number) => Response; req: { query: (name: string) => string | undefined; header: (name: string) => string | undefined } },
+  world: WorldProject,
+  minimumRole: MemberRole,
+  opts: { allowAnonymous?: boolean } = {},
+): Response | null {
+  const token = requestToken(c)
+  const member = activeMemberForToken(world, token)
+  if (token && !member) return c.json({ error: 'Invalid or expired world token' }, 403)
+  if (!member) {
+    if (opts.allowAnonymous || !WORLD_STRICT_AUTH) return null
+    return c.json({ error: `A ${minimumRole} token is required` }, 401)
+  }
+  if (ROLE_RANK[member.role] < ROLE_RANK[minimumRole]) {
+    return c.json({ error: `${minimumRole} capability required`, role: member.role }, 403)
+  }
+  return null
+}
+
+function redactWorldForClient(world: WorldProject, token: string | null): WorldProject {
+  const member = activeMemberForToken(world, token)
+  const canSeeTokens = member?.role === 'owner'
+  return {
+    ...world,
+    members: world.members.map((item) => ({
+      ...item,
+      token: canSeeTokens || item.memberId === member?.memberId ? item.token : '',
+    })),
+  }
+}
+
 function objectKey(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null
 }
@@ -868,6 +1082,7 @@ function createWorldJob(world: WorldProject, type: WorldJobType, scanId?: string
     scanId,
     capabilities: DEFAULT_WORKER_CAPABILITIES,
     payload,
+    progress: 0,
     createdAt: now,
     updatedAt: now,
   }
@@ -900,17 +1115,31 @@ async function completeJobSoon(slug: string, jobId: string): Promise<void> {
       if (!job || job.status !== 'queued') return
       job.status = 'processing'
       job.workerId = 'local-coordinator'
+      job.progress = 0.35
       job.updatedAt = new Date().toISOString()
       await saveWorld(world)
+      broadcast({ type: 'world-job-update', worldId: world.worldId, job })
       setTimeout(async () => {
         try {
           const current = await loadWorld(slug)
           const currentJob = current.jobs.find(j => j.jobId === jobId)
           if (!currentJob || currentJob.status === 'failed') return
-          currentJob.status = 'completed'
-          currentJob.result = jobResultFor(currentJob)
+          const failure = jobFailureReason(currentJob, current)
+          if (failure) {
+            currentJob.status = 'failed'
+            currentJob.error = failure
+            currentJob.result = failure
+            currentJob.progress = 1
+          } else {
+            currentJob.status = 'completed'
+            currentJob.result = jobResultFor(currentJob)
+            currentJob.artifacts = jobArtifactsFor(currentJob, current)
+            currentJob.progress = 1
+            applyCompletedJobToWorld(currentJob, current)
+          }
           currentJob.updatedAt = new Date().toISOString()
           await saveWorld(current)
+          broadcast({ type: 'world-job-update', worldId: current.worldId, job: currentJob })
         } catch (err) {
           console.error('[world-job complete error]', err)
         }
@@ -921,24 +1150,191 @@ async function completeJobSoon(slug: string, jobId: string): Promise<void> {
   }, 25)
 }
 
+function scanForJob(job: WorldJob, world: WorldProject): ScanManifest | null {
+  if (!job.scanId) return null
+  return world.scans.find(scan => scan.scanId === job.scanId || scan.filename === job.scanId) ?? null
+}
+
+function jobFailureReason(job: WorldJob, world: WorldProject): string | null {
+  const scan = scanForJob(job, world)
+  if (['align-scan', 'extract-layers', 'semantic-pass', 'depth-reconstruct', 'splat-train'].includes(job.type) && !scan) {
+    return `${job.type} requires a selected scan.`
+  }
+  if ((job.type === 'depth-reconstruct' || job.type === 'splat-train') && scan && !scan.sessionId) {
+    return `${job.type} requires RGB keyframe observations. Start keyframe streaming before export.`
+  }
+  if (job.type === 'align-scan' && world.scans.length < 2) {
+    return 'align-scan needs at least two scans in the world or a manual control-point target.'
+  }
+  return null
+}
+
+function applyCompletedJobToWorld(job: WorldJob, world: WorldProject): void {
+  const scan = scanForJob(job, world)
+  if (!scan) return
+  if (job.type === 'align-scan') scan.status = 'aligned'
+  else if (job.type === 'semantic-pass' || job.type === 'extract-layers' || job.type === 'merge-points') {
+    scan.status = scan.qualitySummary?.status ?? 'ready'
+  }
+}
+
 function jobResultFor(job: WorldJob): string {
   switch (job.type) {
     case 'ingest':
-      return 'Scan ingest indexed GLB metadata and sidecar manifest.'
+      return 'Scan ingest indexed GLB metadata, quality summary, layers, and sidecar references.'
     case 'extract-layers':
-      return 'Layer index extracted from GLB extras and scene graph conventions.'
+      return 'Layer index is available from GLB extras, scene graph conventions, and sidecar manifests.'
     case 'align-scan':
-      return 'Hybrid alignment queued: GPS/compass seed, manual transform patch, CV refinement placeholder.'
+      return 'Alignment recorded from current world transform. A GPU/Open3D worker can refine this with registration artifacts.'
     case 'merge-points':
-      return 'Point merge placeholder completed; Open3D worker can replace this local result.'
+      return 'Point merge plan recorded. A worker should replace this with a merged cloud artifact.'
     case 'semantic-pass':
-      return 'Semantic model pass placeholder completed; Grounding DINO/SAM 2 worker can replace this result.'
+      return 'Semantic pass queued through the local coordinator. Server masks/detections can attach to this job artifact.'
     case 'depth-reconstruct':
-      return 'Depth reconstruction placeholder completed; Depth Anything/WebXR depth artifacts attach here.'
+      return 'Depth reconstruction inputs validated. Depth Anything or WebXR depth artifacts can attach here.'
     case 'splat-train':
-      return 'Splat training placeholder completed; gsplat/Graphdeco artifacts attach as splat layers.'
+      return 'Splat training inputs validated. gsplat/Graphdeco outputs should attach as splat layers.'
     case 'export-world':
-      return 'World export placeholder completed; combined GLB/semantic JSON export can be generated here.'
+      return 'World export manifest is ready for a combined GLB and semantic JSON worker.'
+  }
+}
+
+function jobArtifactsFor(job: WorldJob, world: WorldProject): WorldJob['artifacts'] {
+  const scan = scanForJob(job, world)
+  switch (job.type) {
+    case 'extract-layers':
+      return scan ? [{
+        type: 'layer-manifest',
+        label: `${scan.name} layer index`,
+        url: `/worlds/${encodeURIComponent(world.shareSlug)}`,
+        metadata: { scanId: scan.scanId, layers: scan.layerIndex.length },
+      }] : []
+    case 'align-scan':
+      return scan ? [{
+        type: 'alignment-report',
+        label: `${scan.name} alignment report`,
+        metadata: {
+          seed: hasGeoPose(scan.geoPose) ? 'gps-compass' : 'manual-local-grid',
+          method: 'local-placeholder-open3d-ready',
+          matrix: scan.localToWorld,
+        },
+      }] : []
+    case 'semantic-pass':
+      return scan ? [{
+        type: 'semantic-report',
+        label: `${scan.name} semantic review`,
+        metadata: { detections: scan.detectionCount ?? 0, ontology: 'companion-scan-v1' },
+      }] : []
+    case 'depth-reconstruct':
+      return scan ? [{
+        type: 'depth-plan',
+        label: `${scan.name} depth reconstruction inputs`,
+        url: scan.frameSetUrl,
+        metadata: { sessionId: scan.sessionId, keyframes: scan.qualitySummary?.keyframeCount ?? null },
+      }] : []
+    case 'splat-train':
+      return scan ? [{
+        type: 'splat-plan',
+        label: `${scan.name} splat training inputs`,
+        url: scan.frameSetUrl,
+        metadata: { sessionId: scan.sessionId, canonicalLayer: 'splat' },
+      }] : []
+    case 'export-world':
+      return [{
+        type: 'world-export-plan',
+        label: `${world.name} export manifest`,
+        url: `/worlds/${encodeURIComponent(world.shareSlug)}`,
+        metadata: { scans: world.scans.length, patches: world.editPatches.length },
+      }]
+    case 'ingest':
+    case 'merge-points':
+      return scan ? [{
+        type: `${job.type}-report`,
+        label: `${scan.name} ${job.type} report`,
+        metadata: { points: scan.pointCount ?? 0 },
+      }] : []
+  }
+}
+
+async function frameObservationsForScan(scan: ScanManifest, limit = 500): Promise<FrameObservation[]> {
+  if (!scan.sessionId) return []
+  const dir = sessionDir(scan.sessionId)
+  if (!dir) return []
+
+  let raw = ''
+  try {
+    raw = await Deno.readTextFile(`${dir}/keyframes.jsonl`)
+  } catch {
+    return []
+  }
+
+  const frames: FrameObservation[] = []
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue
+    try {
+      const meta = JSON.parse(line) as Record<string, unknown>
+      const file = asString(meta['file'])
+      if (!file || !KEYFRAME_FILE_RE.test(file)) continue
+      const index = asNumber(meta['index']) ?? frames.length
+      const pose = normalisePose(meta['pose'])
+      const intrinsics = normaliseIntrinsics(meta['intrinsics'])
+      frames.push({
+        frameId: `${scan.sessionId}-${String(index).padStart(5, '0')}`,
+        scanId: scan.scanId,
+        rgbUrl: `/sessions/${encodeURIComponent(scan.sessionId)}/keyframes/${encodeURIComponent(file)}`,
+        timestamp: asNumber(meta['timestamp']) ?? asNumber(meta['capturedAt']) ?? asNumber(meta['receivedAt']) ?? 0,
+        pose,
+        intrinsics,
+        frustum: {
+          nearM: 0.05,
+          farM: 8,
+          fovYDeg: intrinsics.fovYDeg ?? 60,
+          aspect: intrinsics.width > 0 && intrinsics.height > 0 ? intrinsics.width / intrinsics.height : 1,
+        },
+      })
+      if (frames.length >= limit) break
+    } catch {
+      // Ignore one malformed keyframe line; the rest of the session is still useful.
+    }
+  }
+  return frames
+}
+
+function normalisePose(value: unknown): FrameObservation['pose'] {
+  const pose = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+  const position = pose['position'] && typeof pose['position'] === 'object'
+    ? pose['position'] as Record<string, unknown>
+    : {}
+  const rotation = pose['rotation'] && typeof pose['rotation'] === 'object'
+    ? pose['rotation'] as Record<string, unknown>
+    : {}
+  return {
+    position: {
+      x: asNumber(position['x']) ?? 0,
+      y: asNumber(position['y']) ?? 0,
+      z: asNumber(position['z']) ?? 0,
+    },
+    rotation: {
+      x: asNumber(rotation['x']) ?? 0,
+      y: asNumber(rotation['y']) ?? 0,
+      z: asNumber(rotation['z']) ?? 0,
+      w: asNumber(rotation['w']) ?? 1,
+    },
+  }
+}
+
+function normaliseIntrinsics(value: unknown): FrameObservation['intrinsics'] {
+  const intrinsics = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+  const width = Math.max(1, asNumber(intrinsics['width']) ?? asNumber(intrinsics['sourceWidth']) ?? 1)
+  const height = Math.max(1, asNumber(intrinsics['height']) ?? asNumber(intrinsics['sourceHeight']) ?? 1)
+  return {
+    width,
+    height,
+    fovYDeg: asNumber(intrinsics['fovYDeg']) ?? undefined,
+    fx: asNumber(intrinsics['fx']) ?? undefined,
+    fy: asNumber(intrinsics['fy']) ?? undefined,
+    cx: asNumber(intrinsics['cx']) ?? undefined,
+    cy: asNumber(intrinsics['cy']) ?? undefined,
   }
 }
 
@@ -982,21 +1378,30 @@ app.post('/worlds', async (c) => {
 
 app.get('/worlds/:slug', async (c) => {
   const slug = c.req.param('slug')
-  return c.json(await loadWorld(slug))
+  const world = await loadWorld(slug)
+  const denied = denyUnlessWorldRole(c, world, 'viewer', { allowAnonymous: true })
+  if (denied) return denied
+  return c.json(redactWorldForClient(world, requestToken(c)))
 })
 
 app.get('/worlds/:slug/share', async (c) => {
   const world = await loadWorld(c.req.param('slug'))
+  const denied = denyUnlessWorldRole(c, world, 'editor')
+  if (denied) return denied
   return c.json({ worldId: world.worldId, shareSlug: world.shareSlug, links: shareLinks(c, world) })
 })
 
 app.get('/worlds/:slug/patches', async (c) => {
   const world = await loadWorld(c.req.param('slug'))
+  const denied = denyUnlessWorldRole(c, world, 'viewer', { allowAnonymous: true })
+  if (denied) return denied
   return c.json(world.editPatches)
 })
 
 app.post('/worlds/:slug/patches', async (c) => {
   const world = await loadWorld(c.req.param('slug'))
+  const denied = denyUnlessWorldRole(c, world, 'editor')
+  if (denied) return denied
   const body = await c.req.json().catch(() => ({})) as Partial<EditPatch>
   const targetId = objectKey(body.targetId)
   if (!targetId) return c.json({ error: 'targetId is required' }, 400)
@@ -1026,12 +1431,16 @@ app.post('/worlds/:slug/patches', async (c) => {
 
 app.get('/worlds/:slug/jobs', async (c) => {
   const world = await loadWorld(c.req.param('slug'))
+  const denied = denyUnlessWorldRole(c, world, 'viewer', { allowAnonymous: true })
+  if (denied) return denied
   return c.json(world.jobs.sort((a, b) => b.createdAt.localeCompare(a.createdAt)))
 })
 
 app.post('/worlds/:slug/jobs', async (c) => {
   const slug = c.req.param('slug')
   const world = await loadWorld(slug)
+  const denied = denyUnlessWorldRole(c, world, 'editor')
+  if (denied) return denied
   const body = await c.req.json().catch(() => ({})) as {
     type?: WorldJobType
     scanId?: string
@@ -1050,9 +1459,18 @@ app.post('/worlds/:slug/jobs', async (c) => {
 
 app.get('/worlds/:slug/frames/:scanId', async (c) => {
   const world = await loadWorld(c.req.param('slug'))
+  const denied = denyUnlessWorldRole(c, world, 'viewer', { allowAnonymous: true })
+  if (denied) return denied
   const scan = world.scans.find(s => s.scanId === c.req.param('scanId'))
   if (!scan) return c.json({ error: 'Scan not found' }, 404)
-  return c.json({ scanId: scan.scanId, frames: [] })
+  const limit = Math.min(2000, Math.max(1, Number(c.req.query('limit') ?? 500)))
+  const frames = await frameObservationsForScan(scan, limit)
+  return c.json({
+    scanId: scan.scanId,
+    sessionId: scan.sessionId,
+    count: frames.length,
+    frames,
+  })
 })
 
 app.post('/upload-summary', async (c) => {

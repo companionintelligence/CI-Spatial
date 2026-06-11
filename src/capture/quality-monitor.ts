@@ -17,6 +17,7 @@
 
 import type { ARProvider } from '../ar/provider'
 import type { PointCloud } from '../scene/pointcloud'
+import type { ScanQualitySummary } from '../world/types'
 
 export type DriftRisk = 'low' | 'medium' | 'high'
 
@@ -68,6 +69,7 @@ export class ScanQualityMonitor {
   private _coverageScore = 0
   private _lastLowLight = false
   private _lastReflective = false
+  private _lastSnapshot: QualitySnapshot | null = null
 
   // Cumulative quality counters (for session summary)
   private _counts: QualityCounts = {
@@ -134,7 +136,7 @@ export class ScanQualityMonitor {
       }
     }
 
-    return {
+    const snapshot = {
       coverageScore:    this._coverageScore,
       coverageText:     coverageLabel(this._coverageScore),
       lowLight:         this._lastLowLight,
@@ -143,6 +145,58 @@ export class ScanQualityMonitor {
       missingAreas,
       pointsPerSecond:  this._ptsPerSec,
       trackingLost:     !provider.isTracking(),
+    }
+    this._lastSnapshot = snapshot
+    return snapshot
+  }
+
+  /**
+   * Serialisable quality gate saved alongside GLB uploads. The thresholds are
+   * deliberately conservative: they should guide review/rescan decisions, not
+   * reject a user's work with false precision.
+   */
+  summary(input: {
+    pointCount: number
+    detectionCount: number
+    poseCount: number
+    keyframeCount?: number
+  }): ScanQualitySummary {
+    const snap = this._lastSnapshot
+    const coverageScore = snap?.coverageScore ?? this._coverageScore
+    const missingAreas = snap?.missingAreas ?? 0
+    const trackingLost = snap?.trackingLost ?? false
+    const recommendations: string[] = []
+
+    if (input.pointCount < 150) recommendations.push('Collect more tracking points before export.')
+    if (coverageScore < 0.55) recommendations.push('Sweep the room more slowly to improve surface coverage.')
+    if (missingAreas >= 4) recommendations.push('Rescan sparse floor-grid areas from another angle.')
+    if (this._counts.lowLightFrames > 0) recommendations.push('Add light or revisit dark surfaces.')
+    if (this._counts.driftEvents > 0) recommendations.push('Move slower to reduce SLAM drift.')
+    if (this._counts.reflectiveWarnings > 0) recommendations.push('Review reflective surfaces for false geometry.')
+    if (input.keyframeCount === 0) recommendations.push('Stream RGB keyframes for reconstruction and splat processing.')
+
+    let status: ScanQualitySummary['status'] = 'ready'
+    if (input.pointCount < 75 || coverageScore < 0.25 || trackingLost) {
+      status = 'needs-rescan'
+    } else if (recommendations.length > 0 || coverageScore < 0.8) {
+      status = 'needs-review'
+    }
+
+    return {
+      coverageScore,
+      coverageText: coverageLabel(coverageScore),
+      pointCount: input.pointCount,
+      detectionCount: input.detectionCount,
+      poseCount: input.poseCount,
+      keyframeCount: input.keyframeCount ?? 0,
+      lowLightFrames: this._counts.lowLightFrames,
+      driftEvents: this._counts.driftEvents,
+      reflectiveWarnings: this._counts.reflectiveWarnings,
+      missingAreas,
+      trackingLost,
+      status,
+      recommendations,
+      capturedAt: new Date().toISOString(),
     }
   }
 

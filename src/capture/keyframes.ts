@@ -49,6 +49,14 @@ interface QueuedKeyframe {
   meta: Record<string, unknown>
 }
 
+interface FinalizeSessionPayload {
+  glbFilename?: string
+  pointCount?: number
+  detectionCount?: number
+  poseCount?: number
+  qualitySummary?: unknown
+}
+
 const DEFAULTS: Required<KeyframeStreamerOptions> = {
   minIntervalMs: 1200,
   minDistanceM: 0.3,
@@ -118,12 +126,7 @@ export class KeyframeStreamer {
    * Stop keyframing.  Drains pending uploads (best effort, bounded) and
    * finalizes the session, linking it to the exported scan when known.
    */
-  async stop(finalize?: {
-    glbFilename?: string
-    pointCount?: number
-    detectionCount?: number
-    poseCount?: number
-  }): Promise<void> {
+  async stop(finalize?: FinalizeSessionPayload): Promise<void> {
     if (!this._active && !this._sessionId) return
     this._active = false
     if (this._pollHandle !== null) {
@@ -155,7 +158,7 @@ export class KeyframeStreamer {
   }
 
   /** Finalize the current session against an uploaded scan, keep streaming into a fresh one. */
-  async rotate(finalize: Parameters<KeyframeStreamer['stop']>[0]): Promise<void> {
+  async rotate(finalize: FinalizeSessionPayload): Promise<void> {
     if (!this._active) return
     await this.stop(finalize)
     await this.start().catch((e) => console.warn('[keyframes] restart failed:', e))

@@ -57,6 +57,7 @@ async function main() {
   let autoSaveInFlight = false
   let autoSaveQueued = false
   let captureInFlight = false
+  let latestKeyframeCount = 0
 
   // Start geo tracker early (GPS needs time to acquire a fix)
   // Wire geo indicator chip immediately when first fix arrives
@@ -83,6 +84,7 @@ async function main() {
           pointCount: pointCloud.count,
           detectionCount: store.detections.size,
           poseCount: poseHistory.length,
+          qualitySummary: currentQualitySummary(),
         })
       }
     },
@@ -274,7 +276,7 @@ async function main() {
     overlay.setStatus('Exporting scan...')
     try {
       const result = await exportToGLB(
-        { store, pointCloud, poseHistory, geoFix: geoTracker.snapshot() ?? undefined },
+        { store, pointCloud, poseHistory, geoFix: geoTracker.snapshot() ?? undefined, qualitySummary: currentQualitySummary() },
         { download: true, upload: true, filenamePrefix: 'room-scan', autoSaved: false },
       )
       overlay.setStatus('Exported scan')
@@ -311,7 +313,7 @@ async function main() {
         return
       }
       const result = await exportToGLB(
-        { store, pointCloud, poseHistory, geoFix: geoTracker.snapshot() ?? undefined },
+        { store, pointCloud, poseHistory, geoFix: geoTracker.snapshot() ?? undefined, qualitySummary: currentQualitySummary() },
         { download: false, upload: true, filenamePrefix: 'autosave-room-scan', autoSaved: true },
       )
       const time = new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
@@ -356,6 +358,7 @@ async function main() {
   // ── Keyframe streaming — pose-tagged frames to the server during the scan ──
   const kfStreamer = keyframes
   kfStreamer.onStatus = (s) => {
+    latestKeyframeCount = s.sent
     const btn = document.getElementById('stream-btn') as HTMLButtonElement | null
     if (!btn) return
     btn.classList.toggle('active', s.active)
@@ -372,6 +375,7 @@ async function main() {
         pointCount: pointCloud.count,
         detectionCount: store.detections.size,
         poseCount: poseHistory.length,
+        qualitySummary: currentQualitySummary(),
       })
       overlay.setStatus('Keyframe streaming OFF')
     } else {
@@ -491,6 +495,15 @@ async function main() {
     else if (snap.driftRisk === 'high') overlay.setStatus('⚠ Moving too fast — slow down')
   })
   console.log('[main] Room scanner started')
+
+  function currentQualitySummary() {
+    return qualityMonitor.summary({
+      pointCount: pointCloud.count,
+      detectionCount: store.detections.size,
+      poseCount: poseHistory.length,
+      keyframeCount: latestKeyframeCount,
+    })
+  }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

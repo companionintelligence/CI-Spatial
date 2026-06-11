@@ -15,7 +15,7 @@
  */
 import { test, expect, type Page } from '@playwright/test'
 
-const BASE_URL = process.env['VITE_URL'] ?? 'https://liambook.capybara-ulmer.ts.net:5175'
+const BASE_URL = process.env['VITE_URL'] ?? 'https://liambook.capybara-ulmer.ts.net:5173'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

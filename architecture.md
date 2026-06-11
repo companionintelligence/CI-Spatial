@@ -39,7 +39,7 @@ graph TB
     end
 
     subgraph Host Server (Deno + Ollama)
-        Vite[Vite Dev Server/Proxy :5175]
+        Vite[Vite Dev Server/Proxy :5173]
         Deno[Hono HTTP Backend :8000]
         Ollama[Ollama VL Engine :11434]
         Storage[(Scans & Summaries folders)]
@@ -250,7 +250,7 @@ graph LR
     end
 
     subgraph Vite Dev Server
-        Vite[Vite Proxy :5175]
+        Vite[Vite Proxy :5173]
     end
 
     subgraph Deno HTTP Server
@@ -367,7 +367,7 @@ graph TD
     end
 
     subgraph Host Services
-        ViteServ[Vite Dev Server :5175]
+        ViteServ[Vite Dev Server :5173]
         DenoServ[Deno Hono Server :8000]
         OllamaServ[Ollama Daemon :11434]
     end

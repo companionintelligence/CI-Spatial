@@ -20,6 +20,7 @@ import { LAYER_LABELS, LAYER_ORDER } from '../world/layers'
 import { registerPWA } from '../pwa'
 import type {
   EditPatch,
+  FrameObservation,
   LayerType,
   ScanManifest,
   WorldJob,
@@ -71,6 +72,19 @@ interface OptimizationManifest {
 
 const query = new URLSearchParams(location.search)
 const initialWorldSlug = query.get('world') || 'default'
+const accessToken = query.get('token') || ''
+
+function withAccessToken(url: string): string {
+  if (!accessToken) return url
+  const parsed = new URL(url, location.origin)
+  parsed.searchParams.set('token', accessToken)
+  return parsed.pathname + parsed.search + parsed.hash
+}
+
+function accessHeaders(extra: HeadersInit = {}): HeadersInit {
+  return accessToken ? { ...extra, Authorization: `Bearer ${accessToken}` } : extra
+}
+
 const loader = new GLTFLoader()
 // Optimized scans may carry KHR_draco_mesh_compression; decoder files are
 // copied to public/draco/ by scripts/copy-draco.mjs (npm postinstall).
@@ -443,10 +457,14 @@ function buildScanItem(scan: ScanManifest): HTMLElement {
     ? captured.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
     : 'Unknown date'
   const accuracy = scan.accuracyM != null ? `accuracy ${scan.accuracyM.toFixed(1)}m` : 'manual align'
+  const quality = scan.qualitySummary
+  const qualityLabel = quality
+    ? `${quality.status.replace('-', ' ')} · ${Math.round(quality.coverageScore * 100)}% coverage`
+    : scan.status.replace('-', ' ')
   details.innerHTML = `
     <div class="scan-name" title="${escHtml(scan.filename)}">${escHtml(scan.name || scan.filename.replace(/\\.glb$/, ''))}</div>
     <div class="scan-meta">${capturedLabel} · ${accuracy}</div>
-    <div class="scan-status">Queued for load</div>
+    <div class="scan-status" data-review-status="${escHtml(scan.status)}">${escHtml(qualityLabel)}</div>
   `
 
   item.append(checkbox, details)
@@ -713,6 +731,21 @@ function addDerivedCameraLayers(
   scan: ScanManifest,
   layers: Map<LayerType, Set<THREE.Object3D>>,
 ): void {
+  if (scan.frameSetUrl) {
+    void addFrameObservationLayers(root, scan, layers).catch((error) => {
+      console.warn(`[viewer] Frame observation load failed for ${scan.name}:`, error)
+      addPlaceholderCameraLayers(root, scan, layers)
+    })
+    return
+  }
+  addPlaceholderCameraLayers(root, scan, layers)
+}
+
+function addPlaceholderCameraLayers(
+  root: THREE.Object3D,
+  scan: ScanManifest,
+  layers: Map<LayerType, Set<THREE.Object3D>>,
+): void {
   const pathPoints = [
     new THREE.Vector3(-0.8, 0.35, -0.8),
     new THREE.Vector3(-0.35, 0.5, -0.35),
@@ -737,6 +770,83 @@ function addDerivedCameraLayers(
   }
   root.add(frustumGroup)
   addLayerNode(layers, 'cameraFrustums', frustumGroup)
+}
+
+async function addFrameObservationLayers(
+  root: THREE.Object3D,
+  scan: ScanManifest,
+  layers: Map<LayerType, Set<THREE.Object3D>>,
+): Promise<void> {
+  const response = await fetch(withAccessToken(scan.frameSetUrl!))
+  if (!response.ok) throw new Error(`${response.status} ${await response.text()}`)
+  const payload = await response.json() as { frames?: FrameObservation[] }
+  const frames = payload.frames ?? []
+  if (frames.length === 0) {
+    addPlaceholderCameraLayers(root, scan, layers)
+    return
+  }
+
+  const frameGroup = new THREE.Group()
+  frameGroup.name = `${scan.name} frame observations`
+  frameGroup.userData['scanId'] = scan.scanId
+  frameGroup.userData['layerType'] = 'cameraFrustums'
+
+  const points = frames
+    .map(frame => new THREE.Vector3(frame.pose.position.x, frame.pose.position.y, frame.pose.position.z))
+
+  if (points.length >= 2) {
+    const path = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints(points),
+      cameraPathMaterial.clone(),
+    )
+    path.name = `${scan.name} camera path`
+    path.userData['scanId'] = scan.scanId
+    path.userData['layerType'] = 'cameraPath'
+    root.add(path)
+    addLayerNode(layers, 'cameraPath', path)
+  }
+
+  const stride = Math.max(1, Math.ceil(frames.length / 48))
+  for (let i = 0; i < frames.length; i += stride) {
+    const frame = frames[i]!
+    const frustum = createCameraFrustumMesh(0.18, 0.32)
+    frustum.name = `${scan.name} frustum ${i}`
+    frustum.position.set(frame.pose.position.x, frame.pose.position.y, frame.pose.position.z)
+    frustum.quaternion.set(frame.pose.rotation.x, frame.pose.rotation.y, frame.pose.rotation.z, frame.pose.rotation.w)
+    frustum.userData['scanId'] = scan.scanId
+    frustum.userData['layerType'] = 'cameraFrustums'
+    frameGroup.add(frustum)
+  }
+  root.add(frameGroup)
+  addLayerNode(layers, 'cameraFrustums', frameGroup)
+
+  const rgbGroup = new THREE.Group()
+  rgbGroup.name = `${scan.name} RGB frames`
+  rgbGroup.userData['scanId'] = scan.scanId
+  rgbGroup.userData['layerType'] = 'rgbFrames'
+  const textureLoader = new THREE.TextureLoader()
+  const thumbStride = Math.max(1, Math.ceil(frames.length / 12))
+  for (let i = 0; i < frames.length; i += thumbStride) {
+    const frame = frames[i]!
+    const texture = textureLoader.load(withAccessToken(frame.rgbUrl))
+    texture.colorSpace = THREE.SRGBColorSpace
+    const aspect = frame.intrinsics.width / Math.max(1, frame.intrinsics.height)
+    const plane = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.28 * aspect, 0.28),
+      new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide, transparent: true, opacity: 0.86 }),
+    )
+    plane.name = `${scan.name} RGB frame ${i}`
+    plane.position.set(frame.pose.position.x, frame.pose.position.y, frame.pose.position.z)
+    plane.quaternion.set(frame.pose.rotation.x, frame.pose.rotation.y, frame.pose.rotation.z, frame.pose.rotation.w)
+    plane.translateZ(-0.18)
+    plane.userData['scanId'] = scan.scanId
+    plane.userData['layerType'] = 'rgbFrames'
+    rgbGroup.add(plane)
+  }
+  root.add(rgbGroup)
+  addLayerNode(layers, 'rgbFrames', rgbGroup)
+
+  applyLayerVisibility()
 }
 
 function createCameraFrustumMesh(size: number, depth: number): THREE.LineSegments {
@@ -966,9 +1076,9 @@ async function saveObjectSemanticPatch(obj: THREE.Object3D): Promise<void> {
 
 async function postEditPatch(body: Partial<EditPatch> & { targetId: string; scope: EditPatch['scope'] }): Promise<void> {
   if (!world) return
-  const response = await fetch(`/worlds/${encodeURIComponent(world.shareSlug)}/patches`, {
+  const response = await fetch(withAccessToken(`/worlds/${encodeURIComponent(world.shareSlug)}/patches`), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: accessHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body),
   })
   if (!response.ok) throw new Error(await response.text())
@@ -1100,9 +1210,9 @@ async function queueSelectedJob(): Promise<void> {
   if (!world) return
   const select = document.getElementById('job-type') as HTMLSelectElement
   const type = select.value as WorldJobType
-  const response = await fetch(`/worlds/${encodeURIComponent(world.shareSlug)}/jobs`, {
+  const response = await fetch(withAccessToken(`/worlds/${encodeURIComponent(world.shareSlug)}/jobs`), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: accessHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({
       type,
       scanId: selectedScanId ?? undefined,
@@ -1543,7 +1653,7 @@ function errorMessage(error: unknown): string {
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetch(url)
+  const response = await fetch(withAccessToken(url), { headers: accessHeaders() })
   if (!response.ok) throw new Error(`${response.status} ${await response.text()}`)
   return response.json() as Promise<T>
 }

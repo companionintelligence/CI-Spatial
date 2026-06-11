@@ -10,13 +10,14 @@ An AR room-scanning application that uses 8th Wall SLAM for spatial mapping, a l
 - **Session persistence** — every scan is saved to IndexedDB; browse, reload, edit, or delete past sessions from the history drawer
 - **GLTF export** — exports the full scan (point cloud + camera path + labelled boxes) as a `.glb` file, saved locally and uploaded to the server
 - **World scan editor** — `/viewer.html?world=default` loads many scans into one ENU/Y-up Three.js workspace with map pins, layer toggles, labels, camera frustums, compass, scale, coordinate readout, and transform controls
-- **Shareable scanner/viewer links** — world manifests expose owner/editor/viewer/scanner role links, including `/scanner.html?world=<slug>&token=<scan-token>` for joining the same shared world from phones
-- **Processing queue foundation** — world jobs cover ingest, layer extraction, alignment, point merging, semantic passes, depth reconstruction, splat training, and world export
+- **Shareable scanner/viewer links** — editor/owner share links carry capability tokens; regular world manifests redact stored tokens, and strict role enforcement is available with `WORLD_STRICT_AUTH=1`
+- **Processing queue foundation** — world jobs cover ingest, layer extraction, alignment, point merging, semantic passes, depth reconstruction, splat training, and world export; the local coordinator validates inputs and records artifacts while heavier Open3D/CV/splat workers remain pluggable
 - **Automatic scan optimization** — every upload runs through a persistent job queue: quantization + Draco + point-cloud LODs (`.opt.glb`, `.lodN.glb`, `.manifest.json`), roughly halving file size
-- **Keyframe streaming** — ☁ button streams pose+intrinsics-tagged keyframes to the server while you walk: reconstruction-ready capture sessions under `scans/sessions/`
+- **Quality-gated autosave** — GLB exports and autosaves include coverage, point count, drift/light/reflection warnings, and `ready` / `needs-review` / `needs-rescan` state
+- **Keyframe streaming** — ☁ button streams pose+intrinsics-tagged keyframes to the server while you walk: reconstruction-ready `FrameObservation` sidecars under `scans/sessions/`
 - **Live geometry to desktop** — the WebRTC live stream also carries point-cloud deltas, detections, and camera pose; the desktop editor shows the scan growing in real time
 - **Desktop world editor** — `/viewer` places scans in a shared ENU world with transform gizmos, semantic tagging, layer toggles, and progressive LOD-first loading (Draco-aware)
-- **PWA** — installable on iOS/Android with offline-capable manifest and icons
+- **PWA** — installable on iOS/Android with app-shell caching and an offline write queue for uploads, keyframes, patches, jobs, summaries, and project writes
 
 ---
 
@@ -38,8 +39,8 @@ An iOS or Android device with camera is required for AR scanning. The 3D viewer 
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/mrhegemon/8th-cv-scan.git
-cd 8th-cv-scan
+git clone https://github.com/companionintelligence/CI-Web-XR-Scan.git
+cd CI-Web-XR-Scan
 npm install
 ```
 
@@ -206,6 +207,13 @@ All endpoints are served by the Deno server on `:8000` and proxied through Vite 
 | `POST` | `/worlds/:slug/patches` | Persists transform, label, category, notes, and visibility edit patches |
 | `GET` | `/worlds/:slug/jobs` | Lists queued, processing, completed, and failed world jobs |
 | `POST` | `/worlds/:slug/jobs` | Queues processing jobs such as `align-scan`, `semantic-pass`, or `splat-train` |
+| `GET` | `/worlds/:slug/frames/:scanId` | Returns pose, intrinsics, RGB URL, and frustum metadata for streamed keyframes |
+| `GET` | `/sessions/:id/keyframes/:file` | Serves a captured RGB keyframe JPEG |
+
+By default, world reads are open for local/Tailscale development and world member
+tokens are redacted from manifests. Invalid tokens are rejected. Set
+`WORLD_STRICT_AUTH=1` to require capability tokens for protected world actions
+such as share-link generation, edit patches, and processing jobs.
 
 ---
 

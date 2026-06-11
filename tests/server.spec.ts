@@ -10,7 +10,7 @@
 import { test, expect } from '@playwright/test'
 import { createHash } from 'crypto'
 
-const BASE = process.env['VITE_URL'] ?? 'https://liambook.capybara-ulmer.ts.net:5175'
+const BASE = process.env['VITE_URL'] ?? 'https://liambook.capybara-ulmer.ts.net:5173'
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -40,6 +40,43 @@ async function uploadGlb(request: Parameters<typeof test>[1] extends { request: 
     },
   })
   return { resp, buf }
+}
+
+async function uploadQualityGlb(request: Parameters<typeof test>[1] extends { request: infer R } ? R : never, label = 'quality') {
+  const buf = makeMinimalGlb()
+  const metadata = {
+    detectionCount: 2,
+    labels: [label, 'chair'],
+    exportedAt: new Date().toISOString(),
+    capturedAt: new Date().toISOString(),
+    sessionId: `sess-${Date.now()}-${label}`,
+    pointCount: 320,
+    poseCount: 8,
+    keyframeCount: 1,
+    qualitySummary: {
+      coverageScore: 0.72,
+      coverageText: 'Good - review gaps',
+      pointCount: 320,
+      detectionCount: 2,
+      poseCount: 8,
+      keyframeCount: 1,
+      lowLightFrames: 0,
+      driftEvents: 0,
+      reflectiveWarnings: 0,
+      missingAreas: 1,
+      trackingLost: false,
+      status: 'needs-review',
+      recommendations: ['Stream RGB keyframes for reconstruction and splat processing.'],
+      capturedAt: new Date().toISOString(),
+    },
+  }
+  const resp = await (request as any).post(`${BASE}/upload-scan`, {
+    multipart: {
+      file: { name: `${label}.glb`, mimeType: 'model/gltf-binary', buffer: buf },
+      metadata: JSON.stringify(metadata),
+    },
+  })
+  return { resp, metadata }
 }
 
 // ── /health ──────────────────────────────────────────────────────────────────
@@ -412,6 +449,91 @@ test.describe('POST /process-scan', () => {
     const resp = await request.post(`${BASE}/process-scan`, { data: { filename: 'x.glb', action: 'mesh-cleanup' } })
     const body = await resp.json() as { processedAt: string }
     expect(isNaN(Date.parse(body.processedAt))).toBeFalsy()
+  })
+})
+
+// ── World manifests, quality gates, and frame observations ───────────────────
+
+test.describe('World scan manifests', () => {
+  test('redacts member tokens on anonymous world load', async ({ request }) => {
+    const resp = await request.get(`${BASE}/worlds/default`)
+    expect(resp.status()).toBe(200)
+    const world = await resp.json() as { members: Array<{ token: string }> }
+    expect(world.members.every(member => member.token === '')).toBeTruthy()
+  })
+
+  test('rejects invalid world capability tokens', async ({ request }) => {
+    const resp = await request.get(`${BASE}/worlds/default?token=not-a-real-token`)
+    expect(resp.status()).toBe(403)
+  })
+
+  test('persists quality summary into world scan manifest', async ({ request }) => {
+    const label = `quality-${Date.now()}`
+    const { resp: upResp } = await uploadQualityGlb(request as any, label)
+    expect(upResp.status()).toBe(200)
+    const { filename } = await upResp.json() as { filename: string }
+
+    const world = await (await request.get(`${BASE}/worlds/default`)).json() as {
+      scans: Array<{ filename: string; status: string; qualitySummary?: { coverageScore: number; status: string } }>
+    }
+    const scan = world.scans.find(item => item.filename === filename)
+    expect(scan).toBeTruthy()
+    expect(scan?.status).toBe('needs-review')
+    expect(scan?.qualitySummary?.coverageScore).toBeCloseTo(0.72, 2)
+  })
+
+  test('returns frame observations for scans with keyframe sessions', async ({ request }) => {
+    const session = await (await request.post(`${BASE}/sessions`)).json() as { sessionId: string }
+    const kf = await request.post(`${BASE}/sessions/${session.sessionId}/keyframes`, {
+      multipart: {
+        image: { name: 'kf.jpg', mimeType: 'image/jpeg', buffer: Buffer.from([0xff, 0xd8, 0xff, 0xd9]) },
+        meta: JSON.stringify({
+          index: 0,
+          timestamp: 123,
+          pose: { position: { x: 1, y: 1.5, z: -2 }, rotation: { x: 0, y: 0, z: 0, w: 1 } },
+          intrinsics: { fovYDeg: 58, aspect: 1.33, width: 640, height: 480 },
+        }),
+      },
+    })
+    expect(kf.status()).toBe(200)
+
+    const buf = makeMinimalGlb()
+    const upResp = await request.post(`${BASE}/upload-scan`, {
+      multipart: {
+        file: { name: `frames-${Date.now()}.glb`, mimeType: 'model/gltf-binary', buffer: buf },
+        metadata: JSON.stringify({
+          sessionId: session.sessionId,
+          pointCount: 1000,
+          poseCount: 1,
+          detectionCount: 0,
+          capturedAt: new Date().toISOString(),
+        }),
+      },
+    })
+    expect(upResp.status()).toBe(200)
+    const { filename } = await upResp.json() as { filename: string }
+    const finalize = await request.post(`${BASE}/sessions/${session.sessionId}/finalize`, {
+      data: { glbFilename: filename, pointCount: 1000, poseCount: 1 },
+    })
+    expect(finalize.status()).toBe(200)
+
+    const world = await (await request.get(`${BASE}/worlds/default`)).json() as {
+      scans: Array<{ filename: string; scanId: string; frameSetUrl?: string; layerIndex: Array<{ type: string; source: string; count?: number }> }>
+    }
+    const scan = world.scans.find(item => item.filename === filename)
+    expect(scan?.frameSetUrl).toBeTruthy()
+    expect(scan?.layerIndex.find(layer => layer.type === 'rgbFrames')?.source).toBe('sidecar')
+
+    const framesResp = await request.get(`${BASE}${scan!.frameSetUrl}`)
+    expect(framesResp.status()).toBe(200)
+    const frames = await framesResp.json() as { count: number; frames: Array<{ rgbUrl: string; pose: { position: { x: number } } }> }
+    expect(frames.count).toBe(1)
+    expect(frames.frames[0]?.rgbUrl).toContain(`/sessions/${session.sessionId}/keyframes/`)
+    expect(frames.frames[0]?.pose.position.x).toBe(1)
+
+    const imageResp = await request.get(`${BASE}${frames.frames[0]!.rgbUrl}`)
+    expect(imageResp.status()).toBe(200)
+    expect(imageResp.headers()['content-type']).toContain('image/jpeg')
   })
 })
 

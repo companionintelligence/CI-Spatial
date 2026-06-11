@@ -48,7 +48,7 @@ The E2E test suite is driven by **Playwright**.
 Configure these variables in your environment or a `.env` file:
 
 *   **`VITE_URL`**: The base URL where Vite is serving the application.
-    *   *Default (development):* `https://liambook.capybara-ulmer.ts.net:5175` or `http://localhost:5173`
+    *   *Default (development):* `https://liambook.capybara-ulmer.ts.net:5173` or `http://localhost:5173`
     *   *Usage:* Checked by the Playwright tests to know what URL to load and query.
 *   **`PORT`**: Port for the Deno Hono server.
     *   *Default:* `8000`

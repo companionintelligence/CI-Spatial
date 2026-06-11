@@ -25,6 +25,10 @@ export type WorldJobType =
 
 export type WorldJobStatus = 'queued' | 'processing' | 'completed' | 'failed'
 
+export type ScanReviewStatus = 'ready' | 'needs-review' | 'needs-rescan'
+
+export type ScanManifestStatus = ScanReviewStatus | 'processing' | 'aligned' | 'error'
+
 export interface Vec3 {
   x: number
   y: number
@@ -95,6 +99,23 @@ export interface FrameObservation {
   semanticMaskUrl?: string
 }
 
+export interface ScanQualitySummary {
+  coverageScore: number
+  coverageText: string
+  pointCount: number
+  detectionCount: number
+  poseCount: number
+  keyframeCount: number
+  lowLightFrames: number
+  driftEvents: number
+  reflectiveWarnings: number
+  missingAreas: number
+  trackingLost: boolean
+  status: ScanReviewStatus
+  recommendations: string[]
+  capturedAt: string
+}
+
 export interface TransformPatch {
   position?: Vec3
   rotation?: Quat
@@ -132,7 +153,8 @@ export interface ScanManifest {
   detectionCount: number | null
   layerIndex: LayerManifest[]
   frameSetUrl?: string
-  status: 'ready' | 'needs-review' | 'error'
+  qualitySummary?: ScanQualitySummary | null
+  status: ScanManifestStatus
 }
 
 export interface WorldMember {
@@ -154,6 +176,8 @@ export interface WorldJob {
   capabilities: string[]
   payload?: Record<string, unknown>
   result?: string
+  artifacts?: Array<{ type: string; url?: string; label: string; metadata?: Record<string, unknown> }>
+  progress?: number
   error?: string
   createdAt: string
   updatedAt: string
