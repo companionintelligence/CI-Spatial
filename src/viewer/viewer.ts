@@ -11,6 +11,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js'
 import { SceneEditor, SEMANTIC_TAGS, type ViewMode } from './editor'
+import { MeasureTool } from './measure'
 import { GeoMap, type ScanLocationEntry } from './geomap'
 import { LiveFeed } from './livefeed'
 import { loadSemanticAsset, createMediumPolyAsset } from './assets'
@@ -77,6 +78,9 @@ const dracoLoader = new DRACOLoader()
 dracoLoader.setDecoderPath('/draco/')
 loader.setDRACOLoader(dracoLoader)
 const editor = new SceneEditor()
+const measure = new MeasureTool(() => scene, document.getElementById('viewport')!)
+// Test hook: lets Playwright assert measured distances against expected.json
+;(window as unknown as { __measureTool: MeasureTool }).__measureTool = measure
 const geoMap = new GeoMap()
 const liveFeed = new LiveFeed(initialWorldSlug)
 const labelContainer = document.getElementById('viewport')!
@@ -204,6 +208,8 @@ function initRenderer(): void {
     const rect = canvas.getBoundingClientRect()
     const ndx = ((event.clientX - rect.left) / rect.width) * 2 - 1
     const ndy = -((event.clientY - rect.top) / rect.height) * 2 + 1
+    // Measure mode swallows clicks before selection
+    if (measure.handleClick(ndx, ndy, camera)) return
     const obj = editor.pick(ndx, ndy, camera)
     if (obj) {
       selectEditableObject(obj)
@@ -270,6 +276,7 @@ function startRenderLoop(): void {
       updatePointCloudLOD()
       renderer.render(scene, camera)
       updateLabels()
+      measure.updateLabel(camera)
       updateWorldHud()
     }
   }
@@ -659,6 +666,7 @@ function applyStoredPatches(root: THREE.Object3D, scan: ScanManifest): void {
     if (patch.category) target.userData['tag'] = patch.category
     if (patch.label) target.userData['label'] = patch.label
     if (patch.notes) target.userData['notes'] = patch.notes
+    if (typeof patch.visible === 'boolean') target.visible = patch.visible
   }
 }
 
@@ -1678,6 +1686,29 @@ document.getElementById('btn-geomap')!.addEventListener('click', () => {
 document.getElementById('btn-livefeed')!.addEventListener('click', () => {
   liveFeed.toggle()
   if (liveFeed.isOpen) liveFeed.connect()
+})
+
+document.getElementById('btn-measure')?.addEventListener('click', () => {
+  const active = measure.toggle()
+  document.getElementById('btn-measure')?.classList.toggle('active', active)
+  updateHudInfo(active ? 'Measure: click two points on the scan' : undefined)
+})
+
+// Hide the selected object and persist it as a visibility patch so the
+// edit survives reloads (applied by applyStoredPatches on every load).
+document.getElementById('edit-hide-object')?.addEventListener('click', () => {
+  const obj = editor.selectedObject
+  if (!obj) return
+  obj.visible = false
+  const scan = scanForObject(obj)
+  void postEditPatch({
+    targetId: stableObjectId(obj),
+    scope: 'object',
+    scanId: scan?.manifest.scanId,
+    visible: false,
+  }).then(() => flashButton('edit-hide-object', 'Hidden'))
+    .catch((error) => console.error('[viewer] hide patch failed:', error))
+  clearSelection()
 })
 
 function setTransformMode(mode: 'translate' | 'rotate' | 'scale'): void {

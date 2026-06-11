@@ -106,3 +106,63 @@ Make sure to execute Deno with the following permission flags in the Docker cont
 ### Offline vs. Online Scenarios
 *   **Offline Scanning:** When offline, the app writes frame data, telemetry, and temporary detections into the browser's local **IndexedDB** database.
 *   **Delayed Sync:** When connection is restored, the client reads the queue of unsynced sessions from IndexedDB, uploads them sequentially to `/upload-scan`, and clears the local cache.
+
+---
+
+## 5. Synthetic Test Data & Mocked AR Runtimes
+
+Everything in this section is deterministic — seeded generators, scripted
+runtimes, and a model-free CV engine — so the full scan pipeline runs in CI
+with no device, no SLAM binary, and no VLM weights.
+
+### Generated corpus (`npm run gen:test-data` → `test-data/`, gitignored)
+
+| Artifact | Generator | Contents |
+|---|---|---|
+| `test-data/homes/` | `scripts/generate-test-homes.mjs` | **24 procedural home scans** (8 archetypes × 3 variants: studio, living room, kitchen, office, dining, kids, media, one-bed). Each GLB matches the mobile exporter schema — point cloud (11k–22k pts sampled from walls/floor/furniture with SLAM-style noise), camera path, floor plane, detection boxes with full `extras`, geo metadata — plus a server-metadata sidecar and `expected.json` ground truth (dims, furniture positions/sizes/labels). |
+| `test-data/cv/` | `scripts/generate-cv-images.mjs` | **16 synthetic room images** (pseudo-3D front views with palette-coloured furniture) + `expected.json` bounding-box ground truth for scoring `/infer`. |
+
+Seed a running server with the corpus: `npm run seed:test-data`
+(`COUNT=6` for a subset, `SERVER_URL=` to target another server).
+
+### Mock CV engine (`INFERENCE_MODE=mock`)
+
+`inference.ts` gains a third engine: a deterministic colour-blob detector
+(grid sampling + union-find connected components over the shared palette in
+`src/shared/cv-palette.ts`). It closes the loop with the generated CV images
+and the xr8-mock camera feed — `/infer` returns exact, repeatable detections.
+
+Score any engine against the corpus:
+```bash
+npm run eval:cv                 # → precision/recall/meanIoU/labelAcc + test-data/cv/report.json
+STRICT=1 npm run eval:cv        # CI gate (mock engine baseline: P=R=100%, meanIoU≈0.94)
+```
+
+### Mocked AR runtimes
+
+*   **XR8 mock** (`public/test-fixtures/xr8-mock.js`, load with `/?mock=xr8`):
+    scripted replacement for the 8th Wall engine — emits SLAM poses, world
+    feature points, and a fake camera feed showing palette-coloured furniture.
+    The CI equivalent of the 8th Wall desktop simulator / forum mocks pattern.
+*   **WebXR emulation** (`/?ar=webxr&mock=webxr`): installs
+    [iwer](https://github.com/meta-quest/immersive-web-emulator) — Meta's
+    Immersive Web Emulation Runtime — via a lazy-loaded test hook
+    (`src/test/webxr-emulation.ts`), exposing the device as
+    `window.__iwerDevice` for tests.
+
+### New Playwright projects
+
+| Project | Needs | Command |
+|---|---|---|
+| `api` | Deno server only (no browser binary). Pair with `INFERENCE_MODE=mock` + generated corpus. | `API_URL=http://localhost:8000 npm run test:api` |
+| `chromium-mock` | Vite + Deno (mock engine) + headless Chromium (fake-media flags). | `VITE_URL=https://localhost:5173 npm run test:mock` |
+
+Coverage: `api-test-homes` (24-home upload → job queue → manifests/LODs →
+world synthesis → deletion → keyframe sessions), `api-cv-mock` (/infer shape,
+ground-truth IoU ≥ 0.8, determinism), `mock-xr8-scan` (full capture →
+inference → resolve pipeline in a browser), `mock-webxr-emulated` (WebXR
+route + emulated immersive-ar session), `mock-editor-homes` (editor scan
+list, progressive load status, layers, measurement tool).
+
+Note: `@playwright/test` is pinned to **1.58.x** — 1.60.0 has a spec-loading
+regression in this repo ("did not expect test.describe()").

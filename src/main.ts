@@ -123,6 +123,13 @@ async function main() {
   // beats the 8th Wall SLAM fallback.  ?ar=8thwall forces the inverse.
   const forcedMode = new URLSearchParams(location.search).get('ar')
 
+  // Test hook: ?mock=webxr installs the iwer emulation runtime (Meta's
+  // immersive-web-emulator engine) so WebXR flows run in headless browsers.
+  if (new URLSearchParams(location.search).get('mock') === 'webxr') {
+    const emulation = await import('./test/webxr-emulation')
+    await emulation.installWebXREmulation()
+  }
+
   // XR8 global is set by xr.js (8th Wall OSS engine binary in public/xr.js).
   // If it's not present after a grace timeout we fall back to WebXR.
   // index.html skips loading xr.js entirely when ?ar=webxr is set.

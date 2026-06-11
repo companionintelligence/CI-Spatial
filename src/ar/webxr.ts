@@ -37,15 +37,21 @@ export class WebXRProvider implements ARProvider {
 
     // Set up a companion video stream for camera pixel data.
     // XR camera-access is too sparsely supported to rely on.
-    this.videoStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
-      audio: false,
-    })
-    this.videoEl = document.createElement('video')
-    this.videoEl.srcObject = this.videoStream
-    this.videoEl.playsInline = true
-    this.videoEl.muted = true
-    await this.videoEl.play()
+    // Camera denial is non-fatal: tracking/hit-testing still work, only
+    // frame capture is unavailable (headsets, emulated runtimes).
+    try {
+      this.videoStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      })
+      this.videoEl = document.createElement('video')
+      this.videoEl.srcObject = this.videoStream
+      this.videoEl.playsInline = true
+      this.videoEl.muted = true
+      await this.videoEl.play()
+    } catch (e) {
+      console.warn('[webxr] No camera stream — frame capture disabled:', e)
+    }
 
     this.session = await navigator.xr.requestSession('immersive-ar', {
       requiredFeatures: ['hit-test'],
@@ -68,7 +74,13 @@ export class WebXRProvider implements ARProvider {
     this.refSpace = localFloor
     this.viewerSpace = viewer
 
-    this.hitTestSource = await this.session.requestHitTestSource!({ space: viewer }) ?? null
+    // Hit-test is optional on emulated runtimes (iwer) and some browsers
+    try {
+      this.hitTestSource = await this.session.requestHitTestSource?.({ space: viewer }) ?? null
+    } catch (e) {
+      console.warn('[webxr] hit-test unavailable — feature points disabled:', e)
+      this.hitTestSource = null
+    }
 
     // Main XR frame loop
     const self = this

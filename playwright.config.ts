@@ -24,9 +24,42 @@ export default defineConfig({
   retries: 1,
 
   projects: [
+    // ── API-only tests (request fixture — no browser binary required) ───────
+    // Targets the Deno server directly; pair with INFERENCE_MODE=mock and
+    // the generated corpus (npm run gen:test-data).
+    {
+      name: 'api',
+      testMatch: /api-.*\.spec\.ts/,
+      use: {
+        baseURL: process.env['API_URL'] ?? 'http://localhost:8000',
+      },
+    },
+
+    // ── Headless Chromium with mocked AR runtimes ────────────────────────────
+    //   mock-xr8-*:   scripted 8th Wall engine (public/test-fixtures/xr8-mock.js)
+    //   mock-webxr-*: iwer emulation runtime (Meta immersive-web-emulator)
+    //   mock-editor-*: World Scan Editor against generated test homes
+    {
+      name: 'chromium-mock',
+      testMatch: /mock-.*\.spec\.ts/,
+      use: {
+        ...devices['Desktop Chrome'],
+        baseURL: BASE_URL,
+        ignoreHTTPSErrors: true,
+        permissions: ['camera'],
+        launchOptions: {
+          args: [
+            '--use-fake-ui-for-media-stream',
+            '--use-fake-device-for-media-stream',
+          ],
+        },
+      },
+    },
+
     // ── Desktop Safari simulation (default, no device needed) ──────────────
     {
       name: 'webkit-desktop',
+      testIgnore: [/api-.*\.spec\.ts/, /mock-.*\.spec\.ts/],
       use: {
         ...devices['Desktop Safari'],
         baseURL: BASE_URL,
@@ -37,6 +70,7 @@ export default defineConfig({
     // ── Mobile Safari simulation (no real device needed) ────────────────────
     {
       name: 'webkit-iphone15',
+      testIgnore: [/api-.*\.spec\.ts/, /mock-.*\.spec\.ts/],
       use: {
         ...devices['iPhone 15'],
         baseURL: BASE_URL,
@@ -49,6 +83,7 @@ export default defineConfig({
     // Requires Vite + Deno servers running. No USB connection needed here.
     {
       name: 'iphone-usb',
+      testIgnore: [/api-.*\.spec\.ts/, /mock-.*\.spec\.ts/],
       use: {
         ...devices['iPhone 15'],
         baseURL: BASE_URL,

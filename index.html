@@ -22,15 +22,23 @@
       data-preload-chunks="slam" eagerly loads SLAM/world-tracking.
     -->
     <script>
-      // Skip the 8th Wall engine when WebXR mode is forced (?ar=webxr, via
-      // /webxr.html) — no point loading the SLAM binary inside WebXR-capable
-      // browsers like HelloXR on iOS.
-      if (new URLSearchParams(location.search).get('ar') !== 'webxr') {
-        const xrScript = document.createElement('script')
-        xrScript.async = true
-        xrScript.src = '/xr.js'
-        xrScript.dataset.preloadChunks = 'slam'
-        document.head.appendChild(xrScript)
+      // AR engine selection:
+      //   ?mock=xr8  → scripted XR8 mock (automated tests, no device/binary)
+      //   ?ar=webxr  → skip the SLAM binary entirely (HelloXR / WebXR mode)
+      //   default    → real 8th Wall engine from public/xr.js
+      {
+        const params = new URLSearchParams(location.search)
+        if (params.get('mock') === 'xr8') {
+          const mockScript = document.createElement('script')
+          mockScript.src = '/test-fixtures/xr8-mock.js'
+          document.head.appendChild(mockScript)
+        } else if (params.get('ar') !== 'webxr') {
+          const xrScript = document.createElement('script')
+          xrScript.async = true
+          xrScript.src = '/xr.js'
+          xrScript.dataset.preloadChunks = 'slam'
+          document.head.appendChild(xrScript)
+        }
       }
     </script>
 
