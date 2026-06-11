@@ -65,10 +65,7 @@ export class SidePanel {
       </div>`
     const closeBtn = document.createElement('button')
     closeBtn.setAttribute('aria-label', 'Close panel')
-    closeBtn.style.cssText = `
-      background:none;border:none;color:rgba(255,255,255,0.4);
-      font-size:18px;cursor:pointer;padding:0 2px;line-height:1;
-    `
+    closeBtn.className = 'ci-icon-btn ci-icon-btn--sm'
     closeBtn.textContent = '✕'
     closeBtn.addEventListener('click', () => this.setOpen(false))
     panelHeader.appendChild(closeBtn)
@@ -130,7 +127,7 @@ export class SidePanel {
     }
 
     const clearBtn = document.createElement('button')
-    clearBtn.className = 'panel-btn-ghost'
+    clearBtn.className = 'panel-btn-ghost panel-btn-danger'
     clearBtn.id = 'panel-clear-session-btn'
     clearBtn.textContent = 'Clear session'
     clearBtn.addEventListener('click', async () => { await this.store.clear() })
@@ -159,10 +156,7 @@ export class SidePanel {
       const mkToggle = (label: string, mode: InferMode): HTMLButtonElement => {
         const btn = document.createElement('button')
         btn.dataset['mode'] = mode
-        btn.style.cssText = `
-          flex:1;padding:7px 0;border-radius:8px;border:none;font-size:12px;font-weight:600;
-          cursor:pointer;transition:background 0.15s,color 0.15s;
-        `
+        btn.className = 'ci-toolbar-pill'
         btn.textContent = label
         btn.addEventListener('click', () => {
           this.onInferMode!(mode)
@@ -262,7 +256,7 @@ export class SidePanel {
     card.dataset['key'] = key
     card.style.cssText = `
       display:grid;grid-template-columns:auto 1fr auto;
-      gap:10px;padding:10px 14px;
+      gap:10px;padding:12px 14px;
       border-bottom:1px solid rgba(255,255,255,0.06);
       align-items:start;
       transition:background 0.15s;
@@ -310,13 +304,8 @@ export class SidePanel {
     const editBtn = document.createElement('button')
     editBtn.textContent = '✏'
     editBtn.title = 'Edit label & description'
-    editBtn.style.cssText = `
-      background:none;border:none;color:rgba(255,255,255,0.25);
-      font-size:11px;cursor:pointer;padding:0 2px;margin-left:auto;
-      transition:color 0.15s;flex-shrink:0;
-    `
-    editBtn.addEventListener('pointerenter', () => { editBtn.style.color = '#80ffe1' })
-    editBtn.addEventListener('pointerleave', () => { editBtn.style.color = 'rgba(255,255,255,0.25)' })
+    editBtn.className = 'ci-icon-btn ci-icon-btn--sm'
+    editBtn.style.marginLeft = 'auto'
 
     row1.append(dot, labelEl, confEl, editBtn)
 
@@ -347,18 +336,13 @@ export class SidePanel {
     const safeDesc = det.description.replace(/</g, '&lt;').replace(/>/g, '&gt;')
     editForm.innerHTML = `
       <input type="text" value="${safeLabel}" placeholder="Label"
-        style="width:100%;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);
-               border-radius:6px;color:#fff;font-size:12px;padding:5px 8px;margin-bottom:5px;
-               outline:none;box-sizing:border-box;" />
+        class="ci-field"
+        style="margin-bottom:5px;" />
       <textarea placeholder="Description" rows="2"
-        style="width:100%;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);
-               border-radius:6px;color:#fff;font-size:12px;padding:5px 8px;resize:none;
-               outline:none;font-family:inherit;box-sizing:border-box;">${safeDesc}</textarea>
+        class="ci-field ci-textarea">${safeDesc}</textarea>
       <div style="display:flex;gap:6px;margin-top:5px;">
-        <button class="edit-save" style="flex:1;padding:5px;background:#80ffe1;color:#000;border:none;
-          border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;">Save</button>
-        <button class="edit-cancel" style="flex:1;padding:5px;background:rgba(255,255,255,0.08);
-          color:rgba(255,255,255,0.6);border:none;border-radius:6px;font-size:12px;cursor:pointer;">Cancel</button>
+        <button class="edit-save ci-inline-btn ci-inline-btn--primary" style="flex:1;">Save</button>
+        <button class="edit-cancel ci-inline-btn ci-inline-btn--muted" style="flex:1;">Cancel</button>
       </div>
     `
 

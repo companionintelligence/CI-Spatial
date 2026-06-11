@@ -117,13 +117,7 @@ export class SessionHistory {
     const loadBtn = document.createElement('button')
     loadBtn.textContent = '↩'
     loadBtn.title = 'Load session into view'
-    loadBtn.style.cssText = `
-      background:none;border:1px solid rgba(255,255,255,0.2);color:rgba(255,255,255,0.5);
-      font-size:13px;cursor:pointer;padding:4px 7px;border-radius:6px;
-      transition:background 0.15s,color 0.15s;
-    `
-    loadBtn.addEventListener('pointerenter', () => { loadBtn.style.color = '#80ffe1'; loadBtn.style.borderColor = '#80ffe1' })
-    loadBtn.addEventListener('pointerleave', () => { loadBtn.style.color = 'rgba(255,255,255,0.5)'; loadBtn.style.borderColor = 'rgba(255,255,255,0.2)' })
+    loadBtn.className = 'ci-icon-btn ci-icon-btn--sm'
     loadBtn.addEventListener('click', async (e) => {
       e.stopPropagation()
       loadBtn.style.opacity = '0.5'
@@ -134,13 +128,8 @@ export class SessionHistory {
     const delBtn = document.createElement('button')
     delBtn.textContent = '✕'
     delBtn.title = 'Delete session'
-    delBtn.style.cssText = `
-      background:none;border:none;color:rgba(255,255,255,0.25);
-      font-size:14px;cursor:pointer;padding:4px 6px;
-      transition:color 0.15s;
-    `
-    delBtn.addEventListener('pointerenter', () => { delBtn.style.color = '#ff6b6b' })
-    delBtn.addEventListener('pointerleave', () => { delBtn.style.color = 'rgba(255,255,255,0.25)' })
+    delBtn.className = 'ci-icon-btn ci-icon-btn--sm'
+    delBtn.style.color = '#ffb7b7'
     delBtn.addEventListener('click', async (e) => {
       e.stopPropagation()
       wrap.style.transition = 'opacity 0.2s'
@@ -289,10 +278,8 @@ export class SessionHistory {
       const selBtn = document.createElement('button')
       selBtn.title = isSelected ? 'Deselect' : 'Select'
       selBtn.textContent = isSelected ? '☑' : '☐'
-      selBtn.style.cssText = `
-        background:none;border:none;color:${isSelected ? '#80ffe1' : 'rgba(255,255,255,0.3)'};
-        font-size:14px;cursor:pointer;padding:2px;transition:color 0.15s;
-      `
+      selBtn.className = 'ci-icon-btn ci-icon-btn--sm'
+      selBtn.style.color = isSelected ? '#80ffe1' : 'rgba(255,255,255,0.5)'
       selBtn.addEventListener('click', () => {
         this.store.toggleSelect(key)
         // Re-render this row in place
@@ -306,22 +293,17 @@ export class SessionHistory {
       const editBtn = document.createElement('button')
       editBtn.textContent = '✏'
       editBtn.title = 'Edit'
-      editBtn.style.cssText = `
-        background:none;border:none;color:rgba(255,255,255,0.25);
-        font-size:11px;cursor:pointer;padding:2px;transition:color 0.15s;
-      `
-      editBtn.addEventListener('pointerenter', () => { editBtn.style.color = '#80ffe1' })
-      editBtn.addEventListener('pointerleave', () => { editBtn.style.color = 'rgba(255,255,255,0.25)' })
+      editBtn.className = 'ci-icon-btn ci-icon-btn--sm'
 
       const editForm = document.createElement('div')
       editForm.style.cssText = 'display:none;position:absolute;inset-x:24px;background:rgba(9,24,24,0.98);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:10px;z-index:1;margin-top:4px;'
       editForm.innerHTML = `
         <input type="text" value="${det.label.replace(/</g, '&lt;')}"
-          style="width:100%;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:6px;color:#fff;font-size:12px;padding:5px 8px;outline:none;box-sizing:border-box;margin-bottom:5px;" />
-        <textarea rows="2" style="width:100%;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:6px;color:#fff;font-size:12px;padding:5px 8px;resize:none;outline:none;font-family:inherit;box-sizing:border-box;">${det.description.replace(/</g, '&lt;')}</textarea>
+          class="ci-field" style="margin-bottom:5px;" />
+        <textarea rows="2" class="ci-field ci-textarea">${det.description.replace(/</g, '&lt;')}</textarea>
         <div style="display:flex;gap:6px;margin-top:6px;">
-          <button class="ef-save" style="flex:1;padding:5px;background:#80ffe1;color:#000;border:none;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;">Save</button>
-          <button class="ef-cancel" style="flex:1;padding:5px;background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.6);border:none;border-radius:6px;font-size:12px;cursor:pointer;">Cancel</button>
+          <button class="ef-save ci-inline-btn ci-inline-btn--primary" style="flex:1;">Save</button>
+          <button class="ef-cancel ci-inline-btn ci-inline-btn--muted" style="flex:1;">Cancel</button>
         </div>
       `
       row.style.position = 'relative'
