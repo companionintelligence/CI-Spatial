@@ -7,8 +7,8 @@
  * GET  /scans/:filename    → model/gltf-binary (source or derived artifact)
  * GET  /scans/:filename/manifest     → optimization manifest (artifacts + stats)
  * POST /scans/:filename/optimize     → (re-)enqueue optimization job
- * DELETE /scans/:filename → delete stored .glb + sidecar metadata
- * DELETE /scans?confirm=delete-all → clear test scan storage
+ * DELETE /scans/:filename            → delete stored .glb + sidecars + derived artifacts
+ * DELETE /scans?confirm=delete-all   → clear scan storage (test reset)
  * GET  /jobs               → Job[]   (processing queue state)
  * GET  /jobs/:id           → Job
  * POST /sessions                       → { sessionId } — begin keyframe capture session
@@ -18,24 +18,228 @@
  * POST /upload-summary     multipart { file: File(.md) } → { filename }
  * POST /process-scan       JSON { filename, action, sessionId? } → { action, result }
  * GET  /projects           → Project[]
-app.delete('/scans', async (c) => {
-  const confirm = c.req.query('confirm')
-  if (confirm !== 'delete-all') {
-    return c.json({ error: 'Add ?confirm=delete-all to clear scan storage' }, 400)
+ * POST /projects           JSON { name, address?, notes? } → Project
+ * GET  /projects/:id       → Project
+ * PUT  /projects/:id       JSON (Project) → Project
+ * DELETE /projects/:id     → { ok: true }
+ * GET  /rtc-signal         WebSocket upgrade — WebRTC signaling relay
+ * GET  /events             WebSocket upgrade — server event broadcast (scans/jobs)
+ *
+ * Run:
+ *   deno run --allow-net --allow-read --allow-write --allow-env --allow-ffi main.ts
+ */
+import { Hono } from 'hono'
+import { cors } from 'hono/cors'
+import { logger } from 'hono/logger'
+import { InferenceEngine } from './inference.ts'
+import { JobQueue } from './jobs.ts'
+import { composeYUpTransform, geoToEnu, hasGeoPose } from './src/world/geo.ts'
+import { defaultLayerIndex } from './src/world/layers.ts'
+import type {
+  EditPatch,
+  GeoPose,
+  ScanManifest,
+  WorldJob,
+  WorldJobType,
+  WorldMember,
+  WorldProject,
+} from './src/world/types.ts'
+
+const PORT = Number(Deno.env.get('PORT') ?? 8000)
+const ALLOWED_ORIGIN_PREFIX = Deno.env.get('ALLOWED_ORIGIN_PREFIX') ?? 'https://liambook.capybara-ulmer.ts.net'
+
+const SCANS_DIR    = Deno.env.get('SCANS_DIR')    ?? './scans'
+const SUMMARIES_DIR = Deno.env.get('SUMMARIES_DIR') ?? './summaries'
+const SESSIONS_DIR = Deno.env.get('SESSIONS_DIR') ?? `${SCANS_DIR}/sessions`
+const WORLDS_DIR = Deno.env.get('WORLDS_DIR') ?? './worlds'
+const MAX_KEYFRAMES_PER_SESSION = 2000
+
+function isAllowedOrigin(origin: string): boolean {
+  try {
+    const { hostname, protocol } = new URL(origin)
+    if (protocol !== 'http:' && protocol !== 'https:') return false
+    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]') return true
+    if (hostname.endsWith('.ts.net')) return true
+    if (/^192\.168\.\d+\.\d+$/.test(hostname)) return true
+    if (/^10\.\d+\.\d+\.\d+$/.test(hostname)) return true
+    if (/^172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+$/.test(hostname)) return true
+    if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+$/.test(hostname)) return true
+    return origin.startsWith(ALLOWED_ORIGIN_PREFIX)
+  } catch {
+    return false
+  }
+}
+
+for (const dir of [SCANS_DIR, SUMMARIES_DIR, SESSIONS_DIR, WORLDS_DIR]) {
+  try { await Deno.mkdir(dir, { recursive: true }) } catch { /* already exists */ }
+}
+
+// ── Event broadcast hub (/events WebSocket) ───────────────────────────────────
+const eventSockets = new Set<WebSocket>()
+
+function broadcast(event: Record<string, unknown>): void {
+  const msg = JSON.stringify({ ...event, at: Date.now() })
+  for (const ws of eventSockets) {
+    try {
+      if (ws.readyState === WebSocket.OPEN) ws.send(msg)
+    } catch { /* client gone — close handler will clean up */ }
+  }
+}
+
+const jobQueue = new JobQueue(SCANS_DIR, broadcast)
+await jobQueue.init()
+
+let modelLoaded = false
+const engine = new InferenceEngine()
+const engineLoadPromise = engine.load().then(() => {
+  console.log('[server] Model sessions ready')
+  modelLoaded = true
+}).catch((e) => {
+  console.error('[server] Model load failed:', e.message)
+  console.error('[server] Running in server-only mode (VLM inference will be unavailable/fallback to WebGPU)')
+})
+
+const app = new Hono()
+
+app.onError((err, c) => {
+  console.error('[server-error]', err)
+  return c.json({ error: err.message }, 500)
+})
+
+app.use(logger())
+app.use(
+  cors({
+    origin: (origin) => {
+      console.log(`[server] CORS check: origin=${origin}, prefix=${ALLOWED_ORIGIN_PREFIX}`)
+      if (!origin) return ALLOWED_ORIGIN_PREFIX
+      if (isAllowedOrigin(origin)) {
+        return origin
+      }
+      console.warn(`[server] CORS rejected origin: ${origin}`)
+      return ''
+    },
+    allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowHeaders: ['Content-Type', 'Authorization'],
+    credentials: true,
+  }),
+)
+
+app.get('/health', (c) => c.json({ status: 'ok', model: engine.modelId, modelReady: modelLoaded }))
+
+app.post('/infer', async (c) => {
+  const form = await c.req.formData()
+  const imageFile = form.get('image')
+  if (!imageFile || !(imageFile instanceof File)) {
+    return c.json({ error: 'Missing image field' }, 400)
   }
 
-  let deleted = 0
+  // Wait for ONNX sessions to finish loading (large models take several seconds on first start)
+  await engineLoadPromise
+  if (!modelLoaded) {
+    return c.json({ error: 'Model failed to load on server — running in server-only mode. Install local models or use WebGPU fallback.' }, 503)
+  }
+
   try {
-    for await (const entry of Deno.readDir(SCANS_DIR)) {
-      if (!entry.isFile) continue
-      if (!entry.name.endsWith('.glb') && !entry.name.endsWith('.json')) continue
-      if (await removeIfExists(`${SCANS_DIR}/${entry.name}`)) deleted += 1
-    }
-    await removeAllScansFromWorlds()
-    return c.json({ ok: true, deleted })
+    const buffer = await imageFile.arrayBuffer()
+    console.log(`[infer] Received image: ${buffer.byteLength} bytes`)
+    const detections = await engine.infer(new Uint8Array(buffer))
+    console.log(`[infer] Returning ${detections.length} detections:`, JSON.stringify(detections))
+    return c.json(detections)
   } catch (err) {
-    console.error('[scans clear error]', err)
+    console.error('[infer error]', err)
     return c.json({ error: String(err) }, 500)
+  }
+})
+
+// ── Scan file storage ─────────────────────────────────────────────────────────
+
+app.post('/upload-scan', async (c) => {
+  console.log('[server] /upload-scan route triggered')
+  const form = await c.req.formData()
+  const file = form.get('file')
+  if (!file || !(file instanceof File)) {
+    console.warn('[server] /upload-scan: Missing file field')
+    return c.json({ error: 'Missing file field (expected .glb)' }, 400)
+  }
+
+  // Sanitise filename: strip path components, allow only safe chars, remove double dots.
+  const rawName = (file.name || '')
+    .replace(/[^a-zA-Z0-9._-]/g, '_')
+    .replace(/\.\./g, '__')
+    .replace(/^[._-]+/, '') || 'scan'
+  const safeName = rawName.endsWith('.glb') ? rawName : `${rawName}.glb`
+  const ts = Date.now()
+  // Prefix with timestamp to guarantee uniqueness
+  const filename = `${ts}_${safeName}`
+  const filePath = `${SCANS_DIR}/${filename}`
+
+  try {
+    const buffer = await file.arrayBuffer()
+    await Deno.writeFile(filePath, new Uint8Array(buffer))
+    console.log(`[scan] Saved ${filename} (${(buffer.byteLength / 1024).toFixed(0)} KB)`)
+
+    // Optional metadata JSON alongside the .glb
+    const metaRaw = form.get('metadata')
+    if (metaRaw && typeof metaRaw === 'string') {
+      const metaPath = filePath.replace(/\.glb$/, '.json')
+      await Deno.writeTextFile(metaPath, metaRaw)
+      console.log(`[scan] Saved metadata for ${filename}`)
+    }
+
+    // Every uploaded scan is optimized automatically (quantize/Draco/LODs)
+    const job = jobQueue.enqueue('optimize-scan', filename)
+    broadcast({ type: 'scan-added', filename, size: buffer.byteLength })
+
+    return c.json({ filename, size: buffer.byteLength, job: job.id })
+  } catch (err) {
+    console.error('[scan upload error]', err)
+    return c.json({ error: String(err) }, 500)
+  }
+})
+
+/** True for pipeline-derived artifacts that shouldn't appear in the scan list */
+function isDerivedScanFile(name: string): boolean {
+  return /\.(opt|lod\d+)\.glb$/.test(name)
+}
+
+/** Sanitised scan filename or null when the input is unsafe */
+function safeScanName(raw: string): string | null {
+  if (!raw || raw.includes('/') || raw.includes('\\') || raw.startsWith('.')) return null
+  return raw
+}
+
+app.get('/scans', async (c) => {
+  try {
+    const entries: Array<{
+      filename: string
+      size: number
+      uploadedAt: string
+      optimized: boolean
+      job: { status: string; note: string | null } | null
+    }> = []
+    for await (const entry of Deno.readDir(SCANS_DIR)) {
+      if (!entry.isFile || !entry.name.endsWith('.glb')) continue
+      if (isDerivedScanFile(entry.name)) continue
+      const stat = await Deno.stat(`${SCANS_DIR}/${entry.name}`)
+      let optimized = false
+      try {
+        await Deno.stat(`${SCANS_DIR}/${entry.name.replace(/\.glb$/, '.manifest.json')}`)
+        optimized = true
+      } catch { /* not optimized yet */ }
+      const job = jobQueue.jobForTarget(entry.name)
+      entries.push({
+        filename: entry.name,
+        size: stat.size,
+        uploadedAt: (stat.mtime ?? new Date()).toISOString(),
+        optimized,
+        job: job ? { status: job.status, note: job.note ?? null } : null,
+      })
+    }
+    entries.sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt))
+    return c.json(entries)
+  } catch (err) {
+    console.error('[scans list error]', err)
+    return c.json([], 200)
   }
 })
 
@@ -44,197 +248,227 @@ app.delete('/scans', async (c) => {
 
 app.get('/scans/:filename/manifest', async (c) => {
   const filename = safeScanName(c.req.param('filename'))
-  app.delete('/scans', async (c) => {
-    const confirm = c.req.query('confirm')
-    if (confirm !== 'delete-all') {
-      return c.json({ error: 'Add ?confirm=delete-all to clear scan storage' }, 400)
-    }
+  if (!filename || !filename.endsWith('.glb')) return c.json({ error: 'Invalid filename' }, 400)
+  try {
+    const raw = await Deno.readTextFile(`${SCANS_DIR}/${filename.replace(/\.glb$/, '.manifest.json')}`)
+    return c.json(JSON.parse(raw))
+  } catch {
+    return c.json({ error: 'No manifest — scan not optimized yet' }, 404)
+  }
+})
 
-    let deleted = 0
-    try {
-      for await (const entry of Deno.readDir(SCANS_DIR)) {
-        if (!entry.isFile) continue
-        if (!entry.name.endsWith('.glb') && !entry.name.endsWith('.json')) continue
-        if (await removeIfExists(`${SCANS_DIR}/${entry.name}`)) deleted += 1
-      }
-      await removeAllScansFromWorlds()
-      return c.json({ ok: true, deleted })
-    } catch (err) {
-      console.error('[scans clear error]', err)
-      return c.json({ error: String(err) }, 500)
-    }
-  })
+app.post('/scans/:filename/optimize', async (c) => {
+  const filename = safeScanName(c.req.param('filename'))
+  if (!filename || !filename.endsWith('.glb') || isDerivedScanFile(filename)) {
+    return c.json({ error: 'Invalid filename' }, 400)
+  }
+  try {
+    await Deno.stat(`${SCANS_DIR}/${filename}`)
+  } catch {
+    return c.json({ error: 'Scan not found' }, 404)
+  }
+  const job = jobQueue.enqueue('optimize-scan', filename)
+  return c.json(job, 202)
+})
 
-  // ── Scan manifest + manual re-optimize ────────────────────────────────────────
-  // (Semantic edit persistence lives in the worlds patch system: /worlds/:slug/patches)
+// ── Job queue state ───────────────────────────────────────────────────────────
 
-  app.get('/scans/:filename/manifest', async (c) => {
-    const filename = safeScanName(c.req.param('filename'))
-    if (!filename || !filename.endsWith('.glb')) return c.json({ error: 'Invalid filename' }, 400)
-    try {
-      const raw = await Deno.readTextFile(`${SCANS_DIR}/${filename.replace(/\.glb$/, '.manifest.json')}`)
-      return c.json(JSON.parse(raw))
-    } catch {
-      return c.json({ error: 'No manifest — scan not optimized yet' }, 404)
-    }
-  })
+app.get('/jobs', (c) => c.json([...jobQueue.jobs].reverse()))
 
-  app.post('/scans/:filename/optimize', async (c) => {
-    const filename = safeScanName(c.req.param('filename'))
-    if (!filename || !filename.endsWith('.glb') || isDerivedScanFile(filename)) {
-      return c.json({ error: 'Invalid filename' }, 400)
-    }
-    try {
-      await Deno.stat(`${SCANS_DIR}/${filename}`)
-    } catch {
-      return c.json({ error: 'Scan not found' }, 404)
-    }
-    const job = jobQueue.enqueue('optimize-scan', filename)
-    return c.json(job, 202)
-  })
+app.get('/jobs/:id', (c) => {
+  const job = jobQueue.job(c.req.param('id'))
+  return job ? c.json(job) : c.json({ error: 'Not found' }, 404)
+})
 
-  // ── Job queue state ───────────────────────────────────────────────────────────
-
-  app.get('/jobs', (c) => c.json([...jobQueue.jobs].reverse()))
-
-  app.get('/jobs/:id', (c) => {
-    const job = jobQueue.job(c.req.param('id'))
-    return job ? c.json(job) : c.json({ error: 'Not found' }, 404)
-  })
-
-  // ── Capture sessions — streaming keyframe ingestion ──────────────────────────
-  //
-  // The phone opens a session when scanning starts and streams pose-tagged
-  // keyframes (JPEG + JSON meta) while the user walks the room.  Frames land in
-  //   scans/sessions/<id>/kf-NNNNN.jpg        image
-  //   scans/sessions/<id>/keyframes.jsonl     one meta record per frame
-  // On finalize the session is linked to the exported .glb.  This is the raw
-  // input a dense-reconstruction stage (photogrammetry / splats) consumes.
-
-  const SESSION_ID_RE = /^sess-[a-z0-9-]+$/
-
-  function sessionDir(id: string): string | null {
-    return SESSION_ID_RE.test(id) ? `${SESSIONS_DIR}/${id}` : null
+app.get('/scans/:filename', async (c) => {
+  const filename = c.req.param('filename')
+  // Prevent path traversal
+  if (!filename || filename.includes('/') || filename.includes('\\') || filename.startsWith('.')) {
+    return c.json({ error: 'Invalid filename' }, 400)
+  }
+  if (!filename.endsWith('.glb')) {
+    return c.json({ error: 'Only .glb files are served' }, 400)
   }
 
-  app.post('/sessions', async (c) => {
-    const sessionId = `sess-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-    await Deno.mkdir(`${SESSIONS_DIR}/${sessionId}`, { recursive: true })
-    const record = { sessionId, startedAt: new Date().toISOString(), keyframeCount: 0 }
-    await Deno.writeTextFile(`${SESSIONS_DIR}/${sessionId}/session.json`, JSON.stringify(record, null, 2))
-    console.log(`[session] opened ${sessionId}`)
-    broadcast({ type: 'session-started', sessionId })
-    return c.json(record, 201)
-  })
+  const filePath = `${SCANS_DIR}/${filename}`
+  try {
+    const data = await Deno.readFile(filePath)
+    return new Response(data, {
+      headers: {
+        'Content-Type': 'model/gltf-binary',
+        'Content-Disposition': `attachment; filename="${filename}"`,
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'public, max-age=3600',
+      },
+    })
+  } catch {
+    return c.json({ error: 'Scan not found' }, 404)
+  }
+})
 
-  app.post('/sessions/:id/keyframes', async (c) => {
-    const dir = sessionDir(c.req.param('id'))
-    if (!dir) return c.json({ error: 'Invalid session id' }, 400)
-    try {
-      await Deno.stat(dir)
-    } catch {
-      return c.json({ error: 'Session not found' }, 404)
+// ── Scan deletion ─────────────────────────────────────────────────────────────
+
+async function removeIfExists(path: string): Promise<boolean> {
+  try {
+    await Deno.remove(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** All pipeline-derived sidecars for a scan (deleted alongside the source) */
+function derivedArtifactPaths(filename: string): string[] {
+  const base = filename.replace(/\.glb$/, '')
+  return [
+    `${SCANS_DIR}/${base}.opt.glb`,
+    `${SCANS_DIR}/${base}.lod1.glb`,
+    `${SCANS_DIR}/${base}.lod2.glb`,
+    `${SCANS_DIR}/${base}.manifest.json`,
+    `${SCANS_DIR}/${base}.json`,
+  ]
+}
+
+app.delete('/scans/:filename', async (c) => {
+  const filename = safeScanName(c.req.param('filename'))
+  if (!filename || !filename.endsWith('.glb') || isDerivedScanFile(filename)) {
+    return c.json({ error: 'Invalid filename' }, 400)
+  }
+  try {
+    const deletedGlb = await removeIfExists(`${SCANS_DIR}/${filename}`)
+    let deletedSidecars = 0
+    for (const path of derivedArtifactPaths(filename)) {
+      if (await removeIfExists(path)) deletedSidecars += 1
     }
+    if (!deletedGlb && deletedSidecars === 0) return c.json({ error: 'Scan not found' }, 404)
+    await removeScanFromWorlds(filename)
+    broadcast({ type: 'scan-deleted', filename })
+    return c.json({ ok: true, filename, deleted: { glb: deletedGlb, sidecars: deletedSidecars } })
+  } catch (err) {
+    console.error('[scan delete error]', err)
+    return c.json({ error: String(err) }, 500)
+  }
+})
 
-    const form = await c.req.formData()
-    const image = form.get('image')
-    const metaRaw = form.get('meta')
-    if (!image || !(image instanceof File)) return c.json({ error: 'Missing image field' }, 400)
-    if (typeof metaRaw !== 'string') return c.json({ error: 'Missing meta field' }, 400)
-
-    let meta: Record<string, unknown>
-    try {
-      meta = JSON.parse(metaRaw) as Record<string, unknown>
-    } catch {
-      return c.json({ error: 'meta is not valid JSON' }, 400)
+app.delete('/scans', async (c) => {
+  const confirm = c.req.query('confirm')
+  if (confirm !== 'delete-all') {
+    return c.json({ error: 'Add ?confirm=delete-all to clear scan storage' }, 400)
+  }
+  let deleted = 0
+  try {
+    for await (const entry of Deno.readDir(SCANS_DIR)) {
+      if (!entry.isFile) continue
+      if (!entry.name.endsWith('.glb') && !entry.name.endsWith('.json')) continue
+      if (await removeIfExists(`${SCANS_DIR}/${entry.name}`)) deleted += 1
     }
-    const index = Number.isInteger(meta['index']) ? meta['index'] as number : -1
-    if (index < 0 || index >= MAX_KEYFRAMES_PER_SESSION) {
-      return c.json({ error: `index must be 0…${MAX_KEYFRAMES_PER_SESSION - 1}` }, 400)
-    }
+    await removeAllScansFromWorlds()
+    broadcast({ type: 'scans-cleared', deleted })
+    return c.json({ ok: true, deleted })
+  } catch (err) {
+    console.error('[scans clear error]', err)
+    return c.json({ error: String(err) }, 500)
+  }
+})
 
-    try {
-      const bytes = new Uint8Array(await image.arrayBuffer())
-      const name = `kf-${String(index).padStart(5, '0')}.jpg`
-      await Deno.writeFile(`${dir}/${name}`, bytes)
-      await Deno.writeTextFile(
-        `${dir}/keyframes.jsonl`,
-        JSON.stringify({ ...meta, file: name, bytes: bytes.byteLength, receivedAt: Date.now() }) + '\n',
-        { append: true },
-      )
-      return c.json({ ok: true, index })
-    } catch (err) {
-      console.error('[session keyframe error]', err)
-      return c.json({ error: String(err) }, 500)
-    }
-  })
+// ── Capture sessions — streaming keyframe ingestion ──────────────────────────
+//
+// The phone opens a session when scanning starts and streams pose-tagged
+// keyframes (JPEG + JSON meta) while the user walks the room.  Frames land in
+//   scans/sessions/<id>/kf-NNNNN.jpg        image
+//   scans/sessions/<id>/keyframes.jsonl     one meta record per frame
+// On finalize the session is linked to the exported .glb.  This is the raw
+// input a dense-reconstruction stage (photogrammetry / splats) consumes.
 
-  app.post('/sessions/:id/finalize', async (c) => {
-    const dir = sessionDir(c.req.param('id'))
-    if (!dir) return c.json({ error: 'Invalid session id' }, 400)
-    let record: Record<string, unknown>
-    try {
-      record = JSON.parse(await Deno.readTextFile(`${dir}/session.json`)) as Record<string, unknown>
-    } catch {
-      return c.json({ error: 'Session not found' }, 404)
-    }
+const SESSION_ID_RE = /^sess-[a-z0-9-]+$/
 
-    const body = await c.req.json().catch(() => ({})) as {
-      glbFilename?: string
-      pointCount?: number
-      detectionCount?: number
-      poseCount?: number
-    }
+function sessionDir(id: string): string | null {
+  return SESSION_ID_RE.test(id) ? `${SESSIONS_DIR}/${id}` : null
+}
 
-    let keyframeCount = 0
-    try {
-      const jsonl = await Deno.readTextFile(`${dir}/keyframes.jsonl`)
-      keyframeCount = jsonl.split('\n').filter(Boolean).length
-    } catch { /* no keyframes uploaded */ }
+app.post('/sessions', async (c) => {
+  const sessionId = `sess-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  await Deno.mkdir(`${SESSIONS_DIR}/${sessionId}`, { recursive: true })
+  const record = { sessionId, startedAt: new Date().toISOString(), keyframeCount: 0 }
+  await Deno.writeTextFile(`${SESSIONS_DIR}/${sessionId}/session.json`, JSON.stringify(record, null, 2))
+  console.log(`[session] opened ${sessionId}`)
+  broadcast({ type: 'session-started', sessionId })
+  return c.json(record, 201)
+})
 
-    const glbFilename = body.glbFilename ? safeScanName(body.glbFilename) : null
-    record = {
-      ...record,
-      keyframeCount,
-      finalizedAt: new Date().toISOString(),
-      glbFilename,
-      pointCount: body.pointCount ?? null,
-      detectionCount: body.detectionCount ?? null,
-      poseCount: body.poseCount ?? null,
-    }
-    await Deno.writeTextFile(`${dir}/session.json`, JSON.stringify(record, null, 2))
-    console.log(`[session] finalized ${record['sessionId']} — ${keyframeCount} keyframes` +
-      (glbFilename ? ` → ${glbFilename}` : ''))
+app.post('/sessions/:id/keyframes', async (c) => {
+  const dir = sessionDir(c.req.param('id'))
+  if (!dir) return c.json({ error: 'Invalid session id' }, 400)
+  try {
+    await Deno.stat(dir)
+  } catch {
+    return c.json({ error: 'Session not found' }, 404)
+  }
 
-    if (glbFilename?.endsWith('.glb')) {
-      try {
-        await Deno.stat(`${SCANS_DIR}/${glbFilename}`)
-        try {
-          await Deno.stat(`${SCANS_DIR}/${glbFilename.replace(/\.glb$/, '.manifest.json')}`)
-        } catch {
-          jobQueue.enqueue('optimize-scan', glbFilename)
-        }
-      } catch { /* glb not uploaded yet — upload-scan enqueues on arrival */ }
-    }
-    broadcast({ type: 'session-finalized', sessionId: record['sessionId'], keyframeCount, glbFilename })
-    return c.json(record)
-  })
+  const form = await c.req.formData()
+  const image = form.get('image')
+  const metaRaw = form.get('meta')
+  if (!image || !(image instanceof File)) return c.json({ error: 'Missing image field' }, 400)
+  if (typeof metaRaw !== 'string') return c.json({ error: 'Missing meta field' }, 400)
 
-  app.delete('/scans/:filename', async (c) => {
-    const filename = safeStorageFilename(c.req.param('filename'), '.glb')
-    if (!filename) return c.json({ error: 'Invalid filename' }, 400)
+  let meta: Record<string, unknown>
+  try {
+    meta = JSON.parse(metaRaw) as Record<string, unknown>
+  } catch {
+    return c.json({ error: 'meta is not valid JSON' }, 400)
+  }
+  const index = Number.isInteger(meta['index']) ? meta['index'] as number : -1
+  if (index < 0 || index >= MAX_KEYFRAMES_PER_SESSION) {
+    return c.json({ error: `index must be 0…${MAX_KEYFRAMES_PER_SESSION - 1}` }, 400)
+  }
 
-    try {
-      const deletedGlb = await removeIfExists(`${SCANS_DIR}/${filename}`)
-      const deletedMeta = await removeIfExists(scanMetaPath(filename))
-      if (!deletedGlb && !deletedMeta) return c.json({ error: 'Scan not found' }, 404)
-      await removeScanFromWorlds(filename)
-      return c.json({ ok: true, filename, deleted: { glb: deletedGlb, metadata: deletedMeta } })
-    } catch (err) {
-      console.error('[scan delete error]', err)
-      return c.json({ error: String(err) }, 500)
-    }
-  })
+  try {
+    const bytes = new Uint8Array(await image.arrayBuffer())
+    const name = `kf-${String(index).padStart(5, '0')}.jpg`
+    await Deno.writeFile(`${dir}/${name}`, bytes)
+    await Deno.writeTextFile(
+      `${dir}/keyframes.jsonl`,
+      JSON.stringify({ ...meta, file: name, bytes: bytes.byteLength, receivedAt: Date.now() }) + '\n',
+      { append: true },
+    )
+    return c.json({ ok: true, index })
+  } catch (err) {
+    console.error('[session keyframe error]', err)
+    return c.json({ error: String(err) }, 500)
+  }
+})
+
+app.post('/sessions/:id/finalize', async (c) => {
+  const dir = sessionDir(c.req.param('id'))
+  if (!dir) return c.json({ error: 'Invalid session id' }, 400)
+  let record: Record<string, unknown>
+  try {
+    record = JSON.parse(await Deno.readTextFile(`${dir}/session.json`)) as Record<string, unknown>
+  } catch {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+
+  const body = await c.req.json().catch(() => ({})) as {
+    glbFilename?: string
+    pointCount?: number
+    detectionCount?: number
+    poseCount?: number
+  }
+
+  let keyframeCount = 0
+  try {
+    const jsonl = await Deno.readTextFile(`${dir}/keyframes.jsonl`)
+    keyframeCount = jsonl.split('\n').filter(Boolean).length
+  } catch { /* no keyframes uploaded */ }
+
+  const glbFilename = body.glbFilename ? safeScanName(body.glbFilename) : null
+  record = {
+    ...record,
+    keyframeCount,
+    finalizedAt: new Date().toISOString(),
+    glbFilename,
+    pointCount: body.pointCount ?? null,
+    detectionCount: body.detectionCount ?? null,
     poseCount: body.poseCount ?? null,
   }
   await Deno.writeTextFile(`${dir}/session.json`, JSON.stringify(record, null, 2))
@@ -249,210 +483,151 @@ app.get('/scans/:filename/manifest', async (c) => {
         await Deno.stat(`${SCANS_DIR}/${glbFilename.replace(/\.glb$/, '.manifest.json')}`)
       } catch {
         jobQueue.enqueue('optimize-scan', glbFilename)
-        return c.json({ error: String(err) }, 500)
       }
-    })
+    } catch { /* glb not uploaded yet — upload-scan enqueues on arrival */ }
+  }
+  broadcast({ type: 'session-finalized', sessionId: record['sessionId'], keyframeCount, glbFilename })
+  return c.json(record)
+})
 
-    // ── Scan manifest + manual re-optimize ────────────────────────────────────────
-    // (Semantic edit persistence lives in the worlds patch system: /worlds/:slug/patches)
+app.get('/sessions/:id', async (c) => {
+  const dir = sessionDir(c.req.param('id'))
+  if (!dir) return c.json({ error: 'Invalid session id' }, 400)
+  try {
+    return c.json(JSON.parse(await Deno.readTextFile(`${dir}/session.json`)))
+  } catch {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+})
 
-    app.get('/scans/:filename/manifest', async (c) => {
-      const filename = safeScanName(c.req.param('filename'))
-      if (!filename || !filename.endsWith('.glb')) return c.json({ error: 'Invalid filename' }, 400)
+app.get('/sessions', async (c) => {
+  const sessions: unknown[] = []
+  try {
+    for await (const entry of Deno.readDir(SESSIONS_DIR)) {
+      if (!entry.isDirectory) continue
       try {
-        const raw = await Deno.readTextFile(`${SCANS_DIR}/${filename.replace(/\.glb$/, '.manifest.json')}`)
-        return c.json(JSON.parse(raw))
-      } catch {
-        return c.json({ error: 'No manifest — scan not optimized yet' }, 404)
-      }
-    })
-
-    app.post('/scans/:filename/optimize', async (c) => {
-      const filename = safeScanName(c.req.param('filename'))
-      if (!filename || !filename.endsWith('.glb') || isDerivedScanFile(filename)) {
-        return c.json({ error: 'Invalid filename' }, 400)
-      }
-      try {
-        await Deno.stat(`${SCANS_DIR}/${filename}`)
-      } catch {
-        return c.json({ error: 'Scan not found' }, 404)
-      }
-      const job = jobQueue.enqueue('optimize-scan', filename)
-      return c.json(job, 202)
-    })
-
-    // ── Job queue state ───────────────────────────────────────────────────────────
-
-    app.get('/jobs', (c) => c.json([...jobQueue.jobs].reverse()))
-
-    app.get('/jobs/:id', (c) => {
-      const job = jobQueue.job(c.req.param('id'))
-      return job ? c.json(job) : c.json({ error: 'Not found' }, 404)
-    })
-
-    app.delete('/scans', async (c) => {
-      const confirm = c.req.query('confirm')
-      if (confirm !== 'delete-all') {
-        return c.json({ error: 'Add ?confirm=delete-all to clear scan storage' }, 400)
-      }
-
-      let deleted = 0
-      try {
-        for await (const entry of Deno.readDir(SCANS_DIR)) {
-          if (!entry.isFile) continue
-          if (!entry.name.endsWith('.glb') && !entry.name.endsWith('.json')) continue
-          if (await removeIfExists(`${SCANS_DIR}/${entry.name}`)) deleted += 1
-        }
-        await removeAllScansFromWorlds()
-        return c.json({ ok: true, deleted })
-      } catch (err) {
-        console.error('[scans clear error]', err)
-        return c.json({ error: String(err) }, 500)
-      }
-    })
-
-    // ── Capture sessions — streaming keyframe ingestion ──────────────────────────
-    //
-    // The phone opens a session when scanning starts and streams pose-tagged
-    // keyframes (JPEG + JSON meta) while the user walks the room.  Frames land in
-    //   scans/sessions/<id>/kf-NNNNN.jpg        image
-    //   scans/sessions/<id>/keyframes.jsonl     one meta record per frame
-    // On finalize the session is linked to the exported .glb.  This is the raw
-    // input a dense-reconstruction stage (photogrammetry / splats) consumes.
-
-    const SESSION_ID_RE = /^sess-[a-z0-9-]+$/
-
-    function sessionDir(id: string): string | null {
-      return SESSION_ID_RE.test(id) ? `${SESSIONS_DIR}/${id}` : null
+        sessions.push(JSON.parse(await Deno.readTextFile(`${SESSIONS_DIR}/${entry.name}/session.json`)))
+      } catch { /* incomplete session dir */ }
     }
+  } catch { /* sessions dir missing */ }
+  return c.json(sessions)
+})
 
-    app.post('/sessions', async (c) => {
-      const sessionId = `sess-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-      await Deno.mkdir(`${SESSIONS_DIR}/${sessionId}`, { recursive: true })
-      const record = { sessionId, startedAt: new Date().toISOString(), keyframeCount: 0 }
-      await Deno.writeTextFile(`${SESSIONS_DIR}/${sessionId}/session.json`, JSON.stringify(record, null, 2))
-      console.log(`[session] opened ${sessionId}`)
-      broadcast({ type: 'session-started', sessionId })
-      return c.json(record, 201)
-    })
+// ── Upload session summary (.md) ──────────────────────────────────────────────
 
-    app.post('/sessions/:id/keyframes', async (c) => {
-      const dir = sessionDir(c.req.param('id'))
-      if (!dir) return c.json({ error: 'Invalid session id' }, 400)
+// ── GET /scan-locations — geo metadata for all scans ─────────────────────────
+// Reads the companion .json files saved alongside each .glb
+app.get('/scan-locations', async (c) => {
+  try {
+    const locations: Record<string, unknown>[] = []
+    for await (const entry of Deno.readDir(SCANS_DIR)) {
+      if (!entry.isFile || !entry.name.endsWith('.glb')) continue
+      const metaPath = `${SCANS_DIR}/${entry.name.replace(/\.glb$/, '.json')}`
+      let meta: Record<string, unknown> = {}
       try {
-        await Deno.stat(dir)
-      } catch {
-        return c.json({ error: 'Session not found' }, 404)
-      }
+        meta = JSON.parse(await Deno.readTextFile(metaPath)) as Record<string, unknown>
+      } catch { /* no companion metadata */ }
 
-      const form = await c.req.formData()
-      const image = form.get('image')
-      const metaRaw = form.get('meta')
-      if (!image || !(image instanceof File)) return c.json({ error: 'Missing image field' }, 400)
-      if (typeof metaRaw !== 'string') return c.json({ error: 'Missing meta field' }, 400)
+      // Only include scans that have GPS data
+      if (typeof meta['geoLat'] !== 'number' || typeof meta['geoLng'] !== 'number') continue
+      if (meta['geoLat'] === 0 && meta['geoLng'] === 0) continue
 
-      let meta: Record<string, unknown>
-      try {
-        meta = JSON.parse(metaRaw) as Record<string, unknown>
-      } catch {
-        return c.json({ error: 'meta is not valid JSON' }, 400)
-      }
-      const index = Number.isInteger(meta['index']) ? meta['index'] as number : -1
-      if (index < 0 || index >= MAX_KEYFRAMES_PER_SESSION) {
-        return c.json({ error: `index must be 0…${MAX_KEYFRAMES_PER_SESSION - 1}` }, 400)
-      }
+      locations.push({
+        filename:       entry.name,
+        lat:            meta['geoLat'],
+        lng:            meta['geoLng'],
+        bearing:        meta['geoBearing']  ?? null,
+        address:        meta['geoAddress']  ?? null,
+        capturedAt:     meta['capturedAt']  ?? null,
+        pointCount:     meta['pointCount']  ?? null,
+        detectionCount: meta['detectionCount'] ?? null,
+        scanName:       meta['scanName']    ?? null,
+      })
+    }
+    locations.sort((a, b) =>
+      ((b['capturedAt'] as string) ?? '').localeCompare((a['capturedAt'] as string) ?? ''))
+    return c.json(locations)
+  } catch (err) {
+    console.error('[scan-locations error]', err)
+    return c.json([], 200)
+  }
+})
 
-      try {
-        const bytes = new Uint8Array(await image.arrayBuffer())
-        const name = `kf-${String(index).padStart(5, '0')}.jpg`
-        await Deno.writeFile(`${dir}/${name}`, bytes)
-        await Deno.writeTextFile(
-          `${dir}/keyframes.jsonl`,
-          JSON.stringify({ ...meta, file: name, bytes: bytes.byteLength, receivedAt: Date.now() }) + '\n',
-          { append: true },
-        )
-        return c.json({ ok: true, index })
-      } catch (err) {
-        console.error('[session keyframe error]', err)
-        return c.json({ error: String(err) }, 500)
-      }
-    })
+// ── World projects, edit patches, and processing jobs ────────────────────────
 
-    app.post('/sessions/:id/finalize', async (c) => {
-      const dir = sessionDir(c.req.param('id'))
-      if (!dir) return c.json({ error: 'Invalid session id' }, 400)
-      let record: Record<string, unknown>
-      try {
-        record = JSON.parse(await Deno.readTextFile(`${dir}/session.json`)) as Record<string, unknown>
-      } catch {
-        return c.json({ error: 'Session not found' }, 404)
-      }
+const WORLD_JOB_TYPES = new Set<WorldJobType>([
+  'ingest',
+  'extract-layers',
+  'align-scan',
+  'merge-points',
+  'semantic-pass',
+  'depth-reconstruct',
+  'splat-train',
+  'export-world',
+])
 
-      const body = await c.req.json().catch(() => ({})) as {
-        glbFilename?: string
-        pointCount?: number
-        detectionCount?: number
-        poseCount?: number
-      }
+const DEFAULT_WORKER_CAPABILITIES = ['cpu', 'onnx', 'ollama', 'open3d', 'splat', 'vggt']
 
-      let keyframeCount = 0
-      try {
-        const jsonl = await Deno.readTextFile(`${dir}/keyframes.jsonl`)
-        keyframeCount = jsonl.split('\n').filter(Boolean).length
-      } catch { /* no keyframes uploaded */ }
+interface StoredScanInfo {
+  filename: string
+  size: number
+  uploadedAt: string
+  meta: Record<string, unknown>
+}
 
-      const glbFilename = body.glbFilename ? safeScanName(body.glbFilename) : null
-      record = {
-        ...record,
-        keyframeCount,
-        finalizedAt: new Date().toISOString(),
-        glbFilename,
-        pointCount: body.pointCount ?? null,
-        detectionCount: body.detectionCount ?? null,
-        poseCount: body.poseCount ?? null,
-      }
-      await Deno.writeTextFile(`${dir}/session.json`, JSON.stringify(record, null, 2))
-      console.log(`[session] finalized ${record['sessionId']} — ${keyframeCount} keyframes` +
-        (glbFilename ? ` → ${glbFilename}` : ''))
+function safeSlug(raw: string | undefined, fallback = 'default'): string {
+  const slug = (raw ?? fallback)
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+  return slug || fallback
+}
 
-      if (glbFilename?.endsWith('.glb')) {
-        try {
-          await Deno.stat(`${SCANS_DIR}/${glbFilename}`)
-          // Skip when upload-scan's job already produced a manifest
-          try {
-            await Deno.stat(`${SCANS_DIR}/${glbFilename.replace(/\.glb$/, '.manifest.json')}`)
-          } catch {
-            jobQueue.enqueue('optimize-scan', glbFilename)
-          }
-        } catch { /* glb not uploaded yet — upload-scan enqueues on arrival */ }
-      }
-      broadcast({ type: 'session-finalized', sessionId: record['sessionId'], keyframeCount, glbFilename })
-      return c.json(record)
-    })
+function worldPath(slug: string): string {
+  return `${WORLDS_DIR}/${safeSlug(slug)}.json`
+}
 
-    app.get('/sessions/:id', async (c) => {
-      const dir = sessionDir(c.req.param('id'))
-      if (!dir) return c.json({ error: 'Invalid session id' }, 400)
-      try {
-        return c.json(JSON.parse(await Deno.readTextFile(`${dir}/session.json`)))
-      } catch {
-        return c.json({ error: 'Session not found' }, 404)
-      }
-    })
+function scanMetaPath(filename: string): string {
+  return `${SCANS_DIR}/${filename.replace(/\.glb$/, '.json')}`
+}
 
-    app.get('/sessions', async (c) => {
-      const sessions: unknown[] = []
-      try {
-        for await (const entry of Deno.readDir(SESSIONS_DIR)) {
-          if (!entry.isDirectory) continue
-          try {
-            sessions.push(JSON.parse(await Deno.readTextFile(`${SESSIONS_DIR}/${entry.name}/session.json`)))
-          } catch { /* incomplete session dir */ }
-        }
-      } catch { /* sessions dir missing */ }
-      return c.json(sessions)
-    })
+function asNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
 
+function asString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+function geoPoseFromMeta(meta: Record<string, unknown>): GeoPose {
+  return {
+    lat: asNumber(meta['geoLat']),
+    lng: asNumber(meta['geoLng']),
+    altitudeM: asNumber(meta['geoAltitudeM']),
+    bearing: asNumber(meta['geoBearing']),
+    accuracyM: asNumber(meta['geoAccuracy']),
+    fixedAt: asString(meta['geoFixedAt']),
+    address: asString(meta['geoAddress']),
+    displayAddress: asString(meta['geoDisplayAddress']),
+  }
+}
+
+async function readScanMeta(filename: string): Promise<Record<string, unknown>> {
+  try {
+    return JSON.parse(await Deno.readTextFile(scanMetaPath(filename))) as Record<string, unknown>
+  } catch {
+    return {}
+  }
+}
+
+async function listStoredScans(): Promise<StoredScanInfo[]> {
+  const scans: StoredScanInfo[] = []
+  for await (const entry of Deno.readDir(SCANS_DIR)) {
+    if (!entry.isFile || !entry.name.endsWith('.glb')) continue
+    if (isDerivedScanFile(entry.name)) continue // .opt/.lodN artifacts aren't standalone scans
+    const stat = await Deno.stat(`${SCANS_DIR}/${entry.name}`)
+    scans.push({
       filename: entry.name,
       size: stat.size,
       uploadedAt: (stat.mtime ?? new Date()).toISOString(),
@@ -534,6 +709,35 @@ async function saveWorld(world: WorldProject): Promise<void> {
   await Deno.rename(tmp, worldPath(world.shareSlug))
 }
 
+async function synthesizeWorld(slug: string): Promise<WorldProject> {
+  const stored = await listStoredScans()
+  const included = stored.filter(shouldIncludeInWorld).slice(0, 24)
+  const source = included.length > 0 ? included : stored.slice(0, 8)
+  const originGeoPose = inferWorldOrigin(source)
+  const now = new Date().toISOString()
+  const world: WorldProject = {
+    worldId: `world-${safeSlug(slug)}`,
+    name: slug === 'default' ? 'Default World Scan' : slug.replace(/-/g, ' '),
+    shareSlug: safeSlug(slug),
+    originGeoPose,
+    localFrame: {
+      type: 'ENU_Y_UP',
+      origin: originGeoPose,
+      units: 'meters',
+      axes: { x: 'east', y: 'up', z: 'north' },
+    },
+    scans: source.map((scan, i) => scanManifestFromStored(scan, originGeoPose, i)),
+    members: createWorldMembers(),
+    jobs: [],
+    editPatches: [],
+    createdAt: now,
+    updatedAt: now,
+  }
+  await saveWorld(world)
+  return world
+}
+
+/** Apply a mutator to every stored world file; returns how many were updated */
 async function mutateWorldFiles(mutator: (world: WorldProject) => boolean | Promise<boolean>): Promise<number> {
   let updated = 0
   try {
@@ -578,34 +782,6 @@ async function removeAllScansFromWorlds(): Promise<number> {
   })
 }
 
-async function synthesizeWorld(slug: string): Promise<WorldProject> {
-  const stored = await listStoredScans()
-  const included = stored.filter(shouldIncludeInWorld).slice(0, 24)
-  const source = included.length > 0 ? included : stored.slice(0, 8)
-  const originGeoPose = inferWorldOrigin(source)
-  const now = new Date().toISOString()
-  const world: WorldProject = {
-    worldId: `world-${safeSlug(slug)}`,
-    name: slug === 'default' ? 'Default World Scan' : slug.replace(/-/g, ' '),
-    shareSlug: safeSlug(slug),
-    originGeoPose,
-    localFrame: {
-      type: 'ENU_Y_UP',
-      origin: originGeoPose,
-      units: 'meters',
-      axes: { x: 'east', y: 'up', z: 'north' },
-    },
-    scans: source.map((scan, i) => scanManifestFromStored(scan, originGeoPose, i)),
-    members: createWorldMembers(),
-    jobs: [],
-    editPatches: [],
-    createdAt: now,
-    updatedAt: now,
-  }
-  await saveWorld(world)
-  return world
-}
-
 async function loadWorld(slug: string): Promise<WorldProject> {
   const safe = safeSlug(slug)
   try {
@@ -619,16 +795,12 @@ async function loadWorld(slug: string): Promise<WorldProject> {
 
 async function refreshWorldScans(world: WorldProject): Promise<void> {
   const stored = await listStoredScans()
-  const storedFilenames = new Set(stored.map(scan => scan.filename))
-  const beforeCount = world.scans.length
-  world.scans = world.scans.filter(scan => scan.filename ? storedFilenames.has(scan.filename) : true)
-
   const existing = new Set(world.scans.map(scan => scan.filename))
   const additions = stored
     .filter(shouldIncludeInWorld)
     .filter(scan => !existing.has(scan.filename))
     .slice(0, 12)
-  if (additions.length === 0 && world.scans.length === beforeCount) return
+  if (additions.length === 0) return
 
   const origin = world.originGeoPose
   const nextIndex = world.scans.length
@@ -636,6 +808,7 @@ async function refreshWorldScans(world: WorldProject): Promise<void> {
   await saveWorld(world)
 }
 
+/** Best client-facing base URL: request origin → forwarded host → Vite default */
 function clientBaseUrl(c: { req: { url: string; header: (name: string) => string | undefined } }): string {
   const origin = c.req.header('origin')
   if (origin && isAllowedOrigin(origin)) return origin
@@ -1056,197 +1229,183 @@ interface ProjectRecord {
   floors: unknown[]
 }
 
-app.delete('/scans/:filename', async (c) => {
-  const filename = safeStorageFilename(c.req.param('filename'), '.glb')
-  if (!filename) return c.json({ error: 'Invalid filename' }, 400)
+const PROJECTS_FILE = Deno.env.get('PROJECTS_FILE') ?? './projects.json'
+let projectMutationQueue: Promise<void> = Promise.resolve()
 
+async function loadProjects(): Promise<ProjectRecord[]> {
   try {
-    const deletedGlb = await removeIfExists(`${SCANS_DIR}/${filename}`)
-    const deletedMeta = await removeIfExists(scanMetaPath(filename))
-    if (!deletedGlb && !deletedMeta) return c.json({ error: 'Scan not found' }, 404)
-    await removeScanFromWorlds(filename)
-    return c.json({ ok: true, filename, deleted: { glb: deletedGlb, metadata: deletedMeta } })
-  } catch (err) {
-    console.error('[scan delete error]', err)
-    return c.json({ error: String(err) }, 500)
-  }
+    return JSON.parse(await Deno.readTextFile(PROJECTS_FILE)) as ProjectRecord[]
+  } catch { return [] }
+}
+
+async function saveProjects(projects: ProjectRecord[]): Promise<void> {
+  const tmpFile = `${PROJECTS_FILE}.${crypto.randomUUID()}.tmp`
+  await Deno.writeTextFile(tmpFile, JSON.stringify(projects, null, 2))
+  await Deno.rename(tmpFile, PROJECTS_FILE)
+}
+
+async function mutateProjects<T>(
+  mutator: (projects: ProjectRecord[]) => { result: T; save: boolean } | Promise<{ result: T; save: boolean }>,
+): Promise<T> {
+  const mutation = projectMutationQueue.then(async () => {
+    const projects = await loadProjects()
+    const { result, save } = await mutator(projects)
+    if (save) await saveProjects(projects)
+    return result
+  })
+  projectMutationQueue = mutation.then(() => undefined, () => undefined)
+  return mutation
+}
+
+app.get('/projects', async (c) => {
+  const projects = await loadProjects()
+  projects.sort((a, b) => b.updatedAt - a.updatedAt)
+  return c.json(projects)
 })
 
-app.delete('/scans', async (c) => {
-  const confirm = c.req.query('confirm')
-  if (confirm !== 'delete-all') {
-    return c.json({ error: 'Add ?confirm=delete-all to clear scan storage' }, 400)
-  }
-
-  let deleted = 0
-  try {
-    for await (const entry of Deno.readDir(SCANS_DIR)) {
-      if (!entry.isFile) continue
-      if (!entry.name.endsWith('.glb') && !entry.name.endsWith('.json')) continue
-      if (await removeIfExists(`${SCANS_DIR}/${entry.name}`)) deleted += 1
-    }
-    await removeAllScansFromWorlds()
-    return c.json({ ok: true, deleted })
-  } catch (err) {
-    console.error('[scans clear error]', err)
-    return c.json({ error: String(err) }, 500)
-  }
-})
-
-app.get('/scans/:filename/manifest', async (c) => {
-  const filename = safeScanName(c.req.param('filename'))
-  if (!filename || !filename.endsWith('.glb')) return c.json({ error: 'Invalid filename' }, 400)
-  try {
-    const raw = await Deno.readTextFile(`${SCANS_DIR}/${filename.replace(/\.glb$/, '.manifest.json')}`)
-    return c.json(JSON.parse(raw))
-  } catch {
-    return c.json({ error: 'No manifest — scan not optimized yet' }, 404)
-  }
-})
-
-app.post('/scans/:filename/optimize', async (c) => {
-  const filename = safeScanName(c.req.param('filename'))
-  if (!filename || !filename.endsWith('.glb') || isDerivedScanFile(filename)) {
-    return c.json({ error: 'Invalid filename' }, 400)
-  }
-  try {
-    await Deno.stat(`${SCANS_DIR}/${filename}`)
-  } catch {
-    return c.json({ error: 'Scan not found' }, 404)
-  }
-  const job = jobQueue.enqueue('optimize-scan', filename)
-  return c.json(job, 202)
-})
-
-app.get('/jobs', (c) => c.json([...jobQueue.jobs].reverse()))
-
-app.get('/jobs/:id', (c) => {
-  const job = jobQueue.job(c.req.param('id'))
-  return job ? c.json(job) : c.json({ error: 'Not found' }, 404)
-})
-
-app.post('/sessions', async (c) => {
-  const sessionId = `sess-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  await Deno.mkdir(`${SESSIONS_DIR}/${sessionId}`, { recursive: true })
-  const record = { sessionId, startedAt: new Date().toISOString(), keyframeCount: 0 }
-  await Deno.writeTextFile(`${SESSIONS_DIR}/${sessionId}/session.json`, JSON.stringify(record, null, 2))
-  console.log(`[session] opened ${sessionId}`)
-  broadcast({ type: 'session-started', sessionId })
-  return c.json(record, 201)
-})
-
-app.post('/sessions/:id/keyframes', async (c) => {
-  const dir = sessionDir(c.req.param('id'))
-  if (!dir) return c.json({ error: 'Invalid session id' }, 400)
-  try {
-    await Deno.stat(dir)
-  } catch {
-    return c.json({ error: 'Session not found' }, 404)
-  }
-
-  const form = await c.req.formData()
-  const image = form.get('image')
-  const metaRaw = form.get('meta')
-  if (!image || !(image instanceof File)) return c.json({ error: 'Missing image field' }, 400)
-  if (typeof metaRaw !== 'string') return c.json({ error: 'Missing meta field' }, 400)
-
-  let meta: Record<string, unknown>
-  try {
-    meta = JSON.parse(metaRaw) as Record<string, unknown>
-  } catch {
-    return c.json({ error: 'meta is not valid JSON' }, 400)
-  }
-  const index = Number.isInteger(meta['index']) ? meta['index'] as number : -1
-  if (index < 0 || index >= MAX_KEYFRAMES_PER_SESSION) {
-    return c.json({ error: `index must be 0…${MAX_KEYFRAMES_PER_SESSION - 1}` }, 400)
-  }
-
-  try {
-    const bytes = new Uint8Array(await image.arrayBuffer())
-    const name = `kf-${String(index).padStart(5, '0')}.jpg`
-    await Deno.writeFile(`${dir}/${name}`, bytes)
-    await Deno.writeTextFile(
-      `${dir}/keyframes.jsonl`,
-      JSON.stringify({ ...meta, file: name, bytes: bytes.byteLength, receivedAt: Date.now() }) + '\n',
-      { append: true },
-    )
-    return c.json({ ok: true, index })
-  } catch (err) {
-    console.error('[session keyframe error]', err)
-    return c.json({ error: String(err) }, 500)
-  }
-})
-
-app.post('/sessions/:id/finalize', async (c) => {
-  const dir = sessionDir(c.req.param('id'))
-  if (!dir) return c.json({ error: 'Invalid session id' }, 400)
-  let record: Record<string, unknown>
-  try {
-    record = JSON.parse(await Deno.readTextFile(`${dir}/session.json`)) as Record<string, unknown>
-  } catch {
-    return c.json({ error: 'Session not found' }, 404)
-  }
-
+app.post('/projects', async (c) => {
   const body = await c.req.json().catch(() => ({})) as {
-    glbFilename?: string
-    pointCount?: number
-    detectionCount?: number
-    poseCount?: number
+    name?: string
+    address?: string
+    notes?: string
   }
-
-  let keyframeCount = 0
-  try {
-    const jsonl = await Deno.readTextFile(`${dir}/keyframes.jsonl`)
-    keyframeCount = jsonl.split('\n').filter(Boolean).length
-  } catch { /* no keyframes uploaded */ }
-
-  const glbFilename = body.glbFilename ? safeScanName(body.glbFilename) : null
-  record = {
-    ...record,
-    keyframeCount,
-    finalizedAt: new Date().toISOString(),
-    glbFilename,
-    pointCount: body.pointCount ?? null,
-    detectionCount: body.detectionCount ?? null,
-    poseCount: body.poseCount ?? null,
-  }
-  await Deno.writeTextFile(`${dir}/session.json`, JSON.stringify(record, null, 2))
-  console.log(`[session] finalized ${record['sessionId']} — ${keyframeCount} keyframes` +
-    (glbFilename ? ` → ${glbFilename}` : ''))
-
-  if (glbFilename?.endsWith('.glb')) {
-    try {
-      await Deno.stat(`${SCANS_DIR}/${glbFilename}`)
-      try {
-        await Deno.stat(`${SCANS_DIR}/${glbFilename.replace(/\.glb$/, '.manifest.json')}`)
-      } catch {
-        jobQueue.enqueue('optimize-scan', glbFilename)
-      }
-    } catch { /* glb not uploaded yet — upload-scan enqueues on arrival */ }
-  }
-  broadcast({ type: 'session-finalized', sessionId: record['sessionId'], keyframeCount, glbFilename })
-  return c.json(record)
-})
-
-app.get('/sessions/:id', async (c) => {
-  const dir = sessionDir(c.req.param('id'))
-  if (!dir) return c.json({ error: 'Invalid session id' }, 400)
-  try {
-    return c.json(JSON.parse(await Deno.readTextFile(`${dir}/session.json`)))
-  } catch {
-    return c.json({ error: 'Session not found' }, 404)
-  }
-})
-
-app.get('/sessions', async (c) => {
-  const sessions: unknown[] = []
-  try {
-    for await (const entry of Deno.readDir(SESSIONS_DIR)) {
-      if (!entry.isDirectory) continue
-      try {
-        sessions.push(JSON.parse(await Deno.readTextFile(`${SESSIONS_DIR}/${entry.name}/session.json`)))
-      } catch { /* incomplete session dir */ }
+  if (!body.name?.trim()) return c.json({ error: 'name is required' }, 400)
+  const name = body.name.trim()
+  const project = await mutateProjects((projects) => {
+    const now = Date.now()
+    const project: ProjectRecord = {
+      projectId: `proj-${now}`,
+      name,
+      address: body.address,
+      notes: body.notes,
+      createdAt: now,
+      updatedAt: now,
+      floors: [{ floorId: `floor-${now}`, name: 'Ground Floor', level: 0, rooms: [] }],
     }
-  } catch { /* sessions dir missing */ }
-  return c.json(sessions)
+    projects.push(project)
+    return { result: project, save: true }
+  })
+  return c.json(project, 201)
 })
+
+app.get('/projects/:id', async (c) => {
+  const id = c.req.param('id')
+  const projects = await loadProjects()
+  const project = projects.find(p => p.projectId === id)
+  if (!project) return c.json({ error: 'Not found' }, 404)
+  return c.json(project)
+})
+
+app.put('/projects/:id', async (c) => {
+  const id = c.req.param('id')
+  const body = await c.req.json().catch(() => null) as ProjectRecord | null
+  if (!body) return c.json({ error: 'Invalid JSON' }, 400)
+  const updated = await mutateProjects<ProjectRecord | null>((projects) => {
+    const idx = projects.findIndex(p => p.projectId === id)
+    if (idx === -1) return { result: null, save: false }
+    projects[idx] = { ...body, projectId: id, updatedAt: Date.now() }
+    return { result: projects[idx], save: true }
+  })
+  if (!updated) return c.json({ error: 'Not found' }, 404)
+  return c.json(updated)
+})
+
+app.delete('/projects/:id', async (c) => {
+  const id = c.req.param('id')
+  const deleted = await mutateProjects((projects) => {
+    const idx = projects.findIndex(p => p.projectId === id)
+    if (idx === -1) return { result: false, save: false }
+    projects.splice(idx, 1)
+    return { result: true, save: true }
+  })
+  if (!deleted) return c.json({ error: 'Not found' }, 404)
+  return c.json({ ok: true })
+})
+
+console.log(`[server] CORS origin prefix: ${ALLOWED_ORIGIN_PREFIX}`)
+
+// ── Server event stream — /events ─────────────────────────────────────────────
+// Broadcast-only WebSocket: scan uploads, job transitions, session lifecycle.
+// The desktop viewer subscribes to refresh its scan list live.
+
+app.get('/events', (c) => {
+  const { socket, response } = Deno.upgradeWebSocket(c.req.raw)
+  socket.addEventListener('open', () => {
+    eventSockets.add(socket)
+    socket.send(JSON.stringify({ type: 'hello', jobs: jobQueue.jobs.filter(j => j.status === 'queued' || j.status === 'running').length }))
+  })
+  socket.addEventListener('close', () => eventSockets.delete(socket))
+  socket.addEventListener('error', () => eventSockets.delete(socket))
+  return response
+})
+
+// ── WebRTC signaling — /rtc-signal?room=<id>&role=phone|viewer ───────────────
+//
+// Simple relay: one "phone" sender + one "viewer" receiver per room.
+// Messages are arbitrary JSON (SDP offer/answer, ICE candidates).
+// The server never inspects the payload — it only routes by room + role.
+
+interface RtcPeer {
+  ws: WebSocket
+  role: 'phone' | 'viewer'
+}
+
+/** roomId → { phone?, viewer? } */
+const rtcRooms = new Map<string, Partial<Record<'phone' | 'viewer', RtcPeer>>>()
+
+app.get('/rtc-signal', (c) => {
+  const { socket, response } = Deno.upgradeWebSocket(c.req.raw)
+  const url = new URL(c.req.url)
+  const roomId = (url.searchParams.get('room') ?? 'default').replace(/[^a-zA-Z0-9_-]/g, '')
+  const role   = url.searchParams.get('role') === 'phone' ? 'phone' : 'viewer'
+
+  if (!rtcRooms.has(roomId)) rtcRooms.set(roomId, {})
+  const room = rtcRooms.get(roomId)!
+
+  const peer: RtcPeer = { ws: socket, role }
+  room[role] = peer
+  console.log(`[rtc] ${role} joined room "${roomId}"`)
+
+  // Notify each side when both peers are present
+  const notifyReady = () => {
+    if (room.phone && room.viewer) {
+      const msg = JSON.stringify({ type: 'peer-ready' })
+      if (room.phone.ws.readyState === 1) { // WebSocket.OPEN
+        try { room.phone.ws.send(msg) } catch { /* closed */ }
+      }
+      if (room.viewer.ws.readyState === 1) { // WebSocket.OPEN
+        try { room.viewer.ws.send(msg) } catch { /* closed */ }
+      }
+    }
+  }
+
+  socket.addEventListener('open', () => {
+    notifyReady()
+  })
+  if (socket.readyState === 1) {
+    notifyReady()
+  }
+
+  socket.addEventListener('message', (ev) => {
+    const other = role === 'phone' ? room.viewer : room.phone
+    if (!other) return  // other side not connected yet — drop
+    try {
+      other.ws.send(ev.data as string)
+    } catch { /* other peer closed */ }
+  })
+
+  socket.addEventListener('close', () => {
+    console.log(`[rtc] ${role} left room "${roomId}"`)
+    delete room[role]
+    if (!room.phone && !room.viewer) rtcRooms.delete(roomId)
+    // Notify remaining peer that the other disconnected
+    const remaining = role === 'phone' ? room.viewer : room.phone
+    if (remaining) {
+      try { remaining.ws.send(JSON.stringify({ type: 'peer-left', role })) } catch { /* closed */ }
+    }
+  })
+
+  return response
+})
+
+Deno.serve({ hostname: '0.0.0.0', port: PORT }, app.fetch)
