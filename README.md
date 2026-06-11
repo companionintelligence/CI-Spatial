@@ -9,7 +9,10 @@ An AR room-scanning application that uses 8th Wall SLAM for spatial mapping, a l
 - **3D object pins** — detected objects are placed at their SLAM-resolved world positions as live 3D labels tracking the scene
 - **Session persistence** — every scan is saved to IndexedDB; browse, reload, edit, or delete past sessions from the history drawer
 - **GLTF export** — exports the full scan (point cloud + camera path + labelled boxes) as a `.glb` file, saved locally and uploaded to the server
-- **Desktop 3D viewer** — `/viewer` page renders any uploaded `.glb` with OrbitControls, works without AR hardware
+- **Automatic scan optimization** — every upload runs through a persistent job queue: quantization + Draco + point-cloud LODs (`.opt.glb`, `.lodN.glb`, `.manifest.json`), roughly halving file size
+- **Keyframe streaming** — ☁ button streams pose+intrinsics-tagged keyframes to the server while you walk: reconstruction-ready capture sessions under `scans/sessions/`
+- **Live geometry to desktop** — the WebRTC live stream also carries point-cloud deltas, detections, and camera pose; the desktop editor shows the scan growing in real time
+- **Desktop world editor** — `/viewer` places scans in a shared ENU world with transform gizmos, semantic tagging, layer toggles, and progressive LOD-first loading (Draco-aware)
 - **PWA** — installable on iOS/Android with offline-capable manifest and icons
 
 ---

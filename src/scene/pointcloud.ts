@@ -23,11 +23,11 @@ export class PointCloud {
   }
 
   /**
-   * Add an array of world-space points.  Returns number actually inserted
-   * (i.e. not suppressed as duplicates).
+   * Add an array of world-space points.  Returns the points actually inserted
+   * (i.e. not suppressed as duplicates) so callers can stream deltas.
    */
-  add(points: ReadonlyArray<{ x: number; y: number; z: number }>): number {
-    let added = 0
+  add(points: ReadonlyArray<{ x: number; y: number; z: number }>): Array<{ x: number; y: number; z: number }> {
+    const inserted: Array<{ x: number; y: number; z: number }> = []
     for (const p of points) {
       const key = voxelKey(p.x, p.y, p.z, this._voxelSize)
       if (this._occupied.has(key)) continue
@@ -38,9 +38,9 @@ export class PointCloud {
       this._data[base + 1] = p.y
       this._data[base + 2] = p.z
       this._count++
-      added++
+      inserted.push({ x: p.x, y: p.y, z: p.z })
     }
-    return added
+    return inserted
   }
 
   /** Packed Float32Array of [x0,y0,z0, x1,y1,z1, …] for the filled region. */

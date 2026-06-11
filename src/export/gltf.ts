@@ -74,7 +74,7 @@ export interface ExportData {
   geoFix?: GeoFix         // GPS/bearing/address at time of export (optional)
 }
 
-export async function exportToGLB(data: ExportData): Promise<void> {
+export async function exportToGLB(data: ExportData): Promise<{ uploadedFilename: string | null }> {
   const { store, pointCloud, poseHistory, scanEntry, geoFix } = data
   const scene = new THREE.Scene()
   scene.name = 'room-scan'
@@ -277,20 +277,23 @@ export async function exportToGLB(data: ExportData): Promise<void> {
     `${pointCloud.count} pts, ${poseHistory.length} poses, ${store.detections.size} objects`,
   )
 
-  // Upload to server (non-blocking)
-  void uploadToServer(buffer, filename, store, geoFix)
+  // Upload to server; the server-assigned filename links keyframe sessions
+  // and optimization jobs back to this scan.
+  const uploadedFilename = await uploadToServer(buffer, filename, store, geoFix)
+  return { uploadedFilename }
 }
 
 /**
  * POST the GLB to the Deno server's /upload-scan endpoint so it is persisted
  * in the scans/ folder and available in the 3D viewer.
+ * Returns the server-assigned filename, or null when the upload failed.
  */
 async function uploadToServer(
   buffer: ArrayBuffer,
   filename: string,
   store: DetectionStore,
   geoFix?: GeoFix,
-): Promise<void> {
+): Promise<string | null> {
   try {
     const metadata = JSON.stringify({
       detectionCount: store.detections.size,
@@ -313,12 +316,13 @@ async function uploadToServer(
     if (resp.ok) {
       const { filename: saved } = await resp.json() as { filename: string }
       console.log(`[export] Uploaded to server: ${saved}`)
-    } else {
-      console.warn(`[export] Server upload failed: ${resp.status}`)
+      return saved
     }
+    console.warn(`[export] Server upload failed: ${resp.status}`)
   } catch (err) {
     console.warn('[export] Server upload error:', err)
   }
+  return null
 }
 
 function triggerDownload(buffer: ArrayBuffer, filename: string): void {

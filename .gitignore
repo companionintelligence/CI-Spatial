@@ -56,4 +56,7 @@ test-results/
 scans/
 summaries/
 
+# Draco decoder — copied from node_modules by scripts/copy-draco.mjs (postinstall)
+public/draco/
+
 .agents/*

@@ -125,6 +125,22 @@ export default defineConfig({
           proxy.on('error', (err) => console.error('[vite-proxy-error /scan-locations]', err))
         }
       },
+      '/sessions': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        secure: false,
+        configure: (proxy) => {
+          proxy.on('error', (err) => console.error('[vite-proxy-error /sessions]', err))
+        }
+      },
+      '/jobs': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        secure: false,
+        configure: (proxy) => {
+          proxy.on('error', (err) => console.error('[vite-proxy-error /jobs]', err))
+        }
+      },
       '/rtc-signal': {
         target: 'ws://localhost:8000',
         ws: true,
@@ -132,6 +148,15 @@ export default defineConfig({
         secure: false,
         configure: (proxy) => {
           proxy.on('error', (err) => console.error('[vite-proxy-error ws]', err))
+        }
+      },
+      '/events': {
+        target: 'ws://localhost:8000',
+        ws: true,
+        changeOrigin: true,
+        secure: false,
+        configure: (proxy) => {
+          proxy.on('error', (err) => console.error('[vite-proxy-error /events ws]', err))
         }
       },
     },
