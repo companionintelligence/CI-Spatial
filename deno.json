@@ -5,7 +5,11 @@
     "hono/cors": "npm:hono@^4.7.0/cors",
     "hono/logger": "npm:hono@^4.7.0/logger",
     "onnxruntime-node": "npm:onnxruntime-node@^1.21.0",
-    "jimp": "npm:jimp@^1.6.0"
+    "jimp": "npm:jimp@^1.6.0",
+    "@gltf-transform/core": "npm:@gltf-transform/core@^4.4.0",
+    "@gltf-transform/extensions": "npm:@gltf-transform/extensions@^4.4.0",
+    "@gltf-transform/functions": "npm:@gltf-transform/functions@^4.4.0",
+    "draco3dgltf": "npm:draco3dgltf@^1.5.7"
   },
   "allowScripts": ["npm:onnxruntime-node@1.24.3"]
 }

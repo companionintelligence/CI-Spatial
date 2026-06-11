@@ -251,6 +251,37 @@ export class SceneEditor {
     return Object.fromEntries(this._tags.entries())
   }
 
+  /**
+   * Serialise tags keyed by object *name* — names are stable across GLB
+   * reloads (uuids are not), so this is the shape persisted to the server's
+   * annotations sidecar.
+   */
+  exportTagsByName(): Record<string, TagInfo> {
+    const out: Record<string, TagInfo> = {}
+    if (!this._scene) return out
+    this._scene.traverse((obj) => {
+      const info = this._tags.get(obj.uuid)
+      if (info && obj.name) out[obj.name] = info
+    })
+    return out
+  }
+
+  /**
+   * Apply a saved name-keyed tag map (server annotations sidecar) to the
+   * current scene.  Returns the number of objects that matched.
+   */
+  applyTagsByName(map: Record<string, Partial<TagInfo> & { tag: SemanticTag }>): number {
+    if (!this._scene) return 0
+    let applied = 0
+    this._scene.traverse((obj) => {
+      const info = obj.name ? map[obj.name] : undefined
+      if (!info?.tag) return
+      this.tagObject(obj, info.tag, info)
+      applied++
+    })
+    return applied
+  }
+
   // ── Private helpers ───────────────────────────────────────────────────────────
 
   private _selectObject(obj: THREE.Object3D): void {

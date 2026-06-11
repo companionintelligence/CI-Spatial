@@ -23,13 +23,21 @@ const ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun1.l.google.com:19302' },
 ]
 
+/** Cap on queued-but-unsent data before geometry messages are dropped */
+const DC_BACKPRESSURE_BYTES = 256 * 1024
+const POINT_FLUSH_MS = 500
+const POINT_FLUSH_MAX = 1500
+
 export class RtcBroadcaster {
   private _roomId: string
   private _ws: WebSocket | null = null
   private _pc: RTCPeerConnection | null = null
+  private _dc: RTCDataChannel | null = null
   private _stream: MediaStream | null = null
   private _onStatus: StatusCallback | null = null
   private _running = false
+  private _pointBuffer: number[] = []
+  private _flushHandle: ReturnType<typeof setInterval> | null = null
 
   constructor(roomId: string) {
     this._roomId = roomId
@@ -37,6 +45,25 @@ export class RtcBroadcaster {
 
   set onStatus(fn: StatusCallback) { this._onStatus = fn }
   get isRunning(): boolean { return this._running }
+
+  /**
+   * Queue world-space points for delivery to the viewer over the data
+   * channel.  Batched (500 ms / 1500 pts) and dropped under backpressure —
+   * live geometry is a best-effort preview, never a memory leak.
+   */
+  sendPoints(points: ReadonlyArray<{ x: number; y: number; z: number }>): void {
+    if (!this._running || points.length === 0) return
+    if (this._pointBuffer.length / 3 >= POINT_FLUSH_MAX * 4) return // hard cap
+    for (const p of points) this._pointBuffer.push(round3(p.x), round3(p.y), round3(p.z))
+  }
+
+  /** Send a JSON message (detections, pose, hello) immediately when the channel is open. */
+  sendJson(msg: Record<string, unknown>): void {
+    const dc = this._dc
+    if (!dc || dc.readyState !== 'open') return
+    if (dc.bufferedAmount > DC_BACKPRESSURE_BYTES) return
+    try { dc.send(JSON.stringify(msg)) } catch { /* channel closing */ }
+  }
 
   /** Start streaming the given canvas (or fall back to getUserMedia if null) */
   async start(canvas?: HTMLCanvasElement | null): Promise<void> {
@@ -94,13 +121,32 @@ export class RtcBroadcaster {
 
   stop(): void {
     this._running = false
+    if (this._flushHandle !== null) {
+      clearInterval(this._flushHandle)
+      this._flushHandle = null
+    }
+    this._pointBuffer = []
+    this._dc?.close()
     this._pc?.close()
     this._ws?.close()
     this._stream?.getTracks().forEach(t => t.stop())
+    this._dc = null
     this._pc = null
     this._ws = null
     this._stream = null
     this._status('stopped', 'Stream stopped')
+  }
+
+  private _flushPoints(): void {
+    if (this._pointBuffer.length === 0) return
+    const dc = this._dc
+    if (!dc || dc.readyState !== 'open' || dc.bufferedAmount > DC_BACKPRESSURE_BYTES) {
+      // Channel busy or absent — drop the batch rather than accumulate
+      this._pointBuffer = []
+      return
+    }
+    const batch = this._pointBuffer.splice(0, POINT_FLUSH_MAX * 3)
+    try { dc.send(JSON.stringify({ t: 'pts', p: batch })) } catch { /* closing */ }
   }
 
   private async _handleSignal(msg: Record<string, unknown>): Promise<void> {
@@ -130,6 +176,8 @@ export class RtcBroadcaster {
 
       case 'peer-left':
         this._status('connecting', 'Viewer disconnected — waiting…')
+        this._dc?.close()
+        this._dc = null
         this._pc?.close()
         this._pc = null
         break
@@ -139,6 +187,16 @@ export class RtcBroadcaster {
   private async _createOffer(): Promise<void> {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
     this._pc = pc
+
+    // Data channel for live geometry + detections (negotiated in the offer)
+    const dc = pc.createDataChannel('scan', { ordered: true })
+    this._dc = dc
+    dc.addEventListener('open', () => {
+      this.sendJson({ t: 'hello', startedAt: Date.now() })
+      if (this._flushHandle === null) {
+        this._flushHandle = setInterval(() => this._flushPoints(), POINT_FLUSH_MS)
+      }
+    })
 
     // Add all tracks from our stream
     for (const track of this._stream!.getTracks()) {
@@ -178,4 +236,9 @@ export class RtcBroadcaster {
   private _status(state: BroadcasterStatus['state'], message: string): void {
     this._onStatus?.({ state, message })
   }
+}
+
+/** 1 mm precision is plenty for a live preview and keeps JSON frames small */
+function round3(n: number): number {
+  return Math.round(n * 1000) / 1000
 }
