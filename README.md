@@ -85,6 +85,21 @@ For the current Tailscale dev host:
 
 - Scanner: `https://liambook.capybara-ulmer.ts.net:5173/scanner.html?world=default`
 - Viewer/editor: `https://liambook.capybara-ulmer.ts.net:5173/viewer.html?world=default`
+- WebXR scanner: `https://liambook.capybara-ulmer.ts.net:5173/webxr.html`
+
+### WebXR mode (HelloXR on iOS)
+
+`/webxr.html` runs the same scanner on a **native WebXR `immersive-ar` session**
+instead of the 8th Wall SLAM engine. Safari on iOS has no WebXR AR, so open the
+URL inside [HelloXR](https://apps.apple.com/us/app/helloxr/id6757726359), a
+WebXR-enabled iOS browser (Android Chrome and headset browsers work directly).
+The page auto-detects support and forwards to the scanner in forced-WebXR mode
+(`/?ar=webxr` — `xr.js` is not loaded at all on this path); without support it
+shows the HelloXR install link and fallbacks. The 🥽 button in the AR app and
+the WebXR button in the viewer toolbar navigate between the two runtimes.
+In WebXR mode the point cloud accumulates from per-frame hit-test samples
+(WebXR exposes no SLAM feature points), so sweep the camera slowly across
+surfaces.
 
 ---
 

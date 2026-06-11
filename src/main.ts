@@ -118,9 +118,15 @@ async function main() {
   let provider: ARProvider
   let use8thWall = false
 
+  // Forced runtime: /webxr.html redirects here with ?ar=webxr — used in
+  // WebXR-capable iOS browsers (e.g. HelloXR) where the native WebXR session
+  // beats the 8th Wall SLAM fallback.  ?ar=8thwall forces the inverse.
+  const forcedMode = new URLSearchParams(location.search).get('ar')
+
   // XR8 global is set by xr.js (8th Wall OSS engine binary in public/xr.js).
   // If it's not present after a grace timeout we fall back to WebXR.
-  const xr8Available = await waitForXR8(3000)
+  // index.html skips loading xr.js entirely when ?ar=webxr is set.
+  const xr8Available = forcedMode === 'webxr' ? false : await waitForXR8(3000)
 
   if (xr8Available) {
     try {
@@ -134,13 +140,16 @@ async function main() {
   } else {
     try {
       provider = await createWebXRProvider()
-      overlay.setStatus('WebXR ready')
+      overlay.setStatus(forcedMode === 'webxr' ? 'WebXR ready (native AR session)' : 'WebXR ready')
     } catch (e) {
-      overlay.setStatus('AR not available on this device')
+      overlay.setStatus(forcedMode === 'webxr'
+        ? 'WebXR not available — on iOS open this page in HelloXR'
+        : 'AR not available on this device')
       console.error('[main] No AR runtime available:', e)
       return
     }
   }
+  updateXrModeLink(use8thWall)
 
   // ── 4. AR Overlay & Capture setup ──────────────────────────────────────────
   keyframes = new KeyframeStreamer(provider)
@@ -592,6 +601,27 @@ function waitForXR8(timeoutMs: number): Promise<boolean> {  return new Promise((
     }
     window.addEventListener('xrloaded', onLoaded, { once: true })
   })
+}
+
+/**
+ * Points the runtime-switch nav button at the other AR engine: an 8th Wall
+ * session links to the WebXR scanner route (for HelloXR on iOS), and a WebXR
+ * session links back to the default 8th Wall scanner.
+ */
+function updateXrModeLink(use8thWall: boolean): void {
+  const link = document.getElementById('xr-mode-link') as HTMLAnchorElement | null
+  if (!link) return
+  if (use8thWall) {
+    link.href = '/webxr.html'
+    link.title = 'Switch to WebXR scanner (HelloXR on iOS)'
+    link.setAttribute('aria-label', 'Switch to WebXR scanner')
+    link.classList.remove('active')
+  } else {
+    link.href = '/'
+    link.title = 'WebXR mode active — switch back to 8th Wall scanner'
+    link.setAttribute('aria-label', 'Switch to 8th Wall scanner')
+    link.classList.add('active')
+  }
 }
 
 function bucket(p: { x: number; y: number; z: number }): string {
