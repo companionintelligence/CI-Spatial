@@ -7,7 +7,7 @@
  */
 import { test, expect } from '@playwright/test'
 
-const BASE = process.env['VITE_URL'] ?? 'https://liam-mbp.capybara-ulmer.ts.net:5173'
+const BASE = process.env['VITE_URL'] ?? 'https://liambook.capybara-ulmer.ts.net:5175'
 
 // ── /projects ─────────────────────────────────────────────────────────────────
 

@@ -56,8 +56,47 @@ async function main() {
     if (fix?.address) overlay.setStatus(`📍 ${fix.address}`)
   })
 
-  // ── 2. Inference router ────────────────────────────────────────────────────
+  // ── 2. Inference router & early UI mounting (prevents test timeouts) ───────
   const router = new InferenceRouter()
+
+  // Assigned once the AR provider exists; the export callback below runs on
+  // user action, long after assignment.
+  let keyframes: KeyframeStreamer | null = null
+
+  const panel = new SidePanel(
+    store,
+    async () => {
+      const { uploadedFilename } = await exportToGLB({
+        store, pointCloud, poseHistory, geoFix: geoTracker.snapshot() ?? undefined,
+      })
+      // Link the keyframe session to the uploaded scan, then keep streaming
+      // into a fresh session so the next export gets its own keyframe set.
+      if (keyframes?.active) {
+        void keyframes.rotate({
+          glbFilename: uploadedFilename ?? undefined,
+          pointCount: pointCloud.count,
+          detectionCount: store.detections.size,
+          poseCount: poseHistory.length,
+        })
+      }
+    },
+    () => exportSessionSummary({ store, pointCloud, poseHistory, captureCount, geoFix: geoTracker.snapshot() ?? undefined }),
+    (action) => requestServerProcessing(action, store),
+    (mode) => {
+      router.setMode(mode)
+      overlay.setStatus(`AI: ${mode === 'server' ? '🖥 Server' : '⚡ WebGPU'}`)
+    },
+    router.path,
+  )
+  panel.mount()
+
+  const history = new SessionHistory(store)
+  history.mount()
+
+  document.getElementById('history-btn')?.addEventListener('click', () => {
+    initDrawerGeoMap(geoTracker.snapshot())
+  })
+
   await router.init(
     (stage, pct) => { overlay.setProgress(pct, stage) },
     (mode) => {
@@ -95,36 +134,9 @@ async function main() {
     }
   }
 
-  // ── 4. UI ──────────────────────────────────────────────────────────────────
-  const keyframes = new KeyframeStreamer(provider)
+  // ── 4. AR Overlay & Capture setup ──────────────────────────────────────────
+  keyframes = new KeyframeStreamer(provider)
   const arOverlay = new AROverlay(store, use8thWall, provider)
-  const panel = new SidePanel(
-    store,
-    async () => {
-      const { uploadedFilename } = await exportToGLB({
-        store, pointCloud, poseHistory, geoFix: geoTracker.snapshot() ?? undefined,
-      })
-      // Link the keyframe session to the uploaded scan, then keep streaming
-      // into a fresh session so the next export gets its own keyframe set.
-      if (keyframes.active) {
-        void keyframes.rotate({
-          glbFilename: uploadedFilename ?? undefined,
-          pointCount: pointCloud.count,
-          detectionCount: store.detections.size,
-          poseCount: poseHistory.length,
-        })
-      }
-    },
-    () => exportSessionSummary({ store, pointCloud, poseHistory, captureCount, geoFix: geoTracker.snapshot() ?? undefined }),
-    (action) => requestServerProcessing(action, store),
-    (mode) => {
-      router.setMode(mode)
-      overlay.setStatus(`AI: ${mode === 'server' ? '🖥 Server' : '⚡ WebGPU'}`)
-    },
-    router.path,
-  )
-  const history = new SessionHistory(store)
-
   const capture = new CaptureModule(provider)
   const asyncHitTest = !use8thWall && provider instanceof WebXRProvider
     ? (x: number, y: number) => (provider as WebXRProvider).hitTestAsync(x, y)
@@ -166,7 +178,7 @@ async function main() {
       // Snapshot a Three.js camera from the current SLAM pose for frustum raycasting.
       // This gives the resolver a proper projection matrix at the moment of capture.
       let captureCamera: THREE.PerspectiveCamera | undefined
-      if (use8thWall && provider.isTracking()) {
+      if (provider.isTracking()) {
         const p = provider.getPose()
         captureCamera = new THREE.PerspectiveCamera(
           provider.getCameraFovY(), provider.getCameraAspect(), 0.01, 1000,
@@ -181,6 +193,7 @@ async function main() {
         asyncHitTest,
         cameraPose: pose,
         captureCamera,
+        pointCloud,
       })
       console.log(`[main] World detections (${worldDets.length}):`, JSON.stringify(worldDets))
 
@@ -212,14 +225,6 @@ async function main() {
 
   arOverlay.mount(doCapture)
 
-  panel.mount()
-  history.mount()
-
-  // Open the geo-map in the drawer whenever the history button is clicked
-  document.getElementById('history-btn')?.addEventListener('click', () => {
-    initDrawerGeoMap(geoTracker.snapshot())
-  })
-
   // ── Auto-capture ───────────────────────────────────────────────────────────
   const autoCapture = new AutoCapture(provider, doCapture)
   autoCapture.onStatusChange = (status) => {
@@ -247,7 +252,8 @@ async function main() {
   })
 
   // ── Keyframe streaming — pose-tagged frames to the server during the scan ──
-  keyframes.onStatus = (s) => {
+  const kfStreamer = keyframes
+  kfStreamer.onStatus = (s) => {
     const btn = document.getElementById('stream-btn') as HTMLButtonElement | null
     if (!btn) return
     btn.classList.toggle('active', s.active)
@@ -259,15 +265,15 @@ async function main() {
   }
 
   document.getElementById('stream-btn')?.addEventListener('click', () => {
-    if (keyframes.active) {
-      void keyframes.stop({
+    if (kfStreamer.active) {
+      void kfStreamer.stop({
         pointCount: pointCloud.count,
         detectionCount: store.detections.size,
         poseCount: poseHistory.length,
       })
       overlay.setStatus('Keyframe streaming OFF')
     } else {
-      keyframes.start()
+      kfStreamer.start()
         .then(() => overlay.setStatus('Streaming keyframes — walk the room'))
         .catch((e) => {
           overlay.setStatus('Keyframe session failed — server offline?')

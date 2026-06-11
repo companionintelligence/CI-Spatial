@@ -32,7 +32,7 @@ export class RtcBroadcaster {
   private _roomId: string
   private _ws: WebSocket | null = null
   private _pc: RTCPeerConnection | null = null
-  private _dc: RTCDataChannel | null = null
+  private _dataChannel: RTCDataChannel | null = null
   private _stream: MediaStream | null = null
   private _onStatus: StatusCallback | null = null
   private _running = false
@@ -59,7 +59,7 @@ export class RtcBroadcaster {
 
   /** Send a JSON message (detections, pose, hello) immediately when the channel is open. */
   sendJson(msg: Record<string, unknown>): void {
-    const dc = this._dc
+    const dc = this._dataChannel
     if (!dc || dc.readyState !== 'open') return
     if (dc.bufferedAmount > DC_BACKPRESSURE_BYTES) return
     try { dc.send(JSON.stringify(msg)) } catch { /* channel closing */ }
@@ -126,20 +126,30 @@ export class RtcBroadcaster {
       this._flushHandle = null
     }
     this._pointBuffer = []
-    this._dc?.close()
+    this._dataChannel?.close()
     this._pc?.close()
     this._ws?.close()
     this._stream?.getTracks().forEach(t => t.stop())
-    this._dc = null
+    this._dataChannel = null
     this._pc = null
     this._ws = null
     this._stream = null
     this._status('stopped', 'Stream stopped')
   }
 
+  /** Send pose, frustum, detection, or progress metadata to the viewer. */
+  sendSpatial(meta: Record<string, unknown>): void {
+    const message = JSON.stringify({ type: 'meta', ...meta })
+    if (this._dataChannel?.readyState === 'open') {
+      this._dataChannel.send(message)
+      return
+    }
+    this._send({ type: 'meta', ...meta })
+  }
+
   private _flushPoints(): void {
     if (this._pointBuffer.length === 0) return
-    const dc = this._dc
+    const dc = this._dataChannel
     if (!dc || dc.readyState !== 'open' || dc.bufferedAmount > DC_BACKPRESSURE_BYTES) {
       // Channel busy or absent — drop the batch rather than accumulate
       this._pointBuffer = []
@@ -176,9 +186,9 @@ export class RtcBroadcaster {
 
       case 'peer-left':
         this._status('connecting', 'Viewer disconnected — waiting…')
-        this._dc?.close()
-        this._dc = null
+        this._dataChannel?.close()
         this._pc?.close()
+        this._dataChannel = null
         this._pc = null
         break
     }
@@ -188,9 +198,11 @@ export class RtcBroadcaster {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
     this._pc = pc
 
-    // Data channel for live geometry + detections (negotiated in the offer)
-    const dc = pc.createDataChannel('scan', { ordered: true })
-    this._dc = dc
+    // Data channel for live geometry, detections, and spatial metadata.
+    // Reliable + ordered: traffic is a few KB/s and the backpressure guard
+    // in _flushPoints/sendJson prevents queue build-up on a slow link.
+    const dc = pc.createDataChannel('scan-spatial-events', { ordered: true })
+    this._dataChannel = dc
     dc.addEventListener('open', () => {
       this.sendJson({ t: 'hello', startedAt: Date.now() })
       if (this._flushHandle === null) {

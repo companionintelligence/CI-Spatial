@@ -40,6 +40,7 @@ export class LiveFeed {
   private _roomId: string
   private _ws: WebSocket | null = null
   private _pc: RTCPeerConnection | null = null
+  private _dataChannel: RTCDataChannel | null = null
   private _container: HTMLElement | null = null
   private _video: HTMLVideoElement | null = null
   private _onStatus: FeedStatusCallback | null = null
@@ -97,8 +98,10 @@ export class LiveFeed {
 
   disconnect(): void {
     this._connected = false
+    this._dataChannel?.close()
     this._pc?.close()
     this._ws?.close()
+    this._dataChannel = null
     this._pc = null
     this._ws = null
     this._setVideoSrc(null)
@@ -154,7 +157,9 @@ export class LiveFeed {
       case 'peer-left':
         this._status('connecting', 'Phone disconnected — waiting…')
         this._setVideoSrc(null)
+        this._dataChannel?.close()
         this._pc?.close()
+        this._dataChannel = null
         this._pc = null
         break
 
@@ -175,13 +180,8 @@ export class LiveFeed {
       }
     })
 
-    // Phone's 'scan' data channel — live geometry + detections
     pc.addEventListener('datachannel', (e) => {
-      e.channel.addEventListener('message', (ev) => {
-        try {
-          this._onData?.(JSON.parse(ev.data as string) as Record<string, unknown>)
-        } catch { /* malformed frame — ignore */ }
-      })
+      this._bindDataChannel(e.channel)
     })
 
     pc.addEventListener('icecandidate', (e) => {
@@ -202,6 +202,25 @@ export class LiveFeed {
     const answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
     this._send({ type: 'answer', sdp: answer.sdp })
+  }
+
+  private _bindDataChannel(channel: RTCDataChannel): void {
+    this._dataChannel?.close()
+    this._dataChannel = channel
+    channel.addEventListener('message', (event) => {
+      try {
+        const msg = JSON.parse(String(event.data)) as Record<string, unknown>
+        // 'meta' frames (pose/frustum metadata) keep the legacy callback;
+        // geometry frames ('hello' | 'pts' | 'dets' | 'pose') go to onData.
+        if (msg['type'] === 'meta') {
+          this._onMeta?.(msg)
+        } else {
+          this._onData?.(msg)
+        }
+      } catch {
+        this._onMeta?.({ type: 'meta', raw: event.data })
+      }
+    })
   }
 
   private _send(msg: Record<string, unknown>): void {

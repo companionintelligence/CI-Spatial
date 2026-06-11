@@ -120,8 +120,11 @@ export class EighthWallProvider implements ARProvider {
             if (wp) {
               const newPts: Array<{ x: number; y: number; z: number }> = []
               if (Array.isArray(wp)) {
-                for (const p of wp as Array<{ x?: number; y?: number; z?: number }>) {
-                  if (typeof p?.x === 'number') newPts.push({ x: p.x, y: p.y ?? 0, z: p.z ?? 0 })
+                for (const p of wp as any[]) {
+                  const pos = p?.position || p
+                  if (pos && typeof pos.x === 'number') {
+                    newPts.push({ x: pos.x, y: pos.y ?? 0, z: pos.z ?? 0 })
+                  }
                 }
               } else if (wp.points instanceof Float32Array || Array.isArray(wp.points)) {
                 const flat = wp.points as ArrayLike<number>
@@ -199,6 +202,7 @@ export class EighthWallProvider implements ARProvider {
 
   hitTest(x: number, y: number): HitResult | null {
     const results = XR8.XrController.hitTest(x, y, ['FEATURE_POINT'])
+    console.log('[8thwall-hitTest] input:', x, y, 'raw results:', JSON.stringify(results))
     if (!results?.length) return null
     const { position, rotation, distance } = results[0]
     return { position, rotation, distance }

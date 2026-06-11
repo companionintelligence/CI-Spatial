@@ -11,5 +11,5 @@
     "@gltf-transform/functions": "npm:@gltf-transform/functions@^4.4.0",
     "draco3dgltf": "npm:draco3dgltf@^1.5.7"
   },
-  "allowScripts": ["npm:onnxruntime-node@1.24.3"]
+  "allowScripts": ["npm:onnxruntime-node@1.21.0", "npm:onnxruntime-node@1.24.3"]
 }
