@@ -9,6 +9,8 @@
     "server": "deno run --watch --allow-net --allow-read --allow-write --allow-env --allow-ffi main.ts",
     "start": "concurrently --raw --names \"infer,vite\" -c \"cyan,green\" \"npm run server\" \"npm run dev\"",
     "gen-icons": "node scripts/generate-icons.mjs",
+    "postinstall": "node scripts/copy-draco.mjs",
+    "smoke:pipeline": "node scripts/smoke-pipeline.mjs",
     "test": "playwright test --project=webkit-desktop",
     "test:mobile": "playwright test --project=webkit-iphone15",
     "test:iphone": "playwright test --project=iphone-usb",
@@ -19,12 +21,16 @@
     "three": "^0.184.0"
   },
   "devDependencies": {
+    "@gltf-transform/core": "^4.4.0",
+    "@gltf-transform/extensions": "^4.4.0",
+    "@gltf-transform/functions": "^4.4.0",
     "@playwright/test": "^1.60.0",
     "@types/leaflet": "^1.9.21",
     "@types/three": "^0.184.1",
     "@types/webxr": "^0.5.24",
     "@vitejs/plugin-basic-ssl": "^2.3.0",
     "concurrently": "^10.0.3",
+    "draco3dgltf": "^1.5.7",
     "typescript": "^6.0.3",
     "vite": "^8.0.16",
     "ws": "^8.21.0"

@@ -17,6 +17,7 @@ import { RoomScanner } from './ar/scanner'
 import { PointCloud } from './scene/pointcloud'
 import { CaptureModule } from './capture/capture'
 import { AutoCapture } from './capture/auto-capture'
+import { KeyframeStreamer } from './capture/keyframes'
 import { ScanQualityMonitor } from './capture/quality-monitor'
 import { InferenceRouter } from './inference/router'
 import { resolveDetections, mergeDetections } from './spatial/resolver'
@@ -68,9 +69,23 @@ async function main() {
   // ── 2. Inference router & early UI mounting (prevents test timeouts) ───────
   const router = new InferenceRouter()
 
+  // Assigned once the AR provider exists; the export callback below runs on
+  // user action, long after assignment.
+  let keyframes: KeyframeStreamer | null = null
+
   const panel = new SidePanel(
     store,
-    () => { void exportManualScan() },
+    async () => {
+      const uploadedFilename = await exportManualScan()
+      if (keyframes?.active) {
+        void keyframes.rotate({
+          glbFilename: uploadedFilename,
+          pointCount: pointCloud.count,
+          detectionCount: store.detections.size,
+          poseCount: poseHistory.length,
+        })
+      }
+    },
     () => exportSessionSummary({ store, pointCloud, poseHistory, captureCount, geoFix: geoTracker.snapshot() ?? undefined }),
     (action) => requestServerProcessing(action, store),
     (mode) => {
@@ -128,6 +143,7 @@ async function main() {
   }
 
   // ── 4. AR Overlay & Capture setup ──────────────────────────────────────────
+  keyframes = new KeyframeStreamer(provider)
   const arOverlay = new AROverlay(store, use8thWall, provider)
   const capture = new CaptureModule(provider)
   const asyncHitTest = !use8thWall && provider instanceof WebXRProvider
@@ -240,7 +256,7 @@ async function main() {
     }
   }
 
-  async function exportManualScan(): Promise<void> {
+  async function exportManualScan(): Promise<string | undefined> {
     setAutosaveStatus('Exporting scan...')
     overlay.setStatus('Exporting scan...')
     try {
@@ -250,10 +266,12 @@ async function main() {
       )
       overlay.setStatus('Exported scan')
       setAutosaveStatus(result.uploadedFilename ? `Exported + uploaded ${shortName(result.uploadedFilename)}` : 'Export downloaded')
+      return result.uploadedFilename
     } catch (error) {
       overlay.setStatus('Export failed')
       setAutosaveStatus('Export failed')
       console.error('[export]', error)
+      return undefined
     }
   }
 
@@ -322,6 +340,37 @@ async function main() {
     }
   })
 
+  // ── Keyframe streaming — pose-tagged frames to the server during the scan ──
+  const kfStreamer = keyframes
+  kfStreamer.onStatus = (s) => {
+    const btn = document.getElementById('stream-btn') as HTMLButtonElement | null
+    if (!btn) return
+    btn.classList.toggle('active', s.active)
+    btn.title = s.active
+      ? `Streaming keyframes · ${s.sent} sent${s.offline ? ' · OFFLINE' : ''}`
+      : 'Stream keyframes to server'
+    const countEl = document.getElementById('stream-count')
+    if (countEl) countEl.textContent = s.active ? `${s.sent}` : ''
+  }
+
+  document.getElementById('stream-btn')?.addEventListener('click', () => {
+    if (kfStreamer.active) {
+      void kfStreamer.stop({
+        pointCount: pointCloud.count,
+        detectionCount: store.detections.size,
+        poseCount: poseHistory.length,
+      })
+      overlay.setStatus('Keyframe streaming OFF')
+    } else {
+      kfStreamer.start()
+        .then(() => overlay.setStatus('Streaming keyframes — walk the room'))
+        .catch((e) => {
+          overlay.setStatus('Keyframe session failed — server offline?')
+          console.warn('[keyframes]', e)
+        })
+    }
+  })
+
   // ── 5. Start AR — permission must be requested in the button click handler ───
   // Safari iOS 13+ requires DeviceOrientationEvent/DeviceMotionEvent.requestPermission()
   // to be called synchronously inside a click handler, with NO awaits before it.
@@ -381,10 +430,39 @@ async function main() {
   }
   overlay.setProgress(null)
 
+  // Mirror detection updates to the desktop viewer over the RTC data channel.
+  // Snapshots are small (≤ ~50 objects), so a throttled full sync is simpler
+  // and more robust than per-mutation deltas.
+  let detSyncTimer: ReturnType<typeof setTimeout> | null = null
+  store.subscribe(() => {
+    if (detSyncTimer) return
+    detSyncTimer = setTimeout(() => {
+      detSyncTimer = null
+      broadcaster.sendJson({
+        t: 'dets',
+        items: [...store.detections.values()].map((d) => ({
+          label: d.label,
+          confidence: d.confidence,
+          pos: [d.worldPos.x, d.worldPos.y, d.worldPos.z],
+        })),
+      })
+    }, 1000)
+  })
+
   // ── 6. Continuous SLAM point-cloud accumulation ──────────────────────────────
   scanner.start(provider, (frame) => {
-    const added = pointCloud.add(frame.points)
+    const inserted = pointCloud.add(frame.points)
+    const added = inserted.length
     if (frame.points.length > 0) poseHistory.push(frame.pose)
+
+    // Live geometry to the viewer — no-ops unless the stream is running
+    broadcaster.sendPoints(inserted)
+    broadcaster.sendJson({
+      t: 'pose',
+      p: [frame.pose.position.x, frame.pose.position.y, frame.pose.position.z],
+      q: [frame.pose.rotation.x, frame.pose.rotation.y, frame.pose.rotation.z, frame.pose.rotation.w],
+    })
+
     if (added > 0) {
       const statsEl = document.getElementById('scan-stats')
       if (statsEl) statsEl.textContent = `${pointCloud.count} pts`

@@ -139,6 +139,50 @@
         border-color: #80ffe1;
         color: #80ffe1;
       }
+
+      /* ── Keyframe stream button (server capture session) ── */
+      #stream-btn {
+        pointer-events: all;
+        position: absolute;
+        right: 16px;
+        bottom: 232px;
+        width: 48px;
+        height: 48px;
+        border-radius: 50%;
+        border: 2px solid rgba(255, 255, 255, 0.35);
+        background: rgba(0, 0, 0, 0.6);
+        color: #fff;
+        font-size: 16px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        backdrop-filter: blur(8px);
+        transition: border-color 0.2s, background 0.2s;
+      }
+      #stream-btn:active { background: rgba(255, 255, 255, 0.15); }
+      #stream-btn.active {
+        background: rgba(102, 187, 106, 0.25);
+        border-color: #66bb6a;
+        color: #66bb6a;
+      }
+      #stream-count {
+        position: absolute;
+        top: -4px;
+        right: -4px;
+        min-width: 17px;
+        height: 17px;
+        border-radius: 9px;
+        background: #66bb6a;
+        color: #04150a;
+        font-size: 10px;
+        font-weight: 800;
+        align-items: center;
+        justify-content: center;
+        padding: 0 3px;
+        display: none;
+      }
+      #stream-btn.active #stream-count { display: flex; }
       /* Pulsing ring when auto-capture is in-flight */
       #capture-btn.auto-busy::after {
         content: '';
@@ -849,7 +893,11 @@
         📷
         <span id="auto-capture-count"></span>
       </button>
-      <a href="/viewer.html" id="viewer-link" aria-label="Open Companion Scan editor" title="Companion Scan editor">🖥</a>
+      <button id="stream-btn" aria-label="Stream keyframes" title="Stream keyframes to server">
+        ☁️
+        <span id="stream-count"></span>
+      </button>
+      <a href="/viewer.html" id="viewer-link" aria-label="Open 3D Viewer" title="Desktop 3D Viewer">🖥</a>
 
       <div id="side-panel">
         <div id="panel-content"></div>

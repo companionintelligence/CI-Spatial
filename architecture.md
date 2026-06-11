@@ -287,6 +287,71 @@ graph LR
 | `/projects/:id` | PUT | JSON `Project` | `Project` | Allow matched origins | Updates project by ID. |
 | `/projects/:id` | DELETE| ID parameter | `{"ok":true}` | Allow matched origins | Removes project from repository. |
 | `/rtc-signal` | GET | Query params: `room`, `role` | WebSocket Upgrade (101) | Handled by Deno WebSockets | WebRTC signaling relay between `phone` and `viewer`. |
+| `/events` | GET | None | WebSocket Upgrade (101) | Handled by Deno WebSockets | Broadcast stream: `scan-added`, `job-update`, `session-*` events. The viewer subscribes to refresh its scan list and job chips live. |
+| `/sessions` | POST | None | `{"sessionId":"sess-..."}` (201) | Allow matched origins | Opens a keyframe capture session (`scans/sessions/<id>/`). |
+| `/sessions/:id/keyframes` | POST | Multipart `{ image: JPEG, meta: JSON }` | `{"ok":true,"index":N}` | Allow matched origins | Streams pose+intrinsics-tagged keyframes during a scan — the raw input for future dense reconstruction (photogrammetry / splats). |
+| `/sessions/:id/finalize` | POST | JSON `{ glbFilename?, pointCount?, … }` | Session record | Allow matched origins | Links the session to its exported scan; enqueues optimization if needed. |
+| `/sessions` / `/sessions/:id` | GET | — | Session record(s) | Allow matched origins | Inspect capture sessions. |
+| `/scans/:filename/manifest` | GET | Filename parameter | `ScanManifest` JSON | Allow matched origins | Optimization artifact index (optimized + LODs + stage log). 404 until the job runs. |
+| `/scans/:filename/optimize` | POST | Filename parameter | `Job` (202) | Allow matched origins | Manually (re-)enqueue the optimization job. |
+| `/jobs`, `/jobs/:id` | GET | — | `Job[]` / `Job` | Allow matched origins | Persistent job queue state (`scans/jobs.json`). |
+
+### Scan Optimization Pipeline (`pipeline.ts` + `jobs.ts`)
+
+Every uploaded `.glb` is processed by an in-process, persistent job queue
+(sequential worker — the box also runs VLM inference):
+
+```
+upload-scan ──▶ JobQueue('optimize-scan') ──▶ pipeline.ts (gltf-transform)
+                                                  │ dedup + prune
+                                                  │ point-cloud LODs (voxel 0.12 m / 0.30 m)
+                                                  │ KHR_mesh_quantization (no decoder needed)
+                                                  │ Draco (triangle meshes only, guarded)
+                                                  ▼
+        <base>.opt.glb  +  <base>.lod1.glb / .lod2.glb  +  <base>.manifest.json
+```
+
+Typical result: ~50 % size reduction from quantization alone; the coarsest LOD
+is 5–20× smaller than the source. KTX2 texture compression is intentionally
+deferred — scan GLBs carry no textures yet; `stats.textures` in the manifest
+gates that stage when textured reconstruction meshes arrive.
+Verify the pipeline standalone with `npm run smoke:pipeline` (plain Node, no
+model or AR hardware required).
+
+### Progressive Loading (World Scan Editor)
+
+`loadScanIntoWorld` checks `/scans/:filename/manifest` first: when artifacts
+exist it renders the coarsest LOD within a few hundred ms, then streams the
+optimized full-quality GLB behind it and swaps atomically (camera, selection,
+and visibility state preserved). `GLTFLoader` carries a `DRACOLoader`
+(decoder copied to `public/draco/` by the npm `postinstall` hook). Unoptimized
+scans fall back to the original single-pass load.
+
+### Live Geometry Channel (phone → editor)
+
+The WebRTC broadcaster's `scan-spatial-events` data channel carries, alongside
+the video stream:
+
+| Message | Payload | Cadence |
+|---|---|---|
+| `{t:'hello'}` | session start | on channel open |
+| `{t:'pts', p:[x,y,z,…]}` | voxel-deduped point-cloud deltas | batched 500 ms / ≤1500 pts, dropped under backpressure |
+| `{t:'dets', items:[…]}` | detection snapshot | throttled 1 s after store changes |
+| `{t:'pose', p, q}` | camera pose | each scanner tick (~750 ms) |
+
+The desktop editor accumulates these into a `live-scan-preview` layer
+(dynamic-draw point buffer, capped at 500 k points) with live detection boxes
+and a device frustum — the room appears in the editor while it is being walked.
+
+### Keyframe Streaming (mobile capture budget)
+
+`KeyframeStreamer` (☁ button in the AR app) triggers a keyframe when the
+camera moves ≥ 0.30 m or rotates ≥ 20° (≤ 1 per 1.2 s). Frames are downscaled
+to ≤ 1280 px JPEG and uploaded with pose + intrinsics. Guardrails: bounded
+queue with capture-skip backpressure (memory stays flat), single upload in
+flight with retry/backoff, offline pause, and suspension while the page is
+hidden (battery). Exports finalize the session against the uploaded scan and
+rotate into a fresh one.
 
 ---
 

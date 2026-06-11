@@ -22,6 +22,15 @@ export type FeedStatusCallback = (s: FeedStatus) => void
 /** Called when the phone sends an out-of-band metadata message over the data channel */
 export type MetaCallback = (meta: Record<string, unknown>) => void
 
+/**
+ * Scan-data messages arriving on the phone's `scan` data channel:
+ *   { t: 'hello', startedAt }                  — new live session, reset state
+ *   { t: 'pts',  p: [x,y,z, x,y,z, …] }        — point-cloud delta batch
+ *   { t: 'dets', items: [{label, pos, …}] }    — current detection snapshot
+ *   { t: 'pose', p: [x,y,z], q: [x,y,z,w] }    — phone camera pose
+ */
+export type ScanDataCallback = (msg: Record<string, unknown>) => void
+
 const ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
@@ -36,6 +45,7 @@ export class LiveFeed {
   private _video: HTMLVideoElement | null = null
   private _onStatus: FeedStatusCallback | null = null
   private _onMeta: MetaCallback | null = null
+  private _onData: ScanDataCallback | null = null
   private _connected = false
   private _open = false
 
@@ -45,6 +55,7 @@ export class LiveFeed {
 
   set onStatus(fn: FeedStatusCallback) { this._onStatus = fn }
   set onMeta(fn: MetaCallback) { this._onMeta = fn }
+  set onData(fn: ScanDataCallback) { this._onData = fn }
   get isOpen(): boolean { return this._open }
 
   /** Inject the panel DOM into parentEl */
@@ -198,8 +209,14 @@ export class LiveFeed {
     this._dataChannel = channel
     channel.addEventListener('message', (event) => {
       try {
-        const meta = JSON.parse(String(event.data)) as Record<string, unknown>
-        this._onMeta?.(meta)
+        const msg = JSON.parse(String(event.data)) as Record<string, unknown>
+        // 'meta' frames (pose/frustum metadata) keep the legacy callback;
+        // geometry frames ('hello' | 'pts' | 'dets' | 'pose') go to onData.
+        if (msg['type'] === 'meta') {
+          this._onMeta?.(msg)
+        } else {
+          this._onData?.(msg)
+        }
       } catch {
         this._onMeta?.({ type: 'meta', raw: event.data })
       }

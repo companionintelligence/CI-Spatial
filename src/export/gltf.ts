@@ -307,6 +307,7 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
 /**
  * POST the GLB to the Deno server's /upload-scan endpoint so it is persisted
  * in the scans/ folder and available in the 3D viewer.
+ * Returns the server-assigned filename, or null when the upload failed.
  */
 async function uploadToServer(
   buffer: ArrayBuffer,
@@ -342,9 +343,8 @@ async function uploadToServer(
       const { filename: saved } = await resp.json() as { filename: string }
       console.log(`[export] Uploaded to server: ${saved}`)
       return saved
-    } else {
-      console.warn(`[export] Server upload failed: ${resp.status}`)
     }
+    console.warn(`[export] Server upload failed: ${resp.status}`)
   } catch (err) {
     console.warn('[export] Server upload error:', err)
   }

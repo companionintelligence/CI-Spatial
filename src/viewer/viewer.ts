@@ -9,6 +9,7 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js'
 import { SceneEditor, SEMANTIC_TAGS, type ViewMode } from './editor'
 import { GeoMap, type ScanLocationEntry } from './geomap'
 import { LiveFeed } from './livefeed'
@@ -58,9 +59,23 @@ interface ShareLinksResponse {
   links: Record<string, string>
 }
 
+/** Optimization manifest written by the server's optimize-scan job */
+interface OptimizationManifest {
+  artifacts: {
+    optimized: { filename: string; bytes: number; draco: boolean; quantized: boolean }
+    /** Coarsest first — lods[0] is the instant preview */
+    lods: Array<{ filename: string; bytes: number; points: number; voxelM: number }>
+  }
+}
+
 const query = new URLSearchParams(location.search)
 const initialWorldSlug = query.get('world') || 'default'
 const loader = new GLTFLoader()
+// Optimized scans may carry KHR_draco_mesh_compression; decoder files are
+// copied to public/draco/ by scripts/copy-draco.mjs (npm postinstall).
+const dracoLoader = new DRACOLoader()
+dracoLoader.setDecoderPath('/draco/')
+loader.setDRACOLoader(dracoLoader)
 const editor = new SceneEditor()
 const geoMap = new GeoMap()
 const liveFeed = new LiveFeed(initialWorldSlug)
@@ -159,6 +174,29 @@ function initRenderer(): void {
   }
   liveFeed.onMeta = (meta) => {
     upsertLiveFrustum(meta)
+  }
+  // Live geometry from the phone's data channel: point-cloud deltas,
+  // detection snapshots, and camera pose — the scan grows in the editor
+  // in real time while someone walks the room.
+  liveFeed.onData = (msg) => {
+    switch (msg['t']) {
+      case 'hello':
+        liveReset()
+        break
+      case 'pts':
+        liveAddPoints(msg['p'] as number[])
+        break
+      case 'dets':
+        liveSetDetections((msg['items'] ?? []) as Array<{ label?: string; confidence?: number; pos?: number[] }>)
+        break
+      case 'pose': {
+        const p = msg['p'] as number[] | undefined
+        if (Array.isArray(p) && p.length >= 3) {
+          upsertLiveFrustum({ position: { x: p[0], y: p[1], z: p[2] } })
+        }
+        break
+      }
+    }
   }
 
   canvas.addEventListener('click', (event) => {
@@ -411,48 +449,34 @@ function buildScanItem(scan: ScanManifest): HTMLElement {
   return item
 }
 
+/**
+ * Progressive scan load.  When the server's optimize-scan job has produced
+ * artifacts, the coarsest point-cloud LOD is shown within a few hundred ms
+ * and the full-quality (quantized/Draco) GLB streams in behind it and swaps
+ * atomically.  Unoptimized scans fall back to a single-pass load.
+ */
 async function loadScanIntoWorld(scan: ScanManifest): Promise<void> {
   if (!worldGroup) throw new Error('World scene was not initialized')
   setScanStatus(scan.scanId, 'Loading GLB...')
 
   try {
-    const gltf = await new Promise<{ scene?: THREE.Group; scenes?: THREE.Group[] }>((resolve, reject) => {
-      loader.load(scan.glbUrl, resolve as (g: unknown) => void, undefined, reject)
-    })
-    const root = gltf.scene ?? gltf.scenes?.[0]
-    if (!root) throw new Error('Scan GLB has no scene graph')
+    const optimization = await fetchOptimizationManifest(scan.filename)
+    const preview = optimization?.artifacts.lods[0]
+    const optimized = optimization?.artifacts.optimized
 
-    root.name = scan.name || scan.filename
-    root.userData['scanId'] = scan.scanId
-    root.userData['filename'] = scan.filename
-    root.userData['scope'] = 'scan-root'
-    root.userData['objectId'] = scan.scanId
+    if (preview) {
+      setScanStatus(scan.scanId, `Preview ${formatKB(preview.bytes)}...`)
+      integrateScanRoot(scan, await loadGlbRoot(`/scans/${encodeURIComponent(preview.filename)}`))
+      setScanStatus(scan.scanId, 'Preview shown - loading full quality...')
+    }
 
-    applyMatrix(root, scan.localToWorld)
-    upgradeSemanticMeshes(root, scan.scanId)
-    assignStableObjectIds(root, scan.scanId)
-    applyStoredPatches(root, scan)
-
-    const layerNodes = collectLayerNodes(root)
-    const points = collectPoints(root)
-    addDerivedCameraLayers(root, scan, layerNodes)
-    buildDetectionBounds(root, scan.scanId, layerNodes)
-    createSemanticLabels(root, scan.scanId)
-
-    worldGroup.add(root)
-    loadedScans.set(scan.scanId, {
-      manifest: scan,
-      root,
-      layerNodes,
-      points,
-      visible: true,
-      loaded: true,
-    })
-
-    editor.setScene(scene!)
-    editor.setMode(editor.mode)
-    applyLayerVisibility()
-    setScanStatus(scan.scanId, 'Ready')
+    const fullUrl = optimized
+      ? `/scans/${encodeURIComponent(optimized.filename)}`
+      : scan.glbUrl
+    integrateScanRoot(scan, await loadGlbRoot(fullUrl))
+    setScanStatus(scan.scanId, optimized
+      ? `Ready - optimized ${formatKB(optimized.bytes)}${optimized.draco ? ' - draco' : ''}`
+      : 'Ready')
   } catch (error) {
     const message = errorMessage(error)
     loadedScans.set(scan.scanId, {
@@ -467,6 +491,95 @@ async function loadScanIntoWorld(scan: ScanManifest): Promise<void> {
     setScanStatus(scan.scanId, `Error: ${message}`)
     throw error
   }
+}
+
+async function fetchOptimizationManifest(filename: string): Promise<OptimizationManifest | null> {
+  try {
+    const resp = await fetch(`/scans/${encodeURIComponent(filename)}/manifest`)
+    if (!resp.ok) return null
+    const manifest = await resp.json() as OptimizationManifest
+    return manifest.artifacts?.optimized ? manifest : null
+  } catch {
+    return null
+  }
+}
+
+function loadGlbRoot(url: string): Promise<THREE.Group> {
+  return new Promise((resolve, reject) => {
+    loader.load(url, (gltf) => {
+      const g = gltf as { scene?: THREE.Group; scenes?: THREE.Group[] }
+      const root = g.scene ?? g.scenes?.[0]
+      if (root) resolve(root)
+      else reject(new Error('Scan GLB has no scene graph'))
+    }, undefined, reject)
+  })
+}
+
+/**
+ * Attach a freshly loaded scan root to the world, replacing any previously
+ * loaded root for the same scan (LOD preview → full quality swap).
+ */
+function integrateScanRoot(scan: ScanManifest, root: THREE.Group): void {
+  if (!worldGroup) return
+
+  // Tear down the previous generation of this scan (preview pass)
+  const previous = loadedScans.get(scan.scanId)
+  if (previous && previous.loaded) {
+    worldGroup.remove(previous.root)
+    removeLabelsForScan(scan.scanId)
+    detectionBoundsObjects = detectionBoundsObjects.filter((obj) => {
+      let current: THREE.Object3D | null = obj
+      while (current) {
+        if (current === previous.root) return false
+        current = current.parent
+      }
+      return true
+    })
+  }
+
+  root.name = scan.name || scan.filename
+  root.userData['scanId'] = scan.scanId
+  root.userData['filename'] = scan.filename
+  root.userData['scope'] = 'scan-root'
+  root.userData['objectId'] = scan.scanId
+
+  applyMatrix(root, scan.localToWorld)
+  upgradeSemanticMeshes(root, scan.scanId)
+  assignStableObjectIds(root, scan.scanId)
+  applyStoredPatches(root, scan)
+
+  const layerNodes = collectLayerNodes(root)
+  const points = collectPoints(root)
+  addDerivedCameraLayers(root, scan, layerNodes)
+  buildDetectionBounds(root, scan.scanId, layerNodes)
+  createSemanticLabels(root, scan.scanId)
+
+  worldGroup.add(root)
+  root.visible = previous?.visible ?? true
+  loadedScans.set(scan.scanId, {
+    manifest: scan,
+    root,
+    layerNodes,
+    points,
+    visible: previous?.visible ?? true,
+    loaded: true,
+  })
+
+  editor.setScene(scene!)
+  editor.setMode(editor.mode)
+  applyLayerVisibility()
+}
+
+function removeLabelsForScan(scanId: string): void {
+  labels = labels.filter((label) => {
+    if (label.scanId !== scanId) return true
+    label.el.remove()
+    return false
+  })
+}
+
+function formatKB(bytes: number): string {
+  return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`
 }
 
 function upgradeSemanticMeshes(root: THREE.Object3D, scanId: string): void {
@@ -1111,6 +1224,123 @@ function isVec3Like(value: unknown): value is { x: number; y: number; z: number 
     && typeof candidate['z'] === 'number'
 }
 
+// ─── Live scan preview — geometry streamed from the phone ───────────────────
+
+const LIVE_SCAN_ID = 'live-scan'
+const LIVE_MAX_POINTS = 500_000
+const LIVE_INITIAL_CAPACITY = 50_000
+
+const liveState = {
+  group: null as THREE.Group | null,
+  points: null as THREE.Points | null,
+  detGroup: null as THREE.Group | null,
+  capacity: 0,
+  count: 0,
+}
+
+function ensureLiveLayer(): THREE.Group | null {
+  if (!scene) return null
+  if (!liveState.group) {
+    liveState.group = new THREE.Group()
+    liveState.group.name = 'live-scan-preview'
+  }
+  if (liveState.group.parent !== scene) scene.add(liveState.group)
+  return liveState.group
+}
+
+function liveReset(): void {
+  liveState.count = 0
+  liveState.points?.geometry.setDrawRange(0, 0)
+  liveState.detGroup?.clear()
+  removeLabelsForScan(LIVE_SCAN_ID)
+  updateHudInfo('Live scan started')
+}
+
+function liveAddPoints(flat: number[]): void {
+  const group = ensureLiveLayer()
+  if (!group || !Array.isArray(flat) || flat.length < 3) return
+
+  const incoming = Math.floor(flat.length / 3)
+  const target = Math.min(liveState.count + incoming, LIVE_MAX_POINTS)
+  if (target === liveState.count) return
+
+  if (!liveState.points || target > liveState.capacity) {
+    let capacity = Math.max(liveState.capacity, LIVE_INITIAL_CAPACITY)
+    while (capacity < target) capacity *= 2
+    capacity = Math.min(capacity, LIVE_MAX_POINTS)
+
+    const positions = new Float32Array(capacity * 3)
+    const colors = new Float32Array(capacity * 3)
+    if (liveState.points) {
+      positions.set((liveState.points.geometry.getAttribute('position') as THREE.BufferAttribute).array.subarray(0, liveState.count * 3))
+      colors.set((liveState.points.geometry.getAttribute('color') as THREE.BufferAttribute).array.subarray(0, liveState.count * 3))
+      liveState.points.geometry.dispose()
+      group.remove(liveState.points)
+    }
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3).setUsage(THREE.DynamicDrawUsage))
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3).setUsage(THREE.DynamicDrawUsage))
+    geometry.setDrawRange(0, liveState.count)
+    const material = new THREE.PointsMaterial({ vertexColors: true, size: 0.03, sizeAttenuation: true })
+    liveState.points = new THREE.Points(geometry, material)
+    liveState.points.name = 'live-points'
+    liveState.points.frustumCulled = false
+    group.add(liveState.points)
+    liveState.capacity = capacity
+  }
+
+  const posAttr = liveState.points.geometry.getAttribute('position') as THREE.BufferAttribute
+  const colAttr = liveState.points.geometry.getAttribute('color') as THREE.BufferAttribute
+  const positions = posAttr.array as Float32Array
+  const colors = colAttr.array as Float32Array
+
+  for (let i = 0; liveState.count < target; i++, liveState.count++) {
+    const base = liveState.count * 3
+    const y = flat[i * 3 + 1]
+    positions[base] = flat[i * 3]
+    positions[base + 1] = y
+    positions[base + 2] = flat[i * 3 + 2]
+    // Height heatmap over a fixed -1m…2.5m band (no global bounds while live)
+    const t = Math.max(0, Math.min(1, (y + 1) / 3.5))
+    colors[base] = t
+    colors[base + 1] = 1 - Math.abs(t * 2 - 1)
+    colors[base + 2] = 1 - t
+  }
+  posAttr.needsUpdate = true
+  colAttr.needsUpdate = true
+  liveState.points.geometry.setDrawRange(0, liveState.count)
+  liveState.points.geometry.computeBoundingSphere()
+}
+
+function liveSetDetections(items: Array<{ label?: string; confidence?: number; pos?: number[] }>): void {
+  const group = ensureLiveLayer()
+  if (!group) return
+  if (!liveState.detGroup) {
+    liveState.detGroup = new THREE.Group()
+    liveState.detGroup.name = 'live-detections'
+    group.add(liveState.detGroup)
+  }
+  liveState.detGroup.clear()
+  removeLabelsForScan(LIVE_SCAN_ID)
+
+  for (const det of items) {
+    const pos = det.pos
+    if (!Array.isArray(pos) || pos.length < 3) continue
+    const box = new THREE.LineSegments(
+      new THREE.EdgesGeometry(new THREE.BoxGeometry(0.3, 0.3, 0.3)),
+      new THREE.LineBasicMaterial({ color: 0x66bb6a, transparent: true, opacity: 0.85 }),
+    )
+    box.position.set(pos[0], pos[1], pos[2])
+    liveState.detGroup.add(box)
+
+    const confidence = typeof det.confidence === 'number' ? ` ${Math.round(det.confidence * 100)}%` : ''
+    createLabel(`${det.label ?? 'object'}${confidence}`, box.position, {
+      scanId: LIVE_SCAN_ID,
+      layerType: 'labels',
+    })
+  }
+}
+
 // ─── HUD and camera helpers ──────────────────────────────────────────────────
 
 function updateHudInfo(message?: string): void {
@@ -1462,8 +1692,86 @@ function setTransformMode(mode: 'translate' | 'rotate' | 'scale'): void {
   }
 }
 
+// ─── Server event stream — live scan list + job status ──────────────────────
+
+let worldRefreshTimer: ReturnType<typeof setTimeout> | null = null
+
+function connectServerEvents(): void {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+  let ws: WebSocket
+  try {
+    ws = new WebSocket(`${proto}://${location.host}/events`)
+  } catch {
+    return
+  }
+  ws.addEventListener('message', (event) => {
+    try {
+      const msg = JSON.parse(String(event.data)) as Record<string, unknown>
+      if (msg['type'] === 'scan-added' || msg['type'] === 'session-finalized') {
+        scheduleWorldRefresh()
+      } else if (msg['type'] === 'job-update') {
+        handleJobUpdate(msg['job'] as { target?: string; status?: string; note?: string | null })
+      }
+    } catch { /* malformed event — ignore */ }
+  })
+  ws.addEventListener('close', () => {
+    setTimeout(connectServerEvents, 3000)
+  })
+}
+
+function scheduleWorldRefresh(): void {
+  if (worldRefreshTimer) return
+  worldRefreshTimer = setTimeout(() => {
+    worldRefreshTimer = null
+    void refreshWorldScans()
+  }, 800)
+}
+
+/** Re-fetch the world and stream in any scans that appeared since page load. */
+async function refreshWorldScans(): Promise<void> {
+  if (!world) return
+  try {
+    const updated = await fetchJson<WorldProject>(`/worlds/${encodeURIComponent(initialWorldSlug)}`)
+    world = updated
+    const fresh = updated.scans.filter((scan) => !scanItems.has(scan.scanId))
+    if (fresh.length === 0) return
+
+    document.getElementById('viewer-placeholder')!.style.display = 'none'
+    const listEl = document.getElementById('scan-list')!
+    document.getElementById('scan-list-empty')?.remove()
+    for (const scan of fresh) {
+      const item = buildScanItem(scan)
+      scanItems.set(scan.scanId, item)
+      listEl.prepend(item)
+      void loadScanIntoWorld(scan).catch(() => { /* status chip shows the error */ })
+    }
+    renderWorldPanel()
+    updateHudInfo()
+  } catch (error) {
+    console.warn('[viewer] world refresh failed:', error)
+  }
+}
+
+function handleJobUpdate(job: { target?: string; status?: string; note?: string | null } | undefined): void {
+  if (!job?.target || !world) return
+  const scan = world.scans.find((s) => s.filename === job.target)
+  if (!scan) return
+
+  if (job.status === 'queued') setScanStatus(scan.scanId, 'Optimization queued...')
+  else if (job.status === 'running') setScanStatus(scan.scanId, 'Optimizing (quantize/draco/LODs)...')
+  else if (job.status === 'error') setScanStatus(scan.scanId, `Optimize failed: ${job.note ?? 'see server log'}`)
+  else if (job.status === 'done') {
+    setScanStatus(scan.scanId, `Optimized - ${job.note ?? 'artifacts ready'}`)
+    // Re-load to swap in the optimized artifact (preview → quantized/draco)
+    if (loadedScans.get(scan.scanId)?.loaded) {
+      void loadScanIntoWorld(scan).catch(() => { /* status chip shows the error */ })
+    }
+  }
+}
+
 // ─── Boot ────────────────────────────────────────────────────────────────────
 
 initRenderer()
 startRenderLoop()
 void loadWorldProject()
+connectServerEvents()
