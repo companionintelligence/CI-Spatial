@@ -205,15 +205,19 @@ test.describe('3D Viewer page', () => {
 // ── Side panel ────────────────────────────────────────────────────────────────
 
 test.describe('Side panel', () => {
-  test('panel is not visible by default', async ({ page }) => {
+  test.beforeEach(async ({ page }) => {
     await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
+    await waitForStatus(page, 'begin')
+    await page.evaluate(() => document.getElementById('start-screen')?.remove())
+  })
+
+  test('panel is not visible by default', async ({ page }) => {
     const panel = page.locator('#side-panel')
     // Panel exists but should not have 'open' class
     await expect(panel).not.toHaveClass(/open/)
   })
 
   test('clicking panel toggle opens the panel', async ({ page }) => {
-    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
     await page.locator('#panel-toggle').click()
     await expect(page.locator('#side-panel')).toHaveClass(/open/)
   })
@@ -222,19 +226,22 @@ test.describe('Side panel', () => {
 // ── History drawer ────────────────────────────────────────────────────────────
 
 test.describe('History drawer', () => {
-  test('history drawer is not visible by default', async ({ page }) => {
+  test.beforeEach(async ({ page }) => {
     await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
+    await waitForStatus(page, 'begin')
+    await page.evaluate(() => document.getElementById('start-screen')?.remove())
+  })
+
+  test('history drawer is not visible by default', async ({ page }) => {
     await expect(page.locator('#history-drawer')).not.toHaveClass(/open/)
   })
 
   test('clicking history button opens the drawer', async ({ page }) => {
-    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
     await page.locator('#history-btn').click()
     await expect(page.locator('#history-drawer')).toHaveClass(/open/)
   })
 
   test('clicking close button closes the drawer', async ({ page }) => {
-    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
     await page.locator('#history-btn').click()
     await expect(page.locator('#history-drawer')).toHaveClass(/open/)
     await page.locator('#history-close').click()
@@ -242,7 +249,6 @@ test.describe('History drawer', () => {
   })
 
   test('pressing Escape closes the drawer', async ({ page }) => {
-    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
     await page.locator('#history-btn').click()
     await expect(page.locator('#history-drawer')).toHaveClass(/open/)
     await page.keyboard.press('Escape')
@@ -250,7 +256,6 @@ test.describe('History drawer', () => {
   })
 
   test('clicking backdrop closes the drawer', async ({ page }) => {
-    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
     await page.locator('#history-btn').click()
     await expect(page.locator('#history-drawer')).toHaveClass(/open/)
     // Click the backdrop (the drawer element itself, not the panel)
@@ -330,7 +335,7 @@ test.describe('UI element positions', () => {
     expect(display).toBe('none')
   })
 
-  test('RTC stream badge is in the bottom-left when shown', async ({ page }) => {
+  test('RTC stream badge is in the top-left HUD panel when shown', async ({ page }) => {
     await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
     await page.evaluate(() => {
       const el = document.getElementById('rtc-stream-btn') as HTMLElement | null
@@ -341,9 +346,9 @@ test.describe('UI element positions', () => {
     if (box) {
       const vw = page.viewportSize()?.width ?? 400
       const vh = page.viewportSize()?.height ?? 800
-      // left half, bottom half
+      // left half, top half (since it is unified inside the HUD panel)
       expect(box.x).toBeLessThan(vw / 2)
-      expect(box.y).toBeGreaterThan(vh / 2)
+      expect(box.y).toBeLessThan(vh / 2)
     }
   })
 
@@ -395,23 +400,24 @@ test.describe('Progress bar (analyzing)', () => {
 // ── Viewer page new controls ───────────────────────────────────────────────────
 
 test.describe('Viewer new controls', () => {
-  test('live feed button is present in viewer toolbar', async ({ page }) => {
+  test.beforeEach(async ({ page }) => {
     await page.goto(`${BASE_URL}/viewer.html`, { waitUntil: 'domcontentloaded' })
+    await page.waitForTimeout(1500)
+  })
+
+  test('live feed button is present in viewer toolbar', async ({ page }) => {
     await expect(page.locator('#btn-livefeed')).toBeVisible()
   })
 
   test('bounds toggle button is present', async ({ page }) => {
-    await page.goto(`${BASE_URL}/viewer.html`, { waitUntil: 'domcontentloaded' })
     await expect(page.locator('#btn-toggle-bounds')).toBeVisible()
   })
 
   test('geomap button is present', async ({ page }) => {
-    await page.goto(`${BASE_URL}/viewer.html`, { waitUntil: 'domcontentloaded' })
     await expect(page.locator('#btn-geomap')).toBeVisible()
   })
 
   test('clicking live feed button shows live feed panel', async ({ page }) => {
-    await page.goto(`${BASE_URL}/viewer.html`, { waitUntil: 'domcontentloaded' })
     // Panel should not be visible initially
     const initialDisplay = await page.locator('#livefeed-panel').evaluate(
       (el) => window.getComputedStyle(el).display
@@ -426,7 +432,6 @@ test.describe('Viewer new controls', () => {
   })
 
   test('bounds button starts with reduced opacity (off)', async ({ page }) => {
-    await page.goto(`${BASE_URL}/viewer.html`, { waitUntil: 'domcontentloaded' })
     const opacity = await page.locator('#btn-toggle-bounds').evaluate(
       (el) => (el as HTMLElement).style.opacity
     )
@@ -434,7 +439,6 @@ test.describe('Viewer new controls', () => {
   })
 
   test('clicking bounds button toggles opacity to 1 (on)', async ({ page }) => {
-    await page.goto(`${BASE_URL}/viewer.html`, { waitUntil: 'domcontentloaded' })
     await page.locator('#btn-toggle-bounds').click()
     const opacity = await page.locator('#btn-toggle-bounds').evaluate(
       (el) => (el as HTMLElement).style.opacity
@@ -446,21 +450,28 @@ test.describe('Viewer new controls', () => {
 // ── AI Engine settings ─────────────────────────────────────────────────────────
 
 test.describe('AI engine settings', () => {
-  test('defaults to server mode — no infer-mode key needed', async ({ page }) => {
+  test.beforeEach(async ({ page }) => {
     await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
+    await waitForStatus(page, 'begin')
+    await page.evaluate(() => document.getElementById('start-screen')?.remove())
+  })
+
+  test('defaults to server mode — no infer-mode key needed', async ({ page }) => {
     // Clear any saved preference so we start fresh
     await page.evaluate(() => localStorage.removeItem('infer-mode'))
     await page.reload({ waitUntil: 'domcontentloaded' })
-    // Status bar should report server mode
-    const statusText = await page.locator('#status-text').textContent()
-    // 'server' or '🖥 Server' should appear regardless of emoji rendering
-    expect(statusText?.toLowerCase()).toContain('server')
+    await waitForStatus(page, 'begin')
+    await page.evaluate(() => document.getElementById('start-screen')?.remove())
+
+    // Open side panel
+    await page.locator('#panel-toggle').click()
+    await page.waitForTimeout(300)
+
+    // Verify that the server toggle is active
+    await expect(page.locator('[data-mode="server"]')).toHaveAttribute('data-active', 'true')
   })
 
   test('server toggle in settings panel sets localStorage to server', async ({ page }) => {
-    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
-    await page.waitForTimeout(1500)
-
     // Open the panel
     await page.locator('#panel-toggle').click()
     await page.waitForTimeout(300)
@@ -475,9 +486,6 @@ test.describe('AI engine settings', () => {
   })
 
   test('webgpu toggle in settings panel sets localStorage to webgpu', async ({ page }) => {
-    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
-    await page.waitForTimeout(1500)
-
     await page.locator('#panel-toggle').click()
     await page.waitForTimeout(300)
 
@@ -490,7 +498,6 @@ test.describe('AI engine settings', () => {
   })
 
   test('localStorage infer-mode survives reload', async ({ page }) => {
-    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
     await page.evaluate(() => localStorage.setItem('infer-mode', 'server'))
     await page.reload({ waitUntil: 'domcontentloaded' })
     const saved = await page.evaluate(() => localStorage.getItem('infer-mode'))
@@ -498,8 +505,6 @@ test.describe('AI engine settings', () => {
   })
 
   test('AI engine panel buttons are present in side panel', async ({ page }) => {
-    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
-    await page.waitForTimeout(1500)
     await page.locator('#panel-toggle').click()
     await page.waitForTimeout(300)
     await expect(page.locator('[data-mode="server"]')).toBeVisible()

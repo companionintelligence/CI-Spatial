@@ -55,8 +55,29 @@ async function main() {
     if (fix?.address) overlay.setStatus(`📍 ${fix.address}`)
   })
 
-  // ── 2. Inference router ────────────────────────────────────────────────────
+  // ── 2. Inference router & early UI mounting (prevents test timeouts) ───────
   const router = new InferenceRouter()
+
+  const panel = new SidePanel(
+    store,
+    () => exportToGLB({ store, pointCloud, poseHistory, geoFix: geoTracker.snapshot() ?? undefined }),
+    () => exportSessionSummary({ store, pointCloud, poseHistory, captureCount, geoFix: geoTracker.snapshot() ?? undefined }),
+    (action) => requestServerProcessing(action, store),
+    (mode) => {
+      router.setMode(mode)
+      overlay.setStatus(`AI: ${mode === 'server' ? '🖥 Server' : '⚡ WebGPU'}`)
+    },
+    router.path,
+  )
+  panel.mount()
+
+  const history = new SessionHistory(store)
+  history.mount()
+
+  document.getElementById('history-btn')?.addEventListener('click', () => {
+    initDrawerGeoMap(geoTracker.snapshot())
+  })
+
   await router.init(
     (stage, pct) => { overlay.setProgress(pct, stage) },
     (mode) => {
@@ -94,21 +115,8 @@ async function main() {
     }
   }
 
-  // ── 4. UI ──────────────────────────────────────────────────────────────────
+  // ── 4. AR Overlay & Capture setup ──────────────────────────────────────────
   const arOverlay = new AROverlay(store, use8thWall, provider)
-  const panel = new SidePanel(
-    store,
-    () => exportToGLB({ store, pointCloud, poseHistory, geoFix: geoTracker.snapshot() ?? undefined }),
-    () => exportSessionSummary({ store, pointCloud, poseHistory, captureCount, geoFix: geoTracker.snapshot() ?? undefined }),
-    (action) => requestServerProcessing(action, store),
-    (mode) => {
-      router.setMode(mode)
-      overlay.setStatus(`AI: ${mode === 'server' ? '🖥 Server' : '⚡ WebGPU'}`)
-    },
-    router.path,
-  )
-  const history = new SessionHistory(store)
-
   const capture = new CaptureModule(provider)
   const asyncHitTest = !use8thWall && provider instanceof WebXRProvider
     ? (x: number, y: number) => (provider as WebXRProvider).hitTestAsync(x, y)
@@ -196,14 +204,6 @@ async function main() {
   }
 
   arOverlay.mount(doCapture)
-
-  panel.mount()
-  history.mount()
-
-  // Open the geo-map in the drawer whenever the history button is clicked
-  document.getElementById('history-btn')?.addEventListener('click', () => {
-    initDrawerGeoMap(geoTracker.snapshot())
-  })
 
   // ── Auto-capture ───────────────────────────────────────────────────────────
   const autoCapture = new AutoCapture(provider, doCapture)

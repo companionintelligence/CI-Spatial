@@ -57,10 +57,27 @@ export interface ResolveOptions {
  */
 function ensureValidRotation(q: any): { x: number; y: number; z: number; w: number } {
   if (!q) return { x: 0, y: 0, z: 0, w: 1 }
-  const lenSq = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w
-  if (lenSq < 0.001) return { x: 0, y: 0, z: 0, w: 1 }
+
+  // Extract values, checking standard properties (x, y, z, w), private fields (_x, _y, _z, _w), and arrays
+  let x = typeof q.x === 'number' ? q.x : (typeof q._x === 'number' ? q._x : (Array.isArray(q) ? q[0] : undefined))
+  let y = typeof q.y === 'number' ? q.y : (typeof q._y === 'number' ? q._y : (Array.isArray(q) ? q[1] : undefined))
+  let z = typeof q.z === 'number' ? q.z : (typeof q._z === 'number' ? q._z : (Array.isArray(q) ? q[2] : undefined))
+  let w = typeof q.w === 'number' ? q.w : (typeof q._w === 'number' ? q._w : (Array.isArray(q) ? q[3] : undefined))
+
+  // If any values are missing, non-numeric, or null, use default identity quaternion parts
+  if (x === undefined || x === null || isNaN(x)) x = 0
+  if (y === undefined || y === null || isNaN(y)) y = 0
+  if (z === undefined || z === null || isNaN(z)) z = 0
+  if (w === undefined || w === null || isNaN(w)) w = 1
+
+  const lenSq = x * x + y * y + z * z + w * w
+  // If quaternion has zero/near-zero length or is invalid, return identity quaternion
+  if (lenSq < 0.001 || isNaN(lenSq)) {
+    return { x: 0, y: 0, z: 0, w: 1 }
+  }
+
   const len = Math.sqrt(lenSq)
-  return { x: q.x / len, y: q.y / len, z: q.z / len, w: q.w / len }
+  return { x: x / len, y: y / len, z: z / len, w: w / len }
 }
 
 function raycastPointCloud(

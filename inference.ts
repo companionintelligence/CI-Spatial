@@ -80,7 +80,7 @@ export class InferenceEngine {
   constructor() {
     this.mode = Deno.env.get('INFERENCE_MODE') === 'onnx' ? 'onnx' : 'ollama'
     this.ollamaUrl = Deno.env.get('OLLAMA_HOST') ?? 'http://localhost:11434'
-    this.ollamaModel = Deno.env.get('OLLAMA_MODEL') ?? 'qwen3-vl:4b'
+    this.ollamaModel = Deno.env.get('OLLAMA_MODEL') ?? 'moondream:latest'
     this.modelId = this.mode === 'onnx' ? 'LiquidAI/LFM2.5-VL-1.6B-ONNX' : `Ollama/${this.ollamaModel}`
   }
 
@@ -98,7 +98,7 @@ export class InferenceEngine {
         
         if (!hasModel) {
           // Fallback check to any pulled vision models
-          const visionModels = ['qwen3-vl:4b', 'moondream:latest', 'llava:7b', 'qwen3.5:4b', 'qwen3.5:2b']
+          const visionModels = ['moondream:latest', 'llava:7b', 'qwen3-vl:4b', 'qwen3.5:4b', 'qwen3.5:2b']
           let foundFallback = false
           for (const fallback of visionModels) {
             if (data.models.some(m => m.name === fallback || m.name.startsWith(fallback + ':'))) {

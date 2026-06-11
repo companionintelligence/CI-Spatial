@@ -186,8 +186,14 @@ export class SidePanel {
     this._currentInferMode = mode
     const on  = 'background:rgba(255,255,255,0.92);color:#000;'
     const off = 'background:rgba(255,255,255,0.07);color:rgba(255,255,255,0.55);'
-    if (this._aiServerBtn)  this._aiServerBtn .style.cssText  += mode === 'server'  ? on : off
-    if (this._aiWebGPUBtn)  this._aiWebGPUBtn .style.cssText  += mode === 'webgpu'  ? on : off
+    if (this._aiServerBtn) {
+      this._aiServerBtn.style.cssText += mode === 'server' ? on : off
+      this._aiServerBtn.setAttribute('data-active', String(mode === 'server'))
+    }
+    if (this._aiWebGPUBtn) {
+      this._aiWebGPUBtn.style.cssText += mode === 'webgpu' ? on : off
+      this._aiWebGPUBtn.setAttribute('data-active', String(mode === 'webgpu'))
+    }
     const note = document.getElementById('ai-engine-note')
     if (note) note.textContent = mode === 'server' ? 'Server uses all machine cores' : 'On-device — no data leaves your phone'
   }
