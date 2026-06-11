@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Companion Scan — WebXR</title>
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" href="/icon-192.png" type="image/png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icon-192.png" />
+    <meta name="theme-color" content="#010d0e" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Companion Scan XR" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <style>
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+      html, body {
+        width: 100%;
+        height: 100%;
+        background:
+          radial-gradient(circle at 50% 32%, rgba(128,255,225,0.16), transparent 34%),
+          linear-gradient(180deg, #071212 0%, #010d0e 100%);
+        color: #eff0f0;
+        font-family: 'Avenir Next', 'Avenir', 'Helvetica Neue', 'Segoe UI', sans-serif;
+      }
+
+      body { display: grid; place-items: center; padding: 24px; }
+
+      .panel {
+        max-width: 360px;
+        text-align: center;
+      }
+
+      .mark {
+        width: 56px;
+        height: 56px;
+        margin: 0 auto 16px;
+        border: 1px solid rgba(239,240,240,0.38);
+        border-radius: 50%;
+        box-shadow: 0 0 34px rgba(128,255,225,0.24);
+        position: relative;
+      }
+      .mark::before { content: ''; position: absolute; inset: 9px; border: 1px solid rgba(239,240,240,0.32); border-radius: 50%; }
+      .mark::after { content: ''; position: absolute; width: 18px; height: 18px; right: 7px; top: 18px; background: #80ffe1; border-radius: 50%; }
+
+      .eyebrow {
+        color: #80ffe1;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        margin-bottom: 7px;
+      }
+
+      .title { font-size: 17px; font-weight: 800; margin-bottom: 10px; }
+
+      .status {
+        font-size: 13px;
+        line-height: 1.6;
+        color: rgba(239,244,241,0.62);
+        margin-bottom: 22px;
+      }
+      .status strong { color: #eff0f0; }
+      .status a { color: #80ffe1; }
+
+      .actions { display: flex; flex-direction: column; gap: 10px; }
+
+      .btn {
+        display: block;
+        padding: 13px 18px;
+        border-radius: 999px;
+        border: 1px solid rgba(239,240,240,0.18);
+        background: linear-gradient(180deg, rgba(26,45,46,0.9), rgba(8,20,21,0.94));
+        color: #eff0f0;
+        font-size: 14px;
+        font-weight: 700;
+        text-decoration: none;
+        transition: border-color 0.2s, box-shadow 0.2s;
+      }
+      .btn:hover, .btn:active {
+        border-color: rgba(128,255,225,0.42);
+        box-shadow: 0 0 0 5px rgba(128,255,225,0.06);
+      }
+      .btn.primary {
+        background: rgba(128,255,225,0.16);
+        border-color: rgba(128,255,225,0.5);
+        color: #80ffe1;
+      }
+      .btn.subtle { font-weight: 600; color: rgba(239,244,241,0.62); }
+    </style>
+  </head>
+  <body>
+    <main class="panel" aria-label="Companion Scan WebXR mode">
+      <div class="mark" aria-hidden="true"></div>
+      <div class="eyebrow">Companion Intelligence</div>
+      <div class="title">WebXR Scanner</div>
+      <p class="status" id="xr-status">Checking WebXR support…</p>
+      <nav class="actions">
+        <a class="btn primary" id="btn-start" href="/?ar=webxr">Start WebXR Scan</a>
+        <a class="btn" id="btn-helloxr" href="https://apps.apple.com/us/app/helloxr/id6757726359" style="display:none">Get HelloXR for iOS</a>
+        <a class="btn subtle" href="/">8th Wall Scanner</a>
+        <a class="btn subtle" href="/viewer.html">Desktop 3D Viewer</a>
+      </nav>
+    </main>
+
+    <script>
+      // Detect WebXR immersive-ar.  When available (HelloXR on iOS, Quest
+      // browser, Android Chrome), forward straight into the scanner in
+      // forced-WebXR mode; otherwise explain how to get a WebXR browser.
+      const statusEl = document.getElementById('xr-status')
+      const helloxrBtn = document.getElementById('btn-helloxr')
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+        || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+
+      async function detect() {
+        if (navigator.xr) {
+          try {
+            const supported = await navigator.xr.isSessionSupported('immersive-ar')
+            if (supported) {
+              statusEl.innerHTML = '<strong>WebXR AR is available.</strong> Opening scanner…'
+              location.replace('/?ar=webxr')
+              return
+            }
+          } catch { /* fall through to guidance */ }
+        }
+        if (isIOS) {
+          statusEl.innerHTML =
+            '<strong>This browser has no WebXR AR.</strong> On iOS, open this page inside the '
+            + '<a href="https://apps.apple.com/us/app/helloxr/id6757726359">HelloXR</a> app — '
+            + 'it provides a WebXR-enabled browser. Or use the 8th Wall scanner, which works in Safari.'
+          helloxrBtn.style.display = 'block'
+        } else {
+          statusEl.innerHTML =
+            '<strong>WebXR immersive-ar is not supported here.</strong> '
+            + 'Use Android Chrome or a headset browser, or fall back to the 8th Wall scanner.'
+        }
+      }
+      detect()
+    </script>
+  </body>
+</html>

@@ -60,3 +60,6 @@ summaries/
 public/draco/
 
 .agents/*
+
+# Generated test fixtures — npm run gen:test-data
+test-data/

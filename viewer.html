@@ -812,9 +812,11 @@
         <button class="mode-btn"        id="mode-wire"    data-mode="wireframe">⬡ Wire</button>
         <button class="mode-btn"        id="mode-semantic" data-mode="semantic">🏷 Semantic</button>
         <div id="toolbar-spacer"></div>
+        <button class="mode-btn" id="btn-measure" title="Measure distance: click two points">📏 Measure</button>
         <button class="mode-btn" id="btn-geomap">🗺 Map</button>
         <button class="mode-btn" id="btn-livefeed">📡 Live</button>
         <a href="/" id="back-link">← AR App</a>
+        <a href="/webxr.html" id="webxr-link" class="mode-btn" title="WebXR scanner — use HelloXR on iOS">🥽 WebXR</a>
       </div>
 
       <div id="main-area">
@@ -941,6 +943,14 @@
                   <button id="edit-save-notes"
                     style="margin-top:6px;width:100%;padding:6px;background:rgba(128,255,225,0.15);border:1px solid rgba(128,255,225,0.3);border-radius:6px;color:#80ffe1;font-size:11px;font-weight:700;cursor:pointer;">
                     Save Notes
+                  </button>
+                </div>
+
+                <div class="edit-section">
+                  <div class="edit-section-title">Visibility</div>
+                  <button id="edit-hide-object"
+                    style="width:100%;padding:6px;background:rgba(239,154,154,0.12);border:1px solid rgba(239,154,154,0.3);border-radius:6px;color:#ef9a9a;font-size:11px;font-weight:700;cursor:pointer;">
+                    Hide Object (saved as patch)
                   </button>
                 </div>
               </div>

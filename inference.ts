@@ -1,12 +1,15 @@
 /**
  * Inference engine — runs LFM2.5-VL-1.6B-ONNX locally.
  *
- * Supports two modes:
+ * Supports three modes (INFERENCE_MODE env):
  * 1. "ollama" (default) — POSTs to local Ollama API (Metal/AMD accelerated, zero local deps)
  * 2. "onnx"             — runs via onnxruntime-node (loaded dynamically to avoid load errors)
+ * 3. "mock"             — deterministic colour-blob detector for tests/CI; recognises the
+ *                         shared CV palette colours (test-data/cv images, xr8-mock feed)
  */
 import { SPATIAL_DETECTION_PROMPT, parseDetections } from './prompt.ts'
 import type { RawDetection } from './prompt.ts'
+import { classifyPixel } from './src/shared/cv-palette.ts'
 
 // Re-export shared types
 export type { RawDetection }
@@ -64,7 +67,7 @@ function arrayBufferToBase64(bytes: Uint8Array): string {
 
 export class InferenceEngine {
   readonly modelId: string
-  private mode: 'ollama' | 'onnx'
+  private mode: 'ollama' | 'onnx' | 'mock'
   
   // Ollama configuration
   private ollamaUrl: string
@@ -78,13 +81,23 @@ export class InferenceEngine {
   private _onnxQueue: Promise<unknown> = Promise.resolve()
 
   constructor() {
-    this.mode = Deno.env.get('INFERENCE_MODE') === 'onnx' ? 'onnx' : 'ollama'
+    const requested = Deno.env.get('INFERENCE_MODE')
+    this.mode = requested === 'onnx' ? 'onnx' : requested === 'mock' ? 'mock' : 'ollama'
     this.ollamaUrl = Deno.env.get('OLLAMA_HOST') ?? 'http://localhost:11434'
     this.ollamaModel = Deno.env.get('OLLAMA_MODEL') ?? 'moondream:latest'
-    this.modelId = this.mode === 'onnx' ? 'LiquidAI/LFM2.5-VL-1.6B-ONNX' : `Ollama/${this.ollamaModel}`
+    this.modelId = this.mode === 'onnx' ? 'LiquidAI/LFM2.5-VL-1.6B-ONNX'
+      : this.mode === 'mock' ? 'mock/color-blob-v1'
+      : `Ollama/${this.ollamaModel}`
   }
 
   async load(): Promise<void> {
+    if (this.mode === 'mock') {
+      const jimpMod = await import('jimp')
+      JimpClass = jimpMod.Jimp
+      console.log('[engine] Mock colour-blob engine ready (INFERENCE_MODE=mock)')
+      return
+    }
+
     if (this.mode === 'ollama') {
       console.log(`[engine] Initializing Ollama engine (model: "${this.ollamaModel}" at ${this.ollamaUrl})…`)
       try {
@@ -163,6 +176,9 @@ export class InferenceEngine {
   }
 
   async infer(imageBytes: Uint8Array): Promise<RawDetection[]> {
+    if (this.mode === 'mock') {
+      return this._inferMock(imageBytes)
+    }
     if (this.mode === 'ollama') {
       return this._inferOllama(imageBytes)
     }
@@ -171,6 +187,99 @@ export class InferenceEngine {
     const result = this._onnxQueue.then(() => this._inferOnnx(imageBytes))
     this._onnxQueue = result.catch(() => {})
     return result
+  }
+
+  /**
+   * Mock engine: detects solid CV-palette colour blobs via grid sampling +
+   * union-find connected components.  Deterministic and model-free, so the
+   * full capture → infer → resolve pipeline is testable in CI.  Pairs with
+   * scripts/generate-cv-images.mjs and the xr8-mock camera feed.
+   */
+  private async _inferMock(imageBytes: Uint8Array): Promise<RawDetection[]> {
+    // Jimp dispatches on input type — a raw Uint8Array is treated as a URL
+    const { Buffer } = await import('node:buffer')
+    const image = await JimpClass.read(Buffer.from(imageBytes))
+    const { width, height, data } = image.bitmap as { width: number; height: number; data: Uint8Array }
+
+    const step = Math.max(2, Math.floor(Math.min(width, height) / 160))
+    const cols = Math.floor(width / step)
+    const rows = Math.floor(height / step)
+
+    // Classify a sampled grid against the palette
+    const labels = new Array<string | null>(cols * rows).fill(null)
+    for (let gy = 0; gy < rows; gy++) {
+      for (let gx = 0; gx < cols; gx++) {
+        const i = ((gy * step) * width + gx * step) * 4
+        labels[gy * cols + gx] = classifyPixel(data[i], data[i + 1], data[i + 2])
+      }
+    }
+
+    // Union-find over the 4-neighbourhood of same-label cells
+    const parent = new Int32Array(cols * rows).fill(-1)
+    const find = (a: number): number => {
+      let r = a
+      while (parent[r] !== r) r = parent[r]
+      while (parent[a] !== r) { const next = parent[a]; parent[a] = r; a = next }
+      return r
+    }
+    for (let gy = 0; gy < rows; gy++) {
+      for (let gx = 0; gx < cols; gx++) {
+        const idx = gy * cols + gx
+        if (!labels[idx]) continue
+        if (parent[idx] === -1) parent[idx] = idx
+        if (gx > 0 && labels[idx - 1] === labels[idx]) {
+          const a = find(idx), b = find(idx - 1)
+          if (a !== b) parent[a] = b
+        }
+        if (gy > 0 && labels[idx - cols] === labels[idx]) {
+          const a = find(idx), b = find(idx - cols)
+          if (a !== b) parent[a] = b
+        }
+      }
+    }
+
+    // Cluster bounds → detections
+    interface MockBlob { label: string; minX: number; minY: number; maxX: number; maxY: number; count: number }
+    const blobs = new Map<number, MockBlob>()
+    for (let gy = 0; gy < rows; gy++) {
+      for (let gx = 0; gx < cols; gx++) {
+        const idx = gy * cols + gx
+        const label = labels[idx]
+        if (!label) continue
+        const r = find(idx)
+        let blob = blobs.get(r)
+        if (!blob) {
+          blob = { label, minX: gx, minY: gy, maxX: gx, maxY: gy, count: 0 }
+          blobs.set(r, blob)
+        }
+        blob.count++
+        if (gx < blob.minX) blob.minX = gx
+        if (gx > blob.maxX) blob.maxX = gx
+        if (gy < blob.minY) blob.minY = gy
+        if (gy > blob.maxY) blob.maxY = gy
+      }
+    }
+
+    const minSamples = 20
+    const detections: RawDetection[] = []
+    for (const blob of blobs.values()) {
+      if (blob.count < minSamples) continue
+      detections.push({
+        label: blob.label,
+        confidence: 0.95,
+        description: `mock colour-blob detection (${blob.count} samples)`,
+        bbox: [
+          (blob.minX * step) / width,
+          (blob.minY * step) / height,
+          ((blob.maxX + 1) * step) / width,
+          ((blob.maxY + 1) * step) / height,
+        ],
+      })
+    }
+    detections.sort((a, b) =>
+      (b.bbox[2] - b.bbox[0]) * (b.bbox[3] - b.bbox[1]) - (a.bbox[2] - a.bbox[0]) * (a.bbox[3] - a.bbox[1]))
+    console.log(`[engine] mock detections: ${detections.map(d => d.label).join(', ') || '(none)'}`)
+    return detections
   }
 
   private async _inferOllama(imageBytes: Uint8Array): Promise<RawDetection[]> {

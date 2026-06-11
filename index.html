@@ -21,7 +21,26 @@
       Download from https://8th.io/xrjs and place in public/xr.js
       data-preload-chunks="slam" eagerly loads SLAM/world-tracking.
     -->
-    <script async src="/xr.js" data-preload-chunks="slam"></script>
+    <script>
+      // AR engine selection:
+      //   ?mock=xr8  → scripted XR8 mock (automated tests, no device/binary)
+      //   ?ar=webxr  → skip the SLAM binary entirely (HelloXR / WebXR mode)
+      //   default    → real 8th Wall engine from public/xr.js
+      {
+        const params = new URLSearchParams(location.search)
+        if (params.get('mock') === 'xr8') {
+          const mockScript = document.createElement('script')
+          mockScript.src = '/test-fixtures/xr8-mock.js'
+          document.head.appendChild(mockScript)
+        } else if (params.get('ar') !== 'webxr') {
+          const xrScript = document.createElement('script')
+          xrScript.async = true
+          xrScript.src = '/xr.js'
+          xrScript.dataset.preloadChunks = 'slam'
+          document.head.appendChild(xrScript)
+        }
+      }
+    </script>
 
     <style>
       *,
@@ -190,8 +209,8 @@
       #stream-btn {
         pointer-events: all;
         position: absolute;
-        right: 16px;
-        bottom: 232px;
+        right: max(16px, env(safe-area-inset-right));
+        bottom: calc(250px + env(safe-area-inset-bottom));
         width: 48px;
         height: 48px;
         border-radius: 50%;
@@ -293,6 +312,40 @@
         border-color: #80ffe1;
         color: #80ffe1;
         transform: scale(0.94);
+      }
+
+      /* ── AR runtime switch (8th Wall ↔ WebXR / HelloXR) ── */
+      #xr-mode-link {
+        pointer-events: all;
+        position: absolute;
+        right: max(16px, env(safe-area-inset-right));
+        bottom: calc(310px + env(safe-area-inset-bottom));
+        width: 48px;
+        height: 48px;
+        border-radius: 50%;
+        border: 1px solid var(--ci-line);
+        background: linear-gradient(180deg, rgba(26, 45, 46, 0.9), rgba(8, 20, 21, 0.94));
+        color: var(--ci-text);
+        font-size: 16px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        backdrop-filter: blur(12px);
+        box-shadow: var(--ci-shadow);
+        text-decoration: none;
+        transition: border-color 0.2s ease-out, background 0.2s ease-out, color 0.2s ease-out, transform 0.15s ease-out, box-shadow 0.2s ease-out;
+      }
+      #xr-mode-link:hover, #xr-mode-link:active {
+        background: rgba(128,255,225, 0.18);
+        border-color: #80ffe1;
+        color: #80ffe1;
+        transform: scale(0.94);
+      }
+      #xr-mode-link.active {
+        background: rgba(128,255,225, 0.25);
+        border-color: #80ffe1;
+        color: #80ffe1;
       }
 
       /* Full-screen backdrop + slide-in drawer */
@@ -1117,6 +1170,7 @@
         <span id="stream-count"></span>
       </button>
       <a href="/viewer.html" id="viewer-link" aria-label="Open 3D Viewer" title="Desktop 3D Viewer">🖥</a>
+      <a href="/webxr.html" id="xr-mode-link" aria-label="Switch AR runtime" title="Switch to WebXR scanner (HelloXR on iOS)">🥽</a>
 
       <div id="side-panel">
         <div id="panel-content"></div>

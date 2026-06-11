@@ -29,25 +29,37 @@ export class WebXRProvider implements ARProvider {
     rotation: { x: 0, y: 0, z: 0, w: 1 },
   }
   private animFrameId: number | null = null
+  /** Surface points sampled from the viewer-ray hit test each frame */
+  private _recentHitPoints: Array<{ x: number; y: number; z: number }> = []
 
   async start(canvas: HTMLCanvasElement): Promise<void> {
     if (!navigator.xr) throw new Error('WebXR not available')
 
     // Set up a companion video stream for camera pixel data.
     // XR camera-access is too sparsely supported to rely on.
-    this.videoStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
-      audio: false,
-    })
-    this.videoEl = document.createElement('video')
-    this.videoEl.srcObject = this.videoStream
-    this.videoEl.playsInline = true
-    this.videoEl.muted = true
-    await this.videoEl.play()
+    // Camera denial is non-fatal: tracking/hit-testing still work, only
+    // frame capture is unavailable (headsets, emulated runtimes).
+    try {
+      this.videoStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      })
+      this.videoEl = document.createElement('video')
+      this.videoEl.srcObject = this.videoStream
+      this.videoEl.playsInline = true
+      this.videoEl.muted = true
+      await this.videoEl.play()
+    } catch (e) {
+      console.warn('[webxr] No camera stream — frame capture disabled:', e)
+    }
 
     this.session = await navigator.xr.requestSession('immersive-ar', {
       requiredFeatures: ['hit-test'],
       optionalFeatures: ['dom-overlay'],
+      // Without an explicit root the dom-overlay feature never activates and
+      // the entire HTML UI is invisible inside the immersive session
+      // (HelloXR on iOS, Quest browser).
+      domOverlay: { root: document.body },
     })
 
     const gl = canvas.getContext('webgl2', { xrCompatible: true }) as WebGL2RenderingContext
@@ -62,7 +74,13 @@ export class WebXRProvider implements ARProvider {
     this.refSpace = localFloor
     this.viewerSpace = viewer
 
-    this.hitTestSource = await this.session.requestHitTestSource!({ space: viewer }) ?? null
+    // Hit-test is optional on emulated runtimes (iwer) and some browsers
+    try {
+      this.hitTestSource = await this.session.requestHitTestSource?.({ space: viewer }) ?? null
+    } catch (e) {
+      console.warn('[webxr] hit-test unavailable — feature points disabled:', e)
+      this.hitTestSource = null
+    }
 
     // Main XR frame loop
     const self = this
@@ -83,6 +101,22 @@ export class WebXRProvider implements ARProvider {
           const aspect = proj[5] / proj[0]
           if (Number.isFinite(fovY) && fovY > 0) self._fovY = fovY
           if (Number.isFinite(aspect) && aspect > 0) self._aspect = aspect
+        }
+      }
+
+      // Sample the viewer-ray hit test each frame.  WebXR exposes no SLAM
+      // feature points, but sweeping the camera leaves a trail of surface
+      // hits — enough for the point-cloud accumulator (which voxel-dedupes)
+      // and the live geometry stream to work in WebXR mode.
+      if (self.hitTestSource && self.refSpace) {
+        const hits = frame.getHitTestResults(self.hitTestSource)
+        if (hits.length > 0) {
+          const pose = hits[0].getPose(self.refSpace)
+          if (pose) {
+            const { x, y, z } = pose.transform.position
+            self._recentHitPoints.push({ x, y, z })
+            if (self._recentHitPoints.length > 120) self._recentHitPoints.shift()
+          }
         }
       }
 
@@ -145,9 +179,10 @@ export class WebXRProvider implements ARProvider {
   }
 
   featurePoints(_gridSize?: number): Array<{ x: number; y: number; z: number }> {
-    // WebXR does not expose SLAM feature points — return empty so the point
-    // cloud stays empty and the exporter falls back to detection-only export.
-    return []
+    // WebXR exposes no SLAM feature points; drain the per-frame viewer-ray
+    // hit-test samples instead (collected in the XR frame loop above).
+    if (this._recentHitPoints.length === 0) return []
+    return this._recentHitPoints.splice(0)
   }
 
   getPose(): Pose {
