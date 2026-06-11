@@ -1,4 +1,4 @@
-# Test Infrastructure Guide — CI Web XR Scan
+# Test Infrastructure Guide — Companion Scan
 
 This guide details the test architecture, configuration, commands, and setups for testing the **CI-Web-XR-Scan** project.
 
@@ -65,10 +65,10 @@ Configure these variables in your environment or a `.env` file:
 
 ## 3. Test Architecture & Tiers
 
-The test suite contains **38 specific test cases** organized across 4 distinct test tiers:
+The test suite contains **53+ browser and server checks** organized across 4 distinct test tiers:
 
 ### Tier 1: Feature Coverage (Tests 1–15)
-*   **F1 (Backend API):** Boot & Health (`GET /health`), Inference (`POST /infer`), Scan Upload (`POST /upload-scan`), Scan Locations Index (`GET /scan-locations`), Projects CRUD.
+*   **F1 (Backend API):** Boot & Health (`GET /health`), Inference (`POST /infer`), Scan Upload (`POST /upload-scan`), Scan Listing/Deletion (`GET /scans`, `DELETE /scans/:filename`, guarded `DELETE /scans?confirm=delete-all`), Scan Locations Index (`GET /scan-locations`), Projects CRUD.
 *   **F2 (Mobile Capture):** Frame conversion & JPEG compression, Focal length to vertical FOV conversion ($58.71^{\circ}$ check), SLAM point cloud extraction, Centroid mapping.
 *   **F3 (Web3D Viewer):** Async model loading, click-to-pick raycasting, View Mode (semantic colors) material overrides, Custom tags & notes edits, downsampled/wireframe overlays.
 

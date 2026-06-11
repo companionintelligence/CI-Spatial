@@ -60,6 +60,8 @@ export class GeoMap {
   private _map: unknown = null  // Leaflet map instance (typed loosely to avoid bundle)
   private _L: typeof import('leaflet') | null = null
   private _markers: unknown[] = []
+  private _locations: ScanLocationEntry[] = []
+  private _emptyEl: HTMLElement | null = null
   private _onSelect: ScanSelectCallback | null = null
   private _open = false
 
@@ -84,10 +86,8 @@ export class GeoMap {
     requestAnimationFrame(() => {
       if (this._container) this._container.classList.add('geomap-open')
     })
-    // Init or invalidate map
-    if (this._map && this._L) {
-      (this._map as import('leaflet').Map).invalidateSize()
-    }
+    setTimeout(() => this._refreshMapSize(), 80)
+    setTimeout(() => this._refreshMapSize(), 360)
   }
 
   close(): void {
@@ -113,12 +113,14 @@ export class GeoMap {
         this._L = await loadLeaflet()
       } catch (e) {
         console.error('[geomap] Leaflet load failed:', e)
+        this._setEmptyState(true, 'Map unavailable')
         return
       }
     }
 
     const L = this._L
     const validLocs = locations.filter(l => l.lat !== 0 || l.lng !== 0)
+    this._locations = validLocs
 
     if (!this._map) {
       const center: [number, number] = validLocs.length > 0
@@ -128,13 +130,15 @@ export class GeoMap {
       this._map = L.map(this._mapEl!, {
         center,
         zoom: validLocs.length > 0 ? 17 : 10,
+        maxZoom: 19,
         zoomControl: true,
       })
 
-      // OSM tiles — no API key needed
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap contributors',
-        maxZoom: 22,
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        attribution: '© OpenStreetMap © CARTO',
+        subdomains: 'abcd',
+        maxZoom: 19,
+        maxNativeZoom: 19,
       }).addTo(this._map as import('leaflet').Map)
     }
 
@@ -172,15 +176,39 @@ export class GeoMap {
       bounds.push([loc.lat, loc.lng])
     }
 
-    // Fit map to all pins
-    if (bounds.length === 1) {
-      (this._map as import('leaflet').Map).setView(bounds[0]!, 17)
-    } else if (bounds.length > 1) {
-      (this._map as import('leaflet').Map).fitBounds(bounds, { padding: [32, 32] })
-    }
+    this._setEmptyState(bounds.length === 0)
+    this._fitToPins()
+    this._refreshMapSize()
   }
 
   // ── Private builders ────────────────────────────────────────────────────────
+
+  private _refreshMapSize(): void {
+    if (!this._map || !this._L) return
+    const map = this._map as import('leaflet').Map
+    map.invalidateSize()
+    this._fitToPins()
+  }
+
+  private _fitToPins(): void {
+    if (!this._map || this._locations.length === 0) return
+    const map = this._map as import('leaflet').Map
+    const bounds = this._locations.map(loc => [loc.lat, loc.lng] as [number, number])
+    if (bounds.length === 1) {
+      map.setView(bounds[0]!, 17)
+    } else {
+      map.fitBounds(bounds, { padding: [32, 32], maxZoom: 18 })
+    }
+  }
+
+  private _setEmptyState(empty: boolean, message = 'No geotagged scans yet'): void {
+    const countEl = document.getElementById('geomap-count')
+    if (countEl) countEl.textContent = this._locations.length > 0 ? `${this._locations.length} mapped` : '0 mapped'
+    if (!this._emptyEl) return
+    this._emptyEl.style.display = empty ? 'flex' : 'none'
+    const msg = this._emptyEl.querySelector<HTMLElement>('[data-empty-message]')
+    if (msg) msg.textContent = message
+  }
 
   private _buildDrawer(): HTMLElement {
     const el = document.createElement('div')
@@ -189,7 +217,7 @@ export class GeoMap {
       position: absolute;
       bottom: 0; left: 0; right: 0;
       height: 320px;
-      background: #0c0e18;
+      background: #091818;
       border-top: 1px solid rgba(255,255,255,0.12);
       display: none;
       flex-direction: column;
@@ -226,11 +254,11 @@ export class GeoMap {
           width: 0; height: 0;
           border-left: 4px solid transparent;
           border-right: 4px solid transparent;
-          border-bottom: 8px solid rgba(79,195,247,0.9);
+          border-bottom: 8px solid rgba(128,255,225,0.9);
         }
 
         .geomap-popup .leaflet-popup-content-wrapper {
-          background: rgba(10,12,20,0.97);
+          background: rgba(9,24,24,0.97);
           border: 1px solid rgba(255,255,255,0.12);
           border-radius: 10px;
           color: #fff;
@@ -239,7 +267,7 @@ export class GeoMap {
           padding: 0;
           box-shadow: 0 8px 32px rgba(0,0,0,0.7);
         }
-        .geomap-popup .leaflet-popup-tip { background: rgba(10,12,20,0.97); }
+        .geomap-popup .leaflet-popup-tip { background: rgba(9,24,24,0.97); }
         .geomap-popup .leaflet-popup-content { margin: 0; }
       `
       document.head.appendChild(style)
@@ -265,8 +293,24 @@ export class GeoMap {
     this._mapEl = document.createElement('div')
     this._mapEl.style.cssText = 'flex:1;min-height:0;'
 
+    this._emptyEl = document.createElement('div')
+    this._emptyEl.id = 'geomap-empty'
+    this._emptyEl.style.cssText = `
+      position:absolute;left:0;right:0;top:41px;bottom:0;
+      display:flex;align-items:center;justify-content:center;flex-direction:column;
+      gap:8px;text-align:center;color:rgba(239,240,240,0.62);
+      background:linear-gradient(180deg, rgba(9,24,24,0.62), rgba(1,13,14,0.72));
+      pointer-events:none;z-index:401;font-size:12px;padding:18px;
+    `
+    this._emptyEl.innerHTML = `
+      <div style="width:42px;height:42px;border-radius:50%;border:1px solid rgba(128,255,225,0.36);display:flex;align-items:center;justify-content:center;color:#80ffe1;">Map</div>
+      <div data-empty-message>No geotagged scans yet</div>
+      <div style="font-size:10px;color:rgba(239,240,240,0.36);max-width:240px;line-height:1.5;">Capture with location enabled or import scans with GeoPose metadata.</div>
+    `
+
     el.appendChild(header)
     el.appendChild(this._mapEl)
+    el.appendChild(this._emptyEl)
 
     // Wire close button after appending to DOM
     setTimeout(() => {
@@ -280,7 +324,7 @@ export class GeoMap {
 // ── HTML builders ──────────────────────────────────────────────────────────────
 
 const PIN_COLORS = [
-  '#4fc3f7', '#81c784', '#ff8a65', '#ce93d8', '#ffcc80',
+  '#80ffe1', '#81c784', '#ff8a65', '#ce93d8', '#ffcc80',
   '#80deea', '#c5e1a5', '#fff176', '#ef9a9a', '#90caf9',
 ]
 
@@ -332,7 +376,7 @@ function buildPopupHtml(loc: ScanLocationEntry): string {
         ${loc.detectionCount ? `📍 ${loc.detectionCount} objects` : ''}
       </div>
       <a href="${mapUrl}" target="_blank" rel="noopener noreferrer"
-         style="display:inline-block;margin-top:8px;font-size:10px;color:rgba(79,195,247,0.8);text-decoration:none;">
+         style="display:inline-block;margin-top:8px;font-size:10px;color:rgba(128,255,225,0.8);text-decoration:none;">
         View on maps ↗
       </a>
     </div>

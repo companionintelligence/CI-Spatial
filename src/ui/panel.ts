@@ -9,7 +9,7 @@ import type { DetectionStore, StoredDetection } from '../scene/store'
 import type { InferMode } from '../inference/router'
 
 const CATEGORY_COLORS: Record<string, string> = {
-  chair: '#4fc3f7', table: '#81c784', sofa: '#ff8a65', couch: '#ff8a65',
+  chair: '#80ffe1', table: '#81c784', sofa: '#ff8a65', couch: '#ff8a65',
   bed: '#ce93d8', desk: '#a5d6a7', monitor: '#80cbc4', tv: '#80cbc4',
   door: '#ffcc80', window: '#80deea', shelf: '#c5e1a5', bookcase: '#c5e1a5',
   lamp: '#fff176', plant: '#66bb6a',
@@ -35,7 +35,7 @@ export class SidePanel {
 
   constructor(
     private readonly store: DetectionStore,
-    private readonly onExport: () => void,
+    private readonly onExport: () => void | Promise<void>,
     private readonly onSummary?: () => void,
     private readonly onProcess?: (action: string) => void,
     private readonly onInferMode?: (mode: InferMode) => void,
@@ -56,7 +56,13 @@ export class SidePanel {
       padding:16px 14px 10px;border-bottom:1px solid rgba(255,255,255,0.08);
       flex-shrink:0;
     `
-    panelHeader.innerHTML = `<span style="color:#fff;font-size:15px;font-weight:700;">Detections</span>`
+    panelHeader.innerHTML = `
+      <div style="min-width:0;">
+        <div style="color:#fff;font-size:15px;font-weight:800;">Review & Export</div>
+        <div id="scan-flow-steps" style="color:rgba(255,255,255,0.34);font-size:10px;letter-spacing:0.06em;text-transform:uppercase;margin-top:3px;">
+          Scan · Review · Edit · Export
+        </div>
+      </div>`
     const closeBtn = document.createElement('button')
     closeBtn.setAttribute('aria-label', 'Close panel')
     closeBtn.style.cssText = `
@@ -74,14 +80,29 @@ export class SidePanel {
     // ── Footer buttons ─────────────────────────────────────────────────────
     const exportBtn = document.createElement('button')
     exportBtn.className = 'panel-btn-primary'
-    exportBtn.textContent = '⬇ Export .glb'
-    exportBtn.addEventListener('click', this.onExport)
+    exportBtn.id = 'panel-export-glb-btn'
+    exportBtn.textContent = 'Export GLB'
+    exportBtn.addEventListener('click', async () => {
+      exportBtn.disabled = true
+      exportBtn.textContent = 'Exporting...'
+      try {
+        await this.onExport()
+        exportBtn.textContent = 'Exported'
+        setTimeout(() => { exportBtn.textContent = 'Export GLB' }, 1400)
+      } catch {
+        exportBtn.textContent = 'Export failed'
+        setTimeout(() => { exportBtn.textContent = 'Export GLB' }, 1800)
+      } finally {
+        exportBtn.disabled = false
+      }
+    })
     this.footer.appendChild(exportBtn)
 
     if (this.onSummary) {
       const summaryBtn = document.createElement('button')
       summaryBtn.className = 'panel-btn-ghost'
-      summaryBtn.textContent = '📄 Export Summary'
+      summaryBtn.id = 'panel-export-summary-btn'
+      summaryBtn.textContent = 'Export Summary'
       summaryBtn.addEventListener('click', this.onSummary)
       this.footer.appendChild(summaryBtn)
     }
@@ -110,6 +131,7 @@ export class SidePanel {
 
     const clearBtn = document.createElement('button')
     clearBtn.className = 'panel-btn-ghost'
+    clearBtn.id = 'panel-clear-session-btn'
     clearBtn.textContent = 'Clear session'
     clearBtn.addEventListener('click', async () => { await this.store.clear() })
     this.footer.appendChild(clearBtn)
@@ -244,7 +266,7 @@ export class SidePanel {
       border-bottom:1px solid rgba(255,255,255,0.06);
       align-items:start;
       transition:background 0.15s;
-      ${isSelected ? 'background:rgba(79,195,247,0.08);border-left:2px solid #4fc3f7;padding-left:12px;' : ''}
+      ${isSelected ? 'background:rgba(128,255,225,0.08);border-left:2px solid #80ffe1;padding-left:12px;' : ''}
     `
     card.addEventListener('pointerenter', () => {
       if (!isSelected) card.style.background = 'rgba(255,255,255,0.04)'
@@ -293,7 +315,7 @@ export class SidePanel {
       font-size:11px;cursor:pointer;padding:0 2px;margin-left:auto;
       transition:color 0.15s;flex-shrink:0;
     `
-    editBtn.addEventListener('pointerenter', () => { editBtn.style.color = '#4fc3f7' })
+    editBtn.addEventListener('pointerenter', () => { editBtn.style.color = '#80ffe1' })
     editBtn.addEventListener('pointerleave', () => { editBtn.style.color = 'rgba(255,255,255,0.25)' })
 
     row1.append(dot, labelEl, confEl, editBtn)
@@ -311,7 +333,7 @@ export class SidePanel {
       font-size:11px;font-family:monospace;color:rgba(255,255,255,0.55);
     `
     posBadge.innerHTML = `
-      <span style="color:#4fc3f7;">${fmtCoord(p.x)}</span>
+      <span style="color:#80ffe1;">${fmtCoord(p.x)}</span>
       <span style="opacity:0.3;">·</span>
       <span style="color:#81c784;">${fmtCoord(p.y)}</span>
       <span style="opacity:0.3;">·</span>
@@ -333,7 +355,7 @@ export class SidePanel {
                border-radius:6px;color:#fff;font-size:12px;padding:5px 8px;resize:none;
                outline:none;font-family:inherit;box-sizing:border-box;">${safeDesc}</textarea>
       <div style="display:flex;gap:6px;margin-top:5px;">
-        <button class="edit-save" style="flex:1;padding:5px;background:#4fc3f7;color:#000;border:none;
+        <button class="edit-save" style="flex:1;padding:5px;background:#80ffe1;color:#000;border:none;
           border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;">Save</button>
         <button class="edit-cancel" style="flex:1;padding:5px;background:rgba(255,255,255,0.08);
           color:rgba(255,255,255,0.6);border:none;border-radius:6px;font-size:12px;cursor:pointer;">Cancel</button>
@@ -371,7 +393,7 @@ export class SidePanel {
     if (isSelected) {
       ring.innerHTML = `
         <svg width="${r * 2}" height="${r * 2}" viewBox="0 0 ${r * 2} ${r * 2}">
-          <circle cx="${r}" cy="${r}" r="${r - stroke / 2}" fill="#4fc3f7" stroke="#4fc3f7" stroke-width="${stroke}"/>
+          <circle cx="${r}" cy="${r}" r="${r - stroke / 2}" fill="#80ffe1" stroke="#80ffe1" stroke-width="${stroke}"/>
           <text x="${r}" y="${r + 4}" text-anchor="middle" fill="#000" font-size="10" font-weight="bold">✓</text>
         </svg>`
     } else {

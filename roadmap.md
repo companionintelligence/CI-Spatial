@@ -26,6 +26,7 @@ Focus: **quality-of-life + CI/CD**
 
 | # | Feature | Notes |
 |---|---------|-------|
+| 1.1.0 | **World scan editor foundation** | `viewer.html` now loads a `WorldProject` instead of a single GLB: many scans can be placed in one ENU/Y-up scene, aligned with sidecar transforms, and inspected with compass, scale, coordinate readout, map pins, layer toggles, labels, camera frustums, and transform controls. |
 | 1.1.1 | **8th Wall simulator in CI** | Use XR8's built-in desktop replay mode to run `@simulator`-tagged Playwright tests headlessly. Capture a reference SLAM session (`.bin`) once on device and commit to `public/test-fixtures/`. |
 | 1.1.2 | **Docker image** | Single `Dockerfile` running the Deno server; `docker-compose.yml` with a volume for `./scans/`. Enables reproducible local dev and cloud deploy. |
 | 1.1.3 | **GitHub Actions CI** | `push` → lint + `tsc --noEmit` + Playwright (`webkit-desktop` project); cache Deno and npm modules. |
@@ -48,6 +49,8 @@ Focus: **sharing + search**
 | 1.2.4 | **Offline-first** | Service Worker caches the Vite build shell + viewer; requests queue with background sync when the Deno server is unreachable. |
 | 1.2.5 | **Progressive mesh LOD** | On export, generate a low-poly version of the point cloud (Draco compression via `gltf-pipeline`). Viewer loads LOD0 first. |
 | 1.2.6 | **User accounts (optional)** | JWT-based auth on the Deno server; scans are namespaced per user. Minimal UI: email + magic link. |
+| 1.2.7 | **Shared world links** | World-level links now exist for `/viewer.html?world=<slug>&token=<role-token>` and `/scanner.html?world=<slug>&token=<scanner-token>`; next step is QR UI and token revocation/expiry controls. |
+| 1.2.8 | **Processing workers** | The local coordinator exposes queued job records for `ingest`, `extract-layers`, `align-scan`, `merge-points`, `semantic-pass`, `depth-reconstruct`, `splat-train`, and `export-world`; next step is Redis Streams plus CPU/GPU worker capability advertising. |
 
 ---
 
@@ -63,6 +66,7 @@ Focus: **collaboration + cloud**
 | 1.3.4 | **Floor-plan export** | Post-process the scan's detected object positions to generate a 2D SVG floor plan with labelled furniture. |
 | 1.3.5 | **LLM scene description** | After export, POST the detection list to an LLM endpoint; get a one-paragraph natural-language summary of the room. Show in viewer sidebar. |
 | 1.3.6 | **Multi-session merge** | Align two scans taken from different angles using overlapping detections as registration anchors; merge into a single `.glb`. |
+| 1.3.7 | **Semantic world map + splats** | Capture RGB frames, poses, intrinsics, optional depth, and camera frustums as `FrameObservation` sidecars; train Gaussian splats as visual layers while keeping canonical geometry, labels, categories, and edit patches structured. |
 
 ---
 

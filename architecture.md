@@ -1,12 +1,12 @@
-# CI XR Scan — System Architecture & Trace Documentation
+# Companion Scan — System Architecture & Trace Documentation
 
-CI XR Scan is a mobile-first, privacy-respecting Augmented Reality (AR) application designed to capture, reconstruct, and index physical rooms. It leverages SLAM tracking, frame capture, vision-language models (VLMs), spatial coordinate resolution, and persistent client-server storage.
+Companion Scan is a mobile-first, privacy-respecting Augmented Reality (AR) application designed to capture, reconstruct, and index physical rooms. It leverages SLAM tracking, frame capture, vision-language models (VLMs), spatial coordinate resolution, and persistent client-server storage.
 
 ---
 
 ## 1. High-Level System Architecture
 
-The following block diagram represents the modular structure of the CI XR Scan system, showing the boundary between client-side components running in the mobile browser and server-side components running on the local host.
+The following block diagram represents the modular structure of the Companion Scan system, showing the boundary between client-side components running in the mobile browser and server-side components running on the local host.
 
 ```mermaid
 graph TB
@@ -292,7 +292,7 @@ graph LR
 
 ## 5. Deployment Model
 
-CI XR Scan is designed to be self-hosted, running either natively on local developer machines or inside Docker containers.
+Companion Scan is designed to be self-hosted, running either natively on local developer machines or inside Docker containers.
 
 ```mermaid
 graph TD
@@ -333,7 +333,7 @@ The project is structured into three phases, moving from localized single-device
 
 ```mermaid
 gantt
-    title CI XR Scan Milestones
+    title Companion Scan Milestones
     dateFormat  YYYY-MM-DD
     section Phase 1 (Shipped)
     AR Scanning (SLAM)             :done, 2026-05-01, 2026-05-15

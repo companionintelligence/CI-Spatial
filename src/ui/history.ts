@@ -122,7 +122,7 @@ export class SessionHistory {
       font-size:13px;cursor:pointer;padding:4px 7px;border-radius:6px;
       transition:background 0.15s,color 0.15s;
     `
-    loadBtn.addEventListener('pointerenter', () => { loadBtn.style.color = '#4fc3f7'; loadBtn.style.borderColor = '#4fc3f7' })
+    loadBtn.addEventListener('pointerenter', () => { loadBtn.style.color = '#80ffe1'; loadBtn.style.borderColor = '#80ffe1' })
     loadBtn.addEventListener('pointerleave', () => { loadBtn.style.color = 'rgba(255,255,255,0.5)'; loadBtn.style.borderColor = 'rgba(255,255,255,0.2)' })
     loadBtn.addEventListener('click', async (e) => {
       e.stopPropagation()
@@ -254,7 +254,7 @@ export class SessionHistory {
       padding:8px 24px 8px 32px;
       border-top:1px solid rgba(255,255,255,0.04);
       transition:background 0.1s;
-      ${isSelected ? 'background:rgba(79,195,247,0.08);border-left:2px solid #4fc3f7;' : ''}
+      ${isSelected ? 'background:rgba(128,255,225,0.08);border-left:2px solid #80ffe1;' : ''}
     `
     row.addEventListener('pointerenter', () => { if (!isSelected) row.style.background = 'rgba(255,255,255,0.03)' })
     row.addEventListener('pointerleave', () => { if (!isSelected) row.style.background = '' })
@@ -264,7 +264,7 @@ export class SessionHistory {
 
     // Colour dot
     const dot = document.createElement('div')
-    const COLORS: Record<string, string> = { chair: '#4fc3f7', table: '#81c784', sofa: '#ff8a65', lamp: '#fff176', door: '#ffcc80', window: '#80deea', default: '#b0bec5' }
+    const COLORS: Record<string, string> = { chair: '#80ffe1', table: '#81c784', sofa: '#ff8a65', lamp: '#fff176', door: '#ffcc80', window: '#80deea', default: '#b0bec5' }
     const color = COLORS[det.label.toLowerCase()] ?? COLORS['default']
     dot.style.cssText = `width:8px;height:8px;border-radius:50%;background:${color};flex-shrink:0;`
 
@@ -290,7 +290,7 @@ export class SessionHistory {
       selBtn.title = isSelected ? 'Deselect' : 'Select'
       selBtn.textContent = isSelected ? '☑' : '☐'
       selBtn.style.cssText = `
-        background:none;border:none;color:${isSelected ? '#4fc3f7' : 'rgba(255,255,255,0.3)'};
+        background:none;border:none;color:${isSelected ? '#80ffe1' : 'rgba(255,255,255,0.3)'};
         font-size:14px;cursor:pointer;padding:2px;transition:color 0.15s;
       `
       selBtn.addEventListener('click', () => {
@@ -310,17 +310,17 @@ export class SessionHistory {
         background:none;border:none;color:rgba(255,255,255,0.25);
         font-size:11px;cursor:pointer;padding:2px;transition:color 0.15s;
       `
-      editBtn.addEventListener('pointerenter', () => { editBtn.style.color = '#4fc3f7' })
+      editBtn.addEventListener('pointerenter', () => { editBtn.style.color = '#80ffe1' })
       editBtn.addEventListener('pointerleave', () => { editBtn.style.color = 'rgba(255,255,255,0.25)' })
 
       const editForm = document.createElement('div')
-      editForm.style.cssText = 'display:none;position:absolute;inset-x:24px;background:rgba(10,12,20,0.98);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:10px;z-index:1;margin-top:4px;'
+      editForm.style.cssText = 'display:none;position:absolute;inset-x:24px;background:rgba(9,24,24,0.98);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:10px;z-index:1;margin-top:4px;'
       editForm.innerHTML = `
         <input type="text" value="${det.label.replace(/</g, '&lt;')}"
           style="width:100%;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:6px;color:#fff;font-size:12px;padding:5px 8px;outline:none;box-sizing:border-box;margin-bottom:5px;" />
         <textarea rows="2" style="width:100%;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:6px;color:#fff;font-size:12px;padding:5px 8px;resize:none;outline:none;font-family:inherit;box-sizing:border-box;">${det.description.replace(/</g, '&lt;')}</textarea>
         <div style="display:flex;gap:6px;margin-top:6px;">
-          <button class="ef-save" style="flex:1;padding:5px;background:#4fc3f7;color:#000;border:none;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;">Save</button>
+          <button class="ef-save" style="flex:1;padding:5px;background:#80ffe1;color:#000;border:none;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;">Save</button>
           <button class="ef-cancel" style="flex:1;padding:5px;background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.6);border:none;border-radius:6px;font-size:12px;cursor:pointer;">Cancel</button>
         </div>
       `

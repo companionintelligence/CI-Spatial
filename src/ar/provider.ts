@@ -34,10 +34,10 @@ export interface ARProvider {
   stop(): void
   /**
    * Returns a promise that resolves with the very next camera frame.
-   * Calling this multiple times before a frame arrives queues all callers —
-   * each caller gets their own copy once the next frame lands.
+   * Rejects if another capture is already pending or if no frame arrives before
+   * `timeoutMs`, so the UI can recover instead of waiting forever.
    */
-  captureFrame(): Promise<RawFrame>
+  captureFrame(timeoutMs?: number): Promise<RawFrame>
   /**
    * Synchronous hit-test at normalised screen coords (0–1, 0–1).
    * Returns null when no SLAM feature point is found beneath the coordinate.

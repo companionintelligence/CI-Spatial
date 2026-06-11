@@ -5,7 +5,7 @@
  * The server runs at http://liam-mbp.capybara-ulmer.ts.net:8000
  * and is accessible over the Tailscale network.
  */
-import { parseDetections } from './prompt'
+import { normalizeDetections, parseDetections } from './prompt'
 import type { RawDetection } from './prompt'
 
 // Empty string = same origin, proxied through Vite dev server (no mixed content).
@@ -27,22 +27,16 @@ export async function inferViaServer(imageBlob: Blob): Promise<RawDetection[]> {
 
   const json = (await response.json()) as unknown
   console.log('[server-client] Raw /infer response:', JSON.stringify(json).slice(0, 500))
-  if (Array.isArray(json)) return json.filter((d): d is RawDetection => isDetection(d))
+  if (Array.isArray(json)) return normalizeDetections(json)
 
   // Some responses wrap in { detections: [...] }
   if (typeof json === 'object' && json !== null && 'detections' in json) {
     const { detections } = json as { detections: unknown }
-    if (Array.isArray(detections)) return detections.filter((d): d is RawDetection => isDetection(d))
+    if (Array.isArray(detections)) return normalizeDetections(detections)
   }
 
   // Fallback: try parsing as raw text
   if (typeof json === 'string') return parseDetections(json)
 
   return []
-}
-
-function isDetection(d: unknown): d is RawDetection {
-  if (typeof d !== 'object' || d === null) return false
-  const obj = d as Record<string, unknown>
-  return typeof obj['label'] === 'string' && Array.isArray(obj['bbox'])
 }

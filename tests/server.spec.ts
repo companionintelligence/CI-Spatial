@@ -258,6 +258,46 @@ test.describe('GET /scans/:filename', () => {
   })
 })
 
+// ── DELETE /scans/:filename ──────────────────────────────────────────────────
+
+test.describe('DELETE /scans/:filename', () => {
+  test('deletes a stored GLB and metadata sidecar', async ({ request }) => {
+    const { resp: upResp } = await uploadGlb(request as any, 'delete-api')
+    expect(upResp.status()).toBe(200)
+    const { filename } = await upResp.json() as { filename: string }
+
+    const delResp = await request.delete(`${BASE}/scans/${encodeURIComponent(filename)}`)
+    expect(delResp.status()).toBe(200)
+    const body = await delResp.json() as { ok: boolean; deleted: { glb: boolean; metadata: boolean } }
+    expect(body.ok).toBeTruthy()
+    expect(body.deleted.glb).toBeTruthy()
+    expect(body.deleted.metadata).toBeTruthy()
+
+    const getResp = await request.get(`${BASE}/scans/${encodeURIComponent(filename)}`)
+    expect(getResp.status()).toBe(404)
+  })
+
+  test('returns 404 for missing scan', async ({ request }) => {
+    const resp = await request.delete(`${BASE}/scans/not-present-delete-test.glb`)
+    expect(resp.status()).toBe(404)
+  })
+
+  test('rejects traversal', async ({ request }) => {
+    const resp = await request.delete(`${BASE}/scans/..%2F..%2Fetc%2Fpasswd`)
+    expect(resp.status()).toBeGreaterThanOrEqual(400)
+    expect(resp.status()).not.toBe(200)
+  })
+})
+
+// ── DELETE /scans bulk guard ─────────────────────────────────────────────────
+
+test.describe('DELETE /scans bulk guard', () => {
+  test('requires explicit confirmation', async ({ request }) => {
+    const resp = await request.delete(`${BASE}/scans`)
+    expect(resp.status()).toBe(400)
+  })
+})
+
 // ── GET /scan-locations ───────────────────────────────────────────────────────
 
 test.describe('GET /scan-locations', () => {

@@ -1,6 +1,6 @@
-# CI XR Scan
+# Companion Scan
 
-An AR room-scanning application that uses 8th Wall SLAM for spatial mapping, a local LFM2.5-VL vision-language model for object detection, and Three.js for 3D visualisation. Results are exported as `.glb` files and viewable in a standalone desktop 3D viewer.
+An AR room-scanning application that uses 8th Wall SLAM for spatial mapping, a local LFM2.5-VL vision-language model for object detection, and Three.js for 3D visualisation. Results are exported as `.glb` files and can be composed into shared world projects in the browser-based scan editor.
 
 ## Features
 
@@ -9,7 +9,9 @@ An AR room-scanning application that uses 8th Wall SLAM for spatial mapping, a l
 - **3D object pins** — detected objects are placed at their SLAM-resolved world positions as live 3D labels tracking the scene
 - **Session persistence** — every scan is saved to IndexedDB; browse, reload, edit, or delete past sessions from the history drawer
 - **GLTF export** — exports the full scan (point cloud + camera path + labelled boxes) as a `.glb` file, saved locally and uploaded to the server
-- **Desktop 3D viewer** — `/viewer` page renders any uploaded `.glb` with OrbitControls, works without AR hardware
+- **World scan editor** — `/viewer.html?world=default` loads many scans into one ENU/Y-up Three.js workspace with map pins, layer toggles, labels, camera frustums, compass, scale, coordinate readout, and transform controls
+- **Shareable scanner/viewer links** — world manifests expose owner/editor/viewer/scanner role links, including `/scanner.html?world=<slug>&token=<scan-token>` for joining the same shared world from phones
+- **Processing queue foundation** — world jobs cover ingest, layer extraction, alignment, point merging, semantic passes, depth reconstruction, splat training, and world export
 - **PWA** — installable on iOS/Android with offline-capable manifest and icons
 
 ---
@@ -73,7 +75,12 @@ This uses `concurrently` to run:
 - **Deno inference server** on `:8000` (`npm run server`)
 - **Vite dev server** on `:5173` with HTTPS (`npm run dev`)
 
-Open `https://<tailscale-hostname>:5173` on your phone to scan, or on desktop to use the 3D viewer at `https://<tailscale-hostname>:5173/viewer.html`.
+Open `https://<tailscale-hostname>:5173` on your phone to scan, or on desktop to use the world editor at `https://<tailscale-hostname>:5173/viewer.html?world=default`.
+
+For the current Tailscale dev host:
+
+- Scanner: `https://liambook.capybara-ulmer.ts.net:5173/scanner.html?world=default`
+- Viewer/editor: `https://liambook.capybara-ulmer.ts.net:5173/viewer.html?world=default`
 
 ---
 
@@ -87,6 +94,7 @@ Open `https://<tailscale-hostname>:5173` on your phone to scan, or on desktop to
 ├── download_models.py       # Model download helper
 ├── index.html               # AR scanning app entry point
 ├── viewer.html              # Standalone 3D viewer entry point
+├── scanner.html             # Share-link scanner redirect entry point
 ├── vite.config.ts           # Vite + Tailscale HTTPS config
 ├── package.json
 ├── deno.json
@@ -100,6 +108,7 @@ Open `https://<tailscale-hostname>:5173` on your phone to scan, or on desktop to
 │   └── resources/           # 8th Wall worker scripts + tflite models
 │
 ├── scans/                   # Uploaded .glb scan files (created at runtime)
+├── worlds/                  # World manifests, edit patches, and queued jobs (created at runtime)
 │
 ├── src/
 │   ├── main.ts              # Frontend app bootstrap
@@ -126,8 +135,12 @@ Open `https://<tailscale-hostname>:5173` on your phone to scan, or on desktop to
 │   │   ├── overlay.ts       # AR pin labels + 3D projection
 │   │   ├── panel.ts         # Side panel (object manifest)
 │   │   └── history.ts       # Session history drawer
-│   └── viewer/
-│       └── viewer.ts        # Standalone GLTF 3D viewer
+│   ├── viewer/
+│   │   └── viewer.ts        # World scan editor
+│   └── world/
+│       ├── types.ts         # WorldProject, ScanManifest, LayerManifest, EditPatch
+│       ├── geo.ts           # WGS84/GeoPose to local ENU helpers
+│       └── layers.ts        # Layer ordering and default layer manifests
 │
 ├── scripts/
 │   ├── generate-icons.mjs   # PWA icon generator (pure Node.js)
@@ -165,6 +178,15 @@ All endpoints are served by the Deno server on `:8000` and proxied through Vite 
 | `POST` | `/upload-scan` | Multipart `file` (.glb) + optional `metadata` (JSON) → saves to `scans/` |
 | `GET` | `/scans` | Returns JSON array of `{ filename, size, uploadedAt }` |
 | `GET` | `/scans/:filename` | Serves a `.glb` file with `model/gltf-binary` content-type |
+| `DELETE` | `/scans/:filename` | Deletes one stored `.glb`, sidecar metadata, and world manifest references |
+| `DELETE` | `/scans?confirm=delete-all` | Clears test scan storage and prunes scans from world manifests |
+| `GET` | `/worlds` | Lists world projects |
+| `POST` | `/worlds` | Creates a world project |
+| `GET` | `/worlds/:slug` | Returns a world manifest with scans, layers, members, jobs, and patches |
+| `GET` | `/worlds/:slug/share` | Returns owner/editor/viewer/scanner role links |
+| `POST` | `/worlds/:slug/patches` | Persists transform, label, category, notes, and visibility edit patches |
+| `GET` | `/worlds/:slug/jobs` | Lists queued, processing, completed, and failed world jobs |
+| `POST` | `/worlds/:slug/jobs` | Queues processing jobs such as `align-scan`, `semantic-pass`, or `splat-train` |
 
 ---
 

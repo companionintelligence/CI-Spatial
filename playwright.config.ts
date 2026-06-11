@@ -1,5 +1,5 @@
 /**
- * Playwright configuration for CI XR Scan.
+ * Playwright configuration for Companion Scan.
  *
  * Desktop webkit: simulates Safari on macOS, fast iteration.
  * iphone-usb: same engine, iPhone 15 UA, served over Tailscale URL so the

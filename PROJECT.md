@@ -1,4 +1,4 @@
-# Project: CI Web XR Scan
+# Project: Companion Scan
 
 ## Architecture
 - Mobile Capture (8th Wall/WebXR) and CV backend pipeline.

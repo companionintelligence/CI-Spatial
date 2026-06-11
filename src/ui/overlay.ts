@@ -20,7 +20,7 @@ declare const XR8: {
 export type CaptureButtonCallback = () => Promise<void>
 
 const CATEGORY_COLORS: Record<string, string> = {
-  chair:    '#4fc3f7',
+  chair:    '#80ffe1',
   table:    '#81c784',
   sofa:     '#ff8a65',
   couch:    '#ff8a65',

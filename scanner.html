@@ -3,10 +3,90 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>CI XR Scan</title>
+    <title>Companion Scan</title>
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" href="/icon-192.png" type="image/png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icon-192.png" />
+    <meta name="theme-color" content="#010d0e" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Companion Scan" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <style>
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        background:
+          radial-gradient(circle at 50% 38%, rgba(128,255,225,0.18), transparent 32%),
+          linear-gradient(180deg, #071212 0%, #010d0e 100%);
+        color: #eff0f0;
+        font-family: 'Source Code Pro', 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
+      }
+
+      body {
+        display: grid;
+        place-items: center;
+      }
+
+      .handoff {
+        text-align: center;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .mark {
+        width: 56px;
+        height: 56px;
+        margin: 0 auto 14px;
+        border: 1px solid rgba(239,240,240,0.38);
+        border-radius: 50%;
+        box-shadow: 0 0 34px rgba(128,255,225,0.24);
+        position: relative;
+      }
+
+      .mark::before,
+      .mark::after {
+        content: '';
+        position: absolute;
+        border-radius: 50%;
+      }
+
+      .mark::before {
+        inset: 9px;
+        border: 1px solid rgba(239,240,240,0.32);
+      }
+
+      .mark::after {
+        width: 18px;
+        height: 18px;
+        right: 7px;
+        top: 18px;
+        background: #80ffe1;
+      }
+
+      .eyebrow {
+        color: #80ffe1;
+        font-size: 10px;
+        font-weight: 800;
+        margin-bottom: 7px;
+      }
+
+      .title {
+        font-size: 15px;
+        font-weight: 800;
+      }
+    </style>
     <script>
       location.replace('/' + location.search + location.hash)
     </script>
   </head>
-  <body></body>
+  <body>
+    <main class="handoff" aria-label="Opening Companion Scan">
+      <div class="mark" aria-hidden="true"></div>
+      <div class="eyebrow">Companion Intelligence</div>
+      <div class="title">Companion Scan</div>
+    </main>
+  </body>
 </html>

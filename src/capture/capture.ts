@@ -20,8 +20,8 @@ export interface CaptureResult {
 export class CaptureModule {
   constructor(private readonly provider: ARProvider) {}
 
-  async capture(): Promise<CaptureResult> {
-    const frame = await this.provider.captureFrame()
+  async capture(timeoutMs = 4000): Promise<CaptureResult> {
+    const frame = await this.provider.captureFrame(timeoutMs)
     const { pixels, width, height, pose, timestamp } = frame
 
     // Build an ImageBitmap from the raw RGBA array, then draw to OffscreenCanvas

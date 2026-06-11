@@ -1,5 +1,5 @@
 /**
- * World Scan Editor.
+ * Companion Scan world editor.
  *
  * Loads a WorldProject manifest, places many GLB scans in one ENU/Y-up Three.js
  * scene, exposes per-layer visibility, and persists scan/object edits as
@@ -15,6 +15,7 @@ import { LiveFeed } from './livefeed'
 import { loadSemanticAsset, createMediumPolyAsset } from './assets'
 import { enuToGeo, hasGeoPose, matrixTranslation } from '../world/geo'
 import { LAYER_LABELS, LAYER_ORDER } from '../world/layers'
+import { registerPWA } from '../pwa'
 import type {
   EditPatch,
   LayerType,
@@ -23,6 +24,8 @@ import type {
   WorldJobType,
   WorldProject,
 } from '../world/types'
+
+registerPWA()
 
 interface Label3D {
   el: HTMLElement
@@ -190,7 +193,7 @@ function initWorldScene(): void {
   hideInspectorOnly()
 
   scene = new THREE.Scene()
-  scene.name = 'World Scan Editor'
+  scene.name = 'Companion Scan World'
 
   const ambient = new THREE.AmbientLight(0xffffff, 0.62)
   const sun = new THREE.DirectionalLight(0xffffff, 1.15)
@@ -308,7 +311,7 @@ async function loadWorldProject(): Promise<void> {
     const slug = encodeURIComponent(initialWorldSlug)
     const loadedWorld = await fetchJson<WorldProject>(`/worlds/${slug}`)
     world = loadedWorld
-    document.title = `${loadedWorld.name} - CI XR Scan`
+    document.title = `${loadedWorld.name} - Companion Scan`
     document.getElementById('viewer-placeholder')!.style.display = loadedWorld.scans.length ? 'none' : 'flex'
 
     buildScanList(loadedWorld.scans)
@@ -327,7 +330,7 @@ async function loadWorldProject(): Promise<void> {
     if (loadedCount > 0 && worldGroup) {
       fitCamera(worldGroup)
       const first = loadedWorld.scans.find(scan => loadedScans.get(scan.scanId)?.loaded)
-      if (first) selectScan(first.scanId, false)
+      if (first) selectScan(first.scanId, false, false)
     } else {
       const placeholder = document.getElementById('viewer-placeholder')!
       placeholder.style.display = 'flex'
@@ -691,7 +694,7 @@ function createSemanticLabels(root: THREE.Object3D, scanId: string): void {
 
 // ─── Selection, inspector, and edit patches ──────────────────────────────────
 
-function selectScan(scanId: string, focus: boolean): void {
+function selectScan(scanId: string, focus: boolean, openEdit = true): void {
   const loaded = loadedScans.get(scanId)
   if (!loaded || !loaded.loaded) return
 
@@ -701,7 +704,7 @@ function selectScan(scanId: string, focus: boolean): void {
   selectedTransformTarget = loaded.root
   transformControls?.attach(loaded.root)
   showInspector(loaded.root)
-  syncEditPanel(loaded.root)
+  syncEditPanel(loaded.root, openEdit)
   if (focus) fitCamera(loaded.root)
 }
 
@@ -740,7 +743,7 @@ function showInspector(obj: THREE.Object3D): void {
 
   title.textContent = data.name || obj.name || scan?.manifest.name || '(unnamed)'
   body.innerHTML = [
-    data.tag ? rowHtml('Category', `<span style="background:rgba(79,195,247,0.18);color:#4fc3f7;padding:1px 6px;border-radius:4px;font-weight:700;">${escHtml(String(data.tag))}</span>`) : '',
+    data.tag ? rowHtml('Category', `<span style="background:rgba(128,255,225,0.18);color:#80ffe1;padding:1px 6px;border-radius:4px;font-weight:700;">${escHtml(String(data.tag))}</span>`) : '',
     data.aiLabel ? rowHtml('Label', escHtml(data.aiLabel)) : '',
     data.confidence !== undefined ? rowHtml('Conf', `<span class="inspector-confidence" style="background:${confColor}22;color:${confColor};">${Math.round(data.confidence * 100)}%</span>`) : '',
     scan ? rowHtml('Scan', escHtml(scan.manifest.name)) : '',
@@ -759,7 +762,7 @@ function hideInspectorOnly(): void {
   document.getElementById('inspector-panel')?.classList.remove('visible')
 }
 
-function syncEditPanel(obj: THREE.Object3D): void {
+function syncEditPanel(obj: THREE.Object3D, openEdit = true): void {
   const noSelection = document.getElementById('edit-no-selection')!
   const selectedInfo = document.getElementById('edit-selected-info')!
   const nameEl = document.getElementById('edit-obj-name')!
@@ -787,7 +790,7 @@ function syncEditPanel(obj: THREE.Object3D): void {
   })
 
   updateTransformReadout()
-  switchSidebarTab('edit')
+  if (openEdit) switchSidebarTab('edit')
 }
 
 function updateTransformReadout(): void {

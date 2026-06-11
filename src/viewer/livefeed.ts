@@ -326,13 +326,13 @@ export class LiveFeed {
           color: #fff; font-size: 11px; padding: 3px 7px; outline: none;
         }
         #livefeed-connect-btn {
-          background: rgba(79,195,247,0.15);
-          border: 1px solid rgba(79,195,247,0.35);
-          color: #4fc3f7; font-size: 11px; font-weight: 600;
+          background: rgba(128,255,225,0.15);
+          border: 1px solid rgba(128,255,225,0.35);
+          color: #80ffe1; font-size: 11px; font-weight: 600;
           padding: 3px 10px; border-radius: 5px; cursor: pointer;
           white-space: nowrap;
         }
-        #livefeed-connect-btn:hover { background: rgba(79,195,247,0.25); }
+        #livefeed-connect-btn:hover { background: rgba(128,255,225,0.25); }
         #livefeed-connect-btn.live {
           background: rgba(239,154,154,0.15);
           border-color: rgba(239,154,154,0.35); color: #ef9a9a;

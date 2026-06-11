@@ -38,6 +38,7 @@ async function clickStartAR(page: Page) {
 test.describe('App loads', () => {
   test('page renders start screen', async ({ page }) => {
     await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
+    await expect(page.locator('#start-title')).toHaveText('Companion Scan')
     await expect(page.locator('#start-ar-btn')).toBeVisible()
     await expect(page.locator('#start-ar-btn')).toHaveText('Start AR')
   })
@@ -61,6 +62,38 @@ test.describe('App loads', () => {
     await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
     const manifest = await page.locator('link[rel="manifest"]').getAttribute('href')
     expect(manifest).toBe('/manifest.json')
+  })
+
+  test('PWA manifest includes install metadata and shortcuts', async ({ request }) => {
+    const resp = await request.get(`${BASE_URL}/manifest.json`)
+    expect(resp.status()).toBe(200)
+    const manifest = await resp.json() as {
+      scope: string
+      display: string
+      icons: Array<{ sizes: string; purpose?: string }>
+      shortcuts: Array<{ url: string }>
+    }
+    expect(manifest.scope).toBe('/')
+    expect(manifest.display).toBe('standalone')
+    expect(manifest.icons.some((icon) => icon.sizes === '512x512' && icon.purpose?.includes('maskable'))).toBeTruthy()
+    expect(manifest.shortcuts.some((shortcut) => shortcut.url.startsWith('/viewer.html'))).toBeTruthy()
+  })
+
+  test('service worker shell is available and skips API mutation routes', async ({ request }) => {
+    const resp = await request.get(`${BASE_URL}/sw.js`)
+    expect(resp.status()).toBe(200)
+    const text = await resp.text()
+    expect(text).toContain('companion-scan')
+    expect(text).toContain('/infer')
+    expect(text).toContain('/upload-scan')
+    expect(text).toContain('/scans')
+  })
+
+  test('viewer page exposes PWA metadata for installed editor launches', async ({ page }) => {
+    await page.goto(`${BASE_URL}/viewer.html?world=default`, { waitUntil: 'domcontentloaded' })
+    await expect(page.locator('link[rel="manifest"]')).toHaveAttribute('href', '/manifest.json')
+    await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute('href', '/icon-192.png')
+    await expect(page.locator('meta[name="apple-mobile-web-app-capable"]')).toHaveAttribute('content', 'yes')
   })
 })
 
@@ -160,6 +193,45 @@ test.describe('Scan storage API', () => {
     const dlResp = await request.get(`${BASE_URL}/scans/${encodeURIComponent(body.filename)}`)
     expect(dlResp.status()).toBe(200)
     expect(dlResp.headers()['content-type']).toContain('gltf-binary')
+
+    const delResp = await request.delete(`${BASE_URL}/scans/${encodeURIComponent(body.filename)}`)
+    expect(delResp.status()).toBe(200)
+    const deletedResp = await request.get(`${BASE_URL}/scans/${encodeURIComponent(body.filename)}`)
+    expect(deletedResp.status()).toBe(404)
+  })
+
+  test('DELETE /scans/:filename removes uploaded scan and sidecar metadata', async ({ request }) => {
+    const magic = 0x46546C67
+    const version = 2
+    const jsonBytes = new TextEncoder().encode(JSON.stringify({ asset: { version: '2.0' } }))
+    const padLen = (4 - (jsonBytes.length % 4)) % 4
+    const paddedJson = new Uint8Array(jsonBytes.length + padLen)
+    paddedJson.set(jsonBytes)
+    const totalLen = 12 + 8 + paddedJson.length
+    const buf = new ArrayBuffer(totalLen)
+    const view = new DataView(buf)
+    view.setUint32(0, magic, true)
+    view.setUint32(4, version, true)
+    view.setUint32(8, totalLen, true)
+    view.setUint32(12, paddedJson.length, true)
+    view.setUint32(16, 0x4E4F534A, true)
+    new Uint8Array(buf, 20).set(paddedJson)
+
+    const upload = await request.post(`${BASE_URL}/upload-scan`, {
+      multipart: {
+        file: { name: 'delete-me.glb', mimeType: 'model/gltf-binary', buffer: Buffer.from(buf) },
+        metadata: JSON.stringify({ detectionCount: 0, labels: [], exportedAt: new Date().toISOString() }),
+      },
+    })
+    expect(upload.status()).toBe(200)
+    const { filename } = await upload.json() as { filename: string }
+
+    const del = await request.delete(`${BASE_URL}/scans/${encodeURIComponent(filename)}`)
+    expect(del.status()).toBe(200)
+    const body = await del.json() as { ok: boolean; deleted: { glb: boolean; metadata: boolean } }
+    expect(body.ok).toBeTruthy()
+    expect(body.deleted.glb).toBeTruthy()
+    expect(body.deleted.metadata).toBeTruthy()
   })
 
   test('GET /scans/:filename returns 404 for missing file', async ({ request }) => {
@@ -172,6 +244,12 @@ test.describe('Scan storage API', () => {
     // Should be 400 or 404, never 200
     expect(resp.status()).toBeGreaterThanOrEqual(400)
   })
+
+  test('DELETE /scans/:filename rejects path traversal', async ({ request }) => {
+    const resp = await request.delete(`${BASE_URL}/scans/..%2F..%2Fetc%2Fpasswd`)
+    expect(resp.status()).toBeGreaterThanOrEqual(400)
+    expect(resp.status()).not.toBe(200)
+  })
 })
 
 // ── 3D Viewer page ────────────────────────────────────────────────────────────
@@ -179,7 +257,7 @@ test.describe('Scan storage API', () => {
 test.describe('3D Viewer page', () => {
   test('viewer.html loads', async ({ page }) => {
     await page.goto(`${BASE_URL}/viewer.html`, { waitUntil: 'domcontentloaded' })
-    await expect(page.locator('#sidebar-title')).toHaveText('Saved Scans')
+    await expect(page.locator('#sidebar-title')).toHaveText('Companion Scan')
   })
 
   test('viewer sidebar shows scan list or empty state', async ({ page }) => {
@@ -295,6 +373,25 @@ test.describe('UI element positions', () => {
       expect(box.x).toBeLessThan(vw / 2)
       expect(box.y).toBeLessThan(vh / 2)
     }
+  })
+
+  test('status, compass, and autosave share one top-left HUD widget', async ({ page }) => {
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
+    const result = await page.evaluate(() => {
+      const hud = document.getElementById('hud-panel')
+      return {
+        statusInside: hud?.contains(document.getElementById('status-bar')) ?? false,
+        compassInside: hud?.contains(document.getElementById('compass-ring')) ?? false,
+        geoInside: hud?.contains(document.getElementById('geo-chip')) ?? false,
+        autosaveInside: hud?.contains(document.getElementById('autosave-status')) ?? false,
+        oldFloatingGeo: Boolean(document.getElementById('geo-indicator')),
+      }
+    })
+    expect(result.statusInside).toBeTruthy()
+    expect(result.compassInside).toBeTruthy()
+    expect(result.geoInside).toBeTruthy()
+    expect(result.autosaveInside).toBeTruthy()
+    expect(result.oldFloatingGeo).toBeFalsy()
   })
 
   test('quality overlay is in the top-left HUD panel', async ({ page }) => {
@@ -431,6 +528,17 @@ test.describe('Viewer new controls', () => {
     expect(afterDisplay).not.toBe('none')
   })
 
+  test('clicking geomap opens a usable map drawer', async ({ page }) => {
+    await page.locator('#btn-geomap').click()
+    await expect(page.locator('#geomap-drawer')).toBeVisible()
+    await expect(page.locator('.leaflet-container')).toBeVisible({ timeout: 5000 })
+    const hasPinsOrEmptyState = await page.evaluate(() => {
+      return document.querySelectorAll('.geomap-pin-wrapper').length > 0
+        || window.getComputedStyle(document.getElementById('geomap-empty')!).display !== 'none'
+    })
+    expect(hasPinsOrEmptyState).toBeTruthy()
+  })
+
   test('bounds button starts with reduced opacity (off)', async ({ page }) => {
     const opacity = await page.locator('#btn-toggle-bounds').evaluate(
       (el) => (el as HTMLElement).style.opacity
@@ -444,6 +552,34 @@ test.describe('Viewer new controls', () => {
       (el) => (el as HTMLElement).style.opacity
     )
     expect(parseFloat(opacity)).toBe(1)
+  })
+})
+
+// ── Scan / review / edit / export flow ───────────────────────────────────────
+
+test.describe('Scan review edit export flow', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
+    await waitForStatus(page, 'begin')
+    await page.evaluate(() => document.getElementById('start-screen')?.remove())
+  })
+
+  test('review panel exposes edit, export, processing, and clear controls', async ({ page }) => {
+    await page.locator('#panel-toggle').click()
+    await expect(page.locator('#side-panel')).toHaveClass(/open/)
+    await expect(page.locator('#scan-flow-steps')).toContainText('Scan')
+    await expect(page.locator('#scan-flow-steps')).toContainText('Review')
+    await expect(page.locator('#scan-flow-steps')).toContainText('Edit')
+    await expect(page.locator('#scan-flow-steps')).toContainText('Export')
+    await expect(page.locator('#panel-export-glb-btn')).toBeVisible()
+    await expect(page.locator('#panel-export-summary-btn')).toBeVisible()
+    await expect(page.locator('#panel-clear-session-btn')).toBeVisible()
+    await expect(page.locator('#panel-stream-btn')).toBeVisible()
+  })
+
+  test('autosave status is visible before scanning', async ({ page }) => {
+    await expect(page.locator('#autosave-status')).toBeVisible()
+    await expect(page.locator('#autosave-status')).toContainText('Autosave')
   })
 })
 

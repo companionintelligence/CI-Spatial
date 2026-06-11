@@ -103,6 +103,11 @@ export class DetectionStore {
     await this.persist()
   }
 
+  /** Persist the current session even when it has no detections yet. */
+  async saveSnapshot(): Promise<void> {
+    await this.persist()
+  }
+
   subscribe(fn: ChangeListener): () => void {
     this.listeners.add(fn)
     return () => this.listeners.delete(fn)

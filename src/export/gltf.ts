@@ -74,8 +74,27 @@ export interface ExportData {
   geoFix?: GeoFix         // GPS/bearing/address at time of export (optional)
 }
 
-export async function exportToGLB(data: ExportData): Promise<void> {
+export interface ExportOptions {
+  download?: boolean
+  upload?: boolean
+  filenamePrefix?: string
+  autoSaved?: boolean
+}
+
+export interface ExportResult {
+  filename: string
+  size: number
+  uploadedFilename?: string
+}
+
+export async function exportToGLB(data: ExportData, options: ExportOptions = {}): Promise<ExportResult> {
   const { store, pointCloud, poseHistory, scanEntry, geoFix } = data
+  const {
+    download = true,
+    upload = true,
+    filenamePrefix = 'room-scan',
+    autoSaved = false,
+  } = options
   const scene = new THREE.Scene()
   scene.name = 'room-scan'
 
@@ -94,6 +113,7 @@ export async function exportToGLB(data: ExportData): Promise<void> {
     floorName,
     roomName,
     projectId:       scanEntry?.projectId ?? null,
+    autoSaved,
     pointCount:      pointCloud.count,
     detectionCount:  store.detections.size,
     poseCount:       poseHistory.length,
@@ -270,15 +290,18 @@ export async function exportToGLB(data: ExportData): Promise<void> {
   })
 
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-  const filename = `room-scan-${ts}.glb`
-  triggerDownload(buffer, filename)
+  const filename = `${filenamePrefix}-${ts}.glb`
+  if (download) triggerDownload(buffer, filename)
   console.log(
     `[export] GLB: ${(buffer.byteLength / 1024).toFixed(0)} KB,`,
     `${pointCloud.count} pts, ${poseHistory.length} poses, ${store.detections.size} objects`,
   )
 
-  // Upload to server (non-blocking)
-  void uploadToServer(buffer, filename, store, geoFix)
+  let uploadedFilename: string | undefined
+  if (upload) {
+    uploadedFilename = await uploadToServer(buffer, filename, data, autoSaved)
+  }
+  return { filename, size: buffer.byteLength, uploadedFilename }
 }
 
 /**
@@ -288,9 +311,10 @@ export async function exportToGLB(data: ExportData): Promise<void> {
 async function uploadToServer(
   buffer: ArrayBuffer,
   filename: string,
-  store: DetectionStore,
-  geoFix?: GeoFix,
-): Promise<void> {
+  data: ExportData,
+  autoSaved: boolean,
+): Promise<string | undefined> {
+  const { store, pointCloud, poseHistory, geoFix } = data
   try {
     const metadata = JSON.stringify({
       detectionCount: store.detections.size,
@@ -298,6 +322,10 @@ async function uploadToServer(
       exportedAt: new Date().toISOString(),
       capturedAt: new Date().toISOString(),
       sessionId:  store.sessionId,
+      scanName: filename.replace(/\.glb$/, ''),
+      autoSaved,
+      pointCount: pointCloud.count,
+      poseCount: poseHistory.length,
       // Geo fields — written flat so the server can index them for /scan-locations
       geoLat:     geoFix?.lat          ?? null,
       geoLng:     geoFix?.lng          ?? null,
@@ -313,12 +341,14 @@ async function uploadToServer(
     if (resp.ok) {
       const { filename: saved } = await resp.json() as { filename: string }
       console.log(`[export] Uploaded to server: ${saved}`)
+      return saved
     } else {
       console.warn(`[export] Server upload failed: ${resp.status}`)
     }
   } catch (err) {
     console.warn('[export] Server upload error:', err)
   }
+  return undefined
 }
 
 function triggerDownload(buffer: ArrayBuffer, filename: string): void {
@@ -330,4 +360,3 @@ function triggerDownload(buffer: ArrayBuffer, filename: string): void {
   a.click()
   setTimeout(() => URL.revokeObjectURL(url), 10_000)
 }
-

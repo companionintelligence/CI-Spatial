@@ -5,6 +5,8 @@
  * POST /upload-scan        multipart { file: File(.glb), metadata?: JSON } → { filename }
  * GET  /scans              → [{ filename, size, uploadedAt }]
  * GET  /scans/:filename    → model/gltf-binary
+ * DELETE /scans/:filename → delete stored .glb + sidecar metadata
+ * DELETE /scans?confirm=delete-all → clear test scan storage
  * POST /upload-summary     multipart { file: File(.md) } → { filename }
  * POST /process-scan       JSON { filename, action, sessionId? } → { action, result }
  * GET  /projects           → Project[]
@@ -39,6 +41,26 @@ const ALLOWED_ORIGIN_PREFIX = Deno.env.get('ALLOWED_ORIGIN_PREFIX') ?? 'https://
 const SCANS_DIR    = Deno.env.get('SCANS_DIR')    ?? './scans'
 const SUMMARIES_DIR = Deno.env.get('SUMMARIES_DIR') ?? './summaries'
 const WORLDS_DIR = Deno.env.get('WORLDS_DIR') ?? './worlds'
+
+function safeStorageFilename(raw: string, requiredExt?: string): string | null {
+  let filename = raw
+  try { filename = decodeURIComponent(raw) } catch { /* use raw */ }
+  if (!filename || filename.includes('/') || filename.includes('\\')) return null
+  if (filename.startsWith('.') || filename.includes('..')) return null
+  if (!/^[a-zA-Z0-9._-]+$/.test(filename)) return null
+  if (requiredExt && !filename.endsWith(requiredExt)) return null
+  return filename
+}
+
+async function removeIfExists(path: string): Promise<boolean> {
+  try {
+    await Deno.remove(path)
+    return true
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false
+    throw error
+  }
+}
 
 function isAllowedOrigin(origin: string): boolean {
   try {
@@ -184,14 +206,31 @@ app.get('/scans', async (c) => {
   }
 })
 
-app.get('/scans/:filename', async (c) => {
-  const filename = c.req.param('filename')
-  // Prevent path traversal
-  if (!filename || filename.includes('/') || filename.includes('\\') || filename.startsWith('.')) {
-    return c.json({ error: 'Invalid filename' }, 400)
+app.delete('/scans', async (c) => {
+  const confirm = c.req.query('confirm')
+  if (confirm !== 'delete-all') {
+    return c.json({ error: 'Add ?confirm=delete-all to clear scan storage' }, 400)
   }
-  if (!filename.endsWith('.glb')) {
-    return c.json({ error: 'Only .glb files are served' }, 400)
+
+  let deleted = 0
+  try {
+    for await (const entry of Deno.readDir(SCANS_DIR)) {
+      if (!entry.isFile) continue
+      if (!entry.name.endsWith('.glb') && !entry.name.endsWith('.json')) continue
+      if (await removeIfExists(`${SCANS_DIR}/${entry.name}`)) deleted += 1
+    }
+    await removeAllScansFromWorlds()
+    return c.json({ ok: true, deleted })
+  } catch (err) {
+    console.error('[scans clear error]', err)
+    return c.json({ error: String(err) }, 500)
+  }
+})
+
+app.get('/scans/:filename', async (c) => {
+  const filename = safeStorageFilename(c.req.param('filename'), '.glb')
+  if (!filename) {
+    return c.json({ error: 'Invalid filename' }, 400)
   }
 
   const filePath = `${SCANS_DIR}/${filename}`
@@ -207,6 +246,22 @@ app.get('/scans/:filename', async (c) => {
     })
   } catch {
     return c.json({ error: 'Scan not found' }, 404)
+  }
+})
+
+app.delete('/scans/:filename', async (c) => {
+  const filename = safeStorageFilename(c.req.param('filename'), '.glb')
+  if (!filename) return c.json({ error: 'Invalid filename' }, 400)
+
+  try {
+    const deletedGlb = await removeIfExists(`${SCANS_DIR}/${filename}`)
+    const deletedMeta = await removeIfExists(scanMetaPath(filename))
+    if (!deletedGlb && !deletedMeta) return c.json({ error: 'Scan not found' }, 404)
+    await removeScanFromWorlds(filename)
+    return c.json({ ok: true, filename, deleted: { glb: deletedGlb, metadata: deletedMeta } })
+  } catch (err) {
+    console.error('[scan delete error]', err)
+    return c.json({ error: String(err) }, 500)
   }
 })
 
@@ -405,6 +460,50 @@ async function saveWorld(world: WorldProject): Promise<void> {
   await Deno.rename(tmp, worldPath(world.shareSlug))
 }
 
+async function mutateWorldFiles(mutator: (world: WorldProject) => boolean | Promise<boolean>): Promise<number> {
+  let updated = 0
+  try {
+    for await (const entry of Deno.readDir(WORLDS_DIR)) {
+      if (!entry.isFile || !entry.name.endsWith('.json')) continue
+      try {
+        const world = JSON.parse(await Deno.readTextFile(`${WORLDS_DIR}/${entry.name}`)) as WorldProject
+        if (await mutator(world)) {
+          await saveWorld(world)
+          updated += 1
+        }
+      } catch (error) {
+        console.warn(`[world] Could not mutate ${entry.name}:`, error)
+      }
+    }
+  } catch { /* worlds directory may be empty */ }
+  return updated
+}
+
+async function removeScanFromWorlds(filename: string): Promise<number> {
+  return mutateWorldFiles((world) => {
+    const beforeScans = world.scans.length
+    world.scans = world.scans.filter(scan => scan.filename !== filename)
+    world.editPatches = world.editPatches.filter(patch => patch.targetId !== filename && patch.scanId !== filename)
+    world.jobs = world.jobs.filter(job => {
+      if (!job.scanId) return true
+      return world.scans.some(scan => scan.scanId === job.scanId)
+    })
+    return world.scans.length !== beforeScans
+  })
+}
+
+async function removeAllScansFromWorlds(): Promise<number> {
+  return mutateWorldFiles((world) => {
+    const hadScans = world.scans.length > 0
+    world.scans = []
+    world.editPatches = world.editPatches.filter(patch => patch.scope === 'world')
+    world.jobs = world.jobs.filter(job => !job.scanId)
+    world.originGeoPose = { lat: null, lng: null, altitudeM: null, bearing: null, accuracyM: null }
+    world.localFrame.origin = world.originGeoPose
+    return hadScans
+  })
+}
+
 async function synthesizeWorld(slug: string): Promise<WorldProject> {
   const stored = await listStoredScans()
   const included = stored.filter(shouldIncludeInWorld).slice(0, 24)
@@ -446,12 +545,16 @@ async function loadWorld(slug: string): Promise<WorldProject> {
 
 async function refreshWorldScans(world: WorldProject): Promise<void> {
   const stored = await listStoredScans()
+  const storedFilenames = new Set(stored.map(scan => scan.filename))
+  const beforeCount = world.scans.length
+  world.scans = world.scans.filter(scan => scan.filename ? storedFilenames.has(scan.filename) : true)
+
   const existing = new Set(world.scans.map(scan => scan.filename))
   const additions = stored
     .filter(shouldIncludeInWorld)
     .filter(scan => !existing.has(scan.filename))
     .slice(0, 12)
-  if (additions.length === 0) return
+  if (additions.length === 0 && world.scans.length === beforeCount) return
 
   const origin = world.originGeoPose
   const nextIndex = world.scans.length
@@ -459,9 +562,35 @@ async function refreshWorldScans(world: WorldProject): Promise<void> {
   await saveWorld(world)
 }
 
-function shareLinks(c: { req: { url: string } }, world: WorldProject): Record<string, string> {
+function clientBaseUrl(c: { req: { url: string; header: (name: string) => string | undefined } }): string {
+  const origin = c.req.header('origin')
+  if (origin && isAllowedOrigin(origin)) return origin
+
+  const forwardedHost = c.req.header('x-forwarded-host')
+  if (forwardedHost) {
+    const forwardedProto = c.req.header('x-forwarded-proto') ?? 'https'
+    return `${forwardedProto}://${forwardedHost}`
+  }
+
   const url = new URL(c.req.url)
-  const base = `${url.protocol}//${url.host}`
+  if ((url.hostname === 'localhost' || url.hostname === '127.0.0.1') && url.port === String(PORT)) {
+    return viteBaseUrlFromEnv()
+  }
+  return `${url.protocol}//${url.host}`
+}
+
+function viteBaseUrlFromEnv(): string {
+  try {
+    const url = new URL(ALLOWED_ORIGIN_PREFIX)
+    if (!url.port) url.port = '5173'
+    return url.toString().replace(/\/$/, '')
+  } catch {
+    return 'https://liambook.capybara-ulmer.ts.net:5173'
+  }
+}
+
+function shareLinks(c: { req: { url: string; header: (name: string) => string | undefined } }, world: WorldProject): Record<string, string> {
+  const base = clientBaseUrl(c)
   const byRole = new Map(world.members.filter(m => !m.revokedAt).map(m => [m.role, m.token]))
   return {
     owner: `${base}/viewer.html?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('owner') ?? '')}`,

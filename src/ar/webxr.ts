@@ -19,7 +19,11 @@ export class WebXRProvider implements ARProvider {
   private videoEl: HTMLVideoElement | null = null
   private offscreen: OffscreenCanvas | null = null
   private offCtx: OffscreenCanvasRenderingContext2D | null = null
-  private captureQueue: Array<(frame: RawFrame) => void> = []
+  private captureQueue: Array<{
+    resolve: (frame: RawFrame) => void
+    reject: (error: Error) => void
+    timeout: ReturnType<typeof setTimeout>
+  }> = []
   private latestPose: Pose = {
     position: { x: 0, y: 0, z: 0 },
     rotation: { x: 0, y: 0, z: 0, w: 1 },
@@ -100,7 +104,10 @@ export class WebXRProvider implements ARProvider {
           timestamp: time,
         }
         const queue = self.captureQueue.splice(0)
-        queue.forEach((resolve) => resolve(frame_))
+        queue.forEach((pending) => {
+          clearTimeout(pending.timeout)
+          pending.resolve(frame_)
+        })
       }
     }
 
@@ -118,8 +125,23 @@ export class WebXRProvider implements ARProvider {
     this.viewerSpace = null
   }
 
-  captureFrame(): Promise<RawFrame> {
-    return new Promise((resolve) => this.captureQueue.push(resolve))
+  captureFrame(timeoutMs = 4000): Promise<RawFrame> {
+    if (this.captureQueue.length > 0) {
+      return Promise.reject(new Error('Capture already pending'))
+    }
+
+    return new Promise((resolve, reject) => {
+      const pending = {
+        resolve,
+        reject,
+        timeout: setTimeout(() => {
+          const idx = this.captureQueue.indexOf(pending)
+          if (idx >= 0) this.captureQueue.splice(idx, 1)
+          reject(new Error('Timed out waiting for camera frame'))
+        }, timeoutMs),
+      }
+      this.captureQueue.push(pending)
+    })
   }
 
   featurePoints(_gridSize?: number): Array<{ x: number; y: number; z: number }> {

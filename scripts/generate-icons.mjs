@@ -67,7 +67,7 @@ function encodePNG(size, rgbFn) {
 }
 
 // ─── Icon pixel function ───────────────────────────────────────────────────────
-// Design: dark navy bg · outer scan ring (cyan) · corner brackets · center dot
+// Design: Companion dark teal bg · mint scan ring · orbital mark · center signal.
 function iconPixel(x, y, size) {
   const cx = size / 2, cy = size / 2
   // Normalized coords -1..1
@@ -76,18 +76,18 @@ function iconPixel(x, y, size) {
   const dist = Math.sqrt(nx * nx + ny * ny)
   const angle = Math.atan2(ny, nx)
 
-  // Base background: dark navy, subtly brighter toward center
+  // Base background: Companion deep teal, subtly brighter toward center.
   const bg = 1 - Math.min(1, dist * 0.6)
-  let r = Math.round(6 + bg * 14)
-  let g = Math.round(10 + bg * 16)
-  let b = Math.round(22 + bg * 26)
+  let r = Math.round(1 + bg * 12)
+  let g = Math.round(13 + bg * 24)
+  let b = Math.round(14 + bg * 24)
 
   // Outer scan ring (radius ~0.77)
   if (dist > 0.70 && dist < 0.84) {
     const fade = 1 - Math.abs(dist - 0.77) / 0.07
-    r = Math.round(r + fade * (20 - r))
-    g = Math.round(g + fade * (200 - g))
-    b = Math.round(b + fade * (255 - b))
+    r = Math.round(r + fade * (128 - r))
+    g = Math.round(g + fade * (255 - g))
+    b = Math.round(b + fade * (225 - b))
   }
 
   // Dashed mid ring (radius ~0.52)
@@ -95,9 +95,9 @@ function iconPixel(x, y, size) {
     const dashAngle = ((angle % (Math.PI / 4)) + Math.PI * 2) % (Math.PI / 4)
     if (dashAngle < Math.PI / 4 * 0.55) {
       const fade = 1 - Math.abs(dist - 0.52) / 0.03
-      r = Math.round(r + fade * (0 - r))
-      g = Math.round(g + fade * (140 - g))
-      b = Math.round(b + fade * (210 - b))
+      r = Math.round(r + fade * (239 - r))
+      g = Math.round(g + fade * (240 - g))
+      b = Math.round(b + fade * (240 - b))
     }
   }
 
@@ -114,27 +114,27 @@ function iconPixel(x, y, size) {
   const inVArm = ay >= bPos - bLen && ay <= bPos + bThk &&
                  ax >= bPos - bThk / 2 && ax <= bPos + bThk / 2
   if (inHArm || inVArm) {
-    r = Math.round(r * 0.1 + 60 * 0.9)
-    g = Math.round(g * 0.1 + 220 * 0.9)
-    b = Math.round(b * 0.1 + 255 * 0.9)
+    r = Math.round(r * 0.1 + 128 * 0.9)
+    g = Math.round(g * 0.1 + 255 * 0.9)
+    b = Math.round(b * 0.1 + 225 * 0.9)
   }
 
   // Scan lines (subtle horizontal lines in the inner area)
   if (dist < 0.47) {
     const scanY = ((y / size) * 20) % 1
     if (scanY < 0.18) {
-      r = Math.round(r + 8)
-      g = Math.round(g + 20)
-      b = Math.round(b + 30)
+      r = Math.round(r + 10)
+      g = Math.round(g + 24)
+      b = Math.round(b + 22)
     }
   }
 
   // Center dot
   if (dist < 0.055) {
     const fade = 1 - dist / 0.055
-    r = Math.round(r + fade * (80 - r))
-    g = Math.round(g + fade * (230 - g))
-    b = Math.round(b + fade * (255 - b))
+    r = Math.round(r + fade * (128 - r))
+    g = Math.round(g + fade * (255 - g))
+    b = Math.round(b + fade * (225 - b))
   }
 
   return [r, g, b]

@@ -1,6 +1,6 @@
 # Architectural Review: Distributed 3D Scanning and Reconstruction
 
-This document presents a rigorous architectural review of the CI Web XR Scan system, covering mobile capture mechanisms, CV backend ingestion, desktop editor rendering, live state synchronization, and Tailscale testing integrations.
+This document presents a rigorous architectural review of the Companion Scan system, covering mobile capture mechanisms, CV backend ingestion, desktop editor rendering, live state synchronization, and Tailscale testing integrations.
 
 ---
 

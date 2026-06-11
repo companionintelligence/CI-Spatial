@@ -29,9 +29,15 @@ import { exportToGLB } from './export/gltf'
 import { exportSessionSummary } from './export/summary'
 import { GeoTracker, type GeoFix } from './geo/geo-tracker'
 import { RtcBroadcaster } from './rtc/broadcaster'
+import { registerPWA } from './pwa'
 import * as THREE from 'three'
 
+const CAPTURE_FRAME_TIMEOUT_MS = 5000
+const TRACKING_WAIT_MS = 2500
+
 async function main() {
+  registerPWA()
+
   const canvas = document.getElementById('camerafeed') as HTMLCanvasElement
   const overlay = setupStatusOverlay()
 
@@ -46,6 +52,10 @@ async function main() {
   const poseHistory: Pose[] = []
   const scanner = new RoomScanner()
   let captureCount = 0    // total successful captures this session
+  let autoSaveTimer: ReturnType<typeof setTimeout> | null = null
+  let autoSaveInFlight = false
+  let autoSaveQueued = false
+  let captureInFlight = false
 
   // Start geo tracker early (GPS needs time to acquire a fix)
   // Wire geo indicator chip immediately when first fix arrives
@@ -60,7 +70,7 @@ async function main() {
 
   const panel = new SidePanel(
     store,
-    () => exportToGLB({ store, pointCloud, poseHistory, geoFix: geoTracker.snapshot() ?? undefined }),
+    () => { void exportManualScan() },
     () => exportSessionSummary({ store, pointCloud, poseHistory, captureCount, geoFix: geoTracker.snapshot() ?? undefined }),
     (action) => requestServerProcessing(action, store),
     (mode) => {
@@ -73,6 +83,8 @@ async function main() {
 
   const history = new SessionHistory(store)
   history.mount()
+
+  void store.saveSnapshot()
 
   document.getElementById('history-btn')?.addEventListener('click', () => {
     initDrawerGeoMap(geoTracker.snapshot())
@@ -124,12 +136,27 @@ async function main() {
 
   // Shared capture handler used by both the manual button and auto-capture
   async function doCapture() {
-    if (!provider.isTracking()) {
-      overlay.setStatus('Tracking not ready — move camera slowly over a surface')
+    if (captureInFlight) {
+      overlay.setStatus('Capture already processing...')
+      return
     }
-    overlay.setStatus('Capturing…')
+
+    captureInFlight = true
+    setCaptureBusy(true)
+
+    if (!provider.isTracking()) {
+      overlay.setStatus('Tracking warming up...')
+      const trackingReady = await waitForTracking(provider, TRACKING_WAIT_MS)
+      if (!trackingReady) {
+        overlay.setStatus('Tracking not ready — move camera slowly over a surface')
+        captureInFlight = false
+        setCaptureBusy(false)
+        return
+      }
+    }
+    overlay.setStatus('Capturing next frame...')
     try {
-      const { blob, pose, timestamp } = await capture.capture()
+      const { blob, pose, timestamp } = await capture.capture(CAPTURE_FRAME_TIMEOUT_MS)
       console.log(`[main] Captured blob: ${blob.size} bytes, type=${blob.type}, pose=`, pose)
       overlay.setStatus('Analysing…')
 
@@ -193,14 +220,78 @@ async function main() {
       showInferDialog(worldDets)
 
       captureCount++
+      await store.saveSnapshot()
+      queueAutoSave()
       overlay.setStatus(
         `${store.detections.size} object${store.detections.size === 1 ? '' : 's'} · ${pointCloud.count} pts`,
       )
     } catch (e) {
-      overlay.setStatus('Capture failed — try again')
+      clearAnalysisProgress()
+      const message = e instanceof Error ? e.message : String(e)
+      overlay.setStatus(message.includes('Timed out')
+        ? 'Camera frame timed out — tap once more'
+        : 'Capture failed — try again')
       console.error('[capture]', e)
+    } finally {
+      clearAnalysisProgress()
+      overlay.setProgress(null)
+      captureInFlight = false
+      setCaptureBusy(false)
     }
-    overlay.setProgress(null)
+  }
+
+  async function exportManualScan(): Promise<void> {
+    setAutosaveStatus('Exporting scan...')
+    overlay.setStatus('Exporting scan...')
+    try {
+      const result = await exportToGLB(
+        { store, pointCloud, poseHistory, geoFix: geoTracker.snapshot() ?? undefined },
+        { download: true, upload: true, filenamePrefix: 'room-scan', autoSaved: false },
+      )
+      overlay.setStatus('Exported scan')
+      setAutosaveStatus(result.uploadedFilename ? `Exported + uploaded ${shortName(result.uploadedFilename)}` : 'Export downloaded')
+    } catch (error) {
+      overlay.setStatus('Export failed')
+      setAutosaveStatus('Export failed')
+      console.error('[export]', error)
+    }
+  }
+
+  function queueAutoSave(): void {
+    if (autoSaveTimer) clearTimeout(autoSaveTimer)
+    setAutosaveStatus('Autosave queued')
+    autoSaveTimer = setTimeout(() => {
+      void runAutoSave()
+    }, 1200)
+  }
+
+  async function runAutoSave(): Promise<void> {
+    if (autoSaveInFlight) {
+      autoSaveQueued = true
+      return
+    }
+    autoSaveInFlight = true
+    autoSaveQueued = false
+    setAutosaveStatus('Saving scan...')
+    try {
+      await store.saveSnapshot()
+      if (pointCloud.count === 0 && store.detections.size === 0 && poseHistory.length === 0) {
+        setAutosaveStatus('Autosaved locally')
+        return
+      }
+      const result = await exportToGLB(
+        { store, pointCloud, poseHistory, geoFix: geoTracker.snapshot() ?? undefined },
+        { download: false, upload: true, filenamePrefix: 'autosave-room-scan', autoSaved: true },
+      )
+      const time = new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+      setAutosaveStatus(result.uploadedFilename ? `Autosaved ${shortName(result.uploadedFilename)} · ${time}` : `Autosaved locally · ${time}`)
+    } catch (error) {
+      setAutosaveStatus('Autosave failed')
+      console.error('[autosave]', error)
+    } finally {
+      autoSaveInFlight = false
+      if (autoSaveQueued) queueAutoSave()
+    }
   }
 
   arOverlay.mount(doCapture)
@@ -333,6 +424,47 @@ function setupStatusOverlay() {
       }
     },
   }
+}
+
+function setAutosaveStatus(text: string): void {
+  const el = document.getElementById('autosave-status')
+  if (el) el.textContent = text
+}
+
+function setCaptureBusy(busy: boolean): void {
+  const btn = document.getElementById('capture-btn') as HTMLButtonElement | null
+  if (!btn) return
+  btn.classList.toggle('busy', busy)
+  btn.disabled = busy
+  btn.setAttribute('aria-busy', String(busy))
+}
+
+function clearAnalysisProgress(): void {
+  document.getElementById('progress-bar-fill')?.classList.remove('analyzing')
+  document.getElementById('progress-bar-wrap')?.classList.remove('visible')
+}
+
+function waitForTracking(provider: ARProvider, timeoutMs: number): Promise<boolean> {
+  if (provider.isTracking()) return Promise.resolve(true)
+  return new Promise((resolve) => {
+    const started = performance.now()
+    const tick = () => {
+      if (provider.isTracking()) {
+        resolve(true)
+        return
+      }
+      if (performance.now() - started >= timeoutMs) {
+        resolve(false)
+        return
+      }
+      setTimeout(tick, 100)
+    }
+    tick()
+  })
+}
+
+function shortName(filename: string): string {
+  return filename.replace(/^\d+_/, '').replace(/\.glb$/, '')
 }
 
 function updateQualityOverlay(snap: import('./capture/quality-monitor').QualitySnapshot): void {
@@ -478,7 +610,7 @@ main().catch((e: unknown) => {
   if (el) el.textContent = `Error: ${e instanceof Error ? e.message : String(e)}`
 })
 
-// ─── Geo indicator (top-right chip) ──────────────────────────────────────────
+// ─── Geo indicator (inside the unified top-left HUD) ─────────────────────────
 
 function updateGeoIndicator(fix: GeoFix): void {
   const chip    = document.getElementById('geo-chip') as HTMLElement | null
@@ -540,7 +672,7 @@ function initDrawerGeoMap(fix: GeoFix | null): void {
     if (fix) {
       const icon = L.divIcon({
         className: '',
-        html: '<div style="width:12px;height:12px;background:#4fc3f7;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 4px rgba(79,195,247,0.3)"></div>',
+        html: '<div style="width:12px;height:12px;background:#80ffe1;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 4px rgba(128,255,225,0.3)"></div>',
         iconSize: [12, 12],
         iconAnchor: [6, 6],
       })

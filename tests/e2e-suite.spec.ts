@@ -4,7 +4,7 @@
  */
 import { test, expect } from '@playwright/test'
 import { mergeDetections } from '../src/spatial/resolver'
-import { parseDetections } from '../prompt.ts'
+import { normalizeDetections, parseDetections } from '../prompt.ts'
 
 const BASE = process.env['VITE_URL'] ?? 'https://liambook.capybara-ulmer.ts.net:5175'
 
@@ -472,6 +472,22 @@ test.describe('Tier 2: Boundary & Corner Cases', () => {
     expect(results[0].confidence).toBe(0.85)
   })
 
+  test('Test 18b: Duplicate VLM boxes are collapsed and capped', () => {
+    const raw = [
+      { label: 'Chair', bbox: [0.23, 0.25, 0.5, 0.49], confidence: 0.39, description: 'gray blanket on chair.' },
+      { label: 'chair', bbox: [0.231, 0.251, 0.501, 0.491], confidence: 0.62, description: 'same chair, higher confidence' },
+      { label: 'chair', bbox: [0.7, 0.1, 0.9, 0.4], confidence: 0.52, description: 'second chair' },
+      { label: 'table', bbox: [0.1, 0.1, 0.2, 0.2], confidence: 80, description: 'confidence percent' },
+      { label: 'table', bbox: [0.101, 0.1, 0.201, 0.2], confidence: 0.3, description: 'duplicate table' },
+    ]
+
+    const results = normalizeDetections(raw)
+    expect(results).toHaveLength(3)
+    expect(results[0].label).toBe('chair')
+    expect(results[0].confidence).toBe(0.62)
+    expect(results.find((d) => d.label === 'table')?.confidence).toBe(0.8)
+  })
+
   test('Test 19: Bbox Coordinate Denormalization Recovery', () => {
     const pixelText = `[{"label": "chair", "bbox": [100, 200, 300, 400], "confidence": 0.9, "description": "chair"}]`
     const results = parseDetections(pixelText)
@@ -618,6 +634,42 @@ test.describe('Tier 2: Boundary & Corner Cases', () => {
     })
 
     expect(fov).toBe(60)
+  })
+
+  test('Test 24b: Pending capture rejects duplicates and times out cleanly', async ({ page }) => {
+    await page.goto(BASE, { waitUntil: 'domcontentloaded' })
+    const result = await page.evaluate(async () => {
+      ;(window as any).XR8 = {
+        addCameraPipelineModules: (mods: any[]) => {
+          ;(window as any).eighthWallModules = mods
+        },
+        loadChunk: async () => {},
+        GlTextureRenderer: { pipelineModule: () => ({}) },
+        XrController: { pipelineModule: () => ({}), hitTest: () => [] },
+        CameraPixelArray: { pipelineModule: () => ({}) },
+        XrConfig: { device: () => ({ ANY: {} }) },
+        run: () => {},
+        stop: () => {},
+      }
+
+      const { EighthWallProvider } = await import('/src/ar/eighthwall.ts')
+      const provider = new EighthWallProvider()
+      const canvas = document.createElement('canvas')
+      await provider.start(canvas)
+
+      const first = provider.captureFrame(40)
+        .then(() => 'resolved')
+        .catch((error: Error) => error.message)
+      const second = await provider.captureFrame(40)
+        .then(() => 'resolved')
+        .catch((error: Error) => error.message)
+      const firstResult = await first
+      provider.stop()
+      return { firstResult, second }
+    })
+
+    expect(result.second).toContain('already pending')
+    expect(result.firstResult).toContain('Timed out')
   })
 
   test('Test 25: Quaternion Normalization Safeguards', async ({ page }) => {

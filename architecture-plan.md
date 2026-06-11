@@ -1,4 +1,4 @@
-## Repo: `ci-xr-scan-web`
+## Repo: `companion-scan-web`
 
 ### What this is
 
@@ -23,7 +23,7 @@ This is a CI product: private by default, runs the VLM on-device when the hardwa
 ### File structure
 
 ```
-ci-xr-scan-web/
+companion-scan-web/
 ├── index.html
 ├── vite.config.ts
 ├── package.json
