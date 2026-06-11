@@ -17,6 +17,7 @@ import type { RawDetection } from '../inference/prompt'
 import type { PointCloud } from '../scene/pointcloud'
 
 const DEDUP_RADIUS_M = 0.3
+const FALLBACK_DEPTH_M = 2.0
 
 export interface WorldDetection {
   label: string
@@ -130,6 +131,19 @@ function raycastPointCloud(
   return bestPoint ? { position: bestPoint } : null
 }
 
+function pointOnCaptureRay(
+  cx: number,
+  cy: number,
+  camera: THREE.PerspectiveCamera,
+  depth = FALLBACK_DEPTH_M,
+): { x: number; y: number; z: number } {
+  const ndc = new THREE.Vector2(cx * 2 - 1, -(cy * 2 - 1))
+  const ray = new THREE.Raycaster()
+  ray.setFromCamera(ndc, camera)
+  const point = ray.ray.origin.clone().add(ray.ray.direction.clone().multiplyScalar(depth))
+  return { x: point.x, y: point.y, z: point.z }
+}
+
 export async function resolveDetections(
   detections: RawDetection[],
   timestamp: number,
@@ -208,17 +222,21 @@ export async function resolveDetections(
       }
     }
 
-    // 4. Fallback: place object 2.0 meters in front of the camera using native Three.js rotation APIs
+    // 4. Fallback: place object along its bbox camera ray, or straight ahead
+    // when no capture camera is available.
     if (!hitPos) {
-      if (opts.cameraPose) {
+      if (opts.captureCamera) {
+        hitPos = pointOnCaptureRay(cx, cy, opts.captureCamera)
+        hitRot = ensureValidRotation(opts.cameraPose?.rotation ?? opts.captureCamera.quaternion)
+        console.warn(`[resolver] Hit test miss for "${det.label}" — using bbox ray fallback:`, JSON.stringify(hitPos))
+      } else if (opts.cameraPose) {
         const p = opts.cameraPose.position
         const q = opts.cameraPose.rotation
         const cameraDir = new THREE.Vector3(0, 0, -1).applyQuaternion(new THREE.Quaternion(q.x, q.y, q.z, q.w))
-        const DEPTH = 2.0
         hitPos = {
-          x: p.x + cameraDir.x * DEPTH,
-          y: p.y + cameraDir.y * DEPTH,
-          z: p.z + cameraDir.z * DEPTH,
+          x: p.x + cameraDir.x * FALLBACK_DEPTH_M,
+          y: p.y + cameraDir.y * FALLBACK_DEPTH_M,
+          z: p.z + cameraDir.z * FALLBACK_DEPTH_M,
         }
         hitRot = ensureValidRotation(q)
         console.warn(`[resolver] Hit test miss for "${det.label}" — using fallback position in front of camera:`, JSON.stringify(hitPos))

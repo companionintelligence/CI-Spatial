@@ -12,6 +12,11 @@
  */
 import type { ARProvider, HitResult, Pose, RawFrame } from './provider'
 
+type Point3 = { x: number; y: number; z: number }
+
+const MIN_POINT_DISTANCE_M = 0.08
+const MAX_POINT_DISTANCE_M = 50
+
 // XR8 is a global injected by xr.js — we declare it to satisfy TypeScript
 declare const XR8: {
   addCameraPipelineModule(mod: object): void
@@ -37,6 +42,65 @@ declare const XR8: {
     pipelineModule(opts: { luminance: boolean }): object
   }
   XrConfig: { device(): { ANY: unknown } }
+}
+
+function finitePoint(p: Point3): boolean {
+  return Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z)
+}
+
+function poseDistance(a: Point3, b: Point3): number {
+  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z)
+}
+
+function usefulWorldPoint(p: Point3, pose: Pose): boolean {
+  if (!finitePoint(p)) return false
+  const dist = poseDistance(p, pose.position)
+  return dist >= MIN_POINT_DISTANCE_M && dist <= MAX_POINT_DISTANCE_M
+}
+
+function appendPointValue(value: unknown, out: Point3[]): void {
+  if (!value) return
+  if (Array.isArray(value)) {
+    if (value.length >= 3 && value.every((n) => typeof n === 'number')) {
+      for (let i = 0; i + 2 < value.length; i += 3) {
+        out.push({ x: value[i], y: value[i + 1], z: value[i + 2] })
+      }
+    } else {
+      for (const item of value) appendPointValue(item, out)
+    }
+    return
+  }
+
+  if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
+    const flat = value as unknown as ArrayLike<number>
+    for (let i = 0; i + 2 < flat.length; i += 3) {
+      out.push({ x: flat[i], y: flat[i + 1], z: flat[i + 2] })
+    }
+    return
+  }
+
+  if (typeof value !== 'object') return
+  const obj = value as Record<string, unknown>
+  const positioned = obj['position'] ?? obj['worldPosition'] ?? obj['point'] ?? obj['coords']
+  if (positioned) {
+    appendPointValue(positioned, out)
+    return
+  }
+
+  if (typeof obj['x'] === 'number' && typeof obj['y'] === 'number' && typeof obj['z'] === 'number') {
+    out.push({ x: obj['x'], y: obj['y'], z: obj['z'] })
+    return
+  }
+
+  for (const key of ['points', 'positions', 'worldPoints', 'data']) {
+    if (obj[key]) appendPointValue(obj[key], out)
+  }
+}
+
+function extractPointBatch(source: unknown, pose: Pose): Point3[] {
+  const raw: Point3[] = []
+  appendPointValue(source, raw)
+  return raw.filter((p) => usefulWorldPoint(p, pose))
 }
 
 export class EighthWallProvider implements ARProvider {
@@ -119,25 +183,13 @@ export class EighthWallProvider implements ARProvider {
               }
             }
 
-            // Harvest world points
-            const wp = reality.worldPoints as Record<string, unknown> | null | undefined
-            if (wp) {
-              const newPts: Array<{ x: number; y: number; z: number }> = []
-              if (Array.isArray(wp)) {
-                for (const p of wp as any[]) {
-                  const pos = p?.position || p
-                  if (pos && typeof pos.x === 'number') {
-                    newPts.push({ x: pos.x, y: pos.y ?? 0, z: pos.z ?? 0 })
-                  }
-                }
-              } else if (wp.points instanceof Float32Array || Array.isArray(wp.points)) {
-                const flat = wp.points as ArrayLike<number>
-                for (let i = 0; i + 2 < flat.length; i += 3) {
-                  newPts.push({ x: flat[i], y: flat[i + 1], z: flat[i + 2] })
-                }
-              }
-              if (newPts.length > 0) self._latestWorldPoints = newPts
-            }
+            // Harvest world points.  xr.js builds vary: some expose
+            // reality.worldPoints, others expose reality.points.
+            const newPts = [
+              ...extractPointBatch(reality.worldPoints, self.latestPose),
+              ...extractPointBatch(reality.points, self.latestPose),
+            ]
+            if (newPts.length > 0) self._latestWorldPoints = newPts
           }
         },
 
@@ -224,7 +276,13 @@ export class EighthWallProvider implements ARProvider {
     const results = XR8.XrController.hitTest(x, y, ['FEATURE_POINT'])
     console.log('[8thwall-hitTest] input:', x, y, 'raw results:', JSON.stringify(results))
     if (!results?.length) return null
-    const { position, rotation, distance } = results[0]
+    const { position, rotation } = results[0]
+    const reportedDistance = results[0].distance
+    const computedDistance = position ? poseDistance(position, this.latestPose.position) : NaN
+    const distance = Number.isFinite(reportedDistance) && reportedDistance > 0
+      ? reportedDistance
+      : computedDistance
+    if (!position || !usefulWorldPoint(position, this.latestPose)) return null
     return { position, rotation, distance }
   }
 
@@ -253,7 +311,9 @@ export class EighthWallProvider implements ARProvider {
       for (let c = 1; c <= gridSize; c++) {
         try {
           const results = XR8.XrController.hitTest(c * step, r * step, ['FEATURE_POINT'])
-          if (results?.length) pts.push(results[0].position)
+          if (results?.length && usefulWorldPoint(results[0].position, this.latestPose)) {
+            pts.push(results[0].position)
+          }
         } catch {
           // Intermittent WASM map miss — skip this probe
         }

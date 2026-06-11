@@ -449,6 +449,88 @@ test.describe('UI element positions', () => {
     }
   })
 
+  test('scanner action rail stacks bottom-right controls without overlap', async ({ page }) => {
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
+    const result = await page.evaluate(() => {
+      const ids = ['xr-mode-link', 'panel-toggle', 'viewer-link', 'stream-btn', 'auto-capture-btn', 'history-btn']
+      const boxes = ids.map((id) => {
+        const el = document.getElementById(id)!
+        const rect = el.getBoundingClientRect()
+        return {
+          id,
+          parent: el.parentElement?.id,
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height,
+          right: rect.right,
+          bottom: rect.bottom,
+        }
+      })
+      return {
+        railExists: Boolean(document.getElementById('scanner-action-rail')),
+        viewportWidth: window.innerWidth,
+        boxes,
+      }
+    })
+
+    expect(result.railExists).toBeTruthy()
+    for (const box of result.boxes) {
+      expect(box.parent).toBe('scanner-action-rail')
+      expect(box.width).toBeGreaterThanOrEqual(47)
+      expect(box.width).toBeLessThanOrEqual(49)
+      expect(box.height).toBeGreaterThanOrEqual(47)
+      expect(box.height).toBeLessThanOrEqual(49)
+      expect(box.right).toBeGreaterThan(result.viewportWidth - 70)
+    }
+
+    for (let i = 0; i < result.boxes.length - 1; i++) {
+      expect(result.boxes[i].bottom).toBeLessThanOrEqual(result.boxes[i + 1].y)
+    }
+  })
+
+  test('capture button starts enabled and managed by busy state only', async ({ page }) => {
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
+    const state = await page.locator('#capture-btn').evaluate((el) => ({
+      disabled: (el as HTMLButtonElement).disabled,
+      ariaBusy: el.getAttribute('aria-busy'),
+      busyClass: el.classList.contains('busy'),
+    }))
+    expect(state.disabled).toBeFalsy()
+    expect(state.ariaBusy).not.toBe('true')
+    expect(state.busyClass).toBeFalsy()
+  })
+
+  test('capture button remains the tap target for repeated presses', async ({ page }) => {
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
+    await page.evaluate(() => {
+      document.getElementById('start-screen')?.remove()
+      ;(window as unknown as { __captureTapCount: number }).__captureTapCount = 0
+      document.getElementById('capture-btn')?.addEventListener('click', () => {
+        ;(window as unknown as { __captureTapCount: number }).__captureTapCount += 1
+      })
+    })
+
+    const hitTarget = await page.locator('#capture-btn').evaluate((el) => {
+      const rect = el.getBoundingClientRect()
+      const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
+      return {
+        id: hit?.id,
+        disabled: (el as HTMLButtonElement).disabled,
+      }
+    })
+
+    expect(hitTarget.id).toBe('capture-btn')
+    expect(hitTarget.disabled).toBeFalsy()
+
+    await page.locator('#capture-btn').click()
+    await page.locator('#capture-btn').click()
+    const tapCount = await page.evaluate(() => {
+      return (window as unknown as { __captureTapCount: number }).__captureTapCount
+    })
+    expect(tapCount).toBe(2)
+  })
+
   test('history drawer z-index is higher than side panel', async ({ page }) => {
     await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
     const [drawerZ, panelZ] = await page.evaluate(() => {

@@ -70,11 +70,10 @@ export class AROverlay {
   mount(onCapture: CaptureButtonCallback): void {
     this.captureBtn.addEventListener('click', async () => {
       if (this.captureBtn.classList.contains('busy')) return
-      this.captureBtn.classList.add('busy')
       try {
         await onCapture()
-      } finally {
-        this.captureBtn.classList.remove('busy')
+      } catch (error) {
+        console.warn('[overlay] capture handler failed:', error)
       }
     })
 

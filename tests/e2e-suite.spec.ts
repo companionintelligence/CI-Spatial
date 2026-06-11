@@ -257,6 +257,68 @@ test.describe('Tier 1: Feature Coverage', () => {
     ])
   })
 
+  test('Test 8b: XR8 reality.points are harvested and camera-near hits are ignored', async ({ page }) => {
+    await page.goto(BASE, { waitUntil: 'domcontentloaded' })
+    await page.evaluate(() => {
+      (window as any).XR8 = {
+        addCameraPipelineModules: (mods: any[]) => {
+          (window as any).eighthWallModules = mods
+        },
+        loadChunk: async () => {},
+        GlTextureRenderer: { pipelineModule: () => ({}) },
+        XrController: {
+          pipelineModule: () => ({}),
+          hitTest: () => [{
+            position: { x: 0.001, y: 1.501, z: 0.001 },
+            rotation: { x: 0, y: 0, z: 0, w: 1 },
+            distance: 0,
+          }],
+        },
+        CameraPixelArray: { pipelineModule: () => ({}) },
+        XrConfig: { device: () => ({ ANY: {} }) },
+        run: () => {}
+      }
+    })
+
+    const result = await page.evaluate(async () => {
+      const { EighthWallProvider } = await import('/src/ar/eighthwall.ts')
+      const provider = new EighthWallProvider()
+      const canvas = document.createElement('canvas')
+      await provider.start(canvas)
+
+      const modules = (window as any).eighthWallModules
+      const clientModule = modules.find((m: any) => m.name === 'ci-scan-capture')
+
+      clientModule.onUpdate({
+        processCpuResult: {
+          reality: {
+            position: { x: 0, y: 1.5, z: 0 },
+            rotation: { x: 0, y: 0, z: 0, w: 1 },
+            worldPoints: { points: [3, 1.1, -4, 4, 1.3, -5] },
+            points: [
+              { x: 0.001, y: 1.501, z: 0.001 },
+              { position: { x: 1, y: 1.2, z: -2 } },
+              [2, 0.8, -3],
+            ]
+          }
+        }
+      })
+
+      return {
+        points: provider.featurePoints(),
+        hit: provider.hitTest(0.5, 0.5),
+      }
+    })
+
+    expect(result.hit).toBeNull()
+    expect(result.points).toEqual([
+      { x: 3, y: 1.1, z: -4 },
+      { x: 4, y: 1.3, z: -5 },
+      { x: 1, y: 1.2, z: -2 },
+      { x: 2, y: 0.8, z: -3 }
+    ])
+  })
+
   test('Test 9: Centroid 3D Position Extraction', async ({ page }) => {
     await page.goto(BASE, { waitUntil: 'domcontentloaded' })
     const resolvedPos = await page.evaluate(async () => {
@@ -561,6 +623,53 @@ test.describe('Tier 2: Boundary & Corner Cases', () => {
     expect(resolvedPos.x).toBeCloseTo(0, 2)
     expect(resolvedPos.y).toBeCloseTo(0, 2)
     expect(resolvedPos.z).toBeCloseTo(0, 2)
+  })
+
+  test('Test 22b: BBox ray fallback keeps detections spatially separated', async ({ page }) => {
+    await page.goto(BASE, { waitUntil: 'domcontentloaded' })
+    const threeModuleUrl = `/@fs${process.cwd()}/node_modules/three/build/three.module.js`
+    const positions = await page.evaluate(async (threeUrl) => {
+      const { resolveDetections } = await import('/src/spatial/resolver.ts')
+      const THREE = await import(threeUrl)
+
+      const cameraPose = {
+        position: { x: 0, y: 1.5, z: 0 },
+        rotation: { x: 0, y: 0, z: 0, w: 1 }
+      }
+      const mockProvider = {
+        hitTest: () => ({
+          position: { x: 0.001, y: 1.501, z: 0.001 },
+          rotation: { x: 0, y: 0, z: 0, w: 1 },
+          distance: 0,
+        })
+      }
+
+      const captureCamera = new THREE.PerspectiveCamera(60, 1, 0.01, 100)
+      captureCamera.position.set(0, 1.5, 0)
+      captureCamera.quaternion.set(0, 0, 0, 1)
+      captureCamera.updateMatrixWorld(true)
+
+      const detections = [
+        { label: 'chair', bbox: [0.1, 0.45, 0.25, 0.65], confidence: 0.9, description: 'chair' },
+        { label: 'vase', bbox: [0.7, 0.45, 0.85, 0.65], confidence: 0.9, description: 'vase' },
+      ]
+      const results = await resolveDetections(detections as any, Date.now(), {
+        provider: mockProvider as any,
+        cameraPose,
+        captureCamera,
+      })
+      return results.map((r) => r.worldPos)
+    }, threeModuleUrl)
+
+    expect(positions).toHaveLength(2)
+    expect(positions[0].x).toBeLessThan(positions[1].x)
+    expect(Math.hypot(
+      positions[0].x - positions[1].x,
+      positions[0].y - positions[1].y,
+      positions[0].z - positions[1].z,
+    )).toBeGreaterThan(0.5)
+    expect(positions[0].z).toBeLessThan(-1)
+    expect(positions[1].z).toBeLessThan(-1)
   })
 
   test('Test 23: Duplicate Collision Mitigation', () => {

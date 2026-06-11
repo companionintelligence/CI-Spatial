@@ -33,7 +33,7 @@ import { RtcBroadcaster } from './rtc/broadcaster'
 import { registerPWA } from './pwa'
 import * as THREE from 'three'
 
-const CAPTURE_FRAME_TIMEOUT_MS = 5000
+const CAPTURE_FRAME_TIMEOUT_MS = 8000
 const TRACKING_WAIT_MS = 2500
 
 async function main() {
@@ -180,10 +180,7 @@ async function main() {
       overlay.setStatus('Tracking warming up...')
       const trackingReady = await waitForTracking(provider, TRACKING_WAIT_MS)
       if (!trackingReady) {
-        overlay.setStatus('Tracking not ready — move camera slowly over a surface')
-        captureInFlight = false
-        setCaptureBusy(false)
-        return
+        overlay.setStatus('Capturing without stable tracking...')
       }
     }
     overlay.setStatus('Capturing next frame...')
@@ -529,8 +526,8 @@ function setCaptureBusy(busy: boolean): void {
   const btn = document.getElementById('capture-btn') as HTMLButtonElement | null
   if (!btn) return
   btn.classList.toggle('busy', busy)
-  btn.disabled = busy
   btn.setAttribute('aria-busy', String(busy))
+  btn.setAttribute('aria-disabled', String(busy))
 }
 
 function clearAnalysisProgress(): void {
