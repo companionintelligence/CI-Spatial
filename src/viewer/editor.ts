@@ -126,20 +126,22 @@ export class SceneEditor {
 
   /** Switch between view modes. Respects `scene`. */
   setMode(mode: ViewMode): void {
-    this._mode = mode
+    const supportedModes: ViewMode[] = ['points', 'solid', 'wireframe', 'semantic']
+    const nextMode: ViewMode = supportedModes.includes(mode) ? mode : 'solid'
+    this._mode = nextMode
     if (!this._scene) return
 
     this._scene.traverse((obj) => {
       if (!(obj instanceof THREE.Mesh)) return
-      if (mode === 'solid' || mode === 'wireframe') {
+      if (nextMode === 'solid' || nextMode === 'wireframe') {
         this._restoreOriginalMaterial(obj)
-        if (mode === 'wireframe') {
+        if (nextMode === 'wireframe') {
           const wf = new THREE.MeshBasicMaterial({ color: 0x4fc3f7, wireframe: true })
           this._setMaterial(obj, wf)
         }
-      } else if (mode === 'semantic') {
+      } else if (nextMode === 'semantic') {
         this._applySemanticMaterial(obj)
-      } else if (mode === 'points') {
+      } else if (nextMode === 'points') {
         // hide meshes, keep point cloud visible (handled by outside caller)
         this._restoreOriginalMaterial(obj)
       }
@@ -149,7 +151,7 @@ export class SceneEditor {
     // In points mode hide all Mesh children except the Points cloud
     this._scene.traverse((obj) => {
       if (!(obj instanceof THREE.Mesh)) return
-      obj.visible = mode !== 'points'
+      obj.visible = nextMode !== 'points'
     })
     this._scene.traverse((obj) => {
       if (obj instanceof THREE.Points) obj.visible = true
@@ -167,7 +169,20 @@ export class SceneEditor {
       .filter(h => h.object instanceof THREE.Mesh || h.object instanceof THREE.Points)
     if (hits.length === 0) { this._clearSelection(); return null }
 
-    const obj = hits[0].object
+    let obj: THREE.Object3D | null = hits[0].object
+    // Walk up the parent chain to find the node containing label metadata or LOD group
+    while (obj && obj !== this._scene) {
+      if (obj.userData && obj.userData['label']) {
+        break
+      }
+      if (obj.parent && obj.parent instanceof THREE.LOD) {
+        obj = obj.parent
+        break
+      }
+      obj = obj.parent
+    }
+
+    if (!obj || obj === this._scene) { this._clearSelection(); return null }
     this._selectObject(obj)
     return obj
   }
@@ -256,26 +271,36 @@ export class SceneEditor {
   private _selectObject(obj: THREE.Object3D): void {
     this._clearSelection()
     this._selected = obj
-    if (obj instanceof THREE.Mesh) {
-      const mat = Array.isArray(obj.material) ? obj.material : [obj.material]
-      for (const m of mat) {
-        if ('emissive' in m) {
-          (m as THREE.MeshBasicMaterial & { emissive: THREE.Color }).emissive?.set(0x334466)
+    obj.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        const mat = Array.isArray(child.material) ? child.material : [child.material]
+        for (const m of mat) {
+          if ('emissive' in m) {
+            const anyM = m as any
+            if (anyM._origEmissive === undefined) {
+              anyM._origEmissive = anyM.emissive ? anyM.emissive.getHex() : 0
+            }
+            anyM.emissive?.set(0x334466)
+          }
         }
       }
-    }
+    })
   }
 
   private _clearSelection(): void {
-    if (this._selected instanceof THREE.Mesh) {
-      const mat = Array.isArray(this._selected.material)
-        ? this._selected.material
-        : [this._selected.material]
-      for (const m of mat) {
-        if ('emissive' in m) {
-          (m as THREE.MeshBasicMaterial & { emissive: THREE.Color }).emissive?.set(0x000000)
+    if (this._selected) {
+      this._selected.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          const mat = Array.isArray(child.material) ? child.material : [child.material]
+          for (const m of mat) {
+            if ('emissive' in m) {
+              const anyM = m as any
+              const orig = anyM._origEmissive !== undefined ? anyM._origEmissive : 0
+              anyM.emissive?.setHex(orig)
+            }
+          }
         }
-      }
+      })
     }
     this._selected = null
   }

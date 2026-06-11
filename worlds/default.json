@@ -1,0 +1,3691 @@
+{
+  "worldId": "world-default",
+  "name": "Default World Scan",
+  "shareSlug": "default",
+  "originGeoPose": {
+    "lat": 37.7749,
+    "lng": -122.4194,
+    "altitudeM": null,
+    "bearing": null,
+    "accuracyM": null,
+    "fixedAt": null,
+    "address": "GPS Geotagged Test Location",
+    "displayAddress": null
+  },
+  "localFrame": {
+    "type": "ENU_Y_UP",
+    "origin": {
+      "lat": 37.7749,
+      "lng": -122.4194,
+      "altitudeM": null,
+      "bearing": null,
+      "accuracyM": null,
+      "fixedAt": null,
+      "address": "GPS Geotagged Test Location",
+      "displayAddress": null
+    },
+    "units": "meters",
+    "axes": {
+      "x": "east",
+      "y": "up",
+      "z": "north"
+    }
+  },
+  "scans": [
+    {
+      "scanId": "scan-1781143179888_viewer-sample",
+      "sessionId": null,
+      "filename": "1781143179888_viewer-sample.glb",
+      "name": "Viewer Sample Room",
+      "glbUrl": "/scans/1781143179888_viewer-sample.glb",
+      "metadataUrl": "/scans/1781143179888_viewer-sample.json",
+      "geoPose": {
+        "lat": null,
+        "lng": null,
+        "altitudeM": null,
+        "bearing": null,
+        "accuracyM": null,
+        "fixedAt": null,
+        "address": null,
+        "displayAddress": null
+      },
+      "localToWorld": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-06-11T01:55:00.000Z",
+      "pointCount": null,
+      "detectionCount": 3,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 3
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 3
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": null
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-1781143179888_viewer-sample",
+      "status": "ready"
+    },
+    {
+      "scanId": "scan-1781141158521_geotag-test",
+      "sessionId": null,
+      "filename": "1781141158521_geotag-test.glb",
+      "name": "geotag-test",
+      "glbUrl": "/scans/1781141158521_geotag-test.glb",
+      "metadataUrl": "/scans/1781141158521_geotag-test.json",
+      "geoPose": {
+        "lat": 37.7749,
+        "lng": -122.4194,
+        "altitudeM": null,
+        "bearing": null,
+        "accuracyM": null,
+        "fixedAt": null,
+        "address": "GPS Geotagged Test Location",
+        "displayAddress": null
+      },
+      "localToWorld": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-06-11T01:25:58.522Z",
+      "pointCount": null,
+      "detectionCount": 1,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 1
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 1
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": null
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-1781141158521_geotag-test",
+      "status": "ready"
+    },
+    {
+      "scanId": "scan-1781141116524_test-geo-t1",
+      "sessionId": null,
+      "filename": "1781141116524_test-geo-t1.glb",
+      "name": "test-geo-t1",
+      "glbUrl": "/scans/1781141116524_test-geo-t1.glb",
+      "metadataUrl": "/scans/1781141116524_test-geo-t1.json",
+      "geoPose": {
+        "lat": 37.7749,
+        "lng": -122.4194,
+        "altitudeM": null,
+        "bearing": null,
+        "accuracyM": null,
+        "fixedAt": null,
+        "address": "Test Location 1781141116509",
+        "displayAddress": null
+      },
+      "localToWorld": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-06-11T01:25:16.509Z",
+      "pointCount": null,
+      "detectionCount": 1,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 1
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 1
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": null
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-1781141116524_test-geo-t1",
+      "status": "ready"
+    },
+    {
+      "scanId": "scan-1781141114939_geo-test-1781141114925",
+      "sessionId": null,
+      "filename": "1781141114939_geo-test-1781141114925.glb",
+      "name": "geo-test-1781141114925",
+      "glbUrl": "/scans/1781141114939_geo-test-1781141114925.glb",
+      "metadataUrl": "/scans/1781141114939_geo-test-1781141114925.json",
+      "geoPose": {
+        "lat": 37.7749,
+        "lng": -122.4194,
+        "altitudeM": null,
+        "bearing": null,
+        "accuracyM": null,
+        "fixedAt": null,
+        "address": "1 Market St",
+        "displayAddress": null
+      },
+      "localToWorld": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-06-11T01:25:14.925Z",
+      "pointCount": null,
+      "detectionCount": 2,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": null
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-1781141114939_geo-test-1781141114925",
+      "status": "ready"
+    },
+    {
+      "scanId": "scan-1781070061022_geo-test-1781070061008",
+      "sessionId": null,
+      "filename": "1781070061022_geo-test-1781070061008.glb",
+      "name": "geo-test-1781070061008",
+      "glbUrl": "/scans/1781070061022_geo-test-1781070061008.glb",
+      "metadataUrl": "/scans/1781070061022_geo-test-1781070061008.json",
+      "geoPose": {
+        "lat": 37.7749,
+        "lng": -122.4194,
+        "altitudeM": null,
+        "bearing": null,
+        "accuracyM": null,
+        "fixedAt": null,
+        "address": "1 Market St",
+        "displayAddress": null
+      },
+      "localToWorld": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-06-10T05:41:01.008Z",
+      "pointCount": null,
+      "detectionCount": 2,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": null
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-1781070061022_geo-test-1781070061008",
+      "status": "ready"
+    },
+    {
+      "scanId": "scan-1781070057758_geo-test-1781070057747",
+      "sessionId": null,
+      "filename": "1781070057758_geo-test-1781070057747.glb",
+      "name": "geo-test-1781070057747",
+      "glbUrl": "/scans/1781070057758_geo-test-1781070057747.glb",
+      "metadataUrl": "/scans/1781070057758_geo-test-1781070057747.json",
+      "geoPose": {
+        "lat": 37.7749,
+        "lng": -122.4194,
+        "altitudeM": null,
+        "bearing": null,
+        "accuracyM": null,
+        "fixedAt": null,
+        "address": "1 Market St",
+        "displayAddress": null
+      },
+      "localToWorld": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-06-10T05:40:57.747Z",
+      "pointCount": null,
+      "detectionCount": 2,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": null
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-1781070057758_geo-test-1781070057747",
+      "status": "ready"
+    },
+    {
+      "scanId": "scan-1781070057637_geo-test-1781070057603",
+      "sessionId": null,
+      "filename": "1781070057637_geo-test-1781070057603.glb",
+      "name": "geo-test-1781070057603",
+      "glbUrl": "/scans/1781070057637_geo-test-1781070057603.glb",
+      "metadataUrl": "/scans/1781070057637_geo-test-1781070057603.json",
+      "geoPose": {
+        "lat": 37.7749,
+        "lng": -122.4194,
+        "altitudeM": null,
+        "bearing": null,
+        "accuracyM": null,
+        "fixedAt": null,
+        "address": "1 Market St",
+        "displayAddress": null
+      },
+      "localToWorld": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-06-10T05:40:57.603Z",
+      "pointCount": null,
+      "detectionCount": 2,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": null
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-1781070057637_geo-test-1781070057603",
+      "status": "ready"
+    },
+    {
+      "scanId": "scan-1781069975976_geo-test-1781069975965",
+      "sessionId": null,
+      "filename": "1781069975976_geo-test-1781069975965.glb",
+      "name": "geo-test-1781069975965",
+      "glbUrl": "/scans/1781069975976_geo-test-1781069975965.glb",
+      "metadataUrl": "/scans/1781069975976_geo-test-1781069975965.json",
+      "geoPose": {
+        "lat": 37.7749,
+        "lng": -122.4194,
+        "altitudeM": null,
+        "bearing": null,
+        "accuracyM": null,
+        "fixedAt": null,
+        "address": "1 Market St",
+        "displayAddress": null
+      },
+      "localToWorld": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-06-10T05:39:35.965Z",
+      "pointCount": null,
+      "detectionCount": 2,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": null
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-1781069975976_geo-test-1781069975965",
+      "status": "ready"
+    },
+    {
+      "scanId": "scan-1781069968865_geo-test-1781069968842",
+      "sessionId": null,
+      "filename": "1781069968865_geo-test-1781069968842.glb",
+      "name": "geo-test-1781069968842",
+      "glbUrl": "/scans/1781069968865_geo-test-1781069968842.glb",
+      "metadataUrl": "/scans/1781069968865_geo-test-1781069968842.json",
+      "geoPose": {
+        "lat": 37.7749,
+        "lng": -122.4194,
+        "altitudeM": null,
+        "bearing": null,
+        "accuracyM": null,
+        "fixedAt": null,
+        "address": "1 Market St",
+        "displayAddress": null
+      },
+      "localToWorld": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-06-10T05:39:28.842Z",
+      "pointCount": null,
+      "detectionCount": 2,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": null
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-1781069968865_geo-test-1781069968842",
+      "status": "ready"
+    },
+    {
+      "scanId": "scan-1781069968807_geo-test-1781069968791",
+      "sessionId": null,
+      "filename": "1781069968807_geo-test-1781069968791.glb",
+      "name": "geo-test-1781069968791",
+      "glbUrl": "/scans/1781069968807_geo-test-1781069968791.glb",
+      "metadataUrl": "/scans/1781069968807_geo-test-1781069968791.json",
+      "geoPose": {
+        "lat": 37.7749,
+        "lng": -122.4194,
+        "altitudeM": null,
+        "bearing": null,
+        "accuracyM": null,
+        "fixedAt": null,
+        "address": "1 Market St",
+        "displayAddress": null
+      },
+      "localToWorld": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-06-10T05:39:28.791Z",
+      "pointCount": null,
+      "detectionCount": 2,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": null
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-1781069968807_geo-test-1781069968791",
+      "status": "ready"
+    },
+    {
+      "scanId": "scan-1781069359921_geo-test-1781069359907",
+      "sessionId": null,
+      "filename": "1781069359921_geo-test-1781069359907.glb",
+      "name": "geo-test-1781069359907",
+      "glbUrl": "/scans/1781069359921_geo-test-1781069359907.glb",
+      "metadataUrl": "/scans/1781069359921_geo-test-1781069359907.json",
+      "geoPose": {
+        "lat": 37.7749,
+        "lng": -122.4194,
+        "altitudeM": null,
+        "bearing": null,
+        "accuracyM": null,
+        "fixedAt": null,
+        "address": "1 Market St",
+        "displayAddress": null
+      },
+      "localToWorld": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-06-10T05:29:19.907Z",
+      "pointCount": null,
+      "detectionCount": 2,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": null
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-1781069359921_geo-test-1781069359907",
+      "status": "ready"
+    },
+    {
+      "scanId": "scan-1781069358301_geo-test-1781069358279",
+      "sessionId": null,
+      "filename": "1781069358301_geo-test-1781069358279.glb",
+      "name": "geo-test-1781069358279",
+      "glbUrl": "/scans/1781069358301_geo-test-1781069358279.glb",
+      "metadataUrl": "/scans/1781069358301_geo-test-1781069358279.json",
+      "geoPose": {
+        "lat": 37.7749,
+        "lng": -122.4194,
+        "altitudeM": null,
+        "bearing": null,
+        "accuracyM": null,
+        "fixedAt": null,
+        "address": "1 Market St",
+        "displayAddress": null
+      },
+      "localToWorld": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-06-10T05:29:18.279Z",
+      "pointCount": null,
+      "detectionCount": 2,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": null
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-1781069358301_geo-test-1781069358279",
+      "status": "ready"
+    },
+    {
+      "scanId": "scan-1781069354897_geo-test-1781069354885",
+      "sessionId": null,
+      "filename": "1781069354897_geo-test-1781069354885.glb",
+      "name": "geo-test-1781069354885",
+      "glbUrl": "/scans/1781069354897_geo-test-1781069354885.glb",
+      "metadataUrl": "/scans/1781069354897_geo-test-1781069354885.json",
+      "geoPose": {
+        "lat": 37.7749,
+        "lng": -122.4194,
+        "altitudeM": null,
+        "bearing": null,
+        "accuracyM": null,
+        "fixedAt": null,
+        "address": "1 Market St",
+        "displayAddress": null
+      },
+      "localToWorld": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-06-10T05:29:14.885Z",
+      "pointCount": null,
+      "detectionCount": 2,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": null
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-1781069354897_geo-test-1781069354885",
+      "status": "ready"
+    },
+    {
+      "scanId": "scan-1781068102708_geo-test-1781068102695",
+      "sessionId": null,
+      "filename": "1781068102708_geo-test-1781068102695.glb",
+      "name": "geo-test-1781068102695",
+      "glbUrl": "/scans/1781068102708_geo-test-1781068102695.glb",
+      "metadataUrl": "/scans/1781068102708_geo-test-1781068102695.json",
+      "geoPose": {
+        "lat": 37.7749,
+        "lng": -122.4194,
+        "altitudeM": null,
+        "bearing": null,
+        "accuracyM": null,
+        "fixedAt": null,
+        "address": "1 Market St",
+        "displayAddress": null
+      },
+      "localToWorld": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-06-10T05:08:22.695Z",
+      "pointCount": null,
+      "detectionCount": 2,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": null
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-1781068102708_geo-test-1781068102695",
+      "status": "ready"
+    },
+    {
+      "scanId": "scan-1781068102699_geo-test-1781068102686",
+      "sessionId": null,
+      "filename": "1781068102699_geo-test-1781068102686.glb",
+      "name": "geo-test-1781068102686",
+      "glbUrl": "/scans/1781068102699_geo-test-1781068102686.glb",
+      "metadataUrl": "/scans/1781068102699_geo-test-1781068102686.json",
+      "geoPose": {
+        "lat": 37.7749,
+        "lng": -122.4194,
+        "altitudeM": null,
+        "bearing": null,
+        "accuracyM": null,
+        "fixedAt": null,
+        "address": "1 Market St",
+        "displayAddress": null
+      },
+      "localToWorld": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-06-10T05:08:22.686Z",
+      "pointCount": null,
+      "detectionCount": 2,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": null
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-1781068102699_geo-test-1781068102686",
+      "status": "ready"
+    },
+    {
+      "scanId": "scan-1781068102681_geo-test-1781068102670",
+      "sessionId": null,
+      "filename": "1781068102681_geo-test-1781068102670.glb",
+      "name": "geo-test-1781068102670",
+      "glbUrl": "/scans/1781068102681_geo-test-1781068102670.glb",
+      "metadataUrl": "/scans/1781068102681_geo-test-1781068102670.json",
+      "geoPose": {
+        "lat": 37.7749,
+        "lng": -122.4194,
+        "altitudeM": null,
+        "bearing": null,
+        "accuracyM": null,
+        "fixedAt": null,
+        "address": "1 Market St",
+        "displayAddress": null
+      },
+      "localToWorld": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-06-10T05:08:22.670Z",
+      "pointCount": null,
+      "detectionCount": 2,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": null
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-1781068102681_geo-test-1781068102670",
+      "status": "ready"
+    },
+    {
+      "scanId": "scan-1781068071157_geo-test-1781068071144",
+      "sessionId": null,
+      "filename": "1781068071157_geo-test-1781068071144.glb",
+      "name": "geo-test-1781068071144",
+      "glbUrl": "/scans/1781068071157_geo-test-1781068071144.glb",
+      "metadataUrl": "/scans/1781068071157_geo-test-1781068071144.json",
+      "geoPose": {
+        "lat": 37.7749,
+        "lng": -122.4194,
+        "altitudeM": null,
+        "bearing": null,
+        "accuracyM": null,
+        "fixedAt": null,
+        "address": "1 Market St",
+        "displayAddress": null
+      },
+      "localToWorld": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-06-10T05:07:51.144Z",
+      "pointCount": null,
+      "detectionCount": 2,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": null
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-1781068071157_geo-test-1781068071144",
+      "status": "ready"
+    },
+    {
+      "scanId": "scan-1781068065595_geo-test-1781068065581",
+      "sessionId": null,
+      "filename": "1781068065595_geo-test-1781068065581.glb",
+      "name": "geo-test-1781068065581",
+      "glbUrl": "/scans/1781068065595_geo-test-1781068065581.glb",
+      "metadataUrl": "/scans/1781068065595_geo-test-1781068065581.json",
+      "geoPose": {
+        "lat": 37.7749,
+        "lng": -122.4194,
+        "altitudeM": null,
+        "bearing": null,
+        "accuracyM": null,
+        "fixedAt": null,
+        "address": "1 Market St",
+        "displayAddress": null
+      },
+      "localToWorld": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-06-10T05:07:45.581Z",
+      "pointCount": null,
+      "detectionCount": 2,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": null
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-1781068065595_geo-test-1781068065581",
+      "status": "ready"
+    },
+    {
+      "scanId": "scan-1781068065593_geo-test-1781068065579",
+      "sessionId": null,
+      "filename": "1781068065593_geo-test-1781068065579.glb",
+      "name": "geo-test-1781068065579",
+      "glbUrl": "/scans/1781068065593_geo-test-1781068065579.glb",
+      "metadataUrl": "/scans/1781068065593_geo-test-1781068065579.json",
+      "geoPose": {
+        "lat": 37.7749,
+        "lng": -122.4194,
+        "altitudeM": null,
+        "bearing": null,
+        "accuracyM": null,
+        "fixedAt": null,
+        "address": "1 Market St",
+        "displayAddress": null
+      },
+      "localToWorld": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-06-10T05:07:45.579Z",
+      "pointCount": null,
+      "detectionCount": 2,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": null
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-1781068065593_geo-test-1781068065579",
+      "status": "ready"
+    },
+    {
+      "scanId": "scan-1781068010773_geo-test-1781068010760",
+      "sessionId": null,
+      "filename": "1781068010773_geo-test-1781068010760.glb",
+      "name": "geo-test-1781068010760",
+      "glbUrl": "/scans/1781068010773_geo-test-1781068010760.glb",
+      "metadataUrl": "/scans/1781068010773_geo-test-1781068010760.json",
+      "geoPose": {
+        "lat": 37.7749,
+        "lng": -122.4194,
+        "altitudeM": null,
+        "bearing": null,
+        "accuracyM": null,
+        "fixedAt": null,
+        "address": "1 Market St",
+        "displayAddress": null
+      },
+      "localToWorld": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-06-10T05:06:50.760Z",
+      "pointCount": null,
+      "detectionCount": 2,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": null
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-1781068010773_geo-test-1781068010760",
+      "status": "ready"
+    },
+    {
+      "scanId": "scan-1781068010755_geo-test-1781068010742",
+      "sessionId": null,
+      "filename": "1781068010755_geo-test-1781068010742.glb",
+      "name": "geo-test-1781068010742",
+      "glbUrl": "/scans/1781068010755_geo-test-1781068010742.glb",
+      "metadataUrl": "/scans/1781068010755_geo-test-1781068010742.json",
+      "geoPose": {
+        "lat": 37.7749,
+        "lng": -122.4194,
+        "altitudeM": null,
+        "bearing": null,
+        "accuracyM": null,
+        "fixedAt": null,
+        "address": "1 Market St",
+        "displayAddress": null
+      },
+      "localToWorld": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-06-10T05:06:50.742Z",
+      "pointCount": null,
+      "detectionCount": 2,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": null
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-1781068010755_geo-test-1781068010742",
+      "status": "ready"
+    },
+    {
+      "scanId": "scan-1781068010749_geo-test-1781068010733",
+      "sessionId": null,
+      "filename": "1781068010749_geo-test-1781068010733.glb",
+      "name": "geo-test-1781068010733",
+      "glbUrl": "/scans/1781068010749_geo-test-1781068010733.glb",
+      "metadataUrl": "/scans/1781068010749_geo-test-1781068010733.json",
+      "geoPose": {
+        "lat": 37.7749,
+        "lng": -122.4194,
+        "altitudeM": null,
+        "bearing": null,
+        "accuracyM": null,
+        "fixedAt": null,
+        "address": "1 Market St",
+        "displayAddress": null
+      },
+      "localToWorld": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-06-10T05:06:50.733Z",
+      "pointCount": null,
+      "detectionCount": 2,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": null
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-1781068010749_geo-test-1781068010733",
+      "status": "ready"
+    },
+    {
+      "scanId": "scan-1781067962548_geo-test-1781067962537",
+      "sessionId": null,
+      "filename": "1781067962548_geo-test-1781067962537.glb",
+      "name": "geo-test-1781067962537",
+      "glbUrl": "/scans/1781067962548_geo-test-1781067962537.glb",
+      "metadataUrl": "/scans/1781067962548_geo-test-1781067962537.json",
+      "geoPose": {
+        "lat": 37.7749,
+        "lng": -122.4194,
+        "altitudeM": null,
+        "bearing": null,
+        "accuracyM": null,
+        "fixedAt": null,
+        "address": "1 Market St",
+        "displayAddress": null
+      },
+      "localToWorld": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-06-10T05:06:02.537Z",
+      "pointCount": null,
+      "detectionCount": 2,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": null
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-1781067962548_geo-test-1781067962537",
+      "status": "ready"
+    },
+    {
+      "scanId": "scan-1781067962542_geo-test-1781067962527",
+      "sessionId": null,
+      "filename": "1781067962542_geo-test-1781067962527.glb",
+      "name": "geo-test-1781067962527",
+      "glbUrl": "/scans/1781067962542_geo-test-1781067962527.glb",
+      "metadataUrl": "/scans/1781067962542_geo-test-1781067962527.json",
+      "geoPose": {
+        "lat": 37.7749,
+        "lng": -122.4194,
+        "altitudeM": null,
+        "bearing": null,
+        "accuracyM": null,
+        "fixedAt": null,
+        "address": "1 Market St",
+        "displayAddress": null
+      },
+      "localToWorld": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-06-10T05:06:02.527Z",
+      "pointCount": null,
+      "detectionCount": 2,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": null
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-1781067962542_geo-test-1781067962527",
+      "status": "ready"
+    },
+    {
+      "scanId": "scan-1781067962540_geo-test-1781067962525",
+      "sessionId": null,
+      "filename": "1781067962540_geo-test-1781067962525.glb",
+      "name": "geo-test-1781067962525",
+      "glbUrl": "/scans/1781067962540_geo-test-1781067962525.glb",
+      "metadataUrl": "/scans/1781067962540_geo-test-1781067962525.json",
+      "geoPose": {
+        "lat": 37.7749,
+        "lng": -122.4194,
+        "altitudeM": null,
+        "bearing": null,
+        "accuracyM": null,
+        "fixedAt": null,
+        "address": "1 Market St",
+        "displayAddress": null
+      },
+      "localToWorld": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-06-10T05:06:02.525Z",
+      "pointCount": null,
+      "detectionCount": 2,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 2
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": null
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-1781067962540_geo-test-1781067962525",
+      "status": "ready"
+    }
+  ],
+  "members": [
+    {
+      "memberId": "owner-1d6ef569-694c-41c7-8cbd-f3e14513fa37",
+      "role": "owner",
+      "token": "owner-98025f99-2487-4607-9638-73eee98b6a79",
+      "createdAt": "2026-06-11T02:23:56.600Z",
+      "expiresAt": null
+    },
+    {
+      "memberId": "editor-bb8569d7-acab-4417-88b9-124f19de3128",
+      "role": "editor",
+      "token": "editor-ad6249cd-ea55-4cbc-b425-397723107310",
+      "createdAt": "2026-06-11T02:23:56.600Z",
+      "expiresAt": null
+    },
+    {
+      "memberId": "viewer-58313dfb-9f1a-4ff4-8004-747bd5b94b64",
+      "role": "viewer",
+      "token": "viewer-aebe54ae-4278-4591-abee-b21419c535d2",
+      "createdAt": "2026-06-11T02:23:56.600Z",
+      "expiresAt": null
+    },
+    {
+      "memberId": "scanner-347336a7-f602-46eb-b5c1-3c6558702fc1",
+      "role": "scanner",
+      "token": "scanner-1e5708d1-b10b-46bd-91b2-0b17920b862b",
+      "createdAt": "2026-06-11T02:23:56.600Z",
+      "expiresAt": null
+    }
+  ],
+  "jobs": [
+    {
+      "jobId": "job-1781144970244-ceff5056",
+      "worldId": "world-default",
+      "type": "ingest",
+      "status": "completed",
+      "capabilities": [
+        "cpu",
+        "onnx",
+        "ollama",
+        "open3d",
+        "splat",
+        "vggt"
+      ],
+      "payload": {
+        "source": "viewer",
+        "requestedAt": "2026-06-11T02:28:56.077Z"
+      },
+      "createdAt": "2026-06-11T02:29:30.244Z",
+      "updatedAt": "2026-06-11T02:29:33.350Z",
+      "workerId": "local-coordinator",
+      "result": "Scan ingest indexed GLB metadata and sidecar manifest."
+    },
+    {
+      "jobId": "job-1781144878311-26ffe1c3",
+      "worldId": "world-default",
+      "type": "extract-layers",
+      "status": "completed",
+      "scanId": "scan-1781143179888_viewer-sample",
+      "capabilities": [
+        "cpu",
+        "onnx",
+        "ollama",
+        "open3d",
+        "splat",
+        "vggt"
+      ],
+      "payload": {
+        "source": "viewer",
+        "requestedAt": "2026-06-11T02:27:58.096Z"
+      },
+      "createdAt": "2026-06-11T02:27:58.311Z",
+      "updatedAt": "2026-06-11T02:27:59.242Z",
+      "workerId": "local-coordinator",
+      "result": "Layer index extracted from GLB extras and scene graph conventions."
+    }
+  ],
+  "editPatches": [],
+  "createdAt": "2026-06-11T02:23:56.600Z",
+  "updatedAt": "2026-06-11T02:29:33.350Z"
+}

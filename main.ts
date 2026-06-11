@@ -21,14 +21,42 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
 import { InferenceEngine } from './inference.ts'
+import { composeYUpTransform, geoToEnu, hasGeoPose } from './src/world/geo.ts'
+import { defaultLayerIndex } from './src/world/layers.ts'
+import type {
+  EditPatch,
+  GeoPose,
+  ScanManifest,
+  WorldJob,
+  WorldJobType,
+  WorldMember,
+  WorldProject,
+} from './src/world/types.ts'
 
 const PORT = Number(Deno.env.get('PORT') ?? 8000)
 const ALLOWED_ORIGIN_PREFIX = Deno.env.get('ALLOWED_ORIGIN_PREFIX') ?? 'https://liambook.capybara-ulmer.ts.net'
 
 const SCANS_DIR    = Deno.env.get('SCANS_DIR')    ?? './scans'
 const SUMMARIES_DIR = Deno.env.get('SUMMARIES_DIR') ?? './summaries'
+const WORLDS_DIR = Deno.env.get('WORLDS_DIR') ?? './worlds'
 
-for (const dir of [SCANS_DIR, SUMMARIES_DIR]) {
+function isAllowedOrigin(origin: string): boolean {
+  try {
+    const { hostname, protocol } = new URL(origin)
+    if (protocol !== 'http:' && protocol !== 'https:') return false
+    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]') return true
+    if (hostname.endsWith('.ts.net')) return true
+    if (/^192\.168\.\d+\.\d+$/.test(hostname)) return true
+    if (/^10\.\d+\.\d+\.\d+$/.test(hostname)) return true
+    if (/^172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+$/.test(hostname)) return true
+    if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+$/.test(hostname)) return true
+    return origin.startsWith(ALLOWED_ORIGIN_PREFIX)
+  } catch {
+    return false
+  }
+}
+
+for (const dir of [SCANS_DIR, SUMMARIES_DIR, WORLDS_DIR]) {
   try { await Deno.mkdir(dir, { recursive: true }) } catch { /* already exists */ }
 }
 
@@ -55,31 +83,14 @@ app.use(
     origin: (origin) => {
       console.log(`[server] CORS check: origin=${origin}, prefix=${ALLOWED_ORIGIN_PREFIX}`)
       if (!origin) return ALLOWED_ORIGIN_PREFIX
-      // Allow localhost
-      if (origin.startsWith('http://localhost:') || origin === 'http://localhost' || origin.startsWith('https://localhost:') || origin === 'https://localhost') {
-        return origin
-      }
-      // Allow 127.0.0.1
-      if (origin.includes('127.0.0.1')) {
-        return origin
-      }
-      // Allow any .ts.net (Tailscale) domain
-      if (origin.includes('.ts.net')) {
-        return origin
-      }
-      // Allow any local network IP origin (e.g. 192.168.x.x, 10.x.x.x, 172.16.x.x)
-      if (/^https?:\/\/(192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?$/.test(origin)) {
-        return origin
-      }
-      // Fallback: check prefix
-      if (origin.startsWith(ALLOWED_ORIGIN_PREFIX)) {
+      if (isAllowedOrigin(origin)) {
         return origin
       }
       console.warn(`[server] CORS rejected origin: ${origin}`)
       return ''
     },
-    allowMethods: ['GET', 'POST', 'OPTIONS'],
-    allowHeaders: ['Content-Type'],
+    allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowHeaders: ['Content-Type', 'Authorization'],
     credentials: true,
   }),
 )
@@ -87,15 +98,16 @@ app.use(
 app.get('/health', (c) => c.json({ status: 'ok', model: engine.modelId }))
 
 app.post('/infer', async (c) => {
-  // Wait for ONNX sessions to finish loading (large models take several seconds on first start)
-  await engineLoadPromise
-  if (!modelLoaded) {
-    return c.json({ error: 'Model failed to load on server — running in server-only mode. Install local models or use WebGPU fallback.' }, 503)
-  }
   const form = await c.req.formData()
   const imageFile = form.get('image')
   if (!imageFile || !(imageFile instanceof File)) {
     return c.json({ error: 'Missing image field' }, 400)
+  }
+
+  // Wait for ONNX sessions to finish loading (large models take several seconds on first start)
+  await engineLoadPromise
+  if (!modelLoaded) {
+    return c.json({ error: 'Model failed to load on server — running in server-only mode. Install local models or use WebGPU fallback.' }, 503)
   }
 
   try {
@@ -236,6 +248,435 @@ app.get('/scan-locations', async (c) => {
     console.error('[scan-locations error]', err)
     return c.json([], 200)
   }
+})
+
+// ── World projects, edit patches, and processing jobs ────────────────────────
+
+const WORLD_JOB_TYPES = new Set<WorldJobType>([
+  'ingest',
+  'extract-layers',
+  'align-scan',
+  'merge-points',
+  'semantic-pass',
+  'depth-reconstruct',
+  'splat-train',
+  'export-world',
+])
+
+const DEFAULT_WORKER_CAPABILITIES = ['cpu', 'onnx', 'ollama', 'open3d', 'splat', 'vggt']
+
+interface StoredScanInfo {
+  filename: string
+  size: number
+  uploadedAt: string
+  meta: Record<string, unknown>
+}
+
+function safeSlug(raw: string | undefined, fallback = 'default'): string {
+  const slug = (raw ?? fallback)
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+  return slug || fallback
+}
+
+function worldPath(slug: string): string {
+  return `${WORLDS_DIR}/${safeSlug(slug)}.json`
+}
+
+function scanMetaPath(filename: string): string {
+  return `${SCANS_DIR}/${filename.replace(/\.glb$/, '.json')}`
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+function geoPoseFromMeta(meta: Record<string, unknown>): GeoPose {
+  return {
+    lat: asNumber(meta['geoLat']),
+    lng: asNumber(meta['geoLng']),
+    altitudeM: asNumber(meta['geoAltitudeM']),
+    bearing: asNumber(meta['geoBearing']),
+    accuracyM: asNumber(meta['geoAccuracy']),
+    fixedAt: asString(meta['geoFixedAt']),
+    address: asString(meta['geoAddress']),
+    displayAddress: asString(meta['geoDisplayAddress']),
+  }
+}
+
+async function readScanMeta(filename: string): Promise<Record<string, unknown>> {
+  try {
+    return JSON.parse(await Deno.readTextFile(scanMetaPath(filename))) as Record<string, unknown>
+  } catch {
+    return {}
+  }
+}
+
+async function listStoredScans(): Promise<StoredScanInfo[]> {
+  const scans: StoredScanInfo[] = []
+  for await (const entry of Deno.readDir(SCANS_DIR)) {
+    if (!entry.isFile || !entry.name.endsWith('.glb')) continue
+    const stat = await Deno.stat(`${SCANS_DIR}/${entry.name}`)
+    scans.push({
+      filename: entry.name,
+      size: stat.size,
+      uploadedAt: (stat.mtime ?? new Date()).toISOString(),
+      meta: await readScanMeta(entry.name),
+    })
+  }
+  scans.sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt))
+  return scans
+}
+
+function shouldIncludeInWorld(scan: StoredScanInfo): boolean {
+  const geo = geoPoseFromMeta(scan.meta)
+  return scan.size > 512 || hasGeoPose(geo)
+}
+
+function inferWorldOrigin(scans: StoredScanInfo[]): GeoPose {
+  for (const scan of scans) {
+    const geo = geoPoseFromMeta(scan.meta)
+    if (hasGeoPose(geo)) return geo
+  }
+  return { lat: null, lng: null, altitudeM: null, bearing: null, accuracyM: null }
+}
+
+function scanIdFor(filename: string, meta: Record<string, unknown>): string {
+  const sessionId = asString(meta['sessionId'])
+  if (sessionId) return `scan-${safeSlug(sessionId)}`
+  return `scan-${safeSlug(filename.replace(/\.glb$/, ''))}`
+}
+
+function scanNameFor(filename: string, meta: Record<string, unknown>): string {
+  return asString(meta['scanName']) ?? filename.replace(/^\d+_/, '').replace(/\.glb$/, '')
+}
+
+function scanManifestFromStored(
+  scan: StoredScanInfo,
+  origin: GeoPose,
+  index: number,
+): ScanManifest {
+  const geoPose = geoPoseFromMeta(scan.meta)
+  const translation = hasGeoPose(origin) && hasGeoPose(geoPose)
+    ? geoToEnu(origin, geoPose)
+    : { x: (index % 6) * 3, y: 0, z: Math.floor(index / 6) * 3 }
+  const localToWorld = composeYUpTransform(translation, geoPose.bearing, 1)
+
+  return {
+    scanId: scanIdFor(scan.filename, scan.meta),
+    sessionId: asString(scan.meta['sessionId']),
+    filename: scan.filename,
+    name: scanNameFor(scan.filename, scan.meta),
+    glbUrl: `/scans/${encodeURIComponent(scan.filename)}`,
+    metadataUrl: `/scans/${encodeURIComponent(scan.filename.replace(/\.glb$/, '.json'))}`,
+    geoPose,
+    localToWorld,
+    accuracyM: geoPose.accuracyM,
+    capturedAt: asString(scan.meta['capturedAt']) ?? asString(scan.meta['exportedAt']) ?? scan.uploadedAt,
+    pointCount: asNumber(scan.meta['pointCount']),
+    detectionCount: asNumber(scan.meta['detectionCount']),
+    layerIndex: defaultLayerIndex(scan.meta),
+    frameSetUrl: `/worlds/default/frames/${encodeURIComponent(scanIdFor(scan.filename, scan.meta))}`,
+    status: 'ready',
+  }
+}
+
+function createWorldMembers(): WorldMember[] {
+  const now = new Date().toISOString()
+  return (['owner', 'editor', 'viewer', 'scanner'] as const).map((role) => ({
+    memberId: `${role}-${crypto.randomUUID()}`,
+    role,
+    token: `${role}-${crypto.randomUUID()}`,
+    createdAt: now,
+    expiresAt: null,
+  }))
+}
+
+async function saveWorld(world: WorldProject): Promise<void> {
+  world.updatedAt = new Date().toISOString()
+  const tmp = `${worldPath(world.shareSlug)}.${crypto.randomUUID()}.tmp`
+  await Deno.writeTextFile(tmp, JSON.stringify(world, null, 2))
+  await Deno.rename(tmp, worldPath(world.shareSlug))
+}
+
+async function synthesizeWorld(slug: string): Promise<WorldProject> {
+  const stored = await listStoredScans()
+  const included = stored.filter(shouldIncludeInWorld).slice(0, 24)
+  const source = included.length > 0 ? included : stored.slice(0, 8)
+  const originGeoPose = inferWorldOrigin(source)
+  const now = new Date().toISOString()
+  const world: WorldProject = {
+    worldId: `world-${safeSlug(slug)}`,
+    name: slug === 'default' ? 'Default World Scan' : slug.replace(/-/g, ' '),
+    shareSlug: safeSlug(slug),
+    originGeoPose,
+    localFrame: {
+      type: 'ENU_Y_UP',
+      origin: originGeoPose,
+      units: 'meters',
+      axes: { x: 'east', y: 'up', z: 'north' },
+    },
+    scans: source.map((scan, i) => scanManifestFromStored(scan, originGeoPose, i)),
+    members: createWorldMembers(),
+    jobs: [],
+    editPatches: [],
+    createdAt: now,
+    updatedAt: now,
+  }
+  await saveWorld(world)
+  return world
+}
+
+async function loadWorld(slug: string): Promise<WorldProject> {
+  const safe = safeSlug(slug)
+  try {
+    const world = JSON.parse(await Deno.readTextFile(worldPath(safe))) as WorldProject
+    await refreshWorldScans(world)
+    return world
+  } catch {
+    return synthesizeWorld(safe)
+  }
+}
+
+async function refreshWorldScans(world: WorldProject): Promise<void> {
+  const stored = await listStoredScans()
+  const existing = new Set(world.scans.map(scan => scan.filename))
+  const additions = stored
+    .filter(shouldIncludeInWorld)
+    .filter(scan => !existing.has(scan.filename))
+    .slice(0, 12)
+  if (additions.length === 0) return
+
+  const origin = world.originGeoPose
+  const nextIndex = world.scans.length
+  world.scans.push(...additions.map((scan, i) => scanManifestFromStored(scan, origin, nextIndex + i)))
+  await saveWorld(world)
+}
+
+function shareLinks(c: { req: { url: string } }, world: WorldProject): Record<string, string> {
+  const url = new URL(c.req.url)
+  const base = `${url.protocol}//${url.host}`
+  const byRole = new Map(world.members.filter(m => !m.revokedAt).map(m => [m.role, m.token]))
+  return {
+    owner: `${base}/viewer.html?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('owner') ?? '')}`,
+    editor: `${base}/viewer.html?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('editor') ?? '')}`,
+    viewer: `${base}/viewer.html?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('viewer') ?? '')}`,
+    scanner: `${base}/scanner.html?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('scanner') ?? '')}`,
+  }
+}
+
+function objectKey(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+function applyPatchToWorld(world: WorldProject, patch: EditPatch): void {
+  if (patch.scope === 'scan' && patch.scanId && patch.transform?.matrix) {
+    const scan = world.scans.find(s => s.scanId === patch.scanId || s.filename === patch.targetId)
+    if (scan) scan.localToWorld = patch.transform.matrix
+  }
+}
+
+function createWorldJob(world: WorldProject, type: WorldJobType, scanId?: string, payload?: Record<string, unknown>): WorldJob {
+  const now = new Date().toISOString()
+  return {
+    jobId: `job-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
+    worldId: world.worldId,
+    type,
+    status: 'queued',
+    scanId,
+    capabilities: DEFAULT_WORKER_CAPABILITIES,
+    payload,
+    createdAt: now,
+    updatedAt: now,
+  }
+}
+
+async function enqueueLegacyProcessJob(action: string, filename: string): Promise<string | null> {
+  const mapping: Record<string, WorldJobType> = {
+    'object-count': 'semantic-pass',
+    'scene-description': 'semantic-pass',
+    'floor-plan': 'extract-layers',
+    'mesh-cleanup': 'merge-points',
+    'room-segment': 'align-scan',
+  }
+  const type = mapping[action]
+  if (!type) return null
+  const world = await loadWorld('default')
+  const scan = world.scans.find(s => s.filename === filename)
+  const job = createWorldJob(world, type, scan?.scanId, { legacyAction: action, filename })
+  world.jobs.unshift(job)
+  await saveWorld(world)
+  await completeJobSoon(world.shareSlug, job.jobId)
+  return job.jobId
+}
+
+async function completeJobSoon(slug: string, jobId: string): Promise<void> {
+  setTimeout(async () => {
+    try {
+      const world = await loadWorld(slug)
+      const job = world.jobs.find(j => j.jobId === jobId)
+      if (!job || job.status !== 'queued') return
+      job.status = 'processing'
+      job.workerId = 'local-coordinator'
+      job.updatedAt = new Date().toISOString()
+      await saveWorld(world)
+      setTimeout(async () => {
+        try {
+          const current = await loadWorld(slug)
+          const currentJob = current.jobs.find(j => j.jobId === jobId)
+          if (!currentJob || currentJob.status === 'failed') return
+          currentJob.status = 'completed'
+          currentJob.result = jobResultFor(currentJob)
+          currentJob.updatedAt = new Date().toISOString()
+          await saveWorld(current)
+        } catch (err) {
+          console.error('[world-job complete error]', err)
+        }
+      }, 650)
+    } catch (err) {
+      console.error('[world-job start error]', err)
+    }
+  }, 25)
+}
+
+function jobResultFor(job: WorldJob): string {
+  switch (job.type) {
+    case 'ingest':
+      return 'Scan ingest indexed GLB metadata and sidecar manifest.'
+    case 'extract-layers':
+      return 'Layer index extracted from GLB extras and scene graph conventions.'
+    case 'align-scan':
+      return 'Hybrid alignment queued: GPS/compass seed, manual transform patch, CV refinement placeholder.'
+    case 'merge-points':
+      return 'Point merge placeholder completed; Open3D worker can replace this local result.'
+    case 'semantic-pass':
+      return 'Semantic model pass placeholder completed; Grounding DINO/SAM 2 worker can replace this result.'
+    case 'depth-reconstruct':
+      return 'Depth reconstruction placeholder completed; Depth Anything/WebXR depth artifacts attach here.'
+    case 'splat-train':
+      return 'Splat training placeholder completed; gsplat/Graphdeco artifacts attach as splat layers.'
+    case 'export-world':
+      return 'World export placeholder completed; combined GLB/semantic JSON export can be generated here.'
+  }
+}
+
+app.get('/worlds', async (c) => {
+  const worlds: WorldProject[] = []
+  try {
+    for await (const entry of Deno.readDir(WORLDS_DIR)) {
+      if (!entry.isFile || !entry.name.endsWith('.json')) continue
+      try {
+        worlds.push(JSON.parse(await Deno.readTextFile(`${WORLDS_DIR}/${entry.name}`)) as WorldProject)
+      } catch { /* ignore one broken world */ }
+    }
+  } catch { /* directory may not exist yet */ }
+  if (worlds.length === 0) worlds.push(await loadWorld('default'))
+  worlds.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  return c.json(worlds.map(w => ({
+    worldId: w.worldId,
+    name: w.name,
+    shareSlug: w.shareSlug,
+    scanCount: w.scans.length,
+    jobCount: w.jobs.length,
+    updatedAt: w.updatedAt,
+  })))
+})
+
+app.post('/worlds', async (c) => {
+  const body = await c.req.json().catch(() => ({})) as { name?: string; shareSlug?: string }
+  const slug = safeSlug(body.shareSlug ?? body.name ?? `world-${Date.now()}`)
+  const existingPath = worldPath(slug)
+  try {
+    await Deno.stat(existingPath)
+    return c.json({ error: 'World already exists', shareSlug: slug }, 409)
+  } catch { /* create */ }
+  const world = await synthesizeWorld(slug)
+  if (body.name?.trim()) {
+    world.name = body.name.trim()
+    await saveWorld(world)
+  }
+  return c.json(world, 201)
+})
+
+app.get('/worlds/:slug', async (c) => {
+  const slug = c.req.param('slug')
+  return c.json(await loadWorld(slug))
+})
+
+app.get('/worlds/:slug/share', async (c) => {
+  const world = await loadWorld(c.req.param('slug'))
+  return c.json({ worldId: world.worldId, shareSlug: world.shareSlug, links: shareLinks(c, world) })
+})
+
+app.get('/worlds/:slug/patches', async (c) => {
+  const world = await loadWorld(c.req.param('slug'))
+  return c.json(world.editPatches)
+})
+
+app.post('/worlds/:slug/patches', async (c) => {
+  const world = await loadWorld(c.req.param('slug'))
+  const body = await c.req.json().catch(() => ({})) as Partial<EditPatch>
+  const targetId = objectKey(body.targetId)
+  if (!targetId) return c.json({ error: 'targetId is required' }, 400)
+  const scope = body.scope ?? 'object'
+  if (!['scan', 'object', 'point-selection', 'layer', 'world'].includes(scope)) {
+    return c.json({ error: 'Invalid patch scope' }, 400)
+  }
+  const patch: EditPatch = {
+    patchId: `patch-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
+    worldId: world.worldId,
+    scanId: objectKey(body.scanId) ?? undefined,
+    targetId,
+    scope,
+    transform: body.transform,
+    label: objectKey(body.label) ?? undefined,
+    category: objectKey(body.category) ?? undefined,
+    notes: objectKey(body.notes) ?? undefined,
+    visible: typeof body.visible === 'boolean' ? body.visible : undefined,
+    actorId: objectKey(body.actorId) ?? 'local-editor',
+    createdAt: new Date().toISOString(),
+  }
+  world.editPatches.push(patch)
+  applyPatchToWorld(world, patch)
+  await saveWorld(world)
+  return c.json({ ok: true, patch, world })
+})
+
+app.get('/worlds/:slug/jobs', async (c) => {
+  const world = await loadWorld(c.req.param('slug'))
+  return c.json(world.jobs.sort((a, b) => b.createdAt.localeCompare(a.createdAt)))
+})
+
+app.post('/worlds/:slug/jobs', async (c) => {
+  const slug = c.req.param('slug')
+  const world = await loadWorld(slug)
+  const body = await c.req.json().catch(() => ({})) as {
+    type?: WorldJobType
+    scanId?: string
+    payload?: Record<string, unknown>
+  }
+  const type = body.type
+  if (!type || !WORLD_JOB_TYPES.has(type)) {
+    return c.json({ error: `type must be one of ${[...WORLD_JOB_TYPES].join(', ')}` }, 400)
+  }
+  const job = createWorldJob(world, type, body.scanId, body.payload)
+  world.jobs.unshift(job)
+  await saveWorld(world)
+  await completeJobSoon(slug, job.jobId)
+  return c.json(job, 202)
+})
+
+app.get('/worlds/:slug/frames/:scanId', async (c) => {
+  const world = await loadWorld(c.req.param('slug'))
+  const scan = world.scans.find(s => s.scanId === c.req.param('scanId'))
+  if (!scan) return c.json({ error: 'Scan not found' }, 404)
+  return c.json({ scanId: scan.scanId, frames: [] })
 })
 
 app.post('/upload-summary', async (c) => {
@@ -393,7 +834,11 @@ app.post('/process-scan', async (c) => {
   }
 
   console.log(`[process] action=${action} file=${filename}`)
-  return c.json({ action, result, processedAt: new Date().toISOString() })
+  const jobId = await enqueueLegacyProcessJob(action, targetFilename).catch((err) => {
+    console.error('[process] queue bridge failed:', err)
+    return null
+  })
+  return c.json({ action, result, jobId, processedAt: new Date().toISOString() })
 })
 
 // ── Project management (in-memory, persisted to projects.json) ────────────────
@@ -409,6 +854,7 @@ interface ProjectRecord {
 }
 
 const PROJECTS_FILE = Deno.env.get('PROJECTS_FILE') ?? './projects.json'
+let projectMutationQueue: Promise<void> = Promise.resolve()
 
 async function loadProjects(): Promise<ProjectRecord[]> {
   try {
@@ -417,7 +863,22 @@ async function loadProjects(): Promise<ProjectRecord[]> {
 }
 
 async function saveProjects(projects: ProjectRecord[]): Promise<void> {
-  await Deno.writeTextFile(PROJECTS_FILE, JSON.stringify(projects, null, 2))
+  const tmpFile = `${PROJECTS_FILE}.${crypto.randomUUID()}.tmp`
+  await Deno.writeTextFile(tmpFile, JSON.stringify(projects, null, 2))
+  await Deno.rename(tmpFile, PROJECTS_FILE)
+}
+
+async function mutateProjects<T>(
+  mutator: (projects: ProjectRecord[]) => { result: T; save: boolean } | Promise<{ result: T; save: boolean }>,
+): Promise<T> {
+  const mutation = projectMutationQueue.then(async () => {
+    const projects = await loadProjects()
+    const { result, save } = await mutator(projects)
+    if (save) await saveProjects(projects)
+    return result
+  })
+  projectMutationQueue = mutation.then(() => undefined, () => undefined)
+  return mutation
 }
 
 app.get('/projects', async (c) => {
@@ -433,19 +894,21 @@ app.post('/projects', async (c) => {
     notes?: string
   }
   if (!body.name?.trim()) return c.json({ error: 'name is required' }, 400)
-  const projects = await loadProjects()
-  const now = Date.now()
-  const project: ProjectRecord = {
-    projectId: `proj-${now}`,
-    name: body.name.trim(),
-    address: body.address,
-    notes: body.notes,
-    createdAt: now,
-    updatedAt: now,
-    floors: [{ floorId: `floor-${now}`, name: 'Ground Floor', level: 0, rooms: [] }],
-  }
-  projects.push(project)
-  await saveProjects(projects)
+  const name = body.name.trim()
+  const project = await mutateProjects((projects) => {
+    const now = Date.now()
+    const project: ProjectRecord = {
+      projectId: `proj-${now}`,
+      name,
+      address: body.address,
+      notes: body.notes,
+      createdAt: now,
+      updatedAt: now,
+      floors: [{ floorId: `floor-${now}`, name: 'Ground Floor', level: 0, rooms: [] }],
+    }
+    projects.push(project)
+    return { result: project, save: true }
+  })
   return c.json(project, 201)
 })
 
@@ -461,20 +924,25 @@ app.put('/projects/:id', async (c) => {
   const id = c.req.param('id')
   const body = await c.req.json().catch(() => null) as ProjectRecord | null
   if (!body) return c.json({ error: 'Invalid JSON' }, 400)
-  const projects = await loadProjects()
-  const idx = projects.findIndex(p => p.projectId === id)
-  if (idx === -1) return c.json({ error: 'Not found' }, 404)
-  projects[idx] = { ...body, projectId: id, updatedAt: Date.now() }
-  await saveProjects(projects)
-  return c.json(projects[idx])
+  const updated = await mutateProjects<ProjectRecord | null>((projects) => {
+    const idx = projects.findIndex(p => p.projectId === id)
+    if (idx === -1) return { result: null, save: false }
+    projects[idx] = { ...body, projectId: id, updatedAt: Date.now() }
+    return { result: projects[idx], save: true }
+  })
+  if (!updated) return c.json({ error: 'Not found' }, 404)
+  return c.json(updated)
 })
 
 app.delete('/projects/:id', async (c) => {
   const id = c.req.param('id')
-  const projects = await loadProjects()
-  const filtered = projects.filter(p => p.projectId !== id)
-  if (filtered.length === projects.length) return c.json({ error: 'Not found' }, 404)
-  await saveProjects(filtered)
+  const deleted = await mutateProjects((projects) => {
+    const idx = projects.findIndex(p => p.projectId === id)
+    if (idx === -1) return { result: false, save: false }
+    projects.splice(idx, 1)
+    return { result: true, save: true }
+  })
+  if (!deleted) return c.json({ error: 'Not found' }, 404)
   return c.json({ ok: true })
 })
 
@@ -549,4 +1017,4 @@ app.get('/rtc-signal', (c) => {
   return response
 })
 
-Deno.serve({ port: PORT }, app.fetch)
+Deno.serve({ hostname: '0.0.0.0', port: PORT }, app.fetch)

@@ -158,7 +158,7 @@ async function main() {
       // Snapshot a Three.js camera from the current SLAM pose for frustum raycasting.
       // This gives the resolver a proper projection matrix at the moment of capture.
       let captureCamera: THREE.PerspectiveCamera | undefined
-      if (use8thWall && provider.isTracking()) {
+      if (provider.isTracking()) {
         const p = provider.getPose()
         captureCamera = new THREE.PerspectiveCamera(
           provider.getCameraFovY(), provider.getCameraAspect(), 0.01, 1000,

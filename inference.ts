@@ -115,7 +115,8 @@ export class InferenceEngine {
         }
         console.log(`[engine] Ollama connected. Target model: ${this.ollamaModel}`)
       } catch (err) {
-        console.error(`[engine] Failed to connect to Ollama:`, err.message)
+        const message = err instanceof Error ? err.message : String(err)
+        console.error(`[engine] Failed to connect to Ollama:`, message)
         throw new Error(`Ollama is unreachable. Ensure Ollama is running at ${this.ollamaUrl}.`)
       }
       return

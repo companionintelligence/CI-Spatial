@@ -12,6 +12,9 @@ export class WebXRProvider implements ARProvider {
   private session: XRSession | null = null
   private refSpace: XRReferenceSpace | null = null
   private hitTestSource: XRHitTestSource | null = null
+  private viewerSpace: XRReferenceSpace | null = null
+  private _fovY = 60
+  private _aspect = 1
   private videoStream: MediaStream | null = null
   private videoEl: HTMLVideoElement | null = null
   private offscreen: OffscreenCanvas | null = null
@@ -53,6 +56,7 @@ export class WebXRProvider implements ARProvider {
       this.session!.requestReferenceSpace('viewer'),
     ])
     this.refSpace = localFloor
+    this.viewerSpace = viewer
 
     this.hitTestSource = await this.session.requestHitTestSource!({ space: viewer }) ?? null
 
@@ -68,6 +72,13 @@ export class WebXRProvider implements ARProvider {
         self.latestPose = {
           position: { x: p.x, y: p.y, z: p.z },
           rotation: { x: q.x, y: q.y, z: q.z, w: q.w },
+        }
+        if (viewerPose.views.length > 0) {
+          const proj = viewerPose.views[0].projectionMatrix
+          const fovY = 2 * Math.atan(1 / proj[5]) * (180 / Math.PI)
+          const aspect = proj[5] / proj[0]
+          if (Number.isFinite(fovY) && fovY > 0) self._fovY = fovY
+          if (Number.isFinite(aspect) && aspect > 0) self._aspect = aspect
         }
       }
 
@@ -104,6 +115,7 @@ export class WebXRProvider implements ARProvider {
     this.session = null
     this.hitTestSource = null
     this.videoStream = null
+    this.viewerSpace = null
   }
 
   captureFrame(): Promise<RawFrame> {
@@ -129,11 +141,11 @@ export class WebXRProvider implements ARProvider {
   }
 
   getCameraFovY(): number {
-    return 60
+    return this._fovY
   }
 
   getCameraAspect(): number {
-    return window.innerWidth / window.innerHeight
+    return this._aspect
   }
 
   hitTest(x: number, y: number): HitResult | null {
@@ -151,25 +163,45 @@ export class WebXRProvider implements ARProvider {
    * Used by the spatial resolver when this provider is active.
    */
   hitTestAsync(x: number, y: number): Promise<HitResult | null> {
+    const session = this.session
+    if (!session || !this.viewerSpace || !this.refSpace) {
+      return Promise.resolve(null)
+    }
     return new Promise((resolve) => {
-      if (!this.session || !this.hitTestSource || !this.refSpace) {
+      const ndcX = x * 2 - 1
+      const ndcY = 1 - y * 2
+      const fovYRad = (this._fovY * Math.PI) / 180
+      const tanHalfFovY = Math.tan(fovYRad / 2)
+      const dirX = ndcX * this._aspect * tanHalfFovY
+      const dirY = ndcY * tanHalfFovY
+      const len = Math.hypot(dirX, dirY, 1) || 1
+      const ray = new XRRay(
+        { x: 0, y: 0, z: 0, w: 1 },
+        { x: dirX / len, y: dirY / len, z: -1 / len, w: 0 }
+      )
+      const sessionAny = session as any
+      if (typeof sessionAny.requestHitTestSource === 'function') {
+        sessionAny.requestHitTestSource({ space: this.viewerSpace!, offsetRay: ray })
+          .then((source: any) => {
+            session.requestAnimationFrame((_time, frame) => {
+              const results = frame.getHitTestResults(source)
+              source.cancel()
+              if (!results.length) { resolve(null); return }
+              const pose = results[0].getPose(this.refSpace!)
+              if (!pose) { resolve(null); return }
+              const { position: p, orientation: q } = pose.transform
+              const cp = this.latestPose.position
+              resolve({
+                position: { x: p.x, y: p.y, z: p.z },
+                rotation: { x: q.x, y: q.y, z: q.z, w: q.w },
+                distance: Math.hypot(p.x - cp.x, p.y - cp.y, p.z - cp.z),
+              })
+            })
+          })
+          .catch(() => resolve(null))
+      } else {
         resolve(null)
-        return
       }
-      this.session.requestAnimationFrame((_time, frame) => {
-        const results = frame.getHitTestResults(this.hitTestSource!)
-        if (!results.length) { resolve(null); return }
-        const pose = results[0].getPose(this.refSpace!)
-        if (!pose) { resolve(null); return }
-        const { position: p, orientation: q } = pose.transform
-        // x/y used for ray origin in future; for now use viewer ray hit
-        void x; void y
-        resolve({
-          position: { x: p.x, y: p.y, z: p.z },
-          rotation: { x: q.x, y: q.y, z: q.z, w: q.w },
-          distance: Math.sqrt(p.x * p.x + p.y * p.y + p.z * p.z),
-        })
-      })
     })
   }
 }

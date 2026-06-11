@@ -654,5 +654,78 @@
       }
     ],
     "notes": "Updated in test"
+  },
+  {
+    "projectId": "proj-1781141113216",
+    "name": "Test Building",
+    "address": "1 Test St",
+    "notes": "Playwright test",
+    "createdAt": 1781141113216,
+    "updatedAt": 1781141113216,
+    "floors": [
+      {
+        "floorId": "floor-1781141113216",
+        "name": "Ground Floor",
+        "level": 0,
+        "rooms": []
+      }
+    ]
+  },
+  {
+    "projectId": "proj-1781141113292",
+    "name": "Scan Site 1781141113261",
+    "createdAt": 1781141113292,
+    "updatedAt": 1781141113292,
+    "floors": [
+      {
+        "floorId": "floor-1781141113292",
+        "name": "Ground Floor",
+        "level": 0,
+        "rooms": []
+      }
+    ]
+  },
+  {
+    "projectId": "proj-1781141113358",
+    "name": "Floor Test",
+    "createdAt": 1781141113358,
+    "updatedAt": 1781141113358,
+    "floors": [
+      {
+        "floorId": "floor-1781141113358",
+        "name": "Ground Floor",
+        "level": 0,
+        "rooms": []
+      }
+    ]
+  },
+  {
+    "projectId": "proj-1781141113397",
+    "name": "Get By ID",
+    "createdAt": 1781141113397,
+    "updatedAt": 1781141113397,
+    "floors": [
+      {
+        "floorId": "floor-1781141113397",
+        "name": "Ground Floor",
+        "level": 0,
+        "rooms": []
+      }
+    ]
+  },
+  {
+    "projectId": "proj-1781141113485",
+    "name": "After Update",
+    "createdAt": 1781141113485,
+    "updatedAt": 1781141113542,
+    "floors": [
+      {
+        "floorId": "floor-1781141113485",
+        "name": "Ground Floor",
+        "level": 0,
+        "rooms": []
+      }
+    ],
+    "notes": "Updated in test"
   }
 ]

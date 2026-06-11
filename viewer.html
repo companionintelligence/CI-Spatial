@@ -184,8 +184,29 @@
         line-height: 1.6;
       }
 
+      .scan-item {
+        display: grid;
+        grid-template-columns: 20px minmax(0, 1fr);
+        gap: 8px;
+        align-items: center;
+      }
+
+      .scan-visible {
+        width: 16px;
+        height: 16px;
+        accent-color: #4fc3f7;
+      }
+
+      .scan-status {
+        margin-top: 3px;
+        font-size: 10px;
+        color: rgba(255,255,255,0.28);
+      }
+
       /* ── Edit panel ── */
-      #edit-panel-content {
+      #edit-panel-content,
+      #world-panel-content,
+      #layers-panel-content {
         flex: 1;
         overflow-y: auto;
         padding: 10px;
@@ -241,6 +262,113 @@
         text-align: center;
         padding: 24px 8px;
         line-height: 1.6;
+      }
+
+      .world-stat-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 6px;
+      }
+
+      .world-stat {
+        border: 1px solid rgba(255,255,255,0.07);
+        background: rgba(0,0,0,0.18);
+        border-radius: 8px;
+        padding: 8px;
+        min-width: 0;
+      }
+
+      .world-stat-value {
+        font-size: 16px;
+        font-weight: 800;
+        color: #fff;
+        line-height: 1.1;
+      }
+
+      .world-stat-label {
+        margin-top: 3px;
+        font-size: 10px;
+        color: rgba(255,255,255,0.35);
+      }
+
+      .world-link-row,
+      .layer-item,
+      .job-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 7px 0;
+        border-bottom: 1px solid rgba(255,255,255,0.06);
+        min-width: 0;
+      }
+
+      .world-link-row:last-child,
+      .layer-item:last-child,
+      .job-row:last-child { border-bottom: none; }
+
+      .world-link-row span,
+      .layer-name,
+      .job-title {
+        font-size: 11px;
+        color: rgba(255,255,255,0.68);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .copy-link-btn,
+      .job-btn,
+      .transform-btn {
+        border: 1px solid rgba(79,195,247,0.28);
+        background: rgba(79,195,247,0.11);
+        color: #4fc3f7;
+        border-radius: 6px;
+        padding: 5px 8px;
+        font-size: 10px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .copy-link-btn:hover,
+      .job-btn:hover,
+      .transform-btn:hover { background: rgba(79,195,247,0.18); }
+
+      .transform-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
+      }
+
+      .transform-btn.active {
+        background: rgba(102,187,106,0.16);
+        border-color: rgba(102,187,106,0.35);
+        color: #66bb6a;
+      }
+
+      .layer-toggle {
+        width: 16px;
+        height: 16px;
+        accent-color: #4fc3f7;
+        flex-shrink: 0;
+      }
+
+      .layer-meta,
+      .job-meta {
+        font-size: 10px;
+        color: rgba(255,255,255,0.32);
+        line-height: 1.4;
+      }
+
+      #job-type {
+        width: 100%;
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255,255,255,0.1);
+        color: #fff;
+        border-radius: 6px;
+        padding: 7px;
+        font-size: 11px;
+        margin-bottom: 7px;
       }
 
       /* ── Viewport ── */
@@ -315,6 +443,68 @@
         max-width: 220px;
       }
       #hud-info.visible { display: block; }
+
+      #world-hud {
+        position: absolute;
+        left: 10px;
+        bottom: 12px;
+        display: grid;
+        gap: 8px;
+        z-index: 5;
+        pointer-events: none;
+      }
+
+      #compass-widget {
+        width: 72px;
+        height: 72px;
+        border-radius: 50%;
+        border: 1px solid rgba(255,255,255,0.15);
+        background: rgba(0,0,0,0.55);
+        backdrop-filter: blur(8px);
+        position: relative;
+      }
+
+      #compass-widget::before {
+        content: "N";
+        position: absolute;
+        top: 5px;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 10px;
+        color: #4fc3f7;
+        font-weight: 800;
+      }
+
+      #compass-arrow {
+        position: absolute;
+        left: 50%;
+        top: 16px;
+        width: 2px;
+        height: 42px;
+        background: linear-gradient(#4fc3f7 0 50%, rgba(255,255,255,0.35) 50% 100%);
+        transform-origin: 50% 20px;
+      }
+
+      #scale-widget,
+      #coord-readout {
+        width: 160px;
+        background: rgba(0,0,0,0.55);
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 8px;
+        backdrop-filter: blur(8px);
+        padding: 7px 9px;
+        font-size: 10px;
+        color: rgba(255,255,255,0.65);
+      }
+
+      #scale-bar {
+        width: 96px;
+        height: 7px;
+        border-left: 2px solid #fff;
+        border-right: 2px solid #fff;
+        border-bottom: 2px solid #fff;
+        margin-bottom: 4px;
+      }
 
       /* ── Object inspector panel (floating, appears on click) ── */
       #inspector-panel {
@@ -433,6 +623,101 @@
         border-radius: 50%;
         animation: spin 0.8s linear infinite;
       }
+
+      @media (max-width: 720px) {
+        #top-toolbar {
+          overflow-x: auto;
+          overflow-y: hidden;
+          padding: 0 8px;
+          gap: 6px;
+        }
+
+        #top-toolbar-title,
+        #toolbar-spacer,
+        #back-link {
+          display: none;
+        }
+
+        .toolbar-sep {
+          display: none;
+        }
+
+        .mode-btn {
+          flex: 0 0 auto;
+          padding: 5px 8px;
+          font-size: 11px;
+        }
+
+        #main-area {
+          flex-direction: column;
+        }
+
+        #sidebar {
+          width: 100%;
+          min-width: 0;
+          height: min(44vh, 370px);
+          min-height: 300px;
+          border-right: none;
+          border-bottom: 1px solid rgba(255,255,255,0.07);
+        }
+
+        #sidebar-header {
+          padding: 10px 12px 8px;
+        }
+
+        .sidebar-tab {
+          padding: 9px 4px;
+          font-size: 10px;
+        }
+
+        #viewport {
+          min-height: 0;
+        }
+
+        #hud-info {
+          top: 8px;
+          left: 8px;
+          max-width: 190px;
+        }
+
+        #inspector-panel {
+          width: min(230px, calc(100% - 16px));
+          top: 8px;
+          right: 8px;
+        }
+
+        #world-hud {
+          left: 8px;
+          bottom: 8px;
+        }
+
+        #compass-widget {
+          width: 58px;
+          height: 58px;
+        }
+
+        #compass-arrow {
+          top: 13px;
+          height: 34px;
+          transform-origin: 50% 17px;
+        }
+
+        #scale-widget,
+        #coord-readout {
+          width: 148px;
+        }
+
+        #hud-controls {
+          right: 8px;
+          bottom: 8px;
+          max-width: 180px;
+        }
+
+        .hud-btn {
+          padding: 5px 8px;
+          font-size: 10px;
+        }
+      }
     </style>
   </head>
   <body>
@@ -454,13 +739,15 @@
 
       <div id="main-area">
 
-        <!-- Sidebar with tabs: Scans | Edit -->
+        <!-- Sidebar with tabs: Scans | World | Layers | Edit -->
         <div id="sidebar">
           <div id="sidebar-header">
-            <span id="sidebar-title">Saved Scans</span>
+            <span id="sidebar-title">World Scan Editor</span>
           </div>
           <div id="sidebar-tabs">
             <button class="sidebar-tab active" data-tab="scans">Scans</button>
+            <button class="sidebar-tab"        data-tab="world">World</button>
+            <button class="sidebar-tab"        data-tab="layers">Layers</button>
             <button class="sidebar-tab"        data-tab="edit">Edit</button>
           </div>
 
@@ -471,11 +758,75 @@
             </div>
           </div>
 
+          <!-- World panel -->
+          <div class="sidebar-panel" id="tab-world">
+            <div id="world-panel-content">
+              <div class="edit-section">
+                <div class="edit-section-title">World</div>
+                <div class="world-stat-grid">
+                  <div class="world-stat">
+                    <div class="world-stat-value" id="world-scan-count">--</div>
+                    <div class="world-stat-label">Scans</div>
+                  </div>
+                  <div class="world-stat">
+                    <div class="world-stat-value" id="world-layer-count">--</div>
+                    <div class="world-stat-label">Layers</div>
+                  </div>
+                  <div class="world-stat">
+                    <div class="world-stat-value" id="world-job-count">--</div>
+                    <div class="world-stat-label">Jobs</div>
+                  </div>
+                  <div class="world-stat">
+                    <div class="world-stat-value" id="world-origin-label">--</div>
+                    <div class="world-stat-label">Origin</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="edit-section">
+                <div class="edit-section-title">Share Links</div>
+                <div id="share-links">
+                  <div class="layer-meta">Loading share links...</div>
+                </div>
+              </div>
+
+              <div class="edit-section">
+                <div class="edit-section-title">Processing Queue</div>
+                <select id="job-type" aria-label="Processing job">
+                  <option value="ingest">Ingest</option>
+                  <option value="extract-layers">Extract layers</option>
+                  <option value="align-scan">Align scan</option>
+                  <option value="merge-points">Merge points</option>
+                  <option value="semantic-pass">Semantic pass</option>
+                  <option value="depth-reconstruct">Depth reconstruct</option>
+                  <option value="splat-train">Splat train</option>
+                  <option value="export-world">Export world</option>
+                </select>
+                <button class="job-btn" id="btn-queue-job" style="width:100%;">Queue Job</button>
+                <div id="job-list" style="margin-top:8px;">
+                  <div class="layer-meta">No jobs queued yet.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Layers panel -->
+          <div class="sidebar-panel" id="tab-layers">
+            <div id="layers-panel-content">
+              <div class="edit-section">
+                <div class="edit-section-title">GLB + Sidecar Layers</div>
+                <div id="layer-list">
+                  <div class="layer-meta">Loading layers...</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <!-- Edit panel -->
           <div class="sidebar-panel" id="tab-edit">
             <div id="edit-panel-content">
               <div class="no-selection-msg" id="edit-no-selection">
-                Click an object in the viewport to select it, then assign a semantic tag.
+                Click a scan or object in the viewport to move it, label it, and assign semantic categories.
               </div>
 
               <!-- Inspector: shown when an object is selected -->
@@ -484,6 +835,16 @@
                   <div class="edit-section-title">Selected Object</div>
                   <div id="edit-obj-name" style="font-size:13px;font-weight:700;color:#fff;margin-bottom:6px;word-break:break-all;"></div>
                   <div id="edit-obj-meta" style="font-size:11px;color:rgba(255,255,255,0.4);line-height:1.7;"></div>
+                </div>
+
+                <div class="edit-section">
+                  <div class="edit-section-title">Transform</div>
+                  <div class="transform-grid">
+                    <button class="transform-btn active" id="transform-translate">Move</button>
+                    <button class="transform-btn" id="transform-rotate">Rotate</button>
+                    <button class="transform-btn" id="transform-scale">Scale</button>
+                  </div>
+                  <button class="job-btn" id="edit-save-transform" style="width:100%;margin-top:7px;">Save Transform</button>
                 </div>
 
                 <div class="edit-section">
@@ -519,6 +880,17 @@
 
           <!-- Scene info HUD -->
           <div id="hud-info"></div>
+
+          <div id="world-hud">
+            <div id="compass-widget" aria-label="Compass">
+              <div id="compass-arrow"></div>
+            </div>
+            <div id="scale-widget">
+              <div id="scale-bar"></div>
+              <span id="scale-label">1 m</span>
+            </div>
+            <div id="coord-readout">World: --</div>
+          </div>
 
           <!-- Floating object inspector -->
           <div id="inspector-panel">

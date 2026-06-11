@@ -36,6 +36,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: path.resolve(process.cwd(), 'index.html'),
+        scanner: path.resolve(process.cwd(), 'scanner.html'),
         viewer: path.resolve(process.cwd(), 'viewer.html'),
       },
     },
@@ -106,6 +107,14 @@ export default defineConfig({
         secure: false,
         configure: (proxy) => {
           proxy.on('error', (err) => console.error('[vite-proxy-error /projects]', err))
+        }
+      },
+      '/worlds': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        secure: false,
+        configure: (proxy) => {
+          proxy.on('error', (err) => console.error('[vite-proxy-error /worlds]', err))
         }
       },
       '/scan-locations': {

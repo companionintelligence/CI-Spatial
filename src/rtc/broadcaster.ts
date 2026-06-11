@@ -27,6 +27,7 @@ export class RtcBroadcaster {
   private _roomId: string
   private _ws: WebSocket | null = null
   private _pc: RTCPeerConnection | null = null
+  private _dataChannel: RTCDataChannel | null = null
   private _stream: MediaStream | null = null
   private _onStatus: StatusCallback | null = null
   private _running = false
@@ -94,13 +95,25 @@ export class RtcBroadcaster {
 
   stop(): void {
     this._running = false
+    this._dataChannel?.close()
     this._pc?.close()
     this._ws?.close()
     this._stream?.getTracks().forEach(t => t.stop())
+    this._dataChannel = null
     this._pc = null
     this._ws = null
     this._stream = null
     this._status('stopped', 'Stream stopped')
+  }
+
+  /** Send pose, frustum, detection, or progress metadata to the viewer. */
+  sendSpatial(meta: Record<string, unknown>): void {
+    const message = JSON.stringify({ type: 'meta', ...meta })
+    if (this._dataChannel?.readyState === 'open') {
+      this._dataChannel.send(message)
+      return
+    }
+    this._send({ type: 'meta', ...meta })
   }
 
   private async _handleSignal(msg: Record<string, unknown>): Promise<void> {
@@ -130,7 +143,9 @@ export class RtcBroadcaster {
 
       case 'peer-left':
         this._status('connecting', 'Viewer disconnected — waiting…')
+        this._dataChannel?.close()
         this._pc?.close()
+        this._dataChannel = null
         this._pc = null
         break
     }
@@ -139,6 +154,10 @@ export class RtcBroadcaster {
   private async _createOffer(): Promise<void> {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
     this._pc = pc
+    this._dataChannel = pc.createDataChannel('scan-spatial-events', {
+      ordered: false,
+      maxRetransmits: 0,
+    })
 
     // Add all tracks from our stream
     for (const track of this._stream!.getTracks()) {
