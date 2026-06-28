@@ -15,6 +15,7 @@ import { MeasureTool } from './measure'
 import { GeoMap, type ScanLocationEntry } from './geomap'
 import { LiveFeed } from './livefeed'
 import { loadSemanticAsset, createMediumPolyAsset } from './assets'
+import { fetchLingBotMapArtifacts, type LingBotMapOverlay } from './lingbot-map'
 import { enuToGeo, hasGeoPose, matrixTranslation } from '../world/geo'
 import { LAYER_LABELS, LAYER_ORDER } from '../world/layers'
 import { registerPWA } from '../pwa'
@@ -120,6 +121,10 @@ let world: WorldProject | null = null
 let selectedTransformTarget: THREE.Object3D | null = null
 let selectedScanId: string | null = null
 let isTransformDragging = false
+
+const lingbotOverlays = new Map<string, LingBotMapOverlay>()
+let lingbotShowPoints = false
+let lingbotShowPath = false
 
 const boundEdgeMaterial = new THREE.LineBasicMaterial({
   color: 0x4fc3f7,
@@ -937,6 +942,70 @@ function selectScan(scanId: string, focus: boolean, openEdit = true): void {
   showInspector(loaded.root)
   syncEditPanel(loaded.root, openEdit)
   if (focus) fitCamera(loaded.root)
+  void refreshLingBotMapPanel(scanId)
+}
+
+async function refreshLingBotMapPanel(scanId: string): Promise<void> {
+  const status = document.getElementById('lingbot-map-status')
+  const stats = document.getElementById('lingbot-map-stats')
+  if (!status || !stats) return
+  const scan = world?.scans.find(s => s.scanId === scanId)
+  if (!scan) {
+    status.textContent = 'Select a scan to see its LingBot-Map reconstruction.'
+    stats.textContent = ''
+    return
+  }
+  if (!scan.sessionId) {
+    status.textContent = 'This scan has no streamed keyframes — start keyframe streaming first.'
+    stats.textContent = ''
+    return
+  }
+  let overlay = lingbotOverlays.get(scanId)
+  if (!overlay) {
+    status.textContent = 'Loading LingBot-Map artifacts…'
+    try {
+      const fetched = await fetchLingBotMapArtifacts(scan, (url) => fetch(withAccessToken(url)))
+      if (!fetched) {
+        status.textContent = 'No LingBot-Map manifest yet. Queue the lingbot-map-reconstruct job to create one.'
+        stats.textContent = ''
+        return
+      }
+      overlay = fetched
+      lingbotOverlays.set(scanId, overlay)
+      const loaded = loadedScans.get(scanId)
+      if (loaded) {
+        loaded.root.add(overlay.pointsGroup, overlay.pathGroup)
+        overlay.pointsGroup.visible = lingbotShowPoints
+        overlay.pathGroup.visible = lingbotShowPath
+      }
+    } catch (e) {
+      console.error('[viewer] lingbot-map fetch failed:', e)
+      status.textContent = `Failed to load LingBot-Map artifacts: ${e instanceof Error ? e.message : String(e)}`
+      stats.textContent = ''
+      return
+    }
+  }
+  const m = overlay.manifest
+  if (m.status === 'ok') {
+    status.textContent = `Reconstruction ready — ${overlay.pointCount.toLocaleString()} points, ${overlay.poseCount.toLocaleString()} poses.`
+    stats.textContent = m.elapsedMs ? `Run took ${(m.elapsedMs / 1000).toFixed(1)}s on ${m.frameCount ?? '?'} frames.` : ''
+  } else if (m.status === 'skipped') {
+    status.textContent = `Skipped: ${m.skippedReason ?? 'no reason given'}`
+    stats.textContent = ''
+  } else {
+    status.textContent = `LingBot-Map error: ${m.error ?? 'unknown'}`
+    stats.textContent = ''
+  }
+}
+
+function setLingBotPointsVisible(visible: boolean): void {
+  lingbotShowPoints = visible
+  for (const overlay of lingbotOverlays.values()) overlay.pointsGroup.visible = visible
+}
+
+function setLingBotPathVisible(visible: boolean): void {
+  lingbotShowPath = visible
+  for (const overlay of lingbotOverlays.values()) overlay.pathGroup.visible = visible
 }
 
 function selectEditableObject(obj: THREE.Object3D): void {
@@ -1785,6 +1854,13 @@ document.getElementById('btn-queue-job')?.addEventListener('click', () => {
   })
 })
 
+document.getElementById('lingbot-map-points-toggle')?.addEventListener('change', (e) => {
+  setLingBotPointsVisible((e.target as HTMLInputElement).checked)
+})
+document.getElementById('lingbot-map-path-toggle')?.addEventListener('change', (e) => {
+  setLingBotPathVisible((e.target as HTMLInputElement).checked)
+})
+
 document.getElementById('inspector-close')!.addEventListener('click', clearSelection)
 
 document.getElementById('btn-geomap')!.addEventListener('click', () => {
@@ -1852,6 +1928,14 @@ function connectServerEvents(): void {
         scheduleWorldRefresh()
       } else if (msg['type'] === 'job-update') {
         handleJobUpdate(msg['job'] as { target?: string; status?: string; note?: string | null })
+      } else if (msg['type'] === 'world-job-update') {
+        const wj = msg['job'] as { jobType?: string; type?: string; status?: string; scanId?: string } | undefined
+        const t = wj?.type ?? wj?.jobType
+        if (t === 'lingbot-map-reconstruct' && wj?.status === 'completed' && wj?.scanId) {
+          lingbotOverlays.delete(wj.scanId)
+          if (selectedScanId === wj.scanId) void refreshLingBotMapPanel(wj.scanId)
+        }
+        void refreshJobs()
       }
     } catch { /* malformed event — ignore */ }
   })

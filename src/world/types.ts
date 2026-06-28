@@ -20,6 +20,7 @@ export type WorldJobType =
   | 'merge-points'
   | 'semantic-pass'
   | 'depth-reconstruct'
+  | 'lingbot-map-reconstruct'
   | 'splat-train'
   | 'export-world'
 

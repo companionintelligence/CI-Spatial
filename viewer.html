@@ -881,6 +881,7 @@
                   <option value="merge-points">Merge points</option>
                   <option value="semantic-pass">Semantic pass</option>
                   <option value="depth-reconstruct">Depth reconstruct</option>
+                  <option value="lingbot-map-reconstruct">LingBot-Map reconstruct</option>
                   <option value="splat-train">Splat train</option>
                   <option value="export-world">Export world</option>
                 </select>
@@ -900,6 +901,22 @@
                 <div id="layer-list">
                   <div class="layer-meta">Loading layers...</div>
                 </div>
+              </div>
+
+              <div class="edit-section" id="lingbot-map-section">
+                <div class="edit-section-title">LingBot-Map Reconstruction</div>
+                <div id="lingbot-map-status" class="layer-meta" style="margin-bottom:6px;">
+                  Run the <code>lingbot-map-reconstruct</code> job to densify the selected scan.
+                </div>
+                <label class="layer-row" style="display:flex;align-items:center;gap:8px;">
+                  <input type="checkbox" id="lingbot-map-points-toggle" />
+                  <span>Show LingBot-Map points</span>
+                </label>
+                <label class="layer-row" style="display:flex;align-items:center;gap:8px;">
+                  <input type="checkbox" id="lingbot-map-path-toggle" />
+                  <span>Show LingBot-Map camera path</span>
+                </label>
+                <div id="lingbot-map-stats" class="layer-meta" style="margin-top:6px;"></div>
               </div>
             </div>
           </div>
