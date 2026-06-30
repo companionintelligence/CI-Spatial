@@ -33,6 +33,7 @@ import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
 import { InferenceEngine } from './inference.ts'
 import { JobQueue } from './jobs.ts'
+import { runLingBotMapReconstruction } from './lingbot_map.ts'
 import { composeYUpTransform, geoToEnu, hasGeoPose } from './src/world/geo.ts'
 import { defaultLayerIndex } from './src/world/layers.ts'
 import type {
@@ -58,6 +59,9 @@ const SESSIONS_DIR = Deno.env.get('SESSIONS_DIR') ?? `${SCANS_DIR}/sessions`
 const WORLDS_DIR = Deno.env.get('WORLDS_DIR') ?? './worlds'
 const MAX_KEYFRAMES_PER_SESSION = 2000
 const WORLD_STRICT_AUTH = Deno.env.get('WORLD_STRICT_AUTH') === '1'
+
+const LINGBOT_MAP_SCRIPT = Deno.env.get('LINGBOT_MAP_SCRIPT') ??
+  new URL('./scripts/lingbot_map_worker.py', import.meta.url).pathname
 
 function isAllowedOrigin(origin: string): boolean {
   try {
@@ -461,6 +465,27 @@ app.get('/sessions/:id/keyframes/:file', async (c) => {
   }
 })
 
+const LINGBOT_MAP_ARTIFACTS: Record<string, string> = {
+  'lingbot-map.point-cloud.ply': 'application/octet-stream',
+  'lingbot-map.poses.json': 'application/json',
+  'lingbot-map.manifest.json': 'application/json',
+}
+
+app.get('/sessions/:id/:artifact{lingbot-map\\..+}', async (c) => {
+  const dir = sessionDir(c.req.param('id'))
+  const artifact = c.req.param('artifact')
+  const mime = dir ? LINGBOT_MAP_ARTIFACTS[artifact] : undefined
+  if (!mime) return c.json({ error: 'Invalid artifact path' }, 400)
+  try {
+    const data = await Deno.readFile(`${dir}/${artifact}`)
+    return new Response(data, {
+      headers: { 'Content-Type': mime, 'Cache-Control': 'private, max-age=300' },
+    })
+  } catch {
+    return c.json({ error: 'Artifact not found' }, 404)
+  }
+})
+
 app.post('/sessions/:id/finalize', async (c) => {
   const dir = sessionDir(c.req.param('id'))
   if (!dir) return c.json({ error: 'Invalid session id' }, 400)
@@ -587,11 +612,12 @@ const WORLD_JOB_TYPES = new Set<WorldJobType>([
   'merge-points',
   'semantic-pass',
   'depth-reconstruct',
+  'lingbot-map-reconstruct',
   'splat-train',
   'export-world',
 ])
 
-const DEFAULT_WORKER_CAPABILITIES = ['cpu', 'onnx', 'ollama', 'open3d', 'splat', 'vggt']
+const DEFAULT_WORKER_CAPABILITIES = ['cpu', 'onnx', 'ollama', 'open3d', 'splat', 'vggt', 'lingbot-map']
 
 interface StoredScanInfo {
   filename: string
@@ -1114,11 +1140,17 @@ async function completeJobSoon(slug: string, jobId: string): Promise<void> {
       const job = world.jobs.find(j => j.jobId === jobId)
       if (!job || job.status !== 'queued') return
       job.status = 'processing'
-      job.workerId = 'local-coordinator'
+      job.workerId = job.type === 'lingbot-map-reconstruct' ? 'lingbot-map' : 'local-coordinator'
       job.progress = 0.35
       job.updatedAt = new Date().toISOString()
       await saveWorld(world)
       broadcast({ type: 'world-job-update', worldId: world.worldId, job })
+
+      if (job.type === 'lingbot-map-reconstruct') {
+        await _runLingBotMapJob(slug, jobId)
+        return
+      }
+
       setTimeout(async () => {
         try {
           const current = await loadWorld(slug)
@@ -1150,6 +1182,111 @@ async function completeJobSoon(slug: string, jobId: string): Promise<void> {
   }, 25)
 }
 
+async function _runLingBotMapJob(slug: string, jobId: string): Promise<void> {
+  try {
+    const world = await loadWorld(slug)
+    const job = world.jobs.find(j => j.jobId === jobId)
+    if (!job) return
+    const scan = scanForJob(job, world)
+    const failure = jobFailureReason(job, world)
+    if (failure) {
+      job.status = 'failed'
+      job.error = failure
+      job.result = failure
+      job.progress = 1
+      job.updatedAt = new Date().toISOString()
+      await saveWorld(world)
+      broadcast({ type: 'world-job-update', worldId: world.worldId, job })
+      return
+    }
+    const sessionId = scan!.sessionId!
+    const sessionPath = sessionDir(sessionId)
+    if (!sessionPath) {
+      job.status = 'failed'
+      job.error = `Invalid session id: ${sessionId}`
+      job.result = job.error
+      job.progress = 1
+      job.updatedAt = new Date().toISOString()
+      await saveWorld(world)
+      broadcast({ type: 'world-job-update', worldId: world.worldId, job })
+      return
+    }
+
+    const base = scan!.filename.replace(/\.glb$/, '')
+    const glbSidecarPath = `${SCANS_DIR}/${base}.lingbot.glb`
+    const result = await runLingBotMapReconstruction({
+      sessionDir: sessionPath,
+      scriptPath: LINGBOT_MAP_SCRIPT,
+      glbSidecarPath,
+      glbExtras: { sessionId, scanId: scan!.scanId },
+    })
+
+    const current = await loadWorld(slug)
+    const currentJob = current.jobs.find(j => j.jobId === jobId)
+    if (!currentJob) return
+    currentJob.progress = 1
+    if (result.status === 'ok') {
+      currentJob.status = 'completed'
+      currentJob.result = jobResultFor(currentJob)
+      currentJob.artifacts = jobArtifactsFor(currentJob, current)
+      if (result.glbSidecarPath) {
+        const glbName = result.glbSidecarPath.split('/').pop()!
+        currentJob.artifacts ??= []
+        currentJob.artifacts.push({
+          type: 'lingbot-map-glb',
+          label: `${scan!.name} LingBot-Map GLB`,
+          url: `/scans/${encodeURIComponent(glbName)}`,
+          metadata: { points: result.glbPointCount ?? null },
+        })
+        const targetScan = current.scans.find(s => s.scanId === scan!.scanId)
+        if (targetScan && !targetScan.layerIndex.some(l => l.id === 'lingbot-map')) {
+          targetScan.layerIndex.push({
+            id: 'lingbot-map',
+            type: 'points',
+            label: 'LingBot-Map reconstruction',
+            visibleByDefault: false,
+            encodedInGlb: true,
+            source: 'derived',
+            count: result.glbPointCount ?? null,
+          })
+        }
+      }
+      applyCompletedJobToWorld(currentJob, current)
+    } else if (result.status === 'skipped') {
+      currentJob.status = 'completed'
+      currentJob.result = `LingBot-Map skipped: ${result.skippedReason ?? 'unknown reason'}`
+      currentJob.artifacts = [{
+        type: 'lingbot-map-skip',
+        label: 'LingBot-Map run skipped',
+        url: `/sessions/${encodeURIComponent(sessionId)}/lingbot-map.manifest.json`,
+        metadata: { sessionId, skippedReason: result.skippedReason ?? null },
+      }]
+    } else {
+      currentJob.status = 'failed'
+      currentJob.error = result.error ?? `worker exit ${result.exitCode}`
+      currentJob.result = currentJob.error
+    }
+    currentJob.updatedAt = new Date().toISOString()
+    await saveWorld(current)
+    broadcast({ type: 'world-job-update', worldId: current.worldId, job: currentJob })
+  } catch (err) {
+    console.error('[lingbot-map job error]', err)
+    try {
+      const recovered = await loadWorld(slug)
+      const recoveredJob = recovered.jobs.find(j => j.jobId === jobId)
+      if (recoveredJob) {
+        recoveredJob.status = 'failed'
+        recoveredJob.error = err instanceof Error ? err.message : String(err)
+        recoveredJob.result = recoveredJob.error
+        recoveredJob.progress = 1
+        recoveredJob.updatedAt = new Date().toISOString()
+        await saveWorld(recovered)
+        broadcast({ type: 'world-job-update', worldId: recovered.worldId, job: recoveredJob })
+      }
+    } catch { /* nothing more we can do */ }
+  }
+}
+
 function scanForJob(job: WorldJob, world: WorldProject): ScanManifest | null {
   if (!job.scanId) return null
   return world.scans.find(scan => scan.scanId === job.scanId || scan.filename === job.scanId) ?? null
@@ -1157,10 +1294,10 @@ function scanForJob(job: WorldJob, world: WorldProject): ScanManifest | null {
 
 function jobFailureReason(job: WorldJob, world: WorldProject): string | null {
   const scan = scanForJob(job, world)
-  if (['align-scan', 'extract-layers', 'semantic-pass', 'depth-reconstruct', 'splat-train'].includes(job.type) && !scan) {
+  if (['align-scan', 'extract-layers', 'semantic-pass', 'depth-reconstruct', 'lingbot-map-reconstruct', 'splat-train'].includes(job.type) && !scan) {
     return `${job.type} requires a selected scan.`
   }
-  if ((job.type === 'depth-reconstruct' || job.type === 'splat-train') && scan && !scan.sessionId) {
+  if ((job.type === 'depth-reconstruct' || job.type === 'lingbot-map-reconstruct' || job.type === 'splat-train') && scan && !scan.sessionId) {
     return `${job.type} requires RGB keyframe observations. Start keyframe streaming before export.`
   }
   if (job.type === 'align-scan' && world.scans.length < 2) {
@@ -1174,6 +1311,9 @@ function applyCompletedJobToWorld(job: WorldJob, world: WorldProject): void {
   if (!scan) return
   if (job.type === 'align-scan') scan.status = 'aligned'
   else if (job.type === 'semantic-pass' || job.type === 'extract-layers' || job.type === 'merge-points') {
+    scan.status = scan.qualitySummary?.status ?? 'ready'
+  }
+  else if (job.type === 'lingbot-map-reconstruct') {
     scan.status = scan.qualitySummary?.status ?? 'ready'
   }
 }
@@ -1192,6 +1332,8 @@ function jobResultFor(job: WorldJob): string {
       return 'Semantic pass queued through the local coordinator. Server masks/detections can attach to this job artifact.'
     case 'depth-reconstruct':
       return 'Depth reconstruction inputs validated. Depth Anything or WebXR depth artifacts can attach here.'
+    case 'lingbot-map-reconstruct':
+      return 'LingBot-Map streaming reconstruction complete. Point cloud + per-frame poses written to the session.'
     case 'splat-train':
       return 'Splat training inputs validated. gsplat/Graphdeco outputs should attach as splat layers.'
     case 'export-world':
@@ -1232,6 +1374,21 @@ function jobArtifactsFor(job: WorldJob, world: WorldProject): WorldJob['artifact
         url: scan.frameSetUrl,
         metadata: { sessionId: scan.sessionId, keyframes: scan.qualitySummary?.keyframeCount ?? null },
       }] : []
+    case 'lingbot-map-reconstruct': {
+      if (!scan || !scan.sessionId) return []
+      const sessionId = scan.sessionId
+      return [{
+        type: 'lingbot-map-reconstruction',
+        label: `${scan.name} LingBot-Map reconstruction`,
+        url: `/sessions/${encodeURIComponent(sessionId)}/lingbot-map.manifest.json`,
+        metadata: {
+          sessionId,
+          pointCloudUrl: `/sessions/${encodeURIComponent(sessionId)}/lingbot-map.point-cloud.ply`,
+          posesUrl: `/sessions/${encodeURIComponent(sessionId)}/lingbot-map.poses.json`,
+          keyframes: scan.qualitySummary?.keyframeCount ?? null,
+        },
+      }]
+    }
     case 'splat-train':
       return scan ? [{
         type: 'splat-plan',

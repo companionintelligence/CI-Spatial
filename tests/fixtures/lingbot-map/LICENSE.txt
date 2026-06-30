@@ -1,0 +1,7 @@
+Big Buck Bunny
+(c) 2008 Blender Foundation | www.bigbuckbunny.org
+Licensed under Creative Commons Attribution 3.0 (CC-BY 3.0).
+Source: https://download.blender.org/demo/movies/BBB/bbb_sunflower_native_60fps_normal.mp4
+
+This file is fetched as a reference clip for the LingBot-Map integration
+test. It is not redistributed by this repository.

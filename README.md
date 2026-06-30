@@ -226,6 +226,46 @@ The app routes inference through two paths:
 
 The router (`src/inference/router.ts`) pings `/health` on startup to decide which path to use.
 
+### LingBot-Map server processing
+
+Sessions that stream RGB keyframes can be densified server-side with [LingBot-Map](https://github.com/Robbyant/lingbot-map) — a feed-forward Geometric Context Transformer that runs streaming 3D reconstruction directly from the JPEG keyframes the mobile app uploads.
+
+**Setup** (one-time, on the inference box):
+
+```bash
+# 1. Install LingBot-Map in a venv the Deno server can reach
+git clone https://github.com/Robbyant/lingbot-map ~/lingbot-map
+python3 -m venv ~/.venvs/lingbot-map && source ~/.venvs/lingbot-map/bin/activate
+pip install -e ~/lingbot-map
+
+# 2. Download a checkpoint (see lingbot-map README for variants)
+huggingface-cli download robbyant/lingbot-map --local-dir ~/models/lingbot-map
+
+# 3. Point the Deno server at the venv python + checkpoint
+export LINGBOT_MAP_PYTHON=~/.venvs/lingbot-map/bin/python
+export LINGBOT_MAP_MODEL_PATH=~/models/lingbot-map/checkpoint.pt
+```
+
+**Triggering a reconstruction.** The server exposes the `lingbot-map-reconstruct` world job type. Enqueue one against a scan that has a finalized session:
+
+```bash
+curl -X POST http://<host>:8000/worlds/default/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"lingbot-map-reconstruct","scanId":"<scanId>"}'
+```
+
+The job invokes `scripts/lingbot_map_worker.py` as a subprocess and writes three sibling artifacts into the session directory:
+
+| File | What it is |
+|------|-----------|
+| `lingbot-map.point-cloud.ply` | Binary PLY of merged world points (XYZ + RGB when available) |
+| `lingbot-map.poses.json` | Per-frame camera-to-world matrices + intrinsics |
+| `lingbot-map.manifest.json` | Run index + stats; always written, even on skip/error |
+
+All three are served read-only at `/sessions/<id>/<artifact>`. The desktop editor consumes them via the world-job artifact metadata. If LingBot-Map / torch is not installed, or the checkpoint is missing, the worker writes a `skipped` manifest with a `remediation` hint and the world job completes with that message rather than failing — so the UI explains *why* no reconstruction was produced.
+
+See [docs/lingbot-map.md](docs/lingbot-map.md) for the full architecture diagram, UI walkthrough with screenshots, test setup, and CC-BY clip provenance.
+
 ---
 
 ## Testing

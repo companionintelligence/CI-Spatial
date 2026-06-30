@@ -63,3 +63,9 @@ public/draco/
 
 # Generated test fixtures — npm run gen:test-data
 test-data/
+
+# LingBot-Map reference clip — fetched on demand via npm run test:lingbot:fetch-video.
+# Large CC-BY video; only LICENSE.txt is committed.
+tests/fixtures/lingbot-map/source.mp4
+tests/fixtures/lingbot-map/*.webm
+tests/fixtures/lingbot-map/*.mov
