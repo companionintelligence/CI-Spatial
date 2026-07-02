@@ -269,3 +269,13 @@ export async function createWebXRProvider(): Promise<WebXRProvider> {
   if (!supported) throw new Error('immersive-ar session not supported')
   return new WebXRProvider()
 }
+
+/** True if this browser can run a native `immersive-ar` WebXR session. */
+export async function isImmersiveARSupported(): Promise<boolean> {
+  if (!navigator.xr) return false
+  try {
+    return await navigator.xr.isSessionSupported('immersive-ar')
+  } catch {
+    return false
+  }
+}

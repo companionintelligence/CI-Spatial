@@ -56,6 +56,14 @@ test-results/
 scans/
 summaries/
 
+# TLS certificates (tailscale cert output) — machine-local, never commit
+*.crt
+*.key
+
+# Local test-run isolation dirs (npm run test:box, npm run bench:models)
+.test-run/
+.bench-run/
+
 # Draco decoder — copied from node_modules by scripts/copy-draco.mjs (postinstall)
 public/draco/
 

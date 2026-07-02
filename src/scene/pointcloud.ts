@@ -7,12 +7,14 @@
  */
 
 const DEFAULT_VOXEL_M = 0.05 // 5 cm
+const MAX_POINTS = 250_000 // hard memory cap — decimate instead of growing past this
 
 export class PointCloud {
   private _data: Float32Array = new Float32Array(3000) // 1 000 pts × 3 floats
   private _count = 0
   private _voxelSize: number
   private _occupied = new Set<string>()
+  private _decimations = 0
 
   constructor(voxelSizeM = DEFAULT_VOXEL_M) {
     this._voxelSize = voxelSizeM
@@ -20,6 +22,11 @@ export class PointCloud {
 
   get count(): number {
     return this._count
+  }
+
+  /** How many times the cloud has been decimated to stay under MAX_POINTS. */
+  get decimations(): number {
+    return this._decimations
   }
 
   /**
@@ -90,9 +97,28 @@ export class PointCloud {
 
   private _grow(): void {
     if (this._count * 3 < this._data.length) return
+    // Doubling past MAX_POINTS would blow memory — decimate in place instead:
+    // keep every 2nd point, halve the live count, and keep accepting points.
+    if (this._data.length * 2 > MAX_POINTS * 3) {
+      this._decimate()
+      return
+    }
     const next = new Float32Array(this._data.length * 2)
     next.set(this._data)
     this._data = next
+  }
+
+  private _decimate(): void {
+    const half = Math.floor(this._count / 2)
+    for (let i = 0; i < half; i++) {
+      const src = i * 2 * 3
+      const dst = i * 3
+      this._data[dst]     = this._data[src]
+      this._data[dst + 1] = this._data[src + 1]
+      this._data[dst + 2] = this._data[src + 2]
+    }
+    this._count = half
+    this._decimations++
   }
 }
 

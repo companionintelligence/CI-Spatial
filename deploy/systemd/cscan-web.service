@@ -1,0 +1,22 @@
+# Companion Scan — production web frontend (vite build + vite preview on :5173).
+# `vite preview` inherits server.https/proxy from vite.config.ts, so phones get
+# the same TLS cert + API proxy wiring as the dev server, without HMR overhead.
+# For dev iteration: systemctl --user stop cscan-web cscan-server && npm start
+[Unit]
+Description=Companion Scan web frontend (vite preview, :5173)
+Wants=cscan-server.service
+After=cscan-server.service
+
+[Service]
+WorkingDirectory=__REPO__
+EnvironmentFile=%h/.config/cscan/env
+# Rebuild the bundle on service start unless CSCAN_SKIP_BUILD=1 (fast restarts).
+ExecStartPre=/bin/sh -c '[ "$CSCAN_SKIP_BUILD" = "1" ] || __NPM__ run build'
+ExecStartPre=-__REPO__/scripts/wait-for-url.sh http://127.0.0.1:${PORT}/health 60 soft
+ExecStart=__NPM__ run preview
+Restart=on-failure
+RestartSec=3
+SyslogIdentifier=cscan-web
+
+[Install]
+WantedBy=default.target

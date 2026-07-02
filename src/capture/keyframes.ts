@@ -105,7 +105,10 @@ export class KeyframeStreamer {
   /** Open a server session and begin pose-delta keyframing. */
   async start(): Promise<void> {
     if (this._active) return
-    const resp = await fetch('/sessions', { method: 'POST' })
+    const resp = await fetch('/sessions', {
+      method: 'POST',
+      signal: AbortSignal.timeout(10_000),
+    })
     if (!resp.ok) throw new Error(`POST /sessions → ${resp.status}`)
     const { sessionId } = await resp.json() as { sessionId: string }
 
@@ -134,10 +137,13 @@ export class KeyframeStreamer {
       this._pollHandle = null
     }
 
-    // Bounded drain — don't trap the user on a stuck network
-    const deadline = Date.now() + 5000
-    while ((this._queue.length > 0 || this._uploading) && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 150))
+    // Bounded drain — don't trap the user on a stuck network.  Skipped when
+    // the page is hidden (going away); the keepalive finalize still lands.
+    if (document.visibilityState !== 'hidden') {
+      const deadline = Date.now() + 5000
+      while ((this._queue.length > 0 || this._uploading) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 150))
+      }
     }
 
     const sessionId = this._sessionId
@@ -150,6 +156,8 @@ export class KeyframeStreamer {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(finalize ?? {}),
+        keepalive: true, // payload is small; survives the page unloading
+        signal: AbortSignal.timeout(10_000),
       })
       console.log(`[keyframes] finalized ${sessionId} (${this._sent} keyframes)`)
     } catch (e) {
@@ -283,10 +291,11 @@ export class KeyframeStreamer {
         const resp = await fetch(`/sessions/${this._sessionId}/keyframes`, {
           method: 'POST',
           body: form,
+          signal: AbortSignal.timeout(20_000),
         })
         if (resp.ok) return true
         if (resp.status >= 400 && resp.status < 500) return false // not retryable
-      } catch { /* network error — retry */ }
+      } catch { /* network error or timeout — retry */ }
       await new Promise((r) => setTimeout(r, 500 * 2 ** attempt))
     }
     return false

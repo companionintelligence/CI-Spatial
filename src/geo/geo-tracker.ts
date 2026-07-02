@@ -194,6 +194,7 @@ export class GeoTracker {
 
       const resp = await fetch(url.toString(), {
         headers: { 'Accept-Language': 'en', 'User-Agent': 'ci-xr-scan/1.0' },
+        signal: AbortSignal.timeout(5000),
       })
       if (!resp.ok) return
 

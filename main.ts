@@ -17,6 +17,7 @@
  * GET  /sessions/:id                   → session record
  * POST /upload-summary     multipart { file: File(.md) } → { filename }
  * POST /process-scan       JSON { filename, action, sessionId? } → { action, result }
+ * POST /client-logs        JSON { entries: [{ ts, level, msg, stack?, url? }], ua? } → 204
  * GET  /projects           → Project[]
  * POST /projects           JSON { name, address?, notes? } → Project
  * GET  /projects/:id       → Project
@@ -51,7 +52,12 @@ import type {
 } from './src/world/types.ts'
 
 const PORT = Number(Deno.env.get('PORT') ?? 8000)
-const ALLOWED_ORIGIN_PREFIX = Deno.env.get('ALLOWED_ORIGIN_PREFIX') ?? 'https://liambook.capybara-ulmer.ts.net'
+const SERVER_STARTED_AT = Date.now()
+// Origin phones arrive from. Precedence: explicit prefix → TAILSCALE_HOSTNAME
+// (shared with vite.config.ts) → historical default.
+const TAILSCALE_HOSTNAME = Deno.env.get('TAILSCALE_HOSTNAME')
+const ALLOWED_ORIGIN_PREFIX = Deno.env.get('ALLOWED_ORIGIN_PREFIX')
+  ?? (TAILSCALE_HOSTNAME ? `https://${TAILSCALE_HOSTNAME}` : 'https://liambook.capybara-ulmer.ts.net')
 
 const SCANS_DIR    = Deno.env.get('SCANS_DIR')    ?? './scans'
 const SUMMARIES_DIR = Deno.env.get('SUMMARIES_DIR') ?? './summaries'
@@ -59,6 +65,10 @@ const SESSIONS_DIR = Deno.env.get('SESSIONS_DIR') ?? `${SCANS_DIR}/sessions`
 const WORLDS_DIR = Deno.env.get('WORLDS_DIR') ?? './worlds'
 const MAX_KEYFRAMES_PER_SESSION = 2000
 const WORLD_STRICT_AUTH = Deno.env.get('WORLD_STRICT_AUTH') === '1'
+// /infer hardening knobs
+const INFER_MAX_IMAGE_BYTES = Number(Deno.env.get('INFER_MAX_IMAGE_BYTES') ?? '') || 12_000_000
+const ENGINE_LOAD_WAIT_MS = 15_000 // max time /infer waits for the model to finish loading
+const INFER_TIMEOUT_MS = 60_000    // hard cap on a single engine.infer() call
 
 const LINGBOT_MAP_SCRIPT = Deno.env.get('LINGBOT_MAP_SCRIPT') ??
   new URL('./scripts/lingbot_map_worker.py', import.meta.url).pathname
@@ -99,6 +109,7 @@ const jobQueue = new JobQueue(SCANS_DIR, broadcast)
 await jobQueue.init()
 
 let modelLoaded = false
+let engineLoadSettled = false
 const engine = new InferenceEngine()
 const engineLoadPromise = engine.load().then(() => {
   console.log('[server] Model sessions ready')
@@ -106,7 +117,11 @@ const engineLoadPromise = engine.load().then(() => {
 }).catch((e) => {
   console.error('[server] Model load failed:', e.message)
   console.error('[server] Running in server-only mode (VLM inference will be unavailable/fallback to WebGPU)')
+}).finally(() => {
+  engineLoadSettled = true
 })
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
 const app = new Hono()
 
@@ -133,31 +148,107 @@ app.use(
   }),
 )
 
-app.get('/health', (c) => c.json({ status: 'ok', model: engine.modelId, modelReady: modelLoaded }))
+app.get('/health', (c) => c.json({
+  status: 'ok',
+  model: engine.modelId,
+  modelReady: modelLoaded,
+  mode: engine.mode,
+  engineLoadState: !engineLoadSettled ? 'loading' : modelLoaded ? 'ready' : 'failed',
+  uptimeMs: Date.now() - SERVER_STARTED_AT,
+  lastInferMs: engine.lastInferMs,
+  lastInferAt: engine.lastInferAt,
+}))
 
 app.post('/infer', async (c) => {
+  // Reject oversized uploads before buffering them (header check first, then
+  // the real byte count for chunked bodies).
+  const contentLength = Number(c.req.header('content-length') ?? '')
+  if (Number.isFinite(contentLength) && contentLength > INFER_MAX_IMAGE_BYTES) {
+    return c.json({ error: `Image too large (${contentLength} bytes; max ${INFER_MAX_IMAGE_BYTES})`, code: 'too-large' }, 413)
+  }
+
   const form = await c.req.formData()
   const imageFile = form.get('image')
   if (!imageFile || !(imageFile instanceof File)) {
     return c.json({ error: 'Missing image field' }, 400)
   }
 
-  // Wait for ONNX sessions to finish loading (large models take several seconds on first start)
-  await engineLoadPromise
+  // Bounded wait for model load — never park phone requests indefinitely.
+  await Promise.race([engineLoadPromise, sleep(ENGINE_LOAD_WAIT_MS)])
   if (!modelLoaded) {
-    return c.json({ error: 'Model failed to load on server — running in server-only mode. Install local models or use WebGPU fallback.' }, 503)
+    return engineLoadSettled
+      ? c.json({ error: 'Model failed to load on server — install local models or use WebGPU fallback.', code: 'model-failed' }, 503)
+      : c.json({ error: `Model still loading after ${ENGINE_LOAD_WAIT_MS / 1000}s — retry shortly.`, code: 'model-loading' }, 503)
   }
 
   try {
     const buffer = await imageFile.arrayBuffer()
+    if (buffer.byteLength > INFER_MAX_IMAGE_BYTES) {
+      return c.json({ error: `Image too large (${buffer.byteLength} bytes; max ${INFER_MAX_IMAGE_BYTES})`, code: 'too-large' }, 413)
+    }
     console.log(`[infer] Received image: ${buffer.byteLength} bytes`)
-    const detections = await engine.infer(new Uint8Array(buffer))
-    console.log(`[infer] Returning ${detections.length} detections:`, JSON.stringify(detections))
+    const started = Date.now()
+    const detections = await Promise.race([
+      engine.infer(new Uint8Array(buffer)),
+      sleep(INFER_TIMEOUT_MS).then(() => 'timeout' as const),
+    ])
+    if (detections === 'timeout') {
+      console.error(`[infer error] inference exceeded ${INFER_TIMEOUT_MS}ms`)
+      return c.json({ error: `Inference timed out after ${INFER_TIMEOUT_MS / 1000}s`, code: 'timeout' }, 504)
+    }
+    const elapsed = Date.now() - started
+    console.log(`[infer] Returning ${detections.length} detections in ${elapsed}ms:`, JSON.stringify(detections))
+    c.header('Server-Timing', `infer;dur=${elapsed}`)
+    c.header('X-Inference-Ms', String(elapsed))
     return c.json(detections)
   } catch (err) {
     console.error('[infer error]', err)
     return c.json({ error: String(err) }, 500)
   }
+})
+
+// ── Phone-side console relay (?debug=remote pages POST here) ─────────────────
+const clientLogHits = new Map<string, number[]>()
+
+app.post('/client-logs', async (c) => {
+  const ip = c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
+  const now = Date.now()
+  const hits = (clientLogHits.get(ip) ?? []).filter((t) => now - t < 60_000)
+  if (hits.length >= 60) return c.json({ error: 'Rate limit exceeded' }, 429)
+  hits.push(now)
+  clientLogHits.set(ip, hits)
+
+  const raw = await c.req.text()
+  if (raw.length > 16_384) return c.json({ error: 'Log payload too large' }, 413)
+
+  let body: { entries?: Array<{ ts?: number; level?: string; msg?: string; stack?: string; url?: string }>; ua?: string }
+  try {
+    body = JSON.parse(raw)
+  } catch {
+    return c.json({ error: 'Invalid JSON' }, 400)
+  }
+  if (!Array.isArray(body.entries)) return c.json({ error: 'Missing entries array' }, 400)
+
+  const ipTag = ip.includes('.') ? ip.split('.').pop()! : ip
+  for (const entry of body.entries) {
+    const record = {
+      ts: entry.ts ?? now,
+      level: String(entry.level ?? 'log'),
+      msg: String(entry.msg ?? '').slice(0, 1000),
+      stack: entry.stack?.slice(0, 2000),
+      url: entry.url,
+      ua: body.ua,
+      ip: ipTag,
+    }
+    console.log(`[client ${ipTag}] ${record.level} ${record.msg}`)
+    try {
+      await Deno.writeTextFile(`${SCANS_DIR}/client-logs.jsonl`, JSON.stringify(record) + '\n', { append: true })
+    } catch (e) {
+      console.warn('[client-logs] append failed:', e)
+    }
+    broadcast({ type: 'client-log', ...record })
+  }
+  return c.body(null, 204)
 })
 
 // ── Scan file storage ─────────────────────────────────────────────────────────
@@ -1015,7 +1106,9 @@ function viteBaseUrlFromEnv(): string {
     if (!url.port) url.port = '5173'
     return url.toString().replace(/\/$/, '')
   } catch {
-    return 'https://liambook.capybara-ulmer.ts.net:5173'
+    return TAILSCALE_HOSTNAME
+      ? `https://${TAILSCALE_HOSTNAME}:5173`
+      : 'https://liambook.capybara-ulmer.ts.net:5173'
   }
 }
 

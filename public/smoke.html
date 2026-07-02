@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Companion Scan — Smoke Test</title>
+    <meta name="theme-color" content="#010d0e" />
+    <style>
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+      :root {
+        color-scheme: dark;
+        --ci-bg-elevated: rgba(8, 21, 22, 0.88);
+        --ci-line: rgba(239, 240, 240, 0.12);
+        --ci-text: #eef4f1;
+        --ci-muted: rgba(239, 244, 241, 0.56);
+        --ci-accent: #80ffe1;
+        --ci-ok: #66bb6a;
+        --ci-warning: #ffcc80;
+        --ci-fail: #ef5350;
+        --ci-font-body: 'Avenir Next', 'Avenir', 'Helvetica Neue', 'Segoe UI', sans-serif;
+      }
+
+      html, body {
+        min-height: 100%;
+        background:
+          radial-gradient(circle at 50% 0%, rgba(128, 255, 225, 0.1), transparent 34%),
+          linear-gradient(180deg, #071212 0%, #010d0e 100%);
+        color: var(--ci-text);
+        font-family: var(--ci-font-body);
+      }
+
+      main {
+        max-width: 560px;
+        margin: 0 auto;
+        padding: 28px 16px calc(32px + env(safe-area-inset-bottom));
+      }
+
+      .eyebrow {
+        color: var(--ci-accent);
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        margin-bottom: 6px;
+      }
+      h1 { font-size: 18px; font-weight: 800; margin-bottom: 4px; }
+      .subtitle { font-size: 12px; color: var(--ci-muted); margin-bottom: 16px; line-height: 1.5; }
+
+      #summary {
+        border: 1px solid var(--ci-line);
+        border-radius: 12px;
+        padding: 11px 13px;
+        font-size: 13px;
+        font-weight: 700;
+        margin-bottom: 14px;
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--ci-muted);
+      }
+      #summary.ok   { border-color: rgba(102, 187, 106, 0.5);  background: rgba(102, 187, 106, 0.12); color: var(--ci-ok); }
+      #summary.warn { border-color: rgba(255, 204, 128, 0.45); background: rgba(255, 204, 128, 0.1);  color: var(--ci-warning); }
+      #summary.fail { border-color: rgba(239, 83, 80, 0.5);    background: rgba(239, 83, 80, 0.12);   color: var(--ci-fail); }
+
+      #rows {
+        border: 1px solid var(--ci-line);
+        border-radius: 14px;
+        background: var(--ci-bg-elevated);
+        overflow: hidden;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: 52px minmax(0, 1fr);
+        gap: 10px;
+        padding: 10px 12px;
+        align-items: start;
+      }
+      .row + .row { border-top: 1px solid rgba(255, 255, 255, 0.06); }
+
+      .badge {
+        margin-top: 2px;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.05em;
+        text-align: center;
+        border-radius: 5px;
+        padding: 3px 0;
+        border: 1px solid var(--ci-line);
+        color: var(--ci-muted);
+      }
+      .badge.pass { border-color: rgba(102, 187, 106, 0.55);  background: rgba(102, 187, 106, 0.14); color: var(--ci-ok); }
+      .badge.warn { border-color: rgba(255, 204, 128, 0.5);   background: rgba(255, 204, 128, 0.12); color: var(--ci-warning); }
+      .badge.fail { border-color: rgba(239, 83, 80, 0.55);    background: rgba(239, 83, 80, 0.14);   color: var(--ci-fail); }
+
+      .name { font-size: 13px; font-weight: 700; }
+      .detail {
+        font-size: 11px;
+        color: var(--ci-muted);
+        font-family: ui-monospace, Menlo, monospace;
+        line-height: 1.5;
+        margin-top: 2px;
+        overflow-wrap: anywhere;
+      }
+
+      footer { margin-top: 16px; font-size: 11px; color: var(--ci-muted); line-height: 1.7; }
+      footer a { color: var(--ci-accent); }
+      #page-url { font-family: ui-monospace, Menlo, monospace; overflow-wrap: anywhere; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="eyebrow">Companion Intelligence</div>
+      <h1>Smoke Test</h1>
+      <p class="subtitle">60-second phone triage before AR testing. Results are also relayed to the box via /client-logs (npm run logs:watch).</p>
+      <div id="summary">Running checks…</div>
+      <div id="rows"></div>
+      <footer>
+        <div id="page-url"></div>
+        <div><a href="/">Scanner (8th Wall)</a> · <a href="/webxr.html">WebXR scanner</a></div>
+      </footer>
+    </main>
+
+    <script>
+      // Static, dependency-free — plain script, no imports, no build step.
+      const rowsEl = document.getElementById('rows')
+      const results = []
+
+      document.getElementById('page-url').textContent = location.href
+
+      function addRow(name) {
+        const row = document.createElement('div')
+        row.className = 'row'
+        row.innerHTML = '<span class="badge">RUN</span><div><div class="name"></div><div class="detail">running…</div></div>'
+        row.querySelector('.name').textContent = name
+        rowsEl.appendChild(row)
+        return function done(status, detail) {
+          const badge = row.querySelector('.badge')
+          badge.textContent = status
+          badge.className = 'badge ' + status.toLowerCase()
+          row.querySelector('.detail').textContent = detail
+          results.push({ name, status, detail })
+        }
+      }
+
+      async function check(name, fn) {
+        const done = addRow(name)
+        try {
+          const r = await fn()
+          done(r.status, r.detail)
+        } catch (e) {
+          done('FAIL', e && e.message ? e.message : String(e))
+        }
+      }
+
+      function fmtBytes(n) {
+        if (typeof n !== 'number') return '?'
+        if (n >= 1e9) return (n / 1e9).toFixed(2) + ' GB'
+        if (n >= 1e6) return (n / 1e6).toFixed(1) + ' MB'
+        if (n >= 1e3) return (n / 1e3).toFixed(1) + ' kB'
+        return n + ' B'
+      }
+
+      function fmtUptime(ms) {
+        if (typeof ms !== 'number') return '?'
+        const s = Math.round(ms / 1000)
+        if (s < 90) return s + ' s'
+        if (s < 5400) return Math.round(s / 60) + ' min'
+        return (s / 3600).toFixed(1) + ' h'
+      }
+
+      // 1. Secure context + UA + viewport
+      function checkContext() {
+        const detail = 'UA ' + navigator.userAgent
+          + ' · viewport ' + innerWidth + '×' + innerHeight + ' @' + (devicePixelRatio || 1) + 'x'
+        return window.isSecureContext
+          ? { status: 'PASS', detail: 'secure context · ' + detail }
+          : { status: 'FAIL', detail: 'NOT a secure context — camera/XR/SW will fail · ' + detail }
+      }
+
+      // 2. GET /health
+      async function checkHealth() {
+        const resp = await fetch('/health', { signal: AbortSignal.timeout(8000) })
+        if (!resp.ok) return { status: 'FAIL', detail: 'HTTP ' + resp.status }
+        const h = await resp.json()
+        return {
+          status: 'PASS',
+          detail: 'model ' + h.model + ' · mode ' + h.mode + ' · engine ' + h.engineLoadState
+            + ' · up ' + fmtUptime(h.uptimeMs)
+            + (typeof h.lastInferMs === 'number' ? ' · last infer ' + h.lastInferMs + ' ms' : ''),
+        }
+      }
+
+      // 3. Tiny /infer round-trip — 64×64 sofa-orange canvas (CV palette, src/shared/cv-palette.ts)
+      async function checkInfer() {
+        const canvas = document.createElement('canvas')
+        canvas.width = 64
+        canvas.height = 64
+        const ctx = canvas.getContext('2d')
+        ctx.fillStyle = '#ff6d00' // rgb(255,109,0) → "sofa" in the mock engine
+        ctx.fillRect(0, 0, 64, 64)
+        const blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', 0.92))
+        if (!blob) return { status: 'FAIL', detail: 'canvas.toBlob returned null' }
+
+        const form = new FormData()
+        form.append('image', blob, 'smoke.jpg')
+        const t0 = performance.now()
+        // 75s: past the server's 60s inference cap, so a slow/cold model
+        // yields the server's typed 504 rather than a client-side abort.
+        const resp = await fetch('/infer', { method: 'POST', body: form, signal: AbortSignal.timeout(75000) })
+        const wallMs = Math.round(performance.now() - t0)
+
+        if (resp.status === 503) {
+          const body = await resp.json().catch(() => ({}))
+          return body.code === 'model-loading'
+            ? { status: 'WARN', detail: 'HTTP 503 model-loading — model warming up, retry shortly' }
+            : { status: 'FAIL', detail: 'HTTP 503 · ' + (body.code || body.error || 'unavailable') }
+        }
+        if (!resp.ok) return { status: 'FAIL', detail: 'HTTP ' + resp.status }
+        const json = await resp.json()
+        if (!Array.isArray(json)) return { status: 'FAIL', detail: 'response is not a JSON array' }
+        const match = (resp.headers.get('server-timing') || '').match(/infer;dur=(\d+)/)
+        const latency = match ? match[1] + ' ms (Server-Timing)' : wallMs + ' ms (wall clock)'
+        return { status: 'PASS', detail: json.length + ' detection(s) · ' + latency }
+      }
+
+      // 4. /events WebSocket
+      function checkEvents() {
+        return new Promise((resolve) => {
+          const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/events'
+          const t0 = performance.now()
+          let settled = false
+          let ws = null
+          const finish = (r) => {
+            if (settled) return
+            settled = true
+            try { if (ws) ws.close() } catch { /* already closed */ }
+            resolve(r)
+          }
+          setTimeout(() => finish({ status: 'FAIL', detail: 'no open event within 5 s → ' + url }), 5000)
+          try {
+            ws = new WebSocket(url)
+          } catch (e) {
+            return finish({ status: 'FAIL', detail: 'WebSocket constructor threw: ' + e })
+          }
+          ws.addEventListener('open', () =>
+            finish({ status: 'PASS', detail: 'open in ' + Math.round(performance.now() - t0) + ' ms → ' + url }))
+          ws.addEventListener('error', () =>
+            finish({ status: 'FAIL', detail: 'socket error before open → ' + url }))
+          ws.addEventListener('close', (ev) =>
+            finish({ status: 'FAIL', detail: 'closed before open (code ' + ev.code + ') → ' + url }))
+        })
+      }
+
+      // 5. IndexedDB write + read on a throwaway database
+      async function checkIndexedDB() {
+        if (!('indexedDB' in window)) return { status: 'FAIL', detail: 'indexedDB unavailable' }
+        const name = 'smoke-probe-' + Date.now()
+        const db = await new Promise((res, rej) => {
+          const req = indexedDB.open(name, 1)
+          req.onupgradeneeded = () => req.result.createObjectStore('kv')
+          req.onsuccess = () => res(req.result)
+          req.onerror = () => rej(req.error || new Error('indexedDB.open failed'))
+        })
+        try {
+          const value = await new Promise((res, rej) => {
+            const tx = db.transaction('kv', 'readwrite')
+            tx.objectStore('kv').put('ok', 'probe')
+            const get = tx.objectStore('kv').get('probe')
+            get.onsuccess = () => res(get.result)
+            tx.onerror = () => rej(tx.error || new Error('transaction failed'))
+          })
+          return value === 'ok'
+            ? { status: 'PASS', detail: 'open + write + read OK (throwaway db deleted)' }
+            : { status: 'FAIL', detail: 'read back unexpected value: ' + value }
+        } finally {
+          db.close()
+          indexedDB.deleteDatabase(name)
+        }
+      }
+
+      // 6. Service worker registration state
+      async function checkServiceWorker() {
+        if (!('serviceWorker' in navigator)) return { status: 'WARN', detail: 'navigator.serviceWorker unavailable' }
+        const reg = await navigator.serviceWorker.getRegistration()
+        if (!reg) return { status: 'WARN', detail: 'none registered (registers on first scanner visit)' }
+        const state = reg.active ? 'active' : reg.installing ? 'installing' : reg.waiting ? 'waiting' : 'registered'
+        return { status: 'PASS', detail: 'registered · ' + state + ' · scope ' + reg.scope }
+      }
+
+      // 7. XR runtimes — WebXR immersive-ar + XR8 global
+      async function checkXR() {
+        const xr8 = typeof window.XR8 !== 'undefined'
+          ? 'XR8 present'
+          : 'XR8 n/a (loads in scanner)'
+        if (!navigator.xr) return { status: 'WARN', detail: 'navigator.xr missing · ' + xr8 }
+        let ar
+        try {
+          ar = (await navigator.xr.isSessionSupported('immersive-ar')) ? 'supported' : 'not supported'
+        } catch (e) {
+          ar = 'check failed (' + e + ')'
+        }
+        return {
+          status: ar === 'supported' ? 'PASS' : 'WARN',
+          detail: 'navigator.xr present · immersive-ar ' + ar + ' · ' + xr8,
+        }
+      }
+
+      // 8. Storage estimate
+      async function checkStorage() {
+        if (!navigator.storage || !navigator.storage.estimate) {
+          return { status: 'WARN', detail: 'navigator.storage.estimate unavailable' }
+        }
+        const est = await navigator.storage.estimate()
+        const pct = est.quota ? ((est.usage / est.quota) * 100).toFixed(1) + '%' : '?'
+        return { status: 'PASS', detail: fmtBytes(est.usage) + ' used of ' + fmtBytes(est.quota) + ' quota (' + pct + ')' }
+      }
+
+      function renderSummary() {
+        const summary = document.getElementById('summary')
+        const fails = results.filter((r) => r.status === 'FAIL').length
+        const warns = results.filter((r) => r.status === 'WARN').length
+        let cls = 'ok'
+        let text = 'All ' + results.length + ' checks green'
+        if (fails > 0) {
+          cls = 'fail'
+          text = fails + ' failure' + (fails === 1 ? '' : 's') + (warns ? ' · ' + warns + ' warning' + (warns === 1 ? '' : 's') : '')
+        } else if (warns > 0) {
+          cls = 'warn'
+          text = 'No failures · ' + warns + ' warning' + (warns === 1 ? '' : 's')
+        }
+        summary.className = cls
+        summary.textContent = text
+        summary.dataset.fails = String(fails)
+        summary.dataset.warns = String(warns)
+        return text
+      }
+
+      function relayResults(summaryText) {
+        const level = { PASS: 'log', WARN: 'warn', FAIL: 'error' }
+        const entries = results.map((r) => ({
+          ts: Date.now(),
+          level: level[r.status] || 'log',
+          msg: '[smoke] ' + r.name + ': ' + r.status + ' — ' + r.detail,
+          url: location.href,
+        }))
+        entries.push({ ts: Date.now(), level: 'log', msg: '[smoke] summary: ' + summaryText, url: location.href })
+        return fetch('/client-logs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ entries, ua: navigator.userAgent }),
+        }).catch(() => { /* relay is best-effort — box may be offline */ })
+      }
+
+      async function run() {
+        await check('Secure context', checkContext)
+        await check('GET /health', checkHealth)
+        await check('POST /infer round-trip', checkInfer)
+        await check('/events WebSocket', checkEvents)
+        await check('IndexedDB', checkIndexedDB)
+        await check('Service worker', checkServiceWorker)
+        await check('XR runtimes', checkXR)
+        await check('Storage estimate', checkStorage)
+        const summaryText = renderSummary()
+        await relayResults(summaryText)
+      }
+
+      run()
+    </script>
+  </body>
+</html>
