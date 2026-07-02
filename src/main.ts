@@ -11,7 +11,7 @@
  *   7. Wire auto-capture toggle → pose-delta-based automated capture
  */
 import { createEighthWallProvider } from './ar/eighthwall'
-import { createWebXRProvider, WebXRProvider } from './ar/webxr'
+import { createWebXRProvider, WebXRProvider, isImmersiveARSupported } from './ar/webxr'
 import type { ARProvider, Pose } from './ar/provider'
 import { RoomScanner } from './ar/scanner'
 import { PointCloud } from './scene/pointcloud'
@@ -158,7 +158,10 @@ async function main() {
       return
     }
   }
-  updateXrModeLink(use8thWall)
+  // Only offer the WebXR toggle when it would actually work — no point
+  // sending desktop/unsupported-browser users to a dead-end landing page.
+  const webxrSupported = use8thWall ? await isImmersiveARSupported() : true
+  updateXrModeLink(use8thWall, webxrSupported)
 
   // ── 4. AR Overlay & Capture setup ──────────────────────────────────────────
   keyframes = new KeyframeStreamer(provider)
@@ -621,19 +624,27 @@ function waitForXR8(timeoutMs: number): Promise<boolean> {  return new Promise((
 }
 
 /**
- * Points the runtime-switch nav button at the other AR engine: an 8th Wall
- * session links to the WebXR scanner route (for HelloXR on iOS), and a WebXR
- * session links back to the default 8th Wall scanner.
+ * Points the runtime-switch nav button at the other AR engine. 8th Wall is
+ * the default; the WebXR toggle is only shown when this browser can actually
+ * run an `immersive-ar` session (`webxrSupported`) — otherwise it's hidden
+ * rather than sending the user to a dead-end landing page. A WebXR session
+ * always links back to the 8th Wall scanner.
  */
-function updateXrModeLink(use8thWall: boolean): void {
+function updateXrModeLink(use8thWall: boolean, webxrSupported: boolean): void {
   const link = document.getElementById('xr-mode-link') as HTMLAnchorElement | null
   if (!link) return
   if (use8thWall) {
-    link.href = '/webxr.html'
-    link.title = 'Switch to WebXR scanner (HelloXR on iOS)'
+    if (!webxrSupported) {
+      link.style.display = 'none'
+      return
+    }
+    link.style.display = ''
+    link.href = '/?ar=webxr'
+    link.title = 'Switch to WebXR scanner'
     link.setAttribute('aria-label', 'Switch to WebXR scanner')
     link.classList.remove('active')
   } else {
+    link.style.display = ''
     link.href = '/'
     link.title = 'WebXR mode active — switch back to 8th Wall scanner'
     link.setAttribute('aria-label', 'Switch to 8th Wall scanner')
