@@ -95,6 +95,7 @@ if (!existsSync(join(root, 'test-data', 'cv', 'expected.json'))) {
 
 // 2. Servers
 launch('deno', denoBin, ['run', '--allow-net', '--allow-read', '--allow-write', '--allow-env', '--allow-ffi', 'main.ts'], {
+  DENO_NO_PACKAGE_JSON: '1',
   INFERENCE_MODE: 'mock',
   PORT: String(API_PORT),
   SCANS_DIR: join(RUN_DIR, 'scans'),

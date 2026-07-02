@@ -74,6 +74,7 @@ export class InferenceEngine {
   // Ollama configuration
   private ollamaUrl: string
   private ollamaModel: string
+  private ollamaContextLength: number
 
   // ONNX sessions
   private embedTokensSession: any = null
@@ -87,6 +88,10 @@ export class InferenceEngine {
     this._mode = requested === 'onnx' ? 'onnx' : requested === 'mock' ? 'mock' : 'ollama'
     this.ollamaUrl = Deno.env.get('OLLAMA_HOST') ?? 'http://localhost:11434'
     this.ollamaModel = Deno.env.get('OLLAMA_MODEL') ?? 'moondream:latest'
+    this.ollamaContextLength = Math.max(
+      1024,
+      Number(Deno.env.get('OLLAMA_NUM_CTX') ?? Deno.env.get('OLLAMA_CONTEXT_LENGTH') ?? 16_384),
+    )
     this.modelId = this._mode === 'onnx' ? 'LiquidAI/LFM2.5-VL-1.6B-ONNX'
       : this._mode === 'mock' ? 'mock/color-blob-v1'
       : `Ollama/${this.ollamaModel}`
@@ -317,6 +322,7 @@ export class InferenceEngine {
       stream: false,
       options: {
         temperature: 0.1,
+        num_ctx: this.ollamaContextLength,
       }
     }
 

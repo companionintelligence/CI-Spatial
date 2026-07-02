@@ -8,6 +8,7 @@ After=network-online.target
 [Service]
 WorkingDirectory=__REPO__
 EnvironmentFile=%h/.config/cscan/env
+Environment=DENO_NO_PACKAGE_JSON=1
 # Soft gate: warn if Ollama isn't up yet, but start anyway — the engine
 # degrades gracefully and /health reports engineLoadState.
 ExecStartPre=-__REPO__/scripts/wait-for-url.sh ${OLLAMA_HOST}/api/tags 60 soft

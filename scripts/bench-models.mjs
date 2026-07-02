@@ -140,6 +140,7 @@ async function benchModel(model) {
     env: {
       ...process.env,
       ...(model === 'mock' ? { INFERENCE_MODE: 'mock' } : { INFERENCE_MODE: 'ollama', OLLAMA_MODEL: model, OLLAMA_HOST: OLLAMA }),
+      DENO_NO_PACKAGE_JSON: '1',
       PORT: String(PORT),
       SCANS_DIR: join(RUN_DIR, 'scans'),
       WORLDS_DIR: join(RUN_DIR, 'worlds'),
