@@ -1,0 +1,13 @@
+# Companion Scan — Tailscale HTTPS cert issuance/renewal (oneshot, timer-driven).
+# tailscale cert is a no-op unless the Let's Encrypt cert (90-day) is near renewal.
+[Unit]
+Description=Companion Scan Tailscale cert renewal
+
+[Service]
+Type=oneshot
+WorkingDirectory=__REPO__
+EnvironmentFile=%h/.config/cscan/env
+ExecStart=/bin/sh -c 'tailscale cert --cert-file "__REPO__/${TAILSCALE_HOSTNAME}.crt" --key-file "__REPO__/${TAILSCALE_HOSTNAME}.key" "${TAILSCALE_HOSTNAME}"'
+# vite preview reads the cert only at startup
+ExecStartPost=-/usr/bin/systemctl --user try-restart cscan-web.service
+SyslogIdentifier=cscan-cert
