@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>Companion Scan — World Editor</title>
     <link rel="manifest" href="/manifest.json" />
     <link rel="icon" href="/icon-192.png" type="image/png" />
@@ -43,6 +43,23 @@
         color: var(--ci-paper);
         font-family: 'Source Code Pro', 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
         overflow: hidden;
+        /* Editor chrome is not a document: no selection/callout/page zoom.
+           Inputs opt back in; the 3D canvas gets touch-action: none so
+           OrbitControls owns pinch instead of the page. */
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+        -webkit-tap-highlight-color: transparent;
+        touch-action: manipulation;
+      }
+
+      input, textarea, select, [contenteditable] {
+        -webkit-user-select: text;
+        user-select: text;
+      }
+
+      #viewport canvas {
+        touch-action: none;
       }
 
       #app {
@@ -1023,6 +1040,14 @@
       </div>
     </div>
 
+    <script>
+      // iOS Safari ignores user-scalable=no for pinch; block page zoom with
+      // the non-standard gesture* events. OrbitControls pinch is unaffected
+      // (it listens to pointer events on the canvas, touch-action: none).
+      for (const evt of ['gesturestart', 'gesturechange', 'gestureend']) {
+        document.addEventListener(evt, (e) => e.preventDefault(), { passive: false })
+      }
+    </script>
     <script type="module" src="/src/viewer/viewer.ts"></script>
   </body>
 </html>

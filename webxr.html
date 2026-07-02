@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>Companion Scan — WebXR</title>
     <link rel="manifest" href="/manifest.json" />
     <link rel="icon" href="/icon-192.png" type="image/png" />
@@ -23,6 +23,11 @@
           linear-gradient(180deg, #071212 0%, #010d0e 100%);
         color: #eff0f0;
         font-family: 'Avenir Next', 'Avenir', 'Helvetica Neue', 'Segoe UI', sans-serif;
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+        -webkit-tap-highlight-color: transparent;
+        touch-action: manipulation;
       }
 
       body { display: grid; place-items: center; padding: 24px; }
@@ -105,6 +110,11 @@
     </main>
 
     <script>
+      // Block iOS pinch zoom (user-scalable=no is ignored for pinch).
+      for (const evt of ['gesturestart', 'gesturechange', 'gestureend']) {
+        document.addEventListener(evt, (e) => e.preventDefault(), { passive: false })
+      }
+
       // Detect WebXR immersive-ar.  When available (HelloXR on iOS, Quest
       // browser, Android Chrome), forward straight into the scanner in
       // forced-WebXR mode; otherwise explain how to get a WebXR browser.

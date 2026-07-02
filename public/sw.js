@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'companion-scan-v2'
+const CACHE_VERSION = 'companion-scan-v3'
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -7,6 +7,8 @@ const APP_SHELL = [
   '/manifest.json',
   '/icon-192.png',
   '/icon-512.png',
+  '/webxr.html',
+  '/smoke.html',
   '/xr.js',
   '/xr-slam.js',
 ]
@@ -22,6 +24,10 @@ const API_PREFIXES = [
   '/scans',
   '/scan-locations',
   '/rtc-signal',
+  '/sessions',
+  '/jobs',
+  '/events',
+  '/client-logs',
 ]
 
 const QUEUE_DB = 'companion-scan-offline-queue'
@@ -69,7 +75,9 @@ self.addEventListener('fetch', (event) => {
   }
 
   if (request.mode === 'navigate') {
-    const fallback = url.pathname.endsWith('/viewer.html') ? '/viewer.html' : '/index.html'
+    const fallback = url.pathname.endsWith('/viewer.html') ? '/viewer.html'
+      : url.pathname.endsWith('/webxr.html') ? '/webxr.html'
+      : '/index.html'
     event.respondWith(networkFirst(request, fallback))
     return
   }
