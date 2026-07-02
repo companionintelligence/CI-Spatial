@@ -16,6 +16,7 @@ import { GeoMap, type ScanLocationEntry } from './geomap'
 import { LiveFeed } from './livefeed'
 import { loadSemanticAsset, createMediumPolyAsset } from './assets'
 import { fetchLingBotMapArtifacts, type LingBotMapOverlay } from './lingbot-map'
+import { attachSparkRenderer, loadSplat, disposeSplat, type LoadedSplat } from './splat-viewer'
 import { enuToGeo, hasGeoPose, matrixTranslation } from '../world/geo'
 import { LAYER_LABELS, LAYER_ORDER } from '../world/layers'
 import { registerPWA } from '../pwa'
@@ -125,6 +126,8 @@ let isTransformDragging = false
 const lingbotOverlays = new Map<string, LingBotMapOverlay>()
 let lingbotShowPoints = false
 let lingbotShowPath = false
+
+const loadedSplats = new Map<string, LoadedSplat>()
 
 const boundEdgeMaterial = new THREE.LineBasicMaterial({
   color: 0x4fc3f7,
@@ -257,6 +260,7 @@ function initWorldScene(): void {
 
   scene = new THREE.Scene()
   scene.name = 'Companion Scan World'
+  attachSparkRenderer(renderer, scene)
 
   const ambient = new THREE.AmbientLight(0xffffff, 0.62)
   const sun = new THREE.DirectionalLight(0xffffff, 1.15)
@@ -1006,6 +1010,64 @@ function setLingBotPointsVisible(visible: boolean): void {
 function setLingBotPathVisible(visible: boolean): void {
   lingbotShowPath = visible
   for (const overlay of lingbotOverlays.values()) overlay.pathGroup.visible = visible
+}
+
+// ─── Gaussian splats (Spark) ──────────────────────────────────────────────────
+
+async function addSplat(source: Parameters<typeof loadSplat>[0]): Promise<void> {
+  const status = document.getElementById('splat-status')
+  if (status) status.textContent = 'Loading splat…'
+  try {
+    const loaded = await loadSplat(source)
+    if (!scene) throw new Error('scene not ready')
+    scene.add(loaded.mesh)
+    loadedSplats.set(loaded.id, loaded)
+    if (status) status.textContent = ''
+  } catch (e) {
+    if (status) status.textContent = `Failed to load splat: ${e instanceof Error ? e.message : String(e)}`
+    console.error('[viewer] splat load failed:', e)
+  }
+  renderSplatList()
+}
+
+function removeSplat(id: string): void {
+  const loaded = loadedSplats.get(id)
+  if (!loaded) return
+  disposeSplat(loaded)
+  loadedSplats.delete(id)
+  renderSplatList()
+}
+
+function renderSplatList(): void {
+  const list = document.getElementById('splat-list')
+  if (!list) return
+  list.innerHTML = ''
+
+  if (loadedSplats.size === 0) {
+    list.innerHTML = '<div class="layer-meta">No splats loaded.</div>'
+    return
+  }
+
+  for (const loaded of loadedSplats.values()) {
+    const row = document.createElement('div')
+    row.className = 'layer-item'
+
+    const left = document.createElement('div')
+    left.style.minWidth = '0'
+    left.innerHTML = `
+      <div class="layer-name">${escHtml(loaded.label)}</div>
+      <div class="layer-meta">${loaded.mesh.numSplats.toLocaleString()} splats</div>
+    `
+
+    const remove = document.createElement('button')
+    remove.className = 'job-btn'
+    remove.textContent = '✕'
+    remove.title = 'Remove splat'
+    remove.addEventListener('click', () => removeSplat(loaded.id))
+
+    row.append(left, remove)
+    list.appendChild(row)
+  }
 }
 
 function selectEditableObject(obj: THREE.Object3D): void {
@@ -1859,6 +1921,21 @@ document.getElementById('lingbot-map-points-toggle')?.addEventListener('change',
 })
 document.getElementById('lingbot-map-path-toggle')?.addEventListener('change', (e) => {
   setLingBotPathVisible((e.target as HTMLInputElement).checked)
+})
+
+document.getElementById('btn-load-splat-url')?.addEventListener('click', () => {
+  const input = document.getElementById('splat-url-input') as HTMLInputElement | null
+  const url = input?.value.trim()
+  if (!url) return
+  void addSplat({ kind: 'url', url })
+  if (input) input.value = ''
+})
+document.getElementById('splat-file-input')?.addEventListener('change', (e) => {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  void file.arrayBuffer().then((fileBytes) => addSplat({ kind: 'file', fileBytes, fileName: file.name }))
+  input.value = ''
 })
 
 document.getElementById('inspector-close')!.addEventListener('click', clearSelection)

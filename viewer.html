@@ -952,6 +952,26 @@
                 </label>
                 <div id="lingbot-map-stats" class="layer-meta" style="margin-top:6px;"></div>
               </div>
+
+              <div class="edit-section" id="splat-section">
+                <div class="edit-section-title">Gaussian Splats</div>
+                <div class="layer-meta" style="margin-bottom:6px;">
+                  View a trained Gaussian-splat asset (.ply/.spz/.splat/.ksplat) alongside your scans. There's no in-app trainer yet — export from an external tool.
+                </div>
+                <div style="display:flex;gap:6px;margin-bottom:6px;">
+                  <input type="text" id="splat-url-input" placeholder="https://…/scene.spz"
+                    style="flex:1;min-width:0;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:#fff;font-size:11px;padding:6px 8px;outline:none;" />
+                  <button class="job-btn" id="btn-load-splat-url">Load</button>
+                </div>
+                <label class="job-btn" for="splat-file-input" style="display:block;text-align:center;cursor:pointer;">
+                  Load from file…
+                </label>
+                <input type="file" id="splat-file-input" accept=".ply,.spz,.splat,.ksplat,.sog,.zip" style="display:none;" />
+                <div id="splat-status" class="layer-meta" style="margin-top:6px;"></div>
+                <div id="splat-list" style="margin-top:8px;">
+                  <div class="layer-meta">No splats loaded.</div>
+                </div>
+              </div>
             </div>
           </div>
 
