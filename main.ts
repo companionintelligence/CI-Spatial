@@ -35,6 +35,7 @@ import { logger } from 'hono/logger'
 import { InferenceEngine } from './inference.ts'
 import { JobQueue } from './jobs.ts'
 import { runLingBotMapReconstruction } from './lingbot_map.ts'
+import { runSplatTrain } from './splat_train.ts'
 import { composeYUpTransform, geoToEnu, hasGeoPose } from './src/world/geo.ts'
 import { defaultLayerIndex } from './src/world/layers.ts'
 import type {
@@ -378,6 +379,40 @@ app.get('/jobs', (c) => c.json([...jobQueue.jobs].reverse()))
 app.get('/jobs/:id', (c) => {
   const job = jobQueue.job(c.req.param('id'))
   return job ? c.json(job) : c.json({ error: 'Not found' }, 404)
+})
+
+// ── Splat-train artifacts ─────────────────────────────────────────────────────
+// Trained Gaussian-splat sidecars land in SCANS_DIR next to the source scan:
+//   <base>.splat.ply                  INRIA 3DGS point cloud (Brush output)
+//   <base>.compressed.ply             optional compressed variant
+//   <base>.splat-train.manifest.json  run index (status/gaussianCount/params)
+// Gated by an allowlisted suffix + the same traversal guard as /scans/:filename.
+// Registered before the .glb-only /scans/:filename route so these suffixes win.
+const SPLAT_ARTIFACT_MIME: Array<{ suffix: string; mime: string }> = [
+  { suffix: '.splat-train.manifest.json', mime: 'application/json' },
+  { suffix: '.compressed.ply', mime: 'application/octet-stream' },
+  { suffix: '.splat.ply', mime: 'application/octet-stream' },
+]
+
+app.get('/scans/:filename{.+\\.(splat\\.ply|compressed\\.ply|splat-train\\.manifest\\.json)}', async (c) => {
+  const filename = c.req.param('filename')
+  if (!filename || filename.includes('/') || filename.includes('\\') || filename.startsWith('.')) {
+    return c.json({ error: 'Invalid filename' }, 400)
+  }
+  const entry = SPLAT_ARTIFACT_MIME.find(e => filename.endsWith(e.suffix))
+  if (!entry) return c.json({ error: 'Invalid splat artifact path' }, 400)
+  try {
+    const data = await Deno.readFile(`${SCANS_DIR}/${filename}`)
+    return new Response(data, {
+      headers: {
+        'Content-Type': entry.mime,
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'private, max-age=300',
+      },
+    })
+  } catch {
+    return c.json({ error: 'Splat artifact not found' }, 404)
+  }
 })
 
 app.get('/scans/:filename', async (c) => {
@@ -1233,7 +1268,11 @@ async function completeJobSoon(slug: string, jobId: string): Promise<void> {
       const job = world.jobs.find(j => j.jobId === jobId)
       if (!job || job.status !== 'queued') return
       job.status = 'processing'
-      job.workerId = job.type === 'lingbot-map-reconstruct' ? 'lingbot-map' : 'local-coordinator'
+      job.workerId = job.type === 'lingbot-map-reconstruct'
+        ? 'lingbot-map'
+        : job.type === 'splat-train'
+          ? 'brush'
+          : 'local-coordinator'
       job.progress = 0.35
       job.updatedAt = new Date().toISOString()
       await saveWorld(world)
@@ -1241,6 +1280,11 @@ async function completeJobSoon(slug: string, jobId: string): Promise<void> {
 
       if (job.type === 'lingbot-map-reconstruct') {
         await _runLingBotMapJob(slug, jobId)
+        return
+      }
+
+      if (job.type === 'splat-train') {
+        await _runSplatTrainJob(slug, jobId)
         return
       }
 
@@ -1380,6 +1424,131 @@ async function _runLingBotMapJob(slug: string, jobId: string): Promise<void> {
   }
 }
 
+async function _runSplatTrainJob(slug: string, jobId: string): Promise<void> {
+  try {
+    const world = await loadWorld(slug)
+    const job = world.jobs.find(j => j.jobId === jobId)
+    if (!job) return
+    const scan = scanForJob(job, world)
+    const failure = jobFailureReason(job, world)
+    if (failure) {
+      job.status = 'failed'
+      job.error = failure
+      job.result = failure
+      job.progress = 1
+      job.updatedAt = new Date().toISOString()
+      await saveWorld(world)
+      broadcast({ type: 'world-job-update', worldId: world.worldId, job })
+      return
+    }
+    const sessionId = scan!.sessionId!
+    const sessionPath = sessionDir(sessionId)
+    if (!sessionPath) {
+      job.status = 'failed'
+      job.error = `Invalid session id: ${sessionId}`
+      job.result = job.error
+      job.progress = 1
+      job.updatedAt = new Date().toISOString()
+      await saveWorld(world)
+      broadcast({ type: 'world-job-update', worldId: world.worldId, job })
+      return
+    }
+
+    const base = scan!.filename.replace(/\.glb$/, '')
+    const outputPlyPath = `${SCANS_DIR}/${base}.splat.ply`
+    const outputCompressedPlyPath = `${SCANS_DIR}/${base}.compressed.ply`
+    const manifestPath = `${SCANS_DIR}/${base}.splat-train.manifest.json`
+    const result = await runSplatTrain({
+      sessionDir: sessionPath,
+      outputPlyPath,
+      outputCompressedPlyPath,
+      manifestPath,
+      provenance: { sessionId, scanId: scan!.scanId },
+    })
+
+    const current = await loadWorld(slug)
+    const currentJob = current.jobs.find(j => j.jobId === jobId)
+    if (!currentJob) return
+    currentJob.progress = 1
+    if (result.status === 'ok') {
+      currentJob.status = 'completed'
+      currentJob.result = jobResultFor(currentJob)
+      currentJob.artifacts = jobArtifactsFor(currentJob, current)
+      const plyName = `${base}.splat.ply`
+      currentJob.artifacts ??= []
+      currentJob.artifacts.push({
+        type: 'splat-ply',
+        label: `${scan!.name} Gaussian splat`,
+        url: `/scans/${encodeURIComponent(plyName)}`,
+        metadata: {
+          gaussianCount: result.gaussianCount ?? null,
+          compressedUrl: result.compressedPlyPath
+            ? `/scans/${encodeURIComponent(`${base}.compressed.ply`)}`
+            : null,
+          manifestUrl: `/scans/${encodeURIComponent(`${base}.splat-train.manifest.json`)}`,
+        },
+      })
+      // Promote the scan's reserved 'splat' layer from 'future' to a real
+      // 'sidecar' layer carrying the trained gaussian count. Falls back to a
+      // fresh entry if the default index somehow lacked one.
+      const targetScan = current.scans.find(s => s.scanId === scan!.scanId)
+      if (targetScan) {
+        const existing = targetScan.layerIndex.find(l => l.type === 'splat')
+        if (existing) {
+          existing.source = 'sidecar'
+          existing.count = result.gaussianCount ?? existing.count ?? null
+        } else {
+          targetScan.layerIndex.push({
+            id: 'layer-splat',
+            type: 'splat',
+            label: 'Gaussian splat',
+            visibleByDefault: false,
+            encodedInGlb: false,
+            source: 'sidecar',
+            count: result.gaussianCount ?? null,
+          })
+        }
+      }
+      applyCompletedJobToWorld(currentJob, current)
+    } else if (result.status === 'skipped') {
+      currentJob.status = 'completed'
+      currentJob.result = `Splat train skipped: ${result.manifest.skippedReason ?? 'unknown reason'}`
+      currentJob.artifacts = [{
+        type: 'splat-skip',
+        label: 'Splat training skipped',
+        url: `/scans/${encodeURIComponent(`${base}.splat-train.manifest.json`)}`,
+        metadata: {
+          sessionId,
+          skippedReason: result.manifest.skippedReason ?? null,
+          remediation: result.manifest.remediation ?? null,
+        },
+      }]
+    } else {
+      currentJob.status = 'failed'
+      currentJob.error = result.manifest.error ?? `brush exit ${result.exitCode}`
+      currentJob.result = currentJob.error
+    }
+    currentJob.updatedAt = new Date().toISOString()
+    await saveWorld(current)
+    broadcast({ type: 'world-job-update', worldId: current.worldId, job: currentJob })
+  } catch (err) {
+    console.error('[splat-train job error]', err)
+    try {
+      const recovered = await loadWorld(slug)
+      const recoveredJob = recovered.jobs.find(j => j.jobId === jobId)
+      if (recoveredJob) {
+        recoveredJob.status = 'failed'
+        recoveredJob.error = err instanceof Error ? err.message : String(err)
+        recoveredJob.result = recoveredJob.error
+        recoveredJob.progress = 1
+        recoveredJob.updatedAt = new Date().toISOString()
+        await saveWorld(recovered)
+        broadcast({ type: 'world-job-update', worldId: recovered.worldId, job: recoveredJob })
+      }
+    } catch { /* nothing more we can do */ }
+  }
+}
+
 function scanForJob(job: WorldJob, world: WorldProject): ScanManifest | null {
   if (!job.scanId) return null
   return world.scans.find(scan => scan.scanId === job.scanId || scan.filename === job.scanId) ?? null
@@ -1409,6 +1578,9 @@ function applyCompletedJobToWorld(job: WorldJob, world: WorldProject): void {
   else if (job.type === 'lingbot-map-reconstruct') {
     scan.status = scan.qualitySummary?.status ?? 'ready'
   }
+  else if (job.type === 'splat-train') {
+    scan.status = scan.qualitySummary?.status ?? 'ready'
+  }
 }
 
 function jobResultFor(job: WorldJob): string {
@@ -1428,7 +1600,7 @@ function jobResultFor(job: WorldJob): string {
     case 'lingbot-map-reconstruct':
       return 'LingBot-Map streaming reconstruction complete. Point cloud + per-frame poses written to the session.'
     case 'splat-train':
-      return 'Splat training inputs validated. gsplat/Graphdeco outputs should attach as splat layers.'
+      return 'Gaussian splat trained with Brush. The .splat.ply sidecar is available as a splat layer on the scan.'
     case 'export-world':
       return 'World export manifest is ready for a combined GLB and semantic JSON worker.'
   }
@@ -1483,6 +1655,8 @@ function jobArtifactsFor(job: WorldJob, world: WorldProject): WorldJob['artifact
       }]
     }
     case 'splat-train':
+      // The real .splat.ply artifact is appended by _runSplatTrainJob once the
+      // Brush run lands; this base entry records the training inputs.
       return scan ? [{
         type: 'splat-plan',
         label: `${scan.name} splat training inputs`,

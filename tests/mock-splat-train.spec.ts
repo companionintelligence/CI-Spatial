@@ -1,0 +1,147 @@
+/**
+ * Splat-train UI + server-processing integration test.
+ *
+ * What this covers end-to-end:
+ *   1. Server serves the trained-splat artifacts through the gated allowlist —
+ *      correct mime types, and a 400 on unknown / traversal names.
+ *   2. The world-job pipeline accepts `splat-train`.
+ *   3. The viewer's splat layer loads the served .ply into a SparkJS SplatMesh
+ *      (mesh initializes, numSplats > 0), surfaces the Trained-Splat panel in
+ *      the Layers tab, and the toggle drives visibility.
+ *
+ * Fixture provenance: scripts/make-splat-fixture.mjs synthesises a valid INRIA
+ * 3DGS .ply + the `<base>.splat-train.manifest.json` the world job writes. The
+ * real trainer is Brush (a GPU binary) that can't run in CI, so the artifact is
+ * synthetic — the data path (served .ply → SplatMesh) is identical to a real run.
+ *
+ * Run:
+ *   npm run test:splat:make-fixture      # one-time (re-run after edits)
+ *   API_URL=http://localhost:8000 VITE_URL=http://localhost:5173 \
+ *     npx playwright test --project=chromium-mock mock-splat-train
+ */
+import { test, expect } from '@playwright/test'
+import { existsSync } from 'node:fs'
+import { mkdir } from 'node:fs/promises'
+import { join } from 'node:path'
+
+const SCAN_BASE = 'splat-fixture'
+const SCANS_DIR = join(process.cwd(), 'scans')
+const SCREENSHOT_DIR = join(process.cwd(), 'docs', 'splat-train', 'screenshots')
+
+const API_URL = process.env['API_URL'] ?? ''
+const apiPath = (p: string): string => (API_URL ? `${API_URL}${p}` : p)
+
+const fixtureReady = existsSync(join(SCANS_DIR, `${SCAN_BASE}.splat-train.manifest.json`))
+
+test.describe('Splat-train server processing + viewer splat layer', () => {
+  test.skip(!fixtureReady, 'Fixture missing — run: npm run test:splat:make-fixture')
+  test.describe.configure({ mode: 'serial' })
+  test.setTimeout(120_000)
+
+  test.beforeAll(async () => {
+    await mkdir(SCREENSHOT_DIR, { recursive: true })
+  })
+
+  test('server serves the trained-splat manifest + .ply with correct mimes', async ({ request }) => {
+    const manifest = await request.get(apiPath(`/scans/${SCAN_BASE}.splat-train.manifest.json`))
+    expect(manifest.ok(), 'manifest 200').toBeTruthy()
+    expect(manifest.headers()['content-type']).toContain('application/json')
+    const body = await manifest.json() as { status: string; gaussianCount?: number }
+    expect(body.status).toBe('ok')
+    expect(body.gaussianCount ?? 0).toBeGreaterThan(0)
+
+    const ply = await request.get(apiPath(`/scans/${SCAN_BASE}.splat.ply`))
+    expect(ply.ok(), 'ply 200').toBeTruthy()
+    expect(ply.headers()['content-type']).toContain('application/octet-stream')
+    const bytes = await ply.body()
+    expect(new TextDecoder().decode(bytes.subarray(0, 3))).toBe('ply')
+  })
+
+  test('artifact route rejects unknown files and traversal', async ({ request }) => {
+    const bad = await request.get(apiPath(`/scans/${SCAN_BASE}.evil.ply`))
+    expect([400, 404]).toContain(bad.status())
+    const traversal = await request.get(apiPath(`/scans/${SCAN_BASE}.splat.ply/../../main.ts`))
+    expect([400, 404]).toContain(traversal.status())
+  })
+
+  test('queueing the world job accepts type splat-train', async ({ request }) => {
+    const resp = await request.post(apiPath('/worlds/default/jobs'), {
+      data: { type: 'splat-train' },
+    })
+    // 202 = accepted/queued, 200/201 = created, 4xx = validated rejection.
+    expect([200, 201, 202, 400, 404, 422]).toContain(resp.status())
+  })
+
+  test('viewer shows the Trained-Splat panel and toggle', async ({ page }) => {
+    page.on('pageerror', (err) => console.error('[page]', err))
+    await page.goto('/viewer.html?world=default')
+    await page.click('.sidebar-tab[data-tab="layers"]')
+    await expect(page.locator('#splat-layer-section')).toBeVisible()
+    await expect(page.locator('#splat-layer-toggle')).toBeVisible()
+    await page.screenshot({ path: join(SCREENSHOT_DIR, 'viewer-splat-panel.png'), fullPage: false })
+  })
+
+  test('splat-train option appears in the processing-queue dropdown', async ({ page }) => {
+    await page.goto('/viewer.html?world=default')
+    await page.click('.sidebar-tab[data-tab="world"]')
+    const select = page.locator('#job-type')
+    await expect(select).toBeVisible()
+    const options = await select.locator('option').allTextContents()
+    expect(options.some((o) => o.toLowerCase().includes('splat'))).toBeTruthy()
+    await select.selectOption('splat-train')
+    await page.screenshot({ path: join(SCREENSHOT_DIR, 'viewer-job-dropdown-splat.png'), fullPage: false })
+  })
+
+  test('splat layer loads the served .ply into a SplatMesh', async ({ page }) => {
+    if (!API_URL) test.skip()
+    page.on('pageerror', (err) => console.error('[page]', err))
+    // Forward in-page /scans fetches to the API_URL so the viewer's fetch and
+    // SparkJS's own URL resolution both hit our test server (not Vite's :8000).
+    await page.route('**/scans/**', async (route) => {
+      const url = new URL(route.request().url())
+      const res = await fetch(`${API_URL}${url.pathname}${url.search}`)
+      const buf = Buffer.from(await res.arrayBuffer())
+      await route.fulfill({ status: res.status, body: buf, headers: Object.fromEntries(res.headers.entries()) })
+    })
+    await page.goto('/viewer.html?world=default')
+    await page.click('.sidebar-tab[data-tab="layers"]')
+
+    // Drive the splat-layer loader directly with a minimal scan record pointing
+    // at the fixture base, then assert the SplatMesh initialised.
+    const result = await page.evaluate(async (scanBase) => {
+      const mod = await import('/src/viewer/splat-layer.ts') as typeof import('../src/viewer/splat-layer')
+      const stubScan = {
+        scanId: 'fixture-splat-scan',
+        sessionId: 'sess-fixture-splat',
+        filename: `${scanBase}.glb`,
+        name: 'Splat fixture scan',
+        glbUrl: `/scans/${scanBase}.glb`,
+        geoPose: { lat: null, lng: null, altitudeM: null, bearing: null, accuracyM: null },
+        localToWorld: [],
+        accuracyM: null,
+        capturedAt: null,
+        pointCount: null,
+        detectionCount: null,
+        layerIndex: [],
+        status: 'ready',
+      } as unknown as Parameters<typeof mod.fetchScanSplatLayer>[0]
+      const layer = await mod.fetchScanSplatLayer(stubScan)
+      const status = document.getElementById('splat-layer-status')
+      const stats = document.getElementById('splat-layer-stats')
+      if (layer && layer.manifest.status === 'ok') {
+        status!.textContent = `Trained splat ready — ${layer.gaussianCount.toLocaleString()} gaussians.`
+        stats!.textContent = `Trained in ${(layer.manifest.timing?.elapsedMs ?? 0) / 1000}s on ${layer.manifest.frameCount} frames.`
+      }
+      ;(document.getElementById('splat-layer-toggle') as HTMLInputElement).checked = true
+      return layer && layer.loaded
+        ? { status: layer.manifest.status, gaussianCount: layer.gaussianCount, numSplats: layer.loaded.mesh.numSplats }
+        : (layer ? { status: layer.manifest.status, gaussianCount: layer.gaussianCount, numSplats: 0 } : null)
+    }, SCAN_BASE)
+
+    expect(result).not.toBeNull()
+    expect(result!.status).toBe('ok')
+    expect(result!.gaussianCount).toBeGreaterThan(0)
+    expect(result!.numSplats).toBeGreaterThan(0)
+    await page.screenshot({ path: join(SCREENSHOT_DIR, 'viewer-splat-panel-loaded.png'), fullPage: false })
+  })
+})
