@@ -19,6 +19,7 @@
     "npm:jimp@^1.6.0": "1.6.1",
     "npm:jimp@^1.6.1": "1.6.1",
     "npm:onnxruntime-node@^1.21.0": "1.21.0",
+    "npm:qrcode-terminal@0.12": "0.12.0",
     "npm:three@0.184": "0.184.0",
     "npm:typescript@^6.0.3": "6.0.3",
     "npm:vite@^8.0.16": "8.0.16",
@@ -1190,6 +1191,10 @@
       ],
       "scripts": true
     },
+    "qrcode-terminal@0.12.0": {
+      "integrity": "sha512-EXtzRZmC+YGmGlDFbXKxQiMZNwCLEO6BANKXG4iCtSIM0yqc/pappSx3RIKr4r0uh5JsBckOXeKrB3Iz7mdQpQ==",
+      "bin": true
+    },
     "roarr@2.15.4": {
       "integrity": "sha512-CHhPh+UNHD2GTXNYhPWLnU8ONHdI+5DI+4EYIAOaiD63rHeYlZvyh8P+in5999TTSFgUYuKUAjzRI4mdh/p+2A==",
       "dependencies": [
@@ -1468,6 +1473,7 @@
         "npm:draco3dgltf@^1.5.7",
         "npm:iwer@^2.2.1",
         "npm:jimp@^1.6.1",
+        "npm:qrcode-terminal@0.12",
         "npm:three@0.184",
         "npm:typescript@^6.0.3",
         "npm:vite@^8.0.16",

@@ -75,10 +75,12 @@ test.describe('editor with test-home data', () => {
     const distance = await page.evaluate(() =>
       (window as never as { __measureTool: { lastDistanceM: number | null } }).__measureTool.lastDistanceM)
     // Both clicks may not hit geometry depending on camera fit; when they do,
-    // the distance must be a plausible in-room measurement.
+    // the distance must be plausible for the scene. With a freshly seeded
+    // world the camera fits all 24 geo-placed homes, so cross-viewport clicks
+    // can legitimately span different houses — bound at neighbourhood scale.
     if (distance !== null) {
       expect(distance).toBeGreaterThan(0.01)
-      expect(distance).toBeLessThan(50)
+      expect(distance).toBeLessThan(500)
       await expect(page.locator('#measure-label')).toBeVisible()
       await expect(page.locator('#measure-label')).toContainText(/m$/)
     }

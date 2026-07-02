@@ -367,6 +367,12 @@ def _extract_poses(
             extri, intri = pose_encoding_to_extri_intri(pose_enc, (image_size, image_size))
             matrices = _to_list(extri)
             intrinsics = _to_list(intri)
+            # The decoder returns batched tensors (B=1, N, 3, 4) / (B=1, N, 3, 3);
+            # drop the batch dim so matrices[i] lines up with sampled[i].
+            if len(matrices) == 1 and isinstance(matrices[0], list) and len(matrices[0]) == len(sampled):
+                matrices = matrices[0]
+            if len(intrinsics) == 1 and isinstance(intrinsics[0], list) and len(intrinsics[0]) == len(sampled):
+                intrinsics = intrinsics[0]
         except Exception as e:
             print(f"[lingbot-map] pose decode failed, writing capture-time pose only: {e}", file=sys.stderr)
 

@@ -23,7 +23,10 @@
     "test:mobile": "playwright test --project=webkit-iphone15",
     "test:iphone": "playwright test --project=iphone-usb",
     "logs:iphone": "node scripts/iwdp-console.mjs ws://localhost:9222/devtools/page/2",
-    "logs:watch": "node scripts/logs-watch.mjs"
+    "logs:watch": "node scripts/logs-watch.mjs",
+    "test:box": "node scripts/test-box.mjs",
+    "bench:models": "node scripts/bench-models.mjs",
+    "qr": "node scripts/qr.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",
@@ -42,6 +45,7 @@
     "draco3dgltf": "^1.5.7",
     "iwer": "^2.2.1",
     "jimp": "^1.6.1",
+    "qrcode-terminal": "^0.12.0",
     "typescript": "^6.0.3",
     "vite": "^8.0.16",
     "ws": "^8.21.0"
