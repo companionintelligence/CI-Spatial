@@ -26,6 +26,8 @@ type ChangeListener = (detections: Map<string, StoredDetection>, selected: Set<s
 const DB_NAME = 'ci-xr-scan'
 const STORE_NAME = 'sessions'
 const DB_VERSION = 1
+const DB_OPEN_TIMEOUT_MS = 5000
+const THUMBNAIL_QUOTA_FRACTION = 0.8
 
 export class DetectionStore {
   readonly sessionId: string
@@ -42,7 +44,12 @@ export class DetectionStore {
 
   /** Open (or create) the IndexedDB.  Call once before using the store. */
   async open(): Promise<void> {
-    this.db = await openDB()
+    try {
+      this.db = await withTimeout(openDB(), DB_OPEN_TIMEOUT_MS)
+    } catch (error) {
+      console.warn('[store] IndexedDB unavailable; session persistence disabled:', error)
+      this.db = null
+    }
   }
 
   get detections(): Map<string, StoredDetection> {
@@ -55,11 +62,12 @@ export class DetectionStore {
 
   /** Add or update detections; persists to IndexedDB and notifies listeners */
   async upsert(incoming: Map<string, WorldDetection>, thumbnails: Map<string, string>): Promise<void> {
+    const allowNewThumbnails = await shouldStoreNewThumbnails()
     for (const [key, det] of incoming) {
       const existing = this._detections.get(key)
       this._detections.set(key, {
         ...det,
-        thumbnailDataUrl: existing?.thumbnailDataUrl ?? thumbnails.get(key),
+        thumbnailDataUrl: existing?.thumbnailDataUrl ?? (allowNewThumbnails ? thumbnails.get(key) : undefined),
       })
     }
     this.notify()
@@ -188,6 +196,31 @@ function openDB(): Promise<IDBDatabase> {
     req.onsuccess = () => resolve(req.result)
     req.onerror = () => reject(req.error)
   })
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Timed out after ${timeoutMs} ms`)), timeoutMs)
+  })
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer)
+  })
+}
+
+async function shouldStoreNewThumbnails(): Promise<boolean> {
+  try {
+    const estimate = await navigator.storage?.estimate?.()
+    if (!estimate?.quota || estimate.usage === undefined) return true
+    const fraction = estimate.usage / estimate.quota
+    if (fraction >= THUMBNAIL_QUOTA_FRACTION) {
+      console.warn(`[store] Storage quota ${(fraction * 100).toFixed(0)}% full; skipping new thumbnails`)
+      return false
+    }
+  } catch {
+    // Best effort only.
+  }
+  return true
 }
 
 function idbPut(db: IDBDatabase, record: unknown): Promise<void> {

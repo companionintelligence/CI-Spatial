@@ -7,7 +7,8 @@
  */
 import { test, expect } from '@playwright/test'
 
-const BASE = process.env['VITE_URL'] ?? 'https://liambook.capybara-ulmer.ts.net:5173'
+const HOST = process.env['TAILSCALE_HOSTNAME'] ?? 'liambook.capybara-ulmer.ts.net'
+const BASE = process.env['VITE_URL'] ?? `https://${HOST.replace(/\.$/, '').replace(/^https?:\/\//, '').replace(/\/.*$/, '')}:5173`
 
 // ── /projects ─────────────────────────────────────────────────────────────────
 

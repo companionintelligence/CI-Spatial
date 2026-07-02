@@ -65,10 +65,14 @@ public/xr.js
 For trusted HTTPS on all devices via [Tailscale](https://tailscale.com):
 
 ```bash
-tailscale cert liam-mbp.capybara-ulmer.ts.net  # replace with your hostname
+export TAILSCALE_HOSTNAME=beta-1.capybara-ulmer.ts.net
+tailscale cert "$TAILSCALE_HOSTNAME"
 ```
 
-Edit `HOSTNAME` in `vite.config.ts` to match your machine's Tailscale hostname.
+`vite.config.ts` resolves the hostname from `TAILSCALE_HOSTNAME`, then
+`tailscale status --json`, then a local `*.ts.net.crt`, and finally the original
+liambook fallback. Set `API_TARGET` when the Deno server is not on
+`http://localhost:8000`.
 
 ### 5. Start both servers
 
@@ -82,11 +86,15 @@ This uses `concurrently` to run:
 
 Open `https://<tailscale-hostname>:5173` on your phone to scan, or on desktop to use the world editor at `https://<tailscale-hostname>:5173/viewer.html?world=default`.
 
-For the current Tailscale dev host:
+For beta-1:
 
-- Scanner: `https://liambook.capybara-ulmer.ts.net:5173/scanner.html?world=default`
-- Viewer/editor: `https://liambook.capybara-ulmer.ts.net:5173/viewer.html?world=default`
-- WebXR scanner: `https://liambook.capybara-ulmer.ts.net:5173/webxr.html`
+- Scanner: `https://beta-1.capybara-ulmer.ts.net:5173/scanner.html?world=default`
+- Viewer/editor: `https://beta-1.capybara-ulmer.ts.net:5173/viewer.html?world=default`
+- WebXR scanner: `https://beta-1.capybara-ulmer.ts.net:5173/webxr.html`
+- Device smoke test: `https://beta-1.capybara-ulmer.ts.net:5173/smoke.html`
+
+For persistent systemd services, see [`docs/DEPLOY.md`](docs/DEPLOY.md). For
+phone checklists, see [`docs/DEVICE_TESTING.md`](docs/DEVICE_TESTING.md).
 
 ### WebXR mode (HelloXR on iOS)
 
@@ -183,6 +191,9 @@ surfaces.
 | `npm run build` | TypeScript check + Vite production build |
 | `npm test` | Playwright tests (webkit-desktop) |
 | `npm run test:mobile` | Playwright tests (webkit iPhone 15 emulation) |
+| `npm run test:box` | Starts isolated mock Deno/Vite servers and runs API + Chromium mock projects |
+| `npm run qr -- /scanner.html?world=default` | Print a Tailscale URL QR code |
+| `npm run logs:watch` | Tail mobile `?debug=remote` and `/smoke.html` client logs |
 | `npm run gen-icons` | Regenerate PWA icons |
 
 ---
@@ -193,8 +204,9 @@ All endpoints are served by the Deno server on `:8000` and proxied through Vite 
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/health` | Returns `{ status: "ok", model: "..." }` |
+| `GET` | `/health` | Returns model, mode, engine load state, uptime, and last inference latency |
 | `POST` | `/infer` | Multipart `image` → `RawDetection[]` |
+| `POST` | `/client-logs` | Accepts remote browser logs and appends JSONL under `scans/client-logs/` |
 | `POST` | `/upload-scan` | Multipart `file` (.glb) + optional `metadata` (JSON) → saves to `scans/` |
 | `GET` | `/scans` | Returns JSON array of `{ filename, size, uploadedAt }` |
 | `GET` | `/scans/:filename` | Serves a `.glb` file with `model/gltf-binary` content-type |
@@ -225,6 +237,9 @@ The app routes inference through two paths:
 2. **WebGPU path** (fallback) — Runs the model in-browser via `@huggingface/transformers`. Slower but works without the server.
 
 The router (`src/inference/router.ts`) pings `/health` on startup to decide which path to use.
+The server path retries transient network/model-warmup failures, times out long
+inference requests, and returns specific HUD messages for warmup, offline,
+timeout, payload-too-large, and failed-model states.
 
 ---
 
@@ -239,6 +254,9 @@ npm run test:mobile
 
 # Real iPhone over USB (requires ios-webkit-debug-proxy)
 npm run test:iphone
+
+# On beta-1/Linux with managed mock servers
+npm run test:box
 ```
 
 See `playwright.config.ts` for project configurations.

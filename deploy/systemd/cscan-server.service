@@ -1,0 +1,17 @@
+[Unit]
+Description=Companion Scan Deno API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@PROJECT_DIR@
+EnvironmentFile=-%h/.config/cscan/env
+Environment=DENO_NO_PACKAGE_JSON=1
+ExecStartPre=/bin/sh -c '"@PROJECT_DIR@/scripts/wait-for-url.sh" "${OLLAMA_HOST:-http://127.0.0.1:11434}/api/tags" 45 || true'
+ExecStart=@DENO@ run --allow-net --allow-read --allow-write --allow-env --allow-ffi @PROJECT_DIR@/main.ts
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

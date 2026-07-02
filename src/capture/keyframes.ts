@@ -69,6 +69,9 @@ const DEFAULTS: Required<KeyframeStreamerOptions> = {
 
 const OFFLINE_RETRY_MS = 10_000
 const UPLOAD_RETRIES = 3
+const START_TIMEOUT_MS = 10_000
+const KEYFRAME_UPLOAD_TIMEOUT_MS = 20_000
+const FINALIZE_TIMEOUT_MS = 10_000
 
 export class KeyframeStreamer {
   private _opts: Required<KeyframeStreamerOptions>
@@ -105,7 +108,10 @@ export class KeyframeStreamer {
   /** Open a server session and begin pose-delta keyframing. */
   async start(): Promise<void> {
     if (this._active) return
-    const resp = await fetch('/sessions', { method: 'POST' })
+    const resp = await fetch('/sessions', {
+      method: 'POST',
+      signal: AbortSignal.timeout(START_TIMEOUT_MS),
+    })
     if (!resp.ok) throw new Error(`POST /sessions → ${resp.status}`)
     const { sessionId } = await resp.json() as { sessionId: string }
 
@@ -150,6 +156,8 @@ export class KeyframeStreamer {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(finalize ?? {}),
+        keepalive: true,
+        signal: AbortSignal.timeout(FINALIZE_TIMEOUT_MS),
       })
       console.log(`[keyframes] finalized ${sessionId} (${this._sent} keyframes)`)
     } catch (e) {
@@ -283,6 +291,7 @@ export class KeyframeStreamer {
         const resp = await fetch(`/sessions/${this._sessionId}/keyframes`, {
           method: 'POST',
           body: form,
+          signal: AbortSignal.timeout(KEYFRAME_UPLOAD_TIMEOUT_MS),
         })
         if (resp.ok) return true
         if (resp.status >= 400 && resp.status < 500) return false // not retryable

@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>Companion Scan Smoke</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #071314;
+        color: #eef4f1;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        padding: max(18px, env(safe-area-inset-top)) 18px max(24px, env(safe-area-inset-bottom));
+        box-sizing: border-box;
+      }
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 22px;
+        margin: 0 0 14px;
+        letter-spacing: 0;
+      }
+      #summary {
+        margin: 0 0 16px;
+        color: rgba(238, 244, 241, 0.7);
+      }
+      .row {
+        display: grid;
+        grid-template-columns: 92px 1fr;
+        gap: 10px;
+        align-items: start;
+        border-top: 1px solid rgba(238, 244, 241, 0.12);
+        padding: 12px 0;
+      }
+      .status {
+        min-width: 72px;
+        border-radius: 999px;
+        padding: 4px 8px;
+        text-align: center;
+        font-size: 12px;
+        font-weight: 800;
+      }
+      .pass { background: #80ffe1; color: #062321; }
+      .warn { background: #ffcc80; color: #271700; }
+      .fail { background: #ff8a80; color: #2d0704; }
+      .label { font-weight: 800; }
+      .detail {
+        margin-top: 3px;
+        color: rgba(238, 244, 241, 0.68);
+        font-size: 13px;
+        line-height: 1.45;
+        word-break: break-word;
+      }
+      button {
+        appearance: none;
+        border: 1px solid rgba(128, 255, 225, 0.65);
+        background: #80ffe1;
+        color: #062321;
+        font-weight: 800;
+        border-radius: 6px;
+        padding: 12px 16px;
+        min-height: 44px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Companion Scan Smoke</h1>
+      <p id="summary">Running device checks...</p>
+      <div id="results"></div>
+      <button id="rerun" type="button">Run Again</button>
+    </main>
+    <script type="module">
+      const resultsEl = document.getElementById('results')
+      const summaryEl = document.getElementById('summary')
+      const tests = [
+        secureContext,
+        health,
+        infer,
+        eventsSocket,
+        indexedDb,
+        serviceWorker,
+        xrRuntime,
+      ]
+
+      document.getElementById('rerun').addEventListener('click', () => run())
+      void run()
+
+      async function run() {
+        resultsEl.innerHTML = ''
+        summaryEl.textContent = 'Running device checks...'
+        const results = []
+        for (const test of tests) {
+          const result = await test().catch((error) => ({
+            name: test.name,
+            status: 'fail',
+            detail: error instanceof Error ? error.message : String(error),
+          }))
+          results.push(result)
+          append(result)
+        }
+        const failed = results.filter((item) => item.status === 'fail').length
+        const warned = results.filter((item) => item.status === 'warn').length
+        summaryEl.textContent = failed === 0
+          ? warned === 0 ? 'All checks passed.' : `${warned} check${warned === 1 ? '' : 's'} need attention.`
+          : `${failed} check${failed === 1 ? '' : 's'} failed.`
+        await postLog({ type: 'smoke-results', results })
+      }
+
+      function append(result) {
+        const row = document.createElement('div')
+        row.className = 'row'
+        row.innerHTML = `
+          <div class="status ${result.status}">${result.status.toUpperCase()}</div>
+          <div>
+            <div class="label">${escapeHtml(result.name)}</div>
+            <div class="detail">${escapeHtml(result.detail)}</div>
+          </div>`
+        resultsEl.append(row)
+      }
+
+      function secureContext() {
+        return Promise.resolve({
+          name: 'Secure Context',
+          status: window.isSecureContext ? 'pass' : 'fail',
+          detail: `${location.protocol}//${location.host}`,
+        })
+      }
+
+      async function health() {
+        const started = performance.now()
+        const resp = await fetch('/health', { cache: 'no-store', signal: AbortSignal.timeout(8000) })
+        const body = await resp.json()
+        return {
+          name: 'Server Health',
+          status: resp.ok && body.status === 'ok' ? 'pass' : 'fail',
+          detail: `${resp.status} ${body.model ?? 'unknown model'} ${body.engineLoadState ?? ''} ${Math.round(performance.now() - started)} ms`,
+        }
+      }
+
+      async function infer() {
+        const blob = await tinyJpeg()
+        const form = new FormData()
+        form.append('image', blob, 'smoke.jpg')
+        const started = performance.now()
+        const resp = await fetch('/infer', {
+          method: 'POST',
+          body: form,
+          signal: AbortSignal.timeout(75_000),
+        })
+        const text = await resp.text()
+        let parsed = null
+        try { parsed = JSON.parse(text) } catch {}
+        return {
+          name: 'Tiny Inference',
+          status: resp.ok && Array.isArray(parsed) ? 'pass' : resp.status === 503 ? 'warn' : 'fail',
+          detail: `${resp.status} ${Math.round(performance.now() - started)} ms ${text.slice(0, 160)}`,
+        }
+      }
+
+      async function eventsSocket() {
+        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
+        const url = `${proto}//${location.host}/events`
+        return new Promise((resolve) => {
+          const timeout = setTimeout(() => {
+            ws.close()
+            resolve({ name: 'Events WebSocket', status: 'fail', detail: 'Timed out waiting for hello' })
+          }, 8000)
+          const ws = new WebSocket(url)
+          ws.addEventListener('message', (event) => {
+            clearTimeout(timeout)
+            ws.close()
+            resolve({ name: 'Events WebSocket', status: 'pass', detail: String(event.data).slice(0, 160) })
+          }, { once: true })
+          ws.addEventListener('error', () => {
+            clearTimeout(timeout)
+            resolve({ name: 'Events WebSocket', status: 'fail', detail: url })
+          }, { once: true })
+        })
+      }
+
+      function indexedDb() {
+        return new Promise((resolve) => {
+          const req = indexedDB.open('ci-xr-smoke', 1)
+          const timeout = setTimeout(() => {
+            resolve({ name: 'IndexedDB', status: 'fail', detail: 'Open timed out' })
+          }, 5000)
+          req.onupgradeneeded = () => req.result.createObjectStore('checks')
+          req.onsuccess = async () => {
+            clearTimeout(timeout)
+            const estimate = await navigator.storage?.estimate?.().catch(() => null)
+            req.result.close()
+            indexedDB.deleteDatabase('ci-xr-smoke')
+            const detail = estimate?.quota ? `${Math.round((estimate.usage ?? 0) / estimate.quota * 100)}% quota used` : 'Open succeeded'
+            resolve({ name: 'IndexedDB', status: 'pass', detail })
+          }
+          req.onerror = () => {
+            clearTimeout(timeout)
+            resolve({ name: 'IndexedDB', status: 'fail', detail: String(req.error?.message ?? req.error) })
+          }
+        })
+      }
+
+      async function serviceWorker() {
+        if (!('serviceWorker' in navigator)) return { name: 'Service Worker', status: 'warn', detail: 'Not supported' }
+        const reg = await navigator.serviceWorker.getRegistration().catch(() => null)
+        return {
+          name: 'Service Worker',
+          status: reg ? 'pass' : 'warn',
+          detail: reg?.active?.state ?? 'No active registration yet',
+        }
+      }
+
+      async function xrRuntime() {
+        const navXr = 'xr' in navigator
+        let immersive = false
+        if (navigator.xr?.isSessionSupported) {
+          immersive = await navigator.xr.isSessionSupported('immersive-ar').catch(() => false)
+        }
+        const xr8 = typeof window.XR8 !== 'undefined'
+        return {
+          name: 'AR Runtime',
+          status: navXr || xr8 ? 'pass' : 'warn',
+          detail: `navigator.xr=${navXr} immersive-ar=${immersive} XR8=${xr8}`,
+        }
+      }
+
+      function tinyJpeg() {
+        const canvas = document.createElement('canvas')
+        canvas.width = 64
+        canvas.height = 64
+        const ctx = canvas.getContext('2d')
+        ctx.fillStyle = '#222'
+        ctx.fillRect(0, 0, 64, 64)
+        ctx.fillStyle = '#80ffe1'
+        ctx.fillRect(16, 18, 28, 24)
+        return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.78))
+      }
+
+      async function postLog(body) {
+        await fetch('/client-logs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Client-Log-Source': 'smoke' },
+          body: JSON.stringify(body),
+          keepalive: true,
+        }).catch(() => {})
+      }
+
+      function escapeHtml(value) {
+        return String(value).replace(/[&<>"']/g, (char) => ({
+          '&': '&amp;',
+          '<': '&lt;',
+          '>': '&gt;',
+          '"': '&quot;',
+          "'": '&#039;',
+        }[char]))
+      }
+    </script>
+  </body>
+</html>

@@ -8,6 +8,11 @@
  */
 import type { ARProvider } from '../ar/provider'
 
+const CAPTURE_MAX_LONG_EDGE_PX = 1280
+const CAPTURE_JPEG_QUALITY = 0.8
+const CAPTURE_REENCODE_THRESHOLD_BYTES = 1.5 * 1024 * 1024
+const CAPTURE_REENCODE_QUALITY = 0.65
+
 export interface CaptureResult {
   blob: Blob
   pose: {
@@ -30,12 +35,19 @@ export class CaptureModule {
     const imageData = new ImageData(new Uint8ClampedArray(pixels), width, height)
     const bitmap = await createImageBitmap(imageData)
 
-    const oc = new OffscreenCanvas(width, height)
+    const scale = Math.min(1, CAPTURE_MAX_LONG_EDGE_PX / Math.max(width, height))
+    const targetWidth = Math.max(1, Math.round(width * scale))
+    const targetHeight = Math.max(1, Math.round(height * scale))
+
+    const oc = new OffscreenCanvas(targetWidth, targetHeight)
     const ctx = oc.getContext('2d') as OffscreenCanvasRenderingContext2D
-    ctx.drawImage(bitmap, 0, 0)
+    ctx.drawImage(bitmap, 0, 0, targetWidth, targetHeight)
     bitmap.close()
 
-    const blob = await oc.convertToBlob({ type: 'image/jpeg', quality: 0.85 })
+    let blob = await oc.convertToBlob({ type: 'image/jpeg', quality: CAPTURE_JPEG_QUALITY })
+    if (blob.size > CAPTURE_REENCODE_THRESHOLD_BYTES) {
+      blob = await oc.convertToBlob({ type: 'image/jpeg', quality: CAPTURE_REENCODE_QUALITY })
+    }
 
     return { blob, pose, timestamp }
   }

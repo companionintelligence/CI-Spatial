@@ -44,7 +44,8 @@ export function normalizeDetections(arr: unknown[]): RawDetection[] {
   const prepared = arr
     .map(coerceDetection)
     .filter((det): det is RawDetection => det !== null)
-  return dedupeDetections(normalizeAllBboxes(prepared)).slice(0, MAX_DETECTIONS)
+  const normalized = normalizeAllBboxes(prepared).filter((det) => bboxArea(det.bbox) > 0.0001)
+  return dedupeDetections(normalized).slice(0, MAX_DETECTIONS)
 }
 
 function tryParseArray(text: string): unknown[] | null {

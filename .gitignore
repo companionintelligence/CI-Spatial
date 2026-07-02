@@ -39,6 +39,8 @@ temp/
 .env
 .env.*
 !.env.example
+*.crt
+*.key
 
 # Project-generated outputs
 outputs/

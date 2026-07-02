@@ -1,0 +1,17 @@
+[Unit]
+Description=Companion Scan HTTPS web frontend
+After=network-online.target cscan-server.service
+Wants=network-online.target cscan-server.service
+
+[Service]
+Type=simple
+WorkingDirectory=@PROJECT_DIR@
+EnvironmentFile=-%h/.config/cscan/env
+Environment=NPM_BIN=@NPM@
+ExecStartPre=/bin/sh -c 'if [ "${CSCAN_SKIP_BUILD:-0}" != "1" ]; then "$NPM_BIN" run build; fi'
+ExecStart=@NPM@ exec -- vite preview --host 0.0.0.0
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

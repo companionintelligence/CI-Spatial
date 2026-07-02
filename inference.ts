@@ -67,11 +67,12 @@ function arrayBufferToBase64(bytes: Uint8Array): string {
 
 export class InferenceEngine {
   readonly modelId: string
-  private mode: 'ollama' | 'onnx' | 'mock'
+  private _mode: 'ollama' | 'onnx' | 'mock'
   
   // Ollama configuration
   private ollamaUrl: string
   private ollamaModel: string
+  private ollamaContextLength: number
 
   // ONNX sessions
   private embedTokensSession: any = null
@@ -82,23 +83,28 @@ export class InferenceEngine {
 
   constructor() {
     const requested = Deno.env.get('INFERENCE_MODE')
-    this.mode = requested === 'onnx' ? 'onnx' : requested === 'mock' ? 'mock' : 'ollama'
+    this._mode = requested === 'onnx' ? 'onnx' : requested === 'mock' ? 'mock' : 'ollama'
     this.ollamaUrl = Deno.env.get('OLLAMA_HOST') ?? 'http://localhost:11434'
     this.ollamaModel = Deno.env.get('OLLAMA_MODEL') ?? 'moondream:latest'
-    this.modelId = this.mode === 'onnx' ? 'LiquidAI/LFM2.5-VL-1.6B-ONNX'
-      : this.mode === 'mock' ? 'mock/color-blob-v1'
+    this.ollamaContextLength = Math.max(1024, Number(Deno.env.get('OLLAMA_NUM_CTX') ?? Deno.env.get('OLLAMA_CONTEXT_LENGTH') ?? 16_384))
+    this.modelId = this._mode === 'onnx' ? 'LiquidAI/LFM2.5-VL-1.6B-ONNX'
+      : this._mode === 'mock' ? 'mock/color-blob-v1'
       : `Ollama/${this.ollamaModel}`
   }
 
+  get mode(): 'ollama' | 'onnx' | 'mock' {
+    return this._mode
+  }
+
   async load(): Promise<void> {
-    if (this.mode === 'mock') {
+    if (this._mode === 'mock') {
       const jimpMod = await import('jimp')
       JimpClass = jimpMod.Jimp
       console.log('[engine] Mock colour-blob engine ready (INFERENCE_MODE=mock)')
       return
     }
 
-    if (this.mode === 'ollama') {
+    if (this._mode === 'ollama') {
       console.log(`[engine] Initializing Ollama engine (model: "${this.ollamaModel}" at ${this.ollamaUrl})…`)
       try {
         const res = await fetch(`${this.ollamaUrl}/api/tags`)
@@ -176,10 +182,10 @@ export class InferenceEngine {
   }
 
   async infer(imageBytes: Uint8Array): Promise<RawDetection[]> {
-    if (this.mode === 'mock') {
+    if (this._mode === 'mock') {
       return this._inferMock(imageBytes)
     }
-    if (this.mode === 'ollama') {
+    if (this._mode === 'ollama') {
       return this._inferOllama(imageBytes)
     }
     
@@ -292,6 +298,7 @@ export class InferenceEngine {
       stream: false,
       options: {
         temperature: 0.1,
+        num_ctx: this.ollamaContextLength,
       }
     }
 

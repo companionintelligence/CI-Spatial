@@ -7,14 +7,20 @@
  */
 
 const DEFAULT_VOXEL_M = 0.05 // 5 cm
+const DEFAULT_MAX_POINTS = 250_000
 
 export class PointCloud {
   private _data: Float32Array = new Float32Array(3000) // 1 000 pts × 3 floats
   private _count = 0
   private _voxelSize: number
   private _occupied = new Set<string>()
+  private _decimationNoticeSent = false
 
-  constructor(voxelSizeM = DEFAULT_VOXEL_M) {
+  constructor(
+    voxelSizeM = DEFAULT_VOXEL_M,
+    private readonly _maxPoints = DEFAULT_MAX_POINTS,
+    private readonly _onDecimated?: () => void,
+  ) {
     this._voxelSize = voxelSizeM
   }
 
@@ -30,6 +36,8 @@ export class PointCloud {
     const inserted: Array<{ x: number; y: number; z: number }> = []
     for (const p of points) {
       const key = voxelKey(p.x, p.y, p.z, this._voxelSize)
+      if (this._occupied.has(key)) continue
+      if (this._count >= this._maxPoints) this._decimateInPlace()
       if (this._occupied.has(key)) continue
       this._occupied.add(key)
       this._grow()
@@ -52,6 +60,7 @@ export class PointCloud {
   clear(): void {
     this._count = 0
     this._occupied.clear()
+    this._decimationNoticeSent = false
   }
 
   /**
@@ -93,6 +102,31 @@ export class PointCloud {
     const next = new Float32Array(this._data.length * 2)
     next.set(this._data)
     this._data = next
+  }
+
+  private _decimateInPlace(): void {
+    const nextOccupied = new Set<string>()
+    let write = 0
+    for (let read = 0; read < this._count; read += 2) {
+      const src = read * 3
+      const x = this._data[src]
+      const y = this._data[src + 1]
+      const z = this._data[src + 2]
+      const key = voxelKey(x, y, z, this._voxelSize)
+      if (nextOccupied.has(key)) continue
+      const dst = write * 3
+      this._data[dst] = x
+      this._data[dst + 1] = y
+      this._data[dst + 2] = z
+      nextOccupied.add(key)
+      write++
+    }
+    this._count = write
+    this._occupied = nextOccupied
+    if (!this._decimationNoticeSent) {
+      this._decimationNoticeSent = true
+      this._onDecimated?.()
+    }
   }
 }
 

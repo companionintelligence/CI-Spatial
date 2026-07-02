@@ -27,6 +27,8 @@ const ICE_SERVERS: RTCIceServer[] = [
 const DC_BACKPRESSURE_BYTES = 256 * 1024
 const POINT_FLUSH_MS = 500
 const POINT_FLUSH_MAX = 1500
+const SIGNAL_RECONNECT_MIN_MS = 1000
+const SIGNAL_RECONNECT_MAX_MS = 15_000
 
 export class RtcBroadcaster {
   private _roomId: string
@@ -38,6 +40,8 @@ export class RtcBroadcaster {
   private _running = false
   private _pointBuffer: number[] = []
   private _flushHandle: ReturnType<typeof setInterval> | null = null
+  private _reconnectHandle: ReturnType<typeof setTimeout> | null = null
+  private _reconnectAttempt = 0
 
   constructor(roomId: string) {
     this._roomId = roomId
@@ -89,51 +93,26 @@ export class RtcBroadcaster {
       return
     }
 
-    // Connect signaling WebSocket
-    const wsUrl = this._signalUrl()
-    let ws: WebSocket
-    try {
-      ws = new WebSocket(wsUrl)
-    } catch (e) {
-      this._status('error', `Signal WS failed: ${e instanceof Error ? e.message : String(e)}`)
-      this._running = false
-      return
-    }
-
-    this._ws = ws
-
-    ws.addEventListener('open', () => {
-      this._status('connecting', 'Signal connected — waiting for viewer…')
-    })
-
-    ws.addEventListener('message', (ev) => {
-      void this._handleSignal(JSON.parse(ev.data as string))
-    })
-
-    ws.addEventListener('error', () => {
-      this._status('error', 'Signal WebSocket error')
-    })
-
-    ws.addEventListener('close', () => {
-      if (this._running) this._status('connecting', 'Signal disconnected — retrying…')
-    })
+    this._connectSignal()
   }
 
   stop(): void {
     this._running = false
+    if (this._reconnectHandle !== null) {
+      clearTimeout(this._reconnectHandle)
+      this._reconnectHandle = null
+    }
     if (this._flushHandle !== null) {
       clearInterval(this._flushHandle)
       this._flushHandle = null
     }
     this._pointBuffer = []
-    this._dataChannel?.close()
-    this._pc?.close()
+    this._closePeer()
     this._ws?.close()
     this._stream?.getTracks().forEach(t => t.stop())
-    this._dataChannel = null
-    this._pc = null
     this._ws = null
     this._stream = null
+    this._reconnectAttempt = 0
     this._status('stopped', 'Stream stopped')
   }
 
@@ -157,6 +136,67 @@ export class RtcBroadcaster {
     }
     const batch = this._pointBuffer.splice(0, POINT_FLUSH_MAX * 3)
     try { dc.send(JSON.stringify({ t: 'pts', p: batch })) } catch { /* closing */ }
+  }
+
+  private _connectSignal(): void {
+    if (!this._running) return
+    const wsUrl = this._signalUrl()
+    let ws: WebSocket
+    try {
+      ws = new WebSocket(wsUrl)
+    } catch (e) {
+      this._status('error', `Signal WS failed: ${e instanceof Error ? e.message : String(e)}`)
+      this._scheduleReconnect()
+      return
+    }
+
+    this._ws = ws
+
+    ws.addEventListener('open', () => {
+      this._reconnectAttempt = 0
+      this._status('connecting', 'Signal connected - waiting for viewer...')
+    })
+
+    ws.addEventListener('message', (ev) => {
+      let msg: unknown
+      try {
+        msg = JSON.parse(ev.data as string)
+      } catch {
+        console.warn('[rtc] ignored malformed signal message')
+        return
+      }
+      if (!msg || typeof msg !== 'object') return
+      void this._handleSignal(msg as Record<string, unknown>)
+    })
+
+    ws.addEventListener('error', () => {
+      this._status('error', 'Signal WebSocket error')
+    })
+
+    ws.addEventListener('close', () => {
+      if (!this._running || this._ws !== ws) return
+      this._ws = null
+      this._closePeer()
+      this._status('connecting', 'Signal disconnected - reconnecting...')
+      this._scheduleReconnect()
+    })
+  }
+
+  private _scheduleReconnect(): void {
+    if (!this._running || this._reconnectHandle !== null) return
+    const delay = Math.min(SIGNAL_RECONNECT_MAX_MS, SIGNAL_RECONNECT_MIN_MS * 2 ** this._reconnectAttempt)
+    this._reconnectAttempt++
+    this._reconnectHandle = setTimeout(() => {
+      this._reconnectHandle = null
+      this._connectSignal()
+    }, delay)
+  }
+
+  private _closePeer(): void {
+    this._dataChannel?.close()
+    this._pc?.close()
+    this._dataChannel = null
+    this._pc = null
   }
 
   private async _handleSignal(msg: Record<string, unknown>): Promise<void> {
@@ -185,11 +225,8 @@ export class RtcBroadcaster {
       }
 
       case 'peer-left':
-        this._status('connecting', 'Viewer disconnected — waiting…')
-        this._dataChannel?.close()
-        this._pc?.close()
-        this._dataChannel = null
-        this._pc = null
+        this._status('connecting', 'Viewer disconnected - waiting...')
+        this._closePeer()
         break
     }
   }

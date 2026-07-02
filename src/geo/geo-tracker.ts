@@ -49,6 +49,7 @@ export interface AddressComponents {
 
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/reverse'
 const SESSION_KEY   = 'ci-xr-geo-fix'
+const GEOCODE_TIMEOUT_MS = 10_000
 
 export class GeoTracker {
   private _fix: GeoFix | null = null
@@ -194,6 +195,7 @@ export class GeoTracker {
 
       const resp = await fetch(url.toString(), {
         headers: { 'Accept-Language': 'en', 'User-Agent': 'ci-xr-scan/1.0' },
+        signal: AbortSignal.timeout(GEOCODE_TIMEOUT_MS),
       })
       if (!resp.ok) return
 

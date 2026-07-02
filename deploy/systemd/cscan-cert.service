@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Companion Scan Tailscale TLS certificate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=@PROJECT_DIR@
+EnvironmentFile=-%h/.config/cscan/env
+ExecStart=/bin/sh -c 'test -n "${TAILSCALE_HOSTNAME:-}" && "@TAILSCALE@" cert --cert-file "@PROJECT_DIR@/${TAILSCALE_HOSTNAME}.crt" --key-file "@PROJECT_DIR@/${TAILSCALE_HOSTNAME}.key" "$TAILSCALE_HOSTNAME"'
+ExecStartPost=/bin/systemctl --user try-restart cscan-web.service

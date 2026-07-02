@@ -6,7 +6,8 @@ import { test, expect } from '@playwright/test'
 import { mergeDetections } from '../src/spatial/resolver'
 import { normalizeDetections, parseDetections } from '../prompt.ts'
 
-const BASE = process.env['VITE_URL'] ?? 'https://liambook.capybara-ulmer.ts.net:5173'
+const HOST = process.env['TAILSCALE_HOSTNAME'] ?? 'liambook.capybara-ulmer.ts.net'
+const BASE = process.env['VITE_URL'] ?? `https://${HOST.replace(/\.$/, '').replace(/^https?:\/\//, '').replace(/\/.*$/, '')}:5173`
 
 // Helper to build a minimal valid GLB buffer (~50 bytes)
 function makeMinimalGlb(): Buffer {

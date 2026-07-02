@@ -24,7 +24,11 @@ type ModeChangeCallback = (mode: InferMode) => void
 interface PendingRequest {
   resolve: (detections: RawDetection[]) => void
   reject: (err: Error) => void
+  timeout: ReturnType<typeof setTimeout>
 }
+
+const WEBGPU_FIRST_REQUEST_TIMEOUT_MS = 150_000
+const WEBGPU_REQUEST_TIMEOUT_MS = 45_000
 
 export class InferenceRouter {
   private worker: Worker | null = null
@@ -32,6 +36,7 @@ export class InferenceRouter {
   private pending = new Map<string, PendingRequest>()
   private onProgress: ProgressCallback | null = null
   private onModeChange: ModeChangeCallback | null = null
+  private workerReady = false
 
   /** True if the browser has a WebGPU adapter exposed. */
   get hasWebGPU(): boolean {
@@ -73,9 +78,11 @@ export class InferenceRouter {
   }
 
   private _spawnWorker(): void {
+    this.workerReady = false
     this.worker = new Worker(new URL('./webgpu.worker.ts', import.meta.url), { type: 'module' })
     this.worker.addEventListener('message', this.handleWorkerMessage.bind(this))
-    this.worker.addEventListener('error', (e) => console.error('[worker]', e))
+    this.worker.addEventListener('error', (e) => this._handleWorkerFailure(e.message || 'WebGPU worker failed'))
+    this.worker.addEventListener('messageerror', () => this._handleWorkerFailure('WebGPU worker sent an unreadable message'))
   }
 
   async infer(imageBlob: Blob): Promise<RawDetection[]> {
@@ -89,7 +96,13 @@ export class InferenceRouter {
     const id = crypto.randomUUID()
 
     return new Promise<RawDetection[]>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject })
+      const timeoutMs = this.workerReady ? WEBGPU_REQUEST_TIMEOUT_MS : WEBGPU_FIRST_REQUEST_TIMEOUT_MS
+      const timeout = setTimeout(() => {
+        this.pending.delete(id)
+        reject(new Error('WebGPU inference timed out'))
+        this._fallbackToServer('WebGPU timed out - using server')
+      }, timeoutMs)
+      this.pending.set(id, { resolve, reject, timeout })
       this.worker!.postMessage({ type: 'infer', id, imageDataUrl: dataUrl })
     })
   }
@@ -104,20 +117,53 @@ export class InferenceRouter {
     const { type } = evt.data
     if (type === 'progress') {
       const { stage, pct } = evt.data as { type: 'progress'; stage: string; pct: number }
+      if (pct >= 1 || /ready/i.test(stage)) this.workerReady = true
       this.onProgress?.(stage, pct)
       return
     }
     if (type === 'result') {
       const { id, detections } = evt.data as { type: 'result'; id: string; detections: RawDetection[] }
-      this.pending.get(id)?.resolve(detections)
-      this.pending.delete(id)
+      const pending = this.pending.get(id)
+      if (pending) {
+        clearTimeout(pending.timeout)
+        pending.resolve(detections)
+        this.pending.delete(id)
+      }
       return
     }
     if (type === 'error') {
       const { id, message } = evt.data as { type: 'error'; id: string; message: string }
-      this.pending.get(id)?.reject(new Error(message))
-      this.pending.delete(id)
+      const pending = this.pending.get(id)
+      if (pending) {
+        clearTimeout(pending.timeout)
+        pending.reject(new Error(message))
+        this.pending.delete(id)
+      }
     }
+  }
+
+  private _handleWorkerFailure(message: string): void {
+    console.error('[worker]', message)
+    this._fallbackToServer(`WebGPU failed - using server`)
+  }
+
+  private _fallbackToServer(message: string): void {
+    this._rejectAllPending(new Error(message))
+    this.worker?.terminate()
+    this.worker = null
+    this.workerReady = false
+    this.useWorker = false
+    if (typeof localStorage !== 'undefined') localStorage.setItem('infer-mode', 'server')
+    this.onProgress?.(message, 0)
+    this.onModeChange?.('server')
+  }
+
+  private _rejectAllPending(error: Error): void {
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timeout)
+      pending.reject(error)
+    }
+    this.pending.clear()
   }
 }
 
