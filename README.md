@@ -65,10 +65,13 @@ public/xr.js
 For trusted HTTPS on all devices via [Tailscale](https://tailscale.com):
 
 ```bash
-tailscale cert liam-mbp.capybara-ulmer.ts.net  # replace with your hostname
+tailscale cert <your-machine>.<your-tailnet>.ts.net
 ```
 
-Edit `HOSTNAME` in `vite.config.ts` to match your machine's Tailscale hostname.
+The hostname is auto-detected at Vite startup: `TAILSCALE_HOSTNAME` env var →
+`tailscale status --json` → a `<hostname>.ts.net.crt` file in the repo root.
+Set `TAILSCALE_HOSTNAME` explicitly only if detection picks the wrong name
+(see `.env.example` for all configuration knobs).
 
 ### 5. Start both servers
 
@@ -82,11 +85,15 @@ This uses `concurrently` to run:
 
 Open `https://<tailscale-hostname>:5173` on your phone to scan, or on desktop to use the world editor at `https://<tailscale-hostname>:5173/viewer.html?world=default`.
 
-For the current Tailscale dev host:
+Key routes (replace the hostname with your machine's):
 
-- Scanner: `https://liambook.capybara-ulmer.ts.net:5173/scanner.html?world=default`
-- Viewer/editor: `https://liambook.capybara-ulmer.ts.net:5173/viewer.html?world=default`
-- WebXR scanner: `https://liambook.capybara-ulmer.ts.net:5173/webxr.html`
+- Scanner: `https://<your-tailscale-hostname>:5173/scanner.html?world=default`
+- Viewer/editor: `https://<your-tailscale-hostname>:5173/viewer.html?world=default`
+- WebXR scanner: `https://<your-tailscale-hostname>:5173/webxr.html`
+
+For persistent serving from a Linux box (systemd units, GPU inference, cert
+renewal) see [docs/DEPLOY.md](docs/DEPLOY.md); for the on-device test protocol
+see [docs/DEVICE_TESTING.md](docs/DEVICE_TESTING.md).
 
 ### WebXR mode (HelloXR on iOS)
 

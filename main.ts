@@ -51,7 +51,11 @@ import type {
 } from './src/world/types.ts'
 
 const PORT = Number(Deno.env.get('PORT') ?? 8000)
-const ALLOWED_ORIGIN_PREFIX = Deno.env.get('ALLOWED_ORIGIN_PREFIX') ?? 'https://liambook.capybara-ulmer.ts.net'
+// Origin phones arrive from. Precedence: explicit prefix → TAILSCALE_HOSTNAME
+// (shared with vite.config.ts) → historical default.
+const TAILSCALE_HOSTNAME = Deno.env.get('TAILSCALE_HOSTNAME')
+const ALLOWED_ORIGIN_PREFIX = Deno.env.get('ALLOWED_ORIGIN_PREFIX')
+  ?? (TAILSCALE_HOSTNAME ? `https://${TAILSCALE_HOSTNAME}` : 'https://liambook.capybara-ulmer.ts.net')
 
 const SCANS_DIR    = Deno.env.get('SCANS_DIR')    ?? './scans'
 const SUMMARIES_DIR = Deno.env.get('SUMMARIES_DIR') ?? './summaries'
@@ -1015,7 +1019,9 @@ function viteBaseUrlFromEnv(): string {
     if (!url.port) url.port = '5173'
     return url.toString().replace(/\/$/, '')
   } catch {
-    return 'https://liambook.capybara-ulmer.ts.net:5173'
+    return TAILSCALE_HOSTNAME
+      ? `https://${TAILSCALE_HOSTNAME}:5173`
+      : 'https://liambook.capybara-ulmer.ts.net:5173'
   }
 }
 

@@ -16,7 +16,17 @@
  */
 import { defineConfig, devices } from '@playwright/test'
 
-const BASE_URL = process.env['VITE_URL'] ?? 'https://liambook.capybara-ulmer.ts.net:5173'
+const BASE_URL = process.env['VITE_URL']
+  ?? (process.env['TAILSCALE_HOSTNAME']
+    ? `https://${process.env['TAILSCALE_HOSTNAME']}:5173`
+    : 'https://liambook.capybara-ulmer.ts.net:5173')
+
+// Escape hatch for hosts where `npx playwright install` is unsupported but a
+// compatible Chromium build already exists in the cache, e.g.
+// CHROMIUM_EXECUTABLE_PATH=~/.cache/ms-playwright/chromium-1217/chrome-linux64/chrome
+const chromiumExecutable = process.env['CHROMIUM_EXECUTABLE_PATH']
+  ? { executablePath: process.env['CHROMIUM_EXECUTABLE_PATH'] }
+  : {}
 
 export default defineConfig({
   testDir: './tests',
@@ -48,6 +58,7 @@ export default defineConfig({
         ignoreHTTPSErrors: true,
         permissions: ['camera'],
         launchOptions: {
+          ...chromiumExecutable,
           args: [
             '--use-fake-ui-for-media-stream',
             '--use-fake-device-for-media-stream',
