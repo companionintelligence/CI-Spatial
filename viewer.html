@@ -165,7 +165,23 @@
         display: flex;
         flex-direction: column;
         flex-shrink: 0;
+        transition: width 0.2s ease-out, min-width 0.2s ease-out;
+        position: relative;
       }
+      #sidebar.collapsed {
+        width: 0; min-width: 0; overflow: hidden;
+        border-right: none;
+      }
+      #sidebar-collapse-btn {
+        position: absolute; top: 12px; right: -28px; z-index: 6;
+        width: 26px; height: 26px; border-radius: 4px;
+        background: rgba(9,24,24,0.82); border: 1px solid var(--ci-line);
+        color: rgba(255,255,255,0.6); font-size: 14px; cursor: pointer;
+        display: flex; align-items: center; justify-content: center;
+        transition: right 0.2s ease-out;
+      }
+      #sidebar.collapsed #sidebar-collapse-btn { right: -32px; }
+      #sidebar-collapse-btn:hover { color: #fff; background: rgba(9,24,24,0.95); }
 
       #sidebar-header {
         padding: 14px 14px 10px;
@@ -240,8 +256,8 @@
       }
 
       .scan-meta {
-        font-size: 10px;
-        color: rgba(255,255,255,0.3);
+        font-size: 11px;
+        color: rgba(255,255,255,0.6);
       }
 
       #scan-list-empty {
@@ -296,8 +312,8 @@
 
       .scan-status {
         margin-top: 3px;
-        font-size: 10px;
-        color: rgba(255,255,255,0.28);
+        font-size: 11px;
+        color: rgba(255,255,255,0.6);
       }
 
       /* ── Edit panel ── */
@@ -320,9 +336,9 @@
       }
 
       .edit-section-title {
-        font-size: 10px;
+        font-size: 11px;
         font-weight: 700;
-        color: rgba(255,255,255,0.35);
+        color: rgba(255,255,255,0.65);
         text-transform: uppercase;
         letter-spacing: 0.06em;
         margin-bottom: 8px;
@@ -384,8 +400,8 @@
 
       .world-stat-label {
         margin-top: 3px;
-        font-size: 10px;
-        color: rgba(255,255,255,0.35);
+        font-size: 11px;
+        color: rgba(255,255,255,0.65);
       }
 
       .world-link-row,
@@ -452,8 +468,8 @@
 
       .layer-meta,
       .job-meta {
-        font-size: 10px;
-        color: rgba(255,255,255,0.32);
+        font-size: 11px;
+        color: rgba(255,255,255,0.6);
         line-height: 1.4;
       }
 
@@ -653,7 +669,7 @@
       }
 
       .inspector-label {
-        color: rgba(255,255,255,0.35);
+        color: rgba(255,255,255,0.65);
         white-space: nowrap;
         min-width: 64px;
       }
@@ -840,25 +856,26 @@
 
         <!-- Sidebar with tabs: Scans | World | Layers | Edit -->
         <div id="sidebar">
+          <button id="sidebar-collapse-btn" aria-label="Toggle sidebar" title="Collapse/expand sidebar">◀</button>
           <div id="sidebar-header">
             <span id="sidebar-title">Companion Scan</span>
           </div>
-          <div id="sidebar-tabs">
-            <button class="sidebar-tab active" data-tab="scans">Scans</button>
-            <button class="sidebar-tab"        data-tab="world">World</button>
-            <button class="sidebar-tab"        data-tab="layers">Layers</button>
-            <button class="sidebar-tab"        data-tab="edit">Edit</button>
+          <div id="sidebar-tabs" role="tablist">
+            <button class="sidebar-tab active" data-tab="scans" role="tab" aria-selected="true" id="tab-btn-scans" aria-controls="tab-scans">Scans</button>
+            <button class="sidebar-tab"        data-tab="world" role="tab" aria-selected="false" id="tab-btn-world" aria-controls="tab-world">World</button>
+            <button class="sidebar-tab"        data-tab="layers" role="tab" aria-selected="false" id="tab-btn-layers" aria-controls="tab-layers">Layers</button>
+            <button class="sidebar-tab"        data-tab="edit" role="tab" aria-selected="false" id="tab-btn-edit" aria-controls="tab-edit">Edit</button>
           </div>
 
           <!-- Scans panel -->
-          <div class="sidebar-panel active" id="tab-scans">
+          <div class="sidebar-panel active" id="tab-scans" role="tabpanel" aria-labelledby="tab-btn-scans">
             <div id="scan-list">
               <div id="scan-list-empty">Loading scans…</div>
             </div>
           </div>
 
           <!-- World panel -->
-          <div class="sidebar-panel" id="tab-world">
+          <div class="sidebar-panel" id="tab-world" role="tabpanel" aria-labelledby="tab-btn-world">
             <div id="world-panel-content">
               <div class="edit-section">
                 <div class="edit-section-title">World</div>
@@ -911,7 +928,7 @@
           </div>
 
           <!-- Layers panel -->
-          <div class="sidebar-panel" id="tab-layers">
+          <div class="sidebar-panel" id="tab-layers" role="tabpanel" aria-labelledby="tab-btn-layers">
             <div id="layers-panel-content">
               <div class="edit-section">
                 <div class="edit-section-title">GLB + Sidecar Layers</div>
@@ -959,7 +976,7 @@
           </div>
 
           <!-- Edit panel -->
-          <div class="sidebar-panel" id="tab-edit">
+          <div class="sidebar-panel" id="tab-edit" role="tabpanel" aria-labelledby="tab-btn-edit">
             <div id="edit-panel-content">
               <div class="no-selection-msg" id="edit-no-selection">
                 Click a scan or object in the viewport to move it, label it, and assign semantic categories.
@@ -1038,7 +1055,7 @@
 
           <!-- Floating object inspector -->
           <div id="inspector-panel">
-            <button id="inspector-close">✕</button>
+            <button id="inspector-close" aria-label="Close inspector panel">✕</button>
             <div id="inspector-title">—</div>
             <div id="inspector-body"></div>
           </div>
@@ -1048,7 +1065,7 @@
             <button class="hud-btn" id="btn-reset-camera">⟳ Reset</button>
             <button class="hud-btn" id="btn-toggle-cloud">☁ Cloud</button>
             <button class="hud-btn" id="btn-toggle-labels">🏷 Labels</button>
-            <button class="hud-btn" id="btn-toggle-bounds" style="opacity:0.4">⬡ Bounds</button>
+            <button class="hud-btn" id="btn-toggle-bounds" style="opacity:0.7">⬡ Bounds</button>
             <button class="hud-btn" id="btn-flush-tags">💾 Save Tags</button>
           </div>
 
@@ -1069,5 +1086,16 @@
       }
     </script>
     <script type="module" src="/src/viewer/viewer.ts"></script>
+    <script>
+      // Sidebar collapse toggle
+      document.getElementById('sidebar-collapse-btn')?.addEventListener('click', function() {
+        const sb = document.getElementById('sidebar');
+        if (!sb) return;
+        sb.classList.toggle('collapsed');
+        this.textContent = sb.classList.contains('collapsed') ? '▶' : '◀';
+        // Trigger Three.js resize after transition
+        setTimeout(() => window.dispatchEvent(new Event('resize')), 250);
+      });
+    </script>
   </body>
 </html>

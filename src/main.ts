@@ -43,6 +43,9 @@ let quotaWarningShown = false
 let decimationNoticeShown = false
 
 async function main() {
+  const searchParams = new URLSearchParams(location.search)
+  const skipOnboarding = searchParams.has('mock') || searchParams.get('onboarding') === '0'
+
   // Remote log mirror — inert unless armed via ?debug=remote or localStorage
   installRemoteLog()
 
@@ -147,11 +150,11 @@ async function main() {
   // Forced runtime: /webxr.html redirects here with ?ar=webxr — used in
   // WebXR-capable iOS browsers (e.g. HelloXR) where the native WebXR session
   // beats the 8th Wall SLAM fallback.  ?ar=8thwall forces the inverse.
-  const forcedMode = new URLSearchParams(location.search).get('ar')
+  const forcedMode = searchParams.get('ar')
 
   // Test hook: ?mock=webxr installs the iwer emulation runtime (Meta's
   // immersive-web-emulator engine) so WebXR flows run in headless browsers.
-  if (new URLSearchParams(location.search).get('mock') === 'webxr') {
+  if (searchParams.get('mock') === 'webxr') {
     const emulation = await import('./test/webxr-emulation')
     await emulation.installWebXREmulation()
   }
@@ -309,9 +312,27 @@ async function main() {
         }
       } else {
         const message = e instanceof Error ? e.message : String(e)
-        overlay.setStatus(message.includes('Timed out')
-          ? 'Camera frame timed out — tap once more'
-          : 'Capture failed — try again')
+        const name = e instanceof Error ? e.name : ''
+
+        if (name === 'NotAllowedError' || message.includes('NotAllowedError')) {
+          overlay.setStatus('Camera access denied — check browser settings')
+        } else if (message.includes('Timed out')) {
+          // Check if the timeout is actually due to denied camera permission
+          let denied = false
+          try {
+            if (navigator.permissions) {
+              const camPerm = await navigator.permissions.query({ name: 'camera' as PermissionName })
+              if (camPerm.state === 'denied') denied = true
+            }
+          } catch { /* permissions API may not support camera query */ }
+          overlay.setStatus(denied
+            ? 'Camera access denied — check browser settings'
+            : 'Camera frame timed out — tap once more')
+        } else if (name === 'TypeError' || message.includes('NetworkError') || message.includes('Failed to fetch') || message.includes('network')) {
+          overlay.setStatus('Inference requires network — switch to WebGPU in settings for offline use')
+        } else {
+          overlay.setStatus('Capture failed — try again')
+        }
       }
       console.error('[capture]', e)
     } finally {
@@ -330,12 +351,19 @@ async function main() {
         { store, pointCloud, poseHistory, geoFix: geoTracker.snapshot() ?? undefined, qualitySummary: currentQualitySummary() },
         { download: true, upload: true, filenamePrefix: 'room-scan', autoSaved: false },
       )
-      overlay.setStatus('Exported scan')
-      setAutosaveStatus(result.uploadedFilename ? `Exported + uploaded ${shortName(result.uploadedFilename)}` : 'Export downloaded')
+      if (result.uploadedFilename) {
+        // Both download and upload succeeded
+        overlay.setStatus('Scan exported & synced ✓')
+        setAutosaveStatus(`Scan exported & synced ✓ ${shortName(result.uploadedFilename)}`)
+      } else {
+        // Download succeeded but upload failed (no uploaded filename)
+        overlay.setStatus('Scan saved locally — server sync failed')
+        setAutosaveStatus('Scan saved locally — server sync failed')
+      }
       return result.uploadedFilename
     } catch (error) {
-      overlay.setStatus('Export failed')
-      setAutosaveStatus('Export failed')
+      overlay.setStatus('Export failed — try again')
+      setAutosaveStatus('Export failed — try again')
       console.error('[export]', error)
       return undefined
     }
@@ -439,6 +467,83 @@ async function main() {
         })
     }
   })
+
+  // ── 4b. Onboarding overlay — show once on first visit ────────────────────────
+  const ONBOARD_KEY = 'companion-scan-onboarded'
+  if (!skipOnboarding && !localStorage.getItem(ONBOARD_KEY)) {
+    await new Promise<void>((resolve) => {
+      const ob = document.getElementById('onboarding-overlay')
+      if (!ob) { resolve(); return }
+      ob.classList.add('visible')
+
+      const steps = ob.querySelectorAll<HTMLElement>('.onboard-step')
+      const dots = ob.querySelectorAll<HTMLElement>('.onboard-dot')
+      const nextBtn = document.getElementById('onboard-next-btn') as HTMLButtonElement
+      const skipBtn = document.getElementById('onboard-skip') as HTMLButtonElement
+      let current = 0
+
+      function goToStep(n: number) {
+        steps.forEach((s, i) => s.classList.toggle('active', i === n))
+        dots.forEach((d, i) => d.classList.toggle('active', i === n))
+        nextBtn.textContent = n === steps.length - 1 ? 'Get Started' : 'Next'
+        current = n
+      }
+
+      function finish() {
+        localStorage.setItem(ONBOARD_KEY, '1')
+        ob!.classList.remove('visible')
+        resolve()
+      }
+
+      nextBtn.addEventListener('click', () => {
+        if (current < steps.length - 1) goToStep(current + 1)
+        else finish()
+      })
+      skipBtn.addEventListener('click', finish)
+    })
+  }
+
+  // Show help button during scanning; re-show onboarding on tap
+  const helpBtn = document.getElementById('help-btn')
+  if (helpBtn) {
+    helpBtn.classList.add('visible')
+    helpBtn.addEventListener('click', () => {
+      const ob = document.getElementById('onboarding-overlay')
+      if (ob) {
+        localStorage.removeItem(ONBOARD_KEY)
+        ob.classList.add('visible')
+        const steps = ob.querySelectorAll<HTMLElement>('.onboard-step')
+        const dots = ob.querySelectorAll<HTMLElement>('.onboard-dot')
+        steps.forEach((s, i) => s.classList.toggle('active', i === 0))
+        dots.forEach((d, i) => d.classList.toggle('active', i === 0))
+        const nextBtn = document.getElementById('onboard-next-btn') as HTMLButtonElement
+        if (nextBtn) nextBtn.textContent = 'Next'
+
+        function finishReplay() {
+          localStorage.setItem(ONBOARD_KEY, '1')
+          ob!.classList.remove('visible')
+        }
+
+        let cur = 0
+        const clickHandler = () => {
+          if (cur < steps.length - 1) {
+            cur++
+            steps.forEach((s, i) => s.classList.toggle('active', i === cur))
+            dots.forEach((d, i) => d.classList.toggle('active', i === cur))
+            nextBtn.textContent = cur === steps.length - 1 ? 'Get Started' : 'Next'
+          } else {
+            finishReplay()
+            nextBtn.removeEventListener('click', clickHandler)
+          }
+        }
+        nextBtn.addEventListener('click', clickHandler)
+        document.getElementById('onboard-skip')?.addEventListener('click', () => {
+          finishReplay()
+          nextBtn.removeEventListener('click', clickHandler)
+        }, { once: true })
+      }
+    })
+  }
 
   // ── 5. Start AR — permission must be requested in the button click handler ───
   // Safari iOS 13+ requires DeviceOrientationEvent/DeviceMotionEvent.requestPermission()
@@ -642,6 +747,8 @@ function setCaptureBusy(busy: boolean): void {
   const btn = document.getElementById('capture-btn') as HTMLButtonElement | null
   if (!btn) return
   btn.classList.toggle('busy', busy)
+  btn.disabled = busy
+  btn.style.pointerEvents = busy ? 'none' : ''
   btn.setAttribute('aria-busy', String(busy))
   btn.setAttribute('aria-disabled', String(busy))
 }
@@ -769,6 +876,16 @@ function showInferDialog(dets: Array<{ label: string; description: string; confi
     if (close) close.dataset['bound'] = '1'
   }
 
+  // Tap-to-dismiss: clicking anywhere on the dialog dismisses it
+  if (!dialog.dataset['tapBound']) {
+    dialog.addEventListener('click', (e) => {
+      // Don't dismiss if user is scrolling the body content
+      if (e.target === body || body.contains(e.target as Node)) return
+      hideInferDialog()
+    })
+    dialog.dataset['tapBound'] = '1'
+  }
+
   if (dets.length === 0) return
 
   body.innerHTML = dets.map((d) => {
@@ -785,10 +902,13 @@ function showInferDialog(dets: Array<{ label: string; description: string; confi
       </div>`
   }).join('')
 
+  // Add a "tap to dismiss" hint at the bottom
+  body.innerHTML += `<div style="text-align:center;padding:6px 0 2px;color:rgba(255,255,255,0.25);font-size:10px;">tap to dismiss</div>`
+
   dialog.classList.add('visible')
 
   if (_inferDialogTimer) clearTimeout(_inferDialogTimer)
-  _inferDialogTimer = setTimeout(() => hideInferDialog(), 9000)
+  _inferDialogTimer = setTimeout(() => hideInferDialog(), 4000)
 }
 
 function hideInferDialog(): void {
