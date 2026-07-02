@@ -87,6 +87,21 @@ if (existsSync(join(lingbotFixture, 'lingbot-map.manifest.json'))) {
   console.log('[test-box] mirrored lingbot-map fixture session')
 }
 
+// The splat-train spec needs its .ply + manifest served from SCANS_DIR. Unlike
+// the lingbot fixture (which requires ffmpeg + a downloaded video), the splat
+// fixture is fully synthetic, so we can generate it straight into the isolated
+// store on every run.
+try {
+  execSync('node scripts/make-splat-fixture.mjs', {
+    cwd: root,
+    stdio: 'inherit',
+    env: { ...process.env, SCANS_DIR: join(RUN_DIR, 'scans') },
+  })
+  console.log('[test-box] generated splat-train fixture')
+} catch (e) {
+  console.warn('[test-box] splat fixture generation failed (spec will skip):', e.message)
+}
+
 // 1. Corpus (idempotent, ~seconds)
 if (!existsSync(join(root, 'test-data', 'cv', 'expected.json'))) {
   console.log('[test-box] generating test corpus…')

@@ -17,6 +17,7 @@ import { LiveFeed } from './livefeed'
 import { loadSemanticAsset, createMediumPolyAsset } from './assets'
 import { fetchLingBotMapArtifacts, type LingBotMapOverlay } from './lingbot-map'
 import { attachSparkRenderer, loadSplat, disposeSplat, type LoadedSplat } from './splat-viewer'
+import { fetchScanSplatLayer, disposeScanSplatLayer, type ScanSplatLayer } from './splat-layer'
 import { enuToGeo, hasGeoPose, matrixTranslation } from '../world/geo'
 import { LAYER_LABELS, LAYER_ORDER } from '../world/layers'
 import { registerPWA } from '../pwa'
@@ -128,6 +129,10 @@ let lingbotShowPoints = false
 let lingbotShowPath = false
 
 const loadedSplats = new Map<string, LoadedSplat>()
+
+// Trained-splat sidecars attached per scan (splat-train job output).
+const scanSplatLayers = new Map<string, ScanSplatLayer>()
+let scanSplatVisible = false
 
 const boundEdgeMaterial = new THREE.LineBasicMaterial({
   color: 0x4fc3f7,
@@ -254,6 +259,9 @@ function initWorldScene(): void {
   clearLabels()
   loadedScans.clear()
   scanItems.clear()
+  for (const layer of scanSplatLayers.values()) disposeScanSplatLayer(layer)
+  scanSplatLayers.clear()
+  lingbotOverlays.clear()
   selectedTransformTarget = null
   selectedScanId = null
   hideInspectorOnly()
@@ -947,6 +955,7 @@ function selectScan(scanId: string, focus: boolean, openEdit = true): void {
   syncEditPanel(loaded.root, openEdit)
   if (focus) fitCamera(loaded.root)
   void refreshLingBotMapPanel(scanId)
+  void refreshSplatLayerPanel(scanId)
 }
 
 async function refreshLingBotMapPanel(scanId: string): Promise<void> {
@@ -1010,6 +1019,75 @@ function setLingBotPointsVisible(visible: boolean): void {
 function setLingBotPathVisible(visible: boolean): void {
   lingbotShowPath = visible
   for (const overlay of lingbotOverlays.values()) overlay.pathGroup.visible = visible
+}
+
+// ─── Trained splat layer (splat-train job output) ─────────────────────────────
+
+async function refreshSplatLayerPanel(scanId: string): Promise<void> {
+  const status = document.getElementById('splat-layer-status')
+  const stats = document.getElementById('splat-layer-stats')
+  const toggle = document.getElementById('splat-layer-toggle') as HTMLInputElement | null
+  if (!status || !stats) return
+  const scan = world?.scans.find(s => s.scanId === scanId)
+  if (!scan) {
+    status.textContent = 'Select a scan to see its trained Gaussian splat.'
+    stats.textContent = ''
+    return
+  }
+  if (!scan.sessionId) {
+    status.textContent = 'This scan has no streamed keyframes — start keyframe streaming first.'
+    stats.textContent = ''
+    return
+  }
+
+  let layer = scanSplatLayers.get(scanId)
+  if (!layer) {
+    status.textContent = 'Loading trained splat…'
+    stats.textContent = ''
+    try {
+      const fetched = await fetchScanSplatLayer(scan, (url) => fetch(withAccessToken(url)))
+      if (!fetched) {
+        status.textContent = 'No trained splat yet. Queue the splat-train job to create one.'
+        stats.textContent = ''
+        if (toggle) toggle.checked = false
+        return
+      }
+      layer = fetched
+      scanSplatLayers.set(scanId, layer)
+      if (layer.loaded) {
+        const loadedScan = loadedScans.get(scanId)
+        if (loadedScan) loadedScan.root.add(layer.loaded.mesh)
+        layer.loaded.mesh.visible = scanSplatVisible
+      }
+    } catch (e) {
+      console.error('[viewer] splat layer fetch failed:', e)
+      status.textContent = `Failed to load trained splat: ${e instanceof Error ? e.message : String(e)}`
+      stats.textContent = ''
+      return
+    }
+  }
+
+  const m = layer.manifest
+  if (m.status === 'ok') {
+    status.textContent = `Trained splat ready — ${layer.gaussianCount.toLocaleString()} gaussians.`
+    stats.textContent = m.timing?.elapsedMs
+      ? `Trained in ${(m.timing.elapsedMs / 1000).toFixed(1)}s on ${m.frameCount ?? '?'} frames.`
+      : ''
+    if (toggle) toggle.checked = scanSplatVisible
+  } else if (m.status === 'skipped') {
+    status.textContent = `Skipped: ${m.skippedReason ?? 'no reason given'}`
+    stats.textContent = m.remediation ?? ''
+  } else {
+    status.textContent = `Splat train error: ${m.error ?? 'unknown'}`
+    stats.textContent = ''
+  }
+}
+
+function setScanSplatVisible(visible: boolean): void {
+  scanSplatVisible = visible
+  for (const layer of scanSplatLayers.values()) {
+    if (layer.loaded) layer.loaded.mesh.visible = visible
+  }
 }
 
 // ─── Gaussian splats (Spark) ──────────────────────────────────────────────────
@@ -1921,6 +1999,9 @@ document.getElementById('lingbot-map-points-toggle')?.addEventListener('change',
 })
 document.getElementById('lingbot-map-path-toggle')?.addEventListener('change', (e) => {
   setLingBotPathVisible((e.target as HTMLInputElement).checked)
+})
+document.getElementById('splat-layer-toggle')?.addEventListener('change', (e) => {
+  setScanSplatVisible((e.target as HTMLInputElement).checked)
 })
 
 document.getElementById('btn-load-splat-url')?.addEventListener('click', () => {

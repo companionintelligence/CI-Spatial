@@ -14,6 +14,8 @@
     "test:lingbot:glb": "node --experimental-strip-types --no-warnings --test lingbot_map_glb.test.ts",
     "test:lingbot:fetch-video": "node scripts/fetch-lingbot-test-video.mjs",
     "test:lingbot:make-fixture": "node scripts/make-lingbot-fixture.mjs",
+    "test:splat:make-fixture": "node scripts/make-splat-fixture.mjs",
+    "test:splat:unit": "deno test --allow-read --allow-write --allow-env --allow-run splat_train.test.ts",
     "gen:test-data": "node scripts/generate-test-homes.mjs && node scripts/generate-cv-images.mjs",
     "seed:test-data": "node scripts/seed-test-homes.mjs",
     "eval:cv": "node scripts/eval-cv.mjs",
