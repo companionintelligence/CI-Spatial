@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>Companion Scan</title>
     <link rel="manifest" href="/manifest.json" />
     <link rel="icon" href="/icon-192.png" type="image/png" />
@@ -39,6 +39,14 @@
           xrScript.dataset.preloadChunks = 'slam'
           document.head.appendChild(xrScript)
         }
+
+        // iOS Safari ignores user-scalable=no for pinch; the non-standard
+        // gesture* events are the reliable way to keep the AR view from
+        // zooming. touch-action handles Android/desktop.
+        for (const evt of ['gesturestart', 'gesturechange', 'gestureend']) {
+          document.addEventListener(evt, (e) => e.preventDefault(), { passive: false })
+        }
+        document.addEventListener('dblclick', (e) => e.preventDefault(), { passive: false })
       }
     </script>
 
@@ -95,6 +103,20 @@
           linear-gradient(180deg, #021010 0%, #01070a 100%);
         color: var(--ci-text);
         font-family: var(--ci-font-body);
+        /* App chrome is not a document: no text selection, no long-press
+           callout, no double-tap zoom. Form fields opt back in below. */
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+        -webkit-tap-highlight-color: transparent;
+        touch-action: manipulation;
+      }
+
+      input,
+      textarea,
+      [contenteditable] {
+        -webkit-user-select: text;
+        user-select: text;
       }
 
       /* The XR8 canvas fills the screen */

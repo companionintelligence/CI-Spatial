@@ -5,9 +5,12 @@
  * (or any capable VLM) with no surrounding prose.
  */
 
-export const SPATIAL_DETECTION_PROMPT = `You are a spatial object detector. Analyze this image and respond with ONLY a JSON array. No other text. Format:
-[{"label": "chair", "bbox": [x1,y1,x2,y2], "confidence": 0.92, "description": "wooden dining chair, brown"}]
-Where bbox values are 0–1 normalised fractions of image width/height. List every distinct object you can see. Maximum 8 objects.`
+export const SPATIAL_DETECTION_PROMPT = `Look at this image and list up to 8 distinct visible objects as a JSON array, most prominent object first. Output ONLY the JSON array, no other text.
+Each item must have exactly these four keys: "label", "bbox", "confidence", "description".
+WRONG: {"box_2d": [239, 221, 675, 781], ...} - never output the key "box_2d" or 0-1000 coordinates.
+RIGHT: {"label": "potted plant", "bbox": [0.22, 0.24, 0.78, 0.68], "confidence": 0.92, "description": "small fern, white pot"}
+"bbox" is [x_min, y_min, x_max, y_max] as decimal fractions 0-1 of image width and height.
+"label" is the single most specific singular noun for the object (sofa, chair, table, desk, tv, monitor, lamp, plant, bed, shelf, cabinet, door, window, rug, sink, counter, picture, pillow, tree, bush, ...). Repeat a label only for separate objects of the same kind. Keep "description" under 7 words.`
 
 export interface RawDetection {
   label: string
