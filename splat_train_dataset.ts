@@ -70,7 +70,10 @@ export interface NerfstudioFrame {
 }
 
 export interface NerfstudioTransforms {
-  camera_model: 'OPENCV' | 'PINHOLE'
+  // Brush's nerfstudio loader accepts only 'PERSPECTIVE' (pinhole),
+  // 'OPENCV', or 'OPENCV_FISHEYE' — NOT the COLMAP name 'PINHOLE'
+  // (brush-dataset/src/formats/nerfstudio.rs resolve_camera_model).
+  camera_model: 'PERSPECTIVE' | 'OPENCV'
   /** Provenance so a re-run / debugging can trace which session produced this. */
   ci_source?: { sessionId: string; frameCount: number; generatedAt: string }
   /** Path (relative to transforms.json) to the seed point cloud, when present. */
@@ -186,7 +189,8 @@ export async function buildBrushDataset(opts: BuildDatasetOptions): Promise<Buil
   }
 
   const transforms: NerfstudioTransforms = {
-    camera_model: 'PINHOLE',
+    // Our WebXR intrinsics are distortion-free pinhole → 'PERSPECTIVE'.
+    camera_model: 'PERSPECTIVE',
     ci_source: {
       sessionId: sessionDir.split('/').filter(Boolean).pop() ?? '',
       frameCount: frames.length,
