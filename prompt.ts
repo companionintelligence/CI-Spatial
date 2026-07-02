@@ -42,7 +42,10 @@ export function normalizeDetections(arr: unknown[]): RawDetection[] {
   const prepared = arr
     .map(coerceDetection)
     .filter((det): det is RawDetection => det !== null)
-  return dedupeDetections(normalizeAllBboxes(prepared)).slice(0, MAX_DETECTIONS)
+  // Drop boxes that are degenerate (zero width/height) after clamping —
+  // they would produce useless or NaN placements downstream.
+  const clamped = normalizeAllBboxes(prepared).filter(hasPositiveArea)
+  return dedupeDetections(clamped).slice(0, MAX_DETECTIONS)
 }
 
 function tryParseArray(text: string): unknown[] | null {
@@ -135,6 +138,12 @@ function bboxIou(a: RawDetection['bbox'], b: RawDetection['bbox']): number {
 
 function bboxArea(b: RawDetection['bbox']): number {
   return Math.max(0, b[2] - b[0]) * Math.max(0, b[3] - b[1])
+}
+
+/** True when the (already clamped) bbox has x2 > x1 and y2 > y1. */
+function hasPositiveArea(det: RawDetection): boolean {
+  const [x1, y1, x2, y2] = det.bbox
+  return x2 > x1 && y2 > y1
 }
 
 function bboxCenter(b: RawDetection['bbox']): { x: number; y: number } {

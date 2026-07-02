@@ -20,6 +20,7 @@ import { AutoCapture } from './capture/auto-capture'
 import { KeyframeStreamer } from './capture/keyframes'
 import { ScanQualityMonitor } from './capture/quality-monitor'
 import { InferenceRouter } from './inference/router'
+import { InferServerError } from './inference/server'
 import { resolveDetections, mergeDetections } from './spatial/resolver'
 import { DetectionStore } from './scene/store'
 import { ProjectStore } from './project/project-store'
@@ -31,12 +32,34 @@ import { exportSessionSummary } from './export/summary'
 import { GeoTracker, type GeoFix } from './geo/geo-tracker'
 import { RtcBroadcaster } from './rtc/broadcaster'
 import { registerPWA } from './pwa'
+import { installRemoteLog } from './debug/remote-log'
 import * as THREE from 'three'
 
 const CAPTURE_FRAME_TIMEOUT_MS = 8000
 const TRACKING_WAIT_MS = 2500
 
+// One-time HUD notices — module-level so repeated triggers stay quiet
+let quotaWarningShown = false
+let decimationNoticeShown = false
+
 async function main() {
+  // Remote log mirror — inert unless armed via ?debug=remote or localStorage
+  installRemoteLog()
+
+  // Camera, WebXR, and IndexedDB all need a secure context; fail fast with
+  // actionable guidance instead of a cascade of cryptic permission errors.
+  if (!window.isSecureContext) {
+    const statusEl = document.getElementById('status-text')
+    if (statusEl) statusEl.textContent = `HTTPS required — open https://${location.hostname}:5173 (run: tailscale cert ${location.hostname})`
+    const startBtn = document.getElementById('start-ar-btn') as HTMLButtonElement | null
+    if (startBtn) {
+      startBtn.disabled = true
+      startBtn.style.opacity = '0.4'
+      startBtn.style.cursor = 'not-allowed'
+    }
+    return
+  }
+
   registerPWA()
 
   const canvas = document.getElementById('camerafeed') as HTMLCanvasElement
@@ -45,6 +68,7 @@ async function main() {
   // ── 1. Store + scan accumulators ────────────────────────────────────────────
   const store = new DetectionStore()
   await store.open()
+  void checkStorageQuota(store, overlay)
   const projectStore = new ProjectStore()
   await projectStore.open()
   const qualityMonitor = new ScanQualityMonitor()
@@ -101,7 +125,7 @@ async function main() {
   const history = new SessionHistory(store)
   history.mount()
 
-  void store.saveSnapshot()
+  void store.saveSnapshot().then(() => checkStorageQuota(store, overlay))
 
   document.getElementById('history-btn')?.addEventListener('click', () => {
     initDrawerGeoMap(geoTracker.snapshot())
@@ -154,6 +178,7 @@ async function main() {
       overlay.setStatus(forcedMode === 'webxr'
         ? 'WebXR not available — on iOS open this page in HelloXR'
         : 'AR not available on this device')
+      showArHelp()
       console.error('[main] No AR runtime available:', e)
       return
     }
@@ -255,16 +280,39 @@ async function main() {
 
       captureCount++
       await store.saveSnapshot()
+      void checkStorageQuota(store, overlay)
       queueAutoSave()
       overlay.setStatus(
         `${store.detections.size} object${store.detections.size === 1 ? '' : 's'} · ${pointCloud.count} pts`,
       )
     } catch (e) {
       clearAnalysisProgress()
-      const message = e instanceof Error ? e.message : String(e)
-      overlay.setStatus(message.includes('Timed out')
-        ? 'Camera frame timed out — tap once more'
-        : 'Capture failed — try again')
+      if (e instanceof InferServerError) {
+        // Server-path inference failures carry a typed code — map each to
+        // actionable HUD guidance instead of a generic "failed" message.
+        switch (e.code) {
+          case 'timeout':
+            overlay.setStatus('Server took too long — try again or move closer')
+            break
+          case 'network':
+            overlay.setStatus(navigator.onLine ? 'Server unreachable — is Tailscale connected?' : 'You are offline')
+            break
+          case 'model-loading':
+            overlay.setStatus('Model warming up — retry in a few seconds')
+            break
+          case 'model-failed':
+          case 'unavailable':
+            overlay.setStatus(`Server inference unavailable${router.hasWebGPU ? ' — try WebGPU in the panel' : ''}`)
+            break
+          default:
+            overlay.setStatus('Capture failed — try again')
+        }
+      } else {
+        const message = e instanceof Error ? e.message : String(e)
+        overlay.setStatus(message.includes('Timed out')
+          ? 'Camera frame timed out — tap once more'
+          : 'Capture failed — try again')
+      }
       console.error('[capture]', e)
     } finally {
       clearAnalysisProgress()
@@ -311,6 +359,7 @@ async function main() {
     setAutosaveStatus('Saving scan...')
     try {
       await store.saveSnapshot()
+      void checkStorageQuota(store, overlay)
       if (pointCloud.count === 0 && store.detections.size === 0 && poseHistory.length === 0) {
         setAutosaveStatus('Autosaved locally')
         return
@@ -448,6 +497,22 @@ async function main() {
       }
     })
   }
+
+  // Best-effort teardown when the tab goes away. pagehide is the only
+  // teardown event that fires reliably on iOS Safari (beforeunload does not) —
+  // stop streams and finalize the keyframe session, fire-and-forget.
+  window.addEventListener('pagehide', () => {
+    if (broadcaster.isRunning) broadcaster.stop()
+    if (autoCapture.enabled) autoCapture.disable()
+    if (kfStreamer.active) {
+      void kfStreamer.stop({
+        pointCount: pointCloud.count,
+        detectionCount: store.detections.size,
+        poseCount: poseHistory.length,
+        qualitySummary: currentQualitySummary(),
+      })
+    }
+  })
   overlay.setProgress(null)
 
   // Mirror detection updates to the desktop viewer over the RTC data channel.
@@ -490,6 +555,11 @@ async function main() {
       if (pointCloud.count === added) {
         overlay.setStatus('Tracking — tap to capture')
       }
+    }
+    // One-time notice when the voxel grid starts dropping points to cap memory
+    if (!decimationNoticeShown && pointCloud.decimations > 0) {
+      decimationNoticeShown = true
+      overlay.setStatus('Point cloud thinned to save memory')
     }
     // Update quality overlay on every scanner tick
     const snap = qualityMonitor.tick(provider, pointCloud)
@@ -536,6 +606,36 @@ function setupStatusOverlay() {
 function setAutosaveStatus(text: string): void {
   const el = document.getElementById('autosave-status')
   if (el) el.textContent = text
+}
+
+/** One-time HUD warning when IndexedDB usage crosses 80 % of the browser quota. */
+async function checkStorageQuota(store: DetectionStore, overlay: ReturnType<typeof setupStatusOverlay>): Promise<void> {
+  if (quotaWarningShown) return
+  const q = await store.quotaStatus()
+  if (q && q.quota > 0 && q.usage / q.quota > 0.8) {
+    quotaWarningShown = true
+    overlay.setStatus('Storage nearly full — old sessions may not save')
+  }
+}
+
+/**
+ * Fills and reveals the #ar-help hint on the start screen when no AR runtime
+ * is available — per-platform guidance for getting a working session.
+ */
+function showArHelp(): void {
+  const el = document.getElementById('ar-help')
+  if (!el) return
+  const ua = navigator.userAgent
+  if (/iPhone|iPad|iPod/i.test(ua)) {
+    el.innerHTML = 'Open in Safari for 8th Wall SLAM, or install '
+      + '<a href="https://apps.apple.com/us/app/helloxr/id6757726359" style="color:var(--ci-accent);">HelloXR</a>'
+      + ' for native WebXR'
+  } else if (/Android/i.test(ua)) {
+    el.textContent = 'Use Chrome 90+ with Google Play Services for AR'
+  } else {
+    el.textContent = 'Open this URL on a phone: ' + location.origin
+  }
+  el.hidden = false
 }
 
 function setCaptureBusy(busy: boolean): void {
@@ -821,7 +921,7 @@ function initDrawerGeoMap(fix: GeoFix | null): void {
     if (placeholder) placeholder.style.display = 'none'
 
     // Fetch + plot all stored scan locations
-    void fetch('/scan-locations').then(async (r) => {
+    void fetch('/scan-locations', { signal: AbortSignal.timeout(5000) }).then(async (r) => {
       if (!r.ok) return
       const locations = await r.json() as Array<{ lat: number; lng: number; filename: string; address: string | null }>
       for (const loc of locations) {

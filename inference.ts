@@ -67,8 +67,10 @@ function arrayBufferToBase64(bytes: Uint8Array): string {
 
 export class InferenceEngine {
   readonly modelId: string
-  private mode: 'ollama' | 'onnx' | 'mock'
-  
+  private _mode: 'ollama' | 'onnx' | 'mock'
+  private _lastInferMs: number | null = null
+  private _lastInferAt: number | null = null
+
   // Ollama configuration
   private ollamaUrl: string
   private ollamaModel: string
@@ -82,23 +84,38 @@ export class InferenceEngine {
 
   constructor() {
     const requested = Deno.env.get('INFERENCE_MODE')
-    this.mode = requested === 'onnx' ? 'onnx' : requested === 'mock' ? 'mock' : 'ollama'
+    this._mode = requested === 'onnx' ? 'onnx' : requested === 'mock' ? 'mock' : 'ollama'
     this.ollamaUrl = Deno.env.get('OLLAMA_HOST') ?? 'http://localhost:11434'
     this.ollamaModel = Deno.env.get('OLLAMA_MODEL') ?? 'moondream:latest'
-    this.modelId = this.mode === 'onnx' ? 'LiquidAI/LFM2.5-VL-1.6B-ONNX'
-      : this.mode === 'mock' ? 'mock/color-blob-v1'
+    this.modelId = this._mode === 'onnx' ? 'LiquidAI/LFM2.5-VL-1.6B-ONNX'
+      : this._mode === 'mock' ? 'mock/color-blob-v1'
       : `Ollama/${this.ollamaModel}`
   }
 
+  /** Resolved inference mode (INFERENCE_MODE env). */
+  get mode(): 'ollama' | 'onnx' | 'mock' {
+    return this._mode
+  }
+
+  /** Wall time of the most recent successful infer() in ms, or null. */
+  get lastInferMs(): number | null {
+    return this._lastInferMs
+  }
+
+  /** Epoch ms timestamp of the most recent successful infer(), or null. */
+  get lastInferAt(): number | null {
+    return this._lastInferAt
+  }
+
   async load(): Promise<void> {
-    if (this.mode === 'mock') {
+    if (this._mode === 'mock') {
       const jimpMod = await import('jimp')
       JimpClass = jimpMod.Jimp
       console.log('[engine] Mock colour-blob engine ready (INFERENCE_MODE=mock)')
       return
     }
 
-    if (this.mode === 'ollama') {
+    if (this._mode === 'ollama') {
       console.log(`[engine] Initializing Ollama engine (model: "${this.ollamaModel}" at ${this.ollamaUrl})…`)
       try {
         const res = await fetch(`${this.ollamaUrl}/api/tags`)
@@ -176,13 +193,21 @@ export class InferenceEngine {
   }
 
   async infer(imageBytes: Uint8Array): Promise<RawDetection[]> {
-    if (this.mode === 'mock') {
+    const started = Date.now()
+    const detections = await this._inferDispatch(imageBytes)
+    this._lastInferMs = Date.now() - started
+    this._lastInferAt = Date.now()
+    return detections
+  }
+
+  private _inferDispatch(imageBytes: Uint8Array): Promise<RawDetection[]> {
+    if (this._mode === 'mock') {
       return this._inferMock(imageBytes)
     }
-    if (this.mode === 'ollama') {
+    if (this._mode === 'ollama') {
       return this._inferOllama(imageBytes)
     }
-    
+
     // ONNX serialisation queue
     const result = this._onnxQueue.then(() => this._inferOnnx(imageBytes))
     this._onnxQueue = result.catch(() => {})
@@ -297,11 +322,20 @@ export class InferenceEngine {
 
     console.log(`[engine] Running Ollama inference (${this.ollamaModel})…`)
     const start = Date.now()
-    const res = await fetch(`${this.ollamaUrl}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
+    let res: Response
+    try {
+      res = await fetch(`${this.ollamaUrl}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(55_000),
+      })
+    } catch (err) {
+      if (err instanceof DOMException && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+        throw new Error(`Ollama inference timed out after 55s (model: ${this.ollamaModel})`)
+      }
+      throw err
+    }
 
     if (!res.ok) {
       throw new Error(`Ollama API error: ${res.status} ${await res.text()}`)

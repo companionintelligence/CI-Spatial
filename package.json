@@ -22,7 +22,8 @@
     "test": "playwright test --project=webkit-desktop",
     "test:mobile": "playwright test --project=webkit-iphone15",
     "test:iphone": "playwright test --project=iphone-usb",
-    "logs:iphone": "node scripts/iwdp-console.mjs ws://localhost:9222/devtools/page/2"
+    "logs:iphone": "node scripts/iwdp-console.mjs ws://localhost:9222/devtools/page/2",
+    "logs:watch": "node scripts/logs-watch.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",

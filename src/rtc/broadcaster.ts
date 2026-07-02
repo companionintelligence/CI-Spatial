@@ -28,6 +28,10 @@ const DC_BACKPRESSURE_BYTES = 256 * 1024
 const POINT_FLUSH_MS = 500
 const POINT_FLUSH_MAX = 1500
 
+/** Signaling reconnect backoff: 1s, 2s, 4s… capped at 15s */
+const RECONNECT_BASE_MS = 1000
+const RECONNECT_MAX_MS = 15 * 1000
+
 export class RtcBroadcaster {
   private _roomId: string
   private _ws: WebSocket | null = null
@@ -38,6 +42,8 @@ export class RtcBroadcaster {
   private _running = false
   private _pointBuffer: number[] = []
   private _flushHandle: ReturnType<typeof setInterval> | null = null
+  private _reconnectDelay = RECONNECT_BASE_MS
+  private _reconnectHandle: ReturnType<typeof setTimeout> | null = null
 
   constructor(roomId: string) {
     this._roomId = roomId
@@ -90,6 +96,15 @@ export class RtcBroadcaster {
     }
 
     // Connect signaling WebSocket
+    this._connectSignal()
+  }
+
+  /**
+   * Open (or reopen) the signaling WebSocket.  On unexpected close the
+   * socket reconnects with exponential backoff for as long as the
+   * broadcaster is running.
+   */
+  private _connectSignal(): void {
     const wsUrl = this._signalUrl()
     let ws: WebSocket
     try {
@@ -103,11 +118,20 @@ export class RtcBroadcaster {
     this._ws = ws
 
     ws.addEventListener('open', () => {
+      this._reconnectDelay = RECONNECT_BASE_MS
       this._status('connecting', 'Signal connected — waiting for viewer…')
     })
 
     ws.addEventListener('message', (ev) => {
-      void this._handleSignal(JSON.parse(ev.data as string))
+      let msg: Record<string, unknown>
+      try {
+        msg = JSON.parse(ev.data as string) as Record<string, unknown>
+      } catch {
+        // Malformed relay frame — log and ignore rather than crash
+        console.warn('[rtc] Ignoring malformed signal frame')
+        return
+      }
+      void this._handleSignal(msg)
     })
 
     ws.addEventListener('error', () => {
@@ -115,12 +139,36 @@ export class RtcBroadcaster {
     })
 
     ws.addEventListener('close', () => {
-      if (this._running) this._status('connecting', 'Signal disconnected — retrying…')
+      if (!this._running) return
+      this._status('connecting', 'Signal disconnected — retrying…')
+      // Tear down the stale peer connection so the viewer's fresh
+      // 'peer-ready' after reconnect triggers a clean re-offer.
+      this._teardownPeer()
+      this._reconnectHandle = setTimeout(() => this._connectSignal(), this._reconnectDelay)
+      this._reconnectDelay = Math.min(this._reconnectDelay * 2, RECONNECT_MAX_MS)
     })
+  }
+
+  /** Close the peer connection and data channel (keeps the local stream alive). */
+  private _teardownPeer(): void {
+    if (this._flushHandle !== null) {
+      clearInterval(this._flushHandle)
+      this._flushHandle = null
+    }
+    this._pointBuffer = []
+    this._dataChannel?.close()
+    this._pc?.close()
+    this._dataChannel = null
+    this._pc = null
   }
 
   stop(): void {
     this._running = false
+    if (this._reconnectHandle !== null) {
+      clearTimeout(this._reconnectHandle)
+      this._reconnectHandle = null
+    }
+    this._reconnectDelay = RECONNECT_BASE_MS
     if (this._flushHandle !== null) {
       clearInterval(this._flushHandle)
       this._flushHandle = null

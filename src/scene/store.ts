@@ -26,6 +26,7 @@ type ChangeListener = (detections: Map<string, StoredDetection>, selected: Set<s
 const DB_NAME = 'ci-xr-scan'
 const STORE_NAME = 'sessions'
 const DB_VERSION = 1
+const OPEN_TIMEOUT_MS = 5000 // give up on IndexedDB after 5 s (private mode, hung backends)
 
 export class DetectionStore {
   readonly sessionId: string
@@ -42,7 +43,29 @@ export class DetectionStore {
 
   /** Open (or create) the IndexedDB.  Call once before using the store. */
   async open(): Promise<void> {
-    this.db = await openDB()
+    try {
+      this.db = await Promise.race([
+        openDB(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('IndexedDB open timed out')), OPEN_TIMEOUT_MS),
+        ),
+      ])
+    } catch {
+      console.warn('[store] IndexedDB unavailable — session persistence disabled')
+      this.db = null
+    }
+  }
+
+  /** Storage usage/quota via the StorageManager API; null when unavailable */
+  async quotaStatus(): Promise<{ usage: number; quota: number } | null> {
+    if (!navigator.storage?.estimate) return null
+    try {
+      const { usage, quota } = await navigator.storage.estimate()
+      if (usage === undefined || quota === undefined) return null
+      return { usage, quota }
+    } catch {
+      return null
+    }
   }
 
   get detections(): Map<string, StoredDetection> {
