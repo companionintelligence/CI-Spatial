@@ -533,6 +533,30 @@ ground-truth against `expected.json` in tests. Exposed as `window.__measureTool`
   lingbot-map-reconstruct job"; ready → "Reconstruction ready — 3,655,008 points, 24
   poses." with run stats (`viewer.ts:948-999`). Two checkboxes toggle the dense-point
   overlay and camera-path overlay under the selected scan (`viewer.ts:1857-1862`).
+- **Trained Splat** section: when the selected scan has been through the
+  `splat-train` world job (Brush), shows "Trained splat ready — N gaussians" with
+  train timing, and a **Show trained splat** toggle that loads the served `.ply`
+  into a SparkJS `SplatMesh` under the scan root (`src/viewer/splat-layer.ts`,
+  `viewer.ts:1027-1084`). Skipped/failed runs surface their reason inline
+  ("Skipped: …" / "Splat train error: …") instead of loading anything.
+- **Gaussian Splats** manual loader (from the Spark viewer work): URL field + file
+  picker for viewing any external `.ply/.spz/.splat/.ksplat` asset alongside
+  scans — independent of the per-scan trained-splat pipeline.
+
+![Trained splat loaded in the viewer](splat-train/screenshots/viewer-real-splat-loaded.png)
+
+*Above: a real Brush-trained splat (334,681 gaussians, 15k iterations) rendering in
+the world editor next to the seeded test homes.*
+
+**Improvement opportunities (splat layers)**
+- The generic layer list still shows a "Gaussian splat — planned · future" row even
+  though the Trained Splat section below it is now real — the stale row should be
+  removed or wired to the same state.
+- Three adjacent splat-related panels (layer row, Trained Splat, manual Gaussian
+  Splats) carry different mental models (per-scan pipeline artifact vs ad-hoc viewer
+  asset); a single merged section with a source badge would read better.
+- Loading a 50 MB `.ply` gives no progress feedback — status flips from "Loading
+  trained splat…" straight to ready; a byte-progress indicator would help on phones.
 
 ### 10.5 Sidebar — Edit tab (`viewer.html:925-975`)
 
