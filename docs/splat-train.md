@@ -122,7 +122,7 @@ PLY header and writes the `splat-train` manifest itself.
 3. Switch to the **World** tab. The Processing Queue dropdown includes the
    `Splat train` entry.
 
-![Job dropdown with Splat train selected](screenshots/viewer-job-dropdown-splat.png)
+![Job dropdown with Splat train selected](splat-train/screenshots/viewer-job-dropdown-splat.png)
 
 4. Pick `Splat train` and click **Queue Job**. The local coordinator
    transitions `queued → processing → completed`. On success the job surfaces a
@@ -131,8 +131,8 @@ PLY header and writes the `splat-train` manifest itself.
    gaussian count and the toggle drives the splat's visibility on the selected
    scan without a reload.
 
-![Layers panel — Trained Splat controls](screenshots/viewer-splat-panel.png)
-![Layers panel — trained splat loaded](screenshots/viewer-splat-panel-loaded.png)
+![Layers panel — Trained Splat controls](splat-train/screenshots/viewer-splat-panel.png)
+![Layers panel — trained splat loaded](splat-train/screenshots/viewer-splat-panel-loaded.png)
 
 ## Triggering a training run from curl
 
@@ -205,3 +205,20 @@ in CI, but the served-`.ply` → `SplatMesh` data path is identical to a real ru
   cross-scan alignment still needs an `align-scan` pass.
 - Brush does not emit a compressed PLY by default; the `.compressed.ply` sidecar
   is best-effort (only landed if a compressed variant appears in the export dir).
+
+## Screenshots
+
+Real Brush output (334,681 gaussians, 15k iterations, trained on beta-1's second
+RX 7900 XTX in ~6 minutes) loaded in the world editor:
+
+![Real trained splat rendering in the viewer](splat-train/screenshots/viewer-real-splat-loaded.png)
+
+The Trained Splat layer panel for a scan with a completed run, and the
+processing-queue entry that launches one:
+
+![Trained Splat layer panel](splat-train/screenshots/viewer-trained-splat-panel.png)
+
+![Processing queue with splat-train selected](splat-train/screenshots/viewer-queue-splat-train.png)
+
+(The `viewer-splat-panel*.png` shots are captured automatically by
+`tests/mock-splat-train.spec.ts` on every run with the synthetic fixture.)

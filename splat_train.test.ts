@@ -196,3 +196,184 @@ Deno.test('runSplatTrain lands the PLY + writes an ok manifest via an injected s
   assertEquals(manifest.scanId, 'scan-1')
   await Deno.remove(tmp, { recursive: true })
 })
+
+// ─── Converter regression + edge cases ────────────────────────────────────────
+
+import { buildBrushDataset } from './splat_train_dataset.ts'
+import { assertRejects } from 'jsr:@std/assert@^1.0.0/rejects'
+import { assertStringIncludes } from 'jsr:@std/assert@^1.0.0/string-includes'
+
+/** 2×2 baseline JPEG (SOF0) — enough for readJpegDimensions to parse. */
+const TINY_JPEG = new Uint8Array([
+  0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x02, 0x00, 0x02,
+  0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01, 0xff, 0xd9,
+])
+
+async function makeSession(tmp: string, opts?: { frames?: number; withCloud?: boolean; lyingDims?: boolean; skipImageIdx?: number }) {
+  const sessionDir = `${tmp}/sess-conv-test`
+  await Deno.mkdir(sessionDir, { recursive: true })
+  const n = opts?.frames ?? 2
+  const lines: string[] = []
+  for (let i = 0; i < n; i++) {
+    const file = `kf-${String(i).padStart(5, '0')}.jpg`
+    if (i !== opts?.skipImageIdx) await Deno.writeFile(`${sessionDir}/${file}`, TINY_JPEG)
+    lines.push(JSON.stringify({
+      index: i,
+      file,
+      pose: { position: { x: i, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0, w: 1 } },
+      // Optionally lie about dimensions — the converter must trust the JPEG bytes.
+      intrinsics: { width: opts?.lyingDims ? 480 : 2, height: opts?.lyingDims ? 480 : 2, fovYDeg: 55 },
+    }))
+  }
+  await Deno.writeTextFile(`${sessionDir}/keyframes.jsonl`, lines.join('\n') + '\n')
+  if (opts?.withCloud) {
+    await Deno.writeTextFile(
+      `${sessionDir}/lingbot-map.point-cloud.ply`,
+      'ply\nformat binary_little_endian 1.0\nelement vertex 0\nend_header\n',
+    )
+  }
+  return sessionDir
+}
+
+Deno.test('buildBrushDataset writes camera_model PERSPECTIVE — never the COLMAP name PINHOLE', async () => {
+  // Regression: Brush's nerfstudio loader accepts PERSPECTIVE/OPENCV/OPENCV_FISHEYE/unset
+  // and hard-errors on `PINHOLE`. This shipped once (fixed in 65c6e54) — lock it in.
+  const tmp = await Deno.makeTempDir({ prefix: 'splat-conv-' })
+  const sessionDir = await makeSession(tmp)
+  const result = await buildBrushDataset({ sessionDir, datasetDir: `${tmp}/ds` })
+  const transforms = JSON.parse(await Deno.readTextFile(`${result.datasetDir}/transforms.json`))
+  assertEquals(transforms.camera_model, 'PERSPECTIVE')
+  await Deno.remove(tmp, { recursive: true })
+})
+
+Deno.test('buildBrushDataset trusts real JPEG dimensions over lying metadata', async () => {
+  // The lingbot fixture's metadata claims 480px while the JPEGs are 640×360;
+  // Brush projects through w/h, so wrong dims corrupt cx/cy and the training.
+  const tmp = await Deno.makeTempDir({ prefix: 'splat-conv-' })
+  const sessionDir = await makeSession(tmp, { lyingDims: true })
+  const result = await buildBrushDataset({ sessionDir, datasetDir: `${tmp}/ds` })
+  const transforms = JSON.parse(await Deno.readTextFile(`${result.datasetDir}/transforms.json`))
+  for (const frame of transforms.frames) {
+    assertEquals(frame.w, 2)
+    assertEquals(frame.h, 2)
+    assert(frame.cx <= 2 && frame.cy <= 2, `cx/cy must be scaled to real pixels, got ${frame.cx}/${frame.cy}`)
+  }
+  await Deno.remove(tmp, { recursive: true })
+})
+
+Deno.test('buildBrushDataset seeds ply_file_path only when the session has a point cloud', async () => {
+  const tmp = await Deno.makeTempDir({ prefix: 'splat-conv-' })
+  const bare = await buildBrushDataset({ sessionDir: await makeSession(`${tmp}/a`), datasetDir: `${tmp}/ds-a` })
+  const bareTransforms = JSON.parse(await Deno.readTextFile(`${bare.datasetDir}/transforms.json`))
+  assertEquals(bareTransforms.ply_file_path, undefined)
+
+  const seeded = await buildBrushDataset({ sessionDir: await makeSession(`${tmp}/b`, { withCloud: true }), datasetDir: `${tmp}/ds-b` })
+  const seededTransforms = JSON.parse(await Deno.readTextFile(`${seeded.datasetDir}/transforms.json`))
+  assert(typeof seededTransforms.ply_file_path === 'string' && seededTransforms.ply_file_path.length > 0)
+  // The referenced cloud must resolve relative to transforms.json.
+  await Deno.stat(`${seeded.datasetDir}/${seededTransforms.ply_file_path}`)
+  await Deno.remove(tmp, { recursive: true })
+})
+
+Deno.test('buildBrushDataset rejects a session with no keyframes', async () => {
+  const tmp = await Deno.makeTempDir({ prefix: 'splat-conv-' })
+  const sessionDir = `${tmp}/sess-empty`
+  await Deno.mkdir(sessionDir, { recursive: true })
+  await assertRejects(
+    () => buildBrushDataset({ sessionDir, datasetDir: `${tmp}/ds` }),
+    Error,
+    'no keyframes',
+  )
+  await Deno.remove(tmp, { recursive: true })
+})
+
+Deno.test('buildBrushDataset drops frames whose image is missing and reports the count', async () => {
+  const tmp = await Deno.makeTempDir({ prefix: 'splat-conv-' })
+  const sessionDir = await makeSession(tmp, { frames: 3, skipImageIdx: 1 })
+  const result = await buildBrushDataset({ sessionDir, datasetDir: `${tmp}/ds` })
+  assertEquals(result.droppedFrames, 1)
+  const transforms = JSON.parse(await Deno.readTextFile(`${result.datasetDir}/transforms.json`))
+  assertEquals(transforms.frames.length, 2)
+  await Deno.remove(tmp, { recursive: true })
+})
+
+// ─── Driver error contract + export selection ─────────────────────────────────
+
+Deno.test('runSplatTrain surfaces a brush failure as an error manifest with the stderr tail', async () => {
+  const tmp = await Deno.makeTempDir({ prefix: 'splat-err-' })
+  const sessionDir = await makeSession(tmp)
+  const result = await runSplatTrain({
+    sessionDir,
+    outputPlyPath: `${tmp}/scan.splat.ply`,
+    brushBin: '/bin/true',
+    _spawn: async () => ({ code: 1, stderr: 'Error: Unsupported nerfstudio camera_model `PINHOLE`' }),
+  })
+  assertEquals(result.status, 'error')
+  assertEquals(result.exitCode, 1)
+  assertStringIncludes(result.log ?? '', 'PINHOLE')
+  const manifest = JSON.parse(await Deno.readTextFile(`${tmp}/scan.splat-train.manifest.json`))
+  assertEquals(manifest.status, 'error')
+  assertStringIncludes(manifest.error, 'brush exited 1')
+  await Deno.remove(tmp, { recursive: true })
+})
+
+Deno.test('runSplatTrain lands the highest-iteration export among decoys', async () => {
+  const tmp = await Deno.makeTempDir({ prefix: 'splat-pick-' })
+  const sessionDir = await makeSession(tmp)
+  const plyWithVertices = (n: number) =>
+    new TextEncoder().encode(`ply\nformat binary_little_endian 1.0\nelement vertex ${n}\nproperty float x\nend_header\n`)
+  const result = await runSplatTrain({
+    sessionDir,
+    outputPlyPath: `${tmp}/scan.splat.ply`,
+    brushBin: '/bin/true',
+    _spawn: async (_bin, args) => {
+      const exportPath = args[args.indexOf('--export-path') + 1]
+      await Deno.writeFile(`${exportPath}/splat_100.ply`, plyWithVertices(1))
+      await Deno.writeFile(`${exportPath}/splat_2000.ply`, plyWithVertices(7))
+      await Deno.writeTextFile(`${exportPath}/notes.txt`, 'decoy')
+      return { code: 0, stderr: '' }
+    },
+  })
+  assertEquals(result.status, 'ok')
+  assertEquals(result.gaussianCount, 7)
+  await Deno.remove(tmp, { recursive: true })
+})
+
+// ─── Env-gated real-Brush end-to-end ──────────────────────────────────────────
+
+// Runs ONLY with BRUSH_E2E=1: a ~200-iter real train on the fixture session.
+// Mock-spawn tests cannot catch real CLI contract drift — the PINHOLE
+// camera_model bug shipped precisely because nothing exercised the actual
+// binary. Takes ~10-30s on an idle GPU. Requires the fixture session and a
+// built brush-cli (BRUSH_BIN or the default path).
+Deno.test({
+  name: 'BRUSH_E2E: real brush-cli trains the fixture session end-to-end',
+  ignore: Deno.env.get('BRUSH_E2E') !== '1',
+  fn: async () => {
+    const fixture = `${Deno.cwd()}/scans/sessions/sess-fixture-lingbot`
+    try {
+      await Deno.stat(`${fixture}/keyframes.jsonl`)
+    } catch {
+      throw new Error('fixture session missing — copy scans/sessions/sess-fixture-lingbot in first')
+    }
+    const tmp = await Deno.makeTempDir({ prefix: 'splat-e2e-' })
+    // Train on a copy so the shared fixture never accumulates dataset dirs.
+    const sessionDir = `${tmp}/sess-fixture-lingbot`
+    await Deno.mkdir(sessionDir, { recursive: true })
+    for await (const entry of Deno.readDir(fixture)) {
+      if (entry.isFile) await Deno.copyFile(`${fixture}/${entry.name}`, `${sessionDir}/${entry.name}`)
+    }
+    const result = await runSplatTrain({
+      sessionDir,
+      outputPlyPath: `${tmp}/scan.splat.ply`,
+      trainIters: 200,
+      maxResolution: 320,
+      evalEvery: 200,
+    })
+    assertEquals(result.status, 'ok')
+    assert((result.gaussianCount ?? 0) > 0, 'expected a non-empty splat')
+    const bytes = await Deno.readFile(`${tmp}/scan.splat.ply`)
+    assertEquals(new TextDecoder().decode(bytes.subarray(0, 3)), 'ply')
+    await Deno.remove(tmp, { recursive: true })
+  },
+})

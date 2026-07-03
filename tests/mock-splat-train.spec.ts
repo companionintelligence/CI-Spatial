@@ -144,4 +144,48 @@ test.describe('Splat-train server processing + viewer splat layer', () => {
     expect(result!.numSplats).toBeGreaterThan(0)
     await page.screenshot({ path: join(SCREENSHOT_DIR, 'viewer-splat-panel-loaded.png'), fullPage: false })
   })
+
+  test('a failed train surfaces its error and never loads a mesh', async ({ page }) => {
+    if (!API_URL) test.skip()
+    const errReady = existsSync(join(SCANS_DIR, `${SCAN_BASE}-err.splat-train.manifest.json`))
+    test.skip(!errReady, 'error fixture missing — re-run: npm run test:splat:make-fixture')
+    page.on('pageerror', (err) => console.error('[page]', err))
+    await page.route('**/scans/**', async (route) => {
+      const url = new URL(route.request().url())
+      const res = await fetch(`${API_URL}${url.pathname}${url.search}`)
+      const buf = Buffer.from(await res.arrayBuffer())
+      await route.fulfill({ status: res.status, body: buf, headers: Object.fromEntries(res.headers.entries()) })
+    })
+    await page.goto('/viewer.html?world=default')
+    await page.click('.sidebar-tab[data-tab="layers"]')
+
+    const result = await page.evaluate(async (scanBase) => {
+      const mod = await import('/src/viewer/splat-layer.ts') as typeof import('../src/viewer/splat-layer')
+      const stubScan = {
+        scanId: `scan-${scanBase}-err`,
+        sessionId: 'sess-fixture-splat',
+        filename: `${scanBase}-err.glb`,
+        name: 'Splat fixture scan (failed train)',
+        glbUrl: `/scans/${scanBase}-err.glb`,
+        geoPose: { lat: null, lng: null, altitudeM: null, bearing: null, accuracyM: null },
+        localToWorld: [],
+        accuracyM: null,
+        capturedAt: null,
+        pointCount: null,
+        detectionCount: null,
+        layerIndex: [],
+        status: 'ready',
+      } as unknown as Parameters<typeof mod.fetchScanSplatLayer>[0]
+      const layer = await mod.fetchScanSplatLayer(stubScan)
+      return layer
+        ? { status: layer.manifest.status, error: layer.manifest.error ?? null, hasMesh: Boolean(layer.loaded), gaussianCount: layer.gaussianCount }
+        : null
+    }, SCAN_BASE)
+
+    expect(result).not.toBeNull()
+    expect(result!.status).toBe('error')
+    expect(result!.error).toContain('brush exited')
+    expect(result!.hasMesh).toBe(false)
+    expect(result!.gaussianCount).toBe(0)
+  })
 })
