@@ -76,7 +76,7 @@ test.describe('Splat-train server processing + viewer splat layer', () => {
     page.on('pageerror', (err) => console.error('[page]', err))
     await page.goto('/viewer.html?world=default')
     await page.click('.sidebar-tab[data-tab="layers"]')
-    await expect(page.locator('#splat-layer-section')).toBeVisible()
+    await expect(page.locator('#splat-toolbox-section')).toBeVisible()
     await expect(page.locator('#splat-layer-toggle')).toBeVisible()
     await page.screenshot({ path: join(SCREENSHOT_DIR, 'viewer-splat-panel.png'), fullPage: false })
   })

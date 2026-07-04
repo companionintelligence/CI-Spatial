@@ -953,36 +953,59 @@
                 <div id="lingbot-map-stats" class="layer-meta" style="margin-top:6px;"></div>
               </div>
 
-              <div class="edit-section" id="splat-layer-section">
-                <div class="edit-section-title">Trained Splat</div>
+              <!-- Splat Toolbox — trained-splat status, train/detect actions,
+                   3D object boxes, and the external splat loader in one place. -->
+              <div class="edit-section" id="splat-toolbox-section">
+                <div class="edit-section-title">Splat Toolbox</div>
                 <div id="splat-layer-status" class="layer-meta" style="margin-bottom:6px;">
                   Run the <code>splat-train</code> job to train a Gaussian splat for the selected scan.
                 </div>
-                <label class="layer-row" style="display:flex;align-items:center;gap:8px;">
+                <div id="splat-layer-stats" class="layer-meta" style="margin-bottom:8px;"></div>
+
+                <div style="display:flex;gap:6px;margin-bottom:8px;">
+                  <button class="job-btn" id="btn-splat-train" style="flex:1;">Train splat</button>
+                  <a id="splat-download-link" class="job-btn" href="#" download hidden
+                     style="flex:1;text-align:center;text-decoration:none;">Download .ply</a>
+                </div>
+
+                <label class="layer-row" style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
                   <input type="checkbox" id="splat-layer-toggle" />
                   <span>Show trained splat</span>
                 </label>
-                <div id="splat-layer-stats" class="layer-meta" style="margin-top:6px;"></div>
-              </div>
 
-              <div class="edit-section" id="splat-section">
-                <div class="edit-section-title">Gaussian Splats</div>
-                <div class="layer-meta" style="margin-bottom:6px;">
-                  View a trained Gaussian-splat asset (.ply/.spz/.splat/.ksplat) alongside your scans. There's no in-app trainer yet — export from an external tool.
+                <div class="edit-section-title" style="margin-top:4px;">Detect objects</div>
+                <div id="splat-detect-status" class="layer-meta" style="margin-bottom:6px;">
+                  Detect objects in the trained splat with an open-vocabulary prompt.
                 </div>
                 <div style="display:flex;gap:6px;margin-bottom:6px;">
-                  <input type="text" id="splat-url-input" placeholder="https://…/scene.spz"
+                  <input type="text" id="splat-detect-prompt" placeholder="sofa, chair, table, tv, lamp"
                     style="flex:1;min-width:0;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:#fff;font-size:11px;padding:6px 8px;outline:none;" />
-                  <button class="job-btn" id="btn-load-splat-url">Load</button>
+                  <button class="job-btn" id="btn-splat-detect">Detect</button>
                 </div>
-                <label class="job-btn" for="splat-file-input" style="display:block;text-align:center;cursor:pointer;">
-                  Load from file…
+                <label class="layer-row" style="display:flex;align-items:center;gap:8px;margin-top:6px;">
+                  <input type="checkbox" id="splat-detect-toggle" />
+                  <span>Show detected object boxes</span>
                 </label>
-                <input type="file" id="splat-file-input" accept=".ply,.spz,.splat,.ksplat,.sog,.zip" style="display:none;" />
-                <div id="splat-status" class="layer-meta" style="margin-top:6px;"></div>
-                <div id="splat-list" style="margin-top:8px;">
-                  <div class="layer-meta">No splats loaded.</div>
-                </div>
+
+                <details style="margin-top:12px;">
+                  <summary class="edit-section-title" style="cursor:pointer;">External splat</summary>
+                  <div class="layer-meta" style="margin:6px 0;">
+                    View a trained Gaussian-splat asset (.ply/.spz/.splat/.ksplat) alongside your scans.
+                  </div>
+                  <div style="display:flex;gap:6px;margin-bottom:6px;">
+                    <input type="text" id="splat-url-input" placeholder="https://…/scene.spz"
+                      style="flex:1;min-width:0;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:#fff;font-size:11px;padding:6px 8px;outline:none;" />
+                    <button class="job-btn" id="btn-load-splat-url">Load</button>
+                  </div>
+                  <label class="job-btn" for="splat-file-input" style="display:block;text-align:center;cursor:pointer;">
+                    Load from file…
+                  </label>
+                  <input type="file" id="splat-file-input" accept=".ply,.spz,.splat,.ksplat,.sog,.zip" style="display:none;" />
+                  <div id="splat-status" class="layer-meta" style="margin-top:6px;"></div>
+                  <div id="splat-list" style="margin-top:8px;">
+                    <div class="layer-meta">No splats loaded.</div>
+                  </div>
+                </details>
               </div>
             </div>
           </div>

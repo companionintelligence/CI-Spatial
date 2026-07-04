@@ -49,6 +49,10 @@ async function main() {
   // Remote log mirror — inert unless armed via ?debug=remote or localStorage
   installRemoteLog()
 
+  // Walkthrough-video upload — a server-side path that needs no AR runtime or
+  // secure context, so wire it before the isSecureContext bail-out below.
+  wireVideoUpload()
+
   // Camera, WebXR, and IndexedDB all need a secure context; fail fast with
   // actionable guidance instead of a cascade of cryptic permission errors.
   if (!window.isSecureContext) {
@@ -741,6 +745,68 @@ function showArHelp(): void {
     el.textContent = 'Open this URL on a phone: ' + location.origin
   }
   el.hidden = false
+}
+
+/**
+ * Wire the "or upload a walkthrough video" secondary action on the start
+ * screen. POSTs the chosen file to /ingest-video (multipart) with a simple
+ * upload-% readout, then reveals the "open the 3D editor" link on success.
+ * Deliberately isolated from the AR start flow: it neither removes the start
+ * screen nor touches the onboarding/insecure-context paths.
+ */
+function wireVideoUpload(): void {
+  const input = document.getElementById('upload-video-input') as HTMLInputElement | null
+  const progress = document.getElementById('upload-video-progress')
+  const openLink = document.getElementById('upload-video-open') as HTMLAnchorElement | null
+  const btn = document.getElementById('upload-video-btn')
+  if (!input) return
+
+  input.addEventListener('change', () => {
+    const file = input.files?.[0]
+    if (!file) return
+    if (btn) btn.setAttribute('aria-disabled', 'true')
+    if (openLink) openLink.hidden = true
+    if (progress) progress.textContent = 'Uploading… 0%'
+
+    const form = new FormData()
+    form.append('video', file, file.name)
+    form.append('name', file.name.replace(/\.[^.]+$/, ''))
+
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', '/ingest-video')
+    xhr.upload.addEventListener('progress', (e) => {
+      if (!progress || !e.lengthComputable) return
+      progress.textContent = `Uploading… ${Math.round((e.loaded / e.total) * 100)}%`
+    })
+    xhr.addEventListener('load', () => {
+      if (btn) btn.removeAttribute('aria-disabled')
+      if (xhr.status >= 200 && xhr.status < 300) {
+        let frameCount: number | undefined
+        try { frameCount = (JSON.parse(xhr.responseText) as { frameCount?: number }).frameCount } catch { /* ignore */ }
+        if (progress) {
+          progress.textContent = frameCount
+            ? `Uploaded — ${frameCount} keyframes extracted.`
+            : 'Uploaded — processing started.'
+        }
+        if (openLink) openLink.hidden = false
+      } else {
+        let message = `Upload failed (${xhr.status})`
+        try {
+          const body = JSON.parse(xhr.responseText) as { error?: string; maxBytes?: number }
+          if (body.error) message = `Upload failed: ${body.error}`
+          if (xhr.status === 413 && body.maxBytes) message += ` (max ${(body.maxBytes / 1e6).toFixed(0)} MB)`
+        } catch { /* keep default */ }
+        if (progress) progress.textContent = message
+      }
+      input.value = ''
+    })
+    xhr.addEventListener('error', () => {
+      if (btn) btn.removeAttribute('aria-disabled')
+      if (progress) progress.textContent = 'Upload failed — check your connection.'
+      input.value = ''
+    })
+    xhr.send(form)
+  })
 }
 
 function setCaptureBusy(busy: boolean): void {
