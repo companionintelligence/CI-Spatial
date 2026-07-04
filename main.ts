@@ -692,7 +692,12 @@ app.post('/ingest-video', async (c) => {
     return c.json({ error: `video exceeds ${INGEST_MAX_VIDEO_BYTES} bytes`, maxBytes: INGEST_MAX_VIDEO_BYTES }, 413)
   }
 
-  const form = await c.req.formData()
+  let form: FormData
+  try {
+    form = await c.req.formData()
+  } catch {
+    return c.json({ error: 'expected multipart/form-data with a video field', code: 'bad-request' }, 400)
+  }
   const video = form.get('video')
   if (!video || !(video instanceof File)) {
     return c.json({ error: 'Missing video field (expected a video File)' }, 400)
