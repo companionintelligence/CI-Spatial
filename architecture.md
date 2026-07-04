@@ -1,6 +1,8 @@
 # Companion Scan — System Architecture & Trace Documentation
 
-Companion Scan is a mobile-first, privacy-respecting Augmented Reality (AR) application designed to capture, reconstruct, and index physical rooms. It leverages SLAM tracking, frame capture, vision-language models (VLMs), spatial coordinate resolution, and persistent client-server storage.
+Companion Scan is a mobile-first, privacy-respecting Augmented Reality (AR) application designed to capture, reconstruct, and index physical rooms into a structured **4D map**. It leverages SLAM tracking, frame capture, vision-language models (VLMs), spatial coordinate resolution, an anchored multi-scan world model, asynchronous reconstruction jobs, and persistent client-server storage.
+
+> **Companion documents.** This file is the technical system-design authority: diagrams, data model, the complete API surface, deployment topology, and known shortcomings. The everyday-user experience — first-time-user onboarding (FTUE), the happy-path capture story, and the mental model separating manual capture vs. auto-capture vs. keyframe streaming vs. live WebRTC — lives in **[`docs/UX_FLOW.md`](docs/UX_FLOW.md)**. Read the two together: section 2's sequence diagram below is the *technical trace* (what the code does, frame by frame), while `docs/UX_FLOW.md` is the *experience design* (what the person holding the phone sees and decides). Timelines and shipped-vs-planned status live only in [`roadmap.md`](roadmap.md).
 
 ---
 
@@ -8,9 +10,11 @@ Companion Scan is a mobile-first, privacy-respecting Augmented Reality (AR) appl
 
 The following block diagram represents the modular structure of the Companion Scan system, showing the boundary between client-side components running in the mobile browser and server-side components running on the local host.
 
+Inference is **engine-agnostic**: the server exposes one `/infer` contract and `INFERENCE_MODE` selects the backend. The default is `ollama` (running whatever `OLLAMA_MODEL` is set to — `moondream:latest` out of the box); `onnx` runs the bundled `LiquidAI/LFM2.5-VL-1.6B-ONNX` via `onnxruntime-node`; `mock` is a deterministic colour-blob CV engine for CI and tests. There is no `llama.cpp` in the system.
+
 ```mermaid
 graph TB
-    subgraph Mobile Client (HTTPS/Browser)
+    subgraph mobile ["Mobile Client — HTTPS Browser"]
         ARProvider[AR Provider Abstraction]
         EW[8th Wall Provider]
         XR[WebXR Fallback]
@@ -38,15 +42,17 @@ graph TB
         Exporter --> ClientGLB[Download GLB]
     end
 
-    subgraph Host Server (Deno + Ollama)
+    subgraph host ["Host Server — Deno + Ollama"]
         Vite[Vite Dev Server/Proxy :5173]
         Deno[Hono HTTP Backend :8000]
-        Ollama[Ollama VL Engine :11434]
-        Storage[(Scans & Summaries folders)]
+        Infer[Inference Engine ollama / onnx / mock]
+        JobQ[World Job Queue]
+        Storage[(Scans, Sessions & Worlds folders)]
         ProjectsDB[(projects.json)]
 
         Vite --> Deno
-        Deno --> Ollama
+        Deno --> Infer
+        Deno --> JobQ
         Deno --> Storage
         Deno --> ProjectsDB
     end
@@ -58,11 +64,26 @@ graph TB
     History -- "POST /upload-summary (proxied)" --> Vite
 ```
 
+### The 4D Map Data Model (framing)
+
+Everything the system captures composes into a single anchored **world**. The addressable hierarchy is:
+
+```
+Project ─▶ Floor ─▶ Room ─▶ Session ─▶ { Detections + PointCloud + Splat + … } over Time
+```
+
+- **Project / Floor / Room** — the human-scale organization of a place you own (see the ER diagram in section 3).
+- **Session** — one capture pass (`ScanManifest`): a time-stamped, geo-anchored bundle of typed layers.
+- **Detections + PointCloud + Splat** — the *structured* payload. Rather than one flat mesh, geometry, semantics, and provenance are separated into addressable **layers** (points, mesh, floor, detections, labels, cameraPath, cameraFrustums, rgbFrames, depth, splat, semanticMasks).
+- **Time (the 4th dimension)** — is not a mesh property; it lives in the per-frame observation stream (each `FrameObservation` carries a `timestamp`, `pose`, `intrinsics`, and `frustum`), in `ScanManifest.capturedAt`, and in the append-only `EditPatch[]` edit log (each patch stamped `createdAt`). This is what lets a world hold **multiple scans of the same place captured at different moments** and replay the camera's trajectory. The map is 4D because it is a *time-series of posed observations composed into one anchored frame*, not a static snapshot.
+
+The multi-scan world model and its ENU frame are detailed in section 4; the reconstruction/detection jobs that populate the layers are detailed in section 4 as well.
+
 ---
 
 ## 2. Detailed User Flow
 
-The following sequence diagram traces the user flow from initializing the AR scanner to uploading a finished room scan and summary to the server.
+The following sequence diagram traces the user flow from initializing the AR scanner to uploading a finished room scan and summary to the server. This is the technical trace; for the experience-design narrative of the same journey (onboarding, the "am I done?" question, the four capture modes), see [`docs/UX_FLOW.md`](docs/UX_FLOW.md).
 
 ```mermaid
 sequenceDiagram
@@ -76,9 +97,8 @@ sequenceDiagram
     participant Server as Deno Server (via Vite Proxy)
 
     User->>UI: Loads Webapp over HTTPS
-    UI->>Inf: Pings /health to initialize router
-    Inf-->>UI: Mode established (Server or local WebGPU)
-    User->>UI: Taps "Start AR" (Camera Permissions)
+    UI->>UI: Read localStorage 'infer-mode' (server default, WebGPU opt-in)
+    User->>UI: Taps "Start AR" (Camera + Motion Permissions)
     UI->>AR: Start SLAM Session
     loop Frame Rate (30-60 FPS)
         AR->>UI: Update pose, camera intrinsics, and world points
@@ -89,11 +109,11 @@ sequenceDiagram
     UI->>AR: Lock camera pose & capture frame
     UI->>UI: Create JPEG blob & thumbnail
     UI->>Inf: router.infer(blob)
-    alt WebGPU mode
+    alt WebGPU mode (opt-in via localStorage 'infer-mode')
         Inf->>Inf: Run on-device ONNX in Web Worker
     else Server mode (Default)
         Inf->>Server: POST /infer (image/jpeg)
-        Server->>Server: Ollama: qwen3-vl:4b inference
+        Server->>Server: Inference engine (INFERENCE_MODE): ollama / onnx / mock
         Server-->>Inf: RawDetection[] (JSON bboxes & labels)
     end
     Inf-->>UI: RawDetection[]
@@ -127,9 +147,9 @@ The end-to-end flow is divided into five stages:
 
 | Stage | Process | Execution | Details |
 |---|---|---|---|
-| **1. Init** | AR & AI Setup | Client-Side | Checks WebGPU support and pings `/health`. Requests camera and motion permissions. |
+| **1. Init** | AR & AI Setup | Client-Side | Reads the `infer-mode` localStorage key to choose server-side vs. on-device WebGPU (server is the default; WebGPU is opt-in, not auto-detected). Requests camera and motion permissions on the Start AR tap. |
 | **2. Scan** | Continuous SLAM | Client-Side | Processes feature points, filters out degenerate points, projects 3D pins onto the camera frustum. |
-| **3. Capture** | Object Detection | Hybrid | Grabs frame buffer, encodes JPEG, passes to Local Web Worker (WebGPU) or POSTs to `/infer` (Ollama qwen3-vl). |
+| **3. Capture** | Object Detection | Hybrid | Grabs frame buffer, encodes JPEG, passes to Local Web Worker (WebGPU/ONNX) or POSTs to `/infer` (server engine selected by `INFERENCE_MODE`: ollama / onnx / mock). |
 | **4. Resolve** | Spatial Mapping | Client-Side | Resolves pixel-space bounding boxes to 3D coords by casting ray from NDC through camera, filtering distance, and deduping. |
 | **5. Save / Export** | Persistence & Sync | Client-Server | Writes to IndexedDB. Generates `.glb` & `.md`. POSTs files to Deno via Vite proxy, saving files to `scans/` and `summaries/`. |
 
@@ -245,56 +265,114 @@ Communication is routed through Vite's dev server proxy to prevent Mixed-Content
 
 ```mermaid
 graph LR
-    subgraph Browser Client
+    subgraph client ["Browser Client"]
         UI[AR UI/JS App]
     end
 
-    subgraph Vite Dev Server
+    subgraph vite ["Vite Dev Server"]
         Vite[Vite Proxy :5173]
     end
 
-    subgraph Deno HTTP Server
+    subgraph deno ["Deno HTTP Server"]
         Deno[Hono App :8000]
-        Storage[(Local Filesystem scans/ summaries/)]
+        Storage[(Local Filesystem scans/ sessions/ worlds/ summaries/)]
         DB[(projects.json)]
+        JobQ[World Job Queue]
     end
 
-    subgraph VLM Engine
-        Ollama[Ollama :11434 qwen3-vl:4b]
+    subgraph engine ["Inference Engine — INFERENCE_MODE"]
+        Infer[ollama moondream:latest / onnx LFM2.5-VL / mock CV]
     end
 
     UI -- HTTPS POST/GET --> Vite
     Vite -- HTTP Proxy rewrite --> Deno
     Deno -- Local IPC --> Storage
     Deno -- File I/O --> DB
-    Deno -- HTTP API --> Ollama
+    Deno -- dispatch --> JobQ
+    Deno -- HTTP / in-process API --> Infer
 ```
+
+### Inference Engine (engine-agnostic)
+
+The server exposes one `/infer` contract; `INFERENCE_MODE` picks the backend at startup:
+
+| Mode | Backend | Model | Purpose |
+|---|---|---|---|
+| `ollama` (**default**) | Local Ollama daemon over HTTP | `OLLAMA_MODEL`, defaults to **`moondream:latest`** (pick with `npm run bench:models`) | Production inference on the host GPU. |
+| `onnx` | `onnxruntime-node`, in-process | Bundled **`LiquidAI/LFM2.5-VL-1.6B-ONNX`** (~1.5 GB via `download_models.py`) | Self-contained inference with no external daemon. |
+| `mock` | Deterministic colour-blob CV | none | CI, unit tests, and offline development. |
+
+On the client, WebGPU (on-device ONNX in a Web Worker) versus server inference is **opt-in via the localStorage key `infer-mode`** (`src/inference/router.ts`); server-side is the default. It is not auto-selected by pinging `/health` or probing `navigator.gpu`.
 
 ### API Routes & Interface Specification
 
-| Endpoint | Method | Payload | Success Response (200/201) | CORS Origin Rule | Notes |
-|---|---|---|---|---|---|
-| `/health` | GET | None | `{"status":"ok","model":"..."}` | Allow matched origins | Liveness check; returns active server VLM identifier. |
-| `/infer` | POST | Multipart Form `{ image: File }` | `RawDetection[]` | Allow matched origins | Routes to local Ollama inference engine. |
-| `/upload-scan` | POST | Multipart Form `{ file: File(.glb), metadata?: JSON }` | `{"filename":"...","size":N}` | Allow matched origins | Saves `.glb` to `./scans/` and persists `.json` metadata sidecar. |
-| `/scans` | GET | None | `[{ "filename": string, "size": number, "uploadedAt": string }]` | Allow matched origins | Lists uploaded files sorted by date (newest first). |
-| `/scans/:filename`| GET | Filename parameter | Binary Stream (`model/gltf-binary`) | Allow matched origins | Serves GLB with cache header `public, max-age=3600`. |
-| `/upload-summary` | POST | Multipart Form `{ file: File(.md) }` | `{"filename":"..."}` | Allow matched origins | Saves summary document to `./summaries/`. |
-| `/process-scan` | POST | JSON `{ filename, action, sessionId }` | `{"action":"...","result":"..."}` | Allow matched origins | Triggers actions (e.g. `object-count`, `floor-plan`, `mesh-cleanup`). |
-| `/projects` | GET | None | `Project[]` | Allow matched origins | Lists projects from `projects.json`. |
-| `/projects` | POST | JSON `{ name, address, notes }` | `Project` (201 Created) | Allow matched origins | Creates a new project database entry with a default ground floor. |
-| `/projects/:id` | GET | ID parameter | `Project` | Allow matched origins | Fetches project by ID. |
-| `/projects/:id` | PUT | JSON `Project` | `Project` | Allow matched origins | Updates project by ID. |
-| `/projects/:id` | DELETE| ID parameter | `{"ok":true}` | Allow matched origins | Removes project from repository. |
-| `/rtc-signal` | GET | Query params: `room`, `role` | WebSocket Upgrade (101) | Handled by Deno WebSockets | WebRTC signaling relay between `phone` and `viewer`. |
-| `/events` | GET | None | WebSocket Upgrade (101) | Handled by Deno WebSockets | Broadcast stream: `scan-added`, `job-update`, `session-*` events. The viewer subscribes to refresh its scan list and job chips live. |
-| `/sessions` | POST | None | `{"sessionId":"sess-..."}` (201) | Allow matched origins | Opens a keyframe capture session (`scans/sessions/<id>/`). |
-| `/sessions/:id/keyframes` | POST | Multipart `{ image: JPEG, meta: JSON }` | `{"ok":true,"index":N}` | Allow matched origins | Streams pose+intrinsics-tagged keyframes during a scan — the raw input for future dense reconstruction (photogrammetry / splats). |
-| `/sessions/:id/finalize` | POST | JSON `{ glbFilename?, pointCount?, … }` | Session record | Allow matched origins | Links the session to its exported scan; enqueues optimization if needed. |
-| `/sessions` / `/sessions/:id` | GET | — | Session record(s) | Allow matched origins | Inspect capture sessions. |
-| `/scans/:filename/manifest` | GET | Filename parameter | `ScanManifest` JSON | Allow matched origins | Optimization artifact index (optimized + LODs + stage log). 404 until the job runs. |
-| `/scans/:filename/optimize` | POST | Filename parameter | `Job` (202) | Allow matched origins | Manually (re-)enqueue the optimization job. |
-| `/jobs`, `/jobs/:id` | GET | — | `Job[]` / `Job` | Allow matched origins | Persistent job queue state (`scans/jobs.json`). |
+Routes are registered at the top level of `main.ts`. (Server-side Deno modules live at the **repo root** — `main.ts`, `inference.ts`, `jobs.ts`, `pipeline.ts`, `lingbot_map*.ts`, `splat_train.ts`, `splat_detect.ts` — there is no `server/` subdirectory.)
+
+| Endpoint | Method | Payload | Success Response | Notes |
+|---|---|---|---|---|
+| `/health` | GET | None | `{"status":"ok","model":"..."}` | Liveness check; returns the active inference-engine identifier. |
+| `/infer` | POST | Multipart Form `{ image: File }` | `RawDetection[]` | Routes to the engine selected by `INFERENCE_MODE`. |
+| `/process-scan` | POST | JSON `{ filename, action, sessionId }` | `{"action":"...","result":"..."}` | **Synchronous** scan-analysis actions: `object-count`, `scene-description`, `floor-plan`. Distinct from the async world job queue. |
+| `/upload-scan` | POST | Multipart `{ file: File(.glb), metadata?: JSON }` | `{"filename":"...","size":N}` | Saves `.glb` to `./scans/` and persists a `.json` metadata sidecar. |
+| `/scans` | GET | None | `[{ filename, size, uploadedAt }]` | Lists uploaded files, newest first. |
+| `/scans/:filename` | GET | Filename param | Binary stream (`model/gltf-binary`) | Serves GLB with `public, max-age=3600`. |
+| `/scans/:filename/manifest` | GET | Filename param | `ScanManifest` JSON | Optimization artifact index (optimized + LODs + stage log). 404 until the job runs. |
+| `/scans/:filename/optimize` | POST | Filename param | `Job` (202) | Manually (re-)enqueue the optimization job. |
+| `/scan-locations` | GET | None | `[{ filename, geoLat, geoLng, geoBearing, … }]` | Geo metadata for all scans (map view). |
+| `/upload-summary` | POST | Multipart `{ file: File(.md) }` | `{"filename":"..."}` | Saves a summary document to `./summaries/`. |
+| `/sessions` | POST | None | `{"sessionId":"sess-..."}` (201) | Opens a keyframe capture session (`scans/sessions/<id>/`). |
+| `/sessions` / `/sessions/:id` | GET | — | Session record(s) | Inspect capture sessions. |
+| `/sessions/:id/keyframes` | POST | Multipart `{ image: JPEG, meta: JSON }` | `{"ok":true,"index":N}` | Streams pose+intrinsics-tagged keyframes — raw input for dense reconstruction. |
+| `/sessions/:id/finalize` | POST | JSON `{ glbFilename?, pointCount?, … }` | Session record | Links a session to its exported scan; enqueues optimization if needed. |
+| `/sessions/:id/lingbot-map.manifest.json` | GET | — | Manifest JSON | LingBot-Map reconstruction sidecar. |
+| `/sessions/:id/*.point-cloud.ply` | GET | — | Binary PLY | Reconstructed point-cloud sidecar. |
+| `/sessions/:id/*.poses.json` | GET | — | Poses JSON | Per-frame camera poses sidecar. |
+| `/ingest-video` | POST | Multipart `{ video: File, name?, fps? }` | `202 { sessionId, scanId, jobId, frameCount }` | Video-upload → keyframe session (no `.glb` on disk); extracts frames via `scripts/ingest-video.mjs`. |
+| `/worlds` | GET/POST | `WorldProject` list / create | `WorldProject[]` / `WorldProject` | The multi-scan 4D editor backend. |
+| `/worlds/:slug` | GET | Slug param | `WorldProject` | Fetch a world (read-only view when opened via a `shareSlug`). |
+| `/worlds/:slug/frames/:scanId` | GET | — | Frame observations | Per-scan camera-path / frame stream. |
+| `/worlds/:slug/*.splat` | GET | — | Splat binary | Trained 3DGS splat sidecar. |
+| `/jobs` / `/jobs/:id` | GET | — | `WorldJob[]` / `WorldJob` | Async world job queue state (`scans/jobs.json`). |
+| `/rtc-signal` | GET | Query `room`, `role` | WebSocket upgrade (101) | WebRTC signaling relay between `phone` and `viewer`. |
+| `/events` | GET | None | WebSocket upgrade (101) | Broadcast stream: `scan-added`, `job-update`, `session-*`. The viewer subscribes to refresh scans and job chips live. |
+| `/client-logs` | POST | JSON log batch | `{"ok":true}` | Remote debug-log sink from mobile clients. |
+| `/projects` | GET | None | `Project[]` | Lists projects from `projects.json`. |
+| `/projects` | POST | JSON `{ name, address, notes }` | `Project` (201) | Creates a project with a default ground floor. |
+| `/projects/:id` | GET/PUT/DELETE | ID param / `Project` | `Project` / `{"ok":true}` | Fetch, update, or delete a project. |
+
+CORS: allowed origins are matched against `ALLOWED_ORIGIN_PREFIX` (see section 5), covering localhost, local subnet IPs, and `.ts.net` Tailscale hostnames.
+
+### World & Multi-Scan ENU Model
+
+A **world** (`WorldProject`, `src/world/types.ts`) is an anchored spatial container holding one or more **scans** (`ScanManifest`), each with typed **layers**. This is the backing store for the desktop editor and the unit of sharing.
+
+- **Local frame.** Every world declares an explicit `LocalFrame` of type `ENU_Y_UP`, `units: 'meters'`, axes `{ x: east, y: up, z: north }`, anchored at an `originGeoPose` (lat / lng / altitude / bearing). Scans placed into this frame become metric and geo-referenced.
+- **Layers (`LayerType`).** `points`, `mesh`, `floor`, `detections`, `labels`, `cameraPath`, `cameraFrustums`, `rgbFrames`, `depth`, `splat`, `semanticMasks`. Separating layers is what makes the map *structured* rather than a flat mesh.
+- **Alignment.** Multiple scans of the same place are placed into the shared frame. Alignment is currently a local-grid placeholder ("open3d-ready") refined by the `align-scan` / `merge-points` jobs.
+- **Edits.** All edits (transforms, label changes) are append-only `EditPatch` records stamped `createdAt` — the edit history is part of the time dimension.
+
+#### Roles & Tokens (`WORLD_STRICT_AUTH`)
+
+Worlds carry role-scoped membership (`MemberRole`: `owner | editor | viewer | scanner`) and share slugs. The environment flag `WORLD_STRICT_AUTH=1` (`main.ts`) turns on strict token enforcement: requests must present a valid role token, and anonymous access is rejected. When unset (default), routes allow anonymous access — appropriate for a single-owner LAN/Tailnet deployment. Recipients of a `shareSlug` open `/worlds/:slug` at their granted role (e.g. a `viewer` link is read-only).
+
+### World Job Types & Processing (`/jobs`)
+
+The `/jobs` queue runs **asynchronous** world jobs (`WorldJobType`, status `queued | processing | completed | failed`). These are distinct from the synchronous `/process-scan` actions (`object-count`, `scene-description`, `floor-plan`). Ten job types:
+
+| Job type | Worker / method | Produces |
+|---|---|---|
+| `ingest` | frame/session intake | normalized session |
+| `extract-layers` | layer separation from a GLB | typed `LayerType` sidecars |
+| `align-scan` | local-grid → Open3D-ready alignment | scan transform into the ENU frame |
+| `merge-points` | multi-scan point fusion | merged point cloud |
+| `semantic-pass` | VLM re-pass over frames | detection/label layers |
+| `depth-reconstruct` | monocular depth | depth layer |
+| `lingbot-map-reconstruct` | LingBot-Map (Python, `LINGBOT_MAP_PYTHON` / `LINGBOT_MAP_MODEL_PATH`) | `*.point-cloud.ply` + `*.poses.json` + manifest |
+| `splat-train` | **Brush** (wgpu/AMD, GPU-pinned) 3D Gaussian Splatting | `*.splat.ply` |
+| `splat-detect` | **OWLv2** open-vocabulary detection over the splat | `*.interactions.json` (3D boxes) |
+| `export-world` | world composition | combined GLB + semantic JSON |
+
+The editor's Queue-Job dropdown exposes nine of these; `splat-detect` is fired from the Splat Toolbox section instead. Many runners emit a **plan/placeholder** artifact and report a "hint" when the real worker (Brush, LingBot-Map Python, Open3D) is not wired via env vars — the planned-vs-real distinction is intentional so the queue works end-to-end in CI.
 
 ### Scan Optimization Pipeline (`pipeline.ts` + `jobs.ts`)
 
@@ -326,6 +404,20 @@ optimized full-quality GLB behind it and swaps atomically (camera, selection,
 and visibility state preserved). `GLTFLoader` carries a `DRACOLoader`
 (decoder copied to `public/draco/` by the npm `postinstall` hook). Unoptimized
 scans fall back to the original single-pass load.
+
+### PWA & Offline Write Queue
+
+Companion Scan is an installable PWA (`src/pwa.ts`). Because scanning happens
+in the field on flaky connectivity, uploads are resilient rather than
+best-effort:
+
+- **Offline write queue** — keyframe and scan uploads are queued client-side
+  and drained when connectivity returns; the streamer pauses cleanly when
+  offline and resumes without dropping the session.
+- **Backpressure** — a single upload is kept in flight with retry/backoff; a
+  bounded queue applies capture-skip backpressure so memory stays flat.
+- **Lifecycle awareness** — capture suspends while the page is hidden (battery)
+  and the session survives app backgrounding.
 
 ### Live Geometry Channel (phone → editor)
 
@@ -361,66 +453,206 @@ Companion Scan is designed to be self-hosted, running either natively on local d
 
 ```mermaid
 graph TD
-    subgraph LAN / Tailnet
+    subgraph lan ["LAN / Tailnet"]
         Device[Mobile Device iOS/Android]
-        Host[Mac Host Machine]
+        Host[Host Machine]
     end
 
-    subgraph Host Services
+    subgraph services ["Host Services"]
         ViteServ[Vite Dev Server :5173]
         DenoServ[Deno Hono Server :8000]
-        OllamaServ[Ollama Daemon :11434]
+        InferServ[Inference Engine ollama :11434 / onnx / mock]
     end
 
     Device -- "Tailscale HTTPS (Let's Encrypt Cert)" --> ViteServ
     ViteServ -- "Local Loopback Proxy (HTTP)" --> DenoServ
-    DenoServ -- "Local API (HTTP)" --> OllamaServ
+    DenoServ -- "Local API / in-process" --> InferServ
 ```
 
 ### Deployment Configuration & Environment Variables
 
-The server configuration behaves dynamically based on local environments:
+None of these are required — the server runs with sensible defaults, and `.env`
+is **not** auto-loaded. Values below come from `.env.example`:
 
-- `PORT`: Sets Hono's HTTP port (Defaults to `8000`).
-- `ALLOWED_ORIGIN_PREFIX`: Base Tailscale origin for CORS filtering (Defaults to `https://liambook.capybara-ulmer.ts.net`).
-- `SCANS_DIR`: Location where uploaded scan files are saved (Defaults to `./scans`).
-- `SUMMARIES_DIR`: Location where uploaded Markdown summaries are saved (Defaults to `./summaries`).
-- `PROJECTS_FILE`: Persistence path for the projects JSON database (Defaults to `./projects.json`).
-- `INFERENCE_MODE`: AI runtime selection. Set to `onnx` to run Node ONNX sessions, or `ollama` (default) to utilize the local Ollama API.
-- `OLLAMA_HOST`: Address of the local Ollama daemon (Defaults to `http://localhost:11434`).
-- `OLLAMA_MODEL`: Target vision model running in Ollama (Defaults to `qwen3-vl:4b`).
+- `PORT`: Hono's HTTP port (defaults to `8000`).
+- `TAILSCALE_HOSTNAME`: auto-detected from `tailscale status`; used to build the default CORS origin.
+- `ALLOWED_ORIGIN_PREFIX`: base origin for CORS filtering. Defaults to `https://$TAILSCALE_HOSTNAME` (auto-detected); falls back to a historical dev host only if no Tailscale hostname is available.
+- `API_TARGET`: upstream the Vite proxy forwards to (defaults to `http://localhost:8000`).
+- `INFERENCE_MODE`: `ollama` (default), `onnx`, or `mock` (see section 4).
+- `OLLAMA_HOST`: address of the local Ollama daemon (defaults to `http://localhost:11434`).
+- `OLLAMA_MODEL`: vision model Ollama serves in `ollama` mode. **Defaults to `moondream:latest`.**
+- `INFER_MAX_IMAGE_BYTES`: reject inbound inference images larger than this (defaults to `12000000`).
+- `WORLD_STRICT_AUTH`: set to `1` to enforce role-token auth on world routes (default: anonymous access allowed).
+- `LINGBOT_MAP_PYTHON` / `LINGBOT_MAP_MODEL_PATH`: wire the real LingBot-Map reconstruction worker.
+- `VITE_URL`, `CHROMIUM_EXECUTABLE_PATH`: dev/test convenience.
+
+Timelines and shipped-vs-planned status are tracked in [`roadmap.md`](roadmap.md), not here.
 
 ---
 
-## 6. Project Roadmap
+## 6. Design Decisions
 
-The project is structured into three phases, moving from localized single-device capture to a multi-device collaborative room mapping ecosystem.
+The rationale behind the major structural choices. (These were consolidated here
+from earlier standalone planning notes so that the "why" lives next to the "what".)
 
-```mermaid
-gantt
-    title Companion Scan Milestones
-    dateFormat  YYYY-MM-DD
-    section Phase 1 (Shipped)
-    AR Scanning (SLAM)             :done, 2026-05-01, 2026-05-15
-    Ollama VLM / Local ONNX        :done, 2026-05-15, 2026-05-25
-    Spatial Centroid Raycasting    :done, 2026-05-25, 2026-06-05
-    IndexedDB & GLB Exporters      :done, 2026-06-05, 2026-06-08
-    3D Desktop Viewer              :done, 2026-06-08, 2026-06-10
-    section Phase 2 (Near-Term)
-    Vite proxy improvements        :active, 2026-06-10, 2026-06-12
-    CORS robust networks           :active, 2026-06-10, 2026-06-12
-    Docker container setup         :2026-06-12, 2026-06-15
-    Github Actions CI/CD           :2026-06-15, 2026-06-18
-    section Phase 3 (Medium/Long)
-    QR share links (/view/:id)     :2026-06-20, 2026-06-25
-    Vector/Semantic search         :2026-06-25, 2026-07-02
-    Draco Mesh Compression         :2026-07-02, 2026-07-10
-    Live WebRTC Multi-Device Collab :2026-07-10, 2026-07-25
+### Framework — Vite + vanilla JS
+
+Vite with vanilla JS keeps framework overhead out of the per-frame AR loop.
+TypeScript is used for the inference and spatial layers (where types earn their
+keep); the 8th Wall pipeline hooks stay plain JS to match the engine's own API
+surface.
+
+### AR runtime — 8th Wall primary, WebXR secondary
+
+**8th Wall** is the primary runtime because one API covers Android, iOS, and
+headsets. **WebXR `immersive-ar`** is the secondary path for devices where 8th
+Wall is unavailable (Quest browser, Android XR). A thin `ARProvider` abstraction
+(`src/ar/provider.ts`) means the capture layer never learns which runtime is
+active — it just consumes pose, intrinsics, and world points.
+
+### Inference — two paths, one interface
+
+The caller only ever `await`s `router.infer(imageBlob)` and receives
+`RawDetection[]`; it does not know whether the work ran on-device or on the
+server. Server-side inference is the **default**; the on-device WebGPU worker is
+**opt-in via the `infer-mode` localStorage key** (`src/inference/router.ts`). The
+router does **not** probe `navigator.gpu` or ping `/health` at startup to choose —
+selection is explicit. This keeps the fast path predictable and makes the
+on-device path a deliberate, testable choice rather than a device-fingerprint
+guess. The server engine itself is chosen by `INFERENCE_MODE` (`ollama` /
+`onnx` / `mock`; see section 4).
+
+### HTTPS via the Vite proxy
+
+Mobile browsers require HTTPS to unlock camera and AR APIs, while the local Deno
+server runs plain HTTP on `:8000`. Rather than terminate TLS in Deno, Vite acts
+as a reverse proxy: the phone talks HTTPS to `:5173`, and Vite forwards to
+`localhost:8000`. This sidesteps mixed-content blocking and keeps the Deno server
+simple.
+
+### Export — Three.js scene graph → GLB on demand
+
+The Three.js scene graph is the single source of truth for a scan: each detection
+is an `Object3D` carrying its metadata in `userData` (label, confidence,
+description, dimensions, thumbnail). `GLTFExporter` serializes the whole graph to
+`.glb` on demand, and `userData` survives as GLTF `extras` (see the node
+hierarchy in section 3). Nothing bespoke is needed to "save" — the render graph
+*is* the document.
+
+### Canonical inference prompt
+
+The server and WebGPU paths share one structured-output prompt contract so both
+return the same JSON shape:
+
+```
+You are a spatial object detector. Analyze this image and respond with
+ONLY a JSON array. No other text. Format:
+[{"label": "chair", "bbox": [x1,y1,x2,y2], "confidence": 0.92,
+  "description": "wooden dining chair, brown"}]
+Where bbox values are 0–1 normalized to image dimensions.
 ```
 
+Vision models tuned for structured/OCR-style output (e.g. `moondream`,
+LFM2.5-VL) follow this reliably; `prompt.ts` parses and validates the array.
+
+### Privacy & CI positioning
+
+The on-device WebGPU path is **zero-data-exfiltration by design** — frames never
+leave the phone — which matches Companion Intelligence's privacy-first stance.
+The `.glb` output plus the raw detection JSON (`label`, `worldPos`,
+`description`, `timestamp`) are intended to feed **Digital Memory**, where rooms
+and objects become first-class entities in a personal database. The Deno server
+can run on Companion Core hardware so the whole pipeline stays on infrastructure
+the user owns.
+
 ---
 
-## 7. Shortcomings & Mitigations
+## 7. Implementation Notes
+
+Load-bearing engineering details worth preserving — the non-obvious fixes and
+wire formats behind the components above.
+
+### WebXR camera math
+
+The stock WebXR fallback hardcoded a 60° vertical FOV, which distorted the pin
+projection. The real values are extracted from the `XRView` projection matrix at
+runtime:
+
+$$\text{fovY} = 2 \cdot \arctan\!\left(\tfrac{1}{\text{projectionMatrix}[5]}\right) \cdot \tfrac{180}{\pi}
+\qquad
+\text{aspect} = \frac{\text{projectionMatrix}[5]}{\text{projectionMatrix}[0]}$$
+
+### Hit-test through NDC centroids
+
+Centroid hit-testing originally queried only the center viewer ray, so every
+detection resolved to the middle of the frame. The resolver instead builds an
+`XRRay` from the camera origin through the **normalized device coordinates** of
+each VLM bounding-box centroid, requesting transient hit-test sources on the fly —
+so each object resolves to its own surface.
+
+### 8th Wall capture
+
+8th Wall provides visual-inertial odometry in WASM. It performs native feature
+mapping, populating the client-side voxel `PointCloud` from `reality.worldPoints`
+at ~5 cm resolution. Camera frame bytes are pulled via `XR8.CameraPixelArray` and
+compressed to JPEG for inference and keyframe streaming.
+
+### Deno FFI for ONNX
+
+`INFERENCE_MODE=onnx` uses `onnxruntime-node`, which loads native dynamic
+libraries — this requires the `--allow-ffi` sandbox flag in Deno 2.x (already in
+the `npm run server` command).
+
+### CORS matching
+
+Allowed origins match `ALLOWED_ORIGIN_PREFIX` (default `https://$TAILSCALE_HOSTNAME`,
+auto-detected from `tailscale status`), plus any origin containing `.ts.net` and
+Tailscale subnet IPs within the `100.64.0.0/10` CGNAT range. `projects.json` is
+written atomically to survive concurrent client writes.
+
+### WebRTC data-channel wire format
+
+Beyond the message table in section 4, the `scan-spatial-events` channel encodes
+camera **pose at 30 Hz as a `Float32[7]` array** (`[x, y, z, qx, qy, qz, qw]`),
+streams incremental voxel points as they are captured, and pushes object upserts
+(label, confidence, position, dimensions) to the viewer. The channel is
+**bidirectional**: tag/label edits made in the desktop editor are transmitted
+back to the phone and merged into its IndexedDB session.
+
+### Desktop LOD
+
+Dense point clouds drop frame rate, so the editor decimates far point clouds
+(rendering every N-th vertex by camera distance) and uses `THREE.LOD` to swap
+detailed meshes for bounding boxes past a distance threshold. Assets load
+asynchronously so the main thread never blocks on a scan download (see also the
+progressive LOD-first loading in section 4).
+
+---
+
+## 8. Project Roadmap
+
+The full, phase-framed roadmap — what has shipped versus what is planned — lives
+in **[`roadmap.md`](roadmap.md)**, which is the single owner of status and
+timelines. In brief:
+
+- **Shipped:** AR SLAM capture, engine-agnostic inference (ollama / onnx / mock),
+  spatial resolver, IndexedDB + GLB export, the desktop world editor (ENU
+  multi-scan model, layers, measure, transform, progressive LOD), the scan
+  optimization pipeline (quantization / Draco / LODs), keyframe streaming, the
+  WebRTC live-geometry channel, the async world job queue, the splat toolbox
+  (Brush training / OWLv2 detection / view / compress), video ingest,
+  LingBot-Map reconstruction, the PWA + offline write queue, onboarding +
+  accessibility, and the house-validation kit.
+- **Near-term:** surface the capture-completion verdict on the phone, close the
+  export loop, optional token auth, shared-world-link polish, loop-closure /
+  drift correction, and the Open3D multi-scan align/merge worker.
+- **Later:** semantic/vector search over worlds, multi-device collaboration,
+  cloud sync, distributed job workers, and AR-glasses support.
+
+
+---
+
+## 9. Shortcomings & Mitigations
 
 The following matrix documents the architectural limitations of the current design and details their respective near-term and long-term mitigations.
 
@@ -430,5 +662,7 @@ The following matrix documents the architectural limitations of the current desi
 | **Silent Backend Failures** | Uncaught route crashes return a generic response or drop connection without logging details. | Register Hono's `app.onError` to log full stack traces, and add handler-entry logs (Done). | Integrate central logger service (Winston / Deno log streams). |
 | **Newest Scan Race Condition** | `/process-scan` processes wrong file if uploads fail or occur out of order. | Implement `sessionId` matching in companion JSON files to lookup scans (Done). | Require explicit `scanId` parameter in API request payloads. |
 | **SLAM Coordinate Drift** | Detections lose alignment over long scanning durations (>10 mins). | Advise user via HUD to return to the origin/loop closure points. | Integrate visual-inertial loop closure (ORB-SLAM / WebXR anchor APIs). |
-| **GLB File Size Overhead** | High point-cloud density leads to files exceeding 1 MB quickly. | Filter degenerate depth targets, voxel downsample to 5cm grid (Done). | Integrate Draco mesh encoder compression into the client export pipeline. |
-| **No Authentication** | Anyone on the LAN/Tailnet can access, view, or delete stored scans. | Namespace uploads behind generated session identifiers. | Implement JWT-based auth gate on all state-modifying endpoints. |
+| **Completion Verdict Hidden on Phone** | The quality verdict (`ready` / `needs-review` / `needs-rescan`) is computed but only surfaced in the desktop viewer — the phone user cannot tell if they have captured enough. | Surface `qualityMonitor.summary()` as a status chip plus a Done/Finish affordance (planned; see `docs/UX_FLOW.md`). | Close the export loop with an in-app "View in 3D →" link back to the world. |
+| **Placeholder Reconstruction Jobs** | Some job runners emit plan/placeholder artifacts unless the real worker is wired via env vars; the distinction is invisible to the user. | Runners report a "hint" when a worker is unset. | Surface planned-vs-real status per job in the editor; ship default workers. |
+| **GLB File Size Overhead** | High point-cloud density leads to files exceeding 1 MB quickly. | Voxel downsample + KHR_mesh_quantization + guarded Draco in the optimization pipeline (Done). | KTX2 texture compression once textured reconstruction meshes arrive. |
+| **No Authentication (default)** | With `WORLD_STRICT_AUTH` unset, anyone on the LAN/Tailnet can view or delete stored scans and worlds. | Namespace uploads behind generated session identifiers; opt-in `WORLD_STRICT_AUTH=1` role tokens. | Implement JWT-based auth gate on all state-modifying endpoints. |
