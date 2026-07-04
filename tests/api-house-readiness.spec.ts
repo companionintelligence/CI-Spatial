@@ -148,4 +148,17 @@ test.describe.serial('house-readiness preflight', () => {
     expect([400, 413], `status was ${resp.status()}`).toContain(resp.status())
     expect(resp.status(), 'route is wired (not 404)').not.toBe(404)
   })
+
+  test('/ingest-video: a non-multipart body is a clean 400, not a 500', async ({ request }) => {
+    test.skip(!health, 'preflight failed — server unreachable')
+    // A garbage/non-multipart POST must not blow up formData() parsing into a
+    // 500 — the route should catch the parse failure and return a 400.
+    const resp = await request.post(`${API}/ingest-video`, {
+      data: 'not multipart at all',
+      headers: { 'content-type': 'text/plain' },
+    })
+    expect(resp.status(), `non-multipart POST status was ${resp.status()}`).toBe(400)
+    const body = await resp.json() as { error: string; code: string }
+    expect(body.code, 'bad-request code').toBe('bad-request')
+  })
 })
