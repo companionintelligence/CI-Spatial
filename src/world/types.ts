@@ -22,6 +22,7 @@ export type WorldJobType =
   | 'depth-reconstruct'
   | 'lingbot-map-reconstruct'
   | 'splat-train'
+  | 'splat-detect'
   | 'export-world'
 
 export type WorldJobStatus = 'queued' | 'processing' | 'completed' | 'failed'

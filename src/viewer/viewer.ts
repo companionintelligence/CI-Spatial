@@ -17,7 +17,9 @@ import { LiveFeed } from './livefeed'
 import { loadSemanticAsset, createMediumPolyAsset } from './assets'
 import { fetchLingBotMapArtifacts, type LingBotMapOverlay } from './lingbot-map'
 import { attachSparkRenderer, loadSplat, disposeSplat, type LoadedSplat } from './splat-viewer'
-import { fetchScanSplatLayer, disposeScanSplatLayer, type ScanSplatLayer } from './splat-layer'
+import { fetchScanSplatLayer, disposeScanSplatLayer, splatPlyUrl, type ScanSplatLayer } from './splat-layer'
+import { fetchScanDetectLayer, type ScanDetectLayer } from './splat-detect-layer'
+import { buildTrainJobRequest, buildDetectJobRequest } from './splat-toolbox'
 import { enuToGeo, hasGeoPose, matrixTranslation } from '../world/geo'
 import { LAYER_LABELS, LAYER_ORDER } from '../world/layers'
 import { registerPWA } from '../pwa'
@@ -133,6 +135,10 @@ const loadedSplats = new Map<string, LoadedSplat>()
 // Trained-splat sidecars attached per scan (splat-train job output).
 const scanSplatLayers = new Map<string, ScanSplatLayer>()
 let scanSplatVisible = false
+
+// Splat-detect object-box overlays attached per scan (splat-detect job output).
+const scanDetectLayers = new Map<string, ScanDetectLayer>()
+let scanDetectVisible = false
 
 const boundEdgeMaterial = new THREE.LineBasicMaterial({
   color: 0x4fc3f7,
@@ -261,6 +267,7 @@ function initWorldScene(): void {
   scanItems.clear()
   for (const layer of scanSplatLayers.values()) disposeScanSplatLayer(layer)
   scanSplatLayers.clear()
+  scanDetectLayers.clear()
   lingbotOverlays.clear()
   selectedTransformTarget = null
   selectedScanId = null
@@ -1074,13 +1081,31 @@ async function refreshSplatLayerPanel(scanId: string): Promise<void> {
       ? `Trained in ${(m.timing.elapsedMs / 1000).toFixed(1)}s on ${m.frameCount ?? '?'} frames.`
       : ''
     if (toggle) toggle.checked = scanSplatVisible
+    setSplatDownloadLink(scan)
   } else if (m.status === 'skipped') {
     status.textContent = `Skipped: ${m.skippedReason ?? 'no reason given'}`
     stats.textContent = m.remediation ?? ''
+    setSplatDownloadLink(null)
   } else {
     status.textContent = `Splat train error: ${m.error ?? 'unknown'}`
     stats.textContent = ''
+    setSplatDownloadLink(null)
   }
+
+  void refreshSplatDetectPanel(scanId)
+}
+
+/** Reveal (or hide) the Download .ply link for a scan with a trained splat. */
+function setSplatDownloadLink(scan: ScanManifest | null): void {
+  const link = document.getElementById('splat-download-link') as HTMLAnchorElement | null
+  if (!link) return
+  if (!scan) {
+    link.hidden = true
+    return
+  }
+  link.href = withAccessToken(splatPlyUrl(scan))
+  link.setAttribute('download', `${scan.name || scan.scanId}.splat.ply`)
+  link.hidden = false
 }
 
 function setScanSplatVisible(visible: boolean): void {
@@ -1088,6 +1113,89 @@ function setScanSplatVisible(visible: boolean): void {
   for (const layer of scanSplatLayers.values()) {
     if (layer.loaded) layer.loaded.mesh.visible = visible
   }
+}
+
+// ─── Splat-detect object boxes (splat-detect job output) ──────────────────────
+
+async function refreshSplatDetectPanel(scanId: string): Promise<void> {
+  const status = document.getElementById('splat-detect-status')
+  const toggle = document.getElementById('splat-detect-toggle') as HTMLInputElement | null
+  if (!status) return
+  const scan = world?.scans.find(s => s.scanId === scanId)
+  if (!scan) {
+    status.textContent = 'Detect objects in the trained splat with an open-vocabulary prompt.'
+    return
+  }
+
+  let layer = scanDetectLayers.get(scanId)
+  if (!layer) {
+    try {
+      const fetched = await fetchScanDetectLayer(scan, (url) => fetch(withAccessToken(url)))
+      if (!fetched) {
+        status.textContent = 'No detections yet. Run Detect objects to find furniture in the splat.'
+        if (toggle) toggle.checked = false
+        return
+      }
+      layer = fetched
+      scanDetectLayers.set(scanId, layer)
+      if (layer.objectCount > 0) {
+        const loadedScan = loadedScans.get(scanId)
+        if (loadedScan) loadedScan.root.add(layer.boxesGroup)
+        layer.boxesGroup.visible = scanDetectVisible
+        for (const marker of layer.labels) {
+          createLabel(marker.text, marker.position, { scanId, layerType: 'labels' })
+        }
+      }
+    } catch (e) {
+      console.error('[viewer] detect layer fetch failed:', e)
+      status.textContent = `Failed to load detections: ${e instanceof Error ? e.message : String(e)}`
+      return
+    }
+  }
+
+  const m = layer.manifest
+  if (m.status === 'ok') {
+    status.textContent = layer.objectCount > 0
+      ? `${layer.objectCount.toLocaleString()} object${layer.objectCount === 1 ? '' : 's'} detected${m.prompt ? ` · ${m.prompt}` : ''}.`
+      : 'Detect finished, but no objects matched the prompt.'
+    if (toggle) toggle.checked = scanDetectVisible
+  } else if (m.status === 'skipped') {
+    status.textContent = `Detect skipped: ${m.skippedReason ?? 'no reason given'}`
+  } else {
+    status.textContent = `Detect error: ${m.error ?? 'unknown'}`
+  }
+}
+
+function setScanDetectVisible(visible: boolean): void {
+  scanDetectVisible = visible
+  for (const layer of scanDetectLayers.values()) {
+    layer.boxesGroup.visible = visible
+  }
+  applyLayerVisibility()
+}
+
+async function queueSplatToolboxJob(kind: 'train' | 'detect'): Promise<void> {
+  if (!world) return
+  if (!selectedScanId) {
+    const statusId = kind === 'train' ? 'splat-layer-status' : 'splat-detect-status'
+    setText(statusId, 'Select a scan first, then run this job.')
+    return
+  }
+  const prompt = (document.getElementById('splat-detect-prompt') as HTMLInputElement | null)?.value
+  const request = kind === 'train'
+    ? buildTrainJobRequest(selectedScanId)
+    : buildDetectJobRequest(selectedScanId, prompt)
+  const response = await fetch(withAccessToken(`/worlds/${encodeURIComponent(world.shareSlug)}/jobs`), {
+    method: 'POST',
+    headers: accessHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(request),
+  })
+  if (!response.ok) throw new Error(await response.text())
+  const job = await response.json() as WorldJob
+  world.jobs.unshift(job)
+  renderWorldPanel()
+  flashButton(kind === 'train' ? 'btn-splat-train' : 'btn-splat-detect', 'Queued')
+  setTimeout(() => { void refreshJobs() }, 1000)
 }
 
 // ─── Gaussian splats (Spark) ──────────────────────────────────────────────────
@@ -1324,6 +1432,9 @@ function renderLayerPanel(): void {
   list.innerHTML = ''
 
   for (const type of LAYER_ORDER) {
+    // The Gaussian-splat surface lives in the dedicated Splat Toolbox section
+    // below; keep it out of this generic sidecar-layer list.
+    if (type === 'splat') continue
     const row = document.createElement('label')
     row.className = 'layer-item'
     row.dataset['layer'] = type
@@ -2003,6 +2114,21 @@ document.getElementById('lingbot-map-path-toggle')?.addEventListener('change', (
 document.getElementById('splat-layer-toggle')?.addEventListener('change', (e) => {
   setScanSplatVisible((e.target as HTMLInputElement).checked)
 })
+document.getElementById('splat-detect-toggle')?.addEventListener('change', (e) => {
+  setScanDetectVisible((e.target as HTMLInputElement).checked)
+})
+document.getElementById('btn-splat-train')?.addEventListener('click', () => {
+  void queueSplatToolboxJob('train').catch(error => {
+    console.error('[viewer] splat-train queue failed:', error)
+    flashButton('btn-splat-train', 'Failed')
+  })
+})
+document.getElementById('btn-splat-detect')?.addEventListener('click', () => {
+  void queueSplatToolboxJob('detect').catch(error => {
+    console.error('[viewer] splat-detect queue failed:', error)
+    flashButton('btn-splat-detect', 'Failed')
+  })
+})
 
 document.getElementById('btn-load-splat-url')?.addEventListener('click', () => {
   const input = document.getElementById('splat-url-input') as HTMLInputElement | null
@@ -2092,6 +2218,16 @@ function connectServerEvents(): void {
         if (t === 'lingbot-map-reconstruct' && wj?.status === 'completed' && wj?.scanId) {
           lingbotOverlays.delete(wj.scanId)
           if (selectedScanId === wj.scanId) void refreshLingBotMapPanel(wj.scanId)
+        }
+        if (t === 'splat-train' && wj?.status === 'completed' && wj?.scanId) {
+          const existing = scanSplatLayers.get(wj.scanId)
+          if (existing) disposeScanSplatLayer(existing)
+          scanSplatLayers.delete(wj.scanId)
+          if (selectedScanId === wj.scanId) void refreshSplatLayerPanel(wj.scanId)
+        }
+        if (t === 'splat-detect' && wj?.status === 'completed' && wj?.scanId) {
+          scanDetectLayers.delete(wj.scanId)
+          if (selectedScanId === wj.scanId) void refreshSplatDetectPanel(wj.scanId)
         }
         void refreshJobs()
       }
