@@ -11,7 +11,10 @@
  *   scans/sessions/<id>/
  *   ├── kf-00000.jpg …            downscaled RGB keyframes
  *   ├── keyframes.jsonl           one JSON record / keyframe (pose + intrinsics)
- *   └── lingbot-map.point-cloud.ply   (optional) seed cloud from a prior job
+ *   ├── lingbot-map.point-cloud.ply   (optional) seed cloud from a prior job
+ *   └── lingbot-map.poses.json        (optional) LingBot-Map estimated poses —
+ *                                     the fallback when keyframes carry no pose
+ *                                     (e.g. video-ingest sessions)
  *
  * This module reads that session and writes a `brush-dataset/` subdirectory:
  *
@@ -110,6 +113,14 @@ export interface BuildDatasetResult {
 
 const KEYFRAME_FILE_RE = /^kf-\d{5}\.jpg$/
 
+/** True when a keyframe record carries a usable capture-time pose. */
+export function recordHasPose(rec: KeyframeRecord): boolean {
+  const pose = rec.pose
+  if (!pose || typeof pose !== 'object') return false
+  return (pose.position != null && typeof pose.position === 'object')
+    || (pose.rotation != null && typeof pose.rotation === 'object')
+}
+
 /**
  * Read a Companion-Scan session directory and materialise a Nerfstudio dataset
  * Brush can train on. Returns the dataset path + stats. Throws only on
@@ -129,14 +140,34 @@ export async function buildBrushDataset(opts: BuildDatasetOptions): Promise<Buil
 
   await Deno.mkdir(imagesDir, { recursive: true })
 
+  // Pose fallback for pose-less sessions (video ingest): LingBot-Map's
+  // estimated per-frame poses, loaded lazily on the first record without one.
+  // `undefined` = not yet loaded, `null` = load attempted and unavailable.
+  let lingbotPoses: Map<string, number[][]> | null | undefined
   const frames: NerfstudioFrame[] = []
   let dropped = 0
+  let droppedNoPose = 0
   for (const rec of records) {
     const file = rec.file
     if (!file || !KEYFRAME_FILE_RE.test(file)) {
       dropped++
       continue
     }
+
+    let transform: number[][]
+    if (recordHasPose(rec)) {
+      transform = poseToMatrix(rec.pose ?? {})
+    } else {
+      if (lingbotPoses === undefined) lingbotPoses = await readLingbotPoses(sessionDir)
+      const fallback = lingbotPoses?.get(file)
+      if (!fallback) {
+        dropped++
+        droppedNoPose++
+        continue
+      }
+      transform = fallback
+    }
+
     const srcPath = `${sessionDir}/${file}`
     let bytes: Uint8Array
     try {
@@ -157,7 +188,6 @@ export async function buildBrushDataset(opts: BuildDatasetOptions): Promise<Buil
     await materialiseImage(srcPath, destPath, bytes, imageMode)
 
     const intr = deriveIntrinsics(rec.intrinsics ?? {}, w, h)
-    const transform = poseToMatrix(rec.pose ?? {})
 
     frames.push({
       file_path: `images/${file}`,
@@ -172,6 +202,12 @@ export async function buildBrushDataset(opts: BuildDatasetOptions): Promise<Buil
   }
 
   if (frames.length === 0) {
+    if (droppedNoPose > 0) {
+      throw new Error(
+        `no camera poses: keyframe records carry no pose and ${sessionDir}/lingbot-map.poses.json ` +
+          'has no usable camera matrices — run a lingbot-map-reconstruct job on this session first',
+      )
+    }
     throw new Error('no usable keyframes (all images missing/unreadable)')
   }
 
@@ -334,6 +370,105 @@ export function poseToMatrix(pose: NonNullable<KeyframeRecord['pose']>): number[
     [r20, r21, r22, pz],
     [0, 0, 0, 1],
   ]
+}
+
+/**
+ * Read `<sessionDir>/lingbot-map.poses.json` and return a map of keyframe
+ * file → 4×4 camera-to-world matrix in the OpenGL/Blender convention that
+ * `transforms.json` expects. Returns null when the file is missing or carries
+ * no usable matrices (e.g. the worker's pose decode failed and only
+ * capture-time poses were written).
+ */
+export async function readLingbotPoses(sessionDir: string): Promise<Map<string, number[][]> | null> {
+  let raw: string
+  try {
+    raw = await Deno.readTextFile(`${sessionDir}/lingbot-map.poses.json`)
+  } catch {
+    return null
+  }
+  let parsed: { frames?: Array<{ file?: string; cameraToWorld?: unknown }> }
+  try {
+    parsed = JSON.parse(raw) as typeof parsed
+  } catch {
+    return null
+  }
+  if (!Array.isArray(parsed.frames)) return null
+  const out = new Map<string, number[][]>()
+  for (const frame of parsed.frames) {
+    if (typeof frame?.file !== 'string') continue
+    const c2w = lingbotPoseToC2w(frame.cameraToWorld)
+    if (c2w) out.set(frame.file, c2w)
+  }
+  return out.size > 0 ? out : null
+}
+
+/**
+ * Convert a lingbot-map.poses.json `cameraToWorld` entry into the row-major
+ * 4×4 OpenGL/Blender camera-to-world matrix Nerfstudio/Brush expect.
+ *
+ * Convention (verified against the sources, not the key name):
+ *   - scripts/lingbot_map_worker.py writes the `extri` tensor from LingBot's
+ *     `pose_encoding_to_extri_intri` UNMODIFIED under the key "cameraToWorld".
+ *   - lingbot_map/utils/pose_enc.py documents that tensor as a 3×4 [R|t]
+ *     "camera from world" transform in the OpenCV coordinate system
+ *     (x-right, y-down, z-forward) — i.e. it is actually WORLD-TO-CAMERA
+ *     despite the JSON key. (src/viewer/lingbot-map.ts only draws the
+ *     translation column as an approximate path, so it never disambiguated.)
+ *
+ * So the conversion here is:
+ *   1. invert the OpenCV w2c:      c2w_cv = [Rᵀ | -Rᵀ·t]
+ *   2. OpenCV → OpenGL camera axes: negate the Y and Z basis columns
+ *      (c2w_gl = c2w_cv · diag(1, -1, -1, 1)) — same world frame as the
+ *      lingbot-map.point-cloud.ply seed cloud, so NO world-axis flip.
+ *
+ * Accepts nested 3×4 / 4×4 rows or a flat row-major 12/16 array; returns null
+ * for anything else.
+ */
+export function lingbotPoseToC2w(matrix: unknown): number[][] | null {
+  const m = normaliseMatrixRows(matrix)
+  if (!m) return null
+  // Transpose of the rotation block = its inverse (orthonormal).
+  const rt: number[][] = [
+    [m[0][0], m[1][0], m[2][0]],
+    [m[0][1], m[1][1], m[2][1]],
+    [m[0][2], m[1][2], m[2][2]],
+  ]
+  const t = [m[0][3], m[1][3], m[2][3]]
+  const c = [
+    -(rt[0][0] * t[0] + rt[0][1] * t[1] + rt[0][2] * t[2]),
+    -(rt[1][0] * t[0] + rt[1][1] * t[1] + rt[1][2] * t[2]),
+    -(rt[2][0] * t[0] + rt[2][1] * t[1] + rt[2][2] * t[2]),
+  ]
+  return [
+    [rt[0][0], -rt[0][1], -rt[0][2], c[0]],
+    [rt[1][0], -rt[1][1], -rt[1][2], c[1]],
+    [rt[2][0], -rt[2][1], -rt[2][2], c[2]],
+    [0, 0, 0, 1],
+  ]
+}
+
+/** Coerce nested 3×4/4×4 rows or a flat row-major 12/16 array to 3 usable rows. */
+function normaliseMatrixRows(matrix: unknown): number[][] | null {
+  if (!Array.isArray(matrix) || matrix.length === 0) return null
+  if (typeof matrix[0] === 'number') {
+    const flat = matrix as unknown[]
+    if ((flat.length !== 12 && flat.length !== 16) || !flat.every((v) => typeof v === 'number' && Number.isFinite(v))) {
+      return null
+    }
+    const nums = flat as number[]
+    return [nums.slice(0, 4), nums.slice(4, 8), nums.slice(8, 12)]
+  }
+  const rows = matrix as unknown[]
+  if (rows.length < 3) return null
+  const out: number[][] = []
+  for (let i = 0; i < 3; i++) {
+    const row = rows[i]
+    if (!Array.isArray(row) || row.length < 4 || !row.slice(0, 4).every((v) => typeof v === 'number' && Number.isFinite(v))) {
+      return null
+    }
+    out.push((row as number[]).slice(0, 4))
+  }
+  return out
 }
 
 /**

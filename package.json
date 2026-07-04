@@ -28,7 +28,10 @@
     "logs:watch": "node scripts/logs-watch.mjs",
     "test:box": "node scripts/test-box.mjs",
     "bench:models": "node scripts/bench-models.mjs",
-    "qr": "node scripts/qr.mjs"
+    "qr": "node scripts/qr.mjs",
+    "ingest:video": "node scripts/ingest-video.mjs",
+    "links:house": "node scripts/house-links.mjs",
+    "test:house": "playwright test --project=api house-readiness"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",

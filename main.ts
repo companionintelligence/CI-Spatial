@@ -15,6 +15,7 @@
  * POST /sessions/:id/keyframes         multipart { image, meta } → { ok, index }
  * POST /sessions/:id/finalize          JSON { glbFilename?, … } → session record
  * GET  /sessions/:id                   → session record
+ * POST /ingest-video      multipart { video: File, name?, fps? } → 202 { sessionId, scanId, jobId, frameCount }
  * POST /upload-summary     multipart { file: File(.md) } → { filename }
  * POST /process-scan       JSON { filename, action, sessionId? } → { action, result }
  * POST /client-logs        JSON { entries: [{ ts, level, msg, stack?, url? }], ua? } → 204
@@ -36,6 +37,7 @@ import { InferenceEngine } from './inference.ts'
 import { JobQueue } from './jobs.ts'
 import { runLingBotMapReconstruction } from './lingbot_map.ts'
 import { runSplatTrain } from './splat_train.ts'
+import { runSplatDetect } from './splat_detect.ts'
 import { composeYUpTransform, geoToEnu, hasGeoPose } from './src/world/geo.ts'
 import { defaultLayerIndex } from './src/world/layers.ts'
 import type {
@@ -68,6 +70,8 @@ const MAX_KEYFRAMES_PER_SESSION = 2000
 const WORLD_STRICT_AUTH = Deno.env.get('WORLD_STRICT_AUTH') === '1'
 // /infer hardening knobs
 const INFER_MAX_IMAGE_BYTES = Number(Deno.env.get('INFER_MAX_IMAGE_BYTES') ?? '') || 12_000_000
+// /ingest-video guard: reject an upload whose Content-Length exceeds this (bytes).
+const INGEST_MAX_VIDEO_BYTES = Number(Deno.env.get('INGEST_MAX_VIDEO_BYTES') ?? '') || 1_500_000_000
 const ENGINE_LOAD_WAIT_MS = 15_000 // max time /infer waits for the model to finish loading
 const INFER_TIMEOUT_MS = 60_000    // hard cap on a single engine.infer() call
 
@@ -381,20 +385,26 @@ app.get('/jobs/:id', (c) => {
   return job ? c.json(job) : c.json({ error: 'Not found' }, 404)
 })
 
-// ── Splat-train artifacts ─────────────────────────────────────────────────────
-// Trained Gaussian-splat sidecars land in SCANS_DIR next to the source scan:
-//   <base>.splat.ply                  INRIA 3DGS point cloud (Brush output)
-//   <base>.compressed.ply             optional compressed variant
-//   <base>.splat-train.manifest.json  run index (status/gaussianCount/params)
+// ── Splat-train + splat-detect artifacts ─────────────────────────────────────
+// Trained Gaussian-splat + detection sidecars land in SCANS_DIR next to the scan:
+//   <base>.splat.ply                    INRIA 3DGS point cloud (Brush output)
+//   <base>.compressed.ply               optional compressed variant
+//   <base>.splat-train.manifest.json    train run index (status/gaussianCount/params)
+//   <base>.interactions.json            splat-analyzer 3D object boxes + interactions
+//   <base>.splat-detect.manifest.json   detect run index (status/objectCount/prompt)
 // Gated by an allowlisted suffix + the same traversal guard as /scans/:filename.
 // Registered before the .glb-only /scans/:filename route so these suffixes win.
+// NOTE: order matters — `.splat-detect.manifest.json` is checked before the
+// plainer `.interactions.json`/`.json` suffixes so the more specific one wins.
 const SPLAT_ARTIFACT_MIME: Array<{ suffix: string; mime: string }> = [
   { suffix: '.splat-train.manifest.json', mime: 'application/json' },
+  { suffix: '.splat-detect.manifest.json', mime: 'application/json' },
+  { suffix: '.interactions.json', mime: 'application/json' },
   { suffix: '.compressed.ply', mime: 'application/octet-stream' },
   { suffix: '.splat.ply', mime: 'application/octet-stream' },
 ]
 
-app.get('/scans/:filename{.+\\.(splat\\.ply|compressed\\.ply|splat-train\\.manifest\\.json)}', async (c) => {
+app.get('/scans/:filename{.+\\.(splat\\.ply|compressed\\.ply|splat-train\\.manifest\\.json|splat-detect\\.manifest\\.json|interactions\\.json)}', async (c) => {
   const filename = c.req.param('filename')
   if (!filename || filename.includes('/') || filename.includes('\\') || filename.startsWith('.')) {
     return c.json({ error: 'Invalid filename' }, 400)
@@ -666,6 +676,98 @@ app.post('/sessions/:id/finalize', async (c) => {
   return c.json(record)
 })
 
+// ── Video ingest — "walk the house shooting normal video" ────────────────────
+//
+// POST /ingest-video   multipart { video: File, name?, fps? }
+// Extracts keyframes with scripts/ingest-video.mjs into a capture session, then
+// registers a session-backed scan in the default world and auto-enqueues a
+// lingbot-map-reconstruct job (which estimates the per-frame poses splat-train +
+// splat-detect later consume). Returns 202 { sessionId, scanId, jobId, frameCount }.
+const INGEST_VIDEO_SCRIPT = new URL('./scripts/ingest-video.mjs', import.meta.url).pathname
+
+app.post('/ingest-video', async (c) => {
+  // Guard oversized uploads up front via Content-Length (before buffering).
+  const contentLength = Number(c.req.header('content-length') ?? '')
+  if (Number.isFinite(contentLength) && contentLength > INGEST_MAX_VIDEO_BYTES) {
+    return c.json({ error: `video exceeds ${INGEST_MAX_VIDEO_BYTES} bytes`, maxBytes: INGEST_MAX_VIDEO_BYTES }, 413)
+  }
+
+  const form = await c.req.formData()
+  const video = form.get('video')
+  if (!video || !(video instanceof File)) {
+    return c.json({ error: 'Missing video field (expected a video File)' }, 400)
+  }
+  if (Number.isFinite(video.size) && video.size > INGEST_MAX_VIDEO_BYTES) {
+    return c.json({ error: `video exceeds ${INGEST_MAX_VIDEO_BYTES} bytes`, maxBytes: INGEST_MAX_VIDEO_BYTES }, 413)
+  }
+
+  const nameRaw = form.get('name')
+  const scanName = typeof nameRaw === 'string' && nameRaw.trim().length > 0 ? nameRaw.trim() : null
+  const fpsRaw = form.get('fps')
+  const fps = typeof fpsRaw === 'string' && Number.isFinite(Number(fpsRaw)) && Number(fpsRaw) > 0
+    ? String(Number(fpsRaw))
+    : '2'
+
+  // Save the upload to a temp file the ingest script reads, then delete it.
+  const tmpDir = `${SCANS_DIR}/tmp`
+  await Deno.mkdir(tmpDir, { recursive: true })
+  const safeExt = (video.name.match(/\.(mp4|mov|m4v|webm|avi|mkv)$/i)?.[0] ?? '.mp4').toLowerCase()
+  const tmpVideo = `${tmpDir}/ingest-${Date.now()}-${crypto.randomUUID().slice(0, 8)}${safeExt}`
+  try {
+    await Deno.writeFile(tmpVideo, new Uint8Array(await video.arrayBuffer()))
+  } catch (err) {
+    return c.json({ error: `could not buffer video: ${err}` }, 500)
+  }
+
+  try {
+    // Run the ingest script; the LAST stdout line is JSON { sessionId, frameCount, sessionDir }.
+    const cmd = new Deno.Command('node', {
+      args: [INGEST_VIDEO_SCRIPT, tmpVideo, '--scans-dir', SCANS_DIR, '--fps', fps],
+      stdout: 'piped',
+      stderr: 'piped',
+    })
+    const output = await cmd.output()
+    const stdout = new TextDecoder().decode(output.stdout).trim()
+    const stderr = new TextDecoder().decode(output.stderr).trim()
+    if (output.code !== 0) {
+      console.error('[ingest-video] script failed:', stderr)
+      return c.json({ error: `ingest failed (exit ${output.code})`, detail: stderr.slice(-500) }, 500)
+    }
+
+    const lastLine = stdout.split('\n').filter(Boolean).pop() ?? ''
+    let parsed: { sessionId?: string; frameCount?: number; sessionDir?: string }
+    try {
+      parsed = JSON.parse(lastLine)
+    } catch {
+      console.error('[ingest-video] could not parse script output:', stdout)
+      return c.json({ error: 'ingest produced no parseable summary' }, 500)
+    }
+    const sessionId = parsed.sessionId
+    const frameCount = parsed.frameCount ?? 0
+    if (!sessionId || !sessionDir(sessionId)) {
+      return c.json({ error: `ingest returned an invalid session id: ${sessionId}` }, 500)
+    }
+
+    // Register a session-backed scan in the default world + enqueue reconstruction.
+    const world = await loadWorld('default')
+    const scan = registerSessionScan(world, sessionId, scanName ?? undefined, frameCount)
+    const job = createWorldJob(world, 'lingbot-map-reconstruct', scan.scanId, {
+      source: 'video-ingest',
+      sessionId,
+      frameCount,
+    })
+    world.jobs.unshift(job)
+    await saveWorld(world)
+    await completeJobSoon(world.shareSlug, job.jobId)
+
+    broadcast({ type: 'video-ingested', sessionId, scanId: scan.scanId, jobId: job.jobId, frameCount })
+    return c.json({ sessionId, scanId: scan.scanId, jobId: job.jobId, frameCount }, 202)
+  } finally {
+    // Always drop the temp video — the keyframe session is the durable artifact.
+    await removeIfExists(tmpVideo)
+  }
+})
+
 app.get('/sessions/:id', async (c) => {
   const dir = sessionDir(c.req.param('id'))
   if (!dir) return c.json({ error: 'Invalid session id' }, 400)
@@ -740,6 +842,7 @@ const WORLD_JOB_TYPES = new Set<WorldJobType>([
   'depth-reconstruct',
   'lingbot-map-reconstruct',
   'splat-train',
+  'splat-detect',
   'export-world',
 ])
 
@@ -980,6 +1083,41 @@ function scanManifestFromStored(
     qualitySummary,
     status: scanStatusFromQuality(scan.meta),
   }
+}
+
+/**
+ * Register (or reuse) a session-backed scan in `world` for a capture session
+ * that has no uploaded .glb — the video-ingest path. The synthetic filename
+ * `<sessionId>.glb` never lands on disk; `refreshWorldScans` preserves scans
+ * whose filename isn't among the stored .glb files (see the `if (!storedScan)
+ * return scan` guard), so this entry persists across world reloads. Downstream
+ * job runners derive `base = filename.replace(/\.glb$/, '')` = the sessionId,
+ * so all sidecars (.splat.ply, .interactions.json, …) key off the session.
+ */
+function registerSessionScan(
+  world: WorldProject,
+  sessionId: string,
+  scanName: string | undefined,
+  frameCount: number,
+): ScanManifest {
+  const filename = `${sessionId}.glb`
+  const existing = world.scans.find(s => s.filename === filename || s.sessionId === sessionId)
+  if (existing) return existing
+
+  const stored: StoredScanInfo = {
+    filename,
+    size: 0,
+    uploadedAt: new Date().toISOString(),
+    meta: {
+      sessionId,
+      source: 'video-ingest',
+      keyframeCount: frameCount,
+      ...(scanName ? { scanName } : {}),
+    },
+  }
+  const manifest = scanManifestFromStored(stored, world.originGeoPose, world.scans.length, world.shareSlug)
+  world.scans.push(manifest)
+  return manifest
 }
 
 function createWorldMembers(): WorldMember[] {
@@ -1272,7 +1410,9 @@ async function completeJobSoon(slug: string, jobId: string): Promise<void> {
         ? 'lingbot-map'
         : job.type === 'splat-train'
           ? 'brush'
-          : 'local-coordinator'
+          : job.type === 'splat-detect'
+            ? 'splat-analyzer'
+            : 'local-coordinator'
       job.progress = 0.35
       job.updatedAt = new Date().toISOString()
       await saveWorld(world)
@@ -1285,6 +1425,11 @@ async function completeJobSoon(slug: string, jobId: string): Promise<void> {
 
       if (job.type === 'splat-train') {
         await _runSplatTrainJob(slug, jobId)
+        return
+      }
+
+      if (job.type === 'splat-detect') {
+        await _runSplatDetectJob(slug, jobId)
         return
       }
 
@@ -1549,6 +1694,124 @@ async function _runSplatTrainJob(slug: string, jobId: string): Promise<void> {
   }
 }
 
+async function _runSplatDetectJob(slug: string, jobId: string): Promise<void> {
+  try {
+    const world = await loadWorld(slug)
+    const job = world.jobs.find(j => j.jobId === jobId)
+    if (!job) return
+    const scan = scanForJob(job, world)
+    const failure = jobFailureReason(job, world)
+    if (failure) {
+      job.status = 'failed'
+      job.error = failure
+      job.result = failure
+      job.progress = 1
+      job.updatedAt = new Date().toISOString()
+      await saveWorld(world)
+      broadcast({ type: 'world-job-update', worldId: world.worldId, job })
+      return
+    }
+
+    const base = scan!.filename.replace(/\.glb$/, '')
+    const splatPlyPath = `${SCANS_DIR}/${base}.splat.ply`
+    const sessionId = scan!.sessionId ?? undefined
+    const sessionPath = sessionId ? sessionDir(sessionId) ?? undefined : undefined
+    const outputInteractionsPath = `${SCANS_DIR}/${base}.interactions.json`
+    const manifestPath = `${SCANS_DIR}/${base}.splat-detect.manifest.json`
+    // Prompt: explicit job param wins; the driver defaults the env prompt otherwise.
+    const prompt = typeof job.payload?.['prompt'] === 'string' && (job.payload['prompt'] as string).trim().length > 0
+      ? (job.payload['prompt'] as string).trim()
+      : undefined
+
+    const result = await runSplatDetect({
+      splatPlyPath,
+      sessionDir: sessionPath,
+      outputInteractionsPath,
+      manifestPath,
+      prompt,
+      provenance: { sessionId, scanId: scan!.scanId },
+    })
+
+    const current = await loadWorld(slug)
+    const currentJob = current.jobs.find(j => j.jobId === jobId)
+    if (!currentJob) return
+    currentJob.progress = 1
+    if (result.status === 'ok') {
+      currentJob.status = 'completed'
+      currentJob.result = jobResultFor(currentJob)
+      currentJob.artifacts = jobArtifactsFor(currentJob, current)
+      const interactionsName = `${base}.interactions.json`
+      currentJob.artifacts ??= []
+      currentJob.artifacts.push({
+        type: 'splat-detections',
+        label: `${scan!.name} splat detections`,
+        url: `/scans/${encodeURIComponent(interactionsName)}`,
+        metadata: {
+          objectCount: result.objectCount ?? null,
+          prompt: result.manifest.prompt,
+          manifestUrl: `/scans/${encodeURIComponent(`${base}.splat-detect.manifest.json`)}`,
+        },
+      })
+      // Promote a 'detections' layer carrying the detected object count.
+      const targetScan = current.scans.find(s => s.scanId === scan!.scanId)
+      if (targetScan) {
+        const existing = targetScan.layerIndex.find(l => l.type === 'detections')
+        if (existing) {
+          existing.source = 'sidecar'
+          existing.count = result.objectCount ?? existing.count ?? null
+        } else {
+          targetScan.layerIndex.push({
+            id: 'layer-splat-detections',
+            type: 'detections',
+            label: 'Splat detections',
+            visibleByDefault: false,
+            encodedInGlb: false,
+            source: 'sidecar',
+            count: result.objectCount ?? null,
+          })
+        }
+        if (typeof result.objectCount === 'number') targetScan.detectionCount = result.objectCount
+      }
+      applyCompletedJobToWorld(currentJob, current)
+    } else if (result.status === 'skipped') {
+      currentJob.status = 'completed'
+      currentJob.result = `Splat detect skipped: ${result.manifest.skippedReason ?? 'unknown reason'}`
+      currentJob.artifacts = [{
+        type: 'splat-detect-skip',
+        label: 'Splat detection skipped',
+        url: `/scans/${encodeURIComponent(`${base}.splat-detect.manifest.json`)}`,
+        metadata: {
+          sessionId: sessionId ?? null,
+          skippedReason: result.manifest.skippedReason ?? null,
+          remediation: result.manifest.remediation ?? null,
+        },
+      }]
+    } else {
+      currentJob.status = 'failed'
+      currentJob.error = result.manifest.error ?? `splat-analyzer exit ${result.exitCode}`
+      currentJob.result = currentJob.error
+    }
+    currentJob.updatedAt = new Date().toISOString()
+    await saveWorld(current)
+    broadcast({ type: 'world-job-update', worldId: current.worldId, job: currentJob })
+  } catch (err) {
+    console.error('[splat-detect job error]', err)
+    try {
+      const recovered = await loadWorld(slug)
+      const recoveredJob = recovered.jobs.find(j => j.jobId === jobId)
+      if (recoveredJob) {
+        recoveredJob.status = 'failed'
+        recoveredJob.error = err instanceof Error ? err.message : String(err)
+        recoveredJob.result = recoveredJob.error
+        recoveredJob.progress = 1
+        recoveredJob.updatedAt = new Date().toISOString()
+        await saveWorld(recovered)
+        broadcast({ type: 'world-job-update', worldId: recovered.worldId, job: recoveredJob })
+      }
+    } catch { /* nothing more we can do */ }
+  }
+}
+
 function scanForJob(job: WorldJob, world: WorldProject): ScanManifest | null {
   if (!job.scanId) return null
   return world.scans.find(scan => scan.scanId === job.scanId || scan.filename === job.scanId) ?? null
@@ -1556,7 +1819,7 @@ function scanForJob(job: WorldJob, world: WorldProject): ScanManifest | null {
 
 function jobFailureReason(job: WorldJob, world: WorldProject): string | null {
   const scan = scanForJob(job, world)
-  if (['align-scan', 'extract-layers', 'semantic-pass', 'depth-reconstruct', 'lingbot-map-reconstruct', 'splat-train'].includes(job.type) && !scan) {
+  if (['align-scan', 'extract-layers', 'semantic-pass', 'depth-reconstruct', 'lingbot-map-reconstruct', 'splat-train', 'splat-detect'].includes(job.type) && !scan) {
     return `${job.type} requires a selected scan.`
   }
   if ((job.type === 'depth-reconstruct' || job.type === 'lingbot-map-reconstruct' || job.type === 'splat-train') && scan && !scan.sessionId) {
@@ -1581,6 +1844,9 @@ function applyCompletedJobToWorld(job: WorldJob, world: WorldProject): void {
   else if (job.type === 'splat-train') {
     scan.status = scan.qualitySummary?.status ?? 'ready'
   }
+  else if (job.type === 'splat-detect') {
+    scan.status = scan.qualitySummary?.status ?? 'ready'
+  }
 }
 
 function jobResultFor(job: WorldJob): string {
@@ -1601,6 +1867,8 @@ function jobResultFor(job: WorldJob): string {
       return 'LingBot-Map streaming reconstruction complete. Point cloud + per-frame poses written to the session.'
     case 'splat-train':
       return 'Gaussian splat trained with Brush. The .splat.ply sidecar is available as a splat layer on the scan.'
+    case 'splat-detect':
+      return 'Splat scene detected with splat-analyzer. The .interactions.json sidecar carries 3D object boxes.'
     case 'export-world':
       return 'World export manifest is ready for a combined GLB and semantic JSON worker.'
   }
@@ -1662,6 +1930,14 @@ function jobArtifactsFor(job: WorldJob, world: WorldProject): WorldJob['artifact
         label: `${scan.name} splat training inputs`,
         url: scan.frameSetUrl,
         metadata: { sessionId: scan.sessionId, canonicalLayer: 'splat' },
+      }] : []
+    case 'splat-detect':
+      // The real .interactions.json artifact is appended by _runSplatDetectJob
+      // once the analyzer run lands; this base entry records the detection plan.
+      return scan ? [{
+        type: 'splat-detect-plan',
+        label: `${scan.name} splat detection inputs`,
+        metadata: { sessionId: scan.sessionId, canonicalLayer: 'detections' },
       }] : []
     case 'export-world':
       return [{

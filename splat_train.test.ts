@@ -297,6 +297,62 @@ Deno.test('buildBrushDataset drops frames whose image is missing and reports the
   await Deno.remove(tmp, { recursive: true })
 })
 
+// ─── Pose fallback (video-ingest sessions) ───────────────────────────────────
+
+/** Write a pose-LESS keyframe session (video-ingest style: records carry no pose). */
+async function makePoselessSession(tmp: string, files = ['kf-00000.jpg', 'kf-00001.jpg']) {
+  const sessionDir = `${tmp}/sess-poseless`
+  await Deno.mkdir(sessionDir, { recursive: true })
+  const lines: string[] = []
+  files.forEach((file, i) => {
+    // No `pose` key at all — mirrors scripts/ingest-video.mjs output.
+    lines.push(JSON.stringify({ index: i, file, timestamp: i / 2, intrinsics: { width: 2, height: 2, fovYDeg: 55 } }))
+  })
+  for (const file of files) await Deno.writeFile(`${sessionDir}/${file}`, TINY_JPEG)
+  await Deno.writeTextFile(`${sessionDir}/keyframes.jsonl`, lines.join('\n') + '\n')
+  return sessionDir
+}
+
+Deno.test('buildBrushDataset falls back to lingbot-map.poses.json when records lack pose', async () => {
+  const tmp = await Deno.makeTempDir({ prefix: 'splat-pose-' })
+  const sessionDir = await makePoselessSession(tmp)
+  // Identity cameraToWorld (OpenCV w2c) → the driver inverts + flips Y/Z axes,
+  // yielding the OpenGL c2w diag(1,-1,-1,1). Only kf-00000 is given a pose.
+  await Deno.writeTextFile(
+    `${sessionDir}/lingbot-map.poses.json`,
+    JSON.stringify({
+      frames: [
+        { file: 'kf-00000.jpg', cameraToWorld: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]] },
+        { file: 'kf-00001.jpg', cameraToWorld: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]] },
+      ],
+    }),
+  )
+
+  const result = await buildBrushDataset({ sessionDir, datasetDir: `${tmp}/ds` })
+  assertEquals(result.frameCount, 2)
+  const transforms = JSON.parse(await Deno.readTextFile(`${result.datasetDir}/transforms.json`))
+  assertEquals(transforms.frames.length, 2)
+  // OpenCV→OpenGL flip on an identity extrinsic.
+  assertEquals(transforms.frames[0].transform_matrix, [
+    [1, 0, 0, 0],
+    [0, -1, 0, 0],
+    [0, 0, -1, 0],
+    [0, 0, 0, 1],
+  ])
+  await Deno.remove(tmp, { recursive: true })
+})
+
+Deno.test('buildBrushDataset gives a clear error when no pose is available anywhere', async () => {
+  const tmp = await Deno.makeTempDir({ prefix: 'splat-pose-' })
+  const sessionDir = await makePoselessSession(tmp) // no lingbot-map.poses.json written
+  await assertRejects(
+    () => buildBrushDataset({ sessionDir, datasetDir: `${tmp}/ds` }),
+    Error,
+    'run a lingbot-map-reconstruct job on this session first',
+  )
+  await Deno.remove(tmp, { recursive: true })
+})
+
 // ─── Driver error contract + export selection ─────────────────────────────────
 
 Deno.test('runSplatTrain surfaces a brush failure as an error manifest with the stderr tail', async () => {
