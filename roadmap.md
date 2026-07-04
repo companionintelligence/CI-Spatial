@@ -1,85 +1,176 @@
 # Roadmap
 
-## v1.0 — Shipped ✅
-
-The initial working product. All core features are implemented and the TypeScript codebase compiles clean.
-
-### Completed
-- **AR scanning** — 8th Wall SLAM + per-frame JPEG capture
-- **LFM2.5-VL inference** — Deno server runs the vision model via `llama.cpp` bindings; detections arrive as 3D-pinned markers in the AR scene
-- **3D pins** — `THREE.Sprite` overlays anchored to world-space hit-test positions, persist across frames via the detection store
-- **Session persistence** — IndexedDB stores every session; detections survive page refresh
-- **GLTF export** — exports the live point-cloud + metadata as a `.glb`; browser download + server upload (`POST /upload-scan`)
-- **Server scan storage** — Deno writes `.glb` files to `./scans/`; served via `GET /scans` + `GET /scans/:filename`
-- **3D desktop viewer** — `viewer.html` + Three.js OrbitControls, loads scans from the server, HTML label overlays
-- **History drawer** — slide-in panel; expandable per-session detection list; select / edit / delete
-- **Side panel** — object manifest with close button, per-detection select/deselect/inline edit
-- **Reactive store** — `store.ts` with `updateDetection`, `toggleSelect`, `selectAll`, `deselectAll`
-- **PWA** — manifest + icons, `start_url`, installable on iOS/Android
-- **Test suite** — Playwright tests covering the app shell, health endpoints, inference API, scan storage CRUD, path-traversal guards, 3D viewer page, side panel, history drawer, AR flow
+Status and timelines for Companion Scan live **here and only here**. This file
+uses phase framing — **Shipped**, **Near-term**, **Later / Exploratory** — not
+calendar dates. For the system design, data model, and full API table see
+[architecture.md](architecture.md). For the everyday-user first-time journey see
+[docs/UX_FLOW.md](docs/UX_FLOW.md). For the field-acceptance protocol see
+[docs/HOUSE_VALIDATION.md](docs/HOUSE_VALIDATION.md).
 
 ---
 
-## v1.1 — Near-term
+## Shipped
 
-Focus: **quality-of-life + CI/CD**
+Everything below is implemented on `main` and exercised by the test suite (14
+specs in `tests/` + 4 root Deno unit tests). The TypeScript codebase compiles
+clean.
 
-| # | Feature | Notes |
-|---|---------|-------|
-| 1.1.0 | **World scan editor foundation** | `viewer.html` now loads a `WorldProject` instead of a single GLB: many scans can be placed in one ENU/Y-up scene, aligned with sidecar transforms, and inspected with compass, scale, coordinate readout, map pins, layer toggles, labels, camera frustums, and transform controls. |
-| 1.1.1 | **8th Wall simulator in CI** | Use XR8's built-in desktop replay mode to run `@simulator`-tagged Playwright tests headlessly. Capture a reference SLAM session (`.bin`) once on device and commit to `public/test-fixtures/`. |
-| 1.1.2 | **Docker image** | Single `Dockerfile` running the Deno server; `docker-compose.yml` with a volume for `./scans/`. Enables reproducible local dev and cloud deploy. |
-| 1.1.3 | **GitHub Actions CI** | `push` → lint + `tsc --noEmit` + Playwright (`webkit-desktop` project); cache Deno and npm modules. |
-| 1.1.4 | **Lighthouse / a11y audit** | Run `@lhci/cli` against both `index.html` and `viewer.html`; fail build on score < 80. |
-| 1.1.5 | **Scan delete** | `DELETE /scans/:filename` endpoint + delete button in viewer sidebar and history drawer. |
-| 1.1.6 | **Richer metadata** | Store device orientation, GPS (if granted), and session duration alongside each `.glb`. Show in viewer sidebar. |
-| 1.1.7 | **Confidence threshold UI** | Slider in settings panel to filter low-confidence detections from export and viewer. |
+### Capture (phone)
+
+- **AR SLAM scanning** — 8th Wall SLAM with a WebXR fallback; per-frame JPEG
+  capture, hit-test-anchored geometry, live point cloud.
+- **Live quality monitoring** — `quality-monitor.ts` surfaces a coverage bar,
+  drift / lighting / reflection badges, and a missing-areas count during
+  capture, and computes a `ready` / `needs-review` / `needs-rescan` verdict with
+  recommendations (written into the GLB; see Near-term for surfacing it on the
+  phone).
+- **Three capture pipelines** — manual tap-to-capture, auto-capture as you walk,
+  and keyframe streaming for reconstruction jobs (`capture/keyframes.ts`).
+- **Autosave** — first capture uploads silently to the server.
+
+### Inference (engine-agnostic)
+
+- **Ollama (default)** — `INFERENCE_MODE=ollama`, `OLLAMA_MODEL` defaults to
+  `moondream:latest`; pick a model with `npm run bench:models`.
+- **ONNX** — `INFERENCE_MODE=onnx` runs the bundled
+  `LiquidAI/LFM2.5-VL-1.6B-ONNX` via `onnxruntime-node` (~1.5 GB download).
+- **Mock** — `INFERENCE_MODE=mock` is a deterministic colour-blob CV engine for
+  CI and tests.
+- **WebGPU vs server routing** — opt-in via the localStorage key `infer-mode`
+  (`src/inference/router.ts`); defaults to server-side. Not auto-detected.
+- **Sync scan analysis** — `/process-scan` runs `object-count`,
+  `scene-description`, and `floor-plan` actions.
+
+### Spatial + storage
+
+- **Spatial resolver** — `spatial/resolver.ts` pins detections to world-space
+  positions.
+- **IndexedDB persistence** — sessions and detections survive refresh.
+- **GLB export** — point cloud + metadata exported as `.glb`; browser download
+  plus server upload (`/upload-scan`), stored server-side and served from
+  `/scans`.
+
+### Desktop world editor (`viewer.html`)
+
+- **4D world model** — loads a `WorldProject` (`src/world/types.ts`): many scans
+  placed in one anchored `ENU_Y_UP`, metric (`meters`) frame, geo-anchored at an
+  `originGeoPose`. Time lives in per-frame `FrameObservation` streams and the
+  append-only `EditPatch[]` log, so a world holds multiple scans of the same
+  place captured at different moments.
+- **Layers** — typed, addressable layers (points, mesh, floor, detections,
+  labels, cameraPath, cameraFrustums, rgbFrames, depth, splat, semanticMasks),
+  each independently toggled.
+- **Editing** — transform controls, label editing, and measurement, recorded as
+  append-only `EditPatch` records.
+- **Navigation aids** — compass, scale, coordinate readout, geomap, render modes
+  (solid / points / wire / semantic), and live feed.
+
+### Optimization pipeline
+
+- **Scan optimization** — quantization, Draco compression, and progressive LOD
+  generation on export; the viewer streams keyframes and loads coarse LODs
+  first.
+
+### Realtime + reconstruction jobs
+
+- **WebRTC live geometry** — `/rtc-signal` signalling + `rtc/broadcaster.ts`
+  stream live geometry; `/events` (SSE) for server push.
+- **Async job queue** — `/jobs` runs the `WorldJobType` set: `ingest`,
+  `extract-layers`, `align-scan`, `merge-points`, `semantic-pass`,
+  `depth-reconstruct`, `lingbot-map-reconstruct`, `splat-train`, `splat-detect`,
+  `export-world` (status `queued | processing | completed | failed`). The
+  editor's Queue-Job dropdown exposes 9; `splat-detect` fires from the Splat
+  Toolbox.
+- **Splat toolbox** — train (Brush, GPU-pinned), detect (3D interaction boxes),
+  view, and compress Gaussian splats (`viewer/splat-*.ts`).
+- **Video ingest** — `/ingest-video` turns an uploaded walkthrough video into a
+  session scan (no `.glb` on disk).
+- **LingBot-Map reconstruction** — `lingbot-map-reconstruct` produces point
+  cloud + poses sidecars keyed off `sessionId`.
+
+### App shell + UX
+
+- **PWA / offline** — manifest + icons, installable on iOS/Android; Service
+  Worker caches the app shell.
+- **Onboarding + accessibility** — 3-step onboarding overlay (gated on
+  `localStorage['companion-scan-onboarded']`, replayable via `#help-btn`,
+  skippable with `?onboarding=0` or `?mock`), accessible controls.
+
+### QA
+
+- **House validation kit** — the two-way (live AR + video) field-acceptance
+  protocol and helper scripts (`npm run test:house`, `npm run links:house`); see
+  [docs/HOUSE_VALIDATION.md](docs/HOUSE_VALIDATION.md).
 
 ---
 
-## v1.2 — Medium-term
+## Near-term
 
-Focus: **sharing + search**
+Realistic next steps that build directly on shipped surfaces.
 
-| # | Feature | Notes |
-|---|---------|-------|
-| 1.2.1 | **QR share links** | Each saved scan gets a short URL (`/view/:id`). Page renders viewer.html pre-loaded with that scan. QR code shown in export dialog. |
-| 1.2.2 | **Semantic search** | Index detection labels with a lightweight vector store (e.g. `chromadb` sidecar or `sqlite-vss`). `GET /scans?q=chair` returns ranked results. |
-| 1.2.3 | **Scan thumbnail** | Capture a WebGL screenshot at export time; store as `<timestamp>.thumb.jpg` alongside the `.glb`. Show in scan-list cards. |
-| 1.2.4 | **Offline-first** | Service Worker caches the Vite build shell + viewer; requests queue with background sync when the Deno server is unreachable. |
-| 1.2.5 | **Progressive mesh LOD** | On export, generate a low-poly version of the point cloud (Draco compression via `gltf-pipeline`). Viewer loads LOD0 first. |
-| 1.2.6 | **User accounts (optional)** | JWT-based auth on the Deno server; scans are namespaced per user. Minimal UI: email + magic link. |
-| 1.2.7 | **Shared world links** | World-level links now exist for `/viewer.html?world=<slug>&token=<role-token>` and `/scanner.html?world=<slug>&token=<scanner-token>`; next step is QR UI and token revocation/expiry controls. |
-| 1.2.8 | **Processing workers** | The local coordinator exposes queued job records for `ingest`, `extract-layers`, `align-scan`, `merge-points`, `semantic-pass`, `depth-reconstruct`, `splat-train`, and `export-world`; next step is Redis Streams plus CPU/GPU worker capability advertising. |
-
----
-
-## v1.3 — Long-term
-
-Focus: **collaboration + cloud**
-
-| # | Feature | Notes |
-|---|---------|-------|
-| 1.3.1 | **Real-time collaboration** | WebSocket (Hono `upgradeWebSocket`) broadcasts detection events; multiple devices update the same shared session live. |
-| 1.3.2 | **Cloud sync** | Option to mirror `./scans/` to S3-compatible storage (Cloudflare R2 / AWS S3). CDN-served `.glb` URLs in share links. |
-| 1.3.3 | **AR glasses support** | Adapt the 8th Wall provider for WebXR hand-tracking (Meta Quest, Magic Leap). Detection pins become volumetric objects. |
-| 1.3.4 | **Floor-plan export** | Post-process the scan's detected object positions to generate a 2D SVG floor plan with labelled furniture. |
-| 1.3.5 | **LLM scene description** | After export, POST the detection list to an LLM endpoint; get a one-paragraph natural-language summary of the room. Show in viewer sidebar. |
-| 1.3.6 | **Multi-session merge** | Align two scans taken from different angles using overlapping detections as registration anchors; merge into a single `.glb`. |
-| 1.3.7 | **Semantic world map + splats** | Capture RGB frames, poses, intrinsics, optional depth, and camera frustums as `FrameObservation` sidecars; train Gaussian splats as visual layers while keeping canonical geometry, labels, categories, and edit patches structured. |
+- **Surface the completion verdict on the phone** — render
+  `qualityMonitor.summary()` as a status chip (`✓ Ready to export` / `Review
+  recommended` / `Keep scanning`) plus the top recommendation, and add a
+  `Done / Finish scan` affordance near the capture button. The verdict already
+  exists in code but only appears in the desktop viewer today. See the guided
+  "finish your map" flow in [docs/UX_FLOW.md](docs/UX_FLOW.md).
+- **Close the export loop** — after Export GLB, add a `View in 3D →` link back
+  into the world (reuse the video-upload open pattern); gate manual export
+  behind a confirm when status is `needs-rescan`.
+- **Auth / JWT** — optional token auth on the Deno server so scans and worlds
+  can be namespaced per user (minimal email + magic-link UI). No auth today.
+- **Shared world links polish** — role-scoped links
+  (`/worlds/<shareSlug>`, viewer/scanner tokens) exist; add QR UI plus token
+  revocation and expiry controls.
+- **Loop-closure / drift correction** — reduce SLAM drift on long walk-throughs
+  via loop closure and origin-return recalibration in the `align-scan` /
+  `merge-points` workers (alignment is a local-grid placeholder today).
+- **Multi-scan align + merge UX** — surface the manual placement and
+  align/merge flow in the editor beyond code comments; wire the Open3D refiner.
 
 ---
 
-## Known Limitations
+## Later / Exploratory
 
-- **Camera + motion permissions on iOS** cannot be programmatically granted in Playwright WebKit; those test paths must be verified manually on device.
-- **LFM2.5-VL inference latency** is ~0.5–2 s per frame depending on hardware; frame-skip logic mitigates this but object-dense rooms may lag.
-- **SLAM drift** accumulates over long sessions (~10 min); recalibrating by walking back to the origin helps.
-- **GLB file size** grows with session length; no mesh simplification or point-cloud decimation is applied yet (see v1.2.5).
-- **No auth** on the Deno server — anyone on the local network can upload/download scans (see v1.2.6).
+Larger bets that are not yet scoped for delivery.
+
+- **Semantic / vector search** — index detection labels and world layers in a
+  lightweight vector store; `GET /scans?q=chair`-style ranked queries.
+- **Multi-device collaboration** — several devices editing the same world live
+  over WebSocket, building on the existing SSE/WebRTC transports.
+- **Cloud sync** — mirror server storage to S3-compatible object storage and
+  CDN-serve `.glb`/`.splat` assets in share links.
+- **Distributed job workers** — move the single job coordinator to a queue
+  (e.g. Redis Streams) with CPU/GPU worker capability advertising.
+- **AR glasses support** — adapt the provider for WebXR hand-tracking headsets;
+  detection pins become volumetric objects.
+- **One-click world export bundle** — turn `export-world` into a single bundled
+  GLB + semantic-JSON download rather than a manifest/worker-ready step.
 
 ---
 
-## Architecture Notes
+## Known limitations
 
-See [architecture.md](architecture.md) for the full system diagram and component inventory.
+- **No auth by default** — anyone who can reach the server can upload/download
+  scans and open worlds. Auth is Near-term.
+- **SLAM drift on long scans** — pose error accumulates over long (~10 min)
+  sessions; walking back to the origin helps. Loop-closure is Near-term.
+- **Single-worker job queue** — the async `/jobs` runner is a single worker that
+  shares the box with the VLM; heavy reconstruction jobs and inference contend
+  for the same hardware.
+- **Planned vs real artifacts** — several job runners emit plan/placeholder
+  artifacts unless the real worker (Brush, LingBot-Map Python, Open3D) is wired
+  via env vars; the runner reports a "hint" when unset, and this distinction is
+  currently invisible to the user.
+- **GLB size** — file size grows with session length; quantization/Draco/LOD
+  reduce but do not cap it.
+- **WebXR on iOS** — the WebXR fallback path needs the HelloXR shim on iOS;
+  camera + motion permissions cannot be programmatically granted in Playwright
+  WebKit, so those paths are verified manually on device.
+
+---
+
+## Architecture
+
+See [architecture.md](architecture.md) for the system diagram, the 4D world data
+model, the complete API table, and deployment topology.
