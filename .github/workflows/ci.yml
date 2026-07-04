@@ -1,0 +1,157 @@
+name: CI
+
+# Full verification suite — every step runs the same commands verified
+# locally (see TEST_INFRA.md §5).  No device, SLAM binary, or VLM weights
+# required: AR runtimes are mocked and inference uses INFERENCE_MODE=mock.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Types, build, pipeline smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript (frontend + tests)
+        run: npx tsc --noEmit
+
+      - name: Deno check (server)
+        run: deno check main.ts inference.ts jobs.ts pipeline.ts
+
+      - name: Vite production build
+        run: npx vite build
+
+      - name: Optimization pipeline smoke test
+        run: npm run smoke:pipeline
+
+  api-tests:
+    name: API suite + CV eval (mock engine)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          deno install --allow-scripts
+
+      - name: Generate test corpus (24 homes + 16 CV images)
+        run: npm run gen:test-data
+
+      - name: Start Deno server (mock inference engine)
+        run: |
+          mkdir -p /tmp/ci-scans /tmp/ci-worlds
+          SCANS_DIR=/tmp/ci-scans WORLDS_DIR=/tmp/ci-worlds INFERENCE_MODE=mock \
+            nohup deno run --allow-net --allow-read --allow-write --allow-env --allow-ffi main.ts > /tmp/deno-server.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8000/health && break
+            sleep 1
+          done
+          curl -sf http://localhost:8000/health
+
+      - name: API test suite (scan pipeline + CV ground truth)
+        run: npx playwright test --project=api
+        env:
+          API_URL: http://localhost:8000
+
+      - name: CV eval (strict baseline gate)
+        run: STRICT=1 node scripts/eval-cv.mjs
+        env:
+          SERVER_URL: http://localhost:8000
+
+      - name: Upload CV report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cv-eval-report
+          path: test-data/cv/report.json
+          if-no-files-found: ignore
+
+  browser-tests:
+    name: Browser suite (mocked AR runtimes)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          deno install --allow-scripts
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Generate test corpus
+        run: npm run gen:test-data
+
+      - name: Start Deno server (mock inference engine)
+        run: |
+          mkdir -p /tmp/ci-scans /tmp/ci-worlds
+          SCANS_DIR=/tmp/ci-scans WORLDS_DIR=/tmp/ci-worlds INFERENCE_MODE=mock \
+            nohup deno run --allow-net --allow-read --allow-write --allow-env --allow-ffi main.ts > /tmp/deno-server.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8000/health && break
+            sleep 1
+          done
+          curl -sf http://localhost:8000/health
+
+      - name: Start Vite dev server
+        run: |
+          nohup npx vite --host 0.0.0.0 --port 5173 > /tmp/vite.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -skf https://localhost:5173/ -o /dev/null && break
+            sleep 1
+          done
+          curl -skf https://localhost:5173/ -o /dev/null
+
+      - name: Browser tests (XR8 mock, iwer WebXR, editor)
+        run: npx playwright test --project=chromium-mock
+        env:
+          VITE_URL: https://localhost:5173
+
+      - name: Upload Playwright traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: test-results/
+          if-no-files-found: ignore
