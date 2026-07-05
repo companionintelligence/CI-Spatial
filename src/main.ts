@@ -44,7 +44,12 @@ let decimationNoticeShown = false
 
 async function main() {
   const searchParams = new URLSearchParams(location.search)
-  const skipOnboarding = searchParams.has('mock') || searchParams.get('onboarding') === '0'
+  // Onboarding is skipped under mocks (so scan-flow tests don't stall on it) and
+  // when explicitly disabled with ?onboarding=0. ?onboarding=1 forces it on even
+  // under a mock runtime, so the FTUE overlay can be exercised in tests.
+  const skipOnboarding = searchParams.get('onboarding') === '1'
+    ? false
+    : searchParams.has('mock') || searchParams.get('onboarding') === '0'
 
   // Remote log mirror — inert unless armed via ?debug=remote or localStorage
   installRemoteLog()

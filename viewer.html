@@ -344,6 +344,81 @@
         margin-bottom: 8px;
       }
 
+      /* Map-quality headline: tier stepper + processing line */
+      .quality-section {
+        border-color: rgba(128,255,225,0.22);
+        background: rgba(128,255,225,0.04);
+      }
+      .quality-stepper {
+        display: flex;
+        align-items: stretch;
+        gap: 6px;
+      }
+      .quality-step {
+        flex: 1;
+        min-width: 0;
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 8px;
+        padding: 6px 5px;
+        background: rgba(255,255,255,0.03);
+        opacity: 0.45;
+        transition: all 0.15s;
+      }
+      .quality-step.reached { opacity: 1; }
+      .quality-step.current {
+        border-color: rgba(128,255,225,0.6);
+        background: rgba(128,255,225,0.14);
+        box-shadow: 0 0 0 1px rgba(128,255,225,0.25) inset;
+      }
+      .quality-step-label {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+        color: #fff;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .quality-step.current .quality-step-label { color: #80ffe1; }
+      .quality-step-tick {
+        font-size: 10px;
+        color: rgba(128,255,225,0.85);
+        height: 12px;
+        line-height: 12px;
+      }
+      .quality-blurb {
+        font-size: 11px;
+        color: rgba(255,255,255,0.55);
+        line-height: 1.5;
+        margin-top: 8px;
+      }
+      .quality-next {
+        font-size: 11px;
+        color: #80ffe1;
+        margin-top: 4px;
+      }
+      .quality-processing {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 11px;
+        color: #ffd54f;
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px solid rgba(255,255,255,0.08);
+      }
+      .quality-processing[hidden] { display: none; }
+      .quality-spinner {
+        width: 10px;
+        height: 10px;
+        border: 2px solid rgba(255,213,79,0.3);
+        border-top-color: #ffd54f;
+        border-radius: 50%;
+        flex: none;
+        animation: quality-spin 0.8s linear infinite;
+      }
+      @keyframes quality-spin { to { transform: rotate(360deg); } }
+
       .tag-grid {
         display: flex;
         flex-wrap: wrap;
@@ -930,6 +1005,19 @@
           <!-- Layers panel -->
           <div class="sidebar-panel" id="tab-layers" role="tabpanel" aria-labelledby="tab-btn-layers">
             <div id="layers-panel-content">
+              <!-- Map-quality headline: one coherent per-scan state above the
+                   scattered per-artifact sections below. -->
+              <div class="edit-section quality-section" id="quality-section">
+                <div class="edit-section-title">Map Quality</div>
+                <div class="quality-stepper" id="quality-stepper" role="list" aria-label="Map quality tier"></div>
+                <div class="quality-blurb" id="quality-blurb">Select a scan to see its map quality.</div>
+                <div class="quality-next" id="quality-next" hidden></div>
+                <div class="quality-processing" id="quality-processing" role="status" aria-live="polite" hidden>
+                  <span class="quality-spinner" aria-hidden="true"></span>
+                  <span id="quality-processing-text"></span>
+                </div>
+              </div>
+
               <div class="edit-section">
                 <div class="edit-section-title">GLB + Sidecar Layers</div>
                 <div id="layer-list">

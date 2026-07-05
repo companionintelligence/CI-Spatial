@@ -14,7 +14,7 @@
  * CHROMIUM_EXECUTABLE_PATH (forwarded to Playwright).
  */
 import { spawn, execSync } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, openSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -42,14 +42,19 @@ process.on('SIGINT', () => shutdown(130))
 process.on('SIGTERM', () => shutdown(143))
 
 function launch(name, cmd, args, env) {
+  // Redirect stdout+stderr to a log file rather than a pipe: draining a child's
+  // stdout through the parent event loop stalls under the chromium-mock request
+  // burst, and once the pipe buffer fills Deno's blocking console.log wedges the
+  // API server mid-request. A file fd never backpressures the child.
+  const logPath = join(RUN_DIR, `${name}.log`)
+  const logFd = openSync(logPath, 'a')
+  console.log(`[test-box] ${name} logs → ${logPath}`)
   const child = spawn(cmd, args, {
     cwd: root,
     env: { ...process.env, ...env },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', logFd, logFd],
     detached: true, // own process group so shutdown kills grandchildren too
   })
-  child.stdout.on('data', (d) => process.stdout.write(`[${name}] ${d}`))
-  child.stderr.on('data', (d) => process.stderr.write(`[${name}] ${d}`))
   child.on('exit', (code) => {
     if (!finished) {
       console.error(`[test-box] ${name} exited early (code ${code})`)
@@ -116,7 +121,18 @@ launch('deno', denoBin, ['run', '--allow-net', '--allow-read', '--allow-write', 
   WORLDS_DIR: join(RUN_DIR, 'worlds'),
   SUMMARIES_DIR: join(RUN_DIR, 'summaries'),
 })
-launch('vite', 'npx', ['vite', '--host', '--port', String(VITE_PORT), '--strictPort'], {
+// Vite's default recursive file watcher watches every GLB the seed dumps into
+// .test-run/scans (plus node_modules) — on this shared box that exhausts the
+// system inotify watch limit and crashes vite with ENOSPC mid-seed. This is a
+// headless test run, so HMR/watch buys us nothing; disable it via a throwaway
+// no-watch config that extends the real vite.config.ts. Cleaned up on exit.
+const NOWATCH_CONFIG = join(RUN_DIR, '.vite.nowatch.mjs')
+writeFileSync(
+  NOWATCH_CONFIG,
+  `import base from '${join(root, 'vite.config.ts')}'\n` +
+    `export default { ...base, server: { ...(base.server || {}), watch: null } }\n`,
+)
+launch('vite', 'npx', ['vite', '--config', NOWATCH_CONFIG, '--host', '--port', String(VITE_PORT), '--strictPort'], {
   API_TARGET: API_URL,
 })
 
