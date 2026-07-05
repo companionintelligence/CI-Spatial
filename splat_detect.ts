@@ -50,6 +50,14 @@ export interface SplatDetectRunOptions {
   hipVisibleDevices?: string
   /** Point-renderer splat size. Falls back to env POINT_SPLAT_SIZE, then "6". */
   pointSplatSize?: string
+  /** Camera coverage preset: low (24 views) | medium (90) | high (192). Env SPLAT_DETECT_QUALITY, then "medium". */
+  quality?: string
+  /** Per-frame OWLv2 confidence cutoff. Env SPLAT_DETECT_SCORE_THRESHOLD; unset = run_local.py default (0.12). */
+  scoreThreshold?: string
+  /** Frames an object must appear in to be kept. Env SPLAT_DETECT_MIN_VOTES; unset = run_local.py default (8). */
+  minVotes?: string
+  /** Best single-frame confidence required. Env SPLAT_DETECT_MIN_PEAK_SCORE; unset = run_local.py default (0.40). */
+  minPeakScore?: string
   /** For testing: skip the real spawn and treat these results as the analyzer run. */
   _spawn?: (bin: string, args: string[], env: Record<string, string>) => Promise<{ code: number; stderr: string }>
   /** Provenance forwarded into the manifest. */
@@ -76,6 +84,9 @@ export interface SplatDetectManifest {
     pointSplatSize: string
     quality: string
     renderer: string
+    scoreThreshold?: string
+    minVotes?: string
+    minPeakScore?: string
   }
   timing?: { elapsedMs: number }
   skippedReason?: string
@@ -104,13 +115,23 @@ export function resolveParams(opts: SplatDetectRunOptions) {
   const prompt = opts.prompt ?? Deno.env.get('SPLAT_DETECT_PROMPT') ?? DEFAULT_DETECT_PROMPT
   const hipVisibleDevices = opts.hipVisibleDevices ?? Deno.env.get('HIP_VISIBLE_DEVICES') ?? '1'
   const pointSplatSize = opts.pointSplatSize ?? Deno.env.get('POINT_SPLAT_SIZE') ?? '6'
+  const quality = opts.quality ?? Deno.env.get('SPLAT_DETECT_QUALITY') ?? 'medium'
+  // Clustering knobs: undefined means "let run_local.py use its own default"
+  // (score 0.12 / votes 8 / peak 0.40) so we never fight the analyzer when
+  // untuned — override only once calibrated on a real room splat.
+  const scoreThreshold = opts.scoreThreshold ?? Deno.env.get('SPLAT_DETECT_SCORE_THRESHOLD') ?? undefined
+  const minVotes = opts.minVotes ?? Deno.env.get('SPLAT_DETECT_MIN_VOTES') ?? undefined
+  const minPeakScore = opts.minPeakScore ?? Deno.env.get('SPLAT_DETECT_MIN_PEAK_SCORE') ?? undefined
   return {
     python,
     detectDir,
     prompt,
     hipVisibleDevices,
     pointSplatSize,
-    quality: 'low',
+    quality,
+    scoreThreshold,
+    minVotes,
+    minPeakScore,
     renderer: 'point',
   }
 }
@@ -126,7 +147,7 @@ export function buildDetectArgs(
   jobDir: string,
   params: ReturnType<typeof resolveParams>,
 ): string[] {
-  return [
+  const args = [
     runLocalPath,
     '--ply', plyPath,
     '--prompt', params.prompt,
@@ -134,6 +155,12 @@ export function buildDetectArgs(
     '--renderer', params.renderer,
     '--job_dir', jobDir,
   ]
+  // Only pass clustering knobs when explicitly set — otherwise run_local.py
+  // applies its own tuned defaults.
+  if (params.scoreThreshold != null) args.push('--score_threshold', params.scoreThreshold)
+  if (params.minVotes != null) args.push('--min_votes', params.minVotes)
+  if (params.minPeakScore != null) args.push('--min_peak_score', params.minPeakScore)
+  return args
 }
 
 export async function runSplatDetect(opts: SplatDetectRunOptions): Promise<SplatDetectResult> {

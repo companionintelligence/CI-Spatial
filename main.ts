@@ -1727,6 +1727,13 @@ async function _runSplatDetectJob(slug: string, jobId: string): Promise<void> {
     const prompt = typeof job.payload?.['prompt'] === 'string' && (job.payload['prompt'] as string).trim().length > 0
       ? (job.payload['prompt'] as string).trim()
       : undefined
+    // Tuning knobs: forwarded from the job payload as strings; unset lets the
+    // driver fall back to its env defaults / run_local.py's own defaults.
+    const payloadStr = (key: string): string | undefined => {
+      const v = job.payload?.[key]
+      if (typeof v === 'number') return String(v)
+      return typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined
+    }
 
     const result = await runSplatDetect({
       splatPlyPath,
@@ -1734,6 +1741,10 @@ async function _runSplatDetectJob(slug: string, jobId: string): Promise<void> {
       outputInteractionsPath,
       manifestPath,
       prompt,
+      quality: payloadStr('quality'),
+      scoreThreshold: payloadStr('scoreThreshold'),
+      minVotes: payloadStr('minVotes'),
+      minPeakScore: payloadStr('minPeakScore'),
       provenance: { sessionId, scanId: scan!.scanId },
     })
 
