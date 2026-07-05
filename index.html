@@ -1089,28 +1089,103 @@
         line-height: 1.55;
       }
 
-      #start-ar-btn {
-        padding: 16px 52px;
-        font-size: 17px;
-        font-weight: 700;
-        letter-spacing: 0.02em;
-        color: #010d0e;
-        background: linear-gradient(180deg, rgba(128,255,225,1), rgba(128,255,225,0.82));
-        border: 1px solid rgba(128,255,225,0.7);
-        border-radius: 999px;
+      /* Two stacked capture-path cards — equal dignity, distinct roles */
+      #start-paths {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        width: 100%;
+        max-width: 380px;
+      }
+
+      .start-path {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        width: 100%;
+        min-height: 84px;
+        padding: 16px 18px;
+        text-align: left;
+        border-radius: var(--ci-radius);
+        border: 1px solid var(--ci-line);
+        background: var(--ci-bg-elevated);
+        color: var(--ci-text);
         cursor: pointer;
         -webkit-tap-highlight-color: transparent;
-        transition: transform 0.15s ease-out, opacity 0.15s ease-out, box-shadow 0.2s ease-out;
+        box-shadow: var(--ci-shadow);
+        transition: transform 0.15s ease-out, border-color 0.2s ease-out, background 0.2s ease-out, box-shadow 0.2s ease-out;
+      }
+
+      .start-path:hover {
+        border-color: rgba(128, 255, 225, 0.42);
+        background: var(--ci-bg-elevated-strong);
+        box-shadow: var(--ci-shadow), 0 0 0 5px rgba(128, 255, 225, 0.06);
+      }
+
+      .start-path:active {
+        transform: scale(0.98);
+      }
+
+      /* Primary path — the live-AR card carries the accent (mint) fill */
+      #start-ar-btn.start-path {
+        background: linear-gradient(180deg, rgba(128,255,225,0.98), rgba(128,255,225,0.82));
+        border-color: rgba(128,255,225,0.7);
+        color: #010d0e;
         box-shadow: 0 18px 44px rgba(128,255,225,0.18);
       }
 
-      #start-ar-btn:hover {
+      #start-ar-btn.start-path:hover {
+        background: linear-gradient(180deg, rgba(128,255,225,1), rgba(128,255,225,0.88));
         box-shadow: 0 20px 54px rgba(128,255,225,0.22);
       }
 
-      #start-ar-btn:active {
-        transform: scale(0.94);
+      #start-ar-btn.start-path:disabled {
+        cursor: not-allowed;
+        opacity: 0.4;
+      }
+
+      .start-path-icon {
+        flex-shrink: 0;
+        width: 46px;
+        height: 46px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 24px;
+        border-radius: 12px;
+        background: rgba(1, 13, 14, 0.14);
+      }
+
+      #start-upload-card .start-path-icon {
+        background: rgba(128, 255, 225, 0.10);
+      }
+
+      .start-path-copy {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        min-width: 0;
+      }
+
+      .start-path-title {
+        font-size: 17px;
+        font-weight: 700;
+        letter-spacing: 0.01em;
+      }
+
+      .start-path-sub {
+        font-size: 12px;
+        line-height: 1.45;
         opacity: 0.85;
+      }
+
+      #start-ar-btn.start-path .start-path-sub {
+        color: rgba(1, 13, 14, 0.72);
+        opacity: 1;
+      }
+
+      #start-upload-card .start-path-sub {
+        color: var(--ci-muted);
       }
 
       /* Leaflet dark-mode overrides */
@@ -1197,8 +1272,8 @@
       </div>
       <div class="onboard-step" data-step="2">
         <div class="onboard-icon">💾</div>
-        <div class="onboard-title">Export & View in 3D</div>
-        <div class="onboard-desc">When done, export your scan as a .glb file. Open the desktop viewer to explore, label, and compose multiple scans into a shared world.</div>
+        <div class="onboard-title">Two ways to capture</div>
+        <div class="onboard-desc">Scan a room live with your phone, or upload a walkthrough video you already have — either becomes a 3D map. Then open the desktop viewer to explore, label, and compose scans into a shared world.</div>
       </div>
       <div class="onboard-dots">
         <div class="onboard-dot active"></div>
@@ -1212,7 +1287,8 @@
     <!-- Persistent help button — visible during scanning -->
     <button id="help-btn" aria-label="Show scanning help">?</button>
 
-    <!-- Start screen: must be a real button so Safari grants iOS motion permission from the click handler -->
+    <!-- Start screen: two equal capture paths. #start-ar-btn stays a real
+         <button> so Safari grants iOS motion permission from its click handler. -->
     <div id="start-screen">
       <div id="start-brand">
         <div id="start-brand-mark"></div>
@@ -1220,25 +1296,41 @@
         <div id="start-title">Companion Scan</div>
         <div id="start-subtitle">Private spatial memory for places you own.</div>
       </div>
-      <button id="start-ar-btn">Start AR</button>
-      <!-- Per-platform guidance, populated + unhidden by main.ts when no AR runtime is available -->
-      <div id="ar-help" hidden style="max-width: 320px; text-align: center; color: var(--ci-muted); font-size: 12px; line-height: 1.55;"></div>
 
-      <!-- Quiet secondary action: upload a walkthrough video for server-side
-           keyframe extraction + splat reconstruction (no AR runtime needed). -->
-      <div id="upload-video" style="display:flex;flex-direction:column;align-items:center;gap:8px;max-width:320px;text-align:center;">
-        <label id="upload-video-btn" for="upload-video-input"
-          style="color:rgba(239,240,240,0.62);font-size:12px;text-decoration:underline;text-underline-offset:3px;cursor:pointer;-webkit-tap-highlight-color:transparent;">
-          or upload a walkthrough video
+      <div id="start-paths" role="group" aria-label="Choose how to capture your space">
+        <!-- Path 1 — live AR (primary). Must stay a <button>: the iOS motion
+             permission request in its click handler needs a real user gesture. -->
+        <button id="start-ar-btn" class="start-path" aria-label="Scan a room with live AR">
+          <span class="start-path-icon" aria-hidden="true">📡</span>
+          <span class="start-path-copy">
+            <span class="start-path-title">Scan a room</span>
+            <span class="start-path-sub">Point your phone and walk the room to build a 3D map.</span>
+          </span>
+        </button>
+
+        <!-- Path 2 — upload an existing walkthrough video. The card is a
+             <label for="upload-video-input"> so a tap opens the picker with no
+             extra JS; the existing wireVideoUpload() handles the upload. -->
+        <label id="start-upload-card" class="start-path" for="upload-video-input">
+          <span class="start-path-icon" aria-hidden="true">🎞️</span>
+          <span class="start-path-copy">
+            <span id="upload-video-btn" class="start-path-title">Upload a video</span>
+            <span class="start-path-sub">Already have a walkthrough video? Turn it into a 3D map — no AR needed.</span>
+          </span>
+          <input id="upload-video-input" type="file" accept="video/*" style="display:none;" />
         </label>
-        <input id="upload-video-input" type="file" accept="video/*" style="display:none;" />
-        <div id="upload-video-progress" aria-live="polite"
-          style="font-size:12px;color:var(--ci-muted);line-height:1.5;"></div>
-        <a id="upload-video-open" href="/viewer.html?world=default" hidden
-          style="color:#80ffe1;font-size:12px;font-weight:700;text-decoration:none;">
-          Processing started — open the 3D editor →
-        </a>
       </div>
+
+      <!-- Upload progress / result line, driven by wireVideoUpload() -->
+      <div id="upload-video-progress" aria-live="polite"
+        style="max-width:380px;width:100%;text-align:center;font-size:12px;color:var(--ci-muted);line-height:1.55;"></div>
+      <a id="upload-video-open" href="/viewer.html?world=default" hidden
+        style="color:#80ffe1;font-size:12px;font-weight:700;text-decoration:none;">
+        Processing started — open the 3D editor →
+      </a>
+
+      <!-- Per-platform guidance, populated + unhidden by main.ts when no AR runtime is available -->
+      <div id="ar-help" hidden style="max-width: 340px; text-align: center; color: var(--ci-muted); font-size: 12px; line-height: 1.55;"></div>
     </div>
 
     <div id="ar-overlay">

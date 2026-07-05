@@ -17,9 +17,17 @@ import { LiveFeed } from './livefeed'
 import { loadSemanticAsset, createMediumPolyAsset } from './assets'
 import { fetchLingBotMapArtifacts, type LingBotMapOverlay } from './lingbot-map'
 import { attachSparkRenderer, loadSplat, disposeSplat, type LoadedSplat } from './splat-viewer'
-import { fetchScanSplatLayer, disposeScanSplatLayer, splatPlyUrl, type ScanSplatLayer } from './splat-layer'
+import { fetchScanSplatLayer, disposeScanSplatLayer, splatPlyUrl, splatManifestUrl, type ScanSplatLayer } from './splat-layer'
 import { fetchScanDetectLayer, type ScanDetectLayer } from './splat-detect-layer'
 import { buildTrainJobRequest, buildDetectJobRequest } from './splat-toolbox'
+import {
+  computeQualityTier,
+  jobProcessingLabel,
+  QUALITY_TIERS,
+  QUALITY_TIER_LABELS,
+  QUALITY_TIER_BLURBS,
+  type QualityTier,
+} from './quality-tier'
 import { enuToGeo, hasGeoPose, matrixTranslation } from '../world/geo'
 import { LAYER_LABELS, LAYER_ORDER } from '../world/layers'
 import { registerPWA } from '../pwa'
@@ -961,9 +969,146 @@ function selectScan(scanId: string, focus: boolean, openEdit = true): void {
   showInspector(loaded.root)
   syncEditPanel(loaded.root, openEdit)
   if (focus) fitCamera(loaded.root)
+  void refreshQualityPanel(scanId)
   void refreshLingBotMapPanel(scanId)
   void refreshSplatLayerPanel(scanId)
 }
+
+// ─── Map-quality headline (per-scan tier + processing state) ──────────────────
+
+/**
+ * Render the "Map Quality" headline for the selected scan: a Preview →
+ * Reconstructed → Photoreal stepper lit by which artifacts exist, plus a
+ * single processing line when a quality-relevant world job is in flight for
+ * this scan. Reuses the same manifest fetches the detailed sections use — it
+ * prefers already-cached overlay/layer state and otherwise reads just the
+ * manifests (no heavy PLY loads) so the badge lights up fast.
+ */
+async function refreshQualityPanel(scanId: string): Promise<void> {
+  const stepper = document.getElementById('quality-stepper')
+  if (!stepper) return
+  const scan = world?.scans.find(s => s.scanId === scanId)
+  if (!scan) return
+
+  // Processing line first — it doesn't depend on the (async) manifest reads.
+  renderQualityProcessing(scanId)
+
+  const [reconstructedOk, splatOk] = await Promise.all([
+    isReconstructedOk(scan),
+    isSplatOk(scan),
+  ])
+  // A later selection may have superseded this async read.
+  if (selectedScanId !== scanId) return
+
+  const { tier, nextStep } = computeQualityTier({ reconstructedOk, splatOk })
+  renderQualityStepper(tier)
+
+  const blurb = document.getElementById('quality-blurb')
+  if (blurb) blurb.textContent = QUALITY_TIER_BLURBS[tier]
+  const next = document.getElementById('quality-next')
+  if (next) {
+    next.textContent = nextStep ?? ''
+    next.hidden = !nextStep
+  }
+}
+
+/** True when the scan's LingBot-Map reconstruction manifest exists and is ok. */
+async function isReconstructedOk(scan: ScanManifest): Promise<boolean> {
+  const cached = lingbotOverlays.get(scan.scanId)
+  if (cached) return cached.manifest.status === 'ok'
+  if (!scan.sessionId) return false
+  try {
+    const resp = await fetch(withAccessToken(
+      `/sessions/${encodeURIComponent(scan.sessionId)}/lingbot-map.manifest.json`))
+    if (!resp.ok) return false
+    const m = await resp.json() as { status?: string }
+    return m.status === 'ok'
+  } catch {
+    return false
+  }
+}
+
+/** True when the scan's trained-splat manifest exists and is ok. */
+async function isSplatOk(scan: ScanManifest): Promise<boolean> {
+  const cached = scanSplatLayers.get(scan.scanId)
+  if (cached) return cached.manifest.status === 'ok'
+  try {
+    const resp = await fetch(withAccessToken(splatManifestUrl(scan)))
+    if (!resp.ok) return false
+    const m = await resp.json() as { status?: string }
+    return m.status === 'ok'
+  } catch {
+    return false
+  }
+}
+
+function renderQualityStepper(current: QualityTier): void {
+  const stepper = document.getElementById('quality-stepper')
+  if (!stepper) return
+  const currentIdx = QUALITY_TIERS.indexOf(current)
+  stepper.innerHTML = ''
+  for (let i = 0; i < QUALITY_TIERS.length; i++) {
+    const tier = QUALITY_TIERS[i]!
+    const step = document.createElement('div')
+    step.className = 'quality-step'
+    step.dataset['tier'] = tier
+    step.setAttribute('role', 'listitem')
+    if (i <= currentIdx) step.classList.add('reached')
+    if (i === currentIdx) {
+      step.classList.add('current')
+      step.setAttribute('aria-current', 'step')
+    }
+    step.innerHTML = `
+      <div class="quality-step-tick">${i <= currentIdx ? '●' : ''}</div>
+      <div class="quality-step-label">${escHtml(QUALITY_TIER_LABELS[tier])}</div>
+    `
+    stepper.appendChild(step)
+  }
+}
+
+/**
+ * Show a single "Improving your scan — <friendly>…" line when a
+ * quality-relevant world job for this scan is queued/processing; hide it
+ * otherwise. A job with no scanId is treated as world-wide (applies to the
+ * selected scan too).
+ */
+function renderQualityProcessing(scanId: string): void {
+  const line = document.getElementById('quality-processing')
+  const text = document.getElementById('quality-processing-text')
+  if (!line || !text) return
+  const active = (world?.jobs ?? []).find(job =>
+    (job.status === 'queued' || job.status === 'processing')
+    && (!job.scanId || job.scanId === scanId)
+    && jobProcessingLabel(job.type) !== null)
+  if (!active) {
+    line.hidden = true
+    text.textContent = ''
+    return
+  }
+  text.textContent = `Improving your scan — ${jobProcessingLabel(active.type)}…`
+  line.hidden = false
+}
+
+// Test hook: lets Playwright inject a queued job and re-render the headline
+// without spinning up a GPU trainer.
+;(window as unknown as { __quality: { injectJob: (type: WorldJobType, scanId: string | null) => void } })
+  .__quality = {
+    injectJob(type, scanId) {
+      if (!world) return
+      world.jobs.unshift({
+        jobId: `test-${Date.now()}`,
+        worldId: world.worldId,
+        type,
+        status: 'queued',
+        scanId: scanId ?? undefined,
+        capabilities: [],
+        payload: {},
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      })
+      renderWorldPanel()
+    },
+  }
 
 async function refreshLingBotMapPanel(scanId: string): Promise<void> {
   const status = document.getElementById('lingbot-map-status')
@@ -1424,6 +1569,7 @@ function renderWorldPanel(): void {
   setText('world-job-count', String(world.jobs.length))
   setText('world-origin-label', hasGeoPose(world.originGeoPose) ? 'GPS' : 'Local')
   renderJobs(world.jobs)
+  if (selectedScanId) renderQualityProcessing(selectedScanId)
 }
 
 function renderLayerPanel(): void {
@@ -2228,6 +2374,11 @@ function connectServerEvents(): void {
         if (t === 'splat-detect' && wj?.status === 'completed' && wj?.scanId) {
           scanDetectLayers.delete(wj.scanId)
           if (selectedScanId === wj.scanId) void refreshSplatDetectPanel(wj.scanId)
+        }
+        if ((t === 'lingbot-map-reconstruct' || t === 'splat-train')
+          && wj?.status === 'completed' && selectedScanId
+          && (!wj.scanId || wj.scanId === selectedScanId)) {
+          void refreshQualityPanel(selectedScanId)
         }
         void refreshJobs()
       }
