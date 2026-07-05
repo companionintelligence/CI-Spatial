@@ -26,6 +26,7 @@ see the group headers for where to look.
 | Doc | What it covers |
 |---|---|
 | [UX_FLOW.md](UX_FLOW.md) | The everyday-user first-time journey (FTUE) — the happy-path story from install through scan, structure, reconstruct, and share, plus the capture vs. auto-capture vs. keyframe-stream vs. live-RTC mental model. |
+| [ui-flow/](ui-flow/) | **Screenshot gallery** — mobile + desktop screenshots of every UI/UX flow, generated automatically from the running app. |
 | [UI_MANUAL.md](UI_MANUAL.md) | Surface-by-surface UI reference — the exhaustive control catalog for the AR HUD, start screen, and desktop editor. |
 
 ## Operations & deploy

@@ -6,6 +6,8 @@
 
 This doc sits between architecture.md (the engineer's system sequence) and UI_MANUAL.md (the surface-by-surface control reference). It owns the *narrative*: the first-time journey, the mental model of the four capture pipelines, and the FTUE improvement backlog.
 
+**📸 Screenshot gallery:** [docs/ui-flow/](./ui-flow/) shows mobile + desktop screenshots of every flow below, generated automatically from the running app by [`tests/mock-ui-mobile.spec.ts`](../tests/mock-ui-mobile.spec.ts) and [`tests/mock-ui-desktop.spec.ts`](../tests/mock-ui-desktop.spec.ts). Representative shots are embedded per phase in §4.
+
 ---
 
 ## 1. Purpose & the everyday-user persona
@@ -166,6 +168,8 @@ Rework the overlay to teach outcomes and set expectations for the four capture m
 
 ### Phase 0 — Install / FTUE (phone)
 
+[![start screen](ui-flow/mobile/01-start-screen.png)](ui-flow/mobile/01-start-screen.png) [![onboarding](ui-flow/mobile/02-onboarding-step-1.png)](ui-flow/mobile/02-onboarding-step-1.png)
+
 **User goal:** open the link, understand what the app does, grant access, and get to scanning without friction.
 
 **Screens/controls today:**
@@ -184,6 +188,8 @@ Rework the overlay to teach outcomes and set expectations for the four capture m
 ---
 
 ### Phase 1 — Scan a room (phone)
+
+[![scanning HUD](ui-flow/mobile/05-scanning-hud.png)](ui-flow/mobile/05-scanning-hud.png) [![detections panel](ui-flow/mobile/07-detections-panel.png)](ui-flow/mobile/07-detections-panel.png)
 
 **User goal:** capture the space well enough to be worth exploring later, and know when that's true.
 
@@ -222,6 +228,8 @@ The everyday user must understand there are **four distinct capture pipelines**,
 
 ### Phase 2 — Structure into the 4D map (desktop editor)
 
+[![editor overview](ui-flow/desktop/01-editor-overview.png)](ui-flow/desktop/01-editor-overview.png)
+
 **User goal:** open the world, see scans placed correctly, and organize/label/compose them.
 
 **Screens/controls today** (`viewer.html`, title "Companion Scan — World Editor", opened as `?world=<slug>&token=<token>`, default `world=default`):
@@ -254,6 +262,8 @@ The everyday user must understand there are **four distinct capture pipelines**,
 ---
 
 ### Phase 3 — Reconstruction / detection jobs (server queue)
+
+[![splat toolbox](ui-flow/desktop/05-splat-toolbox.png)](ui-flow/desktop/05-splat-toolbox.png)
 
 **User goal:** turn raw scans into richer artifacts (dense point clouds, splats, detected objects) without understanding the pipeline.
 
@@ -295,6 +305,8 @@ The everyday user must understand there are **four distinct capture pipelines**,
 ---
 
 ### Phase 4 — Export / share the world
+
+[![world tab share links](ui-flow/desktop/03-world-tab.png)](ui-flow/desktop/03-world-tab.png)
 
 **User goal:** hand a specific person a private, explorable copy — scoped to what they should see.
 
