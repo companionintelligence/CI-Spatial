@@ -139,7 +139,9 @@ app.use(logger())
 app.use(
   cors({
     origin: (origin) => {
-      console.log(`[server] CORS check: origin=${origin}, prefix=${ALLOWED_ORIGIN_PREFIX}`)
+      if (Deno.env.get('DEBUG_CORS') === '1') {
+        console.log(`[server] CORS check: origin=${origin}, prefix=${ALLOWED_ORIGIN_PREFIX}`)
+      }
       if (!origin) return ALLOWED_ORIGIN_PREFIX
       if (isAllowedOrigin(origin)) {
         return origin
