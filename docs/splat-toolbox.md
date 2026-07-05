@@ -102,6 +102,14 @@ point cloud (`lingbot-map.point-cloud.ply`) that the driver first converts to a
 3DGS-attribute PLY via `pointcloud_to_gs.py`. So you can detect even before a
 full Brush train has run.
 
+**Tuning:** camera coverage (`SPLAT_DETECT_QUALITY` low/medium/high) and the
+clustering knobs (`SPLAT_DETECT_MIN_VOTES` / `_SCORE_THRESHOLD` / `_MIN_PEAK_SCORE`,
+or per-job payload `quality`/`minVotes`/`scoreThreshold`/`minPeakScore`) decide
+detection quality far more than the pipeline does. They ship **uncalibrated** —
+run `npm run tune:detect -- <room>.splat.ply` against a real trained room splat to
+pick values, then set the env. See **[SPLAT_DETECT_ROADMAP.md](SPLAT_DETECT_ROADMAP.md)**
+for the calibration runbook and the plan to surface detections in the AR scanner.
+
 **How**
 - **Editor:** Splat Toolbox → **Detect objects**; optional prompt override.
 - **curl:**

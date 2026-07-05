@@ -38,21 +38,59 @@ Deno.test('resolveParams honours explicit overrides over env defaults', () => {
   assertEquals(p.prompt, 'chair, sofa')
   assertEquals(p.hipVisibleDevices, '0')
   assertEquals(p.pointSplatSize, '9')
-  assertEquals(p.quality, 'low')
+  assertEquals(p.quality, 'medium') // default when neither option nor env sets it
   assertEquals(p.renderer, 'point')
 })
 
 Deno.test('buildDetectArgs assembles the run_local.py CLI in a stable order', () => {
   const params = resolveParams({ outputInteractionsPath: '/x/a.interactions.json', prompt: 'chair, table' })
   const args = buildDetectArgs('/opt/sa/run_local.py', '/data/scene.splat.ply', '/tmp/job', params)
+  // Default quality is 'medium'; clustering knobs are unset → not passed.
   assertEquals(args, [
     '/opt/sa/run_local.py',
     '--ply', '/data/scene.splat.ply',
     '--prompt', 'chair, table',
-    '--quality', 'low',
+    '--quality', 'medium',
     '--renderer', 'point',
     '--job_dir', '/tmp/job',
   ])
+})
+
+Deno.test('buildDetectArgs appends clustering knobs only when set', () => {
+  const params = resolveParams({
+    outputInteractionsPath: '/x/a.interactions.json',
+    prompt: 'sofa',
+    quality: 'high',
+    scoreThreshold: '0.08',
+    minVotes: '3',
+    minPeakScore: '0.3',
+  })
+  const args = buildDetectArgs('/opt/sa/run_local.py', '/data/s.ply', '/tmp/j', params)
+  assert(args[args.indexOf('--quality') + 1] === 'high')
+  assert(args[args.indexOf('--score_threshold') + 1] === '0.08')
+  assert(args[args.indexOf('--min_votes') + 1] === '3')
+  assert(args[args.indexOf('--min_peak_score') + 1] === '0.3')
+})
+
+Deno.test('resolveParams honours env tuning defaults', () => {
+  const prev = {
+    q: Deno.env.get('SPLAT_DETECT_QUALITY'),
+    v: Deno.env.get('SPLAT_DETECT_MIN_VOTES'),
+  }
+  try {
+    Deno.env.set('SPLAT_DETECT_QUALITY', 'low')
+    Deno.env.set('SPLAT_DETECT_MIN_VOTES', '2')
+    const p = resolveParams({ outputInteractionsPath: '/x/a.json' })
+    assertEquals(p.quality, 'low')
+    assertEquals(p.minVotes, '2')
+    // explicit option still wins over env
+    const p2 = resolveParams({ outputInteractionsPath: '/x/a.json', quality: 'high', minVotes: '5' })
+    assertEquals(p2.quality, 'high')
+    assertEquals(p2.minVotes, '5')
+  } finally {
+    prev.q == null ? Deno.env.delete('SPLAT_DETECT_QUALITY') : Deno.env.set('SPLAT_DETECT_QUALITY', prev.q)
+    prev.v == null ? Deno.env.delete('SPLAT_DETECT_MIN_VOTES') : Deno.env.set('SPLAT_DETECT_MIN_VOTES', prev.v)
+  }
 })
 
 Deno.test('countInteractions parses array, {objects}, and {interactions} shapes', () => {

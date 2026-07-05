@@ -31,7 +31,8 @@
     "qr": "node scripts/qr.mjs",
     "ingest:video": "node scripts/ingest-video.mjs",
     "links:house": "node scripts/house-links.mjs",
-    "test:house": "playwright test --project=api house-readiness"
+    "test:house": "playwright test --project=api house-readiness",
+    "tune:detect": "node scripts/tune-splat-detect.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",
