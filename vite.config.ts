@@ -137,6 +137,20 @@ export default defineConfig({
     // (5173, or the next free port if 5173 is busy).
     hmr: { host: HOSTNAME },
     proxy,
+    // These are runtime data stores written by the Deno API (uploaded scans,
+    // optimized GLBs/LODs, world state) and served to the browser through the
+    // proxy above — never imported into Vite's module graph. Watching them is
+    // pure waste, and under a test:box run the optimize pipeline writes enough
+    // .opt.glb/LOD files to blow past the inotify watch limit and kill the dev
+    // server (ENOSPC). Ignore them so the watcher only tracks real source.
+    watch: {
+      ignored: [
+        '**/.test-run/**',
+        '**/scans/**',
+        '**/worlds/**',
+        '**/summaries/**',
+      ],
+    },
   },
   // `vite preview` (production bundle) inherits server.https/proxy/host; pin the
   // port so the systemd unit and phones always find it at :5173.

@@ -544,7 +544,7 @@ async function loadScanIntoWorld(scan: ScanManifest): Promise<void> {
 
 async function fetchOptimizationManifest(filename: string): Promise<OptimizationManifest | null> {
   try {
-    const resp = await fetch(`/scans/${encodeURIComponent(filename)}/manifest`)
+    const resp = await withTransientRetry(() => fetch(`/scans/${encodeURIComponent(filename)}/manifest`))
     if (!resp.ok) return null
     const manifest = await resp.json() as OptimizationManifest
     return manifest.artifacts?.optimized ? manifest : null
@@ -553,15 +553,20 @@ async function fetchOptimizationManifest(filename: string): Promise<Optimization
   }
 }
 
+// A scan only flips to "Ready" once its GLB loads, so this fetch is the gate the
+// mock-editor tests wait on — retry the transient burst drop that would strand
+// it. GLTFLoader forwards fetch's TypeError to onError, so withTransientRetry
+// catches it; the deterministic "no scene graph" reject is not transient and is
+// surfaced immediately.
 function loadGlbRoot(url: string): Promise<THREE.Group> {
-  return new Promise((resolve, reject) => {
+  return withTransientRetry(() => new Promise<THREE.Group>((resolve, reject) => {
     loader.load(url, (gltf) => {
       const g = gltf as { scene?: THREE.Group; scenes?: THREE.Group[] }
       const root = g.scene ?? g.scenes?.[0]
       if (root) resolve(root)
       else reject(new Error('Scan GLB has no scene graph'))
     }, undefined, reject)
-  })
+  }))
 }
 
 /**
@@ -801,7 +806,7 @@ async function addFrameObservationLayers(
   scan: ScanManifest,
   layers: Map<LayerType, Set<THREE.Object3D>>,
 ): Promise<void> {
-  const response = await fetch(withAccessToken(scan.frameSetUrl!))
+  const response = await withTransientRetry(() => fetch(withAccessToken(scan.frameSetUrl!)))
   if (!response.ok) throw new Error(`${response.status} ${await response.text()}`)
   const payload = await response.json() as { frames?: FrameObservation[] }
   const frames = payload.frames ?? []
@@ -1972,10 +1977,47 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetch(withAccessToken(url), { headers: accessHeaders() })
-  if (!response.ok) throw new Error(`${response.status} ${await response.text()}`)
-  return response.json() as Promise<T>
+const delay = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
+
+/**
+ * A dropped-mid-flight network request. `fetch` (and three's FileLoader, which
+ * forwards fetch's reject) throw `TypeError: Failed to fetch` when the browser
+ * drops an in-flight request during the heavy initial load burst under CPU
+ * contention — even though the server answers every request it receives. HTTP
+ * error statuses arrive as a plain Error / HttpError instead, so restricting to
+ * TypeError retries only the genuine transient and surfaces real errors at once.
+ */
+function isTransientFetchError(error: unknown): boolean {
+  if (error instanceof TypeError) return true
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  return /failed to fetch/i.test(message)
+}
+
+/**
+ * Run an idempotent network op, retrying only transient drops with a short
+ * backoff. During the initial world-load burst (world + jobs + share links, GLB
+ * loads, optimize-manifest and frame-observation fetches all firing at once)
+ * these transient rejects would otherwise drop the scan list / jobs / geometry
+ * on the floor and strand the scan at "not Ready". Worst case adds ~0.9s.
+ */
+async function withTransientRetry<T>(op: () => Promise<T>, retries = 3): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await op()
+    } catch (error) {
+      if (attempt >= retries || !isTransientFetchError(error)) throw error
+      await delay(150 * (attempt + 1))
+    }
+  }
+}
+
+/** GET + parse JSON, riding out transient network drops during load. */
+function fetchJson<T>(url: string): Promise<T> {
+  return withTransientRetry(async () => {
+    const response = await fetch(withAccessToken(url), { headers: accessHeaders() })
+    if (!response.ok) throw new Error(`${response.status} ${await response.text()}`)
+    return await response.json() as T
+  })
 }
 
 function setText(id: string, value: string): void {
