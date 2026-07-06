@@ -20,9 +20,10 @@ back through the `/scans/:filename` routes the viewer already understands.
 |------|--------|------------------------|----------|
 | **View** | SparkJS (`@sparkjsdev/spark`) | viewer splat layer | in-browser 3DGS render |
 | **Train** | [Brush](https://github.com/ArthurBrussee/brush) (wgpu) | `splat-train` world job | `<base>.splat.ply` (+ manifest) |
+| **Finish** | [@playcanvas/splat-transform](https://github.com/playcanvas/splat-transform) | `splat-finish` world job (auto-chained after train) | `<base>.sog` + `<base>.compressed.ply` (+ manifest) |
 | **Detect** | [splat_analyzer](#detect--splat_analyzer) + OWLv2 | `splat-detect` world job | `<base>.interactions.json` (+ manifest) |
-| **Ingest video** | ffmpeg | `scripts/ingest-video.mjs` / `POST /ingest-video` | keyframe session (pose-less) |
-| **Compress** | Brush (best-effort) | rides `splat-train` | `<base>.compressed.ply` when present |
+| **Ingest video** | ffmpeg (+ adaptive fps + blur gate) | `scripts/ingest-video.mjs` / `POST /ingest-video` | keyframe session (pose-less) |
+| **Ingest photos** | sharp/jimp (+ EXIF ordering + blur gate) | `scripts/ingest-photos.mjs` / `POST /ingest-photos` | keyframe session(s) (pose-less) |
 
 ### GPU placement (beta-1, 2× RX 7900 XTX)
 
@@ -138,6 +139,19 @@ an ordinary phone video into scaled JPEG keyframes and lays them down as a
 capture session the rest of the pipeline understands. The records carry **no
 pose** — poses come later from `lingbot-map-reconstruct`.
 
+Two quality gates run automatically:
+
+- **Adaptive fps** — with no explicit `--fps`, the sample rate adapts to the
+  clip length (`ffprobe` duration): `max(2, ceil(40 / seconds))`, capped at 10.
+  Short clips still yield ≥40 frames of parallax; long walkthroughs keep the
+  economical 2fps. An explicit `--fps` (or the route's `fps` field) always wins.
+- **Blur gate** — each extracted frame's sharpness (variance of the 3x3
+  Laplacian on downscaled grayscale, `scripts/ingest-quality.mjs`) is measured
+  and frames under `--min-sharpness` (default 60, env `INGEST_MIN_SHARPNESS`,
+  0 disables) are dropped. Survivors are re-indexed so `kf-NNNNN.jpg` stays
+  contiguous; the count lands in `session.json` as `droppedBlurry`. If the gate
+  would drop *every* frame, it keeps them all instead.
+
 **When:** you have a video instead of a live AR scan, or you want a
 non-interactive capture path.
 
@@ -145,13 +159,13 @@ non-interactive capture path.
 - **Scanner:** the scanner's **Upload video** control posts to `/ingest-video`.
 - **Script (box-side):**
   ```sh
-  node scripts/ingest-video.mjs <video.mp4> --fps 2 --scans-dir <isolated-dir>
+  node scripts/ingest-video.mjs <video.mp4> --scans-dir <isolated-dir>
   ```
-  Last stdout line is JSON `{ sessionId, frameCount, sessionDir }`.
+  Last stdout line is JSON `{ sessionId, frameCount, sessionDir, droppedBlurry, fps }`.
 - **curl:**
   ```sh
   curl -X POST $BASE/ingest-video \
-    -F video=@floor1.mp4 -F name='Downstairs' -F fps=2
+    -F video=@floor1.mp4 -F name='Downstairs'
   # → 202 { sessionId, scanId, jobId, frameCount }
   ```
   The route registers a `scan-<sessionId>` in the `default` world and
@@ -160,15 +174,85 @@ non-interactive capture path.
 
 ---
 
-## Compress — Brush (best-effort)
+## Ingest photos — sharp/jimp
 
-**What:** if Brush emits a `*.compressed.ply` in the export dir, `splat_train.ts`
-carries it alongside the full `.ply` as `<base>.compressed.ply`. Brush does not
-compress by default, so this is opportunistic; there is no standalone compress
-job yet.
+**What:** "shot a burst of stills around the room / found a folder of house
+photos." Orders a photo set by capture time (EXIF `DateTimeOriginal`, file
+mtime fallback — noted as `timesFrom` in `session.json`), drops blurry shots
+with the same blur gate as the video arm, scales to the same long-edge cap,
+and lays the survivors down as a pose-less keyframe session
+(`source: 'photo-ingest'`). The CLI additionally **clusters by capture-time
+gap** (default: a gap > 2h starts a new session — archive folders often hold
+several visits); the server route always ingests one upload as one session.
 
-**When:** transfer/storage of large splats — a smaller sidecar for the same
-scene. See the roadmap candidates below for a real compression leg (SOG/SPZ).
+**How**
+- **Script (box-side, clustering on):**
+  ```sh
+  node scripts/ingest-photos.mjs <photos-dir> --scans-dir <isolated-dir> \
+    [--cluster-gap-hours 2] [--min-sharpness 60]
+  ```
+  Last stdout line is JSON `{ sessionId, frameCount, sessionDir, droppedBlurry,
+  timesFrom, sessions: [...] }`.
+- **curl:**
+  ```sh
+  curl -X POST $BASE/ingest-photos \
+    -F name='Kitchen stills' \
+    -F files=@img_0001.jpg -F files=@img_0002.jpg -F files=@img_0003.jpg
+  # → 202 { sessionId, scanId, jobId, frameCount, droppedBlurry }
+  ```
+  The route registers a `scan-<sessionId>` in the `default` world and
+  auto-enqueues a `lingbot-map-reconstruct` job, exactly like `/ingest-video`.
+  Uploads over `INGEST_MAX_PHOTOS_BYTES` (default 500 MB) get a `413`.
+
+---
+
+## Finish — splat-transform (SOG + compressed PLY)
+
+**What:** the post-processing Stage 4. `splat_finish.ts` spawns the
+[@playcanvas/splat-transform](https://github.com/playcanvas/splat-transform)
+CLI (an npm devDependency, run via node) on a scan's trained
+`<base>.splat.ply` to produce the two web-delivery artifacts plus a manifest:
+
+- `<base>.sog` — super-compressed SOG bundle (ONE ZIP file holding `meta.json`
+  + WebP attribute textures). ~8x smaller than the raw PLY (12.6% on the
+  verify fixture); SparkJS loads it natively.
+- `<base>.compressed.ply` — SuperSplat compressed PLY, ~4x smaller (26.5% on
+  the fixture); loads through Spark's standard PLY path.
+- `<base>.splat-finish.manifest.json` — status, `sizes`
+  (`inputBytes`/`sogBytes`/`compressedBytes`), timing.
+
+The viewer's splat layer **prefers the finished artifacts** (`.sog`, then
+`.compressed.ply`) and gracefully falls back to the raw `.splat.ply`; the Splat
+Toolbox shows the compressed sizes and a **Download .sog** link next to the
+existing Download .ply.
+
+**When:** automatically — every successful `splat-train` auto-enqueues a
+`splat-finish` for the same scan (kill switch: `SPLAT_FINISH_AUTO=0`). Or
+manually re-run it after tuning, via the job queue.
+
+**How**
+- **Editor:** Processing Queue → **Splat finish (compress)**.
+- **curl:**
+  ```sh
+  curl -X POST $BASE/worlds/default/jobs \
+    -H 'authorization: Bearer <editor-token>' \
+    -H 'content-type: application/json' \
+    -d '{"type":"splat-finish","scanId":"scan-<id>"}'
+  ```
+- **CLI (box-side smoke):**
+  ```sh
+  node node_modules/@playcanvas/splat-transform/bin/cli.mjs -w -g cpu \
+    <base>.splat.ply <base>.sog
+  node node_modules/@playcanvas/splat-transform/bin/cli.mjs -w \
+    <base>.splat.ply <base>.compressed.ply
+  ```
+
+**Env:** `SPLAT_FINISH_AUTO` (default on; `0` disables the auto-chain),
+`SPLAT_FINISH_GPU` (default `cpu`; a WebGPU adapter index from `-L` — dawn/
+Vulkan numbering, NOT a HIP id), `SPLAT_FINISH_SH_ITERS` (k-means iterations,
+default 10), `SPLAT_TRANSFORM_CLI` (override the cli.mjs path). A missing
+input splat or CLI → a `skipped` manifest with a remediation; a CLI crash or a
+run with no output → an `error` manifest carrying the stderr tail.
 
 ---
 
@@ -180,12 +264,11 @@ roadmap gaps. Verify current status before adopting; these are directions, not
 dependencies.
 
 **Compression (shrink the splat we ship to the viewer):**
-- **Self-Organizing Gaussians (SOG)** — sorts Gaussians into a 2D grid so their
-  attributes compress as images; strong size wins, directly relevant to serving
-  splats over Tailscale to a phone.
-- **SPZ (Niantic)** — a compact binary splat container; converters exist in the
-  awesome index (`gsbox`, `GaussForge`) for PLY↔SPZ↔SPLAT, a low-effort transfer
-  format we could adopt without changing the trainer.
+- **Self-Organizing Gaussians (SOG)** — ✅ landed as the `splat-finish` job
+  above (splat-transform's SOG writer); the viewer already prefers the `.sog`.
+- **SPZ (Niantic)** — a compact binary splat container; splat-transform can
+  also write `.spz`, so adding it to `splat_finish.ts` is a one-liner if a
+  consumer wants that format.
 
 **Meshing from splats (the GLTF export leg):**
 - **2D Gaussian Splatting (2DGS)** — flattens 3D Gaussians to oriented disks,

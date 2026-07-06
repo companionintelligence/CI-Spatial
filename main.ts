@@ -16,6 +16,7 @@
  * POST /sessions/:id/finalize          JSON { glbFilename?, … } → session record
  * GET  /sessions/:id                   → session record
  * POST /ingest-video      multipart { video: File, name?, fps? } → 202 { sessionId, scanId, jobId, frameCount }
+ * POST /ingest-photos     multipart { files: File[], name? } → 202 { sessionId, scanId, jobId, frameCount, droppedBlurry }
  * POST /upload-summary     multipart { file: File(.md) } → { filename }
  * POST /process-scan       JSON { filename, action, sessionId? } → { action, result }
  * POST /client-logs        JSON { entries: [{ ts, level, msg, stack?, url? }], ua? } → 204
@@ -38,6 +39,7 @@ import { JobQueue } from './jobs.ts'
 import { runLingBotMapReconstruction } from './lingbot_map.ts'
 import { runSplatTrain } from './splat_train.ts'
 import { runSplatDetect } from './splat_detect.ts'
+import { runSplatFinish } from './splat_finish.ts'
 import { composeYUpTransform, geoToEnu, hasGeoPose } from './src/world/geo.ts'
 import { defaultLayerIndex } from './src/world/layers.ts'
 import type {
@@ -72,6 +74,10 @@ const WORLD_STRICT_AUTH = Deno.env.get('WORLD_STRICT_AUTH') === '1'
 const INFER_MAX_IMAGE_BYTES = Number(Deno.env.get('INFER_MAX_IMAGE_BYTES') ?? '') || 12_000_000
 // /ingest-video guard: reject an upload whose Content-Length exceeds this (bytes).
 const INGEST_MAX_VIDEO_BYTES = Number(Deno.env.get('INGEST_MAX_VIDEO_BYTES') ?? '') || 1_500_000_000
+// /ingest-photos guard: reject an upload whose Content-Length exceeds this (bytes).
+const INGEST_MAX_PHOTOS_BYTES = Number(Deno.env.get('INGEST_MAX_PHOTOS_BYTES') ?? '') || 500_000_000
+// Auto-enqueue a splat-finish job when splat-train completes ok (kill switch: SPLAT_FINISH_AUTO=0).
+const SPLAT_FINISH_AUTO = Deno.env.get('SPLAT_FINISH_AUTO') !== '0'
 const ENGINE_LOAD_WAIT_MS = 15_000 // max time /infer waits for the model to finish loading
 const INFER_TIMEOUT_MS = 60_000    // hard cap on a single engine.infer() call
 
@@ -387,26 +393,32 @@ app.get('/jobs/:id', (c) => {
   return job ? c.json(job) : c.json({ error: 'Not found' }, 404)
 })
 
-// ── Splat-train + splat-detect artifacts ─────────────────────────────────────
+// ── Splat-train + splat-detect + splat-finish artifacts ──────────────────────
 // Trained Gaussian-splat + detection sidecars land in SCANS_DIR next to the scan:
 //   <base>.splat.ply                    INRIA 3DGS point cloud (Brush output)
-//   <base>.compressed.ply               optional compressed variant
+//   <base>.sog                          super-compressed SOG bundle (single ZIP:
+//                                       meta.json + WebP textures — splat-finish)
+//   <base>.compressed.ply               SuperSplat compressed PLY (splat-finish)
 //   <base>.splat-train.manifest.json    train run index (status/gaussianCount/params)
+//   <base>.splat-finish.manifest.json   finish run index (status/sizes/timing)
 //   <base>.interactions.json            splat-analyzer 3D object boxes + interactions
 //   <base>.splat-detect.manifest.json   detect run index (status/objectCount/prompt)
 // Gated by an allowlisted suffix + the same traversal guard as /scans/:filename.
 // Registered before the .glb-only /scans/:filename route so these suffixes win.
-// NOTE: order matters — `.splat-detect.manifest.json` is checked before the
+// NOTE: order matters — `.splat-*.manifest.json` suffixes are checked before the
 // plainer `.interactions.json`/`.json` suffixes so the more specific one wins.
 const SPLAT_ARTIFACT_MIME: Array<{ suffix: string; mime: string }> = [
   { suffix: '.splat-train.manifest.json', mime: 'application/json' },
   { suffix: '.splat-detect.manifest.json', mime: 'application/json' },
+  { suffix: '.splat-finish.manifest.json', mime: 'application/json' },
   { suffix: '.interactions.json', mime: 'application/json' },
   { suffix: '.compressed.ply', mime: 'application/octet-stream' },
   { suffix: '.splat.ply', mime: 'application/octet-stream' },
+  // Bundled SOG is a ZIP container; served as a binary download/asset.
+  { suffix: '.sog', mime: 'application/octet-stream' },
 ]
 
-app.get('/scans/:filename{.+\\.(splat\\.ply|compressed\\.ply|splat-train\\.manifest\\.json|splat-detect\\.manifest\\.json|interactions\\.json)}', async (c) => {
+app.get('/scans/:filename{.+\\.(splat\\.ply|compressed\\.ply|sog|splat-train\\.manifest\\.json|splat-detect\\.manifest\\.json|splat-finish\\.manifest\\.json|interactions\\.json)}', async (c) => {
   const filename = c.req.param('filename')
   if (!filename || filename.includes('/') || filename.includes('\\') || filename.startsWith('.')) {
     return c.json({ error: 'Invalid filename' }, 400)
@@ -775,6 +787,112 @@ app.post('/ingest-video', async (c) => {
   }
 })
 
+// ── Photo ingest — "a set of photos instead of a walkthrough video" ──────────
+//
+// POST /ingest-photos   multipart { files: File[], name? }
+// Saves the photos to a temp dir, runs scripts/ingest-photos.mjs (EXIF time
+// ordering + blur filter) in --single-session mode (one upload = one session),
+// then registers a session-backed scan and auto-enqueues lingbot-map-reconstruct
+// exactly like /ingest-video. Returns 202 { sessionId, scanId, jobId, frameCount,
+// droppedBlurry }.
+const INGEST_PHOTOS_SCRIPT = new URL('./scripts/ingest-photos.mjs', import.meta.url).pathname
+
+app.post('/ingest-photos', async (c) => {
+  // Guard oversized uploads up front via Content-Length (before buffering).
+  const contentLength = Number(c.req.header('content-length') ?? '')
+  if (Number.isFinite(contentLength) && contentLength > INGEST_MAX_PHOTOS_BYTES) {
+    return c.json({ error: `photos exceed ${INGEST_MAX_PHOTOS_BYTES} bytes`, maxBytes: INGEST_MAX_PHOTOS_BYTES }, 413)
+  }
+
+  let form: FormData
+  try {
+    form = await c.req.formData()
+  } catch {
+    return c.json({ error: 'expected multipart/form-data with a files field', code: 'bad-request' }, 400)
+  }
+  const files = form.getAll('files').filter((f): f is File => f instanceof File)
+  if (files.length === 0) {
+    return c.json({ error: 'Missing files field (expected one or more photo Files)' }, 400)
+  }
+
+  const nameRaw = form.get('name')
+  const scanName = typeof nameRaw === 'string' && nameRaw.trim().length > 0 ? nameRaw.trim() : null
+
+  // Save the upload to a temp dir the ingest script reads, then delete it.
+  // The index prefix keeps upload order stable for photos without EXIF.
+  const tmpDir = `${SCANS_DIR}/tmp/ingest-photos-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`
+  await Deno.mkdir(tmpDir, { recursive: true })
+  try {
+    let index = 0
+    for (const file of files) {
+      const ext = (file.name.match(/\.(jpe?g|png)$/i)?.[0] ?? '.jpg').toLowerCase()
+      const safeStem = (file.name.replace(/\.[^.]*$/, '') || 'photo')
+        .replace(/[^a-zA-Z0-9._-]/g, '_')
+        .replace(/\.\./g, '__')
+        .replace(/^[._-]+/, '') || 'photo'
+      const dest = `${tmpDir}/${String(index).padStart(4, '0')}-${safeStem}${ext}`
+      await Deno.writeFile(dest, new Uint8Array(await file.arrayBuffer()))
+      index += 1
+    }
+
+    // Run the ingest script; the LAST stdout line is JSON
+    // { sessionId, frameCount, sessionDir, droppedBlurry, … }.
+    const cmd = new Deno.Command('node', {
+      args: [INGEST_PHOTOS_SCRIPT, tmpDir, '--scans-dir', SCANS_DIR, '--single-session', 'true'],
+      stdout: 'piped',
+      stderr: 'piped',
+    })
+    const output = await cmd.output()
+    const stdout = new TextDecoder().decode(output.stdout).trim()
+    const stderr = new TextDecoder().decode(output.stderr).trim()
+    if (output.code !== 0) {
+      console.error('[ingest-photos] script failed:', stderr)
+      return c.json({ error: `ingest failed (exit ${output.code})`, detail: stderr.slice(-500) }, 500)
+    }
+
+    const lastLine = stdout.split('\n').filter(Boolean).pop() ?? ''
+    let parsed: { sessionId?: string; frameCount?: number; sessionDir?: string; droppedBlurry?: number }
+    try {
+      parsed = JSON.parse(lastLine)
+    } catch {
+      console.error('[ingest-photos] could not parse script output:', stdout)
+      return c.json({ error: 'ingest produced no parseable summary' }, 500)
+    }
+    const sessionId = parsed.sessionId
+    const frameCount = parsed.frameCount ?? 0
+    if (!sessionId || !sessionDir(sessionId)) {
+      return c.json({ error: `ingest returned an invalid session id: ${sessionId}` }, 500)
+    }
+
+    // Register a session-backed scan in the default world + enqueue reconstruction
+    // (mirrors /ingest-video).
+    const world = await loadWorld('default')
+    const scan = registerSessionScan(world, sessionId, scanName ?? undefined, frameCount, 'photo-ingest')
+    const job = createWorldJob(world, 'lingbot-map-reconstruct', scan.scanId, {
+      source: 'photo-ingest',
+      sessionId,
+      frameCount,
+    })
+    world.jobs.unshift(job)
+    await saveWorld(world)
+    await completeJobSoon(world.shareSlug, job.jobId)
+
+    broadcast({ type: 'photos-ingested', sessionId, scanId: scan.scanId, jobId: job.jobId, frameCount })
+    return c.json({
+      sessionId,
+      scanId: scan.scanId,
+      jobId: job.jobId,
+      frameCount,
+      droppedBlurry: parsed.droppedBlurry ?? 0,
+    }, 202)
+  } finally {
+    // Always drop the temp photos — the keyframe session is the durable artifact.
+    try {
+      await Deno.remove(tmpDir, { recursive: true })
+    } catch { /* already gone */ }
+  }
+})
+
 app.get('/sessions/:id', async (c) => {
   const dir = sessionDir(c.req.param('id'))
   if (!dir) return c.json({ error: 'Invalid session id' }, 400)
@@ -850,6 +968,7 @@ const WORLD_JOB_TYPES = new Set<WorldJobType>([
   'lingbot-map-reconstruct',
   'splat-train',
   'splat-detect',
+  'splat-finish',
   'export-world',
 ])
 
@@ -1106,6 +1225,7 @@ function registerSessionScan(
   sessionId: string,
   scanName: string | undefined,
   frameCount: number,
+  source: 'video-ingest' | 'photo-ingest' = 'video-ingest',
 ): ScanManifest {
   const filename = `${sessionId}.glb`
   const existing = world.scans.find(s => s.filename === filename || s.sessionId === sessionId)
@@ -1117,7 +1237,7 @@ function registerSessionScan(
     uploadedAt: new Date().toISOString(),
     meta: {
       sessionId,
-      source: 'video-ingest',
+      source,
       keyframeCount: frameCount,
       ...(scanName ? { scanName } : {}),
     },
@@ -1419,7 +1539,9 @@ async function completeJobSoon(slug: string, jobId: string): Promise<void> {
           ? 'brush'
           : job.type === 'splat-detect'
             ? 'splat-analyzer'
-            : 'local-coordinator'
+            : job.type === 'splat-finish'
+              ? 'splat-transform'
+              : 'local-coordinator'
       job.progress = 0.35
       job.updatedAt = new Date().toISOString()
       await saveWorld(world)
@@ -1437,6 +1559,11 @@ async function completeJobSoon(slug: string, jobId: string): Promise<void> {
 
       if (job.type === 'splat-detect') {
         await _runSplatDetectJob(slug, jobId)
+        return
+      }
+
+      if (job.type === 'splat-finish') {
+        await _runSplatFinishJob(slug, jobId)
         return
       }
 
@@ -1622,6 +1749,7 @@ async function _runSplatTrainJob(slug: string, jobId: string): Promise<void> {
     const currentJob = current.jobs.find(j => j.jobId === jobId)
     if (!currentJob) return
     currentJob.progress = 1
+    let chainedFinishJobId: string | null = null
     if (result.status === 'ok') {
       currentJob.status = 'completed'
       currentJob.result = jobResultFor(currentJob)
@@ -1640,6 +1768,18 @@ async function _runSplatTrainJob(slug: string, jobId: string): Promise<void> {
           manifestUrl: `/scans/${encodeURIComponent(`${base}.splat-train.manifest.json`)}`,
         },
       })
+      // Auto-chain Stage 4: enqueue splat-finish (sog + compressed.ply) for the
+      // same scan, mirroring how /ingest-video auto-enqueues reconstruction.
+      // Kill switch: SPLAT_FINISH_AUTO=0.
+      if (SPLAT_FINISH_AUTO) {
+        const finishJob = createWorldJob(current, 'splat-finish', scan!.scanId, {
+          source: 'auto-chain',
+          trainJobId: jobId,
+          sessionId,
+        })
+        current.jobs.unshift(finishJob)
+        chainedFinishJobId = finishJob.jobId
+      }
       // Promote the scan's reserved 'splat' layer from 'future' to a real
       // 'sidecar' layer carrying the trained gaussian count. Falls back to a
       // fresh entry if the default index somehow lacked one.
@@ -1683,6 +1823,7 @@ async function _runSplatTrainJob(slug: string, jobId: string): Promise<void> {
     currentJob.updatedAt = new Date().toISOString()
     await saveWorld(current)
     broadcast({ type: 'world-job-update', worldId: current.worldId, job: currentJob })
+    if (chainedFinishJobId) await completeJobSoon(slug, chainedFinishJobId)
   } catch (err) {
     console.error('[splat-train job error]', err)
     try {
@@ -1830,6 +1971,97 @@ async function _runSplatDetectJob(slug: string, jobId: string): Promise<void> {
   }
 }
 
+async function _runSplatFinishJob(slug: string, jobId: string): Promise<void> {
+  try {
+    const world = await loadWorld(slug)
+    const job = world.jobs.find(j => j.jobId === jobId)
+    if (!job) return
+    const scan = scanForJob(job, world)
+    const failure = jobFailureReason(job, world)
+    if (failure) {
+      job.status = 'failed'
+      job.error = failure
+      job.result = failure
+      job.progress = 1
+      job.updatedAt = new Date().toISOString()
+      await saveWorld(world)
+      broadcast({ type: 'world-job-update', worldId: world.worldId, job })
+      return
+    }
+
+    const base = scan!.filename.replace(/\.glb$/, '')
+    const splatPlyPath = `${SCANS_DIR}/${base}.splat.ply`
+    const outputSogPath = `${SCANS_DIR}/${base}.sog`
+    const outputCompressedPlyPath = `${SCANS_DIR}/${base}.compressed.ply`
+    const manifestPath = `${SCANS_DIR}/${base}.splat-finish.manifest.json`
+    const result = await runSplatFinish({
+      splatPlyPath,
+      outputSogPath,
+      outputCompressedPlyPath,
+      manifestPath,
+      provenance: { sessionId: scan!.sessionId ?? undefined, scanId: scan!.scanId },
+    })
+
+    const current = await loadWorld(slug)
+    const currentJob = current.jobs.find(j => j.jobId === jobId)
+    if (!currentJob) return
+    currentJob.progress = 1
+    if (result.status === 'ok') {
+      currentJob.status = 'completed'
+      currentJob.result = jobResultFor(currentJob)
+      currentJob.artifacts = jobArtifactsFor(currentJob, current)
+      currentJob.artifacts ??= []
+      currentJob.artifacts.push({
+        type: 'splat-sog',
+        label: `${scan!.name} web-optimized splat (.sog)`,
+        url: `/scans/${encodeURIComponent(`${base}.sog`)}`,
+        metadata: {
+          inputBytes: result.sizes?.inputBytes ?? null,
+          sogBytes: result.sizes?.sogBytes ?? null,
+          compressedBytes: result.sizes?.compressedBytes ?? null,
+          compressedPlyUrl: `/scans/${encodeURIComponent(`${base}.compressed.ply`)}`,
+          manifestUrl: `/scans/${encodeURIComponent(`${base}.splat-finish.manifest.json`)}`,
+        },
+      })
+      applyCompletedJobToWorld(currentJob, current)
+    } else if (result.status === 'skipped') {
+      currentJob.status = 'completed'
+      currentJob.result = `Splat finish skipped: ${result.manifest.skippedReason ?? 'unknown reason'}`
+      currentJob.artifacts = [{
+        type: 'splat-finish-skip',
+        label: 'Splat finish skipped',
+        url: `/scans/${encodeURIComponent(`${base}.splat-finish.manifest.json`)}`,
+        metadata: {
+          skippedReason: result.manifest.skippedReason ?? null,
+          remediation: result.manifest.remediation ?? null,
+        },
+      }]
+    } else {
+      currentJob.status = 'failed'
+      currentJob.error = result.manifest.error ?? `splat-transform exit ${result.exitCode}`
+      currentJob.result = currentJob.error
+    }
+    currentJob.updatedAt = new Date().toISOString()
+    await saveWorld(current)
+    broadcast({ type: 'world-job-update', worldId: current.worldId, job: currentJob })
+  } catch (err) {
+    console.error('[splat-finish job error]', err)
+    try {
+      const recovered = await loadWorld(slug)
+      const recoveredJob = recovered.jobs.find(j => j.jobId === jobId)
+      if (recoveredJob) {
+        recoveredJob.status = 'failed'
+        recoveredJob.error = err instanceof Error ? err.message : String(err)
+        recoveredJob.result = recoveredJob.error
+        recoveredJob.progress = 1
+        recoveredJob.updatedAt = new Date().toISOString()
+        await saveWorld(recovered)
+        broadcast({ type: 'world-job-update', worldId: recovered.worldId, job: recoveredJob })
+      }
+    } catch { /* nothing more we can do */ }
+  }
+}
+
 function scanForJob(job: WorldJob, world: WorldProject): ScanManifest | null {
   if (!job.scanId) return null
   return world.scans.find(scan => scan.scanId === job.scanId || scan.filename === job.scanId) ?? null
@@ -1837,7 +2069,7 @@ function scanForJob(job: WorldJob, world: WorldProject): ScanManifest | null {
 
 function jobFailureReason(job: WorldJob, world: WorldProject): string | null {
   const scan = scanForJob(job, world)
-  if (['align-scan', 'extract-layers', 'semantic-pass', 'depth-reconstruct', 'lingbot-map-reconstruct', 'splat-train', 'splat-detect'].includes(job.type) && !scan) {
+  if (['align-scan', 'extract-layers', 'semantic-pass', 'depth-reconstruct', 'lingbot-map-reconstruct', 'splat-train', 'splat-detect', 'splat-finish'].includes(job.type) && !scan) {
     return `${job.type} requires a selected scan.`
   }
   if ((job.type === 'depth-reconstruct' || job.type === 'lingbot-map-reconstruct' || job.type === 'splat-train') && scan && !scan.sessionId) {
@@ -1865,6 +2097,9 @@ function applyCompletedJobToWorld(job: WorldJob, world: WorldProject): void {
   else if (job.type === 'splat-detect') {
     scan.status = scan.qualitySummary?.status ?? 'ready'
   }
+  else if (job.type === 'splat-finish') {
+    scan.status = scan.qualitySummary?.status ?? 'ready'
+  }
 }
 
 function jobResultFor(job: WorldJob): string {
@@ -1887,6 +2122,8 @@ function jobResultFor(job: WorldJob): string {
       return 'Gaussian splat trained with Brush. The .splat.ply sidecar is available as a splat layer on the scan.'
     case 'splat-detect':
       return 'Splat scene detected with splat-analyzer. The .interactions.json sidecar carries 3D object boxes.'
+    case 'splat-finish':
+      return 'Splat finished with splat-transform. The web-optimized .sog and .compressed.ply sidecars are ready for delivery.'
     case 'export-world':
       return 'World export manifest is ready for a combined GLB and semantic JSON worker.'
   }
@@ -1956,6 +2193,14 @@ function jobArtifactsFor(job: WorldJob, world: WorldProject): WorldJob['artifact
         type: 'splat-detect-plan',
         label: `${scan.name} splat detection inputs`,
         metadata: { sessionId: scan.sessionId, canonicalLayer: 'detections' },
+      }] : []
+    case 'splat-finish':
+      // The real .sog artifact is appended by _runSplatFinishJob once the
+      // splat-transform run lands; this base entry records the finish inputs.
+      return scan ? [{
+        type: 'splat-finish-plan',
+        label: `${scan.name} splat finish inputs`,
+        metadata: { sessionId: scan.sessionId, canonicalLayer: 'splat' },
       }] : []
     case 'export-world':
       return [{

@@ -17,7 +17,7 @@ import { LiveFeed } from './livefeed'
 import { loadSemanticAsset, createMediumPolyAsset } from './assets'
 import { fetchLingBotMapArtifacts, type LingBotMapOverlay } from './lingbot-map'
 import { attachSparkRenderer, loadSplat, disposeSplat, type LoadedSplat } from './splat-viewer'
-import { fetchScanSplatLayer, disposeScanSplatLayer, splatPlyUrl, splatManifestUrl, type ScanSplatLayer } from './splat-layer'
+import { fetchScanSplatLayer, disposeScanSplatLayer, splatPlyUrl, splatManifestUrl, splatSogUrl, formatFinishStats, type ScanSplatLayer } from './splat-layer'
 import { fetchScanDetectLayer, type ScanDetectLayer } from './splat-detect-layer'
 import { buildTrainJobRequest, buildDetectJobRequest } from './splat-toolbox'
 import {
@@ -1226,12 +1226,19 @@ async function refreshSplatLayerPanel(scanId: string): Promise<void> {
 
   const m = layer.manifest
   if (m.status === 'ok') {
-    status.textContent = `Trained splat ready — ${layer.gaussianCount.toLocaleString()} gaussians.`
-    stats.textContent = m.timing?.elapsedMs
+    const sourceNote = layer.loadedSource === 'sog'
+      ? ' (web-optimized .sog)'
+      : layer.loadedSource === 'compressed-ply'
+        ? ' (compressed .ply)'
+        : ''
+    status.textContent = `Trained splat ready — ${layer.gaussianCount.toLocaleString()} gaussians${sourceNote}.`
+    const trainedLine = m.timing?.elapsedMs
       ? `Trained in ${(m.timing.elapsedMs / 1000).toFixed(1)}s on ${m.frameCount ?? '?'} frames.`
       : ''
+    const finishLine = formatFinishStats(layer.finish)
+    stats.textContent = [trainedLine, finishLine].filter(Boolean).join(' ')
     if (toggle) toggle.checked = scanSplatVisible
-    setSplatDownloadLink(scan)
+    setSplatDownloadLink(scan, layer)
   } else if (m.status === 'skipped') {
     status.textContent = `Skipped: ${m.skippedReason ?? 'no reason given'}`
     stats.textContent = m.remediation ?? ''
@@ -1245,17 +1252,30 @@ async function refreshSplatLayerPanel(scanId: string): Promise<void> {
   void refreshSplatDetectPanel(scanId)
 }
 
-/** Reveal (or hide) the Download .ply link for a scan with a trained splat. */
-function setSplatDownloadLink(scan: ScanManifest | null): void {
+/** Reveal (or hide) the Download .ply / .sog links for a scan with a trained splat. */
+function setSplatDownloadLink(scan: ScanManifest | null, layer?: ScanSplatLayer): void {
   const link = document.getElementById('splat-download-link') as HTMLAnchorElement | null
-  if (!link) return
-  if (!scan) {
-    link.hidden = true
-    return
+  const sogLink = document.getElementById('splat-download-sog-link') as HTMLAnchorElement | null
+  if (link) {
+    if (!scan) {
+      link.hidden = true
+    } else {
+      link.href = withAccessToken(splatPlyUrl(scan))
+      link.setAttribute('download', `${scan.name || scan.scanId}.splat.ply`)
+      link.hidden = false
+    }
   }
-  link.href = withAccessToken(splatPlyUrl(scan))
-  link.setAttribute('download', `${scan.name || scan.scanId}.splat.ply`)
-  link.hidden = false
+  // The .sog link appears only once the splat-finish job has landed its bundle.
+  if (sogLink) {
+    const finishOk = Boolean(scan && layer?.finish?.status === 'ok' && layer.finish.sogPath)
+    if (!finishOk || !scan) {
+      sogLink.hidden = true
+    } else {
+      sogLink.href = withAccessToken(splatSogUrl(scan))
+      sogLink.setAttribute('download', `${scan.name || scan.scanId}.sog`)
+      sogLink.hidden = false
+    }
+  }
 }
 
 function setScanSplatVisible(visible: boolean): void {
@@ -2407,7 +2427,7 @@ function connectServerEvents(): void {
           lingbotOverlays.delete(wj.scanId)
           if (selectedScanId === wj.scanId) void refreshLingBotMapPanel(wj.scanId)
         }
-        if (t === 'splat-train' && wj?.status === 'completed' && wj?.scanId) {
+        if ((t === 'splat-train' || t === 'splat-finish') && wj?.status === 'completed' && wj?.scanId) {
           const existing = scanSplatLayers.get(wj.scanId)
           if (existing) disposeScanSplatLayer(existing)
           scanSplatLayers.delete(wj.scanId)
