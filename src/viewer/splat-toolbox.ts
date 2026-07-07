@@ -41,3 +41,12 @@ export function buildDetectJobRequest(scanId: string, prompt?: string): SplatJob
   if (trimmed) payload['prompt'] = trimmed
   return { type: 'splat-detect', scanId, payload }
 }
+
+/** Body for the Generate-floor-plan button: a floor-plan job for the selected scan. */
+export function buildFloorPlanJobRequest(scanId: string): SplatJobRequest {
+  return {
+    type: 'floor-plan',
+    scanId,
+    payload: { source: 'viewer-toolbox', requestedAt: new Date().toISOString() },
+  }
+}

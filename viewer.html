@@ -1042,6 +1042,26 @@
                 <div id="lingbot-map-stats" class="layer-meta" style="margin-top:6px;"></div>
               </div>
 
+              <!-- Floor Plan — derived 2D plan from the LingBot-Map point cloud
+                   (floor-plan job output: walls/rooms/areaM2 + rendered SVG). -->
+              <div class="edit-section" id="floor-plan-section">
+                <div class="edit-section-title">Floor Plan</div>
+                <div id="floor-plan-status" class="layer-meta" style="margin-bottom:6px;">
+                  Run the <code>floor-plan</code> job to derive a 2D plan from the reconstruction.
+                </div>
+                <div id="floor-plan-stats" class="layer-meta" style="margin-bottom:8px;"></div>
+                <div id="floor-plan-preview" hidden style="margin-bottom:8px;background:#fbfbf8;border-radius:6px;overflow:hidden;">
+                  <img id="floor-plan-preview-img" alt="Floor plan preview" style="display:block;width:100%;max-height:220px;object-fit:contain;" />
+                </div>
+                <div style="display:flex;gap:6px;">
+                  <button class="job-btn" id="btn-floor-plan" style="flex:1;">Generate floor plan</button>
+                  <a id="floor-plan-download-svg" class="job-btn" href="#" download hidden
+                     style="flex:1;text-align:center;text-decoration:none;">Download SVG</a>
+                  <a id="floor-plan-download-json" class="job-btn" href="#" download hidden
+                     style="flex:1;text-align:center;text-decoration:none;">Download JSON</a>
+                </div>
+              </div>
+
               <!-- Splat Toolbox — trained-splat status, train/detect actions,
                    3D object boxes, and the external splat loader in one place. -->
               <div class="edit-section" id="splat-toolbox-section">

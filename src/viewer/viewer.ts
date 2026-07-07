@@ -19,7 +19,8 @@ import { fetchLingBotMapArtifacts, type LingBotMapOverlay } from './lingbot-map'
 import { attachSparkRenderer, loadSplat, disposeSplat, type LoadedSplat } from './splat-viewer'
 import { fetchScanSplatLayer, disposeScanSplatLayer, splatPlyUrl, splatManifestUrl, splatSogUrl, formatFinishStats, type ScanSplatLayer } from './splat-layer'
 import { fetchScanDetectLayer, type ScanDetectLayer } from './splat-detect-layer'
-import { buildTrainJobRequest, buildDetectJobRequest } from './splat-toolbox'
+import { buildTrainJobRequest, buildDetectJobRequest, buildFloorPlanJobRequest } from './splat-toolbox'
+import { fetchFloorPlanManifest, floorPlanSvgUrl, floorPlanJsonUrl } from './floor-plan-layer'
 import {
   computeQualityTier,
   jobProcessingLabel,
@@ -977,6 +978,7 @@ function selectScan(scanId: string, focus: boolean, openEdit = true): void {
   void refreshQualityPanel(scanId)
   void refreshLingBotMapPanel(scanId)
   void refreshSplatLayerPanel(scanId)
+  void refreshFloorPlanPanel(scanId)
 }
 
 // ─── Map-quality headline (per-scan tier + processing state) ──────────────────
@@ -1344,17 +1346,20 @@ function setScanDetectVisible(visible: boolean): void {
   applyLayerVisibility()
 }
 
-async function queueSplatToolboxJob(kind: 'train' | 'detect'): Promise<void> {
+async function queueSplatToolboxJob(kind: 'train' | 'detect' | 'floor-plan'): Promise<void> {
   if (!world) return
+  const statusId = kind === 'train' ? 'splat-layer-status' : kind === 'detect' ? 'splat-detect-status' : 'floor-plan-status'
+  const buttonId = kind === 'train' ? 'btn-splat-train' : kind === 'detect' ? 'btn-splat-detect' : 'btn-floor-plan'
   if (!selectedScanId) {
-    const statusId = kind === 'train' ? 'splat-layer-status' : 'splat-detect-status'
     setText(statusId, 'Select a scan first, then run this job.')
     return
   }
   const prompt = (document.getElementById('splat-detect-prompt') as HTMLInputElement | null)?.value
   const request = kind === 'train'
     ? buildTrainJobRequest(selectedScanId)
-    : buildDetectJobRequest(selectedScanId, prompt)
+    : kind === 'detect'
+      ? buildDetectJobRequest(selectedScanId, prompt)
+      : buildFloorPlanJobRequest(selectedScanId)
   const response = await fetch(withAccessToken(`/worlds/${encodeURIComponent(world.shareSlug)}/jobs`), {
     method: 'POST',
     headers: accessHeaders({ 'Content-Type': 'application/json' }),
@@ -1364,8 +1369,86 @@ async function queueSplatToolboxJob(kind: 'train' | 'detect'): Promise<void> {
   const job = await response.json() as WorldJob
   world.jobs.unshift(job)
   renderWorldPanel()
-  flashButton(kind === 'train' ? 'btn-splat-train' : 'btn-splat-detect', 'Queued')
+  flashButton(buttonId, 'Queued')
   setTimeout(() => { void refreshJobs() }, 1000)
+}
+
+// ─── Floor plan (floor-plan job output) ───────────────────────────────────────
+
+/**
+ * Render the Layers-tab "Floor Plan" section for the selected scan: headline
+ * numbers from the floor-plan manifest, an inline SVG preview served off the
+ * gated artifact route, and Download SVG/JSON links. A missing manifest is the
+ * expected "no plan yet" state — the Generate button stays primary.
+ */
+async function refreshFloorPlanPanel(scanId: string): Promise<void> {
+  const status = document.getElementById('floor-plan-status')
+  const stats = document.getElementById('floor-plan-stats')
+  const preview = document.getElementById('floor-plan-preview')
+  const previewImg = document.getElementById('floor-plan-preview-img') as HTMLImageElement | null
+  const svgLink = document.getElementById('floor-plan-download-svg') as HTMLAnchorElement | null
+  const jsonLink = document.getElementById('floor-plan-download-json') as HTMLAnchorElement | null
+  if (!status) return
+  const hidePlan = () => {
+    if (stats) stats.textContent = ''
+    if (preview) preview.hidden = true
+    if (svgLink) svgLink.hidden = true
+    if (jsonLink) jsonLink.hidden = true
+  }
+  const scan = world?.scans.find(s => s.scanId === scanId)
+  if (!scan) {
+    status.textContent = 'Select a scan to see its derived floor plan.'
+    hidePlan()
+    return
+  }
+
+  let manifest
+  try {
+    manifest = await fetchFloorPlanManifest(scan, (url) => fetch(withAccessToken(url)))
+  } catch (e) {
+    console.error('[viewer] floor-plan manifest fetch failed:', e)
+    status.textContent = `Failed to load floor plan: ${e instanceof Error ? e.message : String(e)}`
+    hidePlan()
+    return
+  }
+  if (!manifest) {
+    status.textContent = 'No floor plan yet. Generate one from the LingBot-Map reconstruction.'
+    hidePlan()
+    return
+  }
+
+  if (manifest.status === 'ok') {
+    status.textContent = 'Floor plan ready (derived, not survey-grade).'
+    if (stats) {
+      const bits = [
+        `${(manifest.areaM2 ?? 0).toFixed(1)} m²`,
+        `${manifest.wallCount ?? 0} wall${(manifest.wallCount ?? 0) === 1 ? '' : 's'}`,
+      ]
+      if (manifest.roomCount) bits.push(`${manifest.roomCount} room${manifest.roomCount === 1 ? '' : 's'}`)
+      if (manifest.ceilingHeightM) bits.push(`ceiling ${manifest.ceilingHeightM.toFixed(2)} m`)
+      stats.textContent = bits.join(' · ')
+    }
+    if (preview && previewImg) {
+      previewImg.src = withAccessToken(floorPlanSvgUrl(scan))
+      preview.hidden = false
+    }
+    if (svgLink) {
+      svgLink.href = withAccessToken(floorPlanSvgUrl(scan))
+      svgLink.setAttribute('download', `${scan.name || scan.scanId}.floor-plan.svg`)
+      svgLink.hidden = false
+    }
+    if (jsonLink) {
+      jsonLink.href = withAccessToken(floorPlanJsonUrl(scan))
+      jsonLink.setAttribute('download', `${scan.name || scan.scanId}.floor-plan.json`)
+      jsonLink.hidden = false
+    }
+  } else if (manifest.status === 'skipped') {
+    status.textContent = `Floor plan skipped: ${manifest.skippedReason ?? 'no reason given'}`
+    hidePlan()
+  } else {
+    status.textContent = `Floor plan error: ${manifest.error ?? 'unknown'}`
+    hidePlan()
+  }
 }
 
 // ─── Gaussian splats (Spark) ──────────────────────────────────────────────────
@@ -2335,6 +2418,12 @@ document.getElementById('btn-splat-detect')?.addEventListener('click', () => {
   void queueSplatToolboxJob('detect').catch(error => {
     console.error('[viewer] splat-detect queue failed:', error)
     flashButton('btn-splat-detect', 'Failed')
+  })
+})
+document.getElementById('btn-floor-plan')?.addEventListener('click', () => {
+  void queueSplatToolboxJob('floor-plan').catch(error => {
+    console.error('[viewer] floor-plan queue failed:', error)
+    flashButton('btn-floor-plan', 'Failed')
   })
 })
 

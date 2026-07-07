@@ -22,6 +22,7 @@ back through the `/scans/:filename` routes the viewer already understands.
 | **Train** | [Brush](https://github.com/ArthurBrussee/brush) (wgpu) | `splat-train` world job | `<base>.splat.ply` (+ manifest) |
 | **Finish** | [@playcanvas/splat-transform](https://github.com/playcanvas/splat-transform) | `splat-finish` world job (auto-chained after train) | `<base>.sog` + `<base>.compressed.ply` (+ manifest) |
 | **Detect** | [splat_analyzer](#detect--splat_analyzer) + OWLv2 | `splat-detect` world job | `<base>.interactions.json` (+ manifest) |
+| **Floor plan** | `scripts/floor_plan_worker.py` (numpy, CPU) | `floor-plan` world job (auto-chained after reconstruct) | `<base>.floor-plan.json` + `.svg` (+ manifest) |
 | **Ingest video** | ffmpeg (+ adaptive fps + blur gate) | `scripts/ingest-video.mjs` / `POST /ingest-video` | keyframe session (pose-less) |
 | **Ingest photos** | sharp/jimp (+ EXIF ordering + blur gate) | `scripts/ingest-photos.mjs` / `POST /ingest-photos` | keyframe session(s) (pose-less) |
 
@@ -253,6 +254,69 @@ Vulkan numbering, NOT a HIP id), `SPLAT_FINISH_SH_ITERS` (k-means iterations,
 default 10), `SPLAT_TRANSFORM_CLI` (override the cli.mjs path). A missing
 input splat or CLI → a `skipped` manifest with a remediation; a CLI crash or a
 run with no output → an `error` manifest carrying the stderr tail.
+
+---
+
+## Floor plan — height-histogram + RANSAC walls (CPU)
+
+**What:** the contractor-facing 2D deliverable. `floor_plan.ts` spawns
+`scripts/floor_plan_worker.py` (stdlib + numpy only — no torch, no GPU) on the
+session's `lingbot-map.point-cloud.ply`:
+
+1. height histogram → floor/ceiling z estimate,
+2. slice the wall band (floor+0.4 m .. ceiling−0.3 m) into a 2 cm occupancy
+   grid (auto-widened past 4096 cells/side on huge scans),
+3. morphological cleanup, then seeded-RANSAC line fits → dominant wall
+   segments, snapped to the dominant frame when within ~7°,
+4. close a room polygon (rectilinear rectangle from the wall extremes, convex
+   hull fallback) → `areaM2`, `perimeterM`, `ceilingHeightM`.
+
+Deterministic (fixed RNG seed, no timestamps in outputs); a 3.65M-pt cloud
+takes ~4 s. Artifacts land next to the scan:
+
+- `<base>.floor-plan.json` — `walls: [{x1,y1,x2,y2,lengthM}]`,
+  `rooms: [{polygon, areaM2, method}]`, `floorZ`/`ceilingZ`/`ceilingHeightM`,
+  `areaM2`, `perimeterM`, `wallCount`, `gridCellM`, `upAxis`, and the
+  disclaimer `derived, not survey-grade`.
+- `<base>.floor-plan.svg` — rendered plan: dark walls, translucent mint room
+  fill, dimension labels on the longest walls, 1 m grid, north-arrow
+  placeholder, scale bar.
+- `<base>.floor-plan.manifest.json` — status (`ok`/`skipped`/`error`),
+  `areaM2`, `wallCount`, `roomCount`, `ceilingHeightM`, params, timing. This
+  is the artifact report tooling should read.
+
+The viewer's Layers tab **Floor Plan** section shows the headline numbers, an
+inline SVG preview, Download SVG/JSON links, and a **Generate floor plan**
+button that queues the job for the selected scan.
+
+**When:** automatically — every successful `lingbot-map-reconstruct`
+auto-enqueues a `floor-plan` for the same scan (kill switch:
+`FLOORPLAN_AUTO=0`). Or manually from the Layers tab / job queue.
+
+**How**
+- **Editor:** Layers tab → Floor Plan → **Generate floor plan**.
+- **curl:**
+  ```sh
+  curl -X POST $BASE/worlds/default/jobs \
+    -H 'authorization: Bearer <editor-token>' \
+    -H 'content-type: application/json' \
+    -d '{"type":"floor-plan","scanId":"scan-<id>"}'
+  ```
+- **CLI (box-side smoke):**
+  ```sh
+  ~/.venvs/lingbot-map/bin/python scripts/floor_plan_worker.py \
+    --ply scans/sessions/<sess>/lingbot-map.point-cloud.ply \
+    --out-json plan.json --out-svg plan.svg
+  ```
+
+**Env:** `FLOORPLAN_AUTO` (default on; `0` disables the auto-chain),
+`FLOORPLAN_PYTHON` (needs numpy; default `~/.venvs/lingbot-map/bin/python`),
+`FLOORPLAN_WORKER` (worker script override), `FLOORPLAN_MIN_WALL_M` (drop
+segments shorter than this, default 0.5). A missing venv, worker, or point
+cloud → a `skipped` manifest with a remediation; a worker crash or a run with
+no plan output → an `error` manifest carrying the stderr tail. Note the
+output is **derived, not survey-grade** — outdoor/degenerate scenes close via
+convex hull and report inflated areas.
 
 ---
 

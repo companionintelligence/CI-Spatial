@@ -40,6 +40,7 @@ import { runLingBotMapReconstruction } from './lingbot_map.ts'
 import { runSplatTrain } from './splat_train.ts'
 import { runSplatDetect } from './splat_detect.ts'
 import { runSplatFinish } from './splat_finish.ts'
+import { runFloorPlan } from './floor_plan.ts'
 import { composeYUpTransform, geoToEnu, hasGeoPose } from './src/world/geo.ts'
 import { defaultLayerIndex } from './src/world/layers.ts'
 import type {
@@ -403,14 +404,21 @@ app.get('/jobs/:id', (c) => {
 //   <base>.splat-finish.manifest.json   finish run index (status/sizes/timing)
 //   <base>.interactions.json            splat-analyzer 3D object boxes + interactions
 //   <base>.splat-detect.manifest.json   detect run index (status/objectCount/prompt)
+//   <base>.floor-plan.json              derived 2D floor plan (walls/rooms/areaM2)
+//   <base>.floor-plan.svg               rendered plan (walls + room fill + dims)
+//   <base>.floor-plan.manifest.json     floor-plan run index (status/areaM2/wallCount)
 // Gated by an allowlisted suffix + the same traversal guard as /scans/:filename.
 // Registered before the .glb-only /scans/:filename route so these suffixes win.
-// NOTE: order matters — `.splat-*.manifest.json` suffixes are checked before the
-// plainer `.interactions.json`/`.json` suffixes so the more specific one wins.
+// NOTE: order matters — the `.splat-*.manifest.json` / `.floor-plan.manifest.json`
+// suffixes are checked before the plainer `.interactions.json`/`.floor-plan.json`
+// suffixes so the more specific one wins.
 const SPLAT_ARTIFACT_MIME: Array<{ suffix: string; mime: string }> = [
   { suffix: '.splat-train.manifest.json', mime: 'application/json' },
   { suffix: '.splat-detect.manifest.json', mime: 'application/json' },
   { suffix: '.splat-finish.manifest.json', mime: 'application/json' },
+  { suffix: '.floor-plan.manifest.json', mime: 'application/json' },
+  { suffix: '.floor-plan.json', mime: 'application/json' },
+  { suffix: '.floor-plan.svg', mime: 'image/svg+xml' },
   { suffix: '.interactions.json', mime: 'application/json' },
   { suffix: '.compressed.ply', mime: 'application/octet-stream' },
   { suffix: '.splat.ply', mime: 'application/octet-stream' },
@@ -418,7 +426,7 @@ const SPLAT_ARTIFACT_MIME: Array<{ suffix: string; mime: string }> = [
   { suffix: '.sog', mime: 'application/octet-stream' },
 ]
 
-app.get('/scans/:filename{.+\\.(splat\\.ply|compressed\\.ply|sog|splat-train\\.manifest\\.json|splat-detect\\.manifest\\.json|splat-finish\\.manifest\\.json|interactions\\.json)}', async (c) => {
+app.get('/scans/:filename{.+\\.(splat\\.ply|compressed\\.ply|sog|splat-train\\.manifest\\.json|splat-detect\\.manifest\\.json|splat-finish\\.manifest\\.json|interactions\\.json|floor-plan\\.json|floor-plan\\.svg|floor-plan\\.manifest\\.json)}', async (c) => {
   const filename = c.req.param('filename')
   if (!filename || filename.includes('/') || filename.includes('\\') || filename.startsWith('.')) {
     return c.json({ error: 'Invalid filename' }, 400)
@@ -969,6 +977,7 @@ const WORLD_JOB_TYPES = new Set<WorldJobType>([
   'splat-train',
   'splat-detect',
   'splat-finish',
+  'floor-plan',
   'export-world',
 ])
 
@@ -1541,6 +1550,8 @@ async function completeJobSoon(slug: string, jobId: string): Promise<void> {
             ? 'splat-analyzer'
             : job.type === 'splat-finish'
               ? 'splat-transform'
+            : job.type === 'floor-plan'
+              ? 'floor-plan-worker'
               : 'local-coordinator'
       job.progress = 0.35
       job.updatedAt = new Date().toISOString()
@@ -1564,6 +1575,11 @@ async function completeJobSoon(slug: string, jobId: string): Promise<void> {
 
       if (job.type === 'splat-finish') {
         await _runSplatFinishJob(slug, jobId)
+        return
+      }
+
+      if (job.type === 'floor-plan') {
+        await _runFloorPlanJob(slug, jobId)
         return
       }
 
@@ -1682,9 +1698,24 @@ async function _runLingBotMapJob(slug: string, jobId: string): Promise<void> {
       currentJob.error = result.error ?? `worker exit ${result.exitCode}`
       currentJob.result = currentJob.error
     }
+    // Auto-enqueue floor-plan extraction once a reconstruction lands ok — the
+    // plan derives from the point cloud this job just wrote. FLOORPLAN_AUTO=0
+    // is the kill-switch.
+    let autoFloorPlan: WorldJob | null = null
+    if (result.status === 'ok' && Deno.env.get('FLOORPLAN_AUTO') !== '0') {
+      autoFloorPlan = createWorldJob(current, 'floor-plan', scan!.scanId, {
+        source: 'auto:lingbot-map-reconstruct',
+        parentJobId: jobId,
+      })
+      current.jobs.unshift(autoFloorPlan)
+    }
     currentJob.updatedAt = new Date().toISOString()
     await saveWorld(current)
     broadcast({ type: 'world-job-update', worldId: current.worldId, job: currentJob })
+    if (autoFloorPlan) {
+      broadcast({ type: 'world-job-update', worldId: current.worldId, job: autoFloorPlan })
+      await completeJobSoon(slug, autoFloorPlan.jobId)
+    }
   } catch (err) {
     console.error('[lingbot-map job error]', err)
     try {
@@ -2062,6 +2093,125 @@ async function _runSplatFinishJob(slug: string, jobId: string): Promise<void> {
   }
 }
 
+async function _runFloorPlanJob(slug: string, jobId: string): Promise<void> {
+  try {
+    const world = await loadWorld(slug)
+    const job = world.jobs.find(j => j.jobId === jobId)
+    if (!job) return
+    const scan = scanForJob(job, world)
+    const failure = jobFailureReason(job, world)
+    if (failure) {
+      job.status = 'failed'
+      job.error = failure
+      job.result = failure
+      job.progress = 1
+      job.updatedAt = new Date().toISOString()
+      await saveWorld(world)
+      broadcast({ type: 'world-job-update', worldId: world.worldId, job })
+      return
+    }
+
+    const base = scan!.filename.replace(/\.glb$/, '')
+    const sessionId = scan!.sessionId ?? undefined
+    const sessionPath = sessionId ? sessionDir(sessionId) ?? undefined : undefined
+    const outputJsonPath = `${SCANS_DIR}/${base}.floor-plan.json`
+    const outputSvgPath = `${SCANS_DIR}/${base}.floor-plan.svg`
+    const manifestPath = `${SCANS_DIR}/${base}.floor-plan.manifest.json`
+    const payloadStr = (key: string): string | undefined => {
+      const v = job.payload?.[key]
+      if (typeof v === 'number') return String(v)
+      return typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined
+    }
+
+    const result = await runFloorPlan({
+      sessionDir: sessionPath,
+      outputJsonPath,
+      outputSvgPath,
+      manifestPath,
+      minWallM: payloadStr('minWallM'),
+      provenance: { sessionId, scanId: scan!.scanId },
+    })
+
+    const current = await loadWorld(slug)
+    const currentJob = current.jobs.find(j => j.jobId === jobId)
+    if (!currentJob) return
+    currentJob.progress = 1
+    if (result.status === 'ok') {
+      currentJob.status = 'completed'
+      currentJob.result = jobResultFor(currentJob)
+      currentJob.artifacts = jobArtifactsFor(currentJob, current)
+      currentJob.artifacts ??= []
+      currentJob.artifacts.push({
+        type: 'floor-plan',
+        label: `${scan!.name} floor plan`,
+        url: `/scans/${encodeURIComponent(`${base}.floor-plan.json`)}`,
+        metadata: {
+          areaM2: result.areaM2 ?? null,
+          wallCount: result.wallCount ?? null,
+          svgUrl: `/scans/${encodeURIComponent(`${base}.floor-plan.svg`)}`,
+          manifestUrl: `/scans/${encodeURIComponent(`${base}.floor-plan.manifest.json`)}`,
+        },
+      })
+      // Promote the scan's 'floor' layer to a real sidecar entry carrying the
+      // wall count, so the Layers tab lists the plan alongside GLB layers.
+      const targetScan = current.scans.find(s => s.scanId === scan!.scanId)
+      if (targetScan) {
+        const existing = targetScan.layerIndex.find(l => l.id === 'layer-floor-plan')
+        if (existing) {
+          existing.source = 'sidecar'
+          existing.count = result.wallCount ?? existing.count ?? null
+        } else {
+          targetScan.layerIndex.push({
+            id: 'layer-floor-plan',
+            type: 'floor',
+            label: 'Floor plan',
+            visibleByDefault: false,
+            encodedInGlb: false,
+            source: 'sidecar',
+            count: result.wallCount ?? null,
+          })
+        }
+      }
+      applyCompletedJobToWorld(currentJob, current)
+    } else if (result.status === 'skipped') {
+      currentJob.status = 'completed'
+      currentJob.result = `Floor plan skipped: ${result.manifest.skippedReason ?? 'unknown reason'}`
+      currentJob.artifacts = [{
+        type: 'floor-plan-skip',
+        label: 'Floor-plan extraction skipped',
+        url: `/scans/${encodeURIComponent(`${base}.floor-plan.manifest.json`)}`,
+        metadata: {
+          sessionId: sessionId ?? null,
+          skippedReason: result.manifest.skippedReason ?? null,
+          remediation: result.manifest.remediation ?? null,
+        },
+      }]
+    } else {
+      currentJob.status = 'failed'
+      currentJob.error = result.manifest.error ?? `floor-plan worker exit ${result.exitCode}`
+      currentJob.result = currentJob.error
+    }
+    currentJob.updatedAt = new Date().toISOString()
+    await saveWorld(current)
+    broadcast({ type: 'world-job-update', worldId: current.worldId, job: currentJob })
+  } catch (err) {
+    console.error('[floor-plan job error]', err)
+    try {
+      const recovered = await loadWorld(slug)
+      const recoveredJob = recovered.jobs.find(j => j.jobId === jobId)
+      if (recoveredJob) {
+        recoveredJob.status = 'failed'
+        recoveredJob.error = err instanceof Error ? err.message : String(err)
+        recoveredJob.result = recoveredJob.error
+        recoveredJob.progress = 1
+        recoveredJob.updatedAt = new Date().toISOString()
+        await saveWorld(recovered)
+        broadcast({ type: 'world-job-update', worldId: recovered.worldId, job: recoveredJob })
+      }
+    } catch { /* nothing more we can do */ }
+  }
+}
+
 function scanForJob(job: WorldJob, world: WorldProject): ScanManifest | null {
   if (!job.scanId) return null
   return world.scans.find(scan => scan.scanId === job.scanId || scan.filename === job.scanId) ?? null
@@ -2069,7 +2219,7 @@ function scanForJob(job: WorldJob, world: WorldProject): ScanManifest | null {
 
 function jobFailureReason(job: WorldJob, world: WorldProject): string | null {
   const scan = scanForJob(job, world)
-  if (['align-scan', 'extract-layers', 'semantic-pass', 'depth-reconstruct', 'lingbot-map-reconstruct', 'splat-train', 'splat-detect', 'splat-finish'].includes(job.type) && !scan) {
+  if (['align-scan', 'extract-layers', 'semantic-pass', 'depth-reconstruct', 'lingbot-map-reconstruct', 'splat-train', 'splat-detect', 'splat-finish', 'floor-plan'].includes(job.type) && !scan) {
     return `${job.type} requires a selected scan.`
   }
   if ((job.type === 'depth-reconstruct' || job.type === 'lingbot-map-reconstruct' || job.type === 'splat-train') && scan && !scan.sessionId) {
@@ -2100,6 +2250,9 @@ function applyCompletedJobToWorld(job: WorldJob, world: WorldProject): void {
   else if (job.type === 'splat-finish') {
     scan.status = scan.qualitySummary?.status ?? 'ready'
   }
+  else if (job.type === 'floor-plan') {
+    scan.status = scan.qualitySummary?.status ?? 'ready'
+  }
 }
 
 function jobResultFor(job: WorldJob): string {
@@ -2124,6 +2277,8 @@ function jobResultFor(job: WorldJob): string {
       return 'Splat scene detected with splat-analyzer. The .interactions.json sidecar carries 3D object boxes.'
     case 'splat-finish':
       return 'Splat finished with splat-transform. The web-optimized .sog and .compressed.ply sidecars are ready for delivery.'
+    case 'floor-plan':
+      return 'Floor plan extracted from the LingBot-Map point cloud. The .floor-plan.json/.svg sidecars carry walls, rooms, and area (derived, not survey-grade).'
     case 'export-world':
       return 'World export manifest is ready for a combined GLB and semantic JSON worker.'
   }
@@ -2201,6 +2356,14 @@ function jobArtifactsFor(job: WorldJob, world: WorldProject): WorldJob['artifact
         type: 'splat-finish-plan',
         label: `${scan.name} splat finish inputs`,
         metadata: { sessionId: scan.sessionId, canonicalLayer: 'splat' },
+      }] : []
+    case 'floor-plan':
+      // The real .floor-plan.json/.svg artifacts are appended by _runFloorPlanJob
+      // once the worker run lands; this base entry records the extraction inputs.
+      return scan ? [{
+        type: 'floor-plan-inputs',
+        label: `${scan.name} floor-plan inputs`,
+        metadata: { sessionId: scan.sessionId, canonicalLayer: 'floor' },
       }] : []
     case 'export-world':
       return [{
