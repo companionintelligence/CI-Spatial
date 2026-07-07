@@ -64,6 +64,36 @@ test.describe('Splat-train server processing + viewer splat layer', () => {
     expect([400, 404]).toContain(traversal.status())
   })
 
+  test('server serves the splat-finish manifest + .sog + .compressed.ply with correct mimes', async ({ request }) => {
+    const finishReady = existsSync(join(SCANS_DIR, `${SCAN_BASE}.splat-finish.manifest.json`))
+    test.skip(!finishReady, 'finish fixture missing — re-run: npm run test:splat:make-fixture')
+
+    const manifest = await request.get(apiPath(`/scans/${SCAN_BASE}.splat-finish.manifest.json`))
+    expect(manifest.ok(), 'finish manifest 200').toBeTruthy()
+    expect(manifest.headers()['content-type']).toContain('application/json')
+    const body = await manifest.json() as {
+      status: string
+      sogPath?: string
+      compressedPlyPath?: string
+      sizes?: { inputBytes?: number; sogBytes?: number; compressedBytes?: number }
+    }
+    expect(body.status).toBe('ok')
+    expect(body.sogPath).toBe(`${SCAN_BASE}.sog`)
+    expect(body.compressedPlyPath).toBe(`${SCAN_BASE}.compressed.ply`)
+    expect(body.sizes?.inputBytes ?? 0).toBeGreaterThan(0)
+    expect(body.sizes?.compressedBytes ?? 0).toBeGreaterThan(0)
+
+    const sog = await request.get(apiPath(`/scans/${SCAN_BASE}.sog`))
+    expect(sog.ok(), 'sog 200').toBeTruthy()
+    expect(sog.headers()['content-type']).toContain('application/octet-stream')
+
+    const compressed = await request.get(apiPath(`/scans/${SCAN_BASE}.compressed.ply`))
+    expect(compressed.ok(), 'compressed.ply 200').toBeTruthy()
+    expect(compressed.headers()['content-type']).toContain('application/octet-stream')
+    const bytes = await compressed.body()
+    expect(new TextDecoder().decode(bytes.subarray(0, 3))).toBe('ply')
+  })
+
   test('queueing the world job accepts type splat-train', async ({ request }) => {
     const resp = await request.post(apiPath('/worlds/default/jobs'), {
       data: { type: 'splat-train' },
@@ -143,6 +173,76 @@ test.describe('Splat-train server processing + viewer splat layer', () => {
     expect(result!.gaussianCount).toBeGreaterThan(0)
     expect(result!.numSplats).toBeGreaterThan(0)
     await page.screenshot({ path: join(SCREENSHOT_DIR, 'viewer-splat-panel-loaded.png'), fullPage: false })
+  })
+
+  test('splat layer prefers the finished compressed artifact and the toolbox shows finish output', async ({ page }) => {
+    if (!API_URL) test.skip()
+    const finishReady = existsSync(join(SCANS_DIR, `${SCAN_BASE}.splat-finish.manifest.json`))
+    test.skip(!finishReady, 'finish fixture missing — re-run: npm run test:splat:make-fixture')
+    page.on('pageerror', (err) => console.error('[page]', err))
+    await page.route('**/scans/**', async (route) => {
+      const url = new URL(route.request().url())
+      const res = await fetch(`${API_URL}${url.pathname}${url.search}`)
+      const buf = Buffer.from(await res.arrayBuffer())
+      await route.fulfill({ status: res.status, body: buf, headers: Object.fromEntries(res.headers.entries()) })
+    })
+    await page.goto('/viewer.html?world=default')
+    await page.click('.sidebar-tab[data-tab="layers"]')
+
+    // Drive the splat-layer loader with the fixture scan. The fixture's .sog is
+    // a deliberate non-bundle, so the preference chain must fall back to the
+    // (fake but valid) .compressed.ply — proven by numSplats matching the
+    // compressed fixture's smaller gaussian count, not the raw ply's.
+    const result = await page.evaluate(async (scanBase) => {
+      const mod = await import('/src/viewer/splat-layer.ts') as typeof import('../src/viewer/splat-layer')
+      const stubScan = {
+        scanId: 'fixture-splat-scan-finish',
+        sessionId: 'sess-fixture-splat',
+        filename: `${scanBase}.glb`,
+        name: 'Splat fixture scan',
+        glbUrl: `/scans/${scanBase}.glb`,
+        geoPose: { lat: null, lng: null, altitudeM: null, bearing: null, accuracyM: null },
+        localToWorld: [],
+        accuracyM: null,
+        capturedAt: null,
+        pointCount: null,
+        detectionCount: null,
+        layerIndex: [],
+        status: 'ready',
+      } as unknown as Parameters<typeof mod.fetchScanSplatLayer>[0]
+      const layer = await mod.fetchScanSplatLayer(stubScan)
+      if (!layer) return null
+      // Mirror what viewer.ts renders for a finished splat: the stats line via
+      // the shared formatter + the Download .sog link.
+      const stats = document.getElementById('splat-layer-stats')
+      if (stats) stats.textContent = mod.formatFinishStats(layer.finish)
+      const sogLink = document.getElementById('splat-download-sog-link') as HTMLAnchorElement | null
+      if (sogLink && layer.finish?.status === 'ok' && layer.finish.sogPath) {
+        sogLink.href = mod.splatSogUrl(stubScan)
+        sogLink.hidden = false
+      }
+      return {
+        status: layer.manifest.status,
+        finishStatus: layer.finish?.status ?? null,
+        loadedSource: layer.loadedSource ?? null,
+        numSplats: layer.loaded?.mesh.numSplats ?? 0,
+        statsText: stats?.textContent ?? '',
+      }
+    }, SCAN_BASE)
+
+    expect(result).not.toBeNull()
+    expect(result!.status).toBe('ok')
+    expect(result!.finishStatus).toBe('ok')
+    expect(result!.loadedSource).toBe('compressed-ply')
+    // The compressed fixture carries 60% of the raw gaussians — loading it (not
+    // the raw .ply) is what proves the preference.
+    expect(result!.numSplats).toBe(1200)
+    expect(result!.statsText).toContain('Compressed:')
+    expect(result!.statsText).toContain('.sog')
+    await expect(page.locator('#splat-download-sog-link')).toBeVisible()
+    await expect(page.locator('#splat-download-sog-link')).toHaveAttribute('href', /\.sog$/)
+    await page.locator('#splat-toolbox-section').scrollIntoViewIfNeeded()
+    await page.screenshot({ path: join(SCREENSHOT_DIR, 'viewer-splat-finish.png'), fullPage: false })
   })
 
   test('a failed train surfaces its error and never loads a mesh', async ({ page }) => {

@@ -103,6 +103,11 @@ Upload either way:
 Ingest registers a scan and auto-enqueues `lingbot-map-reconstruct` (which
 estimates the poses the video frames lack).
 
+The video arm now **auto-adapts the sample rate** to the clip length (short
+clips still yield ≥40 frames; omit `-F fps=…` to use it) **and drops blurry
+frames** (`droppedBlurry` in the session record — see docs/splat-toolbox.md).
+A photo-set arm exists too: `POST /ingest-photos` with `files=@…` fields.
+
 ---
 
 ## Phase 3 — Processing (on the box)

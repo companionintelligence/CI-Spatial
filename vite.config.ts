@@ -81,6 +81,7 @@ const PROXIED_ROUTES = [
   '/upload-scan',
   '/upload-summary',
   '/ingest-video',
+  '/ingest-photos',
   '/scans',
   '/process-scan',
   '/projects',
