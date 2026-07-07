@@ -46,7 +46,7 @@ test.describe('mobile scanner flow screenshots', () => {
     await page.screenshot({ path: join(SHOTS, '01-start-screen.png') })
   })
 
-  test('02-04 onboarding overlay (3 steps)', async ({ page }) => {
+  test('02-06 onboarding overlay (5 steps)', async ({ page }) => {
     page.on('pageerror', (err) => console.error('[page]', err))
     // Load with the mock runtime present (no page errors) but force the
     // onboarding overlay the everyday first-time user sees. Driving it via the
@@ -55,7 +55,7 @@ test.describe('mobile scanner flow screenshots', () => {
     await page.goto('/?mock=xr8')
     await expect(page.locator('#start-ar-btn')).toBeVisible({ timeout: 20_000 })
 
-    for (const step of [0, 1, 2]) {
+    for (const step of [0, 1, 2, 3, 4]) {
       await page.evaluate((i) => {
         const ob = document.getElementById('onboarding-overlay')
         if (!ob) return
@@ -65,7 +65,7 @@ test.describe('mobile scanner flow screenshots', () => {
         ob.querySelectorAll<HTMLElement>('.onboard-dot').forEach((d, idx) =>
           d.classList.toggle('active', idx === i))
         const next = document.getElementById('onboard-next-btn')
-        if (next) next.textContent = i === 2 ? 'Get Started' : 'Next'
+        if (next) next.textContent = i === 4 ? 'Get Started' : 'Next'
       }, step)
       await page.waitForTimeout(250)
       await page.screenshot({ path: join(SHOTS, `0${step + 2}-onboarding-step-${step + 1}.png`) })

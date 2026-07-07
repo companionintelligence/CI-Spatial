@@ -61,8 +61,9 @@ async function main() {
   // Camera, WebXR, and IndexedDB all need a secure context; fail fast with
   // actionable guidance instead of a cascade of cryptic permission errors.
   if (!window.isSecureContext) {
+    console.warn(`[main] Secure context (HTTPS) required. To test locally: tailscale cert ${location.hostname}`)
     const statusEl = document.getElementById('status-text')
-    if (statusEl) statusEl.textContent = `HTTPS required — open https://${location.hostname}:5173 (run: tailscale cert ${location.hostname})`
+    if (statusEl) statusEl.textContent = `This page must be opened over a secure HTTPS link — ask for the correct link`
     const startBtn = document.getElementById('start-ar-btn') as HTMLButtonElement | null
     if (startBtn) {
       startBtn.disabled = true
@@ -353,6 +354,16 @@ async function main() {
   }
 
   async function exportManualScan(): Promise<string | undefined> {
+    const summary = currentQualitySummary()
+    if (summary.status === 'needs-rescan') {
+      const ok = confirm('Scan quality is low. Review recommendations before exporting. Export anyway?')
+      if (!ok) {
+        overlay.setStatus('Export cancelled')
+        setAutosaveStatus('Export cancelled')
+        return undefined
+      }
+    }
+
     setAutosaveStatus('Exporting scan...')
     overlay.setStatus('Exporting scan...')
     try {
@@ -364,6 +375,12 @@ async function main() {
         // Both download and upload succeeded
         overlay.setStatus('Scan exported & synced ✓')
         setAutosaveStatus(`Scan exported & synced ✓ ${shortName(result.uploadedFilename)}`)
+
+        // Reveal the "View in 3D" link next to status
+        const link = document.getElementById('export-view-link')
+        if (link) {
+          link.style.display = 'inline-block'
+        }
       } else {
         // Download succeeded but upload failed (no uploaded filename)
         overlay.setStatus('Scan saved locally — server sync failed')
@@ -479,8 +496,9 @@ async function main() {
 
   // ── 4b. Onboarding overlay — show once on first visit ────────────────────────
   const ONBOARD_KEY = 'companion-scan-onboarded'
-  if (!skipOnboarding && !localStorage.getItem(ONBOARD_KEY)) {
-    await new Promise<void>((resolve) => {
+
+  function runOnboarding(isReplay = false): Promise<void> {
+    return new Promise<void>((resolve) => {
       const ob = document.getElementById('onboarding-overlay')
       if (!ob) { resolve(); return }
       ob.classList.add('visible')
@@ -498,18 +516,32 @@ async function main() {
         current = n
       }
 
-      function finish() {
+      goToStep(0)
+
+      function cleanupAndFinish() {
         localStorage.setItem(ONBOARD_KEY, '1')
         ob!.classList.remove('visible')
+        // Clean up listeners by cloning the buttons to discard dynamic event listeners
+        const newNextBtn = nextBtn.cloneNode(true)
+        const newSkipBtn = skipBtn.cloneNode(true)
+        nextBtn.parentNode?.replaceChild(newNextBtn, nextBtn)
+        skipBtn.parentNode?.replaceChild(newSkipBtn, skipBtn)
         resolve()
       }
 
       nextBtn.addEventListener('click', () => {
-        if (current < steps.length - 1) goToStep(current + 1)
-        else finish()
+        if (current < steps.length - 1) {
+          goToStep(current + 1)
+        } else {
+          cleanupAndFinish()
+        }
       })
-      skipBtn.addEventListener('click', finish)
+      skipBtn.addEventListener('click', cleanupAndFinish)
     })
+  }
+
+  if (!skipOnboarding && !localStorage.getItem(ONBOARD_KEY)) {
+    await runOnboarding(false)
   }
 
   // Show help button during scanning; re-show onboarding on tap
@@ -517,41 +549,77 @@ async function main() {
   if (helpBtn) {
     helpBtn.classList.add('visible')
     helpBtn.addEventListener('click', () => {
-      const ob = document.getElementById('onboarding-overlay')
-      if (ob) {
-        localStorage.removeItem(ONBOARD_KEY)
-        ob.classList.add('visible')
-        const steps = ob.querySelectorAll<HTMLElement>('.onboard-step')
-        const dots = ob.querySelectorAll<HTMLElement>('.onboard-dot')
-        steps.forEach((s, i) => s.classList.toggle('active', i === 0))
-        dots.forEach((d, i) => d.classList.toggle('active', i === 0))
-        const nextBtn = document.getElementById('onboard-next-btn') as HTMLButtonElement
-        if (nextBtn) nextBtn.textContent = 'Next'
+      void runOnboarding(true)
+    })
+  }
 
-        function finishReplay() {
-          localStorage.setItem(ONBOARD_KEY, '1')
-          ob!.classList.remove('visible')
-        }
-
-        let cur = 0
-        const clickHandler = () => {
-          if (cur < steps.length - 1) {
-            cur++
-            steps.forEach((s, i) => s.classList.toggle('active', i === cur))
-            dots.forEach((d, i) => d.classList.toggle('active', i === cur))
-            nextBtn.textContent = cur === steps.length - 1 ? 'Get Started' : 'Next'
-          } else {
-            finishReplay()
-            nextBtn.removeEventListener('click', clickHandler)
-          }
-        }
-        nextBtn.addEventListener('click', clickHandler)
-        document.getElementById('onboard-skip')?.addEventListener('click', () => {
-          finishReplay()
-          nextBtn.removeEventListener('click', clickHandler)
-        }, { once: true })
+  // Done/Finish Scan button opens side panel and scrolls to export section
+  const finishScanBtn = document.getElementById('finish-scan-btn')
+  if (finishScanBtn) {
+    finishScanBtn.addEventListener('click', () => {
+      panel.setOpen(true)
+      const footer = document.getElementById('panel-footer')
+      if (footer) {
+        footer.scrollIntoView({ behavior: 'smooth' })
       }
     })
+  }
+
+  // Best-effort teardown when the tab goes away. pagehide is the only
+  // teardown event that fires reliably on iOS Safari (beforeunload does not) —
+  // stop streams and finalize the keyframe session, fire-and-forget.
+  window.addEventListener('pagehide', () => {
+    if (broadcaster.isRunning) broadcaster.stop()
+    if (autoCapture.enabled) autoCapture.disable()
+    if (kfStreamer.active) {
+      void kfStreamer.stop({
+        pointCount: pointCloud.count,
+        detectionCount: store.detections.size,
+        poseCount: poseHistory.length,
+        qualitySummary: currentQualitySummary(),
+      })
+    }
+  })
+
+  // Confirmation guards when navigating away from an active scan session
+  function hasUnsavedData(): boolean {
+    return pointCloud.count > 0 || store.detections.size > 0 || poseHistory.length > 0
+  }
+
+  window.addEventListener('beforeunload', (e) => {
+    if (hasUnsavedData()) {
+      e.preventDefault()
+      e.returnValue = 'Leave scan? Unsaved progress will be lost.'
+      return 'Leave scan? Unsaved progress will be lost.'
+    }
+  })
+
+  // Guard action rail navigation links
+  const navLinks = ['xr-mode-link', 'viewer-link']
+  navLinks.forEach((id) => {
+    const link = document.getElementById(id)
+    if (link) {
+      link.addEventListener('click', (e) => {
+        if (hasUnsavedData()) {
+          const ok = confirm('Leave scan? Unsaved progress will be lost.')
+          if (!ok) {
+            e.preventDefault()
+          }
+        }
+      })
+    }
+  })
+
+  // Expose test hooks for E2E validation
+  if (typeof (window as any).__playwright_hooks === 'undefined') {
+    (window as any).__playwright_hooks = {
+      simulateScanData: () => {
+        poseHistory.push({ x: 0, y: 0, z: 0, qw: 1, qx: 0, qy: 0, qz: 0, t: Date.now() })
+      },
+      clearScanData: () => {
+        poseHistory.length = 0
+      }
+    }
   }
 
   // ── 5. Start AR — permission must be requested in the button click handler ───
@@ -572,15 +640,21 @@ async function main() {
 
       try {
         await Promise.all([p1, p2].filter(Boolean))
-      } catch {
-        console.warn('[main] Motion/orientation permission denied — SLAM may not track')
+      } catch (err) {
+        console.warn('[main] Motion/orientation permission denied — SLAM may not track', err)
+        showPermissionBanner('Enable motion & orientation access in Settings → Safari → Motion & Orientation Access.')
       }
       resolve()
     }, { once: true })
   })
 
   overlay.setStatus('Starting AR…')
-  await provider.start(canvas)
+  try {
+    await provider.start(canvas)
+  } catch (e) {
+    console.error('[main] AR provider start failed:', e)
+    showPermissionBanner('Camera access denied. Please check your browser or OS permission settings and allow camera access.')
+  }
   overlay.setStatus('Move camera to initialise tracking…')
 
   // ── WebRTC live-feed broadcaster (optional) ───────────────────────────────
@@ -612,21 +686,6 @@ async function main() {
     })
   }
 
-  // Best-effort teardown when the tab goes away. pagehide is the only
-  // teardown event that fires reliably on iOS Safari (beforeunload does not) —
-  // stop streams and finalize the keyframe session, fire-and-forget.
-  window.addEventListener('pagehide', () => {
-    if (broadcaster.isRunning) broadcaster.stop()
-    if (autoCapture.enabled) autoCapture.disable()
-    if (kfStreamer.active) {
-      void kfStreamer.stop({
-        pointCount: pointCloud.count,
-        detectionCount: store.detections.size,
-        poseCount: poseHistory.length,
-        qualitySummary: currentQualitySummary(),
-      })
-    }
-  })
   overlay.setProgress(null)
 
   // Mirror detection updates to the desktop viewer over the RTC data channel.
@@ -678,6 +737,7 @@ async function main() {
     // Update quality overlay on every scanner tick
     const snap = qualityMonitor.tick(provider, pointCloud)
     updateQualityOverlay(snap)
+    updateVerdictUI()
     if (snap.trackingLost) overlay.setStatus('Tracking lost — move slowly')
     else if (snap.driftRisk === 'high') overlay.setStatus('⚠ Moving too fast — slow down')
   })
@@ -690,6 +750,35 @@ async function main() {
       poseCount: poseHistory.length,
       keyframeCount: latestKeyframeCount,
     })
+  }
+
+  function updateVerdictUI(): void {
+    const summary = currentQualitySummary()
+    const chip = document.getElementById('verdict-chip')
+    if (chip) {
+      chip.textContent = summary.status === 'ready'
+        ? '✓ Ready'
+        : summary.status === 'needs-review'
+          ? '⚠ Review'
+          : '❌ Sparse'
+
+      // Style details dynamically
+      chip.style.background = summary.status === 'ready'
+        ? 'rgba(102,187,106,0.25)'
+        : summary.status === 'needs-review'
+          ? 'rgba(255,152,0,0.25)'
+          : 'rgba(239,83,80,0.25)'
+      chip.style.color = summary.status === 'ready'
+        ? '#66bb6a'
+        : summary.status === 'needs-review'
+          ? '#ffb74d'
+          : '#ef5350'
+    }
+
+    // Also surface the top recommendation on the HUD status-text if status is not ready
+    if (summary.status !== 'ready' && summary.recommendations.length > 0) {
+      overlay.setStatus(`⚠ ${summary.recommendations[0]}`)
+    }
   }
 }
 
@@ -1134,5 +1223,14 @@ function initDrawerGeoMap(fix: GeoFix | null): void {
       _currentMarker.setLatLng([fix.lat, fix.lng])
     }
     if (fix) (_geoMap as LeafletMap).setView([fix.lat, fix.lng], 16)
+  }
+}
+
+function showPermissionBanner(message: string): void {
+  const banner = document.getElementById('permission-error-banner')
+  const msgEl = document.getElementById('permission-error-msg')
+  if (banner && msgEl) {
+    msgEl.textContent = message
+    banner.style.display = 'block'
   }
 }

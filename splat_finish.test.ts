@@ -121,7 +121,7 @@ Deno.test('runSplatFinish lands both outputs + writes an ok manifest with size a
     splatPlyPath: input,
     outputSogPath: `${tmp}/scan.sog`,
     outputCompressedPlyPath: `${tmp}/scan.compressed.ply`,
-    cliPath: '/bin/true', // exists so the guard passes; _spawn fakes the run
+    cliPath: Deno.execPath(), // exists so the guard passes; _spawn fakes the run
     provenance: { sessionId: 'sess-test-finish', scanId: 'scan-9' },
     _spawn: async (_bin, args) => {
       spawns.push(args)
@@ -161,7 +161,7 @@ Deno.test('runSplatFinish surfaces a CLI failure as an error manifest with the s
     splatPlyPath: input,
     outputSogPath: `${tmp}/scan.sog`,
     outputCompressedPlyPath: `${tmp}/scan.compressed.ply`,
-    cliPath: '/bin/true',
+    cliPath: Deno.execPath(),
     _spawn: async () => ({ code: 1, stderr: 'Error: ENOSPC no space left on device' }),
   })
   assertEquals(result.status, 'error')
@@ -180,7 +180,7 @@ Deno.test('runSplatFinish errors when the second (compressed.ply) leg fails', as
     splatPlyPath: input,
     outputSogPath: `${tmp}/scan.sog`,
     outputCompressedPlyPath: `${tmp}/scan.compressed.ply`,
-    cliPath: '/bin/true',
+    cliPath: Deno.execPath(),
     _spawn: async (_bin, args) => {
       const out = args[args.length - 1]
       if (out.endsWith('.sog')) {
@@ -203,7 +203,7 @@ Deno.test('runSplatFinish errors when the CLI exits 0 but produced no output', a
     splatPlyPath: input,
     outputSogPath: `${tmp}/scan.sog`,
     outputCompressedPlyPath: `${tmp}/scan.compressed.ply`,
-    cliPath: '/bin/true',
+    cliPath: Deno.execPath(),
     _spawn: async () => ({ code: 0, stderr: '' }), // lies: writes nothing
   })
   assertEquals(result.status, 'error')

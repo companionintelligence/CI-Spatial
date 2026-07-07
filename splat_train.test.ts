@@ -145,7 +145,7 @@ Deno.test('runSplatTrain rejects an invalid session dir without touching Brush',
   const result = await runSplatTrain({
     sessionDir: '/etc',
     outputPlyPath: `${tmp}/out.splat.ply`,
-    brushBin: '/bin/true',
+    brushBin: Deno.execPath(),
   })
   assertEquals(result.status, 'error')
   assertEquals(result.exitCode, 2)
@@ -172,7 +172,7 @@ Deno.test('runSplatTrain lands the PLY + writes an ok manifest via an injected s
   const result = await runSplatTrain({
     sessionDir,
     outputPlyPath,
-    brushBin: '/bin/true', // exists + executable so the guard passes
+    brushBin: Deno.execPath(), // exists + executable so the guard passes
     provenance: { sessionId: 'sess-test-wxyz', scanId: 'scan-1' },
     // Fake the Brush run: write a tiny valid 3DGS PLY into the export dir.
     _spawn: async (_bin, args) => {
@@ -361,7 +361,7 @@ Deno.test('runSplatTrain surfaces a brush failure as an error manifest with the 
   const result = await runSplatTrain({
     sessionDir,
     outputPlyPath: `${tmp}/scan.splat.ply`,
-    brushBin: '/bin/true',
+    brushBin: Deno.execPath(),
     _spawn: async () => ({ code: 1, stderr: 'Error: Unsupported nerfstudio camera_model `PINHOLE`' }),
   })
   assertEquals(result.status, 'error')
@@ -381,7 +381,7 @@ Deno.test('runSplatTrain lands the highest-iteration export among decoys', async
   const result = await runSplatTrain({
     sessionDir,
     outputPlyPath: `${tmp}/scan.splat.ply`,
-    brushBin: '/bin/true',
+    brushBin: Deno.execPath(),
     _spawn: async (_bin, args) => {
       const exportPath = args[args.indexOf('--export-path') + 1]
       await Deno.writeFile(`${exportPath}/splat_100.ply`, plyWithVertices(1))

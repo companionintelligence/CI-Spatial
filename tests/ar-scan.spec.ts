@@ -17,6 +17,12 @@ import { test, expect, type Page } from '@playwright/test'
 
 const BASE_URL = process.env['VITE_URL'] ?? 'https://liambook.capybara-ulmer.ts.net:5173'
 
+test.beforeEach(async ({ context }) => {
+  await context.addInitScript(() => {
+    window.localStorage.setItem('companion-scan-onboarded', '1')
+  })
+})
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /** Wait for the status bar to contain `text` (case-insensitive substring) */
@@ -40,7 +46,7 @@ test.describe('App loads', () => {
     await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
     await expect(page.locator('#start-title')).toHaveText('Companion Scan')
     await expect(page.locator('#start-ar-btn')).toBeVisible()
-    await expect(page.locator('#start-ar-btn')).toHaveText('Start AR')
+    await expect(page.locator('#start-ar-btn')).toContainText('Scan a room')
   })
 
   test('status bar is visible and initialising', async ({ page }) => {
@@ -452,7 +458,7 @@ test.describe('UI element positions', () => {
   test('scanner action rail stacks bottom-right controls without overlap', async ({ page }) => {
     await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
     const result = await page.evaluate(() => {
-      const ids = ['xr-mode-link', 'panel-toggle', 'viewer-link', 'stream-btn', 'auto-capture-btn', 'history-btn']
+      const ids = ['xr-mode-link', 'viewer-link', 'panel-toggle', 'stream-btn', 'auto-capture-btn', 'history-btn']
       const boxes = ids.map((id) => {
         const el = document.getElementById(id)!
         const rect = el.getBoundingClientRect()
@@ -662,6 +668,30 @@ test.describe('Scan review edit export flow', () => {
   test('autosave status is visible before scanning', async ({ page }) => {
     await expect(page.locator('#autosave-status')).toBeVisible()
     await expect(page.locator('#autosave-status')).toContainText('Autosave')
+  })
+
+  test('Done button opens side panel', async ({ page }) => {
+    await expect(page.locator('#finish-scan-btn')).toBeVisible()
+    await page.locator('#finish-scan-btn').click()
+    await expect(page.locator('#side-panel')).toHaveClass(/open/)
+  })
+
+  test('verdict status chip displays correctly', async ({ page }) => {
+    await expect(page.locator('#verdict-chip')).toBeVisible()
+    await expect(page.locator('#verdict-chip')).toContainText('Scanning')
+  })
+
+  test('navigation guards confirm dialog on leaving active scan', async ({ page }) => {
+    await page.evaluate(() => {
+      (window as any).__playwright_hooks?.simulateScanData()
+    })
+    let dialogMessage = ''
+    page.on('dialog', async (dialog) => {
+      dialogMessage = dialog.message()
+      await dialog.dismiss()
+    })
+    await page.click('#viewer-link')
+    expect(dialogMessage).toContain('Leave scan? Unsaved progress will be lost.')
   })
 })
 

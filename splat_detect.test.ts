@@ -122,7 +122,7 @@ Deno.test('runSplatDetect skips when run_local.py is absent even if python exist
   const tmp = await Deno.makeTempDir({ prefix: 'splat-detect-test-' })
   const result = await runSplatDetect({
     outputInteractionsPath: `${tmp}/scan.interactions.json`,
-    python: '/bin/true', // exists + executable
+    python: Deno.execPath(), // exists + executable
     detectDir: `${tmp}/no-such-analyzer`, // run_local.py won't be found
     splatPlyPath: `${tmp}/scan.splat.ply`,
   })
@@ -143,7 +143,7 @@ Deno.test('runSplatDetect skips when there is no input ply (no splat, no cloud)'
 
   const result = await runSplatDetect({
     outputInteractionsPath: `${tmp}/scan.interactions.json`,
-    python: '/bin/true',
+    python: Deno.execPath(),
     detectDir,
     sessionDir,
     splatPlyPath: `${tmp}/does-not-exist.splat.ply`,
@@ -166,7 +166,7 @@ Deno.test('runSplatDetect lands interactions.json + writes an ok manifest via in
   const result = await runSplatDetect({
     splatPlyPath,
     outputInteractionsPath,
-    python: '/bin/true',
+    python: Deno.execPath(),
     detectDir,
     prompt: 'chair, table',
     provenance: { sessionId: 'sess-detect-wxyz', scanId: 'scan-1' },
@@ -210,7 +210,7 @@ Deno.test('runSplatDetect converts a session point cloud when no trained splat e
   const result = await runSplatDetect({
     sessionDir,
     outputInteractionsPath: `${tmp}/scan.interactions.json`,
-    python: '/bin/true',
+    python: Deno.execPath(),
     detectDir,
     // First spawn = pointcloud_to_gs (writes the converted ply); second = detect.
     _spawn: async (_bin, args) => {
@@ -242,7 +242,7 @@ Deno.test('runSplatDetect surfaces an analyzer failure as an error manifest with
   const result = await runSplatDetect({
     splatPlyPath,
     outputInteractionsPath: `${tmp}/scan.interactions.json`,
-    python: '/bin/true',
+    python: Deno.execPath(),
     detectDir,
     _spawn: async () => ({ code: 1, stderr: 'Traceback: RuntimeError: HIP out of memory' }),
   })
@@ -266,7 +266,7 @@ Deno.test('runSplatDetect errors when the analyzer produced no interactions.json
   const result = await runSplatDetect({
     splatPlyPath,
     outputInteractionsPath: `${tmp}/scan.interactions.json`,
-    python: '/bin/true',
+    python: Deno.execPath(),
     detectDir,
     _spawn: async () => ({ code: 0, stderr: '' }), // exits clean but writes nothing
   })
