@@ -8,6 +8,12 @@ import { normalizeDetections, parseDetections } from '../prompt.ts'
 
 const BASE = process.env['VITE_URL'] ?? 'https://liambook.capybara-ulmer.ts.net:5173'
 
+test.beforeEach(async ({ context }) => {
+  await context.addInitScript(() => {
+    window.localStorage.setItem('companion-scan-onboarded', '1')
+  })
+})
+
 // Helper to build a minimal valid GLB buffer (~50 bytes)
 function makeMinimalGlb(): Buffer {
   const jsonStr = JSON.stringify({ asset: { version: '2.0' } })

@@ -2,22 +2,164 @@
 
 An AR room-scanning application that uses 8th Wall SLAM for spatial mapping, an engine-agnostic vision-language inference layer for object detection, and Three.js for 3D visualisation. Inference defaults to a local Ollama server running `moondream:latest`; a bundled ONNX model (`LiquidAI/LFM2.5-VL-1.6B-ONNX`) and a deterministic mock CV engine are alternates selected via `INFERENCE_MODE`. Results are exported as `.glb` files and can be composed into shared world projects in the browser-based scan editor.
 
+---
+
+## Architecture & Flows
+
+### 1. System Architecture
+The application coordinates Volumetric SLAM tracking, local/remote VLM inference, IndexedDB state caching, and live WebRTC streaming to desktop editors, backed by Deno and Vite servers.
+
+```mermaid
+flowchart TB
+    subgraph UI ["User Interfaces"]
+        ScannerMobile["Mobile AR HUD & Start Screen"]
+        EditorDesktop["Desktop 3D Editor / Viewer (Three.js)"]
+    end
+
+    subgraph ClientCore ["Client Core Runtimes"]
+        ARProvider["AR Provider Layer (WebXR / 8th Wall)"]
+        InferenceRouter["Inference Router (WebGPU Worker / Server)"]
+        Broadcaster["WebRTC Broadcaster (broadcaster.ts)"]
+        PWA["PWA Service Worker & Offline Sync Queue"]
+    end
+
+    subgraph LocalStorage ["Local Browser Storage"]
+        IDB_Client[(IndexedDB Store)]
+        LStore[(Local Storage settings)]
+    end
+
+    subgraph ServerBackend ["Deno Server Backend (:8000)"]
+        HTTPGateway["Deno HTTP Server (main.ts)"]
+        JobRunner["Async Job Queue Coordinator (jobs.ts)"]
+        OptimizationPipeline["Scan Optimization (Draco/LODs - pipeline.ts)"]
+    end
+
+    subgraph ServerStorage ["Server Storage"]
+        ScansStore[("scans/ (.glb, .ply, .json)")]
+        WorldsStore[("worlds/ (.json manifests, patches)")]
+    end
+
+    subgraph HeavyWorkers ["Heavy CV / Reconstruction Workers"]
+        LingBotMap["LingBot-Map Python reconstructor"]
+        SplatTrainer["Brush 3D Gaussian Splat Trainer"]
+        SplatDetector["3D Spatial Object Detector"]
+    end
+
+    %% Wiring
+    ScannerMobile --> ARProvider
+    ScannerMobile --> DoneBtn["Done button / Verdict UI"]
+    ARProvider --> InferenceRouter
+    ARProvider --> Broadcaster
+    ARProvider --> PWA
+    PWA --> IDB_Client
+    InferenceRouter --> LStore
+    
+    Broadcaster -.->|WebRTC live feed| EditorDesktop
+    EditorDesktop --> IDB_Client
+    
+    PWA -->|HTTP Proxy / Vite| HTTPGateway
+    EditorDesktop -->|HTTP / SSE / worlds| HTTPGateway
+    
+    HTTPGateway --> JobRunner
+    HTTPGateway --> OptimizationPipeline
+    HTTPGateway --> ScansStore
+    HTTPGateway --> WorldsStore
+    
+    JobRunner --> HeavyWorkers
+    HeavyWorkers --> ScansStore
+    HeavyWorkers --> WorldsStore
+    OptimizationPipeline --> ScansStore
+```
+
+### 2. User Flow
+The onboarding overlay guides new users through motion permissions, tracking speed guidelines, and capture pipelines. Real-time verdict updates indicate scan quality.
+
+```mermaid
+graph TD
+    A[Start: Open HTTPS link / PWA] --> B[Onboarding Overlay: 5 Steps]
+    B --> C[Allow Camera & Motion Access]
+    C --> D[Choose Capture Method start-screen]
+    D --> D1[📡 Live AR scanning]
+    D --> D2[🎞️ Upload Walkthrough Video]
+    
+    D1 --> E[Initialise SLAM tracking]
+    E --> F[Accumulate Point Cloud & Poses]
+    F --> G{Scanning Mode}
+    G --> G1[🔘 Manual Capture: Tap Shutter]
+    G --> G2[📷 Auto-Capture: Snap as you walk]
+    G --> G3[☁️ Keyframe Stream: Send RGB+poses to server]
+    G --> G4[📡 WebRTC Live: Stream feed to desktop]
+    
+    G1 & G2 --> H[Quality Monitor: evaluate light/drift/reflection]
+    H --> I[HUD Verdict Chip: Ready / Review / Sparse]
+    I --> J[Tapping Done: Open side panel & scroll to export]
+    J --> K{Quality Gate Check}
+    K -- needs-rescan --> K1[Confirm warning prompt]
+    K -- ready / needs-review --> L[Export GLB & Server Sync]
+    L --> M[Reveal View in 3D link]
+    M --> N[Open Desktop Editor: inspect, transform, edit category/tags/notes]
+    N --> O[Queue Async Server Jobs: reconstruct, splat, align, floor-plan]
+    O --> P[Generate Shareable Links: redacting token capability]
+```
+
+### 3. Data Flow
+Posed video keyframes and voxelized points feed into local spatial stores and remote reconstruction pipelines.
+
+```mermaid
+graph TD
+    subgraph Client ["Client Device (PWA / Mobile / Desktop)"]
+        SLAM["8th Wall / WebXR SLAM Engine"] -->|Raw Points & Poses| PC["Local PointCloud (Voxel Grid)"]
+        Camera["Camera Video Stream"] -->|Frames| Cap["Capture Module"]
+        Cap -->|Frame JPEG + Pose| VLM_Local["In-Browser WebGPU Inference"]
+        PC & Dets_Local["Detections"] -->|Saved state| IDB[(IndexedDB Session Store)]
+    end
+
+    subgraph Transport ["Network Transports"]
+        Cap -->|Multipart POST /infer| Server_Infer["Deno Inference Server"]
+        Cap -->|Posed Keyframes /upload-scan| Server_Storage["Deno Scan Storage"]
+        PC & Cap -->|Live JSON & video streams| WebRTC["WebRTC Broadcaster"]
+        IDB -->|Sync GLB /upload-scan| Server_Storage
+        IDB -->|Sync EditPatch logs| Server_Storage
+    end
+
+    subgraph Server ["Deno Server Backend"]
+        Server_Infer -->|Forward JPEG| Ollama["Ollama Vision API (moondream)"]
+        Server_Infer -->|Local ONNX| LFM["LiquidAI ONNX Runtime (LFM-2.5)"]
+        Server_Storage -->|Write GLB & sidecars| ScansDir["/scans/ directory"]
+        Server_Storage -->|World Manifests & Patches| WorldsDir["/worlds/ directory"]
+        Server_Storage -->|Trigger Job /jobs| JobQueue["Async Job Queue"]
+        JobQueue -->|Run Reconstruction| LingBot["LingBot-Map (PLY + poses)"]
+        JobQueue -->|Run Splat Training| Brush["Brush 3DGS (splat.ply)"]
+        JobQueue -->|Run 3D Object Detection| SplatDetect["Splat-Detect (boxes)"]
+    end
+
+    Ollama & LFM -->|Bounding Box JSON| Server_Infer
+    Server_Infer -->|RawDetections| Cap
+    WebRTC -->|Live Geometry & Detections| DesktopEditor["Desktop Viewer & Editor"]
+```
+
+---
+
 ## Features
 
-- **AR scanning** — 8th Wall OSS SLAM tracks the environment and accumulates a colourised point cloud in real time
-- **Engine-agnostic inference** — object detection runs through a local Deno server whose engine is chosen by `INFERENCE_MODE`: `ollama` (default, runs whatever `OLLAMA_MODEL` names — `moondream:latest` by default; pick with `npm run bench:models`), `onnx` (bundled `LiquidAI/LFM2.5-VL-1.6B-ONNX` via `onnxruntime-node`), or `mock` (deterministic colour-blob CV engine for CI/tests). A WebGPU in-browser path is available opt-in via the `infer-mode` localStorage key
-- **3D object pins** — detected objects are placed at their SLAM-resolved world positions as live 3D labels tracking the scene
-- **Session persistence** — every scan is saved to IndexedDB; browse, reload, edit, or delete past sessions from the history drawer
-- **GLTF export** — exports the full scan (point cloud + camera path + labelled boxes) as a `.glb` file, saved locally and uploaded to the server
-- **World scan editor** — `/viewer.html?world=default` loads many scans into one ENU/Y-up Three.js workspace with map pins, layer toggles, labels, camera frustums, compass, scale, coordinate readout, and transform controls
-- **Shareable scanner/viewer links** — editor/owner share links carry capability tokens; regular world manifests redact stored tokens, and strict role enforcement is available with `WORLD_STRICT_AUTH=1`
-- **Processing queue foundation** — world jobs cover ingest, layer extraction, alignment, point merging, semantic passes, depth reconstruction, splat training, and world export; the local coordinator validates inputs and records artifacts while heavier Open3D/CV/splat workers remain pluggable
-- **Automatic scan optimization** — every upload runs through a persistent job queue: quantization + Draco + point-cloud LODs (`.opt.glb`, `.lodN.glb`, `.manifest.json`), roughly halving file size
-- **Quality-gated autosave** — GLB exports and autosaves include coverage, point count, drift/light/reflection warnings, and `ready` / `needs-review` / `needs-rescan` state
-- **Keyframe streaming** — ☁ button streams pose+intrinsics-tagged keyframes to the server while you walk: reconstruction-ready `FrameObservation` sidecars under `scans/sessions/`
-- **Live geometry to desktop** — the WebRTC live stream also carries point-cloud deltas, detections, and camera pose; the desktop editor shows the scan growing in real time
-- **Desktop world editor** — `/viewer` places scans in a shared ENU world with transform gizmos, semantic tagging, layer toggles, and progressive LOD-first loading (Draco-aware)
-- **PWA** — installable on iOS/Android with app-shell caching and an offline write queue for uploads, keyframes, patches, jobs, summaries, and project writes
+- **AR scanning** — 8th Wall OSS SLAM tracks the environment and accumulates a colourised point cloud in real time.
+- **Engine-agnostic inference** — object detection runs through a local Deno server whose engine is chosen by `INFERENCE_MODE`: `ollama` (default, runs whatever `OLLAMA_MODEL` names — `moondream:latest` by default; pick with `npm run bench:models`), `onnx` (bundled `LiquidAI/LFM2.5-VL-1.6B-ONNX` via `onnxruntime-node`), or `mock` (deterministic colour-blob CV engine for CI/tests). A WebGPU in-browser path is available opt-in via the `infer-mode` localStorage key.
+- **3D object pins** — detected objects are placed at their SLAM-resolved world positions as live 3D labels tracking the scene.
+- **Onboarding Overlay** — 5-step interactive overlay guiding users through permission prompts, movement speeds, the 3 capture pipelines, real-time quality diagnostics, and desktop editing. Bypasses automatically on CI/mocks and replays on help button click.
+- **HUD Quality Verdict** — Real-time rendering of `qualityMonitor.summary()` status directly on the phone HUD as a colorized verdict chip (`✓ Ready`, `⚠ Review`, `❌ Sparse`) next to the status row.
+- **HUD Done button** — Primary affordance next to the capture button to quickly open the Side Panel and scroll to the export and synchronization settings.
+- **Accidental Leave Guards** — Intercepts navigation buttons and window unload requests if active point cloud data or poses are in memory to prevent accidental scan losses.
+- **Quality-gated export** — Gating manual exports behind a confirmation prompt when scan quality is poor (`needs-rescan`). Displays a "View in 3D →" quick redirect link in the HUD status line on successful export.
+- **Grouped Action Rail** — Vertically stacks and groups navigation links separate from live scanning tools with a visual divider line, while keeping direct DOM hierarchy for E2E testing compliance.
+- **Session persistence** — every scan is saved to IndexedDB; browse, reload, edit, or delete past sessions from the history drawer.
+- **GLTF export** — exports the full scan (point cloud + camera path + labelled boxes) as a `.glb` file, saved locally and uploaded to the server.
+- **Shareable scanner/viewer links** — editor/owner share links carry capability tokens; regular world manifests redact stored tokens, and strict role enforcement is available with `WORLD_STRICT_AUTH=1`.
+- **Processing queue foundation** — world jobs cover ingest, layer extraction, alignment, point merging, semantic passes, depth reconstruction, splat training, and world export; the local coordinator validates inputs and records artifacts while heavier Open3D/CV/splat workers remain pluggable.
+- **Automatic scan optimization** — every upload runs through a persistent job queue: quantization + Draco + point-cloud LODs (`.opt.glb`, `.lodN.glb`, `.manifest.json`), roughly halving file size.
+- **Keyframe streaming** — ☁ button streams pose+intrinsics-tagged keyframes to the server while you walk: reconstruction-ready `FrameObservation` sidecars under `scans/sessions/`.
+- **Live geometry to desktop** — the WebRTC live stream also carries point-cloud deltas, detections, and camera pose; the desktop editor shows the scan growing in real time.
+- **Desktop world editor** — `/viewer` places scans in a shared ENU world with transform gizmos, semantic tagging, layer toggles, and progressive LOD-first loading (Draco-aware).
+- **PWA** — installable on iOS/Android with app-shell caching and an offline write queue for uploads, keyframes, patches, jobs, summaries, and project writes.
 
 ---
 
@@ -93,32 +235,17 @@ Key routes (replace the hostname with your machine's):
 - Viewer/editor: `https://<your-tailscale-hostname>:5173/viewer.html?world=default`
 - WebXR scanner: `https://<your-tailscale-hostname>:5173/webxr.html`
 
-For persistent serving from a Linux box (systemd units, GPU inference, cert
-renewal) see [docs/DEPLOY.md](docs/DEPLOY.md); for the on-device test protocol
-see [docs/DEVICE_TESTING.md](docs/DEVICE_TESTING.md).
+For persistent serving from a Linux box (systemd units, GPU inference, cert renewal) see [docs/DEPLOY.md](docs/DEPLOY.md); for the on-device test protocol see [docs/DEVICE_TESTING.md](docs/DEVICE_TESTING.md).
 
 ### First-time use / everyday flow
 
-New here? [docs/UX_FLOW.md](docs/UX_FLOW.md) walks the whole happy path as a user
-story — install and onboarding on the phone, scanning a room, structuring scans
-into the 4D world in the desktop editor, queuing reconstruction jobs, and sharing
-a world — plus the mental model for the four capture modes (manual tap,
-auto-capture, keyframe streaming, and WebRTC live). For the full documentation
-index see [docs/README.md](docs/README.md).
+New here? [docs/UX_FLOW.md](docs/UX_FLOW.md) walks the whole happy path as a user story — install and onboarding on the phone, scanning a room, structuring scans into the 4D world in the desktop editor, queuing reconstruction jobs, and sharing a world — plus the mental model for the four capture modes (manual tap, auto-capture, keyframe streaming, and WebRTC live). For the full documentation index see [docs/README.md](docs/README.md).
 
 ### WebXR mode (HelloXR on iOS)
 
-`/webxr.html` runs the same scanner on a **native WebXR `immersive-ar` session**
-instead of the 8th Wall SLAM engine. Safari on iOS has no WebXR AR, so open the
-URL inside [HelloXR](https://apps.apple.com/us/app/helloxr/id6757726359), a
-WebXR-enabled iOS browser (Android Chrome and headset browsers work directly).
-The page auto-detects support and forwards to the scanner in forced-WebXR mode
-(`/?ar=webxr` — `xr.js` is not loaded at all on this path); without support it
-shows the HelloXR install link and fallbacks. The 🥽 button in the AR app and
-the WebXR button in the viewer toolbar navigate between the two runtimes.
-In WebXR mode the point cloud accumulates from per-frame hit-test samples
-(WebXR exposes no SLAM feature points), so sweep the camera slowly across
-surfaces.
+`/webxr.html` runs the same scanner on a **native WebXR `immersive-ar` session** instead of the 8th Wall SLAM engine. Safari on iOS has no WebXR AR, so open the URL inside [HelloXR](https://apps.apple.com/us/app/helloxr/id6757726359), a WebXR-enabled iOS browser (Android Chrome and headset browsers work directly).
+The page auto-detects support and forwards to the scanner in forced-WebXR mode (`/?ar=webxr` — `xr.js` is not loaded at all on this path); without support it shows the HelloXR install link and fallbacks. The 🥽 button in the AR app and the WebXR button in the viewer toolbar navigate between the two runtimes.
+In WebXR mode the point cloud accumulates from per-frame hit-test samples (WebXR exposes no SLAM feature points), so sweep the camera slowly across surfaces.
 
 ---
 
@@ -186,8 +313,7 @@ surfaces.
 ```
 
 Four `deno test` unit suites live at repo root alongside the server modules:
-`lingbot_map.test.ts`, `lingbot_map_glb.test.ts`, `splat_detect.test.ts`,
-`splat_train.test.ts`.
+`lingbot_map.test.ts`, `lingbot_map_glb.test.ts`, `splat_detect.test.ts`, `splat_train.test.ts`.
 
 ---
 
@@ -213,7 +339,7 @@ The repo defines ~30 npm scripts. The most common:
 | `npm run ingest:video` | Ingest a walkthrough video into a session scan |
 | `npm run links:house` | Print the house-validation scanner/viewer links |
 | `npm run gen:test-data` / `seed:test-data` | Generate / seed test fixtures |
-| `npm run test:splat:unit` / `test:splat:make-fixture` | Splat-train unit test + fixture builder |
+| `npm run test:splat:unit` / `test:splat:make-fixture` | Playwright splat unit test + fixture builder |
 | `npm run test:lingbot:glb` / `test:lingbot:fetch-video` / `test:lingbot:make-fixture` | LingBot-Map test + fixture scripts |
 | `npm run gen-icons` | Regenerate PWA icons |
 | `npm run qr` / `logs:watch` / `logs:iphone` | Dev QR link + log tailing helpers |
@@ -226,8 +352,7 @@ Root Deno unit suites run with `deno test` (e.g. `deno test splat_train.test.ts`
 
 All endpoints are served by the Deno server on `:8000` and proxied through Vite on `:5173`.
 
-The full, canonical route table lives in [architecture.md](architecture.md); the
-most-used endpoints:
+The full, canonical route table lives in [architecture.md](architecture.md); the most-used endpoints:
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -255,10 +380,7 @@ most-used endpoints:
 | `POST` | `/client-logs` | Ingests client-side log batches |
 | `GET` | `/projects` | Lists projects |
 
-By default, world reads are open for local/Tailscale development and world member
-tokens are redacted from manifests. Invalid tokens are rejected. Set
-`WORLD_STRICT_AUTH=1` to require capability tokens for protected world actions
-such as share-link generation, edit patches, and processing jobs.
+By default, world reads are open for local/Tailscale development and world member tokens are redacted from manifests. Invalid tokens are rejected. Set `WORLD_STRICT_AUTH=1` to require capability tokens for protected world actions such as share-link generation, edit patches, and processing jobs.
 
 ---
 
@@ -339,18 +461,6 @@ The 8th Wall engine ships with a desktop simulator that replays pre-recorded SLA
 1. Launch the app in Chrome/Edge on desktop — XR8 will load its simulator UI
 2. Load the mock XR8 driver from `public/test-fixtures/xr8-mock.js` (if present)
 3. Playwright tests tagged `@simulator` can drive the capture loop headlessly
-
----
-
-## Architecture
-
-See [architecture.md](architecture.md) for a detailed breakdown of the data flow, component responsibilities, and design decisions.
-
----
-
-## Roadmap
-
-See [roadmap.md](roadmap.md) for planned features and known limitations.
 
 ---
 
