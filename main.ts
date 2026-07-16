@@ -40,6 +40,7 @@ import { runLingBotMapReconstruction } from './lingbot_map.ts'
 import { runSplatTrain } from './splat_train.ts'
 import { runSplatDetect } from './splat_detect.ts'
 import { runSplatFinish } from './splat_finish.ts'
+import { configFromEnv as portalAuthConfig, registerPortalAuth } from './portal_auth.ts'
 import { composeYUpTransform, geoToEnu, hasGeoPose } from './src/world/geo.ts'
 import { defaultLayerIndex } from './src/world/layers.ts'
 import type {
@@ -2787,6 +2788,19 @@ app.get('/rtc-signal', (c) => {
   })
 
   return response
+})
+
+// ── "Sign in with Companion Account" (CI-Portal OIDC) ────────────────────────
+// Inert unless PORTAL_OIDC_ENABLED=1 — see portal_auth.ts for the flow and env.
+// A successful, allowlisted sign-in lands on the default world's owner link,
+// so the existing member-token authz stays the single authorization mechanism.
+registerPortalAuth(app, portalAuthConfig(), {
+  ownerDestination: async () => {
+    const world = await loadWorld('default')
+    const owner = world.members.find((m) => m.role === 'owner' && !m.revokedAt)
+    if (!owner) return '/viewer.html?world=default'
+    return `/viewer.html?world=${world.shareSlug}&token=${encodeURIComponent(owner.token)}`
+  },
 })
 
 // ── Static viewer bundle (production) ────────────────────────────────────────

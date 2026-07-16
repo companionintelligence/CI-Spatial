@@ -9,7 +9,8 @@
     "@gltf-transform/core": "npm:@gltf-transform/core@^4.4.0",
     "@gltf-transform/extensions": "npm:@gltf-transform/extensions@^4.4.0",
     "@gltf-transform/functions": "npm:@gltf-transform/functions@^4.4.0",
-    "draco3dgltf": "npm:draco3dgltf@^1.5.7"
+    "draco3dgltf": "npm:draco3dgltf@^1.5.7",
+    "jose": "npm:jose@^5.9.6"
   },
   "allowScripts": ["npm:onnxruntime-node@1.21.0", "npm:onnxruntime-node@1.24.3"]
 }
