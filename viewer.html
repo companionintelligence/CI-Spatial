@@ -5,9 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>Companion Scan — World Editor</title>
     <link rel="manifest" href="/manifest.json" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Montserrat (CI-Common canon font) — loaded async so an offline/slow
+         fonts CDN never blocks first paint; system-ui fallback covers the gap. -->
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@200;400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
+    <noscript><link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@200;400;500;600;700&display=swap" rel="stylesheet" /></noscript>
     <link rel="icon" href="/icon-192.png" type="image/png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/icon-192.png" />
-    <meta name="theme-color" content="#010d0e" />
+    <meta name="theme-color" content="#041620" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Companion Scan" />
@@ -16,14 +22,29 @@
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
       :root {
-        --ci-ink: #010d0e;
-        --ci-deep: #071212;
-        --ci-panel: #091818;
-        --ci-panel-2: #102222;
+        color-scheme: dark;
+        /* CI-Common design tokens (@companionintelligence/tokens, dark set). */
+        --primary: #abd4d8;
+        --primary-foreground: #041620;
+        --background: #041620;
+        --card: #0a222e;
+        --border: #2c676d;
+        --aqua: #00a9a7;
+        --aqua-light: #72ddd4;
+        --success: #4ade80;
+        --warning: #fbbf24;
+        --destructive: #ef7070;
+        --radius: 0.625rem;
+        --font-sans: 'Montserrat', system-ui, sans-serif;
+        /* App aliases */
+        --ci-ink: var(--background);
+        --ci-deep: #061c28;
+        --ci-panel: var(--card);
+        --ci-panel-2: #102a36;
         --ci-paper: #eff0f0;
         --ci-muted: rgba(239,240,240,0.58);
         --ci-line: rgba(239,240,240,0.14);
-        --ci-mint: #80ffe1;
+        --ci-mint: var(--aqua-light);
       }
 
       button,
@@ -41,7 +62,7 @@
         width: 100%; height: 100%;
         background: var(--ci-deep);
         color: var(--ci-paper);
-        font-family: 'Source Code Pro', 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
+        font-family: var(--font-sans);
         overflow: hidden;
         /* Editor chrome is not a document: no selection/callout/page zoom.
            Inputs opt back in; the 3D canvas gets touch-action: none so
@@ -71,7 +92,7 @@
       /* ── Top toolbar ── */
       #top-toolbar {
         height: 44px;
-        background: rgba(1,13,14,0.78);
+        background: rgba(4,22,32,0.78);
         backdrop-filter: blur(12px);
         border-bottom: 1px solid var(--ci-line);
         display: flex;
@@ -115,15 +136,15 @@
         white-space: nowrap;
       }
       .mode-btn:hover {
-        background: rgba(128,255,225,0.08);
-        border-color: rgba(128,255,225,0.26);
+        background: rgba(114,221,212,0.08);
+        border-color: rgba(114,221,212,0.26);
         color: var(--ci-paper);
-        box-shadow: 0 0 0 5px rgba(128,255,225,0.05);
+        box-shadow: 0 0 0 5px rgba(114,221,212,0.05);
       }
       .mode-btn.active {
-        background: rgba(128,255,225,0.16);
-        border-color: rgba(128,255,225,0.42);
-        color: #80ffe1;
+        background: rgba(114,221,212,0.16);
+        border-color: rgba(114,221,212,0.42);
+        color: #72ddd4;
       }
 
       #toolbar-spacer { flex: 1; }
@@ -143,9 +164,9 @@
         transition: transform 0.15s ease-out, background 0.2s ease-out, border-color 0.2s ease-out, color 0.2s ease-out;
       }
       #back-link:hover {
-        color: #80ffe1;
-        border-color: rgba(128,255,225,0.26);
-        background: rgba(128,255,225,0.08);
+        color: #72ddd4;
+        border-color: rgba(114,221,212,0.26);
+        background: rgba(114,221,212,0.08);
       }
 
       /* ── Main layout ── */
@@ -160,7 +181,7 @@
         width: 260px;
         min-width: 200px;
         height: 100%;
-        background: rgba(9,24,24,0.82);
+        background: rgba(8,28,38,0.82);
         border-right: 1px solid var(--ci-line);
         display: flex;
         flex-direction: column;
@@ -175,13 +196,13 @@
       #sidebar-collapse-btn {
         position: absolute; top: 12px; right: -28px; z-index: 6;
         width: 26px; height: 26px; border-radius: 4px;
-        background: rgba(9,24,24,0.82); border: 1px solid var(--ci-line);
+        background: rgba(8,28,38,0.82); border: 1px solid var(--ci-line);
         color: rgba(255,255,255,0.6); font-size: 14px; cursor: pointer;
         display: flex; align-items: center; justify-content: center;
         transition: right 0.2s ease-out;
       }
       #sidebar.collapsed #sidebar-collapse-btn { right: -32px; }
-      #sidebar-collapse-btn:hover { color: #fff; background: rgba(9,24,24,0.95); }
+      #sidebar-collapse-btn:hover { color: #fff; background: rgba(8,28,38,0.95); }
 
       #sidebar-header {
         padding: 14px 14px 10px;
@@ -220,10 +241,10 @@
       }
       .sidebar-tab:hover { color: rgba(255,255,255,0.8); background: rgba(255,255,255,0.04); }
       .sidebar-tab.active {
-        color: #80ffe1;
-        border-bottom: 2px solid #80ffe1;
+        color: #72ddd4;
+        border-bottom: 2px solid #72ddd4;
         margin-bottom: -1px;
-        background: rgba(128,255,225,0.05);
+        background: rgba(114,221,212,0.05);
       }
 
       .sidebar-panel { display: none; flex: 1; flex-direction: column; overflow: hidden; }
@@ -243,7 +264,7 @@
         transition: background 0.15s ease-out, border-color 0.15s ease-out, transform 0.15s ease-out;
       }
       .scan-item:hover { background: rgba(255,255,255,0.05); }
-      .scan-item.active { background: rgba(128,255,225,0.09); border-left: 2px solid #80ffe1; }
+      .scan-item.active { background: rgba(114,221,212,0.09); border-left: 2px solid #72ddd4; }
 
       .scan-name {
         font-size: 12px;
@@ -278,7 +299,7 @@
       .scan-visible {
         width: 16px;
         height: 16px;
-        accent-color: #80ffe1;
+        accent-color: #72ddd4;
       }
 
       .hud-btn,
@@ -296,18 +317,18 @@
       .hud-btn:hover,
       .sidebar-tool:hover,
       .toggle-btn:hover {
-        background: rgba(128,255,225,0.08);
-        border-color: rgba(128,255,225,0.26);
+        background: rgba(114,221,212,0.08);
+        border-color: rgba(114,221,212,0.26);
         color: var(--ci-paper);
-        box-shadow: 0 0 0 5px rgba(128,255,225,0.05);
+        box-shadow: 0 0 0 5px rgba(114,221,212,0.05);
       }
 
       .hud-btn.active,
       .sidebar-tool.active,
       .toggle-btn.active {
-        background: rgba(128,255,225,0.16);
-        border-color: rgba(128,255,225,0.42);
-        color: #80ffe1;
+        background: rgba(114,221,212,0.16);
+        border-color: rgba(114,221,212,0.42);
+        color: #72ddd4;
       }
 
       .scan-status {
@@ -346,8 +367,8 @@
 
       /* Map-quality headline: tier stepper + processing line */
       .quality-section {
-        border-color: rgba(128,255,225,0.22);
-        background: rgba(128,255,225,0.04);
+        border-color: rgba(114,221,212,0.22);
+        background: rgba(114,221,212,0.04);
       }
       .quality-stepper {
         display: flex;
@@ -366,9 +387,9 @@
       }
       .quality-step.reached { opacity: 1; }
       .quality-step.current {
-        border-color: rgba(128,255,225,0.6);
-        background: rgba(128,255,225,0.14);
-        box-shadow: 0 0 0 1px rgba(128,255,225,0.25) inset;
+        border-color: rgba(114,221,212,0.6);
+        background: rgba(114,221,212,0.14);
+        box-shadow: 0 0 0 1px rgba(114,221,212,0.25) inset;
       }
       .quality-step-label {
         font-size: 10px;
@@ -379,10 +400,10 @@
         overflow: hidden;
         text-overflow: ellipsis;
       }
-      .quality-step.current .quality-step-label { color: #80ffe1; }
+      .quality-step.current .quality-step-label { color: #72ddd4; }
       .quality-step-tick {
         font-size: 10px;
-        color: rgba(128,255,225,0.85);
+        color: rgba(114,221,212,0.85);
         height: 12px;
         line-height: 12px;
       }
@@ -394,7 +415,7 @@
       }
       .quality-next {
         font-size: 11px;
-        color: #80ffe1;
+        color: #72ddd4;
         margin-top: 4px;
       }
       .quality-processing {
@@ -438,9 +459,9 @@
       }
       .tag-chip:hover { background: rgba(255,255,255,0.08); color: #fff; }
       .tag-chip.active {
-        background: rgba(128,255,225,0.18);
-        border-color: rgba(128,255,225,0.5);
-        color: #80ffe1;
+        background: rgba(114,221,212,0.18);
+        border-color: rgba(114,221,212,0.5);
+        color: #72ddd4;
         font-weight: 700;
       }
 
@@ -508,9 +529,9 @@
       .copy-link-btn,
       .job-btn,
       .transform-btn {
-        border: 1px solid rgba(128,255,225,0.28);
-        background: rgba(128,255,225,0.11);
-        color: #80ffe1;
+        border: 1px solid rgba(114,221,212,0.28);
+        background: rgba(114,221,212,0.11);
+        color: #72ddd4;
         border-radius: 6px;
         padding: 5px 8px;
         font-size: 10px;
@@ -520,7 +541,7 @@
 
       .copy-link-btn:hover,
       .job-btn:hover,
-      .transform-btn:hover { background: rgba(128,255,225,0.18); }
+      .transform-btn:hover { background: rgba(114,221,212,0.18); }
 
       .transform-grid {
         display: grid;
@@ -529,15 +550,15 @@
       }
 
       .transform-btn.active {
-        background: rgba(102,187,106,0.16);
-        border-color: rgba(102,187,106,0.35);
-        color: #66bb6a;
+        background: rgba(74,222,128,0.16);
+        border-color: rgba(74,222,128,0.35);
+        color: #4ade80;
       }
 
       .layer-toggle {
         width: 16px;
         height: 16px;
-        accent-color: #80ffe1;
+        accent-color: #72ddd4;
         flex-shrink: 0;
       }
 
@@ -659,7 +680,7 @@
         left: 50%;
         transform: translateX(-50%);
         font-size: 10px;
-        color: #80ffe1;
+        color: #72ddd4;
         font-weight: 800;
       }
 
@@ -669,7 +690,7 @@
         top: 16px;
         width: 2px;
         height: 42px;
-        background: linear-gradient(#80ffe1 0 50%, rgba(255,255,255,0.35) 50% 100%);
+        background: linear-gradient(#72ddd4 0 50%, rgba(255,255,255,0.35) 50% 100%);
         transform-origin: 50% 20px;
       }
 
@@ -700,7 +721,7 @@
         top: 10px;
         right: 10px;
         width: 230px;
-        background: rgba(9,24,24,0.92);
+        background: rgba(8,28,38,0.92);
         backdrop-filter: blur(14px);
         border: 1px solid rgba(255,255,255,0.1);
         border-radius: 12px;
@@ -792,7 +813,7 @@
       #loading-overlay {
         position: absolute;
         inset: 0;
-        background: rgba(9,24,24,0.8);
+        background: rgba(8,28,38,0.8);
         display: none;
         align-items: center;
         justify-content: center;
@@ -807,7 +828,7 @@
       .spinner {
         width: 26px; height: 26px;
         border: 3px solid rgba(255,255,255,0.1);
-        border-top-color: #80ffe1;
+        border-top-color: #72ddd4;
         border-radius: 50%;
         animation: spin 0.8s linear infinite;
       }
@@ -1138,7 +1159,7 @@
                     style="width:100%;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:#fff;font-size:12px;padding:8px;resize:vertical;min-height:64px;outline:none;font-family:inherit;"
                   ></textarea>
                   <button id="edit-save-notes"
-                    style="margin-top:6px;width:100%;padding:6px;background:rgba(128,255,225,0.15);border:1px solid rgba(128,255,225,0.3);border-radius:6px;color:#80ffe1;font-size:11px;font-weight:700;cursor:pointer;">
+                    style="margin-top:6px;width:100%;padding:6px;background:rgba(114,221,212,0.15);border:1px solid rgba(114,221,212,0.3);border-radius:6px;color:#72ddd4;font-size:11px;font-weight:700;cursor:pointer;">
                     Save Notes
                   </button>
                 </div>

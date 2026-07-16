@@ -217,7 +217,7 @@ export class GeoMap {
       position: absolute;
       bottom: 0; left: 0; right: 0;
       height: 320px;
-      background: #091818;
+      background: #0a222e;
       border-top: 1px solid rgba(255,255,255,0.12);
       display: none;
       flex-direction: column;
@@ -254,11 +254,11 @@ export class GeoMap {
           width: 0; height: 0;
           border-left: 4px solid transparent;
           border-right: 4px solid transparent;
-          border-bottom: 8px solid rgba(128,255,225,0.9);
+          border-bottom: 8px solid rgba(114,221,212,0.9);
         }
 
         .geomap-popup .leaflet-popup-content-wrapper {
-          background: rgba(9,24,24,0.97);
+          background: rgba(8,28,38,0.97);
           border: 1px solid rgba(255,255,255,0.12);
           border-radius: 10px;
           color: #fff;
@@ -267,7 +267,7 @@ export class GeoMap {
           padding: 0;
           box-shadow: 0 8px 32px rgba(0,0,0,0.7);
         }
-        .geomap-popup .leaflet-popup-tip { background: rgba(9,24,24,0.97); }
+        .geomap-popup .leaflet-popup-tip { background: rgba(8,28,38,0.97); }
         .geomap-popup .leaflet-popup-content { margin: 0; }
       `
       document.head.appendChild(style)
@@ -299,11 +299,11 @@ export class GeoMap {
       position:absolute;left:0;right:0;top:41px;bottom:0;
       display:flex;align-items:center;justify-content:center;flex-direction:column;
       gap:8px;text-align:center;color:rgba(239,240,240,0.62);
-      background:linear-gradient(180deg, rgba(9,24,24,0.62), rgba(1,13,14,0.72));
+      background:linear-gradient(180deg, rgba(8,28,38,0.62), rgba(4,22,32,0.72));
       pointer-events:none;z-index:401;font-size:12px;padding:18px;
     `
     this._emptyEl.innerHTML = `
-      <div style="width:42px;height:42px;border-radius:50%;border:1px solid rgba(128,255,225,0.36);display:flex;align-items:center;justify-content:center;color:#80ffe1;">Map</div>
+      <div style="width:42px;height:42px;border-radius:50%;border:1px solid rgba(114,221,212,0.36);display:flex;align-items:center;justify-content:center;color:#72ddd4;">Map</div>
       <div data-empty-message>No geotagged scans yet</div>
       <div style="font-size:10px;color:rgba(239,240,240,0.36);max-width:240px;line-height:1.5;">Capture with location enabled or import scans with GeoPose metadata.</div>
     `
@@ -324,7 +324,7 @@ export class GeoMap {
 // ── HTML builders ──────────────────────────────────────────────────────────────
 
 const PIN_COLORS = [
-  '#80ffe1', '#81c784', '#ff8a65', '#ce93d8', '#ffcc80',
+  '#72ddd4', '#81c784', '#ff8a65', '#ce93d8', '#ffcc80',
   '#80deea', '#c5e1a5', '#fff176', '#ef9a9a', '#90caf9',
 ]
 
@@ -376,7 +376,7 @@ function buildPopupHtml(loc: ScanLocationEntry): string {
         ${loc.detectionCount ? `📍 ${loc.detectionCount} objects` : ''}
       </div>
       <a href="${mapUrl}" target="_blank" rel="noopener noreferrer"
-         style="display:inline-block;margin-top:8px;font-size:10px;color:rgba(128,255,225,0.8);text-decoration:none;">
+         style="display:inline-block;margin-top:8px;font-size:10px;color:rgba(114,221,212,0.8);text-decoration:none;">
         View on maps ↗
       </a>
     </div>

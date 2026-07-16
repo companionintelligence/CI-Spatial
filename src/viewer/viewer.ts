@@ -1461,7 +1461,7 @@ function showInspector(obj: THREE.Object3D): void {
 
   title.textContent = data.name || obj.name || scan?.manifest.name || '(unnamed)'
   body.innerHTML = [
-    data.tag ? rowHtml('Category', `<span style="background:rgba(128,255,225,0.18);color:#80ffe1;padding:1px 6px;border-radius:4px;font-weight:700;">${escHtml(String(data.tag))}</span>`) : '',
+    data.tag ? rowHtml('Category', `<span style="background:rgba(114,221,212,0.18);color:#72ddd4;padding:1px 6px;border-radius:4px;font-weight:700;">${escHtml(String(data.tag))}</span>`) : '',
     data.aiLabel ? rowHtml('Label', escHtml(data.aiLabel)) : '',
     data.confidence !== undefined ? rowHtml('Conf', `<span class="inspector-confidence" style="background:${confColor}22;color:${confColor};">${Math.round(data.confidence * 100)}%</span>`) : '',
     scan ? rowHtml('Scan', escHtml(scan.manifest.name)) : '',

@@ -5,9 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>Companion Scan — WebXR</title>
     <link rel="manifest" href="/manifest.json" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Montserrat (CI-Common canon font) — loaded async so an offline/slow
+         fonts CDN never blocks first paint; system-ui fallback covers the gap. -->
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@200;400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
+    <noscript><link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@200;400;500;600;700&display=swap" rel="stylesheet" /></noscript>
     <link rel="icon" href="/icon-192.png" type="image/png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/icon-192.png" />
-    <meta name="theme-color" content="#010d0e" />
+    <meta name="theme-color" content="#041620" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Companion Scan XR" />
@@ -19,8 +25,8 @@
         width: 100%;
         height: 100%;
         background:
-          radial-gradient(circle at 50% 32%, rgba(128,255,225,0.16), transparent 34%),
-          linear-gradient(180deg, #071212 0%, #010d0e 100%);
+          radial-gradient(circle at 50% 32%, rgba(114,221,212,0.16), transparent 34%),
+          linear-gradient(180deg, #061c28 0%, #041620 100%);
         color: #eff0f0;
         font-family: 'Avenir Next', 'Avenir', 'Helvetica Neue', 'Segoe UI', sans-serif;
         -webkit-user-select: none;
@@ -43,14 +49,14 @@
         margin: 0 auto 16px;
         border: 1px solid rgba(239,240,240,0.38);
         border-radius: 50%;
-        box-shadow: 0 0 34px rgba(128,255,225,0.24);
+        box-shadow: 0 0 34px rgba(114,221,212,0.24);
         position: relative;
       }
       .mark::before { content: ''; position: absolute; inset: 9px; border: 1px solid rgba(239,240,240,0.32); border-radius: 50%; }
-      .mark::after { content: ''; position: absolute; width: 18px; height: 18px; right: 7px; top: 18px; background: #80ffe1; border-radius: 50%; }
+      .mark::after { content: ''; position: absolute; width: 18px; height: 18px; right: 7px; top: 18px; background: #72ddd4; border-radius: 50%; }
 
       .eyebrow {
-        color: #80ffe1;
+        color: #72ddd4;
         font-size: 10px;
         font-weight: 800;
         letter-spacing: 0.1em;
@@ -63,11 +69,11 @@
       .status {
         font-size: 13px;
         line-height: 1.6;
-        color: rgba(239,244,241,0.62);
+        color: rgba(248,250,252,0.62);
         margin-bottom: 22px;
       }
       .status strong { color: #eff0f0; }
-      .status a { color: #80ffe1; }
+      .status a { color: #72ddd4; }
 
       .actions { display: flex; flex-direction: column; gap: 10px; }
 
@@ -84,15 +90,15 @@
         transition: border-color 0.2s, box-shadow 0.2s;
       }
       .btn:hover, .btn:active {
-        border-color: rgba(128,255,225,0.42);
-        box-shadow: 0 0 0 5px rgba(128,255,225,0.06);
+        border-color: rgba(114,221,212,0.42);
+        box-shadow: 0 0 0 5px rgba(114,221,212,0.06);
       }
       .btn.primary {
-        background: rgba(128,255,225,0.16);
-        border-color: rgba(128,255,225,0.5);
-        color: #80ffe1;
+        background: rgba(114,221,212,0.16);
+        border-color: rgba(114,221,212,0.5);
+        color: #72ddd4;
       }
-      .btn.subtle { font-weight: 600; color: rgba(239,244,241,0.62); }
+      .btn.subtle { font-weight: 600; color: rgba(248,250,252,0.62); }
     </style>
   </head>
   <body>

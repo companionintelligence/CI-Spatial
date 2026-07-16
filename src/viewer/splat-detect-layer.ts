@@ -68,7 +68,7 @@ export function detectInteractionsUrl(scan: ScanManifest): string {
 }
 
 const BOX_MATERIAL = new THREE.LineBasicMaterial({
-  color: 0x80ffe1,
+  color: 0x72ddd4,
   transparent: true,
   opacity: 0.9,
 })

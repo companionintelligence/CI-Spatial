@@ -243,7 +243,7 @@ export class SessionHistory {
       padding:8px 24px 8px 32px;
       border-top:1px solid rgba(255,255,255,0.04);
       transition:background 0.1s;
-      ${isSelected ? 'background:rgba(128,255,225,0.08);border-left:2px solid #80ffe1;' : ''}
+      ${isSelected ? 'background:rgba(114,221,212,0.08);border-left:2px solid #72ddd4;' : ''}
     `
     row.addEventListener('pointerenter', () => { if (!isSelected) row.style.background = 'rgba(255,255,255,0.03)' })
     row.addEventListener('pointerleave', () => { if (!isSelected) row.style.background = '' })
@@ -253,7 +253,7 @@ export class SessionHistory {
 
     // Colour dot
     const dot = document.createElement('div')
-    const COLORS: Record<string, string> = { chair: '#80ffe1', table: '#81c784', sofa: '#ff8a65', lamp: '#fff176', door: '#ffcc80', window: '#80deea', default: '#b0bec5' }
+    const COLORS: Record<string, string> = { chair: '#72ddd4', table: '#81c784', sofa: '#ff8a65', lamp: '#fff176', door: '#fbbf24', window: '#80deea', default: '#b0bec5' }
     const color = COLORS[det.label.toLowerCase()] ?? COLORS['default']
     dot.style.cssText = `width:8px;height:8px;border-radius:50%;background:${color};flex-shrink:0;`
 
@@ -279,7 +279,7 @@ export class SessionHistory {
       selBtn.title = isSelected ? 'Deselect' : 'Select'
       selBtn.textContent = isSelected ? '☑' : '☐'
       selBtn.className = 'ci-icon-btn ci-icon-btn--sm'
-      selBtn.style.color = isSelected ? '#80ffe1' : 'rgba(255,255,255,0.5)'
+      selBtn.style.color = isSelected ? '#72ddd4' : 'rgba(255,255,255,0.5)'
       selBtn.addEventListener('click', () => {
         this.store.toggleSelect(key)
         // Re-render this row in place
@@ -296,7 +296,7 @@ export class SessionHistory {
       editBtn.className = 'ci-icon-btn ci-icon-btn--sm'
 
       const editForm = document.createElement('div')
-      editForm.style.cssText = 'display:none;position:absolute;inset-x:24px;background:rgba(9,24,24,0.98);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:10px;z-index:1;margin-top:4px;'
+      editForm.style.cssText = 'display:none;position:absolute;inset-x:24px;background:rgba(8,28,38,0.98);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:10px;z-index:1;margin-top:4px;'
       editForm.innerHTML = `
         <input type="text" value="${det.label.replace(/</g, '&lt;')}"
           class="ci-field" style="margin-bottom:5px;" />

@@ -9,7 +9,7 @@ import type { DetectionStore, StoredDetection } from '../scene/store'
 import type { InferMode } from '../inference/router'
 
 const CATEGORY_COLORS: Record<string, string> = {
-  chair: '#80ffe1', table: '#81c784', sofa: '#ff8a65', couch: '#ff8a65',
+  chair: '#72ddd4', table: '#81c784', sofa: '#ff8a65', couch: '#ff8a65',
   bed: '#ce93d8', desk: '#a5d6a7', monitor: '#80cbc4', tv: '#80cbc4',
   door: '#ffcc80', window: '#80deea', shelf: '#c5e1a5', bookcase: '#c5e1a5',
   lamp: '#fff176', plant: '#66bb6a',
@@ -260,7 +260,7 @@ export class SidePanel {
       border-bottom:1px solid rgba(255,255,255,0.06);
       align-items:start;
       transition:background 0.15s;
-      ${isSelected ? 'background:rgba(128,255,225,0.08);border-left:2px solid #80ffe1;padding-left:12px;' : ''}
+      ${isSelected ? 'background:rgba(114,221,212,0.08);border-left:2px solid #72ddd4;padding-left:12px;' : ''}
     `
     card.addEventListener('pointerenter', () => {
       if (!isSelected) card.style.background = 'rgba(255,255,255,0.04)'
@@ -322,7 +322,7 @@ export class SidePanel {
       font-size:11px;font-family:monospace;color:rgba(255,255,255,0.55);
     `
     posBadge.innerHTML = `
-      <span style="color:#80ffe1;">${fmtCoord(p.x)}</span>
+      <span style="color:#72ddd4;">${fmtCoord(p.x)}</span>
       <span style="opacity:0.3;">·</span>
       <span style="color:#81c784;">${fmtCoord(p.y)}</span>
       <span style="opacity:0.3;">·</span>
@@ -377,7 +377,7 @@ export class SidePanel {
     if (isSelected) {
       ring.innerHTML = `
         <svg width="${r * 2}" height="${r * 2}" viewBox="0 0 ${r * 2} ${r * 2}">
-          <circle cx="${r}" cy="${r}" r="${r - stroke / 2}" fill="#80ffe1" stroke="#80ffe1" stroke-width="${stroke}"/>
+          <circle cx="${r}" cy="${r}" r="${r - stroke / 2}" fill="#72ddd4" stroke="#72ddd4" stroke-width="${stroke}"/>
           <text x="${r}" y="${r + 4}" text-anchor="middle" fill="#000" font-size="10" font-weight="bold">✓</text>
         </svg>`
     } else {
