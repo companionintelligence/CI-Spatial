@@ -2789,4 +2789,55 @@ app.get('/rtc-signal', (c) => {
   return response
 })
 
+// ── Static viewer bundle (production) ────────────────────────────────────────
+// In dev, the viewer is served by Vite. In production (Docker / Hub install)
+// the pre-built static bundle is copied to STATIC_DIR; serve it as a
+// fall-through so a single container port hosts both UI and API. When
+// STATIC_DIR is unset/absent the route stays a 404, which is the dev behaviour.
+const STATIC_DIR = Deno.env.get('STATIC_DIR') ?? './dist'
+let staticAvailable = false
+try {
+  const s = await Deno.stat(STATIC_DIR)
+  staticAvailable = s.isDirectory
+} catch { /* no dist — fine in dev */ }
+
+if (staticAvailable) {
+  const STATIC_MIME: Record<string, string> = {
+    '.html': 'text/html; charset=utf-8',
+    '.js': 'application/javascript; charset=utf-8',
+    '.mjs': 'application/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.glb': 'model/gltf-binary',
+    '.gltf': 'model/gltf+json',
+    '.svg': 'image/svg+xml',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
+    '.wasm': 'application/wasm',
+    '.ico': 'image/x-icon',
+    '.map': 'application/json; charset=utf-8',
+  }
+  console.log(`[server] serving static bundle from ${STATIC_DIR}`)
+  app.get('*', async (c) => {
+    let p = new URL(c.req.url).pathname
+    if (p === '/') p = '/index.html'
+    if (p.includes('..')) return c.notFound()
+    const file = `${STATIC_DIR}${p}`
+    try {
+      const bytes = await Deno.readFile(file)
+      const ext = p.slice(p.lastIndexOf('.'))
+      return new Response(bytes, {
+        headers: {
+          'Content-Type': STATIC_MIME[ext] ?? 'application/octet-stream',
+          'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=86400',
+        },
+      })
+    } catch {
+      return c.notFound()
+    }
+  })
+}
+
 Deno.serve({ hostname: '0.0.0.0', port: PORT }, app.fetch)
