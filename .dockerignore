@@ -1,0 +1,15 @@
+.git
+node_modules
+dist
+test-data
+test-results
+scans
+worlds
+summaries
+tests/fixtures
+public/models
+docs
+.test-run
+.claude
+.DS_Store
+*.log

@@ -497,7 +497,7 @@ async function main() {
   // ── 4b. Onboarding overlay — show once on first visit ────────────────────────
   const ONBOARD_KEY = 'companion-scan-onboarded'
 
-  function runOnboarding(isReplay = false): Promise<void> {
+  function runOnboarding(_isReplay = false): Promise<void> {
     return new Promise<void>((resolve) => {
       const ob = document.getElementById('onboarding-overlay')
       if (!ob) { resolve(); return }
@@ -614,7 +614,7 @@ async function main() {
   if (typeof (window as any).__playwright_hooks === 'undefined') {
     (window as any).__playwright_hooks = {
       simulateScanData: () => {
-        poseHistory.push({ x: 0, y: 0, z: 0, qw: 1, qx: 0, qy: 0, qz: 0, t: Date.now() })
+        poseHistory.push({ position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0, w: 1 } })
       },
       clearScanData: () => {
         poseHistory.length = 0
@@ -764,15 +764,15 @@ async function main() {
 
       // Style details dynamically
       chip.style.background = summary.status === 'ready'
-        ? 'rgba(102,187,106,0.25)'
+        ? 'rgba(74,222,128,0.25)'
         : summary.status === 'needs-review'
           ? 'rgba(255,152,0,0.25)'
-          : 'rgba(239,83,80,0.25)'
+          : 'rgba(239,112,112,0.25)'
       chip.style.color = summary.status === 'ready'
-        ? '#66bb6a'
+        ? '#4ade80'
         : summary.status === 'needs-review'
           ? '#ffb74d'
-          : '#ef5350'
+          : '#ef7070'
     }
 
     // Also surface the top recommendation on the HUD status-text if status is not ready
@@ -955,7 +955,7 @@ function updateQualityOverlay(snap: import('./capture/quality-monitor').QualityS
   if (coverageFill) {
     const pct = Math.round(snap.coverageScore * 100)
     coverageFill.style.width = `${pct}%`
-    coverageFill.style.background = pct >= 80 ? '#66bb6a' : pct >= 50 ? '#ffa726' : '#ef5350'
+    coverageFill.style.background = pct >= 80 ? '#4ade80' : pct >= 50 ? '#ffa726' : '#ef7070'
   }
   if (coverageText) coverageText.textContent = snap.coverageText
 
@@ -1207,7 +1207,7 @@ function initDrawerGeoMap(fix: GeoFix | null): void {
       for (const loc of locations) {
         const scanIcon = L.divIcon({
           className: '',
-          html: '<div style="width:8px;height:8px;background:#ef5350;border-radius:50%;border:1.5px solid #fff;"></div>',
+          html: '<div style="width:8px;height:8px;background:#ef7070;border-radius:50%;border:1.5px solid #fff;"></div>',
           iconSize: [8, 8],
           iconAnchor: [4, 4],
         })

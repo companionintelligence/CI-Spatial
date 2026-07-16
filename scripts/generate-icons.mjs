@@ -67,7 +67,9 @@ function encodePNG(size, rgbFn) {
 }
 
 // ─── Icon pixel function ───────────────────────────────────────────────────────
-// Design: Companion dark teal bg · mint scan ring · orbital mark · center signal.
+// Design: Companion dark teal bg · aqua scan ring · orbital mark · center signal.
+// Colors follow @companionintelligence/tokens (CI-Common): background #041620,
+// accent --aqua-light #72ddd4 (114,221,212).
 function iconPixel(x, y, size) {
   const cx = size / 2, cy = size / 2
   // Normalized coords -1..1
@@ -78,16 +80,16 @@ function iconPixel(x, y, size) {
 
   // Base background: Companion deep teal, subtly brighter toward center.
   const bg = 1 - Math.min(1, dist * 0.6)
-  let r = Math.round(1 + bg * 12)
-  let g = Math.round(13 + bg * 24)
-  let b = Math.round(14 + bg * 24)
+  let r = Math.round(4 + bg * 10)
+  let g = Math.round(22 + bg * 22)
+  let b = Math.round(32 + bg * 26)
 
   // Outer scan ring (radius ~0.77)
   if (dist > 0.70 && dist < 0.84) {
     const fade = 1 - Math.abs(dist - 0.77) / 0.07
-    r = Math.round(r + fade * (128 - r))
-    g = Math.round(g + fade * (255 - g))
-    b = Math.round(b + fade * (225 - b))
+    r = Math.round(r + fade * (114 - r))
+    g = Math.round(g + fade * (221 - g))
+    b = Math.round(b + fade * (212 - b))
   }
 
   // Dashed mid ring (radius ~0.52)
@@ -114,27 +116,27 @@ function iconPixel(x, y, size) {
   const inVArm = ay >= bPos - bLen && ay <= bPos + bThk &&
                  ax >= bPos - bThk / 2 && ax <= bPos + bThk / 2
   if (inHArm || inVArm) {
-    r = Math.round(r * 0.1 + 128 * 0.9)
-    g = Math.round(g * 0.1 + 255 * 0.9)
-    b = Math.round(b * 0.1 + 225 * 0.9)
+    r = Math.round(r * 0.1 + 114 * 0.9)
+    g = Math.round(g * 0.1 + 221 * 0.9)
+    b = Math.round(b * 0.1 + 212 * 0.9)
   }
 
   // Scan lines (subtle horizontal lines in the inner area)
   if (dist < 0.47) {
     const scanY = ((y / size) * 20) % 1
     if (scanY < 0.18) {
-      r = Math.round(r + 10)
-      g = Math.round(g + 24)
-      b = Math.round(b + 22)
+      r = Math.round(r + 8)
+      g = Math.round(g + 20)
+      b = Math.round(b + 26)
     }
   }
 
   // Center dot
   if (dist < 0.055) {
     const fade = 1 - dist / 0.055
-    r = Math.round(r + fade * (128 - r))
-    g = Math.round(g + fade * (255 - g))
-    b = Math.round(b + fade * (225 - b))
+    r = Math.round(r + fade * (114 - r))
+    g = Math.round(g + fade * (221 - g))
+    b = Math.round(b + fade * (212 - b))
   }
 
   return [r, g, b]

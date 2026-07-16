@@ -249,13 +249,13 @@ export class LiveFeed {
     const badge = document.getElementById('livefeed-status-badge')
     if (!badge) return
     badge.textContent = message
-    badge.style.color = state === 'live' ? '#66bb6a'
+    badge.style.color = state === 'live' ? '#4ade80'
       : state === 'error' ? '#ef9a9a'
       : 'rgba(255,255,255,0.45)'
     // Pulse dot
     const dot = document.getElementById('livefeed-dot')
     if (dot) {
-      dot.style.background = state === 'live' ? '#66bb6a'
+      dot.style.background = state === 'live' ? '#4ade80'
         : state === 'error' ? '#ef9a9a' : 'rgba(255,255,255,0.3)'
       dot.style.animation = state === 'live' ? 'livefeed-pulse 1.2s ease-in-out infinite' : 'none'
     }
@@ -343,13 +343,13 @@ export class LiveFeed {
           color: #fff; font-size: 11px; padding: 3px 7px; outline: none;
         }
         #livefeed-connect-btn {
-          background: rgba(128,255,225,0.15);
-          border: 1px solid rgba(128,255,225,0.35);
-          color: #80ffe1; font-size: 11px; font-weight: 600;
+          background: rgba(114,221,212,0.15);
+          border: 1px solid rgba(114,221,212,0.35);
+          color: #72ddd4; font-size: 11px; font-weight: 600;
           padding: 3px 10px; border-radius: 5px; cursor: pointer;
           white-space: nowrap;
         }
-        #livefeed-connect-btn:hover { background: rgba(128,255,225,0.25); }
+        #livefeed-connect-btn:hover { background: rgba(114,221,212,0.25); }
         #livefeed-connect-btn.live {
           background: rgba(239,154,154,0.15);
           border-color: rgba(239,154,154,0.35); color: #ef9a9a;

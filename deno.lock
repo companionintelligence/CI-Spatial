@@ -20,6 +20,7 @@
     "npm:iwer@^2.2.1": "2.2.1",
     "npm:jimp@^1.6.0": "1.6.1",
     "npm:jimp@^1.6.1": "1.6.1",
+    "npm:jose@^5.9.6": "5.10.0",
     "npm:onnxruntime-node@^1.21.0": "1.21.0",
     "npm:qrcode-terminal@0.12": "0.12.0",
     "npm:three@0.184": "0.184.0",
@@ -1016,6 +1017,9 @@
         "@jimp/utils"
       ]
     },
+    "jose@5.10.0": {
+      "integrity": "sha512-s+3Al/p9g32Iq+oqXxkW//7jk2Vig6FF1CFqzVXoTUXt2qz89YWbL+OwS17NFYEvxC35n0FKeGO2LGYSxeM2Gg=="
+    },
     "jpeg-js@0.4.4": {
       "integrity": "sha512-WZzeDOEtTOBK4Mdsar0IqEU5sMr3vSV2RqkAIzUEV2BHnUfKGyswWFPFwK5EeDo93K3FohSHbLAjj0s1Wzd+dg=="
     },
@@ -1682,6 +1686,7 @@
       "npm:draco3dgltf@^1.5.7",
       "npm:hono@^4.7.0",
       "npm:jimp@^1.6.0",
+      "npm:jose@^5.9.6",
       "npm:onnxruntime-node@^1.21.0"
     ],
     "packageJson": {

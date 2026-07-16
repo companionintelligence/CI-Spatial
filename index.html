@@ -5,9 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>Companion Scan</title>
     <link rel="manifest" href="/manifest.json" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Montserrat (CI-Common canon font) — loaded async so an offline/slow
+         fonts CDN never blocks first paint; system-ui fallback covers the gap. -->
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@200;400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
+    <noscript><link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@200;400;500;600;700&display=swap" rel="stylesheet" /></noscript>
     <link rel="icon" href="/icon-192.png" type="image/png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/icon-192.png" />
-    <meta name="theme-color" content="#010d0e" />
+    <meta name="theme-color" content="#041620" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Companion Scan" />
@@ -61,24 +67,41 @@
 
       :root {
         color-scheme: dark;
-        --ci-bg: #020b0c;
-        --ci-bg-elevated: rgba(8, 21, 22, 0.88);
-        --ci-bg-elevated-strong: rgba(7, 18, 19, 0.96);
+        /* CI-Common design tokens (@companionintelligence/tokens, dark set).
+           This surface is dark-only (camera HUD), so the .dark values are the
+           canonical ones. --primary is the canon CI teal — lint-canon gated. */
+        --primary: #abd4d8;
+        --primary-foreground: #041620;
+        --background: #041620;
+        --card: #0a222e;
+        --border: #2c676d;
+        --aqua: #00a9a7;
+        --aqua-light: #72ddd4;
+        --success: #4ade80;
+        --success-foreground: #052e16;
+        --warning: #fbbf24;
+        --destructive: #ef7070;
+        --radius: 0.625rem;
+        --font-sans: 'Montserrat', system-ui, sans-serif;
+        /* App aliases (pre-token names used throughout this stylesheet) */
+        --ci-bg: var(--background);
+        --ci-bg-elevated: rgba(5, 23, 32, 0.88);
+        --ci-bg-elevated-strong: rgba(5, 20, 28, 0.96);
         --ci-surface: rgba(255, 255, 255, 0.05);
         --ci-surface-strong: rgba(255, 255, 255, 0.08);
         --ci-line: rgba(239, 240, 240, 0.12);
         --ci-line-strong: rgba(239, 240, 240, 0.18);
-        --ci-text: #eef4f1;
-        --ci-muted: rgba(239, 244, 241, 0.65);
-        --ci-soft: rgba(239, 244, 241, 0.55);
-        --ci-accent: #80ffe1;
-        --ci-accent-2: #66bb6a;
-        --ci-warning: #ffcc80;
+        --ci-text: #f8fafc;
+        --ci-muted: rgba(248, 250, 252, 0.65);
+        --ci-soft: rgba(248, 250, 252, 0.55);
+        --ci-accent: var(--aqua-light);
+        --ci-accent-2: var(--success);
+        --ci-warning: var(--warning);
         --ci-shadow: 0 18px 60px rgba(0, 0, 0, 0.44);
         --ci-radius: 16px;
         --ci-pill-radius: 999px;
-        --ci-font-body: 'Avenir Next', 'Avenir', 'Helvetica Neue', 'Segoe UI', sans-serif;
-        --ci-font-display: 'Avenir Next Condensed', 'Avenir Next', 'Helvetica Neue', 'Segoe UI', sans-serif;
+        --ci-font-body: var(--font-sans);
+        --ci-font-display: var(--font-sans);
       }
 
       button,
@@ -98,9 +121,9 @@
         height: 100%;
         overflow: hidden;
         background:
-          radial-gradient(circle at top left, rgba(128, 255, 225, 0.08), transparent 32%),
-          radial-gradient(circle at bottom right, rgba(102, 187, 106, 0.06), transparent 26%),
-          linear-gradient(180deg, #021010 0%, #01070a 100%);
+          radial-gradient(circle at top left, rgba(114, 221, 212, 0.08), transparent 32%),
+          radial-gradient(circle at bottom right, rgba(74, 222, 128, 0.06), transparent 26%),
+          linear-gradient(180deg, #072433 0%, #041620 100%);
         color: var(--ci-text);
         font-family: var(--ci-font-body);
         /* App chrome is not a document: no text selection, no long-press
@@ -152,9 +175,9 @@
         border: 1px solid var(--ci-line-strong);
         background:
           radial-gradient(circle at 35% 30%, rgba(255,255,255,0.22), rgba(255,255,255,0.08) 48%, rgba(255,255,255,0.04) 100%),
-          linear-gradient(180deg, rgba(25, 44, 46, 0.88), rgba(8, 21, 22, 0.95));
+          linear-gradient(180deg, rgba(16, 42, 54, 0.88), rgba(5, 23, 32, 0.95));
         backdrop-filter: blur(12px);
-        box-shadow: var(--ci-shadow), inset 0 0 0 1px rgba(128, 255, 225, 0.12);
+        box-shadow: var(--ci-shadow), inset 0 0 0 1px rgba(114, 221, 212, 0.12);
         cursor: pointer;
         transition: transform 0.15s ease-out, background 0.2s ease-out, border-color 0.2s ease-out, box-shadow 0.2s ease-out;
       }
@@ -170,13 +193,13 @@
       }
 
       #capture-btn:hover {
-        border-color: rgba(128, 255, 225, 0.42);
-        box-shadow: var(--ci-shadow), 0 0 0 5px rgba(128, 255, 225, 0.06);
+        border-color: rgba(114, 221, 212, 0.42);
+        box-shadow: var(--ci-shadow), 0 0 0 5px rgba(114, 221, 212, 0.06);
       }
 
       #capture-btn:active {
         transform: translateX(-50%) scale(0.92);
-        background: linear-gradient(180deg, rgba(20, 38, 40, 0.92), rgba(12, 24, 26, 0.98));
+        background: linear-gradient(180deg, rgba(12, 36, 48, 0.92), rgba(7, 26, 37, 0.98));
       }
 
       #capture-btn:active::before {
@@ -186,8 +209,8 @@
 
       /* If auto-capture is running, let's pulse/change the shutter button */
       #capture-btn.auto-busy::before {
-        background: rgba(239, 83, 80, 0.5); /* red record indicator */
-        border-color: rgba(239, 83, 80, 0.9);
+        background: rgba(239, 112, 112, 0.5); /* red record indicator */
+        border-color: rgba(239, 112, 112, 0.9);
       }
 
       #capture-btn.busy {
@@ -205,7 +228,7 @@
         height: 48px;
         border-radius: 50%;
         border: 1px solid var(--ci-line);
-        background: linear-gradient(180deg, rgba(26, 45, 46, 0.9), rgba(8, 20, 21, 0.94));
+        background: linear-gradient(180deg, rgba(16, 44, 57, 0.9), rgba(5, 22, 31, 0.94));
         color: var(--ci-text);
         font-size: 18px;
         cursor: pointer;
@@ -216,7 +239,7 @@
         box-shadow: var(--ci-shadow);
         transition: border-color 0.2s ease-out, background 0.2s ease-out, transform 0.15s ease-out, box-shadow 0.2s ease-out;
       }
-      #history-btn:hover { border-color: rgba(128, 255, 225, 0.38); box-shadow: var(--ci-shadow), 0 0 0 5px rgba(128, 255, 225, 0.06); }
+      #history-btn:hover { border-color: rgba(114, 221, 212, 0.38); box-shadow: var(--ci-shadow), 0 0 0 5px rgba(114, 221, 212, 0.06); }
       #history-btn:active { background: rgba(255, 255, 255, 0.12); transform: scale(0.94); }
 
       /* ── Auto-capture button ── */
@@ -229,7 +252,7 @@
         height: 48px;
         border-radius: 50%;
         border: 1px solid var(--ci-line);
-        background: linear-gradient(180deg, rgba(26, 45, 46, 0.9), rgba(8, 20, 21, 0.94));
+        background: linear-gradient(180deg, rgba(16, 44, 57, 0.9), rgba(5, 22, 31, 0.94));
         color: var(--ci-text);
         font-size: 16px;
         cursor: pointer;
@@ -240,12 +263,12 @@
         box-shadow: var(--ci-shadow);
         transition: border-color 0.2s ease-out, background 0.2s ease-out, transform 0.15s ease-out, box-shadow 0.2s ease-out;
       }
-      #auto-capture-btn:hover { border-color: rgba(128, 255, 225, 0.38); box-shadow: var(--ci-shadow), 0 0 0 5px rgba(128, 255, 225, 0.06); }
+      #auto-capture-btn:hover { border-color: rgba(114, 221, 212, 0.38); box-shadow: var(--ci-shadow), 0 0 0 5px rgba(114, 221, 212, 0.06); }
       #auto-capture-btn:active { background: rgba(255, 255, 255, 0.12); transform: scale(0.94); }
       #auto-capture-btn.active {
-        background: rgba(128,255,225, 0.25);
-        border-color: #80ffe1;
-        color: #80ffe1;
+        background: rgba(114,221,212, 0.25);
+        border-color: #72ddd4;
+        color: #72ddd4;
       }
 
       /* ── Keyframe stream button (server capture session) ── */
@@ -258,7 +281,7 @@
         height: 48px;
         border-radius: 50%;
         border: 1px solid var(--ci-line);
-        background: linear-gradient(180deg, rgba(26, 45, 46, 0.9), rgba(8, 20, 21, 0.94));
+        background: linear-gradient(180deg, rgba(16, 44, 57, 0.9), rgba(5, 22, 31, 0.94));
         color: var(--ci-text);
         font-size: 16px;
         cursor: pointer;
@@ -269,12 +292,12 @@
         box-shadow: var(--ci-shadow);
         transition: border-color 0.2s ease-out, background 0.2s ease-out, transform 0.15s ease-out, box-shadow 0.2s ease-out;
       }
-      #stream-btn:hover { border-color: rgba(128, 255, 225, 0.34); box-shadow: var(--ci-shadow), 0 0 0 5px rgba(128, 255, 225, 0.05); }
+      #stream-btn:hover { border-color: rgba(114, 221, 212, 0.34); box-shadow: var(--ci-shadow), 0 0 0 5px rgba(114, 221, 212, 0.05); }
       #stream-btn:active { background: rgba(255, 255, 255, 0.12); transform: scale(0.94); }
       #stream-btn.active {
-        background: rgba(102, 187, 106, 0.25);
-        border-color: #66bb6a;
-        color: #66bb6a;
+        background: rgba(74, 222, 128, 0.25);
+        border-color: #4ade80;
+        color: #4ade80;
       }
       #stream-count {
         position: absolute;
@@ -283,8 +306,8 @@
         min-width: 17px;
         height: 17px;
         border-radius: 9px;
-        background: #66bb6a;
-        color: #04150a;
+        background: #4ade80;
+        color: #052e16;
         font-size: 10px;
         font-weight: 800;
         align-items: center;
@@ -299,7 +322,7 @@
         position: absolute;
         inset: -8px;
         border-radius: 50%;
-        border: 2px solid #80ffe1;
+        border: 2px solid #72ddd4;
         animation: auto-ring 1s ease-out infinite;
         pointer-events: none;
       }
@@ -314,7 +337,7 @@
         min-width: 17px;
         height: 17px;
         border-radius: 9px;
-        background: #80ffe1;
+        background: #72ddd4;
         color: #000;
         font-size: 10px;
         font-weight: 800;
@@ -337,7 +360,7 @@
         padding: 0 16px;
         border-radius: 999px;
         border: 1px solid var(--ci-line);
-        background: linear-gradient(180deg, rgba(26, 45, 46, 0.9), rgba(8, 20, 21, 0.94));
+        background: linear-gradient(180deg, rgba(16, 44, 57, 0.9), rgba(5, 22, 31, 0.94));
         color: var(--ci-text);
         font-size: 14px;
         cursor: pointer;
@@ -351,9 +374,9 @@
         transition: border-color 0.2s ease-out, background 0.2s ease-out, color 0.2s ease-out, transform 0.15s ease-out, box-shadow 0.2s ease-out;
       }
       #viewer-link:hover, #viewer-link:active {
-        background: rgba(128,255,225, 0.18);
-        border-color: #80ffe1;
-        color: #80ffe1;
+        background: rgba(114,221,212, 0.18);
+        border-color: #72ddd4;
+        color: #72ddd4;
         transform: scale(0.94);
       }
 
@@ -367,7 +390,7 @@
         height: 48px;
         border-radius: 50%;
         border: 1px solid var(--ci-line);
-        background: linear-gradient(180deg, rgba(26, 45, 46, 0.9), rgba(8, 20, 21, 0.94));
+        background: linear-gradient(180deg, rgba(16, 44, 57, 0.9), rgba(5, 22, 31, 0.94));
         color: var(--ci-text);
         font-size: 16px;
         cursor: pointer;
@@ -380,15 +403,15 @@
         transition: border-color 0.2s ease-out, background 0.2s ease-out, color 0.2s ease-out, transform 0.15s ease-out, box-shadow 0.2s ease-out;
       }
       #xr-mode-link:hover, #xr-mode-link:active {
-        background: rgba(128,255,225, 0.18);
-        border-color: #80ffe1;
-        color: #80ffe1;
+        background: rgba(114,221,212, 0.18);
+        border-color: #72ddd4;
+        color: #72ddd4;
         transform: scale(0.94);
       }
       #xr-mode-link.active {
-        background: rgba(128,255,225, 0.25);
-        border-color: #80ffe1;
-        color: #80ffe1;
+        background: rgba(114,221,212, 0.25);
+        border-color: #72ddd4;
+        color: #72ddd4;
       }
 
       /* Full-screen backdrop + slide-in drawer */
@@ -411,8 +434,8 @@
         bottom: 0;
         width: min(420px, 88vw);
         background:
-          linear-gradient(180deg, rgba(10, 26, 27, 0.98), rgba(5, 14, 15, 0.98)),
-          radial-gradient(circle at top left, rgba(128, 255, 225, 0.08), transparent 28%);
+          linear-gradient(180deg, rgba(10, 26, 27, 0.98), rgba(4, 16, 23, 0.98)),
+          radial-gradient(circle at top left, rgba(114, 221, 212, 0.08), transparent 28%);
         backdrop-filter: blur(18px);
         -webkit-backdrop-filter: blur(16px);
         border-right: 1px solid var(--ci-line);
@@ -434,7 +457,7 @@
         height: 180px;
         position: relative;
         border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-        background: #091818;
+        background: #0a222e;
       }
       #geo-map {
         width: 100%;
@@ -492,7 +515,7 @@
         line-height: 1;
         transition: background 0.2s ease-out, border-color 0.2s ease-out, color 0.2s ease-out, transform 0.15s ease-out;
       }
-      #history-close:hover { background: rgba(255,255,255,0.08); border-color: rgba(128,255,225,0.25); color: var(--ci-accent); }
+      #history-close:hover { background: rgba(255,255,255,0.08); border-color: rgba(114,221,212,0.25); color: var(--ci-accent); }
       #history-close:active { transform: scale(0.94); }
       #history-body {
         flex: 1;
@@ -580,7 +603,7 @@
         width: min(280px, calc(100vw - 28px - env(safe-area-inset-left) - env(safe-area-inset-right)));
         display: flex;
         flex-direction: column;
-        background: rgba(1,13,14,0.68);
+        background: rgba(4,22,32,0.68);
         backdrop-filter: blur(14px);
         -webkit-backdrop-filter: blur(14px);
         border: 1px solid rgba(239,240,240,0.12);
@@ -646,7 +669,7 @@
       #progress-bar-fill.analyzing {
         width: 45% !important;
         transition: none;
-        background: #80ffe1;
+        background: #72ddd4;
         animation: analyze-sweep 1.1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
       }
 
@@ -675,7 +698,7 @@
         border-bottom: none;
         padding: 5px 10px;
         background: none;
-        color: #66bb6a;
+        color: #4ade80;
         font-size: 11px;
         font-weight: 700;
         cursor: pointer;
@@ -741,7 +764,7 @@
         top: 0;
         bottom: 0;
         width: min(312px, 86vw);
-        background: linear-gradient(180deg, rgba(7, 18, 19, 0.96), rgba(4, 11, 12, 0.98));
+        background: linear-gradient(180deg, rgba(5, 20, 28, 0.96), rgba(4, 11, 12, 0.98));
         backdrop-filter: blur(18px);
         border-left: 1px solid var(--ci-line);
         transform: translateX(100%);
@@ -764,7 +787,7 @@
         height: 48px;
         border-radius: 50%;
         border: 1px solid var(--ci-line);
-        background: linear-gradient(180deg, rgba(26, 45, 46, 0.9), rgba(8, 20, 21, 0.94));
+        background: linear-gradient(180deg, rgba(16, 44, 57, 0.9), rgba(5, 22, 31, 0.94));
         color: var(--ci-text);
         font-size: 18px;
         cursor: pointer;
@@ -777,8 +800,8 @@
       }
 
       #panel-toggle:hover {
-        border-color: rgba(128, 255, 225, 0.38);
-        box-shadow: var(--ci-shadow), 0 0 0 5px rgba(128, 255, 225, 0.06);
+        border-color: rgba(114, 221, 212, 0.38);
+        box-shadow: var(--ci-shadow), 0 0 0 5px rgba(114, 221, 212, 0.06);
       }
 
       #panel-toggle:active {
@@ -795,7 +818,7 @@
         min-width: 18px;
         height: 18px;
         border-radius: 9px;
-        background: #80ffe1;
+        background: #72ddd4;
         color: #000;
         font-size: 11px;
         font-weight: 800;
@@ -846,9 +869,9 @@
         padding: 8px 16px;
         font-size: 13px;
         font-weight: 700;
-        color: #010d0e;
+        color: #041620;
         background: var(--ci-accent);
-        border: 1px solid rgba(128,255,225,0.7);
+        border: 1px solid rgba(114,221,212,0.7);
         border-radius: 16px;
         cursor: pointer;
         backdrop-filter: blur(12px);
@@ -884,17 +907,17 @@
         width: 100%;
         min-height: 44px;
         padding: 12px 14px;
-        background: linear-gradient(180deg, rgba(128,255,225,0.98), rgba(128,255,225,0.84));
-        color: #021010;
-        border: 1px solid rgba(128,255,225,0.5);
+        background: linear-gradient(180deg, rgba(114,221,212,0.98), rgba(114,221,212,0.84));
+        color: #072433;
+        border: 1px solid rgba(114,221,212,0.5);
         border-radius: 13px;
         font-size: 14px;
         font-weight: 700;
         cursor: pointer;
-        box-shadow: 0 10px 30px rgba(128,255,225,0.16);
+        box-shadow: 0 10px 30px rgba(114,221,212,0.16);
         transition: transform 0.15s ease-out, box-shadow 0.2s ease-out, opacity 0.15s ease-out;
       }
-      .panel-btn-primary:hover { transform: translateY(-1px); box-shadow: 0 16px 36px rgba(128,255,225,0.18); }
+      .panel-btn-primary:hover { transform: translateY(-1px); box-shadow: 0 16px 36px rgba(114,221,212,0.18); }
       .panel-btn-primary:active { opacity: 0.82; transform: translateY(0); }
 
       .panel-btn-ghost {
@@ -909,7 +932,7 @@
         cursor: pointer;
         transition: transform 0.15s ease-out, background 0.15s ease-out, border-color 0.15s ease-out, color 0.15s ease-out;
       }
-      .panel-btn-ghost:hover { background: rgba(128,255,225,0.08); border-color: rgba(128,255,225,0.24); color: var(--ci-text); transform: translateY(-1px); }
+      .panel-btn-ghost:hover { background: rgba(114,221,212,0.08); border-color: rgba(114,221,212,0.24); color: var(--ci-text); transform: translateY(-1px); }
       .panel-btn-ghost:active { background: rgba(255, 255, 255, 0.11); transform: translateY(0); }
 
       .panel-btn-danger {
@@ -926,7 +949,7 @@
         justify-content: center;
         border-radius: 50%;
         border: 1px solid var(--ci-line);
-        background: linear-gradient(180deg, rgba(26, 45, 46, 0.9), rgba(8, 20, 21, 0.94));
+        background: linear-gradient(180deg, rgba(16, 44, 57, 0.9), rgba(5, 22, 31, 0.94));
         color: var(--ci-text);
         cursor: pointer;
         box-shadow: var(--ci-shadow);
@@ -934,8 +957,8 @@
       }
 
       .ci-icon-btn:hover {
-        border-color: rgba(128, 255, 225, 0.38);
-        box-shadow: var(--ci-shadow), 0 0 0 5px rgba(128, 255, 225, 0.06);
+        border-color: rgba(114, 221, 212, 0.38);
+        box-shadow: var(--ci-shadow), 0 0 0 5px rgba(114, 221, 212, 0.06);
       }
 
       .ci-icon-btn:active {
@@ -966,9 +989,9 @@
       }
 
       .ci-toolbar-pill:hover {
-        background: rgba(128, 255, 225, 0.08);
+        background: rgba(114, 221, 212, 0.08);
         color: var(--ci-text);
-        border-color: rgba(128, 255, 225, 0.26);
+        border-color: rgba(114, 221, 212, 0.26);
       }
 
       .ci-toolbar-pill:active {
@@ -976,8 +999,8 @@
       }
 
       .ci-toolbar-pill.active {
-        background: rgba(128, 255, 225, 0.16);
-        border-color: rgba(128, 255, 225, 0.42);
+        background: rgba(114, 221, 212, 0.16);
+        border-color: rgba(114, 221, 212, 0.42);
         color: var(--ci-accent);
       }
 
@@ -993,8 +1016,8 @@
       }
 
       .ci-inline-btn:hover {
-        background: rgba(128, 255, 225, 0.08);
-        border-color: rgba(128, 255, 225, 0.24);
+        background: rgba(114, 221, 212, 0.08);
+        border-color: rgba(114, 221, 212, 0.24);
         color: var(--ci-text);
       }
 
@@ -1003,9 +1026,9 @@
       }
 
       .ci-inline-btn--primary {
-        background: linear-gradient(180deg, rgba(128,255,225,0.98), rgba(128,255,225,0.84));
-        color: #021010;
-        border-color: rgba(128,255,225,0.5);
+        background: linear-gradient(180deg, rgba(114,221,212,0.98), rgba(114,221,212,0.84));
+        color: #072433;
+        border-color: rgba(114,221,212,0.5);
         font-weight: 700;
       }
 
@@ -1031,8 +1054,8 @@
       }
 
       .ci-field:focus {
-        border-color: rgba(128, 255, 225, 0.42);
-        box-shadow: 0 0 0 4px rgba(128, 255, 225, 0.08);
+        border-color: rgba(114, 221, 212, 0.42);
+        box-shadow: 0 0 0 4px rgba(114, 221, 212, 0.08);
         background: rgba(255, 255, 255, 0.07);
       }
 
@@ -1046,13 +1069,13 @@
         padding: 0 16px;
         border-radius: 999px;
         border: 1px solid var(--ci-line);
-        background: linear-gradient(180deg, rgba(26, 45, 46, 0.9), rgba(8, 20, 21, 0.94));
+        background: linear-gradient(180deg, rgba(16, 44, 57, 0.9), rgba(5, 22, 31, 0.94));
         color: var(--ci-text);
         text-decoration: none;
       }
 
       .ci-pill-link:hover {
-        border-color: rgba(128, 255, 225, 0.38);
+        border-color: rgba(114, 221, 212, 0.38);
         color: var(--ci-accent);
       }
 
@@ -1069,9 +1092,9 @@
         justify-content: center;
         gap: 22px;
         background:
-          radial-gradient(circle at 50% 30%, rgba(128,255,225,0.14), transparent 28%),
-          linear-gradient(180deg, rgba(9,24,24,0.92), rgba(1,13,14,0.97)),
-          repeating-linear-gradient(90deg, rgba(128,255,225,0.08) 0 1px, transparent 1px 14px);
+          radial-gradient(circle at 50% 30%, rgba(114,221,212,0.14), transparent 28%),
+          linear-gradient(180deg, rgba(8,28,38,0.92), rgba(4,22,32,0.97)),
+          repeating-linear-gradient(90deg, rgba(114,221,212,0.08) 0 1px, transparent 1px 14px);
         backdrop-filter: blur(10px);
         padding: 24px;
       }
@@ -1091,7 +1114,7 @@
         border: 1px solid rgba(239,240,240,0.42);
         border-radius: 50%;
         position: relative;
-        box-shadow: 0 0 34px rgba(128,255,225,0.22);
+        box-shadow: 0 0 34px rgba(114,221,212,0.22);
       }
 
       #start-brand-mark::before,
@@ -1111,12 +1134,12 @@
         height: 18px;
         right: 7px;
         top: 17px;
-        background: #80ffe1;
-        border-color: #80ffe1;
+        background: #72ddd4;
+        border-color: #72ddd4;
       }
 
       #start-eyebrow {
-        color: #80ffe1;
+        color: #72ddd4;
         font-size: 11px;
         font-weight: 800;
         letter-spacing: 0.14em;
@@ -1166,9 +1189,9 @@
       }
 
       .start-path:hover {
-        border-color: rgba(128, 255, 225, 0.42);
+        border-color: rgba(114, 221, 212, 0.42);
         background: var(--ci-bg-elevated-strong);
-        box-shadow: var(--ci-shadow), 0 0 0 5px rgba(128, 255, 225, 0.06);
+        box-shadow: var(--ci-shadow), 0 0 0 5px rgba(114, 221, 212, 0.06);
       }
 
       .start-path:active {
@@ -1177,15 +1200,15 @@
 
       /* Primary path — the live-AR card carries the accent (mint) fill */
       #start-ar-btn.start-path {
-        background: linear-gradient(180deg, rgba(128,255,225,0.98), rgba(128,255,225,0.82));
-        border-color: rgba(128,255,225,0.7);
-        color: #010d0e;
-        box-shadow: 0 18px 44px rgba(128,255,225,0.18);
+        background: linear-gradient(180deg, rgba(114,221,212,0.98), rgba(114,221,212,0.82));
+        border-color: rgba(114,221,212,0.7);
+        color: #041620;
+        box-shadow: 0 18px 44px rgba(114,221,212,0.18);
       }
 
       #start-ar-btn.start-path:hover {
-        background: linear-gradient(180deg, rgba(128,255,225,1), rgba(128,255,225,0.88));
-        box-shadow: 0 20px 54px rgba(128,255,225,0.22);
+        background: linear-gradient(180deg, rgba(114,221,212,1), rgba(114,221,212,0.88));
+        box-shadow: 0 20px 54px rgba(114,221,212,0.22);
       }
 
       #start-ar-btn.start-path:disabled {
@@ -1202,11 +1225,11 @@
         justify-content: center;
         font-size: 24px;
         border-radius: 12px;
-        background: rgba(1, 13, 14, 0.14);
+        background: rgba(4, 22, 32, 0.14);
       }
 
       #start-upload-card .start-path-icon {
-        background: rgba(128, 255, 225, 0.10);
+        background: rgba(114, 221, 212, 0.10);
       }
 
       .start-path-copy {
@@ -1229,7 +1252,7 @@
       }
 
       #start-ar-btn.start-path .start-path-sub {
-        color: rgba(1, 13, 14, 0.72);
+        color: rgba(4, 22, 32, 0.72);
         opacity: 1;
       }
 
@@ -1238,7 +1261,7 @@
       }
 
       /* Leaflet dark-mode overrides */
-      .leaflet-container { background: #091818 !important; font-family: inherit; }
+      .leaflet-container { background: #0a222e !important; font-family: inherit; }
       .leaflet-control-zoom a { background: rgba(20,22,32,0.9) !important; color: #fff !important; border-color: rgba(255,255,255,0.1) !important; }
       .leaflet-control-attribution { background: rgba(0,0,0,0.5) !important; color: rgba(255,255,255,0.3) !important; font-size: 9px !important; }
       .leaflet-control-attribution a { color: rgba(255,255,255,0.4) !important; }
@@ -1253,7 +1276,7 @@
       #onboarding-overlay {
         position: fixed; inset: 0; z-index: 25;
         display: none; flex-direction: column; align-items: center; justify-content: center;
-        background: rgba(1, 13, 14, 0.94); backdrop-filter: blur(16px);
+        background: rgba(4, 22, 32, 0.94); backdrop-filter: blur(16px);
         padding: 24px; gap: 18px;
       }
       #onboarding-overlay.visible { display: flex; }
@@ -1279,9 +1302,9 @@
       }
       .onboard-dot.active { background: var(--ci-accent); }
       #onboard-next-btn {
-        padding: 14px 48px; font-size: 16px; font-weight: 700; color: #010d0e;
-        background: linear-gradient(180deg, rgba(128,255,225,1), rgba(128,255,225,0.82));
-        border: 1px solid rgba(128,255,225,0.7); border-radius: var(--ci-pill-radius);
+        padding: 14px 48px; font-size: 16px; font-weight: 700; color: #041620;
+        background: linear-gradient(180deg, rgba(114,221,212,1), rgba(114,221,212,0.82));
+        border: 1px solid rgba(114,221,212,0.7); border-radius: var(--ci-pill-radius);
         cursor: pointer; -webkit-tap-highlight-color: transparent;
         transition: transform 0.15s ease-out, opacity 0.15s ease-out;
       }
@@ -1386,7 +1409,7 @@
       <div id="upload-video-progress" aria-live="polite"
         style="max-width:380px;width:100%;text-align:center;font-size:12px;color:var(--ci-muted);line-height:1.55;"></div>
       <a id="upload-video-open" href="/viewer.html?world=default" hidden
-        style="color:#80ffe1;font-size:12px;font-weight:700;text-decoration:none;">
+        style="color:#72ddd4;font-size:12px;font-weight:700;text-decoration:none;">
         Processing started — open the 3D editor →
       </a>
 
@@ -1397,7 +1420,7 @@
     <div id="ar-overlay">
 
       <!-- Persistent permission error banner, shown when motion/camera is denied -->
-      <div id="permission-error-banner" style="display:none; position:absolute; top:calc(env(safe-area-inset-top, 0px) + 60px); left:14px; right:14px; background:rgba(239,83,80,0.92); backdrop-filter:blur(8px); border:1px solid rgba(255,255,255,0.2); border-radius:8px; padding:12px; z-index:20; color:#fff; font-size:12px; line-height:1.45; box-shadow:var(--ci-shadow);">
+      <div id="permission-error-banner" style="display:none; position:absolute; top:calc(env(safe-area-inset-top, 0px) + 60px); left:14px; right:14px; background:rgba(239,112,112,0.92); backdrop-filter:blur(8px); border:1px solid rgba(255,255,255,0.2); border-radius:8px; padding:12px; z-index:20; color:#fff; font-size:12px; line-height:1.45; box-shadow:var(--ci-shadow);">
         <div style="font-weight:700; margin-bottom:4px; font-size:13px;">⚠️ Permission Access Required</div>
         <div id="permission-error-msg"></div>
       </div>
@@ -1415,7 +1438,7 @@
                 <line x1="1.5" y1="14" x2="4" y2="14" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
                 <line x1="24" y1="14" x2="26.5" y2="14" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
                 <g id="compass-needle" style="transform-origin:14px 14px">
-                  <polygon points="14,3 15.4,14 14,12 12.6,14" fill="#80ffe1"/>
+                  <polygon points="14,3 15.4,14 14,12 12.6,14" fill="#72ddd4"/>
                   <polygon points="14,25 15.4,14 14,16 12.6,14" fill="rgba(255,255,255,0.4)"/>
                 </g>
                 <text x="13" y="11" font-size="4" fill="rgba(255,255,255,0.5)" font-family="sans-serif" font-weight="700">N</text>
@@ -1425,7 +1448,7 @@
               <div id="status-row">
                 <span id="status-text" aria-live="polite">Initialising…</span>
                 <span id="verdict-chip" class="verdict-scanning" style="display:inline-block; font-size:10px; font-weight:700; padding:1.5px 5px; border-radius:4px; margin-left:6px; background:rgba(255,255,255,0.08); color:rgba(255,255,255,0.6); text-transform:uppercase; letter-spacing:0.04em;">Scanning</span>
-                <a id="export-view-link" href="/viewer.html?world=default" style="display:none; color:#80ffe1; font-weight:700; text-decoration:none; margin-left:8px;">View in 3D →</a>
+                <a id="export-view-link" href="/viewer.html?world=default" style="display:none; color:#72ddd4; font-weight:700; text-decoration:none; margin-left:8px;">View in 3D →</a>
                 <span id="scan-stats"></span>
               </div>
               <div id="geo-chip">
@@ -1446,14 +1469,14 @@
           <div style="display:flex;align-items:center;gap:6px;">
             <span style="font-size:10px;color:rgba(255,255,255,0.4);font-weight:600;text-transform:uppercase;letter-spacing:0.04em;flex-shrink:0;">Cov</span>
             <div style="flex:1;height:4px;background:rgba(255,255,255,0.12);border-radius:2px;overflow:hidden;">
-              <div id="quality-coverage-fill" style="height:100%;width:0%;border-radius:2px;transition:width 0.5s ease,background 0.5s ease;background:#ef5350;"></div>
+              <div id="quality-coverage-fill" style="height:100%;width:0%;border-radius:2px;transition:width 0.5s ease,background 0.5s ease;background:#ef7070;"></div>
             </div>
             <span id="quality-coverage-text" style="font-size:10px;color:rgba(255,255,255,0.6);min-width:26px;text-align:right;"></span>
           </div>
           <div style="display:flex;flex-wrap:wrap;gap:3px;margin-top:3px;">
             <div id="quality-drift-badge"  style="display:none;align-items:center;background:rgba(255,152,0,0.9);border-radius:4px;padding:2px 6px;font-size:11px;font-weight:700;color:#000;"></div>
             <div id="quality-light-badge"  style="display:none;align-items:center;background:rgba(40,40,40,0.9);border:1px solid rgba(255,255,255,0.18);border-radius:4px;padding:2px 6px;font-size:11px;font-weight:700;color:#fff;">🌑 Low light</div>
-            <div id="quality-refl-badge"   style="display:none;align-items:center;background:rgba(128,255,225,0.9);border-radius:4px;padding:2px 6px;font-size:11px;font-weight:700;color:#000;">✦ Refl</div>
+            <div id="quality-refl-badge"   style="display:none;align-items:center;background:rgba(114,221,212,0.9);border-radius:4px;padding:2px 6px;font-size:11px;font-weight:700;color:#000;">✦ Refl</div>
           </div>
           <div id="quality-missing" style="display:none;font-size:10px;color:rgba(255,180,0,0.85);font-weight:600;margin-top:2px;"></div>
         </div>
@@ -1462,7 +1485,7 @@
 
         <!-- 3. RTC LIVE row -->
         <button id="rtc-stream-btn" style="display:none;" aria-label="Stop live stream" title="Tap to stop streaming">
-          <span id="rtc-stream-badge" style="width:7px;height:7px;border-radius:50%;background:#66bb6a;display:inline-block;animation:rtc-live-pulse 1.2s ease-in-out infinite;flex-shrink:0;"></span>
+          <span id="rtc-stream-badge" style="width:7px;height:7px;border-radius:50%;background:#4ade80;display:inline-block;animation:rtc-live-pulse 1.2s ease-in-out infinite;flex-shrink:0;"></span>
           LIVE · tap to stop
         </button>
 
