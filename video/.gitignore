@@ -1,0 +1,12 @@
+# rendered videos — regenerate with `ci-video render`
+out/
+
+# generated compositions — derived from storyboard.json by `ci-video build`,
+# and rebuilt by the workflow before every check/render. A committed copy is
+# never read and goes stale on the first storyboard edit.
+build/
+
+# playwright auth state
+.auth/
+
+node_modules/

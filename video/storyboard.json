@@ -1,0 +1,182 @@
+{
+  "$schema": "https://raw.githubusercontent.com/companionintelligence/CI-Common/main/packages/video-kit/schema/storyboard.schema.json",
+  "app": {
+    "id": "ci-web-xr-scan",
+    "name": "Companion Scan",
+    "repo": "companionintelligence/CI-Web-XR-Scan",
+    "marketplaceId": "ci-web-xr-scan",
+    "website": "ci.computer"
+  },
+  "meta": {
+    "fps": 30,
+    "transitionSeconds": 0.5
+  },
+  "chapters": {
+    "setup": "Before you scan",
+    "capture": "Scanning a room"
+  },
+  "media": {
+    "music": null,
+    "musicVolume": 0.14
+  },
+  "scenes": [
+    {
+      "id": "open",
+      "kind": "intro",
+      "seconds": 5,
+      "title": "Companion Scan",
+      "caption": "Walk the room. Keep the map.",
+      "narration": "Companion Scan turns a walk through a room into a 3D map."
+    },
+    {
+      "id": "ftue-permissions",
+      "kind": "screen",
+      "chapter": "setup",
+      "seconds": 5.5,
+      "caption": "Camera and motion. That's the whole list.",
+      "narration": "It asks for camera and motion sensors. That's the entire permission list.",
+      "shots": [
+        {
+          "id": "onboard-permissions",
+          "url": "companion-scan.local",
+          "alt": "First onboarding step explaining that Companion Scan needs camera and motion access",
+          "motion": "push-in",
+          "capture": {
+            "path": "/?mock=xr8&onboarding=1",
+            "waitFor": "#onboarding-overlay.visible",
+            "settle": 500
+          }
+        }
+      ]
+    },
+    {
+      "id": "ftue-capture-modes",
+      "kind": "screen",
+      "chapter": "setup",
+      "seconds": 6,
+      "caption": "Tap a frame, auto-capture, or stream keyframes.",
+      "narration": "Three ways to capture: tap a frame, snap automatically as you walk, or stream keyframes.",
+      "shots": [
+        {
+          "id": "onboard-capture-modes",
+          "url": "companion-scan.local",
+          "alt": "Onboarding step three listing the three capture modes",
+          "motion": "drift-down",
+          "capture": {
+            "path": "/?mock=xr8&onboarding=1",
+            "waitFor": "#onboarding-overlay.visible",
+            "before": [
+              { "click": "#onboard-next-btn" },
+              { "click": "#onboard-next-btn" },
+              { "waitFor": ".onboard-step[data-step='2'].active" }
+            ],
+            "settle": 400
+          }
+        }
+      ]
+    },
+    {
+      "id": "ftue-finish",
+      "kind": "screen",
+      "chapter": "setup",
+      "seconds": 5.5,
+      "caption": "Export a GLB. Open it in 3D.",
+      "narration": "When you're done, export the scan and open it in the desktop editor.",
+      "shots": [
+        {
+          "id": "onboard-finish",
+          "url": "companion-scan.local",
+          "alt": "Final onboarding step covering GLB export and the 3D editor",
+          "motion": "push-in",
+          "capture": {
+            "path": "/?mock=xr8&onboarding=1",
+            "waitFor": "#onboarding-overlay.visible",
+            "before": [
+              { "click": "#onboard-next-btn" },
+              { "click": "#onboard-next-btn" },
+              { "click": "#onboard-next-btn" },
+              { "click": "#onboard-next-btn" },
+              { "waitFor": ".onboard-step[data-step='4'].active" }
+            ],
+            "settle": 400
+          }
+        }
+      ]
+    },
+    {
+      "id": "choose-your-path",
+      "kind": "screen",
+      "chapter": "capture",
+      "seconds": 6.5,
+      "caption": "Two ways in. Both end in a map.",
+      "narration": "Scan a room with the camera, or upload a walkthrough video you already have.",
+      "shots": [
+        {
+          "id": "start-screen",
+          "url": "companion-scan.local",
+          "alt": "Start screen offering two equal paths: scan a room, or upload a video",
+          "motion": "push-in",
+          "capture": {
+            "path": "/?mock=xr8",
+            "waitFor": "#start-ar-btn",
+            "settle": 400
+          }
+        }
+      ]
+    },
+    {
+      "id": "live-scan",
+      "kind": "screen",
+      "chapter": "capture",
+      "seconds": 7,
+      "caption": "Points build as you walk.",
+      "narration": "Walk slowly and the point cloud fills in. The quality chip says when it's enough.",
+      "shots": [
+        {
+          "id": "live-scan-hud",
+          "url": "companion-scan.local",
+          "alt": "Live scanning heads-up display over the camera feed, with capture controls",
+          "motion": "drift-down",
+          "capture": {
+            "path": "/?mock=xr8",
+            "waitFor": "#start-ar-btn",
+            "before": [
+              { "click": "#start-ar-btn" },
+              { "waitFor": "#capture-btn" },
+              { "wait": 2500 }
+            ],
+            "settle": 600,
+            "mask": [
+              "#scan-stats",
+              "#status-text",
+              "#verdict-chip",
+              "#quality-coverage-text",
+              "#geo-chip"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "what-you-get",
+      "kind": "feature",
+      "seconds": 6,
+      "caption": "Local capture, self-hosted pipeline.",
+      "narration": "It runs in the browser on your phone and sends scans to your own server.",
+      "items": [
+        { "label": "Runs on", "value": "Your phone" },
+        { "label": "Capture", "value": "Live AR or video" },
+        { "label": "Output", "value": "GLB + point cloud" },
+        { "label": "Sends to", "value": "Your own server" }
+      ]
+    },
+    {
+      "id": "close",
+      "kind": "outro",
+      "seconds": 5,
+      "cta": "Own your AI.",
+      "url": "ci.computer",
+      "narration": "Companion Scan, from Companion Intelligence. Own your AI."
+    }
+  ]
+}
