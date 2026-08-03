@@ -33,8 +33,8 @@
       "kind": "screen",
       "chapter": "setup",
       "seconds": 5.5,
-      "caption": "Camera and motion. That's the whole list.",
-      "narration": "It asks for camera and motion sensors. That's the entire permission list.",
+      "caption": "Camera sees the room. Motion tracks you.",
+      "narration": "The camera sees the room. Motion sensors track where you are.",
       "shots": [
         {
           "id": "onboard-permissions",
@@ -174,9 +174,9 @@
       "id": "close",
       "kind": "outro",
       "seconds": 5,
-      "cta": "Own your AI.",
+      "cta": "UnCloud your life.",
       "url": "ci.computer",
-      "narration": "Companion Scan, from Companion Intelligence. Own your AI."
+      "narration": "Companion Scan, from Companion Intelligence. UnCloud your life."
     }
   ]
 }
