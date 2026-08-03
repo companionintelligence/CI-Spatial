@@ -5,12 +5,16 @@ name: Publish container
 # manifest pins :latest, so every push to main republishes :latest (plus an
 # immutable :sha-<short> tag). Mirrors the CI-WebXR-Time-Machine pipeline.
 
+# >>> ci-local:gated original triggers below, restore with `ci-local restore`
+# on:
+#   push:
+#     branches: [main]
+#     tags: ["*"]
+#   pull_request:
+#     branches: [main]
+#   workflow_dispatch:
+# <<< ci-local:gated
 on:
-  push:
-    branches: [main]
-    tags: ["*"]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
