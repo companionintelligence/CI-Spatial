@@ -1,0 +1,74 @@
+# Companion Scan — product video
+
+> **Private & Confidential — Property of Lifescope Inc. Do not distribute.**
+
+Generates a **16:9 desktop cut** and a **9:16 mobile cut** of Companion Scan's FTUE and major
+screens, from this repo's own UI. Both are produced from [`storyboard.json`](storyboard.json).
+
+## Quick start
+
+```bash
+npm install
+npx playwright install --with-deps chromium
+npm run doctor        # verify node / ffmpeg / playwright / hyperframes / fonts
+
+# with the stage running (see below):
+npm run capture       # drive the real UI -> assets/shots/*.png (both viewports)
+npm run build         # storyboard.json -> build/{landscape,portrait}/index.html
+npm run check         # HyperFrames gate: lint, runtime, layout, motion, contrast
+npm run render        # -> out/ci-web-xr-scan-landscape.mp4 and out/ci-web-xr-scan-portrait.mp4
+```
+
+## The stage
+
+From the **repo root**, one server is enough:
+
+```bash
+TAILSCALE_HOSTNAME=localhost npm run dev -- --port 5173 --strictPort
+```
+
+Then `npm run capture` in this directory.
+
+Three things about that command are load-bearing:
+
+- **`TAILSCALE_HOSTNAME=localhost`** — `vite.config.ts` pins `server.allowedHosts` to a
+  Tailscale name (resolved from the Tailscale CLI, falling back to a hard-coded `*.ts.net`
+  host). Without the override Vite rejects a `localhost` Host header and every shot captures a
+  blocked-request page instead of the app.
+- **`--strictPort`** — Vite silently walks to 5174 if 5173 is busy, which would leave capture
+  pointed at a dead port.
+- **HTTPS, not HTTP** — Vite serves TLS with a self-signed cert when no Tailscale cert is
+  present. `baseURL` is `https://localhost:5173`; the kit already sets `ignoreHTTPSErrors`.
+
+**No Deno API server and no models are needed.** Every shot runs against this repo's own 8th Wall
+mock (`public/test-fixtures/xr8-mock.js`, loaded by `index.html` when `?mock=xr8` is set), which
+flies a scripted camera through a synthetic room and emits SLAM poses and feature points entirely
+client-side. `capture.config.mjs` short-circuits the proxied API routes so the absent backend
+fails fast rather than stalling `networkidle`.
+
+`capture.config.mjs` also carries the full list of determinism hazards found in this app — read
+its header before adding a shot.
+
+## Editing the video
+
+Everything editorial lives in [`storyboard.json`](storyboard.json) — scene order, durations,
+captions, narration, and which screens appear. The **capture spec for each shot lives in the same
+file**, so the script and the screenshots cannot drift apart.
+
+Adding a beat is: add a scene, add its shot's `capture` block, `npm run capture -- --only <id>`,
+then `npm run build && npm run render`.
+
+## Media
+
+Drop prepared media into `assets/media/` and point `media.music` at it. Per-scene voiceover is
+picked up automatically from `assets/audio/<sceneId>.mp3`; regenerate it from the storyboard's
+`narration` fields with `npm run narrate`.
+
+## What is committed
+
+`assets/shots/*.png` and `assets/audio/*.mp3` **are** committed — they are the record of what the
+product looked like, and captures are byte-stable, so a diff in them means the UI genuinely
+changed. `out/` is not committed.
+
+See [CI-Engineering `projects/product-video-pipeline/`](https://github.com/companionintelligence/CI-Engineering/tree/main/projects/product-video-pipeline)
+for the full contract.
