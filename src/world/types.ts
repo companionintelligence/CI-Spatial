@@ -24,6 +24,7 @@ export type WorldJobType =
   | 'splat-train'
   | 'splat-detect'
   | 'splat-finish'
+  | 'memory-push'
   | 'export-world'
 
 export type WorldJobStatus = 'queued' | 'processing' | 'completed' | 'failed'

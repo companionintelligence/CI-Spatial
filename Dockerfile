@@ -28,7 +28,7 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 # Server modules (splat_* / lingbot_map power the world-job queue)
-COPY main.ts inference.ts prompt.ts jobs.ts pipeline.ts portal_auth.ts \
+COPY main.ts inference.ts prompt.ts jobs.ts pipeline.ts portal_auth.ts memory_push.ts \
      lingbot_map.ts lingbot_map_glb.ts lingbot_map_ply.ts \
      splat_train.ts splat_train_dataset.ts splat_detect.ts splat_finish.ts \
      deno.json deno.lock ./

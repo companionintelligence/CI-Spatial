@@ -41,6 +41,11 @@ import { runSplatTrain } from './splat_train.ts'
 import { runSplatDetect } from './splat_detect.ts'
 import { runSplatFinish } from './splat_finish.ts'
 import { configFromEnv as portalAuthConfig, registerPortalAuth } from './portal_auth.ts'
+import {
+  configFromEnv as memoryPushConfig,
+  pushScanToMemory,
+  registerMemoryPush,
+} from './memory_push.ts'
 import { composeYUpTransform, geoToEnu, hasGeoPose } from './src/world/geo.ts'
 import { defaultLayerIndex } from './src/world/layers.ts'
 import type {
@@ -66,6 +71,9 @@ const ALLOWED_ORIGIN_PREFIX = Deno.env.get('ALLOWED_ORIGIN_PREFIX')
   ?? (TAILSCALE_HOSTNAME ? `https://${TAILSCALE_HOSTNAME}` : 'https://liambook.capybara-ulmer.ts.net')
 
 const SCANS_DIR    = Deno.env.get('SCANS_DIR')    ?? './scans'
+// Companion Memory (CI-Server) target. Read once at boot so the job guard and
+// the status route agree on whether the integration is wired.
+const memoryPushCfg = memoryPushConfig()
 const SUMMARIES_DIR = Deno.env.get('SUMMARIES_DIR') ?? './summaries'
 const SESSIONS_DIR = Deno.env.get('SESSIONS_DIR') ?? `${SCANS_DIR}/sessions`
 const WORLDS_DIR = Deno.env.get('WORLDS_DIR') ?? './worlds'
@@ -970,6 +978,7 @@ const WORLD_JOB_TYPES = new Set<WorldJobType>([
   'splat-train',
   'splat-detect',
   'splat-finish',
+  'memory-push',
   'export-world',
 ])
 
@@ -1542,7 +1551,9 @@ async function completeJobSoon(slug: string, jobId: string): Promise<void> {
             ? 'splat-analyzer'
             : job.type === 'splat-finish'
               ? 'splat-transform'
-              : 'local-coordinator'
+              : job.type === 'memory-push'
+                ? 'companion-memory'
+                : 'local-coordinator'
       job.progress = 0.35
       job.updatedAt = new Date().toISOString()
       await saveWorld(world)
@@ -1565,6 +1576,11 @@ async function completeJobSoon(slug: string, jobId: string): Promise<void> {
 
       if (job.type === 'splat-finish') {
         await _runSplatFinishJob(slug, jobId)
+        return
+      }
+
+      if (job.type === 'memory-push') {
+        await _runMemoryPushJob(slug, jobId)
         return
       }
 
@@ -1972,6 +1988,73 @@ async function _runSplatDetectJob(slug: string, jobId: string): Promise<void> {
   }
 }
 
+/**
+ * memory-push — ship a finished scan to the user's Companion Memory appliance.
+ *
+ * The push is idempotent on (source_system, scanId), so re-running this job on
+ * the same scan updates nothing and reports a duplicate rather than failing.
+ */
+async function _runMemoryPushJob(slug: string, jobId: string): Promise<void> {
+  try {
+    const world = await loadWorld(slug)
+    const job = world.jobs.find(j => j.jobId === jobId)
+    if (!job) return
+    const scan = scanForJob(job, world)
+    const failure = jobFailureReason(job, world)
+    if (failure) {
+      job.status = 'failed'
+      job.error = failure
+      job.result = failure
+      job.progress = 1
+      job.updatedAt = new Date().toISOString()
+      await saveWorld(world)
+      broadcast({ type: 'world-job-update', worldId: world.worldId, job })
+      return
+    }
+
+    const pushed = await pushScanToMemory(memoryPushCfg, scan!, { scansDir: SCANS_DIR })
+
+    const current = await loadWorld(slug)
+    const currentJob = current.jobs.find(j => j.jobId === jobId)
+    if (!currentJob) return
+    currentJob.progress = 1
+    currentJob.status = 'completed'
+    currentJob.result = pushed.eventDuplicate > 0
+      ? 'Scan was already in Companion Memory — nothing to add.'
+      : jobResultFor(currentJob)
+    currentJob.artifacts = [{
+      type: 'memory-event',
+      label: `${scan!.name} in Companion Memory`,
+      metadata: {
+        sourceSystem: memoryPushCfg.sourceSystem,
+        sourceId: pushed.sourceId,
+        glbFileId: pushed.glbFileId,
+        glbSkippedReason: pushed.glbSkippedReason ?? null,
+        detectionCount: pushed.detectionCount,
+        ingested: pushed.eventIngested,
+        duplicate: pushed.eventDuplicate,
+      },
+    }]
+    currentJob.updatedAt = new Date().toISOString()
+    await saveWorld(current)
+    broadcast({ type: 'world-job-update', worldId: current.worldId, job: currentJob })
+  } catch (err) {
+    console.error('[memory-push] job failed:', err)
+    try {
+      const current = await loadWorld(slug)
+      const currentJob = current.jobs.find(j => j.jobId === jobId)
+      if (!currentJob) return
+      currentJob.status = 'failed'
+      currentJob.progress = 1
+      currentJob.error = err instanceof Error ? err.message : String(err)
+      currentJob.result = currentJob.error
+      currentJob.updatedAt = new Date().toISOString()
+      await saveWorld(current)
+      broadcast({ type: 'world-job-update', worldId: current.worldId, job: currentJob })
+    } catch { /* world unreadable — the error is already logged */ }
+  }
+}
+
 async function _runSplatFinishJob(slug: string, jobId: string): Promise<void> {
   try {
     const world = await loadWorld(slug)
@@ -2070,8 +2153,11 @@ function scanForJob(job: WorldJob, world: WorldProject): ScanManifest | null {
 
 function jobFailureReason(job: WorldJob, world: WorldProject): string | null {
   const scan = scanForJob(job, world)
-  if (['align-scan', 'extract-layers', 'semantic-pass', 'depth-reconstruct', 'lingbot-map-reconstruct', 'splat-train', 'splat-detect', 'splat-finish'].includes(job.type) && !scan) {
+  if (['align-scan', 'extract-layers', 'semantic-pass', 'depth-reconstruct', 'lingbot-map-reconstruct', 'splat-train', 'splat-detect', 'splat-finish', 'memory-push'].includes(job.type) && !scan) {
     return `${job.type} requires a selected scan.`
+  }
+  if (job.type === 'memory-push' && !memoryPushCfg.enabled) {
+    return 'Companion Memory is not connected. Connect it from the Hub, or set CI_SERVER_URL and CI_SERVER_TOKEN.'
   }
   if ((job.type === 'depth-reconstruct' || job.type === 'lingbot-map-reconstruct' || job.type === 'splat-train') && scan && !scan.sessionId) {
     return `${job.type} requires RGB keyframe observations. Start keyframe streaming before export.`
@@ -2125,6 +2211,8 @@ function jobResultFor(job: WorldJob): string {
       return 'Splat scene detected with splat-analyzer. The .interactions.json sidecar carries 3D object boxes.'
     case 'splat-finish':
       return 'Splat finished with splat-transform. The web-optimized .sog and .compressed.ply sidecars are ready for delivery.'
+    case 'memory-push':
+      return 'Scan pushed to Companion Memory as a capture.scan event with the GLB attached.'
     case 'export-world':
       return 'World export manifest is ready for a combined GLB and semantic JSON worker.'
   }
@@ -2800,6 +2888,28 @@ registerPortalAuth(app, portalAuthConfig(), {
     const owner = world.members.find((m) => m.role === 'owner' && !m.revokedAt)
     if (!owner) return '/viewer.html?world=default'
     return `/viewer.html?world=${world.shareSlug}&token=${encodeURIComponent(owner.token)}`
+  },
+})
+
+// ── Companion Memory (CI-Server) ────────────────────────────────────────────
+// Exposes GET /memory/status. The push itself runs as the 'memory-push' world
+// job; inert until the Hub connects Companion Memory (or CI_SERVER_URL +
+// CI_SERVER_TOKEN are set by hand). See memory_push.ts.
+registerMemoryPush(app, memoryPushCfg, {
+  probe: async (cfg) => {
+    try {
+      const resp = await fetch(`${cfg.baseUrl}/v1/events`, {
+        method: 'POST',
+        headers: { 'x-api-key': cfg.token, 'Content-Type': 'application/json' },
+        // An empty batch is rejected by the schema (min 1) without writing
+        // anything — a 4xx that is not 401/403 proves creds reach the API.
+        body: JSON.stringify({ events: [] }),
+        signal: AbortSignal.timeout(5_000),
+      })
+      return resp.status !== 401 && resp.status !== 403 && resp.status < 500
+    } catch {
+      return false
+    }
   },
 })
 
