@@ -48,6 +48,10 @@
   var tickCount = 0
   var feedCanvas = null
   var feedCtx = null
+  // When true the session keeps emitting frames but tickCount stops advancing,
+  // so every emitted frame is identical.  See freezeAt() below.
+  var frozen = false
+  var frozenPoints = null
 
   function currentPose() {
     // Slow sinusoidal walk along X at eye height, looking down -Z
@@ -63,8 +67,25 @@
   }
 
   function worldPoints() {
+    if (!frozen) return batchAt(tickCount)
+    // A frozen session re-emits ONE batch forever, and the voxel grid dedupes it,
+    // so the map would sit at 24 points however long the capture waited. Hand over
+    // the whole walk instead — every batch the session would have emitted up to
+    // the frozen tick — so the map is a pure function of the frozen tick: it fills
+    // on the scanner's first 750 ms harvest and never changes again.
+    if (!frozenPoints) {
+      frozenPoints = []
+      for (var t = 1; t <= tickCount; t++) {
+        var batch = batchAt(t)
+        for (var j = 0; j < batch.length; j++) frozenPoints.push(batch[j])
+      }
+    }
+    return frozenPoints
+  }
+
+  function batchAt(t) {
     // Fresh batch each tick: room floor/walls sprinkled with noise
-    var rand = lcg(0xC0FFEE + tickCount)
+    var rand = lcg(0xC0FFEE + t)
     var pts = []
     for (var i = 0; i < 24; i++) {
       var which = rand()
@@ -100,7 +121,7 @@
   }
 
   function tick() {
-    tickCount++
+    if (!frozen) tickCount++
 
     var processGpuResult = {}
     var processCpuResult = {
@@ -155,13 +176,57 @@
       feedCanvas.width = FEED_W
       feedCanvas.height = FEED_H
       feedCtx = feedCanvas.getContext('2d', { willReadFrequently: true })
+
+      // `?mockFreeze=<tick>` pins the session before the first frame is emitted,
+      // which is the only point early enough to be race-free — RoomScanner starts
+      // its own 750 ms accumulation interval moments later (src/ar/scanner.ts:49),
+      // and a single scanner tick against a moving pose is enough to make the
+      // captured point count differ between runs.
+      var freeze = new URLSearchParams(location.search).get('mockFreeze')
+      if (freeze !== null) window.XR8.freezeAt(freeze)
+
       tickHandle = setInterval(tick, TICK_MS)
-      console.log('[xr8-mock] running — scripted SLAM session at ' + Math.round(1000 / TICK_MS) + ' fps')
+      console.log(
+        '[xr8-mock] running — scripted SLAM session at ' + Math.round(1000 / TICK_MS) + ' fps' +
+        (frozen ? ' (FROZEN at tick ' + tickCount + ')' : ''),
+      )
     },
 
     stop: function () {
       if (tickHandle) clearInterval(tickHandle)
       tickHandle = null
+    },
+
+    /**
+     * Determinism hook — used by the product-video capture, video/capture.config.mjs.
+     *
+     * Everything this mock emits is a pure function of `tickCount`: currentPose(),
+     * worldPoints(), trackingStatus() and hitTest() derive from it and nothing
+     * else. But run() advances it on a WALL-CLOCK setInterval, so "wait 2500 ms,
+     * then shoot" photographs a different pose on every run — which is why the
+     * captured point count, quality verdict and per-object coordinates drifted
+     * between two runs against an unchanged UI.
+     *
+     * freezeAt() pins the session to an exact tick and leaves it there. Frames
+     * keep flowing at TICK_MS — they must, because a capture is only fulfilled by
+     * the NEXT onProcessCpu (src/ar/eighthwall.ts:196) and RoomScanner harvests
+     * points on its own interval — but every frame is now identical, so the app's
+     * accumulated state converges to one value instead of tracking wall time.
+     * The voxel grid dedupes the repeated points, so the count settles and stops.
+     *
+     * Jumping straight to the target rather than replaying the intervening ticks
+     * is deliberate: nothing downstream needs those frames, and each one costs a
+     * full-feed getImageData(). worldPoints() reconstructs the accumulated map
+     * from the tick index alone.
+     */
+    freezeAt: function (target) {
+      var want = Number(target)
+      if (!isFinite(want) || want < 0) {
+        throw new Error('[xr8-mock] freezeAt() needs a non-negative tick index, got ' + target)
+      }
+      tickCount = want
+      frozen = true
+      return tickCount
     },
 
     GlTextureRenderer: {

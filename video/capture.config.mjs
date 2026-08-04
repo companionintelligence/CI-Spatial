@@ -49,29 +49,55 @@
  * Shots are committed, so a rerun on unchanged UI must produce identical bytes.
  * Each of these was verified against the source, not assumed:
  *
- *  1. LIVE POINT COUNT — `#scan-stats` is written as `${pointCloud.count} pts`
- *     (src/main.ts:726). The mock accumulates points on a 33 ms setInterval, so
- *     the count is a function of how many ticks elapsed before the shutter, i.e.
- *     wall-clock timing. Verified NOT fixable by the frozen clock: the kit calls
- *     `context.clock.install()`, but Playwright's fake clock still advances
- *     timers in real time (measured: 45 vs 46 ticks over 1500 ms with and
- *     without install). MASKED.
+ *  1. THE WHOLE SCANNER USED TO TRACK WALL TIME — everything the xr8 mock emits
+ *     is a pure function of its `tickCount`: currentPose(), worldPoints(),
+ *     trackingStatus() and hitTest() derive from it and nothing else. But the
+ *     mock advanced it on a 33 ms setInterval, so "wait 2500 ms, then shoot"
+ *     photographed a different pose every run — and everything downstream moved
+ *     with it: `#scan-stats` (`${pointCloud.count} pts`, src/main.ts:726), the
+ *     `#verdict-chip` verdict (src/main.ts:751-757), the coverage percentage,
+ *     and the per-object coordinates in the side panel and the Latest-scan
+ *     readout. Masking could not fix this and never did: Playwright sizes a mask
+ *     rectangle to the masked element's bounding box, so a mask over
+ *     variable-width text has a moving EDGE — measured as a live drift band at
+ *     CSS x 247-252 on live-scan-hud.
  *
- *  2. HUD STATUS LINE — `#status-text` is rewritten every scanner tick by the
- *     quality monitor (src/main.ts:738-741, 776-781): it flips between
- *     "Tracking — tap to capture", "⚠ Moving too fast — slow down" and the top
- *     recommendation, depending on accumulated points and poses. MASKED.
+ *     Fixed at the source instead: every scanner shot loads
+ *     `?mock=xr8&mockFreeze=700`, which pins the session to tick 700 before the
+ *     first frame is emitted (public/test-fixtures/xr8-mock.js). Frames keep
+ *     flowing — they must, because a capture is only fulfilled by the NEXT
+ *     onProcessCpu (src/ar/eighthwall.ts:196) — but every frame is now identical,
+ *     so the app's accumulated state converges instead of tracking the clock.
+ *     Measured: 4 consecutive runs agree on point count, verdict, coverage and
+ *     every detection coordinate, to the byte. No HUD mask is needed any more.
  *
- *  3. VERDICT CHIP + COVERAGE — `#verdict-chip` flips between "✓ Ready",
- *     "⚠ Review" and "❌ Sparse" (src/main.ts:751-757) and
- *     `#quality-coverage-text` is a live percentage. Both track the same
- *     tick-dependent quality snapshot. MASKED.
+ *     The freeze must happen inside XR8.run(), not from a `before` action:
+ *     RoomScanner starts its own 750 ms accumulation interval moments after
+ *     (src/ar/scanner.ts:49), and one scanner tick against a still-moving pose is
+ *     enough to change the count. That is why it is a URL parameter.
+ *
+ *     `?mockFreeze=700` is also an editorial choice — 700 is where the scripted
+ *     walk reads as a real session (14,235 points, "Good" coverage, 66% bar)
+ *     rather than the thin 48-point map the old 2500 ms wait caught.
+ *
+ *  2. THE 750 ms SCANNER INTERVAL, NOT THE MOCK, FILLS THE MAP — RoomScanner
+ *     harvests points on its own timer, so the shutter can fire before the first
+ *     harvest and photograph an empty `#scan-stats`. Every scanner shot therefore
+ *     waits on `#scan-stats:has-text('pts')` rather than on a settle time.
+ *
+ *  3. FROZEN MEANS FROZEN, SO THE MAP HAS TO ARRIVE AT ONCE — a frozen session
+ *     re-emits one 24-point batch forever and the voxel grid dedupes it, which
+ *     would peg the map at 24 points however long the capture waited. freezeAt()
+ *     therefore hands over every batch the session would have emitted up to the
+ *     frozen tick. The map fills on the first harvest and never changes again.
  *
  *  4. GEOLOCATION — `#geo-chip` renders a reverse-geocoded street address and
  *     raw lat/lng to five decimals (src/main.ts:1138-1140). That is both
- *     non-deterministic AND a privacy leak: an unmasked capture would burn the
- *     developer's home address into a public product video. MASKED, and it
- *     should stay masked even once the HUD copy is pinnable.
+ *     non-deterministic AND a privacy leak: a capture on a machine that grants
+ *     geolocation would burn the developer's home address into a public product
+ *     video. HIDDEN, not masked — a mask is an opaque #0A222E rectangle sitting
+ *     in the middle of the HUD, and hiding gives the same guarantee with no box.
+ *     It must stay suppressed even once the HUD copy is pinnable.
  *
  *  5. ONBOARDING IS ONCE-ONLY — the FTUE overlay is gated on the
  *     `companion-scan-onboarded` localStorage key (src/main.ts:498, 543). The
@@ -105,8 +131,10 @@
  *  9. AUTOSAVE TIMESTAMP — `#autosave-status` renders `Autosaved … · ${time}`
  *     from a live `toLocaleTimeString` (src/main.ts:426). The `objects-named` and
  *     `review-and-export` shots DO click `#capture-btn`, which queues an autosave
- *     1.2 s later (main.ts:297, 398), so this is now live in two shots. MASKED in
- *     both. The prediction in the previous revision of this comment was correct.
+ *     1.2 s later (main.ts:297, 398), so this is live in two shots. Not a hazard
+ *     in practice — `fixedTime` below pins the clock, and it renders the same
+ *     "· 03:04 PM" on every run (measured) — but both shots suppress the whole
+ *     `#hud-panel` anyway, for the reason in hazard 12.
  *
  * 10. VIEWER NAVIGATION IS GUARDED — do not reach viewer.html by clicking
  *     `#viewer-link` or `#xr-mode-link`. src/main.ts:601-612 wraps both in
@@ -134,6 +162,41 @@
  *     the world at exactly the three seeded homes for every shot and both
  *     viewports. Read routes (/infer, /worlds, /scans, /sessions, /jobs,
  *     /scan-locations, /health) must pass through.
+ *
+ * 12. A MASK IS DRAWN OVER THE PAGE, NOT INSIDE THE ELEMENT — Playwright sizes
+ *     each mask rectangle to the masked element's bounding box and paints it on
+ *     top of the finished screenshot, ignoring both z-order and scroll clipping.
+ *     Two shots were ruined by that and it is easy to do again:
+ *       · `#panel-content [data-key] div[style*="monospace"]` matched all four
+ *         detection-card position badges, but `#panel-content` is a 311x164
+ *         scroll box: the three scrolled-out badges still have layout boxes at
+ *         y 306 / 430 / 553, which is where the footer's Export Summary, Scene
+ *         Description and Clear session buttons are. They were painted over.
+ *       · At 360 px the side panel is 309.6 px wide and covers the HUD, but the
+ *         HUD's boxes are still where they were, so every scanner mask landed on
+ *         the panel — `#autosave-status` sat squarely on the Export GLB CTA.
+ *     Rule of thumb: if the element you want to suppress is BEHIND the subject or
+ *     CLIPPED out of it, hide it with a `<style>` rule from an `eval` action;
+ *     masks are only safe over something that is actually visible and on top.
+ *
+ * 13. THE 3D VIEWPORT IS NOT BIT-REPRODUCIBLE, AND THAT IS THE FLOOR — both
+ *     World Editor shots film `#viewer-canvas`, a WebGL surface. Two things used
+ *     to move inside it and are now fixed at the source:
+ *       · every semantic label was created three times, once per LOD level, and
+ *         the copies painted in scan-load-completion order (viewer.ts
+ *         createSemanticLabels / upgradeSemanticMeshes; assets.ts:18 resolves the
+ *         high-detail level on a timer). One label per object now, painted in
+ *         metric depth order.
+ *       · `{ wait: 8000 }` was a wall-clock race against the seed's background
+ *         optimize jobs: when one finishes, handleJobUpdate re-runs
+ *         loadScanIntoWorld and swaps the geometry mid-capture (viewer.ts:2495).
+ *         Both shots now wait for all three rows to read "Ready - optimized",
+ *         which is only set after the full-quality GLB is in the scene.
+ *     What remains is GPU rasterisation noise: 4 consecutive runs on macOS agreed
+ *     to within 7-35 pixels at a delta of 1-4 levels out of 8.3 M. That is not
+ *     maskable — the canvas IS the shot — and it is expected to disappear on CI,
+ *     which renders headless through SwiftShader. Treat a viewer-shot diff of
+ *     that size in a drift PR as noise, and anything larger as a real UI change.
  */
 export default {
   // HTTPS, not HTTP: vite.config.ts pins `server.https` on (Tailscale cert if
