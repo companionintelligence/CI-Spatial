@@ -39,9 +39,14 @@ COPY src/shared/ ./src/shared/
 # the Brush trainer need GPU-capable hosts — install them on the host and point
 # LINGBOT_MAP_PYTHON / SPLAT_DETECT_PYTHON / SPLAT_TRAIN_BIN at them; the jobs
 # degrade gracefully (skippedReason) when the binaries are absent.
+# NOTE: these are spawned by main.ts at runtime, so their own imports must be
+# here too — ingest-{video,photos}.mjs both `import './ingest-quality.mjs'`.
+# A miss here is invisible at build time and only shows up as a 500 from the
+# ingest routes in a real install.
 COPY scripts/lingbot_map_worker.py ./scripts/lingbot_map_worker.py
 COPY scripts/ingest-video.mjs ./scripts/ingest-video.mjs
 COPY scripts/ingest-photos.mjs ./scripts/ingest-photos.mjs
+COPY scripts/ingest-quality.mjs ./scripts/ingest-quality.mjs
 
 # Static viewer bundle from stage 1
 COPY --from=web /web/dist ./dist
