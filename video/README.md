@@ -21,15 +21,26 @@ npm run render        # -> out/ci-web-xr-scan-landscape.mp4 and out/ci-web-xr-sc
 
 ## The stage
 
-From the **repo root**, one server is enough:
+From the **repo root**, **two** servers. Vite serves the app; the Deno API backs the World
+Editor and the detections panel.
 
 ```bash
+# terminal 1 — the API, on isolated data dirs
+npm run gen:test-data
+INFERENCE_MODE=mock \
+SCANS_DIR=/tmp/ci-video-scans \
+WORLDS_DIR=/tmp/ci-video-worlds \
+SUMMARIES_DIR=/tmp/ci-video-summaries \
+  npm run server
+COUNT=3 npm run seed:test-data     # three homes into world "default"
+
+# terminal 2 — the app
 TAILSCALE_HOSTNAME=localhost npm run dev -- --port 5173 --strictPort
 ```
 
 Then `npm run capture` in this directory.
 
-Three things about that command are load-bearing:
+Three things about the Vite command are load-bearing:
 
 - **`TAILSCALE_HOSTNAME=localhost`** — `vite.config.ts` pins `server.allowedHosts` to a
   Tailscale name (resolved from the Tailscale CLI, falling back to a hard-coded `*.ts.net`
@@ -40,11 +51,24 @@ Three things about that command are load-bearing:
 - **HTTPS, not HTTP** — Vite serves TLS with a self-signed cert when no Tailscale cert is
   present. `baseURL` is `https://localhost:5173`; the kit already sets `ignoreHTTPSErrors`.
 
-**No Deno API server and no models are needed.** Every shot runs against this repo's own 8th Wall
-mock (`public/test-fixtures/xr8-mock.js`, loaded by `index.html` when `?mock=xr8` is set), which
-flies a scripted camera through a synthetic room and emits SLAM poses and feature points entirely
-client-side. `capture.config.mjs` short-circuits the proxied API routes so the absent backend
-fails fast rather than stalling `networkidle`.
+**The API is required — do not delete it from the stage again.** An earlier revision of this file
+said no backend was needed, which was true when the cut was five shots of the FTUE and the scanner.
+It is not true now: `world-editor` and `semantic-world` read `/worlds/default`, and
+`objects-named` and `review-and-export` need `/infer` to return detections. Deleting the server
+does **not** fail the build — video-kit substitutes a branded "capture pending" slate for any shot
+whose PNG is missing, so the cut would quietly hollow out instead.
+
+**No models are needed, though.** `INFERENCE_MODE=mock` selects a colour-blob CV engine that only
+needs jimp; `onnxruntime-node` is imported dynamically on the onnx path alone. The camera feed is
+still this repo's own 8th Wall mock (`public/test-fixtures/xr8-mock.js`, loaded by `index.html`
+when `?mock=xr8` is set), which flies a scripted camera through a synthetic room and emits SLAM
+poses and feature points entirely client-side — and it paints the same CV palette the mock engine
+recognises, so `/infer` returns the same objects every run.
+
+`capture.config.mjs` short-circuits the API **write** routes (`/upload-scan`, `/ingest-video`, …).
+That is load-bearing for byte stability, not just speed: an autosave upload would add a fourth scan
+to world "default" carrying a live server-side timestamp, changing what the two World Editor shots
+film. Read routes go to the real server.
 
 `capture.config.mjs` also carries the full list of determinism hazards found in this app — read
 its header before adding a shot.

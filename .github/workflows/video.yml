@@ -35,20 +35,56 @@ jobs:
           # (playwright, hyperframes) 404 on install. Scope it to the org.
           scope: "@companionintelligence"
 
+      # ⚠ KNOWN BLOCKER — this step currently fails with
+      #     npm error 403 Forbidden - GET .../@companionintelligence%2fvideo-kit
+      #     Permission permission_denied: read_package
+      # (run 30868134241, 13s). @companionintelligence/video-kit is a PRIVATE
+      # package linked to the CI-Common repo, and `secrets.GITHUB_TOKEN` is scoped
+      # to CI-Web-XR-Scan, which holds no grant on it. Every product-video repo in
+      # the org hits this, not just this one.
+      #
+      # Two fixes, neither of which can be made from inside this file alone:
+      #   (a) PREFERRED — grant this repo read access on the package:
+      #       CI-Common > Packages > video-kit > Package settings >
+      #       Manage Actions access > Add repository. Web UI only; the REST
+      #       grants endpoint 404s. One action fixes all twelve repos.
+      #   (b) create an org-level PAT secret CI_ORG_READ_TOKEN with read:packages.
+      #
+      # The `||` below is the wiring for (b) and NOTHING MORE. No such secret
+      # exists today, so this expression currently evaluates to GITHUB_TOKEN and
+      # the step still 403s exactly as it does on main. Do not read it as a fix.
       - name: Install video project
         working-directory: video
         run: npm install
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.CI_ORG_READ_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Install Chromium
         working-directory: video
         run: npx playwright install --with-deps chromium
 
-      # Stage = the Vite dev server only. No Deno API server and no model
-      # download: every shot in storyboard.json is driven by the in-repo 8th Wall
-      # mock (public/test-fixtures/xr8-mock.js, via ?mock=xr8), which is
-      # client-side, so nothing filmed here needs the backend.
+      # `npx playwright install --with-deps` pulls media *libraries*, not the
+      # ffmpeg binary — and `ci-video render` shells out to hyperframes, which
+      # execs ffmpeg directly (video-kit bin/ci-video.mjs:205 probes it the same
+      # way). Installed here rather than next to the Render step on purpose: this
+      # fails in seconds, whereas a missing binary discovered after Capture burns
+      # 20+ minutes of the job first. ffprobe ships in the same package and is
+      # what the narration length guard uses.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      # Stage = TWO servers. Vite serves the app; the Deno API (next step) backs
+      # the World Editor and the detections panel. The live-scan and FTUE shots
+      # still ride the in-repo 8th Wall mock (public/test-fixtures/xr8-mock.js,
+      # via ?mock=xr8), which is client-side — but `world-editor`,
+      # `semantic-world`, `objects-named` and `review-and-export` all need the
+      # backend, and video-kit substitutes a "capture pending" slate for a shot
+      # whose PNG is missing, so dropping the API would hollow the cut out
+      # silently instead of failing the build.
       #
       # playwright.config.ts has NO `webServer` block to reuse — it defines
       # projects/baseURL only and expects the servers to be already running (see
@@ -75,6 +111,42 @@ jobs:
             sleep 2
           done
           echo "::error::Vite stage did not answer on https://localhost:5173 within 120s"
+          exit 1
+
+      # The API half of the stage.
+      #
+      # INFERENCE_MODE=mock is what keeps this cheap AND deterministic: the mock
+      # engine is a colour-blob CV detector needing only jimp (inference.ts:223),
+      # while onnxruntime-node is dynamically imported on the onnx path alone
+      # (inference.ts:159) — so no model download, no GPU, no ollama. It
+      # recognises the shared CV palette, which is exactly what the xr8 mock
+      # paints, so /infer returns the same four objects on every run.
+      #
+      # The *_DIR overrides (main.ts:68-71) are load-bearing, not tidiness:
+      # worlds/default.json is a TRACKED file and `scans/` churn inside the
+      # checkout is what vite.config.ts:126-133 already guards against. Seeding
+      # into /tmp keeps the capture from dirtying the tree the drift step diffs.
+      #
+      # Only the homes generator runs, not the full `gen:test-data`: the second
+      # half of that script builds the CV image corpus for /infer scoring, which
+      # no shot uses. COUNT=3 mirrors tests/mock-editor-homes.spec.ts.
+      - name: Start API
+        run: |
+          NODE_OPTIONS=--experimental-strip-types node scripts/generate-test-homes.mjs
+          INFERENCE_MODE=mock \
+          SCANS_DIR=/tmp/ci-video-scans \
+          WORLDS_DIR=/tmp/ci-video-worlds \
+          SUMMARIES_DIR=/tmp/ci-video-summaries \
+            npm run server &
+          for _ in $(seq 1 60); do
+            if curl -sf http://localhost:8000/health >/dev/null; then
+              echo "API up at http://localhost:8000"
+              COUNT=3 npm run seed:test-data
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Deno API did not answer on http://localhost:8000/health within 120s"
           exit 1
 
       - name: Capture
