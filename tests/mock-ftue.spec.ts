@@ -115,9 +115,14 @@ test.describe('FTUE two-path start screen', () => {
     await page.goto('/?mock=xr8&onboarding=1')
     await expect(overlay).toBeVisible({ timeout: 15_000 })
 
-    // Step through all three steps; the last button finishes and persists a flag.
-    for (let i = 0; i < 3; i++) {
-      await page.click('#onboard-next-btn')
+    // Step through every step — the button reads "Get Started" on the last one,
+    // so drive by label rather than a hardcoded count. The count already went
+    // 3 → 5 once (fd6d459) and silently broke this test.
+    const nextBtn = page.locator('#onboard-next-btn')
+    for (let i = 0; i < 10 && await overlay.isVisible(); i++) {
+      const isLast = (await nextBtn.textContent())?.trim() === 'Get Started'
+      await nextBtn.click()
+      if (isLast) break
     }
     await expect(overlay).toBeHidden({ timeout: 5_000 })
 
