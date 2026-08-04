@@ -1,9 +1,15 @@
 name: Publish container
 
 # Builds the single-container image (Deno API + built viewer bundle), boots it,
-# gates on /health and the static UI, then pushes to GHCR. The CI-Marketplace
-# manifest pins :latest, so every push to main republishes :latest (plus an
-# immutable :sha-<short> tag). Mirrors the CI-WebXR-Time-Machine pipeline.
+# gates on /health and the static UI, then pushes to GHCR.
+#
+# PUBLISHING IS MANUAL. Automatic triggers are gated (see the block below), so
+# nothing republishes :latest on its own — and the CI-Marketplace manifest pins
+# :latest. After merging anything that changes the image, dispatch this workflow
+# from main or the marketplace keeps serving the previous build.
+#
+# Only a dispatch from main moves :latest; every run also publishes an immutable
+# :sha-<short> so a feature-branch build can be tested without touching it.
 
 # >>> ci-local:gated original triggers below, restore with `ci-local restore`
 # on:
@@ -50,7 +56,15 @@ jobs:
           set -euo pipefail
           short="$(git rev-parse --short HEAD)"
           echo "sha_tag=${IMAGE_NAME}:sha-${short}" >> "$GITHUB_OUTPUT"
-          tags="${IMAGE_NAME}:latest,${IMAGE_NAME}:sha-${short}"
+          # Immutable per-commit tag always; :latest ONLY from main. Without
+          # this guard a manual dispatch from any branch would overwrite the
+          # tag the marketplace manifest pins.
+          tags="${IMAGE_NAME}:sha-${short}"
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            tags="${tags},${IMAGE_NAME}:latest"
+          else
+            echo "::notice::ref ${GITHUB_REF} is not main — publishing only :sha-${short}, leaving :latest untouched"
+          fi
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             tags="${tags},${IMAGE_NAME}:${GITHUB_REF_NAME}"
           fi
