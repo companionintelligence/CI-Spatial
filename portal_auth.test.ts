@@ -62,6 +62,12 @@ Deno.test('safeRelativePath blocks open redirects', () => {
   assertEquals(safeRelativePath('https://evil.example'), null)
   assertEquals(safeRelativePath('/\\evil'), null)
   assertEquals(safeRelativePath('relative'), null)
+  // Browsers strip ASCII tab/CR/LF before resolving, turning these into
+  // protocol-relative URLs — a pattern-only guard misses them.
+  assertEquals(safeRelativePath('/\t/evil.example'), null, 'tab -> protocol-relative')
+  assertEquals(safeRelativePath('/\t\\evil.example'), null, 'tab+backslash')
+  assertEquals(safeRelativePath('/\r\n/evil.example'), null, 'CRLF')
+  assertEquals(safeRelativePath('/ok/path?q=1#frag'), '/ok/path?q=1#frag', 'normal paths survive')
   assertEquals(safeRelativePath(null), null)
 })
 
@@ -79,7 +85,7 @@ Deno.test('configFromEnv: defaults + fail-closed allowlist', () => {
 
 // ── Integration: full callback flow against a stub Portal IdP ────────────────
 
-function stubPortal(opts: { email?: string | null }): { url: string; close: () => Promise<void>; seen: Record<string, unknown> } {
+function stubPortal(opts: { email?: string | null; emailVerified?: boolean }): { url: string; close: () => Promise<void>; seen: Record<string, unknown> } {
   const seen: Record<string, unknown> = {}
   const server = Deno.serve({ port: 0, onListen: () => {} }, async (req) => {
     const u = new URL(req.url)
@@ -89,7 +95,7 @@ function stubPortal(opts: { email?: string | null }): { url: string; close: () =
     }
     if (u.pathname === '/api/auth/oauth2/userinfo') {
       seen.userinfoAuth = req.headers.get('authorization')
-      return Response.json({ sub: 'portal-user-1', email: opts.email, name: 'Test User' })
+      return Response.json({ sub: 'portal-user-1', email: opts.email, email_verified: opts.emailVerified ?? true, name: 'Test User' })
     }
     return new Response('not found', { status: 404 })
   })
@@ -207,4 +213,52 @@ Deno.test('whoami without credentials is 401; logout clears the cookie', async (
   const out = await app.request('https://scan.example/authenticate/logout', { method: 'POST' })
   assertEquals(out.status, 200)
   assert(out.headers.getSetCookie().some((c) => c.startsWith('cs_session=;')), 'session cleared')
+})
+
+// ── Regression: authorization gates (verified by adversarial review) ─────────
+
+Deno.test('callback: an unverified email is rejected even when allowlisted', async () => {
+  const portal = stubPortal({ email: 'owner@example.com', emailVerified: false })
+  try {
+    const app = testApp(portal.url, ['owner@example.com'])
+    const init = await app.request('https://scan.example/authenticate/oidc')
+    const jar = cookiesFrom(init)
+    const state = jar.get('oidc_state')!
+    const cb = await app.request(
+      `https://scan.example/authenticate/oidc/callback?code=c&state=${state}`,
+      { headers: { cookie: `oidc_state=${state}; oidc_pkce=${jar.get('oidc_pkce')}` } },
+    )
+    assertEquals(cb.status, 403, 'unverified email must not authorize')
+    assert(!cookiesFrom(cb).get('cs_session'), 'no session is minted')
+  } finally {
+    await portal.close()
+  }
+})
+
+Deno.test('whoami: a valid Portal JWT for a non-allowlisted account is refused', async () => {
+  // The Bearer branch previously returned 200 for any structurally valid token,
+  // bypassing PORTAL_OIDC_ALLOWED_EMAILS entirely.
+  const app = testApp('https://portal.example', ['owner@example.com'])
+  const res = await app.request('https://scan.example/authenticate/whoami', {
+    headers: { authorization: 'Bearer not-a-real-jwt' },
+  })
+  assert(res.status === 401 || res.status === 403, `expected 401/403, got ${res.status}`)
+})
+
+Deno.test('cookie: a malformed percent-escape degrades to 401, never a 500', async () => {
+  const app = testApp('https://portal.example', ['a@b.c'])
+  const res = await app.request('https://scan.example/authenticate/whoami', {
+    headers: { cookie: 'cs_session=%' },
+  })
+  assertEquals(res.status, 401, 'malformed cookie must not throw')
+})
+
+Deno.test('session: non-ASCII claims survive the round-trip', async () => {
+  const secret = 'utf8-secret'
+  const token = await signSession(
+    { sub: 'u1', email: 'jose@example.com', name: 'José Ámundsen 日本', exp: Math.floor(Date.now() / 1000) + 60 },
+    secret,
+  )
+  const claims = await verifySession(token, secret)
+  assertEquals(claims?.name, 'José Ámundsen 日本', 'UTF-8 must not be mangled to latin-1')
 })
