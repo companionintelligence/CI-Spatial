@@ -13,17 +13,24 @@ export interface PaletteEntry {
   label: string
   /** sRGB 0-255 */
   rgb: [number, number, number]
+  /**
+   * Plain-English name for `rgb`. The mock engine reports the colour it actually
+   * matched as part of the detection description, so the description reads as a
+   * description rather than as engine debug output. See inference.ts
+   * `describeMockBlob`.
+   */
+  colorName: string
 }
 
 export const CV_PALETTE: PaletteEntry[] = [
-  { label: 'chair', rgb: [41, 98, 255] },   // vivid blue
-  { label: 'sofa', rgb: [255, 109, 0] },    // orange
-  { label: 'bed', rgb: [170, 0, 255] },     // purple
-  { label: 'table', rgb: [109, 76, 65] },   // brown
-  { label: 'lamp', rgb: [255, 214, 0] },    // yellow
-  { label: 'plant', rgb: [0, 200, 83] },    // green
-  { label: 'tv', rgb: [0, 184, 212] },      // cyan
-  { label: 'shelf', rgb: [197, 17, 98] },   // pink
+  { label: 'chair', rgb: [41, 98, 255], colorName: 'blue' },
+  { label: 'sofa', rgb: [255, 109, 0], colorName: 'orange' },
+  { label: 'bed', rgb: [170, 0, 255], colorName: 'purple' },
+  { label: 'table', rgb: [109, 76, 65], colorName: 'walnut' },
+  { label: 'lamp', rgb: [255, 214, 0], colorName: 'yellow' },
+  { label: 'plant', rgb: [0, 200, 83], colorName: 'green' },
+  { label: 'tv', rgb: [0, 184, 212], colorName: 'teal' },
+  { label: 'shelf', rgb: [197, 17, 98], colorName: 'crimson' },
 ]
 
 /** Per-channel tolerance used by the mock detector (JPEG compression noise) */
@@ -31,6 +38,11 @@ export const PALETTE_TOLERANCE = 28
 
 export function paletteColorFor(label: string): [number, number, number] {
   return CV_PALETTE.find((p) => p.label === label)?.rgb ?? [176, 190, 197]
+}
+
+/** Plain-English colour name for a palette label; '' when the label is unknown. */
+export function paletteColorNameFor(label: string): string {
+  return CV_PALETTE.find((p) => p.label === label)?.colorName ?? ''
 }
 
 /** Classify an sRGB pixel against the palette; null when it matches nothing */

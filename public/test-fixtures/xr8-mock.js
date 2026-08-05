@@ -22,12 +22,50 @@
   'use strict'
 
   // ── Synthetic scene (palette colours match cv-palette.ts) ────────────────
+  //
+  // x/y/w/h is each object's normalised bounding box in the feed. The box is the
+  // DETECTION contract — the mock engine's blob bounds land inside it — while
+  // drawObject() below paints a furniture silhouette within that box.
+  //
+  // Every painted pixel that must stay detectable is within PALETTE_TOLERANCE
+  // (±28 per channel, cv-palette.ts:30) of `color`, so shading and seams do not
+  // change which label a pixel classifies as. Two rules follow from how the
+  // detector works (union-find over 4-connected same-label grid cells,
+  // inference.ts _inferMock) and both are load-bearing:
+  //
+  //   1. Each object needs ONE connected core in the exact palette colour.
+  //      Highlights and seams sit on top of that core, never replace it.
+  //   2. Nothing drawn INSIDE an object's core may fall outside tolerance — a
+  //      non-palette line through the middle splits one object into two blobs
+  //      and the panel would list the same label twice. Non-palette detail
+  //      (legs, pot, TV stand) is therefore drawn outside the core.
   var SCENE_OBJECTS = [
     { label: 'sofa', color: 'rgb(255,109,0)', x: 0.32, y: 0.46, w: 0.24, h: 0.16 },
     { label: 'tv', color: 'rgb(0,184,212)', x: 0.08, y: 0.50, w: 0.18, h: 0.14 },
     { label: 'table', color: 'rgb(109,76,65)', x: 0.66, y: 0.52, w: 0.16, h: 0.10 },
     { label: 'plant', color: 'rgb(0,200,83)', x: 0.87, y: 0.42, w: 0.07, h: 0.22 },
   ]
+
+  // Shades used for silhouette detail, all verified inside ±28 per channel of
+  // the palette entry they sit on.
+  var SHADE = {
+    sofa: { dark: 'rgb(232,90,0)', light: 'rgb(255,131,24)' },
+    tv: { dark: 'rgb(0,163,191)', light: 'rgb(18,202,228)' },
+    table: { dark: 'rgb(90,60,50)', light: 'rgb(127,94,83)' },
+    plant: { dark: 'rgb(0,178,66)', light: 'rgb(22,220,100)' },
+  }
+
+  // Set dressing. Neutral by construction: each is >28 away on at least one
+  // channel from every palette entry, so none of it registers as an object.
+  var NEUTRAL = {
+    floor: 'rgb(58,62,72)',
+    rug: 'rgb(86,92,104)',
+    frame: 'rgb(120,124,134)',
+    art: 'rgb(150,154,163)',
+    metal: 'rgb(44,48,58)',
+    pot: 'rgb(170,90,60)',
+    skirting: 'rgb(196,196,200)',
+  }
   var FEED_W = 480
   var FEED_H = 360
   var ROOM = { w: 6, h: 2.6, d: 6 }
@@ -102,21 +140,137 @@
     return pts
   }
 
+  /** Fill a rect given in normalised scene coords. */
+  function fillN(ctx, w, h, color, x, y, rw, rh) {
+    ctx.fillStyle = color
+    ctx.fillRect(x * w, y * h, rw * w, rh * h)
+  }
+
+  /** Fill an ellipse given in normalised scene coords. */
+  function fillEllipseN(ctx, w, h, color, cx, cy, rx, ry) {
+    ctx.fillStyle = color
+    ctx.beginPath()
+    ctx.ellipse(cx * w, cy * h, rx * w, ry * h, 0, 0, Math.PI * 2)
+    ctx.fill()
+  }
+
+  /**
+   * Paint one piece of furniture inside its bounding box.
+   *
+   * Each branch lays the exact-palette core down FIRST and then adds detail in
+   * near-palette shades, so the connected core the detector needs survives every
+   * embellishment. See the SCENE_OBJECTS comment for the two invariants.
+   */
+  function drawObject(ctx, w, h, o) {
+    var x = o.x, y = o.y, ow = o.w, oh = o.h
+    var s = SHADE[o.label]
+
+    if (o.label === 'sofa') {
+      // Legs first, under the body and outside the palette core.
+      fillN(ctx, w, h, NEUTRAL.metal, x + ow * 0.08, y + oh * 0.94, ow * 0.06, oh * 0.12)
+      fillN(ctx, w, h, NEUTRAL.metal, x + ow * 0.86, y + oh * 0.94, ow * 0.06, oh * 0.12)
+      // Back cushion, seat, arms and skirt — overlapping rects in the base
+      // colour form one connected core. The arms stand proud of the backrest so
+      // the silhouette reads as a sofa rather than as a filled rectangle.
+      fillN(ctx, w, h, o.color, x + ow * 0.1, y + oh * 0.26, ow * 0.8, oh * 0.46)
+      fillN(ctx, w, h, o.color, x + ow * 0.1, y + oh * 0.6, ow * 0.8, oh * 0.34)
+      fillN(ctx, w, h, o.color, x, y + oh * 0.14, ow * 0.15, oh * 0.86)
+      fillN(ctx, w, h, o.color, x + ow * 0.85, y + oh * 0.14, ow * 0.15, oh * 0.86)
+      fillN(ctx, w, h, o.color, x + ow * 0.06, y + oh * 0.86, ow * 0.88, oh * 0.14)
+      // Seams: arm joins, the back/seat break and the cushion split. All inside
+      // tolerance, so they shade the silhouette without cutting the blob.
+      fillN(ctx, w, h, s.dark, x + ow * 0.15, y + oh * 0.2, ow * 0.014, oh * 0.72)
+      fillN(ctx, w, h, s.dark, x + ow * 0.835, y + oh * 0.2, ow * 0.014, oh * 0.72)
+      fillN(ctx, w, h, s.dark, x + ow * 0.16, y + oh * 0.6, ow * 0.68, oh * 0.016)
+      fillN(ctx, w, h, s.dark, x + ow * 0.49, y + oh * 0.62, ow * 0.014, oh * 0.24)
+      // Lit tops on the backrest and both arms.
+      fillN(ctx, w, h, s.light, x + ow * 0.16, y + oh * 0.27, ow * 0.68, oh * 0.05)
+      fillN(ctx, w, h, s.light, x + ow * 0.01, y + oh * 0.15, ow * 0.13, oh * 0.05)
+      fillN(ctx, w, h, s.light, x + ow * 0.86, y + oh * 0.15, ow * 0.13, oh * 0.05)
+      return
+    }
+
+    if (o.label === 'tv') {
+      // Stand below the panel, outside the core.
+      fillN(ctx, w, h, NEUTRAL.metal, x + ow * 0.44, y + oh * 1.0, ow * 0.12, oh * 0.12)
+      fillN(ctx, w, h, NEUTRAL.metal, x + ow * 0.3, y + oh * 1.1, ow * 0.4, oh * 0.05)
+      // Bezel then screen — the screen is the core, the bezel is a darker teal
+      // so the whole panel still classifies as one blob.
+      fillN(ctx, w, h, s.dark, x, y, ow, oh)
+      fillN(ctx, w, h, o.color, x + ow * 0.05, y + oh * 0.07, ow * 0.9, oh * 0.86)
+      // A soft diagonal sheen across the screen.
+      ctx.save()
+      ctx.beginPath()
+      ctx.moveTo((x + ow * 0.05) * w, (y + oh * 0.93) * h)
+      ctx.lineTo((x + ow * 0.5) * w, (y + oh * 0.07) * h)
+      ctx.lineTo((x + ow * 0.72) * w, (y + oh * 0.07) * h)
+      ctx.lineTo((x + ow * 0.27) * w, (y + oh * 0.93) * h)
+      ctx.closePath()
+      ctx.fillStyle = s.light
+      ctx.fill()
+      ctx.restore()
+      return
+    }
+
+    if (o.label === 'table') {
+      // Top slab is the core; legs hang off it and stay in the palette colour so
+      // the piece reads as one object to the detector.
+      fillN(ctx, w, h, o.color, x, y, ow, oh * 0.3)
+      fillN(ctx, w, h, o.color, x + ow * 0.08, y + oh * 0.3, ow * 0.09, oh * 0.7)
+      fillN(ctx, w, h, o.color, x + ow * 0.83, y + oh * 0.3, ow * 0.09, oh * 0.7)
+      // Lit top face and a shadowed edge under the slab.
+      fillN(ctx, w, h, s.light, x, y, ow, oh * 0.09)
+      fillN(ctx, w, h, s.dark, x, y + oh * 0.24, ow, oh * 0.06)
+      return
+    }
+
+    if (o.label === 'plant') {
+      // Terracotta pot — deliberately not a palette colour, so the pot is set
+      // dressing and only the foliage is detected.
+      fillN(ctx, w, h, NEUTRAL.pot, x + ow * 0.18, y + oh * 0.74, ow * 0.64, oh * 0.26)
+      fillN(ctx, w, h, 'rgb(150,78,52)', x + ow * 0.14, y + oh * 0.72, ow * 0.72, oh * 0.06)
+      // Stem plus overlapping leaf masses — one connected green core.
+      fillN(ctx, w, h, o.color, x + ow * 0.44, y + oh * 0.34, ow * 0.12, oh * 0.42)
+      fillEllipseN(ctx, w, h, o.color, x + ow * 0.5, y + oh * 0.3, ow * 0.42, oh * 0.2)
+      fillEllipseN(ctx, w, h, s.dark, x + ow * 0.28, y + oh * 0.42, ow * 0.3, oh * 0.14)
+      fillEllipseN(ctx, w, h, s.dark, x + ow * 0.74, y + oh * 0.44, ow * 0.28, oh * 0.13)
+      fillEllipseN(ctx, w, h, s.light, x + ow * 0.56, y + oh * 0.16, ow * 0.3, oh * 0.13)
+      fillEllipseN(ctx, w, h, o.color, x + ow * 0.34, y + oh * 0.2, ow * 0.26, oh * 0.12)
+      return
+    }
+
+    fillN(ctx, w, h, o.color, x, y, ow, oh)
+  }
+
   function drawScene(ctx, w, h) {
+    var HORIZON = 0.72
+
     // Wall gradient
     var grad = ctx.createLinearGradient(0, 0, 0, h)
     grad.addColorStop(0, 'rgb(205,205,209)')
-    grad.addColorStop(0.72, 'rgb(176,176,180)')
+    grad.addColorStop(HORIZON, 'rgb(176,176,180)')
     ctx.fillStyle = grad
     ctx.fillRect(0, 0, w, h)
-    // Floor
-    ctx.fillStyle = 'rgb(58,62,72)'
-    ctx.fillRect(0, h * 0.72, w, h * 0.28)
+
+    // Framed picture on the back wall — gives the room a scale cue.
+    fillN(ctx, w, h, NEUTRAL.frame, 0.53, 0.13, 0.15, 0.21)
+    fillN(ctx, w, h, NEUTRAL.art, 0.545, 0.145, 0.12, 0.18)
+
+    // Floor, with a receding rug and a skirting board at the wall join.
+    fillN(ctx, w, h, NEUTRAL.floor, 0, HORIZON, 1, 1 - HORIZON)
+    fillN(ctx, w, h, NEUTRAL.skirting, 0, HORIZON - 0.016, 1, 0.016)
+    ctx.fillStyle = NEUTRAL.rug
+    ctx.beginPath()
+    ctx.moveTo(0.22 * w, 0.78 * h)
+    ctx.lineTo(0.78 * w, 0.78 * h)
+    ctx.lineTo(0.94 * w, 1.0 * h)
+    ctx.lineTo(0.06 * w, 1.0 * h)
+    ctx.closePath()
+    ctx.fill()
+
     // Furniture (palette colours the mock inference engine detects)
     for (var i = 0; i < SCENE_OBJECTS.length; i++) {
-      var o = SCENE_OBJECTS[i]
-      ctx.fillStyle = o.color
-      ctx.fillRect(o.x * w, o.y * h, o.w * w, o.h * h)
+      drawObject(ctx, w, h, SCENE_OBJECTS[i])
     }
   }
 

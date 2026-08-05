@@ -9,7 +9,7 @@
  */
 import { SPATIAL_DETECTION_PROMPT, parseDetections } from './prompt.ts'
 import type { RawDetection } from './prompt.ts'
-import { classifyPixel } from './src/shared/cv-palette.ts'
+import { classifyPixel, paletteColorNameFor } from './src/shared/cv-palette.ts'
 
 // Re-export shared types
 export type { RawDetection }
@@ -63,6 +63,41 @@ function arrayBufferToBase64(bytes: Uint8Array): string {
     binary += String.fromCharCode(bytes[i])
   }
   return btoa(binary)
+}
+
+/**
+ * Short natural-language description for one mock detection.
+ *
+ * The real engines fill `description` with a human phrase under 7 words
+ * (prompt.ts SPATIAL_DETECTION_PROMPT — e.g. "small fern, white pot"), and the
+ * UI renders that string verbatim into the Latest-scan readout (src/main.ts
+ * ~1060) and the review panel (src/ui/panel.ts:314). The mock used to emit
+ * `mock colour-blob detection (N samples)` there, so any screenshot of the mock
+ * stage — including the product-video captures — showed engine debug output
+ * where the product shows a description.
+ *
+ * Everything in the phrase is measured, not invented: `colorName` is the palette
+ * entry the blob's pixels actually matched, and the size and position words come
+ * from the blob's own bbox. Deterministic for a given bbox, which the committed
+ * captures rely on.
+ */
+export function describeMockBlob(
+  label: string,
+  bbox: [number, number, number, number],
+): string {
+  const [x0, y0, x1, y1] = bbox
+  // Thresholds are fractions of frame AREA, calibrated against furniture seen
+  // across a room: a sofa filling a quarter of the width and a sixth of the
+  // height is ~4%, a side table ~1.5%, a pot plant well under 1%.
+  const area = Math.max(0, x1 - x0) * Math.max(0, y1 - y0)
+  const size = area >= 0.03 ? 'large' : area >= 0.012 ? 'mid-sized' : 'small'
+
+  const centreX = (x0 + x1) / 2
+  const place = centreX < 0.34 ? 'left of frame' : centreX > 0.66 ? 'right of frame' : 'centre of frame'
+
+  const colour = paletteColorNameFor(label)
+  // "large orange sofa, left of frame" — 6 words, inside the 7-word contract.
+  return colour ? `${size} ${colour} ${label}, ${place}` : `${size} ${label}, ${place}`
 }
 
 export class InferenceEngine {
@@ -289,21 +324,28 @@ export class InferenceEngine {
     const detections: RawDetection[] = []
     for (const blob of blobs.values()) {
       if (blob.count < minSamples) continue
+      const bbox: [number, number, number, number] = [
+        (blob.minX * step) / width,
+        (blob.minY * step) / height,
+        ((blob.maxX + 1) * step) / width,
+        ((blob.maxY + 1) * step) / height,
+      ]
       detections.push({
         label: blob.label,
         confidence: 0.95,
-        description: `mock colour-blob detection (${blob.count} samples)`,
-        bbox: [
-          (blob.minX * step) / width,
-          (blob.minY * step) / height,
-          ((blob.maxX + 1) * step) / width,
-          ((blob.maxY + 1) * step) / height,
-        ],
+        // A description, not a sample count — see describeMockBlob. The blob's
+        // sample count stays available on the console line below for debugging.
+        description: describeMockBlob(blob.label, bbox),
+        bbox,
       })
     }
     detections.sort((a, b) =>
       (b.bbox[2] - b.bbox[0]) * (b.bbox[3] - b.bbox[1]) - (a.bbox[2] - a.bbox[0]) * (a.bbox[3] - a.bbox[1]))
-    console.log(`[engine] mock detections: ${detections.map(d => d.label).join(', ') || '(none)'}`)
+    console.log(
+      `[engine] mock detections: ${
+        detections.map(d => d.label).join(', ') || '(none)'
+      }${blobs.size ? ` (blob samples: ${[...blobs.values()].filter(b => b.count >= minSamples).map(b => `${b.label}=${b.count}`).join(' ')})` : ''}`,
+    )
     return detections
   }
 
