@@ -120,19 +120,53 @@ export async function verifySession(token: string, secret: string): Promise<Sess
   if (!valid) return null
   let claims: SessionClaims
   try {
-    claims = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/'))) as SessionClaims
+    // The payload was signed as UTF-8 bytes; atob yields latin-1, so decode
+    // through TextDecoder or any non-ASCII name comes back as mojibake.
+    const raw = atob(payload.replace(/-/g, '+').replace(/_/g, '/'))
+    const bytes = new Uint8Array(raw.length)
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i)
+    claims = JSON.parse(new TextDecoder().decode(bytes)) as SessionClaims
   } catch { return null }
   if (typeof claims.exp !== 'number' || claims.exp * 1000 < Date.now()) return null
   if (typeof claims.sub !== 'string' || typeof claims.email !== 'string') return null
   return claims
 }
 
-/** Open-redirect guard: only same-origin relative paths survive (CI-Server's safeRelativePath). */
+/**
+ * The single authorization decision, so every entry point applies the same
+ * gate. An empty allowlist authorizes nobody (documented fail-closed).
+ */
+export function isAllowedEmail(cfg: PortalAuthConfig, email: string | undefined | null): boolean {
+  if (!email) return false
+  return cfg.allowedEmails.includes(email.trim().toLowerCase())
+}
+
+/**
+ * Open-redirect guard: only same-origin relative paths survive.
+ *
+ * Pattern-matching alone is not enough. The WHATWG URL parser strips ASCII
+ * tab/CR/LF *before* parsing, so "/\t/evil.example" — which passes a naive
+ * startsWith('//') check — is resolved by the browser as protocol-relative and
+ * lands on https://evil.example/. Reject control characters outright, then
+ * normalize through the parser and re-serialize, so backslash and dot tricks
+ * are canonicalized away instead of enumerated.
+ */
 export function safeRelativePath(p: string | undefined | null): string | null {
   if (!p) return null
+  // deno-lint-ignore no-control-regex
+  if (/[\x00-\x1f\x7f]/.test(p)) return null
   if (!p.startsWith('/') || p.startsWith('//') || p.startsWith('/\\')) return null
-  if (p.includes('://') || p.includes('\r') || p.includes('\n')) return null
-  return p
+  if (p.includes('://')) return null
+  const SENTINEL = 'http://local.invalid'
+  let u: URL
+  try {
+    u = new URL(p, SENTINEL)
+  } catch {
+    return null
+  }
+  // Anything that escaped the sentinel origin was not a relative path.
+  if (u.origin !== SENTINEL) return null
+  return `${u.pathname}${u.search}${u.hash}`
 }
 
 // ── Route registration ────────────────────────────────────────────────────────
@@ -152,7 +186,17 @@ function cookie(c: Context, name: string): string | null {
   const header = c.req.header('cookie') ?? ''
   for (const part of header.split(/;\s*/)) {
     const eq = part.indexOf('=')
-    if (eq > 0 && part.slice(0, eq) === name) return decodeURIComponent(part.slice(eq + 1))
+    if (eq > 0 && part.slice(0, eq) === name) {
+      const raw = part.slice(eq + 1)
+      // A malformed percent-escape must not throw: an attacker-set (or merely
+      // corrupted) cookie would otherwise surface as a 500 from the error
+      // handler and wedge sign-in until the browser is cleared.
+      try {
+        return decodeURIComponent(raw)
+      } catch {
+        return raw
+      }
+    }
   }
   return null
 }
@@ -252,10 +296,26 @@ export function registerPortalAuth(app: Hono, cfg: PortalAuthConfig, deps: Porta
       signal: AbortSignal.timeout(10_000),
     }).catch(() => null)
     if (!uiResp?.ok) return c.text('Could not load your Companion Account profile', 502)
-    const profile = await uiResp.json() as { sub?: string; email?: string; name?: string }
-    if (!profile.sub || !profile.email) return c.text('Your Companion Account has no verified email', 403)
+    const profile = await uiResp.json() as {
+      sub?: string
+      email?: string
+      email_verified?: boolean
+      name?: string
+    }
+    if (!profile.sub || !profile.email) return c.text('Your Companion Account has no email', 403)
+    // Authorizing on an email the IdP has not verified is the standard OIDC
+    // account-takeover path: anyone who can register that address at Portal
+    // would inherit the allowlist entry. Require the claim to be strictly true
+    // — absent counts as unverified, and fails closed.
+    if (profile.email_verified !== true) {
+      console.warn(`[portal-auth] rejected sign-in for ${profile.email}: email_verified is not true`)
+      return c.text(
+        'Your Companion Account email is not verified. Verify it in the Portal and try again.',
+        403,
+      )
+    }
 
-    if (!cfg.allowedEmails.includes(profile.email.toLowerCase())) {
+    if (!isAllowedEmail(cfg, profile.email)) {
       console.warn(`[portal-auth] rejected sign-in for ${profile.email} (not in PORTAL_OIDC_ALLOWED_EMAILS)`)
       return c.text('This Companion Account is not authorized for this scanner', 403)
     }
@@ -289,7 +349,14 @@ export function registerPortalAuth(app: Hono, cfg: PortalAuthConfig, deps: Porta
           issuer: `${cfg.issuerUrl}/api/auth`,
           audience: cfg.audience,
         })
-        return c.json({ sub: payload.sub, email: payload['email'] ?? null, name: payload['name'] ?? null, via: 'portal-jwt' })
+        // A valid Portal token proves *who* the caller is, not that they are
+        // authorized here — apply the same allowlist + verified-email gate as
+        // the interactive path, or this route becomes a bypass of it.
+        const email = typeof payload['email'] === 'string' ? payload['email'] : null
+        if (payload['email_verified'] !== true || !isAllowedEmail(cfg, email)) {
+          return c.json({ error: 'Not authorized for this scanner' }, 403)
+        }
+        return c.json({ sub: payload.sub, email, name: payload['name'] ?? null, via: 'portal-jwt' })
       } catch { /* fall through to 401 */ }
     }
     return c.json({ error: 'Not signed in' }, 401)

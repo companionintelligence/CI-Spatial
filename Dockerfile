@@ -28,7 +28,7 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 # Server modules (splat_* / lingbot_map power the world-job queue)
-COPY main.ts inference.ts prompt.ts jobs.ts pipeline.ts portal_auth.ts \
+COPY main.ts inference.ts prompt.ts jobs.ts pipeline.ts portal_auth.ts memory_push.ts \
      lingbot_map.ts lingbot_map_glb.ts lingbot_map_ply.ts \
      splat_train.ts splat_train_dataset.ts splat_detect.ts splat_finish.ts \
      deno.json deno.lock ./
@@ -39,9 +39,14 @@ COPY src/shared/ ./src/shared/
 # the Brush trainer need GPU-capable hosts — install them on the host and point
 # LINGBOT_MAP_PYTHON / SPLAT_DETECT_PYTHON / SPLAT_TRAIN_BIN at them; the jobs
 # degrade gracefully (skippedReason) when the binaries are absent.
+# NOTE: these are spawned by main.ts at runtime, so their own imports must be
+# here too — ingest-{video,photos}.mjs both `import './ingest-quality.mjs'`.
+# A miss here is invisible at build time and only shows up as a 500 from the
+# ingest routes in a real install.
 COPY scripts/lingbot_map_worker.py ./scripts/lingbot_map_worker.py
 COPY scripts/ingest-video.mjs ./scripts/ingest-video.mjs
 COPY scripts/ingest-photos.mjs ./scripts/ingest-photos.mjs
+COPY scripts/ingest-quality.mjs ./scripts/ingest-quality.mjs
 
 # Static viewer bundle from stage 1
 COPY --from=web /web/dist ./dist
