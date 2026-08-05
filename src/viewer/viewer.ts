@@ -383,6 +383,13 @@ function updateLabels(): void {
     label.el.style.display = 'block'
     label.el.style.left = `${x}px`
     label.el.style.top = `${y}px`
+    // Nearer labels paint on top. Without this, overlapping labels stack in DOM
+    // insertion order, which is the order the scans finished loading — a race, so
+    // two identical worlds could paint the same cluster differently. Ranked on
+    // metric distance rather than `projected.z`, which is so non-linear near the
+    // far plane that every label in the world rounds to the same value.
+    const depthCm = Math.round(camera.position.distanceTo(position) * 100)
+    label.el.style.zIndex = String(Math.max(1, 1_000_000 - depthCm))
   }
 }
 
@@ -946,10 +953,27 @@ function buildDetectionBounds(
   })
 }
 
+/** True when some ancestor of `obj` (up to but excluding `root`) is itself labelled. */
+function hasLabelledAncestor(obj: THREE.Object3D, root: THREE.Object3D): boolean {
+  if (obj === root) return false
+  for (let node = obj.parent; node && node !== root; node = node.parent) {
+    if ((node.userData as Record<string, unknown>)['label']) return true
+  }
+  return false
+}
+
 function createSemanticLabels(root: THREE.Object3D, scanId: string): void {
   root.traverse((obj) => {
     const data = obj.userData as Record<string, unknown>
     if (!data['label']) return
+    // One label per detected object, not one per level of detail.
+    // upgradeSemanticMeshes() wraps each labelled mesh in a THREE.LOD and copies
+    // the mesh's userData — label included — onto the LOD and onto every proxy
+    // level it adds. Labelling all of them stacked three pills on each object at
+    // three slightly different projected positions, and because the high-detail
+    // level attaches asynchronously (assets.ts:18 resolves on a timer) their DOM
+    // order — and so which pill painted on top — differed from run to run.
+    if (hasLabelledAncestor(obj, root)) return
     const label = String(data['label'])
     const confidence = typeof data['confidence'] === 'number' ? ` ${Math.round(data['confidence'] * 100)}%` : ''
     createLabel(`${label}${confidence}`, obj.getWorldPosition(new THREE.Vector3()), {

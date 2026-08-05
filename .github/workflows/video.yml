@@ -155,6 +155,13 @@ jobs:
 
       # Shots are byte-stable, so a diff here means the UI genuinely changed.
       # Surface it as a PR rather than silently committing to the branch.
+      #
+      # "byte-stable" is now true of the scanner shots by construction — the xr8
+      # mock is pinned with ?mockFreeze, so nothing in them tracks wall time (see
+      # video/capture.config.mjs hazard 1). The two World Editor shots film a
+      # WebGL canvas and are byte-stable in headless SwiftShader but not against a
+      # hardware GPU; capture.config.mjs hazard 13 records the measured noise
+      # floor so a reviewer can tell it apart from a real change.
       - name: Detect UI drift
         id: drift
         working-directory: video

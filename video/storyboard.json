@@ -166,23 +166,15 @@
           "alt": "Live scanning heads-up display over the camera feed, with capture controls",
           "motion": "drift-down",
           "capture": {
-            "path": "/?mock=xr8",
+            "path": "/?mock=xr8&mockFreeze=700",
             "waitFor": "#start-ar-btn",
             "before": [
               { "click": "#start-ar-btn" },
               { "waitFor": "#capture-btn" },
-              { "wait": 2500 }
+              { "waitFor": "#scan-stats:has-text('pts')" },
+              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#geo-chip{display:none!important}</style>')" }
             ],
-            "settle": 600,
-            "mask": [
-              "#scan-stats",
-              "#status-text",
-              "#verdict-chip",
-              "#quality-coverage-text",
-              "#quality-coverage-fill",
-              "#quality-drift-badge",
-              "#geo-chip"
-            ]
+            "settle": 600
           }
         }
       ]
@@ -198,33 +190,20 @@
         {
           "id": "detections-panel",
           "url": "companion-scan.local",
-          "alt": "Review panel listing the objects one capture found, each with a label, a confidence figure and its position in the room",
+          "alt": "The Latest scan readout over the camera feed, listing the objects one capture found with a label, a confidence figure and a 3D position each",
           "motion": "push-in",
           "capture": {
-            "path": "/?mock=xr8",
+            "path": "/?mock=xr8&mockFreeze=700",
             "waitFor": "#start-ar-btn",
             "before": [
               { "click": "#start-ar-btn" },
               { "waitFor": "#capture-btn" },
-              { "wait": 2500 },
+              { "waitFor": "#scan-stats:has-text('pts')" },
               { "click": "#capture-btn" },
-              { "waitFor": "#panel-content [data-key]" },
-              { "click": "#panel-toggle" },
-              { "waitFor": "#side-panel.open" },
-              { "wait": 2000 }
+              { "waitFor": "#infer-dialog.visible" },
+              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#status-bar,#quality-overlay,#autosave-status{display:none!important}</style>')" }
             ],
-            "settle": 600,
-            "mask": [
-              "#scan-stats",
-              "#status-text",
-              "#verdict-chip",
-              "#quality-coverage-text",
-              "#quality-coverage-fill",
-              "#quality-drift-badge",
-              "#geo-chip",
-              "#autosave-status",
-              "#panel-content [data-key] div[style*=\"monospace\"]"
-            ]
+            "settle": 600
           }
         }
       ]
@@ -243,30 +222,19 @@
           "alt": "The Review and Export panel, with GLB export, summary export and server-processing actions in the footer",
           "motion": "drift-down",
           "capture": {
-            "path": "/?mock=xr8",
+            "path": "/?mock=xr8&mockFreeze=700",
             "waitFor": "#start-ar-btn",
             "before": [
               { "click": "#start-ar-btn" },
               { "waitFor": "#capture-btn" },
-              { "wait": 2500 },
+              { "waitFor": "#scan-stats:has-text('pts')" },
               { "click": "#capture-btn" },
               { "waitFor": "#panel-content [data-key]" },
               { "click": "#finish-scan-btn" },
               { "waitFor": "#side-panel.open #panel-export-glb-btn" },
-              { "wait": 2000 }
+              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#hud-panel{display:none!important}</style>')" }
             ],
-            "settle": 600,
-            "mask": [
-              "#scan-stats",
-              "#status-text",
-              "#verdict-chip",
-              "#quality-coverage-text",
-              "#quality-coverage-fill",
-              "#quality-drift-badge",
-              "#geo-chip",
-              "#autosave-status",
-              "#panel-content [data-key] div[style*=\"monospace\"]"
-            ]
+            "settle": 600
           }
         }
       ]
@@ -288,13 +256,11 @@
             "path": "/viewer.html?world=default",
             "waitFor": "#scan-list .scan-item",
             "before": [
-              { "wait": 8000 }
+              { "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')" },
+              { "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')" },
+              { "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')" }
             ],
-            "settle": 800,
-            "mask": [
-              ".scan-status",
-              "#world-job-count"
-            ]
+            "settle": 1200
           }
         }
       ]
@@ -316,16 +282,13 @@
             "path": "/viewer.html?world=default",
             "waitFor": "#scan-list .scan-item",
             "before": [
-              { "wait": 8000 },
+              { "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')" },
+              { "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')" },
+              { "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')" },
               { "click": "#mode-semantic" },
-              { "waitFor": "#mode-semantic.active" },
-              { "wait": 2000 }
+              { "waitFor": "#mode-semantic.active" }
             ],
-            "settle": 800,
-            "mask": [
-              ".scan-status",
-              "#world-job-count"
-            ]
+            "settle": 1200
           }
         }
       ]
