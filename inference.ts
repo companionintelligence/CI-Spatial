@@ -81,6 +81,25 @@ function arrayBufferToBase64(bytes: Uint8Array): string {
  * from the blob's own bbox. Deterministic for a given bbox, which the committed
  * captures rely on.
  */
+/**
+ * Confidence for one mock blob: how solidly it fills its own bounding box.
+ *
+ * `count` sampled grid cells matched the palette colour; the box spans
+ * `(maxX-minX+1) x (maxY-minY+1)` cells. The ratio is mapped into 0.61–0.96 —
+ * a colour-blob detector has no business claiming better than that, and a
+ * floor keeps a ragged silhouette from reading as a failed detection when it
+ * is in fact the object. Rounded to two places so the UI's `Math.round(c*100)`
+ * is stable.
+ */
+export function blobConfidence(
+  count: number,
+  minX: number, minY: number, maxX: number, maxY: number,
+): number {
+  const cells = (maxX - minX + 1) * (maxY - minY + 1)
+  const fill = cells > 0 ? Math.min(1, count / cells) : 0
+  return Math.round((0.61 + 0.35 * fill) * 100) / 100
+}
+
 export function describeMockBlob(
   label: string,
   bbox: [number, number, number, number],
@@ -332,7 +351,15 @@ export class InferenceEngine {
       ]
       detections.push({
         label: blob.label,
-        confidence: 0.95,
+        // A measurement, not a constant. Every mock detection used to report
+        // exactly 0.95, so the review panel showed "sofa 95% / tv 95% / table
+        // 95%" — three identical numbers, which is the tell that a confidence
+        // column is decorative. Fill ratio is the honest signal this detector
+        // has: how solidly the blob's own bounding box is filled by cells that
+        // matched its palette colour. A clean rectangular object approaches 1;
+        // an L-shaped or partly-occluded one falls away. Deterministic for a
+        // given frame, which the committed captures rely on.
+        confidence: blobConfidence(blob.count, blob.minX, blob.minY, blob.maxX, blob.maxY),
         // A description, not a sample count — see describeMockBlob. The blob's
         // sample count stays available on the console line below for debugging.
         description: describeMockBlob(blob.label, bbox),

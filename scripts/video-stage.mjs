@@ -91,9 +91,31 @@ await run('node', ['scripts/generate-test-homes.mjs'])
 await run('node', ['scripts/generate-cv-images.mjs'])
 
 // ── 2. place them adjacent ───────────────────────────────────────────────────
+/** GLB basenames, in seed order — chosen in step 2, consumed in step 4. */
+let stagedHomes = []
 {
   const homesDir = join(root, 'test-data', 'homes')
-  const index = JSON.parse(readFileSync(join(homesDir, 'index.json'), 'utf8')).slice(0, SCAN_COUNT)
+  const all = JSON.parse(readFileSync(join(homesDir, 'index.json'), 'utf8'))
+  // One home per ARCHETYPE, not the first N of the list.
+  //
+  // index.json is ordered archetype-major with variants A/B/C, so `slice(0, 3)`
+  // handed the World Editor "Studio Apartment A", "Studio Apartment B" and
+  // "Studio Apartment C" — three ±12% rescalings of one room, with near-identical
+  // furniture. The whole claim of the World Editor is that separate scans of
+  // separate rooms assemble into one world; a scan list of three same-named
+  // rooms argues the opposite, and reads like the seeder ran three times by
+  // mistake. Taking the first variant of distinct archetypes gives a living
+  // room, a kitchen and a home office — still fixture data, still deterministic,
+  // but now shaped like a home someone walked through.
+  const seen = new Set()
+  const index = []
+  for (const entry of all) {
+    if (seen.has(entry.slug)) continue
+    seen.add(entry.slug)
+    index.push(entry)
+    if (index.length === SCAN_COUNT) break
+  }
+  while (index.length < SCAN_COUNT && index.length < all.length) index.push(all[index.length])
   // ~8.8 m of longitude per step at this latitude: three rooms in a row, not
   // three addresses in a neighbourhood.
   const STEP_LNG = 0.0001
@@ -107,7 +129,11 @@ await run('node', ['scripts/generate-cv-images.mjs'])
     meta.geoLng = Math.round((baseLng + i * STEP_LNG) * 1e6) / 1e6
     writeFileSync(file, JSON.stringify(meta, null, 2))
   })
-  console.log(`[stage] ${index.length} homes placed ${Math.round(STEP_LNG * 111_320 * Math.cos(baseLat * Math.PI / 180))} m apart`)
+  stagedHomes = index.map((entry) => entry.file.replace(/\.glb$/, ''))
+  console.log(
+    `[stage] ${index.length} homes placed ${Math.round(STEP_LNG * 111_320 * Math.cos(baseLat * Math.PI / 180))} m apart`
+    + `: ${index.map((e) => e.name).join(', ')}`,
+  )
 }
 
 // ── 3. API ───────────────────────────────────────────────────────────────────
@@ -132,7 +158,7 @@ await waitFor(`${api}/health`, 'Deno API')
 // ── 4. seed ──────────────────────────────────────────────────────────────────
 console.log(`[stage] seeding ${SCAN_COUNT} homes`)
 await run('node', ['scripts/seed-test-homes.mjs'], {
-  env: { ...process.env, SERVER_URL: api, COUNT: String(SCAN_COUNT) },
+  env: { ...process.env, SERVER_URL: api, COUNT: String(SCAN_COUNT), HOMES: stagedHomes.join(',') },
 })
 // Every viewer shot waits on "Ready - optimized", which is only set once the
 // full-quality GLB is in the scene. Block here so a capture cannot start against

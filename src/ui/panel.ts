@@ -119,6 +119,7 @@ export class SidePanel {
       for (const [action, btnLabel] of actions) {
         const btn = document.createElement('button')
         btn.className = 'panel-btn-ghost'
+        btn.dataset['needsObjects'] = ''
         btn.textContent = btnLabel
         btn.addEventListener('click', () => this.onProcess!(action))
         processWrap.appendChild(btn)
@@ -232,9 +233,35 @@ export class SidePanel {
     if (note) note.textContent = mode === 'server' ? 'Server uses all machine cores' : 'On-device — no data leaves your phone'
   }
 
+  /**
+   * Gate every action that needs objects on there being objects.
+   *
+   * With an empty session the panel still offered a full-width primary "Export
+   * GLB", plus Export Summary and the three server-processing actions — all of
+   * which produce an empty file or a job over nothing. A bright primary CTA
+   * next to "No objects yet" is the screen contradicting itself, and it is what
+   * the empty-state screenshot showed. The buttons stay visible (they tell the
+   * reader what the panel is for) but read as unavailable until there is
+   * something to export.
+   */
+  private _setActionsEnabled(enabled: boolean): void {
+    const ids = [
+      'panel-export-glb-btn',
+      'panel-export-summary-btn',
+    ]
+    for (const id of ids) {
+      const btn = document.getElementById(id) as HTMLButtonElement | null
+      if (btn) btn.disabled = !enabled
+    }
+    for (const btn of this.footer.querySelectorAll<HTMLButtonElement>('[data-needs-objects]')) {
+      btn.disabled = !enabled
+    }
+  }
+
   private render(dets: Map<string, StoredDetection>, selected: Set<string>): void {
     const count = dets.size
     this.toggle.setAttribute('data-count', count > 0 ? String(count) : '')
+    this._setActionsEnabled(count > 0)
 
     if (count === 0) {
       this.content.innerHTML = `

@@ -953,8 +953,19 @@
         box-shadow: 0 10px 30px rgba(114,221,212,0.16);
         transition: transform 0.15s ease-out, box-shadow 0.2s ease-out, opacity 0.15s ease-out;
       }
-      .panel-btn-primary:hover { transform: translateY(-1px); box-shadow: 0 16px 36px rgba(114,221,212,0.18); }
-      .panel-btn-primary:active { opacity: 0.82; transform: translateY(0); }
+      .panel-btn-primary:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 16px 36px rgba(114,221,212,0.18); }
+      .panel-btn-primary:active:not(:disabled) { opacity: 0.82; transform: translateY(0); }
+
+      /* An empty session has nothing to export, so the actions that need objects
+         read as unavailable rather than sitting there as a bright primary CTA
+         under the words "No objects yet". */
+      .panel-btn-primary:disabled,
+      .panel-btn-ghost:disabled {
+        opacity: 0.32;
+        cursor: not-allowed;
+        box-shadow: none;
+        transform: none;
+      }
 
       .panel-btn-ghost {
         width: 100%;
@@ -968,8 +979,8 @@
         cursor: pointer;
         transition: transform 0.15s ease-out, background 0.15s ease-out, border-color 0.15s ease-out, color 0.15s ease-out;
       }
-      .panel-btn-ghost:hover { background: rgba(114,221,212,0.08); border-color: rgba(114,221,212,0.24); color: var(--ci-text); transform: translateY(-1px); }
-      .panel-btn-ghost:active { background: rgba(255, 255, 255, 0.11); transform: translateY(0); }
+      .panel-btn-ghost:hover:not(:disabled) { background: rgba(114,221,212,0.08); border-color: rgba(114,221,212,0.24); color: var(--ci-text); transform: translateY(-1px); }
+      .panel-btn-ghost:active:not(:disabled) { background: rgba(255, 255, 255, 0.11); transform: translateY(0); }
 
       .panel-btn-danger {
         color: #ffb7b7;
@@ -1503,7 +1514,7 @@
         <!-- 2. Coverage + quality warnings -->
         <div id="quality-overlay" style="display:none;">
           <div style="display:flex;align-items:center;gap:6px;">
-            <span style="font-size:10px;color:rgba(255,255,255,0.4);font-weight:600;text-transform:uppercase;letter-spacing:0.04em;flex-shrink:0;">Cov</span>
+            <span style="font-size:10px;color:rgba(255,255,255,0.4);font-weight:600;text-transform:uppercase;letter-spacing:0.04em;flex-shrink:0;">Coverage</span>
             <div style="flex:1;height:4px;background:rgba(255,255,255,0.12);border-radius:2px;overflow:hidden;">
               <div id="quality-coverage-fill" style="height:100%;width:0%;border-radius:2px;transition:width 0.5s ease,background 0.5s ease;background:#ef7070;"></div>
             </div>
@@ -1512,7 +1523,7 @@
           <div style="display:flex;flex-wrap:wrap;gap:3px;margin-top:3px;">
             <div id="quality-drift-badge"  style="display:none;align-items:center;background:rgba(255,152,0,0.9);border-radius:4px;padding:2px 6px;font-size:11px;font-weight:700;color:#000;"></div>
             <div id="quality-light-badge"  style="display:none;align-items:center;background:rgba(40,40,40,0.9);border:1px solid rgba(255,255,255,0.18);border-radius:4px;padding:2px 6px;font-size:11px;font-weight:700;color:#fff;">🌑 Low light</div>
-            <div id="quality-refl-badge"   style="display:none;align-items:center;background:rgba(114,221,212,0.9);border-radius:4px;padding:2px 6px;font-size:11px;font-weight:700;color:#000;">✦ Refl</div>
+            <div id="quality-refl-badge"   style="display:none;align-items:center;background:rgba(114,221,212,0.9);border-radius:4px;padding:2px 6px;font-size:11px;font-weight:700;color:#000;">✦ Reflections</div>
           </div>
           <div id="quality-missing" style="display:none;font-size:10px;color:rgba(255,180,0,0.85);font-weight:600;margin-top:2px;"></div>
         </div>

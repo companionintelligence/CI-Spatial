@@ -391,14 +391,21 @@
         background: rgba(114,221,212,0.14);
         box-shadow: 0 0 0 1px rgba(114,221,212,0.25) inset;
       }
+      /* Three tiers share a 260 px sidebar, so each label gets about 72 px —
+         and "Reconstructed" is ~78 px at 10px/700. With `nowrap` + ellipsis the
+         middle tier rendered as "Reconstr…", which reads as the app failing to
+         fit its own vocabulary rather than as a deliberate abbreviation. Let it
+         wrap: two short lines cost 12 px of panel height and say the whole word.
+         `min-height` keeps the three steps the same height when only one wraps. */
       .quality-step-label {
         font-size: 10px;
         font-weight: 700;
         letter-spacing: -0.01em;
         color: #fff;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        line-height: 1.2;
+        min-height: 24px;
       }
       .quality-step.current .quality-step-label { color: #72ddd4; }
       .quality-step-tick {
@@ -636,10 +643,15 @@
       }
       .hud-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
 
+      /* The sidebar's collapse chevron is parked at `right: -28px`, which puts it
+         inside the viewport across x = 0…26 px — directly on top of a readout
+         that started at 10 px, so the "W" of "World:" sat under the button in
+         every desktop capture. Give the chevron its own gutter. (On phones the
+         chevron is `display: none` and the mobile rule below reclaims the 8 px.) */
       #hud-info {
         position: absolute;
         top: 10px;
-        left: 10px;
+        left: 44px;
         background: rgba(0,0,0,0.6);
         backdrop-filter: blur(8px);
         border: 1px solid rgba(255,255,255,0.08);

@@ -367,6 +367,35 @@ const LABEL_EDGE_ZONE = 50
  * A chip is a single nowrap line — 20 px — lifted 6 px clear of its anchor.
  */
 const LABEL_MIN_TOP = 20 + 6 + LABEL_EDGE_PAD
+/**
+ * Chip geometry, computed rather than measured — see the note in updateLabels
+ * about why this loop never reads layout. A chip is `padding: 3px 8px` plus a
+ * 1px border on a single 10px/600 line, so 20 px tall and 18 px of horizontal
+ * chrome; the label text itself averages 5.7 px per glyph at that size, which
+ * is the figure "bookcase 100%" ≈ 92 px in LABEL_EDGE_ZONE is derived from.
+ */
+const LABEL_CHIP_HEIGHT = 20
+const LABEL_CHIP_CHROME = 18
+const LABEL_CHAR_ADVANCE = 5.7
+/** Chips closer than this on both axes read as one smeared blob. */
+const LABEL_CHIP_GAP = 3
+
+interface LabelPlacement {
+  label: Label3D
+  x: number
+  y: number
+  pin: '' | 'left' | 'right'
+  depthCm: number
+  left: number
+  right: number
+  top: number
+  bottom: number
+}
+
+/** Estimated on-screen width of a chip, from its text alone. No layout read. */
+function estimateChipWidth(text: string): number {
+  return Math.round(text.length * LABEL_CHAR_ADVANCE) + LABEL_CHIP_CHROME
+}
 
 function updateLabels(): void {
   const viewport = document.getElementById('viewport')!
@@ -374,6 +403,8 @@ function updateLabels(): void {
   const height = viewport.clientHeight
   const projected = new THREE.Vector3()
 
+  // ── Pass 1: project, cull, and collect candidates ──────────────────────────
+  const candidates: LabelPlacement[] = []
   for (const label of labels) {
     if (!isLabelVisible(label)) {
       label.el.style.display = 'none'
@@ -401,7 +432,6 @@ function updateLabels(): void {
       continue
     }
 
-    label.el.style.display = 'block'
     // Keep the chip whole without ever measuring it. A chip is centred on its
     // anchor by `translate(-50%)`, so an anchor close to the edge hangs half a
     // box outside the canvas and gets sliced — that is how "lamp 94%" arrived as
@@ -415,19 +445,56 @@ function updateLabels(): void {
     // different text shaping, which is enough to move every chip by a third of a
     // pixel. Two captures of the same world then disagree depending only on how
     // fast the page loaded. The hot path stays writes-only.
-    const pin = x < LABEL_EDGE_ZONE ? 'left' : x > width - LABEL_EDGE_ZONE ? 'right' : ''
-    label.el.dataset['pin'] = pin
-    label.el.style.left = pin === 'left' ? `${LABEL_EDGE_PAD}px`
-      : pin === 'right' ? `${width - LABEL_EDGE_PAD}px`
-      : `${x}px`
-    label.el.style.top = `${Math.max(LABEL_MIN_TOP, y)}px`
-    // Nearer labels paint on top. Without this, overlapping labels stack in DOM
-    // insertion order, which is the order the scans finished loading — a race, so
-    // two identical worlds could paint the same cluster differently. Ranked on
-    // metric distance rather than `projected.z`, which is so non-linear near the
-    // far plane that every label in the world rounds to the same value.
-    const depthCm = Math.round(camera.position.distanceTo(position) * 100)
-    label.el.style.zIndex = String(Math.max(1, 1_000_000 - depthCm))
+    const pin: '' | 'left' | 'right' =
+      x < LABEL_EDGE_ZONE ? 'left' : x > width - LABEL_EDGE_ZONE ? 'right' : ''
+    const anchorX = pin === 'left' ? LABEL_EDGE_PAD : pin === 'right' ? width - LABEL_EDGE_PAD : x
+    const anchorY = Math.max(LABEL_MIN_TOP, y)
+    const chipW = estimateChipWidth(label.text)
+    const left = pin === 'left' ? anchorX : pin === 'right' ? anchorX - chipW : anchorX - chipW / 2
+
+    candidates.push({
+      label, pin,
+      x: anchorX,
+      y: anchorY,
+      // Nearer labels win. Ranked on metric distance rather than `projected.z`,
+      // which is so non-linear near the far plane that every label in the world
+      // rounds to the same value.
+      depthCm: Math.round(camera.position.distanceTo(position) * 100),
+      left,
+      right: left + chipW,
+      // The chip sits above its anchor: translate(-100%) then -6px.
+      top: anchorY - LABEL_CHIP_HEIGHT - 6,
+      bottom: anchorY - 6,
+    })
+  }
+
+  // ── Pass 2: nearest-wins de-collision ──────────────────────────────────────
+  // Chips are opaque, so two that overlap do not produce two readable labels —
+  // they produce one label and a fragment. That is where "table 76%" reached a
+  // committed screenshot as "le 76%" and "bed 94%" as "d 94%": the nearer chip
+  // painted over the first half of the farther one and left a word that is not
+  // a word. Hiding the loser is strictly better than showing a lie; the object
+  // is still in the manifest, still selectable, and its chip returns as soon as
+  // the camera moves. Sorted nearest-first so the chip the reader is looking at
+  // is the one that survives, and the order is a total order on an integer, so
+  // two captures of the same camera resolve identically.
+  candidates.sort((a, b) => a.depthCm - b.depthCm || (a.label.text < b.label.text ? -1 : 1))
+  const placed: LabelPlacement[] = []
+  for (const c of candidates) {
+    const collides = placed.some(p =>
+      c.left < p.right + LABEL_CHIP_GAP && c.right + LABEL_CHIP_GAP > p.left
+      && c.top < p.bottom + LABEL_CHIP_GAP && c.bottom + LABEL_CHIP_GAP > p.top)
+    if (collides) {
+      c.label.el.style.display = 'none'
+      continue
+    }
+    placed.push(c)
+    const el = c.label.el
+    el.style.display = 'block'
+    el.dataset['pin'] = c.pin
+    el.style.left = `${c.x}px`
+    el.style.top = `${c.y}px`
+    el.style.zIndex = String(Math.max(1, 1_000_000 - c.depthCm))
   }
 }
 

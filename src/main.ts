@@ -245,7 +245,6 @@ async function main() {
         if (reflective) overlay.setStatus('⚠ Reflective surface detected')
       })
 
-      const thumbnail = await capture.captureThumbnail(blob)
       const rawDets = await router.infer(blob)
 
       // Hide analysis bar once inference completes
@@ -280,10 +279,15 @@ async function main() {
       const currentCaptureIdx = captureCount + 1  // will increment after
       for (const wd of worldDets) wd.captureIndex = currentCaptureIdx
 
-      // Build thumbnail map keyed by label (best-effort)
+      // Build thumbnail map keyed by label (best-effort). Each object gets the
+      // frame cropped to ITS OWN box — handing every row the same whole-frame
+      // thumbnail (which is what this did) made the review panel look like a
+      // list of duplicate images rather than a list of objects.
       const thumbMap = new Map<string, string>()
       for (const wd of worldDets) {
-        thumbMap.set(`${wd.label}:${bucket(wd.worldPos)}`, thumbnail)
+        const key = `${wd.label}:${bucket(wd.worldPos)}`
+        if (thumbMap.has(key)) continue
+        thumbMap.set(key, await capture.captureDetectionThumbnail(blob, wd.bbox))
       }
 
       const merged = mergeDetections(store.detections, worldDets)
