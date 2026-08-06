@@ -126,5 +126,31 @@ changed. They are the inputs, and they are the reason a render needs no stage.
 a UI change is a deliberate act: run `npm run capture` against the stage, review the image diff,
 and commit the shots like any other change.
 
+### Shots still awaiting a capture run
+
+Seven shots are declared in `storyboard.json` but have no PNG yet, so they render as the kit's
+branded "capture pending" slate. The build passes either way — that is the point of the slate —
+but the cut is not finished until these are shot. Each one needs the full stage below:
+
+```bash
+npm run capture -- --only onboard-sweep,live-scan-early,objects-manifest,review-panel-empty,world-editor-focus,world-editor-points,world-editor-quality
+```
+
+| Shot | Scene | What it has to catch |
+|---|---|---|
+| `onboard-sweep` | `ftue-permissions` | FTUE card 2 of 5, "Sweep the Room Slowly" |
+| `live-scan-early` | `live-scan` | the HUD at `mockFreeze=90` — a thin map, before the walk fills it |
+| `objects-manifest` | `objects-named` | the side panel scrolled to the top of the object list |
+| `review-panel-empty` | `review-and-export` | the same panel opened *before* the first capture |
+| `world-editor-focus` | `world-editor` | second scan picked: camera flown to it, Edit tab open |
+| `world-editor-points` | `semantic-world` | the world drawn as a raw point cloud |
+| `world-editor-quality` | `map-quality` | the Layers tab's Preview / Reconstructed / Photoreal stepper |
+
+Six of the seven are one half of a two-shot scene — `live-scan-early`, `review-panel-empty` and
+`world-editor-points` open their scene and dissolve into the committed shot; `onboard-sweep`,
+`objects-manifest` and `world-editor-focus` are what the committed shot dissolves *into*. The
+seventh, `world-editor-quality`, is the only shot of the new `map-quality` scene. Capturing them
+is what turns those beats from a still into a state change.
+
 See [CI-Engineering `projects/product-video-pipeline/`](https://github.com/companionintelligence/CI-Engineering/tree/main/projects/product-video-pipeline)
 for the full contract.
