@@ -5,7 +5,32 @@
 Generates a **16:9 desktop cut** and a **9:16 mobile cut** of Companion Scan's FTUE and major
 screens, from this repo's own UI. Both are produced from [`storyboard.json`](storyboard.json).
 
-## Quick start
+The cuts are built **locally, on demand, and are not stored** — there is no GitHub Actions run,
+no uploaded artifact, no committed `.mp4`, no release asset. An MP4 is a build output: make one
+when you need it, then delete it. What *is* kept is the input — the screenshots under
+[`assets/shots/`](assets/shots) and the voiceover under `assets/audio/` — so anyone can render a
+cut without booting the stage, and a moved UI shows up as a reviewable image diff.
+
+## Make the video
+
+One command, from a CI-Engineering checkout in the same workspace:
+
+```bash
+node tools/make-videos.mjs companion-scan
+```
+
+It exports this directory from `origin/main`, renders both cuts from the committed shots, and
+writes the MP4s to `~/Movies/CI-Product-Videos/companion-scan/` — outside every repo. Takes about
+ninety seconds and needs nothing running. `--list` shows every product and its shot count.
+
+The runner resolves `@companionintelligence/video-kit` straight from the CI-Common checkout on
+disk, so it needs no npm registry and no token.
+
+## Working on the cut itself
+
+To iterate on a single step — or to re-shoot the screens, which the runner cannot do for this
+product yet (it carries no stage recipe, so `--capture` falls back to rendering the committed
+shots) — drive `ci-video` directly from this directory:
 
 ```bash
 npm install
@@ -18,6 +43,9 @@ npm run build         # storyboard.json -> build/{landscape,portrait}/index.html
 npm run check         # HyperFrames gate: lint, runtime, layout, motion, contrast
 npm run render        # -> out/ci-web-xr-scan-landscape.mp4 and out/ci-web-xr-scan-portrait.mp4
 ```
+
+`npm install` here pulls video-kit from the private package registry and needs a token for it;
+the runner above avoids that entirely by reading the package off disk.
 
 ## The stage
 
@@ -92,7 +120,11 @@ picked up automatically from `assets/audio/<sceneId>.mp3`; regenerate it from th
 
 `assets/shots/*.png` and `assets/audio/*.mp3` **are** committed — they are the record of what the
 product looked like, and captures are byte-stable, so a diff in them means the UI genuinely
-changed. `out/` is not committed.
+changed. They are the inputs, and they are the reason a render needs no stage.
+
+`out/` is not committed, and no MP4 is stored anywhere else either. Re-shooting the screens after
+a UI change is a deliberate act: run `npm run capture` against the stage, review the image diff,
+and commit the shots like any other change.
 
 See [CI-Engineering `projects/product-video-pipeline/`](https://github.com/companionintelligence/CI-Engineering/tree/main/projects/product-video-pipeline)
 for the full contract.
