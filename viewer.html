@@ -810,6 +810,14 @@
         backdrop-filter: blur(4px);
       }
 
+      /* Pinned to a canvas edge by updateLabels(): align the chip AWAY from that
+         edge so the browser keeps the whole box on screen using its own width.
+         Centring on the anchor is what used to hang half a chip off the canvas
+         and slice "lamp 94%" down to "%"; doing it this way needs no measurement
+         in the render loop, which is what kept two captures identical. */
+      .label3d[data-pin='left']  { transform: translate(0, -100%) translateY(-6px); }
+      .label3d[data-pin='right'] { transform: translate(-100%, -100%) translateY(-6px); }
+
       #loading-overlay {
         position: absolute;
         inset: 0;
@@ -861,17 +869,27 @@
           flex-direction: column;
         }
 
+        /* `min-height: 300px` overrode the 44vh it sits next to on every phone
+           — 44vh is 282 px at 640 — so the sidebar always took 300 px and left
+           the canvas a 296 px strip. Let the viewport-relative height actually
+           apply. */
         #sidebar {
           width: 100%;
           min-width: 0;
-          height: min(44vh, 370px);
-          min-height: 300px;
+          height: min(42vh, 300px);
+          min-height: 0;
           border-right: none;
           border-bottom: 1px solid rgba(255,255,255,0.07);
         }
 
-        #sidebar-header {
-          padding: 10px 12px 8px;
+        /* Both are pure vertical cost on a phone: #sidebar-header repeats the
+           product name the top toolbar already carries, and the collapse chevron
+           is parked 28 px outside a now-full-width sidebar, where #main-area's
+           `overflow: hidden` clips it — an invisible control paying for a 33 px
+           bar. Dropping them hands that height to the canvas. */
+        #sidebar-header,
+        #sidebar-collapse-btn {
+          display: none;
         }
 
         .sidebar-tab {
@@ -893,6 +911,16 @@
           width: min(230px, calc(100% - 16px));
           top: 8px;
           right: 8px;
+        }
+
+        /* 171 px of world readout and a 230 px inspector do not both fit across
+           a 360 px canvas: they overlapped by 57 px and the inspector covered
+           half of "3 scans loaded / 74,090 points". The inspector is the thing
+           the reader just tapped, so it wins — and nothing is lost, because the
+           same world totals are in the sidebar's World tab and the readout
+           returns the moment the inspector is closed. */
+        #viewport:has(#inspector-panel.visible) #hud-info {
+          display: none;
         }
 
         #world-hud {

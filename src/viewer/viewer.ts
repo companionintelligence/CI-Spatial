@@ -353,6 +353,21 @@ function updatePointCloudLOD(): void {
   }
 }
 
+/** Breathing room between an edge-pinned chip and the canvas edge. */
+const LABEL_EDGE_PAD = 4
+/**
+ * How close to an edge an anchor has to be before its chip pins to that edge.
+ * Half the widest chip the semantic overlay can produce, plus the pad: chips are
+ * `<label> <confidence>%` at 10px/600 and `white-space: nowrap`, and the longest
+ * label in CATEGORY_COLORS ("bookcase 100%") measures about 92 px.
+ */
+const LABEL_EDGE_ZONE = 50
+/**
+ * Floor for a chip's anchor, so one near the top of the canvas is not cut by it.
+ * A chip is a single nowrap line — 20 px — lifted 6 px clear of its anchor.
+ */
+const LABEL_MIN_TOP = 20 + 6 + LABEL_EDGE_PAD
+
 function updateLabels(): void {
   const viewport = document.getElementById('viewport')!
   const width = viewport.clientWidth
@@ -375,14 +390,37 @@ function updateLabels(): void {
 
     const x = (projected.x * 0.5 + 0.5) * width
     const y = (-projected.y * 0.5 + 0.5) * height
-    if (x < -80 || x > width + 80 || y < -80 || y > height + 80) {
+    // Cull on the ANCHOR, not on a slack box around it. The old +/-80 px margin
+    // let objects that are off-camera label the frame anyway: in a world of three
+    // adjacent rooms, the two rooms either side of the framed one threw their
+    // chips at the canvas edge, where `translate(-50%)` sliced each one into a
+    // fragment — on a 360 px viewport "lamp 94%" arrived as "%". An object that
+    // is not on screen has no business naming anything on screen.
+    if (x < 0 || x > width || y < 0 || y > height) {
       label.el.style.display = 'none'
       continue
     }
 
     label.el.style.display = 'block'
-    label.el.style.left = `${x}px`
-    label.el.style.top = `${y}px`
+    // Keep the chip whole without ever measuring it. A chip is centred on its
+    // anchor by `translate(-50%)`, so an anchor close to the edge hangs half a
+    // box outside the canvas and gets sliced — that is how "lamp 94%" arrived as
+    // "%" at 360 px. Rather than read the box and clamp it, hand the alignment
+    // to CSS: inside the edge zone the chip pins to the edge and aligns away
+    // from it, and the browser applies its own width.
+    //
+    // Not measuring is the point, not an optimisation. updateLabels runs every
+    // frame, so any offsetWidth read here forces a synchronous layout mid-frame
+    // — and a layout forced during the web font's swap window bakes a slightly
+    // different text shaping, which is enough to move every chip by a third of a
+    // pixel. Two captures of the same world then disagree depending only on how
+    // fast the page loaded. The hot path stays writes-only.
+    const pin = x < LABEL_EDGE_ZONE ? 'left' : x > width - LABEL_EDGE_ZONE ? 'right' : ''
+    label.el.dataset['pin'] = pin
+    label.el.style.left = pin === 'left' ? `${LABEL_EDGE_PAD}px`
+      : pin === 'right' ? `${width - LABEL_EDGE_PAD}px`
+      : `${x}px`
+    label.el.style.top = `${Math.max(LABEL_MIN_TOP, y)}px`
     // Nearer labels paint on top. Without this, overlapping labels stack in DOM
     // insertion order, which is the order the scans finished loading — a race, so
     // two identical worlds could paint the same cluster differently. Ranked on
@@ -2025,23 +2063,51 @@ function updateScaleWidget(): void {
   const viewport = document.getElementById('viewport')
   if (!scaleBar || !scaleLabel || !viewport) return
 
-  const candidates = [0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 50]
-  let selected = candidates[3]!
-  let selectedPx = 96
-  for (const meters of candidates) {
-    const px = projectedPixelDistance(controls.target, controls.target.clone().add(new THREE.Vector3(meters, 0, 0)))
-    if (px >= 58 && px <= 130) {
-      selected = meters
-      selectedPx = px
+  // The bar's WIDTH is the claim; the label only says what unit it is in. So the
+  // two have to be the same measurement, and the fallback is where that broke.
+  //
+  // Rungs step by up to 2.5x while [58, 130] px spans only 2.24x, so a camera can
+  // sit in a gap where NO rung fits the bar. The old loop had no answer for that:
+  // it overwrote `selected` on every non-fitting pass and clamped the width, so it
+  // ran off the end of the ladder and drew a 130 px bar under the largest label
+  // there was. The mobile World Editor found that hole the moment its aspect
+  // changed — 2 m projected to 56 px and 5 m to 135 px, and a six-metre room was
+  // captioned "50 m", the same false readout video/README.md calls the tell of a
+  // badly framed shot.
+  //
+  // Below, a gap resolves to the rung that comes CLOSEST to the band, drawn at its
+  // true width. Whenever a rung does fit — which is every camera the band already
+  // covered — the answer is unchanged.
+  const RUNGS = [0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 50, 100, 200]
+  const MIN_PX = 58
+  const MAX_PX = 130
+
+  let meters = 0
+  let px = 0
+  let closest = Infinity
+  for (const rung of RUNGS) {
+    const width = projectedPixelDistance(controls.target, controls.target.clone().add(new THREE.Vector3(rung, 0, 0)))
+    if (!(width > 0)) continue
+    if (width >= MIN_PX && width <= MAX_PX) {
+      meters = rung
+      px = width
       break
     }
-    if (px > 0) {
-      selected = meters
-      selectedPx = Math.min(130, Math.max(42, px))
+    const miss = width < MIN_PX ? MIN_PX - width : width - MAX_PX
+    if (miss < closest) {
+      closest = miss
+      meters = rung
+      px = width
     }
   }
-  scaleBar.style.width = `${selectedPx.toFixed(0)}px`
-  scaleLabel.textContent = selected < 1 ? `${Math.round(selected * 100)} cm` : `${selected} m`
+
+  // Nothing measured — a camera looking straight down the axis being measured
+  // projects every rung to zero width. Hold the last good reading rather than
+  // draw a bar with no length under a unit it does not stand for.
+  if (!meters) return
+
+  scaleBar.style.width = `${Math.min(MAX_PX, px).toFixed(0)}px`
+  scaleLabel.textContent = meters < 1 ? `${Math.round(meters * 100)} cm` : `${meters} m`
 }
 
 function projectedPixelDistance(a: THREE.Vector3, b: THREE.Vector3): number {

@@ -322,7 +322,7 @@
         {
           "id": "world-editor-scans",
           "url": "companion-scan.local/viewer.html",
-          "alt": "The desktop World Editor with three room scans listed in the sidebar, their point and detection totals on the readout, and the camera framed on the selected room",
+          "alt": "The World Editor with three room scans listed in the sidebar, each one ready and optimized, and the camera framed on the selected room",
           "motion": "drift-down",
           "capture": {
             "path": "/viewer.html?world=default",
