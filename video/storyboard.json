@@ -493,43 +493,6 @@
       "narration": "The map is not just geometry. Every object keeps the label it was given.",
       "shots": [
         {
-          "id": "world-editor-points",
-          "url": "companion-scan.local/viewer.html",
-          "alt": "The world drawn as a raw point cloud, with Points selected in the view-mode toolbar",
-          "motion": "push-in",
-          "capture": {
-            "path": "/viewer.html?world=default",
-            "waitFor": "#scan-list .scan-item",
-            "before": [
-              {
-                "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')"
-              },
-              {
-                "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')"
-              },
-              {
-                "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')"
-              },
-              {
-                "click": "#btn-reset-camera"
-              },
-              {
-                "wait": 600
-              },
-              {
-                "click": "#mode-points"
-              },
-              {
-                "waitFor": "#mode-points.active"
-              },
-              {
-                "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')"
-              }
-            ],
-            "settle": 1200
-          }
-        },
-        {
           "id": "world-editor-semantic",
           "url": "companion-scan.local/viewer.html",
           "alt": "Semantic view of the same world, colouring the scene by the label attached to each detected object",

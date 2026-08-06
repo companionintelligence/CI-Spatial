@@ -631,6 +631,9 @@
       }
 
       .hud-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
         background: rgba(0,0,0,0.6);
         backdrop-filter: blur(8px);
         border: 1px solid rgba(255,255,255,0.12);
@@ -976,16 +979,16 @@
       <div id="top-toolbar">
         <span id="top-toolbar-title">Companion Scan</span>
         <div class="toolbar-sep"></div>
-        <button class="mode-btn active" id="mode-solid"   data-mode="solid">   ◼ Solid</button>
-        <button class="mode-btn"        id="mode-points"  data-mode="points">  ☁ Points</button>
-        <button class="mode-btn"        id="mode-wire"    data-mode="wireframe">⬡ Wire</button>
-        <button class="mode-btn"        id="mode-semantic" data-mode="semantic">🏷 Semantic</button>
+        <button class="mode-btn active" id="mode-solid"   data-mode="solid"><svg width="14px" height="14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 3 8 4.4v9.2L12 21l-8-4.4V7.4z"/><path d="M4 7.4 12 12l8-4.6M12 12v9"/></svg><span>Solid</span></button>
+        <button class="mode-btn"        id="mode-points"  data-mode="points"><svg width="14px" height="14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="6.2" cy="7.4" r="1.5"/><circle cx="12" cy="4.8" r="1.5"/><circle cx="17.8" cy="7.8" r="1.5"/><circle cx="4.9" cy="14.2" r="1.5"/><circle cx="10.6" cy="11.6" r="1.5"/><circle cx="16.6" cy="14" r="1.5"/><circle cx="8" cy="19.2" r="1.5"/><circle cx="14.4" cy="19.4" r="1.5"/></svg><span>Points</span></button>
+        <button class="mode-btn"        id="mode-wire"    data-mode="wireframe"><svg width="14px" height="14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 3 8 4.4v9.2L12 21l-8-4.4V7.4z"/><path d="M4 7.4 12 12l8-4.6M12 12v9M4 16.6 20 7.4M20 16.6 4 7.4"/></svg><span>Wire</span></button>
+        <button class="mode-btn"        id="mode-semantic" data-mode="semantic"><svg width="14px" height="14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M11.2 3.4H20v8.8l-8.8 8.8-8.8-8.8z"/><circle cx="16.2" cy="7.8" r="1.5"/></svg><span>Semantic</span></button>
         <div id="toolbar-spacer"></div>
-        <button class="mode-btn" id="btn-measure" title="Measure distance: click two points">📏 Measure</button>
-        <button class="mode-btn" id="btn-geomap">🗺 Map</button>
-        <button class="mode-btn" id="btn-livefeed">📡 Live</button>
+        <button class="mode-btn" id="btn-measure" title="Measure distance: click two points"><svg width="14px" height="14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="1.8" y="8.4" width="20.4" height="7.2" rx="1.2" transform="rotate(-45 12 12)"/><path d="m9.2 7.8 1.6 1.6M12 5l1.6 1.6M14.8 2.2l1.6 1.6M6.4 10.6 8 12.2"/></svg><span>Measure</span></button>
+        <button class="mode-btn" id="btn-geomap"><svg width="14px" height="14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m3.4 6.6 5.6-2.2v13l-5.6 2.2z"/><path d="M9 4.4l6 2.2v13L9 17.4z"/><path d="m15 6.6 5.6-2.2v13L15 19.6z"/></svg><span>Map</span></button>
+        <button class="mode-btn" id="btn-livefeed"><svg width="14px" height="14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="2.2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 16.2a6 6 0 0 0 0-8.4"/><path d="M4.8 4.8a10.2 10.2 0 0 0 0 14.4M19.2 19.2a10.2 10.2 0 0 0 0-14.4"/></svg><span>Live</span></button>
         <a href="/" id="back-link">← AR App</a>
-        <a href="/webxr.html" id="webxr-link" class="mode-btn" title="WebXR scanner — use HelloXR on iOS">🥽 WebXR</a>
+        <a href="/webxr.html" id="webxr-link" class="mode-btn" title="WebXR scanner — use HelloXR on iOS"><svg width="14px" height="14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3.4 9.6A1.7 1.7 0 0 1 5.1 8h13.8a1.7 1.7 0 0 1 1.7 1.6v4.3a1.7 1.7 0 0 1-1.7 1.7h-3.2l-1.9-2.2h-3.6l-1.9 2.2H5.1a1.7 1.7 0 0 1-1.7-1.7z"/></svg><span>WebXR</span></a>
       </div>
 
       <div id="main-area">
@@ -1221,7 +1224,7 @@
           <canvas id="viewer-canvas"></canvas>
 
           <div id="viewer-placeholder">
-            <div class="icon">🏠</div>
+            <div class="icon"><svg width="28px" height="28px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 10.6 12 4l8 6.6V19a1.4 1.4 0 0 1-1.4 1.4H5.4A1.4 1.4 0 0 1 4 19z"/><path d="M9.8 20.4v-6h4.4v6"/></svg></div>
             <div>Select a scan from the list to view it</div>
             <div style="font-size:12px;opacity:0.6;">Mouse: rotate · Scroll: zoom · Right-click: pan</div>
           </div>
@@ -1250,10 +1253,10 @@
           <!-- Bottom-right HUD buttons -->
           <div id="hud-controls">
             <button class="hud-btn" id="btn-reset-camera">⟳ Reset</button>
-            <button class="hud-btn" id="btn-toggle-cloud">☁ Cloud</button>
-            <button class="hud-btn" id="btn-toggle-labels">🏷 Labels</button>
-            <button class="hud-btn" id="btn-toggle-bounds" style="opacity:0.7">⬡ Bounds</button>
-            <button class="hud-btn" id="btn-flush-tags">💾 Save Tags</button>
+            <button class="hud-btn" id="btn-toggle-cloud"><svg width="13px" height="13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M7.2 19a4.4 4.4 0 0 1-.3-8.8A5.6 5.6 0 0 1 17.6 11a4.2 4.2 0 0 1 .3 8z"/></svg><span>Cloud</span></button>
+            <button class="hud-btn" id="btn-toggle-labels"><svg width="13px" height="13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M11.2 3.4H20v8.8l-8.8 8.8-8.8-8.8z"/><circle cx="16.2" cy="7.8" r="1.5"/></svg><span>Labels</span></button>
+            <button class="hud-btn" id="btn-toggle-bounds" style="opacity:0.7"><svg width="13px" height="13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 3 8 4.4v9.2L12 21l-8-4.4V7.4z"/><path d="M4 7.4 12 12l8-4.6M12 12v9M4 16.6 20 7.4M20 16.6 4 7.4"/></svg><span>Bounds</span></button>
+            <button class="hud-btn" id="btn-flush-tags"><svg width="13px" height="13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4.4 5.8a1.4 1.4 0 0 1 1.4-1.4h10l4 4v9.8a1.4 1.4 0 0 1-1.4 1.4H5.8a1.4 1.4 0 0 1-1.4-1.4z"/><path d="M8 4.4v5h7v-5M8 19.6v-5.4h8v5.4"/></svg><span>Save Tags</span></button>
           </div>
 
           <div id="loading-overlay">

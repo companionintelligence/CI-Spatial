@@ -33,6 +33,7 @@ import { GeoTracker, type GeoFix } from './geo/geo-tracker'
 import { RtcBroadcaster } from './rtc/broadcaster'
 import { registerPWA } from './pwa'
 import { installRemoteLog } from './debug/remote-log'
+import { iconLabel } from './ui/icons'
 import * as THREE from 'three'
 
 const CAPTURE_FRAME_TIMEOUT_MS = 8000
@@ -101,7 +102,7 @@ async function main() {
   geoTracker.onUpdate = (fix) => updateGeoIndicator(fix)
   void geoTracker.start().then((fix) => {
     if (fix) updateGeoIndicator(fix)
-    if (fix?.address) overlay.setStatus(`📍 ${fix.address}`)
+    if (fix?.address) overlay.setStatus(fix.address)
   })
 
   // ── 2. Inference router & early UI mounting (prevents test timeouts) ───────
@@ -129,7 +130,7 @@ async function main() {
     (action) => requestServerProcessing(action, store),
     (mode) => {
       router.setMode(mode)
-      overlay.setStatus(`AI: ${mode === 'server' ? '🖥 Server' : '⚡ WebGPU'}`)
+      overlay.setStatus(`AI: ${mode === 'server' ? 'Server' : 'WebGPU'}`)
     },
     router.path,
   )
@@ -147,11 +148,11 @@ async function main() {
   await router.init(
     (stage, pct) => { overlay.setProgress(pct, stage) },
     (mode) => {
-      overlay.setStatus(`AI: ${mode === 'server' ? '🖥 Server' : '⚡ WebGPU'}`)
+      overlay.setStatus(`AI: ${mode === 'server' ? 'Server' : 'WebGPU'}`)
       panel.updateInferMode(mode)
     },
   )
-  overlay.setStatus(`AI: ${router.path === 'server' ? '🖥 Server' : '⚡ WebGPU'}`)
+  overlay.setStatus(`AI: ${router.path === 'server' ? 'Server' : 'WebGPU'}`)
 
   // ── 3. AR runtime detection ────────────────────────────────────────────────
   let provider: ARProvider
@@ -682,10 +683,10 @@ async function main() {
     panel.streamButton.addEventListener('click', () => {
       if (broadcaster.isRunning) {
         broadcaster.stop()
-        panel.streamButton!.textContent = '📡 Start Live Stream'
+        panel.streamButton!.innerHTML = iconLabel('broadcast', 'Start Live Stream', { size: '15px' })
       } else {
         void broadcaster.start(canvas)
-        panel.streamButton!.textContent = '📡 Stop Stream'
+        panel.streamButton!.innerHTML = iconLabel('broadcast', 'Stop Stream', { size: '15px' })
       }
     })
   }
@@ -764,7 +765,7 @@ async function main() {
         ? '✓ Ready'
         : summary.status === 'needs-review'
           ? '⚠ Review'
-          : '❌ Sparse'
+          : 'Sparse'
 
       // Style details dynamically
       chip.style.background = summary.status === 'ready'
