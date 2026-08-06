@@ -33,9 +33,9 @@
       "id": "ftue-permissions",
       "kind": "screen",
       "chapter": "setup",
-      "seconds": 5.5,
-      "caption": "Camera sees the room. Motion tracks you.",
-      "narration": "The camera sees the room. Motion sensors track where you are.",
+      "seconds": 7,
+      "caption": "Camera sees the room. You walk it slowly.",
+      "narration": "The camera sees the room, motion tracks you, and a slow sweep keeps tracking locked.",
       "shots": [
         {
           "id": "onboard-permissions",
@@ -46,6 +46,21 @@
             "path": "/?mock=xr8&onboarding=1",
             "waitFor": "#onboarding-overlay.visible",
             "settle": 500
+          }
+        },
+        {
+          "id": "onboard-sweep",
+          "url": "companion-scan.local",
+          "alt": "Second onboarding step, Sweep the Room Slowly, explaining that moving too fast degrades SLAM tracking and that the live point cloud shows what has been covered",
+          "motion": "drift-down",
+          "capture": {
+            "path": "/?mock=xr8&onboarding=1",
+            "waitFor": "#onboarding-overlay.visible",
+            "before": [
+              { "click": "#onboard-next-btn" },
+              { "waitFor": ".onboard-step[data-step='1'].active" }
+            ],
+            "settle": 400
           }
         }
       ]
@@ -156,14 +171,31 @@
       "id": "live-scan",
       "kind": "screen",
       "chapter": "capture",
-      "seconds": 7,
-      "caption": "Points build as you walk.",
-      "narration": "Walk slowly and the point cloud fills in. The quality chip says when it's enough.",
+      "seconds": 7.5,
+      "caption": "Thin at first. Full as you walk.",
+      "narration": "Walk the room and the map fills in, with coverage scored live as you go.",
       "shots": [
+        {
+          "id": "live-scan-early",
+          "url": "companion-scan.local",
+          "alt": "The scanning HUD a few seconds into the walk, with a thin point count, a low coverage bar and the live quality recommendation the app raises for a sparse map",
+          "motion": "push-in",
+          "capture": {
+            "path": "/?mock=xr8&mockFreeze=90",
+            "waitFor": "#start-ar-btn",
+            "before": [
+              { "click": "#start-ar-btn" },
+              { "waitFor": "#capture-btn" },
+              { "waitFor": "#scan-stats:has-text('pts')" },
+              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#geo-chip{display:none!important}</style>')" }
+            ],
+            "settle": 600
+          }
+        },
         {
           "id": "live-scan-hud",
           "url": "companion-scan.local",
-          "alt": "Live scanning heads-up display over the camera feed, with capture controls",
+          "alt": "The same scanning HUD later in the walk, with the point count in the thousands and the coverage bar reading Good",
           "motion": "drift-down",
           "capture": {
             "path": "/?mock=xr8&mockFreeze=700",
@@ -183,14 +215,14 @@
       "id": "objects-named",
       "kind": "screen",
       "chapter": "capture",
-      "seconds": 6.5,
+      "seconds": 7,
       "caption": "Every object named, placed and yours.",
       "narration": "Objects come back named and placed, identified on hardware you own.",
       "shots": [
         {
           "id": "detections-panel",
           "url": "companion-scan.local",
-          "alt": "The Latest scan readout over the camera feed, listing the objects one capture found with a label, a confidence figure and a 3D position each",
+          "alt": "The Latest scan readout over the camera feed, listing objects this capture found with a label, a confidence figure and a 3D position each",
           "motion": "push-in",
           "capture": {
             "path": "/?mock=xr8&mockFreeze=700",
@@ -205,6 +237,27 @@
             ],
             "settle": 600
           }
+        },
+        {
+          "id": "objects-manifest",
+          "url": "companion-scan.local",
+          "alt": "The object manifest at the top of the side panel, counting the objects found and listing each one with its label, confidence and X Y Z position",
+          "motion": "drift-down",
+          "capture": {
+            "path": "/?mock=xr8&mockFreeze=700",
+            "waitFor": "#start-ar-btn",
+            "before": [
+              { "click": "#start-ar-btn" },
+              { "waitFor": "#capture-btn" },
+              { "waitFor": "#scan-stats:has-text('pts')" },
+              { "click": "#capture-btn" },
+              { "waitFor": "#panel-content [data-key]" },
+              { "click": "#panel-toggle" },
+              { "waitFor": "#side-panel.open #panel-content [data-key]" },
+              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#hud-panel{display:none!important}</style>')" }
+            ],
+            "settle": 600
+          }
         }
       ]
     },
@@ -212,14 +265,33 @@
       "id": "review-and-export",
       "kind": "screen",
       "chapter": "capture",
-      "seconds": 6,
+      "seconds": 7,
       "caption": "Review the scan. Export a file you own.",
       "narration": "Review everything the scan found, then export it as a file you own.",
       "shots": [
         {
+          "id": "review-panel-empty",
+          "url": "companion-scan.local",
+          "alt": "The Review and Export panel opened before the first capture, empty apart from the prompt to tap the capture button to scan",
+          "motion": "push-in",
+          "capture": {
+            "path": "/?mock=xr8&mockFreeze=700",
+            "waitFor": "#start-ar-btn",
+            "before": [
+              { "click": "#start-ar-btn" },
+              { "waitFor": "#capture-btn" },
+              { "waitFor": "#scan-stats:has-text('pts')" },
+              { "click": "#panel-toggle" },
+              { "waitFor": "#side-panel.open #panel-content:has-text('No objects yet')" },
+              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#hud-panel{display:none!important}</style>')" }
+            ],
+            "settle": 600
+          }
+        },
+        {
           "id": "review-export-panel",
           "url": "companion-scan.local",
-          "alt": "The Review and Export panel, with GLB export, summary export and server-processing actions in the footer",
+          "alt": "The same panel after a capture, with the object list filled in and GLB export, summary export and server-processing actions in the footer",
           "motion": "drift-down",
           "capture": {
             "path": "/?mock=xr8&mockFreeze=700",
@@ -243,14 +315,14 @@
       "id": "world-editor",
       "kind": "screen",
       "chapter": "editor",
-      "seconds": 6.5,
+      "seconds": 7,
       "caption": "Every room, one world, your server.",
       "narration": "Every room you scan lands in one 3D world, stored on your own server.",
       "shots": [
         {
           "id": "world-editor-scans",
           "url": "companion-scan.local/viewer.html",
-          "alt": "The desktop World Editor with several room scans composed into one 3D world",
+          "alt": "The desktop World Editor framed on the whole world, with three room scans listed in the sidebar and their point and detection totals on the readout",
           "motion": "push-in",
           "capture": {
             "path": "/viewer.html?world=default",
@@ -262,6 +334,24 @@
             ],
             "settle": 1200
           }
+        },
+        {
+          "id": "world-editor-focus",
+          "url": "companion-scan.local/viewer.html",
+          "alt": "The same world after picking the second room from the sidebar: the camera has flown to that scan and the Edit tab has opened on its name, confidence and tags",
+          "motion": "drift-down",
+          "capture": {
+            "path": "/viewer.html?world=default",
+            "waitFor": "#scan-list .scan-item",
+            "before": [
+              { "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')" },
+              { "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')" },
+              { "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')" },
+              { "click": "#scan-list .scan-item:nth-child(2)" },
+              { "waitFor": "#tab-edit.active #edit-selected-info" }
+            ],
+            "settle": 1200
+          }
         }
       ]
     },
@@ -269,14 +359,32 @@
       "id": "semantic-world",
       "kind": "screen",
       "chapter": "editor",
-      "seconds": 7,
+      "seconds": 7.5,
       "caption": "Named objects, not an anonymous point cloud.",
       "narration": "The map is not just geometry. Every object keeps the label it was given.",
       "shots": [
         {
+          "id": "world-editor-points",
+          "url": "companion-scan.local/viewer.html",
+          "alt": "The world drawn as a raw point cloud, with Points selected in the view-mode toolbar",
+          "motion": "push-in",
+          "capture": {
+            "path": "/viewer.html?world=default",
+            "waitFor": "#scan-list .scan-item",
+            "before": [
+              { "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')" },
+              { "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')" },
+              { "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')" },
+              { "click": "#mode-points" },
+              { "waitFor": "#mode-points.active" }
+            ],
+            "settle": 1200
+          }
+        },
+        {
           "id": "world-editor-semantic",
           "url": "companion-scan.local/viewer.html",
-          "alt": "Semantic view of the world, colouring the scene by the label attached to each detected object",
+          "alt": "Semantic view of the same world, colouring the scene by the label attached to each detected object",
           "motion": "drift-down",
           "capture": {
             "path": "/viewer.html?world=default",
@@ -287,6 +395,34 @@
               { "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')" },
               { "click": "#mode-semantic" },
               { "waitFor": "#mode-semantic.active" }
+            ],
+            "settle": 1200
+          }
+        }
+      ]
+    },
+    {
+      "id": "map-quality",
+      "kind": "screen",
+      "chapter": "editor",
+      "seconds": 7,
+      "caption": "Preview. Reconstructed. Photoreal.",
+      "narration": "Every scan can be upgraded to a photoreal map, on hardware you already own.",
+      "shots": [
+        {
+          "id": "world-editor-quality",
+          "url": "companion-scan.local/viewer.html",
+          "alt": "The Layers tab showing the Map Quality stepper — Preview, Reconstructed, Photoreal — with the selected scan's current tier lit and the next step spelled out",
+          "motion": "push-in",
+          "capture": {
+            "path": "/viewer.html?world=default",
+            "waitFor": "#scan-list .scan-item",
+            "before": [
+              { "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')" },
+              { "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')" },
+              { "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')" },
+              { "click": "#tab-btn-layers" },
+              { "waitFor": "#tab-layers.active #quality-stepper .quality-step.current" }
             ],
             "settle": 1200
           }

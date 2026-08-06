@@ -80,6 +80,16 @@
  *     walk reads as a real session (14,235 points, "Good" coverage, 66% bar)
  *     rather than the thin 48-point map the old 2500 ms wait caught.
  *
+ *     THE FREEZE TICK IS THE ONLY HONEST WAY TO FILM "the map fills in". The
+ *     `live-scan` scene now cross-dissolves two shots of the same HUD at two
+ *     points in the SAME scripted walk: `live-scan-early` at `mockFreeze=90`
+ *     (three seconds in — a thin map and whatever quality recommendation the app
+ *     genuinely raises for it) and `live-scan-hud` at `mockFreeze=700`. Both are
+ *     pinned sessions, so both are byte-stable, and the difference between them
+ *     is the app's own accumulation rather than a staged screenshot. Do not try
+ *     to get the same contrast with a wall-clock `{ wait: … }` — that is exactly
+ *     the drift this hazard was written about.
+ *
  *  2. THE 750 ms SCANNER INTERVAL, NOT THE MOCK, FILLS THE MAP — RoomScanner
  *     harvests points on its own timer, so the shutter can fire before the first
  *     harvest and photograph an empty `#scan-stats`. Every scanner shot therefore
@@ -178,6 +188,28 @@
  *     Rule of thumb: if the element you want to suppress is BEHIND the subject or
  *     CLIPPED out of it, hide it with a `<style>` rule from an `eval` action;
  *     masks are only safe over something that is actually visible and on top.
+ *
+ *     Corollary for the three panel shots (`objects-manifest`,
+ *     `review-panel-empty`, `review-export-panel`): a CLOSED `#side-panel` is
+ *     `transform: translateX(100%)` (index.html:770), not `display:none`, so
+ *     Playwright still calls its contents visible and `#panel-content [data-key]`
+ *     resolves before the panel is opened. That is why each of those shots
+ *     asserts the OPEN state explicitly — `#side-panel.open #…` — instead of
+ *     trusting the inner selector. Without the `.open` prefix the shutter can
+ *     fire on a panel that is still sliding in, or never opened at all.
+ *
+ * 14. THE HUD RECOMMENDATION LINE IS A REAL PRODUCT STRING, NOT DEBUG OUTPUT —
+ *     `#status-text` is overwritten with `recommendations[0]` on every scanner
+ *     tick whenever the scan is not "ready" (src/main.ts:779-781), and
+ *     src/capture/quality-monitor.ts:176 unconditionally appends "Stream RGB
+ *     keyframes for reconstruction and splat processing." while
+ *     `keyframeCount === 0`. No scanner shot starts keyframe streaming, so on a
+ *     scan with no other complaint that nag is the whole HUD headline. It is
+ *     honest — the app really does say it — but it is off-message for a scene
+ *     about coverage, which is why `live-scan` leads on the thin-map shot, where
+ *     the coverage recommendation outranks it. If a future shot needs the
+ *     keyframe line gone, start the stream (`#stream-btn`) rather than editing
+ *     the DOM: a staged status line is a lie about the product.
  *
  * 13. THE 3D VIEWPORT IS NOT BIT-REPRODUCIBLE, AND THAT IS THE FLOOR — both
  *     World Editor shots film `#viewer-canvas`, a WebGL surface. Two things used
