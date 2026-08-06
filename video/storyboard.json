@@ -9,7 +9,8 @@
   },
   "meta": {
     "fps": 30,
-    "transitionSeconds": 0.5
+    "transitionSeconds": 0.5,
+    "pacing": "fit"
   },
   "chapters": {
     "setup": "Before you scan",
@@ -78,8 +79,12 @@
             "path": "/?mock=xr8&onboarding=1",
             "waitFor": "#onboarding-overlay.visible",
             "before": [
-              { "click": "#onboard-next-btn" },
-              { "waitFor": ".onboard-step[data-step='1'].active" }
+              {
+                "click": "#onboard-next-btn"
+              },
+              {
+                "waitFor": ".onboard-step[data-step='1'].active"
+              }
             ],
             "settle": 400
           }
@@ -103,9 +108,15 @@
             "path": "/?mock=xr8&onboarding=1",
             "waitFor": "#onboarding-overlay.visible",
             "before": [
-              { "click": "#onboard-next-btn" },
-              { "click": "#onboard-next-btn" },
-              { "waitFor": ".onboard-step[data-step='2'].active" }
+              {
+                "click": "#onboard-next-btn"
+              },
+              {
+                "click": "#onboard-next-btn"
+              },
+              {
+                "waitFor": ".onboard-step[data-step='2'].active"
+              }
             ],
             "settle": 400
           }
@@ -129,10 +140,18 @@
             "path": "/?mock=xr8&onboarding=1",
             "waitFor": "#onboarding-overlay.visible",
             "before": [
-              { "click": "#onboard-next-btn" },
-              { "click": "#onboard-next-btn" },
-              { "click": "#onboard-next-btn" },
-              { "waitFor": ".onboard-step[data-step='3'].active" }
+              {
+                "click": "#onboard-next-btn"
+              },
+              {
+                "click": "#onboard-next-btn"
+              },
+              {
+                "click": "#onboard-next-btn"
+              },
+              {
+                "waitFor": ".onboard-step[data-step='3'].active"
+              }
             ],
             "settle": 400
           }
@@ -156,11 +175,21 @@
             "path": "/?mock=xr8&onboarding=1",
             "waitFor": "#onboarding-overlay.visible",
             "before": [
-              { "click": "#onboard-next-btn" },
-              { "click": "#onboard-next-btn" },
-              { "click": "#onboard-next-btn" },
-              { "click": "#onboard-next-btn" },
-              { "waitFor": ".onboard-step[data-step='4'].active" }
+              {
+                "click": "#onboard-next-btn"
+              },
+              {
+                "click": "#onboard-next-btn"
+              },
+              {
+                "click": "#onboard-next-btn"
+              },
+              {
+                "click": "#onboard-next-btn"
+              },
+              {
+                "waitFor": ".onboard-step[data-step='4'].active"
+              }
             ],
             "settle": 400
           }
@@ -184,10 +213,18 @@
             "path": "/?mock=xr8&mockFreeze=90",
             "waitFor": "#start-ar-btn",
             "before": [
-              { "click": "#start-ar-btn" },
-              { "waitFor": "#capture-btn" },
-              { "waitFor": "#scan-stats:has-text('pts')" },
-              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#geo-chip{display:none!important}</style>')" }
+              {
+                "click": "#start-ar-btn"
+              },
+              {
+                "waitFor": "#capture-btn"
+              },
+              {
+                "waitFor": "#scan-stats:has-text('pts')"
+              },
+              {
+                "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#geo-chip{display:none!important}</style>')"
+              }
             ],
             "settle": 600
           }
@@ -201,10 +238,18 @@
             "path": "/?mock=xr8&mockFreeze=700",
             "waitFor": "#start-ar-btn",
             "before": [
-              { "click": "#start-ar-btn" },
-              { "waitFor": "#capture-btn" },
-              { "waitFor": "#scan-stats:has-text('pts')" },
-              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#geo-chip{display:none!important}</style>')" }
+              {
+                "click": "#start-ar-btn"
+              },
+              {
+                "waitFor": "#capture-btn"
+              },
+              {
+                "waitFor": "#scan-stats:has-text('pts')"
+              },
+              {
+                "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#geo-chip{display:none!important}</style>')"
+              }
             ],
             "settle": 600
           }
@@ -228,12 +273,24 @@
             "path": "/?mock=xr8&mockFreeze=700",
             "waitFor": "#start-ar-btn",
             "before": [
-              { "click": "#start-ar-btn" },
-              { "waitFor": "#capture-btn" },
-              { "waitFor": "#scan-stats:has-text('pts')" },
-              { "click": "#capture-btn" },
-              { "waitFor": "#infer-dialog.visible" },
-              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#status-bar,#quality-overlay,#autosave-status{display:none!important}</style>')" }
+              {
+                "click": "#start-ar-btn"
+              },
+              {
+                "waitFor": "#capture-btn"
+              },
+              {
+                "waitFor": "#scan-stats:has-text('pts')"
+              },
+              {
+                "click": "#capture-btn"
+              },
+              {
+                "waitFor": "#infer-dialog.visible"
+              },
+              {
+                "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#status-bar,#quality-overlay,#autosave-status{display:none!important}</style>')"
+              }
             ],
             "settle": 600
           }
@@ -247,14 +304,30 @@
             "path": "/?mock=xr8&mockFreeze=700",
             "waitFor": "#start-ar-btn",
             "before": [
-              { "click": "#start-ar-btn" },
-              { "waitFor": "#capture-btn" },
-              { "waitFor": "#scan-stats:has-text('pts')" },
-              { "click": "#capture-btn" },
-              { "waitFor": "#panel-content [data-key]" },
-              { "click": "#panel-toggle" },
-              { "waitFor": "#side-panel.open #panel-content [data-key]" },
-              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#hud-panel,#scanner-action-rail{display:none!important}</style>')" }
+              {
+                "click": "#start-ar-btn"
+              },
+              {
+                "waitFor": "#capture-btn"
+              },
+              {
+                "waitFor": "#scan-stats:has-text('pts')"
+              },
+              {
+                "click": "#capture-btn"
+              },
+              {
+                "waitFor": "#panel-content [data-key]"
+              },
+              {
+                "click": "#panel-toggle"
+              },
+              {
+                "waitFor": "#side-panel.open #panel-content [data-key]"
+              },
+              {
+                "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#hud-panel,#scanner-action-rail{display:none!important}</style>')"
+              }
             ],
             "settle": 600
           }
@@ -278,12 +351,24 @@
             "path": "/?mock=xr8&mockFreeze=700",
             "waitFor": "#start-ar-btn",
             "before": [
-              { "click": "#start-ar-btn" },
-              { "waitFor": "#capture-btn" },
-              { "waitFor": "#scan-stats:has-text('pts')" },
-              { "click": "#panel-toggle" },
-              { "waitFor": "#side-panel.open #panel-content:has-text('No objects yet')" },
-              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#hud-panel,#scanner-action-rail{display:none!important}</style>')" }
+              {
+                "click": "#start-ar-btn"
+              },
+              {
+                "waitFor": "#capture-btn"
+              },
+              {
+                "waitFor": "#scan-stats:has-text('pts')"
+              },
+              {
+                "click": "#panel-toggle"
+              },
+              {
+                "waitFor": "#side-panel.open #panel-content:has-text('No objects yet')"
+              },
+              {
+                "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#hud-panel,#scanner-action-rail{display:none!important}</style>')"
+              }
             ],
             "settle": 600
           }
@@ -297,14 +382,30 @@
             "path": "/?mock=xr8&mockFreeze=700",
             "waitFor": "#start-ar-btn",
             "before": [
-              { "click": "#start-ar-btn" },
-              { "waitFor": "#capture-btn" },
-              { "waitFor": "#scan-stats:has-text('pts')" },
-              { "click": "#capture-btn" },
-              { "waitFor": "#panel-content [data-key]" },
-              { "click": "#finish-scan-btn" },
-              { "waitFor": "#side-panel.open #panel-export-glb-btn" },
-              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#hud-panel,#scanner-action-rail{display:none!important}</style>')" }
+              {
+                "click": "#start-ar-btn"
+              },
+              {
+                "waitFor": "#capture-btn"
+              },
+              {
+                "waitFor": "#scan-stats:has-text('pts')"
+              },
+              {
+                "click": "#capture-btn"
+              },
+              {
+                "waitFor": "#panel-content [data-key]"
+              },
+              {
+                "click": "#finish-scan-btn"
+              },
+              {
+                "waitFor": "#side-panel.open #panel-export-glb-btn"
+              },
+              {
+                "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#hud-panel,#scanner-action-rail{display:none!important}</style>')"
+              }
             ],
             "settle": 600
           }
@@ -328,12 +429,24 @@
             "path": "/viewer.html?world=default",
             "waitFor": "#scan-list .scan-item",
             "before": [
-              { "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')" },
-              { "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')" },
-              { "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')" },
-              { "click": "#btn-reset-camera" },
-              { "wait": 600 },
-              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')" }
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "click": "#btn-reset-camera"
+              },
+              {
+                "wait": 600
+              },
+              {
+                "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')"
+              }
             ],
             "settle": 1200
           }
@@ -347,12 +460,24 @@
             "path": "/viewer.html?world=default",
             "waitFor": "#scan-list .scan-item",
             "before": [
-              { "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')" },
-              { "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')" },
-              { "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')" },
-              { "click": "#scan-list .scan-item:nth-child(2)" },
-              { "waitFor": "#tab-edit.active #edit-selected-info" },
-              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')" }
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "click": "#scan-list .scan-item:nth-child(2)"
+              },
+              {
+                "waitFor": "#tab-edit.active #edit-selected-info"
+              },
+              {
+                "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')"
+              }
             ],
             "settle": 1200
           }
@@ -376,14 +501,30 @@
             "path": "/viewer.html?world=default",
             "waitFor": "#scan-list .scan-item",
             "before": [
-              { "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')" },
-              { "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')" },
-              { "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')" },
-              { "click": "#btn-reset-camera" },
-              { "wait": 600 },
-              { "click": "#mode-points" },
-              { "waitFor": "#mode-points.active" },
-              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')" }
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "click": "#btn-reset-camera"
+              },
+              {
+                "wait": 600
+              },
+              {
+                "click": "#mode-points"
+              },
+              {
+                "waitFor": "#mode-points.active"
+              },
+              {
+                "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')"
+              }
             ],
             "settle": 1200
           }
@@ -397,14 +538,30 @@
             "path": "/viewer.html?world=default",
             "waitFor": "#scan-list .scan-item",
             "before": [
-              { "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')" },
-              { "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')" },
-              { "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')" },
-              { "click": "#btn-reset-camera" },
-              { "wait": 600 },
-              { "click": "#mode-semantic" },
-              { "waitFor": "#mode-semantic.active" },
-              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')" }
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "click": "#btn-reset-camera"
+              },
+              {
+                "wait": 600
+              },
+              {
+                "click": "#mode-semantic"
+              },
+              {
+                "waitFor": "#mode-semantic.active"
+              },
+              {
+                "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')"
+              }
             ],
             "settle": 1200
           }
@@ -428,14 +585,30 @@
             "path": "/viewer.html?world=default",
             "waitFor": "#scan-list .scan-item",
             "before": [
-              { "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')" },
-              { "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')" },
-              { "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')" },
-              { "click": "#btn-reset-camera" },
-              { "wait": 600 },
-              { "click": "#tab-btn-layers" },
-              { "waitFor": "#tab-layers.active #quality-stepper .quality-step.current" },
-              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')" }
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "click": "#btn-reset-camera"
+              },
+              {
+                "wait": 600
+              },
+              {
+                "click": "#tab-btn-layers"
+              },
+              {
+                "waitFor": "#tab-layers.active #quality-stepper .quality-step.current"
+              },
+              {
+                "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')"
+              }
             ],
             "settle": 1200
           }
@@ -449,10 +622,22 @@
       "caption": "Local capture, self-hosted pipeline.",
       "narration": "It runs in the browser on your phone and sends scans to your own server.",
       "items": [
-        { "label": "Monthly fee", "value": "$0" },
-        { "label": "Capture", "value": "Live AR or video" },
-        { "label": "Output", "value": "GLB + point cloud" },
-        { "label": "Inference", "value": "Your hardware" }
+        {
+          "label": "Monthly fee",
+          "value": "$0"
+        },
+        {
+          "label": "Capture",
+          "value": "Live AR or video"
+        },
+        {
+          "label": "Output",
+          "value": "GLB + point cloud"
+        },
+        {
+          "label": "Inference",
+          "value": "Your hardware"
+        }
       ]
     },
     {
