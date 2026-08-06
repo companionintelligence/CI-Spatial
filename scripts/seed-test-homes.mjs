@@ -6,6 +6,7 @@
  *   npm run server                                     # in another terminal
  *   node scripts/seed-test-homes.mjs                   # all 24 homes
  *   COUNT=6 node scripts/seed-test-homes.mjs           # first N only
+ *   HOMES=home-06-living-room,home-09-kitchen node scripts/seed-test-homes.mjs
  *   SERVER_URL=http://localhost:8098 node scripts/seed-test-homes.mjs
  *
  * Each upload auto-enqueues the optimization job (quantize/Draco/LODs), so
@@ -19,6 +20,13 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const homesDir = join(root, 'test-data', 'homes')
 const SERVER = process.env.SERVER_URL ?? 'http://localhost:8000'
 const COUNT = Number(process.env.COUNT ?? Infinity)
+/**
+ * Explicit home selection by GLB basename, in order. COUNT alone can only take
+ * a prefix of index.json, which is archetype-major — so `COUNT=3` seeds three
+ * variants of the SAME room type. Callers that care which rooms end up in the
+ * world (scripts/video-stage.mjs does) name them instead.
+ */
+const HOMES = (process.env.HOMES ?? '').split(',').map((s) => s.trim()).filter(Boolean)
 
 if (!existsSync(join(homesDir, 'index.json'))) {
   console.error('[seed] test-data missing — run: npm run gen:test-data')
@@ -32,7 +40,17 @@ if (!health) {
 }
 
 const index = JSON.parse(readFileSync(join(homesDir, 'index.json'), 'utf8'))
-const selected = index.slice(0, COUNT)
+const byBase = new Map(index.map((e) => [e.file.replace(/\.glb$/, ''), e]))
+const selected = HOMES.length
+  ? HOMES.map((base) => {
+      const entry = byBase.get(base)
+      if (!entry) {
+        console.error(`[seed] HOMES names "${base}", which is not in index.json`)
+        process.exit(1)
+      }
+      return entry
+    })
+  : index.slice(0, COUNT)
 
 let ok = 0
 for (const entry of selected) {
