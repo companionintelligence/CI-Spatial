@@ -285,3 +285,21 @@ Two things reviewers ask about, both checked against the pixels rather than assu
 
 See [CI-Engineering `projects/product-video-pipeline/`](https://github.com/companionintelligence/CI-Engineering/tree/main/projects/product-video-pipeline)
 for the full contract.
+
+## Why Playwright is pinned exactly
+
+`video/package.json` pins `playwright` to an exact version, not a range.
+
+Captures are byte-stable — that is what makes committing the shots worthwhile, because a UI change
+then lands as a reviewable image diff instead of noise. But that property only holds **within one
+Chromium build**. A `^1.58.0` range resolved to 1.62.1 on one machine and rewrote every committed
+shot in a repo by 0.07–0.47% of pixels: pure text antialiasing, no layout change, and completely
+indistinguishable from a real UI change in review.
+
+So the range is gone. Re-pin deliberately when you want the newer browser, and re-capture the whole
+shot set in the same commit.
+
+> **Divergence, on purpose.** This repo's own e2e suite pins `@playwright/test` to `1.59.0`,
+> which excludes 1.62.1. The video project pins 1.62.1 because that is the build that produced the
+> shots currently committed here — changing it would invalidate them. The kit treats `playwright`
+> as a peer dependency precisely so the two can differ. If you align them, re-capture.
