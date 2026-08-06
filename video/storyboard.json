@@ -30,6 +30,27 @@
       "narration": "Companion Scan turns a walk through a room into a 3D map."
     },
     {
+      "id": "choose-your-path",
+      "kind": "screen",
+      "chapter": "setup",
+      "seconds": 6.5,
+      "caption": "Two ways in. Both end in a map.",
+      "narration": "Scan a room with the camera, or upload a walkthrough video you already have.",
+      "shots": [
+        {
+          "id": "start-screen",
+          "url": "companion-scan.local",
+          "alt": "Start screen offering two equal paths: scan a room, or upload a video",
+          "motion": "push-in",
+          "capture": {
+            "path": "/?mock=xr8",
+            "waitFor": "#start-ar-btn",
+            "settle": 400
+          }
+        }
+      ]
+    },
+    {
       "id": "ftue-permissions",
       "kind": "screen",
       "chapter": "setup",
@@ -130,7 +151,7 @@
           "id": "onboard-finish",
           "url": "companion-scan.local",
           "alt": "Final onboarding step covering GLB export and the 3D editor",
-          "motion": "push-in",
+          "motion": "drift-down",
           "capture": {
             "path": "/?mock=xr8&onboarding=1",
             "waitFor": "#onboarding-overlay.visible",
@@ -141,27 +162,6 @@
               { "click": "#onboard-next-btn" },
               { "waitFor": ".onboard-step[data-step='4'].active" }
             ],
-            "settle": 400
-          }
-        }
-      ]
-    },
-    {
-      "id": "choose-your-path",
-      "kind": "screen",
-      "chapter": "capture",
-      "seconds": 6.5,
-      "caption": "Two ways in. Both end in a map.",
-      "narration": "Scan a room with the camera, or upload a walkthrough video you already have.",
-      "shots": [
-        {
-          "id": "start-screen",
-          "url": "companion-scan.local",
-          "alt": "Start screen offering two equal paths: scan a room, or upload a video",
-          "motion": "push-in",
-          "capture": {
-            "path": "/?mock=xr8",
-            "waitFor": "#start-ar-btn",
             "settle": 400
           }
         }
@@ -223,7 +223,7 @@
           "id": "detections-panel",
           "url": "companion-scan.local",
           "alt": "The Latest scan readout over the camera feed, listing objects this capture found with a label, a confidence figure and a 3D position each",
-          "motion": "push-in",
+          "motion": "drift-down",
           "capture": {
             "path": "/?mock=xr8&mockFreeze=700",
             "waitFor": "#start-ar-btn",
@@ -242,7 +242,7 @@
           "id": "objects-manifest",
           "url": "companion-scan.local",
           "alt": "The object manifest at the top of the side panel, counting the objects found and listing each one with its label, confidence and X Y Z position",
-          "motion": "drift-down",
+          "motion": "push-in",
           "capture": {
             "path": "/?mock=xr8&mockFreeze=700",
             "waitFor": "#start-ar-btn",
@@ -254,7 +254,7 @@
               { "waitFor": "#panel-content [data-key]" },
               { "click": "#panel-toggle" },
               { "waitFor": "#side-panel.open #panel-content [data-key]" },
-              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#hud-panel{display:none!important}</style>')" }
+              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#hud-panel,#scanner-action-rail{display:none!important}</style>')" }
             ],
             "settle": 600
           }
@@ -283,7 +283,7 @@
               { "waitFor": "#scan-stats:has-text('pts')" },
               { "click": "#panel-toggle" },
               { "waitFor": "#side-panel.open #panel-content:has-text('No objects yet')" },
-              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#hud-panel{display:none!important}</style>')" }
+              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#hud-panel,#scanner-action-rail{display:none!important}</style>')" }
             ],
             "settle": 600
           }
@@ -304,7 +304,7 @@
               { "waitFor": "#panel-content [data-key]" },
               { "click": "#finish-scan-btn" },
               { "waitFor": "#side-panel.open #panel-export-glb-btn" },
-              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#hud-panel{display:none!important}</style>')" }
+              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#hud-panel,#scanner-action-rail{display:none!important}</style>')" }
             ],
             "settle": 600
           }
@@ -322,23 +322,7 @@
         {
           "id": "world-editor-scans",
           "url": "companion-scan.local/viewer.html",
-          "alt": "The desktop World Editor framed on the whole world, with three room scans listed in the sidebar and their point and detection totals on the readout",
-          "motion": "push-in",
-          "capture": {
-            "path": "/viewer.html?world=default",
-            "waitFor": "#scan-list .scan-item",
-            "before": [
-              { "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')" },
-              { "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')" },
-              { "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')" }
-            ],
-            "settle": 1200
-          }
-        },
-        {
-          "id": "world-editor-focus",
-          "url": "companion-scan.local/viewer.html",
-          "alt": "The same world after picking the second room from the sidebar: the camera has flown to that scan and the Edit tab has opened on its name, confidence and tags",
+          "alt": "The desktop World Editor with three room scans listed in the sidebar, their point and detection totals on the readout, and the camera framed on the selected room",
           "motion": "drift-down",
           "capture": {
             "path": "/viewer.html?world=default",
@@ -347,8 +331,28 @@
               { "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')" },
               { "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')" },
               { "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')" },
+              { "click": "#btn-reset-camera" },
+              { "wait": 600 },
+              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')" }
+            ],
+            "settle": 1200
+          }
+        },
+        {
+          "id": "world-editor-focus",
+          "url": "companion-scan.local/viewer.html",
+          "alt": "The same world after picking the second room from the sidebar: the camera has flown to that scan and the Edit tab has opened on its name, confidence and tags",
+          "motion": "push-in",
+          "capture": {
+            "path": "/viewer.html?world=default",
+            "waitFor": "#scan-list .scan-item",
+            "before": [
+              { "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')" },
+              { "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')" },
+              { "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')" },
               { "click": "#scan-list .scan-item:nth-child(2)" },
-              { "waitFor": "#tab-edit.active #edit-selected-info" }
+              { "waitFor": "#tab-edit.active #edit-selected-info" },
+              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')" }
             ],
             "settle": 1200
           }
@@ -375,8 +379,11 @@
               { "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')" },
               { "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')" },
               { "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')" },
+              { "click": "#btn-reset-camera" },
+              { "wait": 600 },
               { "click": "#mode-points" },
-              { "waitFor": "#mode-points.active" }
+              { "waitFor": "#mode-points.active" },
+              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')" }
             ],
             "settle": 1200
           }
@@ -393,8 +400,11 @@
               { "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')" },
               { "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')" },
               { "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')" },
+              { "click": "#btn-reset-camera" },
+              { "wait": 600 },
               { "click": "#mode-semantic" },
-              { "waitFor": "#mode-semantic.active" }
+              { "waitFor": "#mode-semantic.active" },
+              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')" }
             ],
             "settle": 1200
           }
@@ -421,8 +431,11 @@
               { "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')" },
               { "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')" },
               { "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')" },
+              { "click": "#btn-reset-camera" },
+              { "wait": 600 },
               { "click": "#tab-btn-layers" },
-              { "waitFor": "#tab-layers.active #quality-stepper .quality-step.current" }
+              { "waitFor": "#tab-layers.active #quality-stepper .quality-step.current" },
+              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')" }
             ],
             "settle": 1200
           }
@@ -436,10 +449,10 @@
       "caption": "Local capture, self-hosted pipeline.",
       "narration": "It runs in the browser on your phone and sends scans to your own server.",
       "items": [
-        { "label": "Runs on", "value": "Your phone" },
+        { "label": "Monthly fee", "value": "$0" },
         { "label": "Capture", "value": "Live AR or video" },
         { "label": "Output", "value": "GLB + point cloud" },
-        { "label": "Sends to", "value": "Your own server" }
+        { "label": "Inference", "value": "Your hardware" }
       ]
     },
     {
