@@ -31,6 +31,7 @@ import {
 import { enuToGeo, hasGeoPose, matrixTranslation } from '../world/geo'
 import { LAYER_LABELS, LAYER_ORDER } from '../world/layers'
 import { registerPWA } from '../pwa'
+import { iconLabel } from '../ui/icons'
 import type {
   EditPatch,
   FrameObservation,
@@ -215,7 +216,8 @@ function initRenderer(): void {
   liveFeed.onStatus = ({ state }) => {
     const btn = document.getElementById('btn-livefeed')!
     btn.classList.toggle('active', state === 'live')
-    btn.textContent = state === 'live' ? 'Live *' : 'Live'
+    // innerHTML, not textContent: the button holds an inline SVG icon.
+    btn.innerHTML = iconLabel('broadcast', state === 'live' ? 'Live *' : 'Live', { size: '14px' })
   }
   liveFeed.onMeta = (meta) => {
     upsertLiveFrustum(meta)

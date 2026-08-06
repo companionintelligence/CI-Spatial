@@ -7,6 +7,7 @@
  */
 import type { DetectionStore, StoredDetection } from '../scene/store'
 import type { InferMode } from '../inference/router'
+import { icon, iconLabel, type IconName } from './icons'
 
 const CATEGORY_COLORS: Record<string, string> = {
   chair: '#72ddd4', table: '#81c784', sofa: '#ff8a65', couch: '#ff8a65',
@@ -111,16 +112,16 @@ export class SidePanel {
       label.style.cssText = 'color:rgba(255,255,255,0.3);font-size:10px;text-transform:uppercase;letter-spacing:0.08em;padding:4px 0 2px;'
       label.textContent = 'Server Processing'
       processWrap.appendChild(label)
-      const actions: [string, string][] = [
-        ['floor-plan', '🗺 Generate Floor Plan'],
-        ['scene-description', '✍ Scene Description'],
-        ['object-count', '📊 Object Report'],
+      const actions: [string, IconName, string][] = [
+        ['floor-plan', 'floorplan', 'Generate Floor Plan'],
+        ['scene-description', 'text-lines', 'Scene Description'],
+        ['object-count', 'chart', 'Object Report'],
       ]
-      for (const [action, btnLabel] of actions) {
+      for (const [action, iconName, btnLabel] of actions) {
         const btn = document.createElement('button')
         btn.className = 'panel-btn-ghost'
         btn.dataset['needsObjects'] = ''
-        btn.textContent = btnLabel
+        btn.innerHTML = iconLabel(iconName, btnLabel, { size: '15px' })
         btn.addEventListener('click', () => this.onProcess!(action))
         processWrap.appendChild(btn)
       }
@@ -137,7 +138,7 @@ export class SidePanel {
     const streamBtn = document.createElement('button')
     streamBtn.className = 'panel-btn-ghost'
     streamBtn.id = 'panel-stream-btn'
-    streamBtn.textContent = '📡 Start Live Stream'
+    streamBtn.innerHTML = iconLabel('broadcast', 'Start Live Stream', { size: '15px' })
     this._streamBtn = streamBtn
     this.footer.appendChild(streamBtn)
 
@@ -154,11 +155,11 @@ export class SidePanel {
       const aiRow = document.createElement('div')
       aiRow.style.cssText = 'display:flex;gap:4px;'
 
-      const mkToggle = (label: string, mode: InferMode): HTMLButtonElement => {
+      const mkToggle = (iconName: IconName, label: string, mode: InferMode): HTMLButtonElement => {
         const btn = document.createElement('button')
         btn.dataset['mode'] = mode
         btn.className = 'ci-toolbar-pill'
-        btn.textContent = label
+        btn.innerHTML = iconLabel(iconName, label, { size: '14px' })
         btn.addEventListener('click', () => {
           this.onInferMode!(mode)
           this._setAIMode(mode)
@@ -166,8 +167,8 @@ export class SidePanel {
         return btn
       }
 
-      this._aiServerBtn = mkToggle('🖥 Server', 'server')
-      this._aiWebGPUBtn = mkToggle('⚡ WebGPU', 'webgpu')
+      this._aiServerBtn = mkToggle('monitor', 'Server', 'server')
+      this._aiWebGPUBtn = mkToggle('bolt', 'WebGPU', 'webgpu')
       aiRow.appendChild(this._aiServerBtn)
       aiRow.appendChild(this._aiWebGPUBtn)
       aiWrap.appendChild(aiRow)
@@ -266,7 +267,7 @@ export class SidePanel {
     if (count === 0) {
       this.content.innerHTML = `
         <div style="padding:24px 16px;text-align:center;">
-          <div style="font-size:32px;margin-bottom:10px;opacity:0.3;">📍</div>
+          <div style="margin-bottom:10px;opacity:0.3;">${icon('pin', { size: '32px' })}</div>
           <p style="color:rgba(255,255,255,0.4);font-size:13px;line-height:1.5;">
             No objects yet.<br>Tap the capture button to scan.
           </p>
