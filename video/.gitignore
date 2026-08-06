@@ -10,3 +10,11 @@ build/
 .auth/
 
 node_modules/
+
+# assets/shots/ is deliberately NOT ignored, and must not be added here.
+# Fleet policy as of 2026-08-05: shots are committed inputs. Only three of the
+# twelve products have a working capture stage, so a gitignored shot set means
+# nobody but the stage's author can render the cut — which is how eleven of the
+# twelve ended up rendering as "capture pending" slates. The PNGs are also the
+# only reviewable record of what the UI looked like: captures are byte-stable,
+# so a diff in them means the product genuinely moved.

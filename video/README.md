@@ -49,8 +49,32 @@ the runner above avoids that entirely by reading the package off disk.
 
 ## The stage
 
-From the **repo root**, **two** servers. Vite serves the app; the Deno API backs the World
-Editor and the detections panel.
+**One command, from the repo root.** [`scripts/video-stage.mjs`](../scripts/video-stage.mjs)
+generates the fixtures, starts the Deno API on isolated data dirs, seeds world `default`, blocks
+until every optimize job is `done`, and then runs Vite in the foreground. `Ctrl-C` tears both down.
+
+```bash
+node scripts/video-stage.mjs                       # Vite :5173, API :8000
+# or, when other agents are staging apps at the same time:
+VIDEO_PORT=5182 VIDEO_API_PORT=18182 node scripts/video-stage.mjs
+```
+
+Then, in this directory:
+
+```bash
+APP_URL=https://localhost:5182 npm run capture
+```
+
+Health-check the stage at `https://localhost:$VIDEO_PORT/health` — Vite proxies it to the API, so
+one green response means both servers are up. Knobs: `VIDEO_PORT`, `VIDEO_API_PORT`, `VIDEO_SCANS`
+(default 3), `VIDEO_DATA_DIR`.
+
+The script also places the seeded homes **adjacent** rather than 122 m apart — see
+[Framing the World Editor](#framing-the-world-editor) for why that is load-bearing rather than
+cosmetic, and read its header comment before changing the layout.
+
+<details>
+<summary>The same stage by hand, in two terminals</summary>
 
 ```bash
 # terminal 1 — the API, on isolated data dirs
@@ -66,7 +90,10 @@ COUNT=3 npm run seed:test-data     # three homes into world "default"
 TAILSCALE_HOSTNAME=localhost npm run dev -- --port 5173 --strictPort
 ```
 
-Then `npm run capture` in this directory.
+By hand you must also place the homes adjacent yourself, or the World Editor shots reproduce the
+122 m framing bug. Prefer the script.
+
+</details>
 
 Three things about the Vite command are load-bearing:
 
@@ -126,27 +153,32 @@ changed. They are the inputs, and they are the reason a render needs no stage.
 a UI change is a deliberate act: run `npm run capture` against the stage, review the image diff,
 and commit the shots like any other change.
 
-### Shots still awaiting a capture run
+### The landscape cut is complete; five portrait frames are deliberately not shot
 
-Seven shots are declared in `storyboard.json` but have no PNG yet, so they render as the kit's
-branded "capture pending" slate. The build passes either way — that is the point of the slate —
-but the cut is not finished until these are shot. Each one needs the full stage below:
+All seventeen shots exist at 1280×720. The seven that had never been taken (`onboard-sweep`,
+`live-scan-early`, `objects-manifest`, `review-panel-empty`, `world-editor-focus`,
+`world-editor-points`, `world-editor-quality`) and the three that had gone stale
+(`world-editor-scans`, `world-editor-semantic`, `review-export-panel`) were all shot against the
+stage above. Two consecutive runs, on two independently built stages, produced **byte-identical**
+PNGs for every one of them.
 
-```bash
-npm run capture -- --only onboard-sweep,live-scan-early,objects-manifest,review-panel-empty,world-editor-focus,world-editor-points,world-editor-quality
-```
+**Five 360×640 frames are missing on purpose** and render as the kit's "capture pending" slate:
 
-Three **committed** shots are also stale, because their `before` arrays changed after they were
-taken. Re-shoot them in the same run:
-
-```bash
-npm run capture -- --only world-editor-scans,world-editor-semantic,review-export-panel
-```
-
-| Shot | Why it is stale |
+| Not shipped | Why |
 |---|---|
-| `world-editor-scans`, `world-editor-semantic` | now click `#btn-reset-camera` before the shutter (see "Framing the World Editor" below) and hide `#coord-readout` |
-| `review-export-panel` | now hides `#scanner-action-rail` as well as `#hud-panel` — the floating rail was sitting on top of Generate Floor Plan, Object Report, Clear session and Start Live Stream |
+| `objects-manifest.mobile`, `review-panel-empty.mobile` | `#panel-content` is ~90 CSS px tall at 360×640 — the footer takes the rest — so the panel slices its own content mid-line. "No objects yet." is cut in half; the sofa card is cut through its description row. |
+| `world-editor-focus.mobile`, `world-editor-points.mobile`, `world-editor-quality.mobile` | The World Editor has no 360 px layout. The sidebar takes the top two thirds, `#inspector-panel` lands on top of the world-stats overlay, and the semantic labels clip against the left edge of the canvas strip (`lamp 94%` → `%`). |
+
+The rule this follows: a missing shot is a known gap, a bad shot is a lie that ships. Do **not**
+"fix" these by re-running `capture` — the kit shoots both viewports for every shot, so a plain
+`npm run capture` regenerates all five. Delete them again, or give the product a mobile layout.
+
+Three portrait frames in the same family — `review-export-panel.mobile`,
+`world-editor-scans.mobile`, `world-editor-semantic.mobile` — **were** re-shot and committed. They
+have the same layout crowding, but they were already committed *and* the versions they replace
+burned a live street-level `ENU … 37.775726, -122.418800` readout into the frame. Replacing a
+coordinate leak with a crowded layout is strictly better; dropping them is better still, and is the
+recommendation once someone decides the portrait cut can lose those beats.
 
 ### Framing the World Editor
 
@@ -166,22 +198,35 @@ Two ways out, and they compose:
    viewer shot except `world-editor-focus` now clicks it. `world-editor-focus` needs no click:
    clicking a `.scan-item` calls `selectScan(id, true)` (`viewer.ts:511`), and `focus: true`
    already fits the camera to that scan.
-2. **Better, if you are re-seeding anyway.** Seed rooms that belong to *one* home, adjacent in
-   space, so "every room, one world" is literally what the viewport shows. That is the frame the
-   `world-editor` scene is written for.
+2. **Better, and now what the stage does.** `scripts/video-stage.mjs` rewrites `geoLat`/`geoLng` in
+   the seeded homes' metadata so the three rooms sit **9 m apart in one row** instead of 122 m
+   apart in three postcodes. Nothing about the product is faked: the geo pose is fixture data and
+   the viewer's geo→local assembly is untouched. What changes is that "every room you scan lands in
+   one 3D world" becomes literally what the viewport shows — and the two off-camera rooms stop
+   flinging their semantic labels into the top-right corner, where they used to land on top of
+   `#inspector-panel` and cover its Size / Room / Floor values.
 
-`map-quality` needs one more thing from the seed: the seeded homes carry neither a reconstruction
-manifest nor a trained splat, so `quality-tier.ts:56-70` will light **Preview** with the other two
-tiers dark, while the narration over it says "upgraded to a photoreal map". Seed a Reconstructed
-and a Photoreal scan first (`npm run test:splat:make-fixture`) or the shot contradicts its own line.
+   Direction matters and was measured, not guessed: with `#btn-reset-camera` framing the
+   auto-selected scan, neighbours stepped **west** stay inside the canvas, and neighbours stepped
+   east, north or south fall behind the camera and out of frame entirely.
 
-| Shot | Scene | What it has to catch |
+`map-quality` was the one shot expected to contradict its own narration, and it does not. The
+seeded homes carry neither a reconstruction manifest nor a trained splat, so `quality-tier.ts:56-70`
+lights **Preview** with the other two tiers dark — but it also renders the app's own next-step copy,
+"Reconstruct from your keyframes to reach Reconstructed", under a three-step Preview → Reconstructed
+→ Photoreal ladder. The narration is "every scan *can be* upgraded to a photoreal map", and a lit
+first rung above the route to the other two is exactly that claim. Seeding a real Photoreal scan
+(`npm run test:splat:make-fixture`) would show the end state instead of the path; it is not needed
+to make the shot true. One blemish remains: at the sidebar's 280 px the middle step elides to
+`Reconstr…` in the landscape frame. The portrait frame renders all three labels in full.
+
+| Shot | Scene | What it caught |
 |---|---|---|
 | `onboard-sweep` | `ftue-permissions` | FTUE card 2 of 5, "Sweep the Room Slowly" |
-| `live-scan-early` | `live-scan` | the HUD at `mockFreeze=90` — a thin map, before the walk fills it |
-| `objects-manifest` | `objects-named` | the side panel scrolled to the top of the object list |
-| `review-panel-empty` | `review-and-export` | the same panel opened *before* the first capture |
-| `world-editor-focus` | `world-editor` | second scan picked: camera flown to it, Edit tab open |
+| `live-scan-early` | `live-scan` | the HUD at `mockFreeze=90` — 2,110 pts, a `SPARSE` chip and "Low — keep scanning" |
+| `objects-manifest` | `objects-named` | the side panel at the top of the object list: `4 OBJECTS`, `sofa 95%`, "large orange sofa, centre of frame", X·Y·Z |
+| `review-panel-empty` | `review-and-export` | the same panel opened *before* the first capture — "No objects yet. Tap the capture button to scan." |
+| `world-editor-focus` | `world-editor` | second scan picked: camera flown to it, Edit tab open on its transform and semantic tags |
 | `world-editor-points` | `semantic-world` | the world drawn as a raw point cloud |
 | `world-editor-quality` | `map-quality` | the Layers tab's Preview / Reconstructed / Photoreal stepper |
 
@@ -190,6 +235,18 @@ Six of the seven are one half of a two-shot scene — `live-scan-early`, `review
 `objects-manifest` and `world-editor-focus` are what the committed shot dissolves *into*. The
 seventh, `world-editor-quality`, is the only shot of the new `map-quality` scene. Capturing them
 is what turns those beats from a still into a state change.
+
+Two things reviewers ask about, both checked against the pixels rather than assumed:
+
+- **The mock is no longer visible in the frame.** `INFERENCE_MODE=mock` used to write
+  `mock colour-blob detection (N samples)` into every detection's `description`, which the UI
+  renders verbatim. `describeMockBlob` (inference.ts, PR #32) replaced it with a phrase built from
+  the blob's own colour and bbox, inside the same 7-word contract the real engines follow. The
+  shipped frames read "large orange sofa, centre of frame" — derived from the pixels, not a canned
+  string, and no debug text anywhere in the shot.
+- **The camera feed is synthetic and looks it.** Every scanner frame is
+  `public/test-fixtures/xr8-mock.js` painting a flat-shaded room. That is the documented way to
+  film AR without a phone; it is a stand-in for a camera, not a claim about output quality.
 
 See [CI-Engineering `projects/product-video-pipeline/`](https://github.com/companionintelligence/CI-Engineering/tree/main/projects/product-video-pipeline)
 for the full contract.
