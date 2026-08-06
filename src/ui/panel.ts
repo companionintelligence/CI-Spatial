@@ -183,6 +183,24 @@ export class SidePanel {
 
     this.store.subscribe((dets, selected) => this.render(dets, selected))
     this.render(this.store.detections, this.store.selected)
+
+    // The footer is built once, but whether it overflows depends on the viewport:
+    // below 700 px tall it scrolls so the object list keeps a usable height
+    // (index.html). Re-check on resize — rotating a phone crosses that boundary.
+    this._markScrollable(this.footer)
+    window.addEventListener('resize', () => {
+      this._markScrollable(this.content)
+      this._markScrollable(this.footer)
+    })
+  }
+
+  /**
+   * Flag a scroll box that has more content below its bottom edge, so the CSS
+   * can fade it. Read synchronously after the DOM is written — the layout it
+   * forces is the same one the next paint would do anyway.
+   */
+  private _markScrollable(el: HTMLElement): void {
+    el.classList.toggle('is-scrollable', el.scrollHeight - el.clientHeight > 1)
   }
 
   setOpen(open: boolean): void {
@@ -226,6 +244,7 @@ export class SidePanel {
             No objects yet.<br>Tap the capture button to scan.
           </p>
         </div>`
+      this._markScrollable(this.content)
       return
     }
 
@@ -245,6 +264,8 @@ export class SidePanel {
     for (const [key, det] of sorted) {
       this.content.appendChild(this._buildCard(key, det, selected.has(key)))
     }
+
+    this._markScrollable(this.content)
   }
 
   private _buildCard(key: string, det: StoredDetection, isSelected: boolean): HTMLElement {

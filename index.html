@@ -903,6 +903,42 @@
         border-top: 1px solid var(--ci-line);
       }
 
+      /* A scroll box whose last visible line is sliced through the middle reads
+         as broken, not as scrollable. Fade its bottom edge instead — but only
+         while there is genuinely more below: `.is-scrollable` is set from
+         panel.ts against the box's own scrollHeight, so a list that fits is
+         never dimmed for nothing. */
+      #panel-content.is-scrollable,
+      #panel-footer.is-scrollable {
+        -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 26px), transparent);
+        mask-image: linear-gradient(to bottom, #000 calc(100% - 26px), transparent);
+      }
+
+      /* ── Short viewports: the footer yields, it does not eat the panel ──────
+         #panel-footer carries ten controls and stands ~490 px tall. #panel-content
+         is `flex: 1`, i.e. a zero basis that only claims what is left over, so on
+         a 640 px phone it was handed 84 px — a scroll box short enough to slice
+         its own empty state through the middle of "No objects yet." and a
+         detection card through its description row.
+
+         Below roughly 700 px there is no arrangement in which the 63 px header,
+         a fixed 490 px footer and one 120 px detection card all fit, so the
+         footer becomes the thing that scrolls and the object list keeps a floor.
+         `min-height: 0` is load-bearing rather than tidy: a flex item defaults to
+         `min-height: auto`, which refuses to shrink below its content height, and
+         that default is exactly what pinned the footer at its full 490 px. */
+      @media (max-height: 700px) {
+        #panel-content {
+          min-height: 40vh;
+        }
+
+        #panel-footer {
+          min-height: 0;
+          overflow-y: auto;
+          -webkit-overflow-scrolling: touch;
+        }
+      }
+
       .panel-btn-primary {
         width: 100%;
         min-height: 44px;

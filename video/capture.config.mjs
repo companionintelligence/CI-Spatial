@@ -211,6 +211,33 @@
  *     keyframe line gone, start the stream (`#stream-btn`) rather than editing
  *     the DOM: a staged status line is a lie about the product.
  *
+ * 15. DO NOT MEASURE THE SEMANTIC LABELS IN THE RENDER LOOP — viewer.ts
+ *     updateLabels() runs every frame, so an offsetWidth/getBoundingClientRect
+ *     read there forces a synchronous layout mid-frame. A layout forced inside
+ *     the Montserrat swap window bakes a slightly different text shaping, and
+ *     every chip then lands about a third of a pixel off. It looks like nothing
+ *     and it is not the GPU noise in hazard 13: measured as ~2,800 differing
+ *     pixels between a capture on a COLD Vite module graph and one on a warm
+ *     graph, while four consecutive warm runs agreed to the byte. That is the
+ *     dangerous shape — a first-run-only diff reads as a fluke.
+ *
+ *     A first attempt cached the measurement instead, which froze page-load
+ *     timing into the layout and failed the same way. Batching every read into
+ *     one per frame also failed. What works is not reading at all: a chip whose
+ *     anchor is inside the edge zone gets `data-pin="left"|"right"` and CSS
+ *     aligns it away from that edge using the browser's own width
+ *     (`.label3d[data-pin]`, viewer.html). The loop writes and never reads.
+ *
+ * 16. THE E2E SUITE WRITES INTO THE STAGE'S WORLD — `npm run test:mobile` (and
+ *     the other browser projects) POST real scans to whatever VITE_URL points
+ *     at. Pointed at this stage, they leave world "default" holding two dozen
+ *     scans named `list-test`, `order-a`, `upload-basic`, … each rendering
+ *     "Error: Scan GLB has no scene graph", and every later viewer capture then
+ *     films "8 scans loaded / 0 points" instead of the three seeded homes. The
+ *     route blocker below only guards the CAPTURE browser; it cannot guard
+ *     another process. Restart the stage (it wipes VIDEO_DATA_DIR on boot)
+ *     before re-shooting anything after a test run.
+ *
  * 13. THE 3D VIEWPORT IS NOT BIT-REPRODUCIBLE, AND THAT IS THE FLOOR — both
  *     World Editor shots film `#viewer-canvas`, a WebGL surface. Two things used
  *     to move inside it and are now fixed at the source:

@@ -69,6 +69,13 @@ Health-check the stage at `https://localhost:$VIDEO_PORT/health` — Vite proxie
 one green response means both servers are up. Knobs: `VIDEO_PORT`, `VIDEO_API_PORT`, `VIDEO_SCANS`
 (default 3), `VIDEO_DATA_DIR`.
 
+**Do not point the e2e suite at a stage you are about to shoot from.** `VITE_URL=https://localhost:$VIDEO_PORT
+npx playwright test` POSTs real scans into world `default` — two dozen of them, named `list-test`,
+`order-a`, `upload-basic`, each rendering "Error: Scan GLB has no scene graph". Every viewer shot then
+films "8 scans loaded · 0 points" instead of the three seeded homes, and it looks like a UI regression.
+`capture.config.mjs` blocks the write routes for the *capture* browser only; it cannot guard another
+process. Restart the stage before re-shooting — it wipes `VIDEO_DATA_DIR` on boot.
+
 The script also places the seeded homes **adjacent** rather than 122 m apart — see
 [Framing the World Editor](#framing-the-world-editor) for why that is load-bearing rather than
 cosmetic, and read its header comment before changing the layout.
@@ -153,32 +160,60 @@ changed. They are the inputs, and they are the reason a render needs no stage.
 a UI change is a deliberate act: run `npm run capture` against the stage, review the image diff,
 and commit the shots like any other change.
 
-### The landscape cut is complete; five portrait frames are deliberately not shot
+### Both cuts are complete
 
-All seventeen shots exist at 1280×720. The seven that had never been taken (`onboard-sweep`,
-`live-scan-early`, `objects-manifest`, `review-panel-empty`, `world-editor-focus`,
-`world-editor-points`, `world-editor-quality`) and the three that had gone stale
-(`world-editor-scans`, `world-editor-semantic`, `review-export-panel`) were all shot against the
-stage above. Two consecutive runs, on two independently built stages, produced **byte-identical**
-PNGs for every one of them.
+All seventeen shots now exist at 1280×720 **and** at 360×640. The five portrait frames that used to
+render as the kit's "capture pending" slate — `objects-manifest.mobile`, `review-panel-empty.mobile`,
+`world-editor-focus.mobile`, `world-editor-points.mobile`, `world-editor-quality.mobile` — were never
+a capture problem. Two screens had no working layout at 360 px, and the rule was that a missing shot
+is a known gap while a bad shot is a lie that ships. Both screens were fixed at the source instead:
 
-**Five 360×640 frames are missing on purpose** and render as the kit's "capture pending" slate:
-
-| Not shipped | Why |
+| What the frame did | What changed |
 |---|---|
-| `objects-manifest.mobile`, `review-panel-empty.mobile` | `#panel-content` is ~90 CSS px tall at 360×640 — the footer takes the rest — so the panel slices its own content mid-line. "No objects yet." is cut in half; the sofa card is cut through its description row. |
-| `world-editor-focus.mobile`, `world-editor-points.mobile`, `world-editor-quality.mobile` | The World Editor has no 360 px layout. The sidebar takes the top two thirds, `#inspector-panel` lands on top of the world-stats overlay, and the semantic labels clip against the left edge of the canvas strip (`lamp 94%` → `%`). |
+| **Review & Export** sliced its own content mid-line. `#panel-footer` carries ten controls and stands ~490 px tall, and `#panel-content` is `flex: 1` — a zero basis that claims only what is left, which at 640 px was 84 px. "No objects yet." was cut in half; a detection card was cut through its description row. | Below 700 px tall the **footer** is the box that scrolls and `#panel-content` keeps a `40vh` floor ([`index.html`](../index.html)). `min-height: 0` on the footer is the load-bearing part — a flex item defaults to `min-height: auto` and refuses to shrink below its content. A box that really does overflow now fades its bottom edge rather than ending mid-word (`.is-scrollable`, set against the box's own `scrollHeight` from [`src/ui/panel.ts`](../src/ui/panel.ts)). |
+| **World Editor** had no 360 px layout. `min-height: 300px` overrode the `44vh` sitting next to it, so the canvas was always a 296 px strip; `#inspector-panel` covered half the world readout; and semantic chips clipped against the canvas edge, where `translate(-50%)` rendered `lamp 94%` as `%`. | The viewport-relative sidebar height applies again, and the title bar (which repeats the toolbar's own product name) and the collapse chevron (parked 28 px outside a full-width sidebar, where `#main-area` clips it) are dropped on a phone — 31 px back to the canvas ([`viewer.html`](../viewer.html)). The world readout yields to the inspector instead of sitting under it; the same totals are in the sidebar's World tab. Labels are culled on their **anchor** rather than an ±80 px slack box, so an off-camera room stops labelling the frame, and a chip inside the edge zone pins to that edge and aligns away from it ([`viewer.ts`](../src/viewer/viewer.ts) `updateLabels`, `.label3d[data-pin]` in [`viewer.html`](../viewer.html)). |
 
-The rule this follows: a missing shot is a known gap, a bad shot is a lie that ships. Do **not**
-"fix" these by re-running `capture` — the kit shoots both viewports for every shot, so a plain
-`npm run capture` regenerates all five. Delete them again, or give the product a mobile layout.
+Sixteen frames were re-shot for this — the five above, plus every landscape and portrait frame the two
+fixes could move — and fifteen changed. (`review-panel-empty.png` did not: at 1280×720 the empty state
+already fit its scroll box, so nothing there overflows and nothing fades.) Two consecutive captures,
+one against a cold Vite module graph and one warm, produced **byte-identical** PNGs for all sixteen.
 
-Three portrait frames in the same family — `review-export-panel.mobile`,
-`world-editor-scans.mobile`, `world-editor-semantic.mobile` — **were** re-shot and committed. They
-have the same layout crowding, but they were already committed *and* the versions they replace
-burned a live street-level `ENU … 37.775726, -122.418800` readout into the frame. Replacing a
-coordinate leak with a crowded layout is strictly better; dropping them is better still, and is the
-recommendation once someone decides the portrait cut can lose those beats.
+The label fix is not mobile-only. `world-editor-scans.png` at 1280×720 had the same clipped chip all
+along, just less obviously: a `lamp 83%` cut in half by the canvas edge, next to a second chip reduced
+to `4%`. Both are whole now.
+
+**Do not place these chips by measuring them.** The obvious fix — read `offsetWidth` and clamp the box
+into the canvas — was written first and it broke byte stability. `updateLabels` runs every frame, so
+reading a box there forces a synchronous layout mid-frame; a layout forced inside the web font's swap
+window bakes a slightly different text shaping, and that moves *every* chip by about a third of a
+pixel. It is not a visible defect and it is not GPU noise: it showed up as ~2,800 differing pixels
+between a capture on a cold Vite module graph and one on a warm graph, and the same shot was
+rock-steady across four warm runs, which is exactly how a real regression disguises itself as a fluke.
+Batching the reads into one per frame did not fix it; moving the measurement out of the loop entirely
+did. `data-pin` hands the alignment to CSS, the render loop writes and never reads, and cold and warm
+captures agree to the byte.
+
+#### The scale bar was captioning a six-metre room "50 m"
+
+Found while re-shooting, and worth knowing about because the frame looked plausible. `updateScaleWidget`
+picked the first rung of `[0.1 … 50]` whose projected width landed in **[58, 130] px** — but rungs step
+by up to 2.5× and that band spans only 2.24×, so a camera can sit in a gap where *no* rung fits. The
+loop had no answer for that: it overwrote its choice on every non-fitting pass and clamped the width,
+so it ran off the end of the ladder and drew a 130 px bar under the largest label there was.
+
+The mobile World Editor found the gap the moment its aspect ratio changed — 2 m projected to 56 px and
+5 m to 135 px — and captioned a six-metre room `50 m`, which is exactly the readout
+[Framing the World Editor](#framing-the-world-editor) below calls the tell of a badly framed shot. A
+gap now resolves to the rung **closest** to the band, drawn at its true width; wherever a rung does
+fit, the answer is unchanged, which is why no committed landscape frame moved because of it.
+
+#### What the fixes deliberately leave alone
+
+Where several detected objects project close together, their chips overlap **each other**. Every
+portrait World Editor frame shows it, because the canvas is smaller — but it is the same behaviour at
+1280×720, it is the app's and not the capture's, and no chip is cut any more. Thinning a dense cluster
+is a product decision about the semantic overlay, not a responsive-layout bug, and it is not what this
+change is for.
 
 ### Framing the World Editor
 
