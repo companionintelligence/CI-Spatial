@@ -15,13 +15,18 @@
 # THIS FILE IS GENERIC — it is the same in every product repo. Everything
 # repo-specific lives in video/stage.sh, which defines stage_up and stage_down.
 #
-# THIS COPY IS THE CANONICAL ONE. It ships with @companionintelligence/video-kit
-# as template/make.sh; every repo's video/make.sh is a copy of it. Fix bugs here
-# and roll the change out, or the copies drift — which is how six repos ended up
-# running five different runners, four of them with a Playwright guard that
-# checked the wrong thing. To see what a repo has diverged by:
+# THE CANONICAL COPY is @companionintelligence/video-kit's template/make.sh, and
+# every repo's video/make.sh is a byte-identical copy of it. Fix bugs in the kit
+# and roll the change out; editing a repo copy is how the copies drift — which is
+# how six repos ended up running five different runners, four of them with a
+# Playwright guard that checked the wrong thing, and how the stale-kit guard
+# below came to live in seven repo copies for a day before it existed in the kit
+# at all. To see what a repo has diverged by, from the repo root:
 #
 #   diff video/make.sh <CI-Common>/packages/video-kit/template/make.sh
+#
+# A healthy repo prints nothing. This paragraph is worded to be true read from
+# either place, because it is the same bytes in both.
 #
 set -euo pipefail
 
