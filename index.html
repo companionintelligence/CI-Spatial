@@ -961,7 +961,14 @@
          under the words "No objects yet". */
       .panel-btn-primary:disabled,
       .panel-btn-ghost:disabled {
-        opacity: 0.32;
+        /* 0.32 put these labels at 2.06-2.13:1 against the panel — under the
+           3:1 WCAG minimum for a UI component, and far under 4.5:1 for text.
+           "Unavailable" should not mean "illegible": a user who cannot read
+           Export Summary cannot tell whether the app is disabled or broken.
+           0.5 measures ~3.1:1 and is still plainly dimmer than the 12:1 an
+           enabled control reads at, so the affordance the comment above
+           describes survives intact. */
+        opacity: 0.5;
         cursor: not-allowed;
         box-shadow: none;
         transform: none;

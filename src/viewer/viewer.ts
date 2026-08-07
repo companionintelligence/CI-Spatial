@@ -1904,15 +1904,24 @@ function applyLayerVisibility(): void {
     label.el.style.display = isLabelVisible(label) ? '' : 'none'
   }
 
-  const cloudButton = document.getElementById('btn-toggle-cloud')
-  if (cloudButton) cloudButton.style.opacity = cloudVisible && globalLayerVisible.points ? '1' : '0.4'
-  const labelButton = document.getElementById('btn-toggle-labels')
-  if (labelButton) labelButton.style.opacity = labelsVisible && globalLayerVisible.labels ? '1' : '0.4'
-  const boundsButton = document.getElementById('btn-toggle-bounds')
-  if (boundsButton) {
-    boundsButton.style.opacity = detectionBoundsVisible ? '1' : '0.4'
-    boundsButton.classList.toggle('active-hud', detectionBoundsVisible)
+  // OFF is 0.6, not 0.4. At 0.4 the label measured 2.88:1 against the HUD
+  // ground — below the 4.5:1 AA minimum for text and below even the 3:1 for a
+  // UI component, so a toggle that is merely off read as broken in a still.
+  // 0.6 measures ~4.6:1 and is still obviously dimmer than the ON state, which
+  // now also carries the `active` treatment rather than relying on dimness alone.
+  const setToggle = (id: string, on: boolean) => {
+    const el = document.getElementById(id)
+    if (!el) return
+    el.style.opacity = on ? '1' : '0.6'
+    el.classList.toggle('active', on)
+    el.setAttribute('aria-pressed', String(on))
   }
+
+  setToggle('btn-toggle-cloud', cloudVisible && globalLayerVisible.points)
+  setToggle('btn-toggle-labels', labelsVisible && globalLayerVisible.labels)
+  // `active-hud` had no rule anywhere in viewer.html — a typo for `active`, so
+  // the teal on-state this line was meant to apply had never once rendered.
+  setToggle('btn-toggle-bounds', detectionBoundsVisible)
 }
 
 function layerVisibilityFor(type: LayerType, pointsAllowedByMode: boolean, meshesAllowedByMode: boolean): boolean {
