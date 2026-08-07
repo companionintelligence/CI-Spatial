@@ -28,7 +28,8 @@
       "seconds": 5,
       "title": "Companion Scan",
       "caption": "Walk the room. Keep the map.",
-      "narration": "Companion Scan turns a walk through a room into a 3D map."
+      "narration": "Companion Scan turns a walk through a room into a 3D map.",
+      "mark": "./assets/app-icon.png"
     },
     {
       "id": "choose-your-path",
@@ -601,7 +602,8 @@
           "label": "Inference",
           "value": "Your hardware"
         }
-      ]
+      ],
+      "reveal": "paced"
     },
     {
       "id": "close",
@@ -609,7 +611,8 @@
       "seconds": 5,
       "cta": "UnCloud your life.",
       "url": "ci.computer",
-      "narration": "Companion Scan. UnCloud your life."
+      "narration": "Companion Scan. UnCloud your life.",
+      "mark": "brand:logo.full"
     }
   ]
 }
