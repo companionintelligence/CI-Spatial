@@ -4,16 +4,43 @@
 # which owns the generic capture/build/check/render steps; this file only has to
 # get the app running and stop it again.
 #
-# TWO servers, not one — this is the manual sequence documented at the top of
-# video/capture.config.mjs, made repeatable. Vite alone is not enough: the
-# storyboard films the World Editor and the detections panel, and both are
-# backed by the Deno API.
+# It is a THIN WRAPPER around scripts/video-stage.mjs, which is this repo's own
+# purpose-built capture stage and the thing that is maintained alongside the app.
+# This file's whole job is to pick free ports, hand them over, wait, and tear it
+# down again — the staging logic itself lives in the Node script.
+#
+# ── Why this delegates instead of doing it itself ────────────────────────────
+# It used to inline the two-server sequence documented at the top of
+# video/capture.config.mjs: start Deno, `COUNT=3 npm run seed:test-data`, start
+# Vite. That sequence is subtly wrong, and every one of its defects reached the
+# committed screenshots as a plausible-looking frame rather than a failure:
+#
+#   1. `COUNT=3` seeds a PREFIX of test-data/homes/index.json, which is ordered
+#      archetype-major with A/B/C variants — so the World Editor filmed
+#      "Studio Apartment A", "Studio Apartment B" and "Studio Apartment C", three
+#      ±12% rescalings of one room. The World Editor's entire claim is that
+#      separate scans of separate rooms assemble into one world; a scan list of
+#      three same-named rooms argues the opposite. seed-test-homes.mjs grew a
+#      HOMES selector for exactly this, and its own comment names
+#      scripts/video-stage.mjs as the caller that uses it.
+#   2. Seeded homes are 0.0011 deg of latitude — about 122 m — apart, so "3 scans
+#      loaded" filmed ONE room with the other two off-camera, and flung their
+#      semantic labels into the top-right corner on top of #inspector-panel,
+#      covering the Room and Floor readouts. video-stage.mjs re-places the homes
+#      ~8.8 m apart before seeding so all three are genuinely in frame.
+#   3. Nothing waited for the background optimize jobs, so the World Editor shots
+#      could film a half-loaded world. video-stage.mjs blocks on /jobs until every
+#      optimize-scan is done, and fails loudly if one errors.
+#
+# Keep this file thin. If the stage needs to change, change video-stage.mjs — it
+# is what a developer runs by hand, so a fix there is a fix for both paths.
 #
 # No device and no SLAM binary are needed. Every `/?mock=xr8` shot goes through
 # public/test-fixtures/xr8-mock.js, a drop-in replacement for the 8th Wall
-# engine that flies a scripted camera through a synthetic room.
+# engine that flies a scripted camera through a synthetic room. The API runs with
+# INFERENCE_MODE=mock (set by video-stage.mjs), a colour-blob detector that needs
+# only jimp — no model download, no GPU.
 
-API_PID=""
 STAGE_PID=""
 STAGE_DATA=""
 
@@ -21,7 +48,10 @@ stage_up() {
   # Never reuse a port somebody else holds: a capture against another server
   # succeeds, produces plausible screenshots and is completely wrong — the
   # failure mode this pipeline exists to avoid. Relocate instead of failing;
-  # both the kit and Vite's API proxy are told where things actually landed.
+  # video-stage.mjs passes API_TARGET to Vite, so its proxy follows the API.
+  #
+  # Several agents stage different repos on this workspace at once, so both
+  # ports genuinely do move.
   STAGE_PORT="$(pick_port 5173)"
   API_PORT="$(pick_port 8000)"
 
@@ -36,85 +66,63 @@ stage_up() {
   # `deno install`, NOT `npm ci`. deno.json sets "nodeModulesDir": "auto", so
   # Deno owns node_modules here and installs the npm: specifiers its own import
   # map declares. `npm ci` installs from package-lock and leaves out packages the
-  # scripts need — @gltf-transform/core among them, which makes gen:test-data
+  # scripts need — @gltf-transform/core among them, which makes generate-test-homes
   # die with ERR_MODULE_NOT_FOUND on a clean checkout. Deno installs both those
-  # and vite, so one install serves the API, the app and the fixture scripts.
+  # and vite, and video-stage.mjs runs vite through node_modules/vite/bin/vite.js,
+  # so this install is what puts it there.
   ( cd "$REPO_ROOT" && deno install )
 
-  # Deterministic fixtures: fixed seed and a fixed timestamp, so the homes are
-  # identical run to run. Idempotent, and slow enough to be worth skipping once
-  # it has been done.
-  if [ ! -f "$REPO_ROOT/test-data/homes/index.json" ]; then
-    ( cd "$REPO_ROOT" && npm run gen:test-data )
-  fi
-
-  # Isolated data dirs, so a capture never writes into the checkout. The API
-  # would otherwise scatter uploaded scans, optimized GLBs and world state
-  # through ./scans, ./worlds and ./summaries.
+  # A per-run data dir, not video-stage.mjs's shared default under $TMPDIR: two
+  # agents staging this repo at once would otherwise wipe each other's world on
+  # boot (the script rmSync's it), and the loser films an empty World Editor.
   STAGE_DATA="$(mktemp -d -t ci-video-scan)"
 
-  # INFERENCE_MODE=mock keeps this cheap and deterministic: the mock engine is a
-  # colour-blob detector needing only jimp, so there is no model download and no
-  # GPU. It recognises the same palette the xr8 mock paints, so /infer returns
-  # the same objects every run.
+  # video-stage.mjs generates the fixtures, places the homes adjacent, starts the
+  # API on isolated dirs, seeds one home per archetype, waits for every optimize
+  # job to finish, then runs Vite in the foreground. It blocks, so background it
+  # and poll.
   ( cd "$REPO_ROOT" \
-      && INFERENCE_MODE=mock \
-         PORT="$API_PORT" \
-         SCANS_DIR="$STAGE_DATA/scans" \
-         WORLDS_DIR="$STAGE_DATA/worlds" \
-         SUMMARIES_DIR="$STAGE_DATA/summaries" \
-         npm run server ) > "$STAGE_LOG" 2>&1 &
-  API_PID=$!
-
-  for _ in $(seq 1 60); do
-    curl -sfo /dev/null "http://localhost:$API_PORT/health" && break
-    kill -0 "$API_PID" 2>/dev/null || { echo "API exited during startup" >&2; return 1; }
-    sleep 1
-  done
-  curl -sfo /dev/null "http://localhost:$API_PORT/health" \
-    || { echo "API never answered on :$API_PORT" >&2; return 1; }
-
-  # Three homes into world "default" — seeded through the API, not by writing
-  # its data dirs, so the server owns its own state. COUNT=3 is what the
-  # storyboard's World Editor and detections shots expect to find.
-  ( cd "$REPO_ROOT" && COUNT=3 SERVER_URL="http://localhost:$API_PORT" npm run seed:test-data ) \
-    >> "$STAGE_LOG" 2>&1 || { echo "seeding failed" >&2; return 1; }
-
-  # TAILSCALE_HOSTNAME=localhost pins the hostname Vite serves and allows;
-  # API_TARGET points its proxy at the API we actually started, so a relocated
-  # API port does not silently break every /infer call in the capture.
-  ( cd "$REPO_ROOT" \
-      && TAILSCALE_HOSTNAME=localhost \
-         API_TARGET="http://localhost:$API_PORT" \
-         npm run dev -- --port "$STAGE_PORT" ) >> "$STAGE_LOG" 2>&1 &
+      && VIDEO_PORT="$STAGE_PORT" \
+         VIDEO_API_PORT="$API_PORT" \
+         VIDEO_DATA_DIR="$STAGE_DATA" \
+         node scripts/video-stage.mjs ) > "$STAGE_LOG" 2>&1 &
   STAGE_PID=$!
 
   # -k: the dev cert is self-signed unless a Tailscale cert happens to be
   # present. The kit's browser context ignores HTTPS errors for the same reason.
-  for _ in $(seq 1 60); do
+  #
+  # Generous timeout: this waits on fixture generation, three GLB uploads and
+  # their optimize jobs, not just a dev server binding a port.
+  for _ in $(seq 1 240); do
     curl -ksfo /dev/null "$STAGE_URL" && break
-    kill -0 "$STAGE_PID" 2>/dev/null || { echo "dev server exited during startup" >&2; return 1; }
+    kill -0 "$STAGE_PID" 2>/dev/null || { echo "video-stage.mjs exited during startup" >&2; return 1; }
     sleep 1
   done
-  curl -ksfo /dev/null "$STAGE_URL" || { echo "dev server never answered on :$STAGE_PORT" >&2; return 1; }
+  curl -ksfo /dev/null "$STAGE_URL" \
+    || { echo "dev server never answered on :$STAGE_PORT" >&2; return 1; }
+
+  # The stage is only ready when the API answers too — Vite proxies /worlds and
+  # /infer to it, and a shot against a dead API films "Failed to load world: …"
+  # rather than failing.
+  curl -sfo /dev/null "http://localhost:$API_PORT/health" \
+    || { echo "API never answered on :$API_PORT" >&2; return 1; }
+
   echo "stage up at $STAGE_URL (API on :$API_PORT)"
 }
 
 stage_down() {
-  # Kill each server's CHILDREN first, then the npm wrapper. `npm run dev`
-  # spawns vite as a child and `npm run server` spawns deno, and killing only
-  # npm leaves the child holding the port.
+  # Kill the CHILDREN first, then the wrapper. video-stage.mjs spawns deno and
+  # vite and traps SIGTERM to take them with it, but if it has already gone the
+  # children would be left holding the ports.
   #
   # Deliberately NOT `kill -- -<pgid>`: a background job in a non-interactive
   # shell shares the script's own process group, so signalling the group kills
   # make.sh too.
-  for pid in "$STAGE_PID" "$API_PID"; do
-    [ -n "$pid" ] || continue
-    kill -0 "$pid" 2>/dev/null || continue
-    pkill -P "$pid" 2>/dev/null || true
-    kill "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
-  done
+  if [ -n "$STAGE_PID" ] && kill -0 "$STAGE_PID" 2>/dev/null; then
+    pkill -P "$STAGE_PID" 2>/dev/null || true
+    kill "$STAGE_PID" 2>/dev/null || true
+    wait "$STAGE_PID" 2>/dev/null || true
+  fi
 
   # Either server can outlive its parent if it re-parented; make sure the ports
   # are free, or the next run refuses to start on one it thinks is taken.

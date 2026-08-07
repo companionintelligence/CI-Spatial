@@ -96,7 +96,7 @@ let stagedHomes = []
 {
   const homesDir = join(root, 'test-data', 'homes')
   const all = JSON.parse(readFileSync(join(homesDir, 'index.json'), 'utf8'))
-  // One home per ARCHETYPE, not the first N of the list.
+  // One home per ARCHETYPE, and ROOMS rather than whole dwellings.
   //
   // index.json is ordered archetype-major with variants A/B/C, so `slice(0, 3)`
   // handed the World Editor "Studio Apartment A", "Studio Apartment B" and
@@ -104,18 +104,45 @@ let stagedHomes = []
   // furniture. The whole claim of the World Editor is that separate scans of
   // separate rooms assemble into one world; a scan list of three same-named
   // rooms argues the opposite, and reads like the seeder ran three times by
-  // mistake. Taking the first variant of distinct archetypes gives a living
-  // room, a kitchen and a home office — still fixture data, still deterministic,
-  // but now shaped like a home someone walked through.
-  const seen = new Set()
-  const index = []
+  // mistake.
+  //
+  // Deduping on `entry.slug` does NOT fix that, although it reads as if it
+  // should: the slug carries the VARIANT as well as the archetype ("studio-a",
+  // "studio-b", "studio-c"), so every entry is already distinct and the filter
+  // never skips anything — the result was byte-identical to `slice(0, 3)`, which
+  // is why the duplicate rooms survived the fix that was meant to remove them.
+  // There is no archetype field on the entry; the archetype is the slug with its
+  // trailing one-letter variant removed.
+  const archetypeOf = (entry) => entry.slug.replace(/-[a-z]$/, '')
+
+  // The storyboard's line over these shots is "Every room you scan lands in one
+  // 3D world", so the seeded homes are rooms of one house — a living room, a
+  // kitchen and a home office. Deduping by archetype alone would take the first
+  // three archetypes in the file (a studio apartment, a one-bedroom and a living
+  // room), which mixes whole dwellings with rooms inside one and argues for a
+  // neighbourhood rather than a home. Still fixture data, still deterministic,
+  // but now shaped like the claim the narration makes.
+  const PREFERRED = ['living-room', 'kitchen', 'office']
+
+  const firstOfArchetype = new Map()
   for (const entry of all) {
-    if (seen.has(entry.slug)) continue
-    seen.add(entry.slug)
-    index.push(entry)
-    if (index.length === SCAN_COUNT) break
+    const archetype = archetypeOf(entry)
+    if (!firstOfArchetype.has(archetype)) firstOfArchetype.set(archetype, entry)
   }
-  while (index.length < SCAN_COUNT && index.length < all.length) index.push(all[index.length])
+
+  const index = []
+  const taken = new Set()
+  const take = (entry) => {
+    if (!entry || taken.has(entry.slug) || index.length >= SCAN_COUNT) return
+    taken.add(entry.slug)
+    index.push(entry)
+  }
+  for (const archetype of PREFERRED) take(firstOfArchetype.get(archetype))
+  // Degrade to a DIFFERENT archetype, never to another variant of one already
+  // taken, if the fixture set is renamed or VIDEO_SCANS asks for more rooms.
+  for (const entry of firstOfArchetype.values()) take(entry)
+  // Last resort only: fewer archetypes exist than SCAN_COUNT wants.
+  for (const entry of all) take(entry)
   // ~8.8 m of longitude per step at this latitude: three rooms in a row, not
   // three addresses in a neighbourhood.
   const STEP_LNG = 0.0001
