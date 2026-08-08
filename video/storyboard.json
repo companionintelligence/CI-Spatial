@@ -28,10 +28,24 @@
       "seconds": 6,
       "minSeconds": 4,
       "title": "How wide is that alcove?",
-      "caption": "You have lived here four years.",
+      "caption": "Four years here, and the answer is still: go and measure it.",
       "narration": "How wide is that alcove? You have lived here four years, and the honest answer is that you would have to go and measure it.",
       "reveal": "paced",
-      "_editNote": "The pain, told concretely rather than as a category. A typographic card, not a screen: there is no product surface that shows the absence of data, and inventing one would be the exact dishonesty this film is being rewritten to remove. `feature` with a title and no items renders as a centred display line over the caption — the kit's only purely typographic beat."
+      "_editNote": "The pain, told concretely rather than as a category, and set as a spec sheet of unknowns — which is the beat: the room is the one thing in the house with no numbers attached to it. Typographic rather than a screen because the subject is an ABSENCE, and there is no product surface that shows the absence of data; inventing one would be the dishonesty this rewrite exists to remove. The three chips are also what keeps the card moving — see the note on `pain-not-a-file`.",
+      "items": [
+        {
+          "label": "Alcove",
+          "value": "?"
+        },
+        {
+          "label": "Ceiling",
+          "value": "?"
+        },
+        {
+          "label": "Doorway",
+          "value": "?"
+        }
+      ]
     },
     {
       "id": "pain-not-a-file",
@@ -40,9 +54,24 @@
       "seconds": 6,
       "minSeconds": 4,
       "title": "Your house is not a file.",
-      "caption": "Everything that happened in it is. It isn't.",
+      "caption": "Everything that happened in it is.",
       "narration": "Your photos are files. Your messages are files. The place all of it happened in is the one thing you have never captured.",
-      "reveal": "paced"
+      "reveal": "paced",
+      "items": [
+        {
+          "label": "Photos",
+          "value": "files"
+        },
+        {
+          "label": "Messages",
+          "value": "files"
+        },
+        {
+          "label": "The room they happened in",
+          "value": "nothing"
+        }
+      ],
+      "_editNote": "Chips carry no invented counts — \"files\" and \"nothing\", not a fabricated number of photos. The film may not put a statistic on screen that it did not measure.\n\nThese three cards were itemless in the first cut of this rewrite and it cost the film the frozen-picture gate: 11% landscape / 14% portrait against an 8% bar. `feature` renders `title` once and then holds, and both the paced reveal and the drift target the chips row (`.<id>-chips`) — with no chips there is literally nothing in motion. Every itemised feature in the fleet measures 0-3%. Do not strip the items back out."
     },
     {
       "id": "quit",
@@ -51,9 +80,20 @@
       "seconds": 6.5,
       "minSeconds": 4,
       "title": "Most people quit right about here.",
-      "caption": "A lidar rig, a subscription, and your floor plan on their server.",
+      "caption": "The usual price of a room you can measure.",
       "narration": "The tools that fix this want a lidar rig, a subscription, and a copy of your floor plan on somebody else's server. Most people quit right about here.",
-      "reveal": "paced"
+      "reveal": "paced",
+      "items": [
+        {
+          "label": "A lidar rig"
+        },
+        {
+          "label": "A subscription"
+        },
+        {
+          "label": "Your floor plan, off-site"
+        }
+      ]
     },
     {
       "id": "title",
@@ -103,14 +143,23 @@
           "motion": "push-in",
           "_focusNote": "The onboarding cards are the only shots in the film where the subject is a small object on a large empty ground. The modal measures w 0.24 x h 0.45 of the plate and sits dead centre; the rest of the 16:9 frame is unlit app shell that carries nothing. Unfocused, the body copy renders at about a 10px x-height on a 1080p frame — technically present, actually unread. The 9:16 cut has no such problem and gets NO focus: the phone frame already crops to the card.\n\n0.64 square at (0.18, 0.18), 2.016x, honoured exactly — deliberately looser than the 0.538 the clamp would allow. At 0.538 (the tightest 16:9 permits) the window anchors and slices the card's icon off the top edge. At 0.60 the whole card fits but 'Skip tutorial' lands on the caption band. 0.64 clears both. Same rect on both cards so they read as one carousel being paged through rather than two unrelated pushes.\n\nWorth stating plainly, because it is the reason these two cards carry the walk beat at all: the onboarding overlay is opaque. Nothing of the xr8 mock's cartoon room is visible behind it — verified against the committed plates, which are flat #0A222E outside the card. These are clean product frames.",
           "focus": {
-            "landscape": { "x": 0.18, "y": 0.18, "w": 0.64, "h": 0.64 }
+            "landscape": {
+              "x": 0.18,
+              "y": 0.18,
+              "w": 0.64,
+              "h": 0.64
+            }
           },
           "capture": {
             "path": "/?mock=xr8&onboarding=1",
             "waitFor": "#onboarding-overlay.visible",
             "before": [
-              { "click": "#onboard-next-btn" },
-              { "waitFor": ".onboard-step[data-step='1'].active" }
+              {
+                "click": "#onboard-next-btn"
+              },
+              {
+                "waitFor": ".onboard-step[data-step='1'].active"
+              }
             ],
             "settle": 400
           }
@@ -133,16 +182,29 @@
           "motion": "push-in",
           "_focusNote": "Same 0.64 rect and the same reasoning as `onboard-sweep` above — see that note. Keeping the two rects identical is what makes the pair read as one carousel.",
           "focus": {
-            "landscape": { "x": 0.18, "y": 0.18, "w": 0.64, "h": 0.64 }
+            "landscape": {
+              "x": 0.18,
+              "y": 0.18,
+              "w": 0.64,
+              "h": 0.64
+            }
           },
           "capture": {
             "path": "/?mock=xr8&onboarding=1",
             "waitFor": "#onboarding-overlay.visible",
             "before": [
-              { "click": "#onboard-next-btn" },
-              { "click": "#onboard-next-btn" },
-              { "click": "#onboard-next-btn" },
-              { "waitFor": ".onboard-step[data-step='3'].active" }
+              {
+                "click": "#onboard-next-btn"
+              },
+              {
+                "click": "#onboard-next-btn"
+              },
+              {
+                "click": "#onboard-next-btn"
+              },
+              {
+                "waitFor": ".onboard-step[data-step='3'].active"
+              }
             ],
             "settle": 400
           }
@@ -167,10 +229,18 @@
             "path": "/?mock=xr8&mockFreeze=90",
             "waitFor": "#start-ar-btn",
             "before": [
-              { "click": "#start-ar-btn" },
-              { "waitFor": "#capture-btn" },
-              { "waitFor": "#scan-stats:has-text('pts')" },
-              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#geo-chip{display:none!important}</style>')" }
+              {
+                "click": "#start-ar-btn"
+              },
+              {
+                "waitFor": "#capture-btn"
+              },
+              {
+                "waitFor": "#scan-stats:has-text('pts')"
+              },
+              {
+                "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#geo-chip{display:none!important}</style>')"
+              }
             ],
             "settle": 600
           }
@@ -183,10 +253,18 @@
             "path": "/?mock=xr8&mockFreeze=700",
             "waitFor": "#start-ar-btn",
             "before": [
-              { "click": "#start-ar-btn" },
-              { "waitFor": "#capture-btn" },
-              { "waitFor": "#scan-stats:has-text('pts')" },
-              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#geo-chip{display:none!important}</style>')" }
+              {
+                "click": "#start-ar-btn"
+              },
+              {
+                "waitFor": "#capture-btn"
+              },
+              {
+                "waitFor": "#scan-stats:has-text('pts')"
+              },
+              {
+                "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#geo-chip{display:none!important}</style>')"
+              }
             ],
             "settle": 600
           }
@@ -211,12 +289,24 @@
             "path": "/viewer.html?world=default",
             "waitFor": "#scan-list .scan-item",
             "before": [
-              { "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')" },
-              { "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')" },
-              { "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')" },
-              { "click": "#btn-reset-camera" },
-              { "wait": 600 },
-              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')" }
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "click": "#btn-reset-camera"
+              },
+              {
+                "wait": 600
+              },
+              {
+                "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')"
+              }
             ],
             "settle": 1200
           }
@@ -241,14 +331,30 @@
             "path": "/viewer.html?world=default",
             "waitFor": "#scan-list .scan-item",
             "before": [
-              { "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')" },
-              { "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')" },
-              { "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')" },
-              { "click": "#btn-reset-camera" },
-              { "wait": 600 },
-              { "click": "#mode-semantic" },
-              { "waitFor": "#mode-semantic.active" },
-              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')" }
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "click": "#btn-reset-camera"
+              },
+              {
+                "wait": 600
+              },
+              {
+                "click": "#mode-semantic"
+              },
+              {
+                "waitFor": "#mode-semantic.active"
+              },
+              {
+                "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')"
+              }
             ],
             "settle": 1200
           }
@@ -273,12 +379,24 @@
             "path": "/viewer.html?world=default",
             "waitFor": "#scan-list .scan-item",
             "before": [
-              { "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')" },
-              { "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')" },
-              { "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')" },
-              { "click": "#scan-list .scan-item:nth-child(2)" },
-              { "waitFor": "#tab-edit.active #edit-selected-info" },
-              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')" }
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "click": "#scan-list .scan-item:nth-child(2)"
+              },
+              {
+                "waitFor": "#tab-edit.active #edit-selected-info"
+              },
+              {
+                "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')"
+              }
             ],
             "settle": 1200
           }
@@ -303,14 +421,30 @@
             "path": "/viewer.html?world=default",
             "waitFor": "#scan-list .scan-item",
             "before": [
-              { "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')" },
-              { "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')" },
-              { "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')" },
-              { "click": "#btn-reset-camera" },
-              { "wait": 600 },
-              { "click": "#tab-btn-layers" },
-              { "waitFor": "#tab-layers.active #quality-stepper .quality-step.current" },
-              { "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')" }
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "click": "#btn-reset-camera"
+              },
+              {
+                "wait": 600
+              },
+              {
+                "click": "#tab-btn-layers"
+              },
+              {
+                "waitFor": "#tab-layers.active #quality-stepper .quality-step.current"
+              },
+              {
+                "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')"
+              }
             ],
             "settle": 1200
           }
@@ -324,10 +458,22 @@
       "caption": "Nothing to cancel. Nothing to ask for back.",
       "narration": "It runs in the browser on your phone, and it sends the scan to hardware you can point at.",
       "items": [
-        { "label": "Monthly fee", "value": "$0" },
-        { "label": "Capture", "value": "Live AR or video" },
-        { "label": "Output", "value": "GLB + point cloud" },
-        { "label": "Inference", "value": "Your hardware" }
+        {
+          "label": "Monthly fee",
+          "value": "$0"
+        },
+        {
+          "label": "Capture",
+          "value": "Live AR or video"
+        },
+        {
+          "label": "Output",
+          "value": "GLB + point cloud"
+        },
+        {
+          "label": "Inference",
+          "value": "Your hardware"
+        }
       ],
       "reveal": "paced"
     },
