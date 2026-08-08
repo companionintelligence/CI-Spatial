@@ -1,0 +1,75 @@
+{
+  "_": "Written by `ci-video narrate`. Records which line each mp3 is a read of, so a later edit to scene.narration can be detected instead of silently keeping the old recording. Commit this with the mp3s.",
+  "voice": "en-GB-SoniaNeural",
+  "scenes": {
+    "map-quality": {
+      "text": "Three tiers of map quality, and the app names what the next one needs: keyframes, streamed while you scan.",
+      "seconds": 6.864
+    },
+    "open": {
+      "text": "Companion Scan turns a walk through a room into a 3D map.",
+      "seconds": 4.248,
+      "adopted": true
+    },
+    "choose-your-path": {
+      "text": "Scan a room with the camera, or upload a walkthrough video you already have.",
+      "seconds": 4.752,
+      "adopted": true
+    },
+    "ftue-permissions": {
+      "text": "The camera sees the room, motion tracks you, and a slow sweep keeps tracking locked.",
+      "seconds": 5.616,
+      "adopted": true
+    },
+    "ftue-capture-modes": {
+      "text": "Tap a frame, auto-capture as you walk, or stream keyframes.",
+      "seconds": 4.536,
+      "adopted": true
+    },
+    "ftue-quality": {
+      "text": "You know when a room is finished scanning, before you walk out of it.",
+      "seconds": 4.128,
+      "adopted": true
+    },
+    "ftue-finish": {
+      "text": "When you're done, export the scan and open it in the desktop editor.",
+      "seconds": 4.416,
+      "adopted": true
+    },
+    "live-scan": {
+      "text": "Walk the room and the map fills in, with coverage scored live as you go.",
+      "seconds": 4.704,
+      "adopted": true
+    },
+    "objects-named": {
+      "text": "Objects come back named and placed, identified on hardware you own.",
+      "seconds": 4.824,
+      "adopted": true
+    },
+    "review-and-export": {
+      "text": "Review everything the scan found, then export it as a file you own.",
+      "seconds": 4.584,
+      "adopted": true
+    },
+    "world-editor": {
+      "text": "Every room you scan lands in one 3D world, stored on your own server.",
+      "seconds": 4.992,
+      "adopted": true
+    },
+    "semantic-world": {
+      "text": "The map is not just geometry. Every object keeps the label it was given.",
+      "seconds": 5.304,
+      "adopted": true
+    },
+    "what-you-get": {
+      "text": "It runs in the browser on your phone and sends scans to your own server.",
+      "seconds": 4.488,
+      "adopted": true
+    },
+    "close": {
+      "text": "Companion Scan, from Companion Intelligence. UnCloud your life.",
+      "seconds": 5.592,
+      "adopted": true
+    }
+  }
+}

@@ -535,8 +535,8 @@
       "transition": "cut",
       "chapter": "editor",
       "seconds": 7,
-      "caption": "Preview. Reconstructed. Photoreal.",
-      "narration": "Every scan can be upgraded to a photoreal map, on hardware you already own.",
+      "caption": "Preview, Reconstructed, Photoreal — and what each tier needs.",
+      "narration": "Three tiers of map quality, and the app names what the next one needs: keyframes, streamed while you scan.",
       "shots": [
         {
           "id": "world-editor-quality",
