@@ -28,7 +28,7 @@
       "seconds": 5,
       "title": "Companion Scan",
       "caption": "Walk the room. Keep the map.",
-      "narration": "Companion Scan turns a walk through a room into a 3D map.",
+      "narration": "The scan leaves your phone. It lands on your own server.",
       "mark": "./assets/app-icon.png"
     },
     {
