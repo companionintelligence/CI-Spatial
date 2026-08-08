@@ -7,9 +7,8 @@
       "seconds": 6.864
     },
     "open": {
-      "text": "Companion Scan turns a walk through a room into a 3D map.",
-      "seconds": 4.248,
-      "adopted": true
+      "text": "The scan leaves your phone. It lands on your own server.",
+      "seconds": 4.152
     },
     "choose-your-path": {
       "text": "Scan a room with the camera, or upload a walkthrough video you already have.",
