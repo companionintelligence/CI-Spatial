@@ -823,6 +823,21 @@
         white-space: nowrap;
         transform: translate(-50%, -100%) translateY(-6px);
         backdrop-filter: blur(4px);
+        /* Promote every chip to its own compositing layer, always.
+           Not a performance hint — a determinism one. A chip is the only text
+           in the app that sits ON TOP of the WebGL canvas, so without this the
+           compositor decides per process whether to promote it, and that
+           decision changes how its glyphs are rasterised: same box, same
+           metrics, text shifted about a fifth of a CSS pixel. That is invisible
+           on screen and fatal to the committed shots — it made the four
+           world-editor captures bistable, so a rerun on unchanged UI produced a
+           diff indistinguishable from a real UI change.
+           Measured on 2026-08-08, 5 fresh browsers per condition, one staged
+           world: chips hidden -> 1 distinct canvas; canvas hidden -> 1 distinct
+           overlay; both visible -> 3 distinct frames. Removing the backdrop
+           blur (3/5) and snapping each chip onto whole device pixels (3/5) both
+           failed; this fixes it (1/5) and leaves the chip looking identical. */
+        will-change: transform;
       }
 
       /* Pinned to a canvas edge by updateLabels(): align the chip AWAY from that
