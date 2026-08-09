@@ -68,7 +68,7 @@
     },
     "close": {
       "text": "Companion Scan, from Companion Intelligence. UnCloud your life.",
-      "seconds": 6.072,
+      "seconds": 5.714,
       "prosody": {
         "rate": "-8%",
         "pitch": "-2Hz",
@@ -77,7 +77,7 @@
     },
     "pain-measure": {
       "text": "How wide is that alcove? You have lived here four years, and the honest answer is that you would have to go and measure it.",
-      "seconds": 7.728,
+      "seconds": 7.388,
       "prosody": {
         "rate": "-5%",
         "pitch": "-1Hz",
@@ -86,7 +86,7 @@
     },
     "pain-not-a-file": {
       "text": "Your photos are files. Your messages are files. The place all of it happened in is the one thing you have never captured.",
-      "seconds": 8.544,
+      "seconds": 8.022,
       "prosody": {
         "rate": "-5%",
         "pitch": "-1Hz",
@@ -95,7 +95,7 @@
     },
     "quit": {
       "text": "The tools that fix this want a lidar rig, a subscription, and a copy of your floor plan on somebody else's server. Most people quit right about here.",
-      "seconds": 9.888,
+      "seconds": 9.544,
       "prosody": {
         "rate": "-5%",
         "pitch": "-1Hz",
@@ -104,7 +104,7 @@
     },
     "title": {
       "text": "There is a shorter way, and it needs the phone already in your pocket.",
-      "seconds": 4.56,
+      "seconds": 4.416,
       "prosody": {
         "rate": "-6%",
         "pitch": "-2Hz",
@@ -113,7 +113,7 @@
     },
     "two-ways-in": {
       "text": "Walk a room with the camera, or hand it a walkthrough video you already have.",
-      "seconds": 4.824,
+      "seconds": 4.682,
       "prosody": {
         "rate": "-3%",
         "pitch": "+0Hz",
@@ -122,7 +122,7 @@
     },
     "the-walk": {
       "text": "It asks you for one thing. Sweep the room slowly, and the map fills in behind you.",
-      "seconds": 6.072,
+      "seconds": 5.735,
       "prosody": {
         "rate": "-3%",
         "pitch": "+0Hz",
@@ -131,7 +131,7 @@
     },
     "what-it-watches": {
       "text": "It watches the light, the reflections and the gaps, and it tells you before you walk out of the room.",
-      "seconds": 6.288,
+      "seconds": 6.185,
       "prosody": {
         "rate": "-3%",
         "pitch": "+0Hz",
@@ -140,7 +140,7 @@
     },
     "the-meter": {
       "text": "Coverage is scored while you walk, off the point count itself. It goes from sparse to good, and the app is the thing that says so.",
-      "seconds": 8.328,
+      "seconds": 8.022,
       "prosody": {
         "rate": "-3%",
         "pitch": "+0Hz",
@@ -149,7 +149,7 @@
     },
     "one-world": {
       "text": "Every room you scan lands in one world, on a machine in your house. Three rooms here. Sixty-nine thousand points, and fifteen objects that came back named.",
-      "seconds": 10.992,
+      "seconds": 10.51,
       "prosody": {
         "rate": "-3%",
         "pitch": "+0Hz",
@@ -158,7 +158,7 @@
     },
     "named-not-numbered": {
       "text": "The map is not just geometry. Every object keeps the label it was given, and the confidence it was given with.",
-      "seconds": 7.464,
+      "seconds": 7.178,
       "prosody": {
         "rate": "-3%",
         "pitch": "+0Hz",
@@ -167,7 +167,7 @@
     },
     "pick-a-room": {
       "text": "Pick any room and the camera flies to it. Its name, its confidence and its tags are all yours to change.",
-      "seconds": 7.608,
+      "seconds": 7.306,
       "prosody": {
         "rate": "-3%",
         "pitch": "+0Hz",
@@ -176,7 +176,7 @@
     },
     "how-good-a-map": {
       "text": "Three tiers of map quality, and the app names exactly what the next one would need.",
-      "seconds": 5.376,
+      "seconds": 5.203,
       "prosody": {
         "rate": "-3%",
         "pitch": "+0Hz",
@@ -185,7 +185,7 @@
     },
     "what-stays-yours": {
       "text": "It runs in the browser on your phone, and it sends the scan to hardware you can point at.",
-      "seconds": 5.712,
+      "seconds": 5.551,
       "prosody": {
         "rate": "-5%",
         "pitch": "-1Hz",
