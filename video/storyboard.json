@@ -13,31 +13,106 @@
     "pacing": "fit"
   },
   "chapters": {
-    "setup": "Before you scan",
-    "capture": "Scanning a room",
-    "editor": "In the 3D editor"
+    "walk": "Walking a room",
+    "world": "The world it lands in"
   },
   "media": {
     "music": null,
     "musicVolume": 0.14
   },
+  "_honestyNote": "WHAT THIS FILM IS ALLOWED TO CLAIM, AND WHY IT IS SHAPED LIKE THIS.\n\nThis repo cannot photograph a real scan. Two independent facts make that true, and both were checked against source rather than assumed:\n\n  1. THE CAMERA FEED IS A CARTOON. Every `?mock=xr8` shot runs\n     public/test-fixtures/xr8-mock.js, whose `drawScene` paints the 'room' with\n     Canvas-2D fillRect/ellipse calls — a cyan TV, an orange sofa, a walnut\n     table, a lollipop plant, on a two-stop wall gradient. It is a fixture for a\n     colour-blob detector, not a photograph. It cannot be cropped out either:\n     the HUD occupies about 0.23 of the plate width, which needs roughly a 4x\n     push, and video-kit's MAX_SCALE is 2.4 (camera.mjs:64). At the tightest\n     framing 16:9 permits, the top of the sofa and the TV are still in shot.\n  2. THERE IS NO REAL CAPTURED GEOMETRY IN THE REPO TO SUBSTITUTE.\n     worlds/default.json is an orphaned manifest: every glbUrl it lists under\n     /scans/ is gone from the checkout (verified — 0 of its referenced GLBs\n     resolve). It also carries a real street address and GPS fix in its\n     geoPose blocks, so it should not be revived for filming as-is.\n\nCapturing a real phone scan and committing it is the option that would fix this\nproperly. It is not available to this pipeline: there is no device, video-kit\ncaptures product screens through Playwright only, and the house rule for these\nfilms is that no footage may be shot that the pipeline cannot shoot. Faking one\nwas never on the table.\n\nSo the film re-frames and says less, which is the remaining honest pair:\n\n  RE-FRAME. The claims that need real data — objects named, objects placed,\n  one world, a map you own — are now made ONLY over the World Editor. That is\n  the one surface where the product is doing real work on real data: three GLBs\n  uploaded through the real /upload-scan path, put through the real optimize\n  jobs, rendered as a real point cloud (69,046 points), carrying 15 real\n  detections with real confidences and real metric dimensions. The rooms are\n  generated fixtures rather than someone's house — that is a limit worth\n  knowing — but the geometry, the pipeline and the readout are the product.\n\n  SAY LESS. Four of the five scanner-over-cartoon shots are cut from this film\n  outright: `detections-panel`, `objects-manifest`, `review-export-panel` and\n  the single-shot uses of the live HUD. The previous cut carried the caption\n  'Every object named, placed and yours.' over a frame whose objects were\n  fillRect calls; that claim now lands on `one-world`, where fifteen genuinely\n  detected objects are on screen.\n\n  The ONE surviving mock frame is the `the-meter` scene, and it is deliberately\n  a `split`: the same scripted session at tick 90 and at tick 700, side by side.\n  Two identical rooms in two browser frames read as a controlled comparison\n  rather than as somebody's living room, the subject becomes the coverage meter\n  (which is a real product behaviour, computed from the real point count), and\n  the caption says on the frame that the session is scripted. That is the only\n  place in the film where the mock appears, and it is labelled where it appears.\n\nThe detector is also a mock: INFERENCE_MODE=mock is a colour-blob CV matcher\n(inference.ts `_inferMock`), not the VLM the product ships. No scene in this cut\nclaims a vision model, names one, or shows its output — the confidences on\nscreen belong to the World Editor's stored detections.",
   "scenes": [
     {
-      "id": "open",
-      "kind": "intro",
-      "seconds": 5,
-      "title": "Companion Scan",
-      "caption": "Walk the room. Keep the map.",
-      "narration": "The scan leaves your phone. It lands on your own server.",
-      "mark": "./assets/app-icon.png"
+      "id": "pain-measure",
+      "kind": "feature",
+      "seconds": 6,
+      "minSeconds": 4,
+      "title": "How wide is that alcove?",
+      "caption": "Four years here, and the answer is still: go and measure it.",
+      "narration": "How wide is that alcove? You have lived here four years, and the honest answer is that you would have to go and measure it.",
+      "reveal": "paced",
+      "_editNote": "The pain, told concretely rather than as a category, and set as a spec sheet of unknowns — which is the beat: the room is the one thing in the house with no numbers attached to it. Typographic rather than a screen because the subject is an ABSENCE, and there is no product surface that shows the absence of data; inventing one would be the dishonesty this rewrite exists to remove. The three chips are also what keeps the card moving — see the note on `pain-not-a-file`.",
+      "items": [
+        {
+          "label": "Alcove",
+          "value": "?"
+        },
+        {
+          "label": "Ceiling",
+          "value": "?"
+        },
+        {
+          "label": "Doorway",
+          "value": "?"
+        }
+      ]
     },
     {
-      "id": "choose-your-path",
+      "id": "pain-not-a-file",
+      "kind": "feature",
+      "transition": "cut",
+      "seconds": 6,
+      "minSeconds": 4,
+      "title": "Your house is not a file.",
+      "caption": "Everything that happened in it is.",
+      "narration": "Your photos are files. Your messages are files. The place all of it happened in is the one thing you have never captured.",
+      "reveal": "paced",
+      "items": [
+        {
+          "label": "Photos",
+          "value": "files"
+        },
+        {
+          "label": "Messages",
+          "value": "files"
+        },
+        {
+          "label": "The room they happened in",
+          "value": "nothing"
+        }
+      ],
+      "_editNote": "Chips carry no invented counts — \"files\" and \"nothing\", not a fabricated number of photos. The film may not put a statistic on screen that it did not measure.\n\nThese three cards were itemless in the first cut of this rewrite and it cost the film the frozen-picture gate: 11% landscape / 14% portrait against an 8% bar. `feature` renders `title` once and then holds, and both the paced reveal and the drift target the chips row (`.<id>-chips`) — with no chips there is literally nothing in motion. Every itemised feature in the fleet measures 0-3%. Do not strip the items back out."
+    },
+    {
+      "id": "quit",
+      "kind": "feature",
+      "transition": "cut",
+      "seconds": 6.5,
+      "minSeconds": 4,
+      "title": "Most people quit right about here.",
+      "caption": "The usual price of a room you can measure.",
+      "narration": "The tools that fix this want a lidar rig, a subscription, and a copy of your floor plan on somebody else's server. Most people quit right about here.",
+      "reveal": "paced",
+      "items": [
+        {
+          "label": "A lidar rig"
+        },
+        {
+          "label": "A subscription"
+        },
+        {
+          "label": "Your floor plan, off-site"
+        }
+      ]
+    },
+    {
+      "id": "title",
+      "kind": "intro",
+      "seconds": 5,
+      "minSeconds": 3.5,
+      "title": "Companion Scan",
+      "caption": "Walk the room. Keep the map.",
+      "narration": "There is a shorter way, and it needs the phone already in your pocket.",
+      "mark": "./assets/app-icon.png",
+      "reveal": "paced"
+    },
+    {
+      "id": "two-ways-in",
       "kind": "screen",
-      "chapter": "setup",
+      "chapter": "walk",
       "seconds": 6.5,
       "caption": "Two ways in. Both end in a map.",
-      "narration": "Scan a room with the camera, or upload a walkthrough video you already have.",
+      "narration": "Walk a room with the camera, or hand it a walkthrough video you already have.",
       "shots": [
         {
           "id": "start-screen",
@@ -53,37 +128,27 @@
       ]
     },
     {
-      "id": "ftue-permissions",
+      "id": "the-walk",
       "kind": "screen",
       "transition": "cut",
-      "chapter": "setup",
-      "seconds": 7,
-      "caption": "Camera sees the room. You walk it slowly.",
-      "narration": "The camera sees the room, motion tracks you, and a slow sweep keeps tracking locked.",
+      "chapter": "walk",
+      "seconds": 6.5,
+      "caption": "One instruction: go slowly.",
+      "narration": "It asks you for one thing. Sweep the room slowly, and the map fills in behind you.",
       "shots": [
-        {
-          "id": "onboard-permissions",
-          "url": "companion-scan.local",
-          "alt": "First onboarding step explaining that Companion Scan needs camera and motion access",
-          "motion": "push-in",
-          "_focusNote": "The five onboarding cards are the only shots in the film where the subject is a small object on a large empty ground. The modal measures w 0.24 x h 0.45 of the plate and sits dead centre; the rest of the 16:9 frame is unlit app shell that carries nothing. Unfocused, the body copy renders at about a 10px x-height on a 1080p frame \u2014 technically present, actually unread. The 9:16 cut has no such problem and gets NO focus: the phone frame already crops to the card.\n\n0.64 square at (0.18, 0.18), 2.016x, honoured exactly \u2014 deliberately looser than the 0.538 the clamp would allow. At 0.538 (the tightest 16:9 permits) the window anchors and slices the card's icon off the top edge, the same guillotine described in the promise focus note on the spatial-companion film. At 0.60 the whole card fits but 'Skip tutorial' lands on the caption band. 0.64 clears both. Same rect on all five so the cards read as one carousel being paged through rather than five unrelated pushes.",
-          "focus": {
-            "landscape": { "x": 0.18, "y": 0.18, "w": 0.64, "h": 0.64 }
-          },
-          "capture": {
-            "path": "/?mock=xr8&onboarding=1",
-            "waitFor": "#onboarding-overlay.visible",
-            "settle": 500
-          }
-        },
         {
           "id": "onboard-sweep",
           "url": "companion-scan.local",
-          "alt": "Second onboarding step, Sweep the Room Slowly, explaining that moving too fast degrades SLAM tracking and that the live point cloud shows what has been covered",
+          "alt": "Onboarding step two, Sweep the Room Slowly, explaining that moving too fast degrades tracking and that the live point cloud shows what has been covered",
           "motion": "push-in",
-          "_focusNote": "The five onboarding cards are the only shots in the film where the subject is a small object on a large empty ground. The modal measures w 0.24 x h 0.45 of the plate and sits dead centre; the rest of the 16:9 frame is unlit app shell that carries nothing. Unfocused, the body copy renders at about a 10px x-height on a 1080p frame \u2014 technically present, actually unread. The 9:16 cut has no such problem and gets NO focus: the phone frame already crops to the card.\n\n0.64 square at (0.18, 0.18), 2.016x, honoured exactly \u2014 deliberately looser than the 0.538 the clamp would allow. At 0.538 (the tightest 16:9 permits) the window anchors and slices the card's icon off the top edge, the same guillotine described in the promise focus note on the spatial-companion film. At 0.60 the whole card fits but 'Skip tutorial' lands on the caption band. 0.64 clears both. Same rect on all five so the cards read as one carousel being paged through rather than five unrelated pushes.",
+          "_focusNote": "The onboarding cards are the only shots in the film where the subject is a small object on a large empty ground. The modal measures w 0.24 x h 0.45 of the plate and sits dead centre; the rest of the 16:9 frame is unlit app shell that carries nothing. Unfocused, the body copy renders at about a 10px x-height on a 1080p frame — technically present, actually unread. The 9:16 cut has no such problem and gets NO focus: the phone frame already crops to the card.\n\n0.64 square at (0.18, 0.18), 2.016x, honoured exactly — deliberately looser than the 0.538 the clamp would allow. At 0.538 (the tightest 16:9 permits) the window anchors and slices the card's icon off the top edge. At 0.60 the whole card fits but 'Skip tutorial' lands on the caption band. 0.64 clears both. Same rect on both cards so they read as one carousel being paged through rather than two unrelated pushes.\n\nWorth stating plainly, because it is the reason these two cards carry the walk beat at all: the onboarding overlay is opaque. Nothing of the xr8 mock's cartoon room is visible behind it — verified against the committed plates, which are flat #0A222E outside the card. These are clean product frames.",
           "focus": {
-            "landscape": { "x": 0.18, "y": 0.18, "w": 0.64, "h": 0.64 }
+            "landscape": {
+              "x": 0.18,
+              "y": 0.18,
+              "w": 0.64,
+              "h": 0.64
+            }
           },
           "capture": {
             "path": "/?mock=xr8&onboarding=1",
@@ -102,59 +167,27 @@
       ]
     },
     {
-      "id": "ftue-capture-modes",
+      "id": "what-it-watches",
       "kind": "screen",
       "transition": "cut",
-      "chapter": "setup",
-      "seconds": 6,
-      "caption": "Tap a frame, auto-capture, or stream keyframes.",
-      "narration": "Tap a frame, auto-capture as you walk, or stream keyframes.",
-      "shots": [
-        {
-          "id": "onboard-capture-modes",
-          "url": "companion-scan.local",
-          "alt": "Onboarding step three listing the three capture modes",
-          "motion": "push-in",
-          "_focusNote": "The five onboarding cards are the only shots in the film where the subject is a small object on a large empty ground. The modal measures w 0.24 x h 0.45 of the plate and sits dead centre; the rest of the 16:9 frame is unlit app shell that carries nothing. Unfocused, the body copy renders at about a 10px x-height on a 1080p frame \u2014 technically present, actually unread. The 9:16 cut has no such problem and gets NO focus: the phone frame already crops to the card.\n\n0.64 square at (0.18, 0.18), 2.016x, honoured exactly \u2014 deliberately looser than the 0.538 the clamp would allow. At 0.538 (the tightest 16:9 permits) the window anchors and slices the card's icon off the top edge, the same guillotine described in the promise focus note on the spatial-companion film. At 0.60 the whole card fits but 'Skip tutorial' lands on the caption band. 0.64 clears both. Same rect on all five so the cards read as one carousel being paged through rather than five unrelated pushes.",
-          "focus": {
-            "landscape": { "x": 0.18, "y": 0.18, "w": 0.64, "h": 0.64 }
-          },
-          "capture": {
-            "path": "/?mock=xr8&onboarding=1",
-            "waitFor": "#onboarding-overlay.visible",
-            "before": [
-              {
-                "click": "#onboard-next-btn"
-              },
-              {
-                "click": "#onboard-next-btn"
-              },
-              {
-                "waitFor": ".onboard-step[data-step='2'].active"
-              }
-            ],
-            "settle": 400
-          }
-        }
-      ]
-    },
-    {
-      "id": "ftue-quality",
-      "kind": "screen",
-      "transition": "cut",
-      "chapter": "setup",
-      "seconds": 5.5,
+      "chapter": "walk",
+      "seconds": 6.5,
       "caption": "Low light, reflections, thin coverage — called out live.",
-      "narration": "You know when a room is finished scanning, before you walk out of it.",
+      "narration": "It watches the light, the reflections and the gaps, and it tells you before you walk out of the room.",
       "shots": [
         {
           "id": "onboard-quality",
           "url": "companion-scan.local",
           "alt": "Onboarding step four explaining live scan-quality tracking for low light, reflective surfaces and sparse coverage",
           "motion": "push-in",
-          "_focusNote": "The five onboarding cards are the only shots in the film where the subject is a small object on a large empty ground. The modal measures w 0.24 x h 0.45 of the plate and sits dead centre; the rest of the 16:9 frame is unlit app shell that carries nothing. Unfocused, the body copy renders at about a 10px x-height on a 1080p frame \u2014 technically present, actually unread. The 9:16 cut has no such problem and gets NO focus: the phone frame already crops to the card.\n\n0.64 square at (0.18, 0.18), 2.016x, honoured exactly \u2014 deliberately looser than the 0.538 the clamp would allow. At 0.538 (the tightest 16:9 permits) the window anchors and slices the card's icon off the top edge, the same guillotine described in the promise focus note on the spatial-companion film. At 0.60 the whole card fits but 'Skip tutorial' lands on the caption band. 0.64 clears both. Same rect on all five so the cards read as one carousel being paged through rather than five unrelated pushes.",
+          "_focusNote": "Same 0.64 rect and the same reasoning as `onboard-sweep` above — see that note. Keeping the two rects identical is what makes the pair read as one carousel.",
           "focus": {
-            "landscape": { "x": 0.18, "y": 0.18, "w": 0.64, "h": 0.64 }
+            "landscape": {
+              "x": 0.18,
+              "y": 0.18,
+              "w": 0.64,
+              "h": 0.64
+            }
           },
           "capture": {
             "path": "/?mock=xr8&onboarding=1",
@@ -179,61 +212,19 @@
       ]
     },
     {
-      "id": "ftue-finish",
-      "kind": "screen",
+      "id": "the-meter",
+      "kind": "split",
       "transition": "cut",
-      "chapter": "setup",
-      "seconds": 5.5,
-      "caption": "Export a GLB. Open it in 3D.",
-      "narration": "When you're done, export the scan and open it in the desktop editor.",
-      "shots": [
-        {
-          "id": "onboard-finish",
-          "url": "companion-scan.local",
-          "alt": "Final onboarding step covering GLB export and the 3D editor",
-          "motion": "push-in",
-          "_focusNote": "The five onboarding cards are the only shots in the film where the subject is a small object on a large empty ground. The modal measures w 0.24 x h 0.45 of the plate and sits dead centre; the rest of the 16:9 frame is unlit app shell that carries nothing. Unfocused, the body copy renders at about a 10px x-height on a 1080p frame \u2014 technically present, actually unread. The 9:16 cut has no such problem and gets NO focus: the phone frame already crops to the card.\n\n0.64 square at (0.18, 0.18), 2.016x, honoured exactly \u2014 deliberately looser than the 0.538 the clamp would allow. At 0.538 (the tightest 16:9 permits) the window anchors and slices the card's icon off the top edge, the same guillotine described in the promise focus note on the spatial-companion film. At 0.60 the whole card fits but 'Skip tutorial' lands on the caption band. 0.64 clears both. Same rect on all five so the cards read as one carousel being paged through rather than five unrelated pushes.",
-          "focus": {
-            "landscape": { "x": 0.18, "y": 0.18, "w": 0.64, "h": 0.64 }
-          },
-          "capture": {
-            "path": "/?mock=xr8&onboarding=1",
-            "waitFor": "#onboarding-overlay.visible",
-            "before": [
-              {
-                "click": "#onboard-next-btn"
-              },
-              {
-                "click": "#onboard-next-btn"
-              },
-              {
-                "click": "#onboard-next-btn"
-              },
-              {
-                "click": "#onboard-next-btn"
-              },
-              {
-                "waitFor": ".onboard-step[data-step='4'].active"
-              }
-            ],
-            "settle": 400
-          }
-        }
-      ]
-    },
-    {
-      "id": "live-scan",
-      "kind": "screen",
-      "chapter": "capture",
+      "chapter": "walk",
       "seconds": 7.5,
-      "caption": "Thin at first. Full as you walk.",
-      "narration": "Walk the room and the map fills in, with coverage scored live as you go.",
+      "caption": "One scripted session, two moments. Sparse, then Good.",
+      "narration": "Coverage is scored while you walk, off the point count itself. It goes from sparse to good, and the app is the thing that says so.",
+      "_editNote": "THE ONLY MOCK FRAME IN THE FILM, AND THE REASON IT IS A `split`.\n\nSee the top-level _honestyNote for why the xr8 mock's camera feed cannot be shown as a room. The coverage meter, however, IS the product: #verdict-chip and the COVERAGE bar are computed from pointCloud.count (src/main.ts:726, 751-757), so the difference between these two plates is the app's own accumulation over the same scripted walk — tick 90 against tick 700 — not two staged screenshots.\n\n`split` is the form that makes that honest. Side by side in two browser frames, two identical cartoon rooms read as a controlled comparison rather than as anybody's living room; the eye goes to the thing that CHANGED, which is the meter. Shown one at a time, full-bleed, the same plate reads as 'here is the room I scanned', which is the claim the film must not make. The caption names the session as scripted, on the frame, where the frame is.\n\n`split` is unused fleet-wide; this is the first cut to reach for it. It ignores `focus` and `motion` by design (scenes.mjs `split` takes only shotSrc), so no camera note applies here.\n\nBoth plates keep `mockFreeze` — see capture.config.mjs hazard 1. The freeze is what makes the pair a genuine before-and-after of one session instead of a wall-clock race, and it is also what makes the two plates byte-stable.",
       "shots": [
         {
           "id": "live-scan-early",
           "url": "companion-scan.local",
-          "alt": "The scanning HUD a few seconds into the walk, with a thin point count, a low coverage bar and the live quality recommendation the app raises for a sparse map",
-          "motion": "push-in",
+          "alt": "The scanning HUD early in a scripted session: a SPARSE badge, 2110 points, a coverage bar reading Low and the app's own recommendation to sweep more slowly",
           "capture": {
             "path": "/?mock=xr8&mockFreeze=90",
             "waitFor": "#start-ar-btn",
@@ -257,8 +248,7 @@
         {
           "id": "live-scan-hud",
           "url": "companion-scan.local",
-          "alt": "The same scanning HUD later in the walk, with the point count in the thousands and the coverage bar reading Good",
-          "motion": "drift-down",
+          "alt": "The same scanning HUD later in the same scripted session, with the point count in the thousands and the coverage bar reading Good",
           "capture": {
             "path": "/?mock=xr8&mockFreeze=700",
             "waitFor": "#start-ar-btn",
@@ -282,145 +272,18 @@
       ]
     },
     {
-      "id": "objects-named",
+      "id": "one-world",
       "kind": "screen",
-      "transition": "cut",
-      "chapter": "capture",
-      "seconds": 7,
-      "caption": "Every object named, placed and yours.",
-      "narration": "Objects come back named and placed, identified on hardware you own.",
-      "shots": [
-        {
-          "id": "detections-panel",
-          "url": "companion-scan.local",
-          "alt": "The Latest scan readout over the camera feed, listing objects this capture found with a label, a confidence figure and a 3D position each",
-          "motion": "drift-down",
-          "capture": {
-            "path": "/?mock=xr8&mockFreeze=700",
-            "waitFor": "#start-ar-btn",
-            "before": [
-              {
-                "click": "#start-ar-btn"
-              },
-              {
-                "waitFor": "#capture-btn"
-              },
-              {
-                "waitFor": "#scan-stats:has-text('pts')"
-              },
-              {
-                "click": "#capture-btn"
-              },
-              {
-                "waitFor": "#infer-dialog.visible"
-              },
-              {
-                "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#status-bar,#quality-overlay,#autosave-status{display:none!important}</style>')"
-              }
-            ],
-            "settle": 600
-          }
-        },
-        {
-          "id": "objects-manifest",
-          "url": "companion-scan.local",
-          "alt": "The object manifest at the top of the side panel, counting the objects found and listing each one with its label, confidence and X Y Z position",
-          "motion": "push-in",
-          "capture": {
-            "path": "/?mock=xr8&mockFreeze=700",
-            "waitFor": "#start-ar-btn",
-            "before": [
-              {
-                "click": "#start-ar-btn"
-              },
-              {
-                "waitFor": "#capture-btn"
-              },
-              {
-                "waitFor": "#scan-stats:has-text('pts')"
-              },
-              {
-                "click": "#capture-btn"
-              },
-              {
-                "waitFor": "#panel-content [data-key]"
-              },
-              {
-                "click": "#panel-toggle"
-              },
-              {
-                "waitFor": "#side-panel.open #panel-content [data-key]"
-              },
-              {
-                "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#hud-panel,#scanner-action-rail{display:none!important}</style>')"
-              }
-            ],
-            "settle": 600
-          }
-        }
-      ]
-    },
-    {
-      "id": "review-and-export",
-      "kind": "screen",
-      "transition": "cut",
-      "chapter": "capture",
-      "seconds": 7,
-      "caption": "Review the scan. Export a file you own.",
-      "narration": "Review everything the scan found, then export it as a file you own.",
-      "_editNote": "Was two shots: `review-panel-empty` (the panel before any capture) then `review-export-panel` (the panel with objects in it). The empty one is gone, and the reason is what it did to the narration. The line is \"Review everything the scan found\" — and for the first half of the beat it played over a panel reading \"No objects yet. Tap the capture button to scan.\", with Export GLB greyed out. The film said one thing and showed its opposite.\n\nWorse in sequence: the scene BEFORE this one (`objects-named`) already shows the detections panel full of named objects. Going full -> empty -> full in the middle of the story reads as the app losing the scan, not as a before-and-after. A before-and-after also has no work to do here; nobody watching needs to be told an empty app is empty.\n\nThe shot was a valid, honest capture and the plate is not the problem — it was pointed at the wrong moment. Its PNGs are deleted with it rather than left orphaned in assets/shots.",
-      "shots": [
-        {
-          "id": "review-export-panel",
-          "url": "companion-scan.local",
-          "alt": "The same panel after a capture, with the object list filled in and GLB export, summary export and server-processing actions in the footer",
-          "motion": "drift-down",
-          "capture": {
-            "path": "/?mock=xr8&mockFreeze=700",
-            "waitFor": "#start-ar-btn",
-            "before": [
-              {
-                "click": "#start-ar-btn"
-              },
-              {
-                "waitFor": "#capture-btn"
-              },
-              {
-                "waitFor": "#scan-stats:has-text('pts')"
-              },
-              {
-                "click": "#capture-btn"
-              },
-              {
-                "waitFor": "#panel-content [data-key]"
-              },
-              {
-                "click": "#finish-scan-btn"
-              },
-              {
-                "waitFor": "#side-panel.open #panel-export-glb-btn"
-              },
-              {
-                "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#hud-panel,#scanner-action-rail{display:none!important}</style>')"
-              }
-            ],
-            "settle": 600
-          }
-        }
-      ]
-    },
-    {
-      "id": "world-editor",
-      "kind": "screen",
-      "chapter": "editor",
-      "seconds": 7,
-      "caption": "Every room, one world, your server.",
-      "narration": "Every room you scan lands in one 3D world, stored on your own server.",
+      "chapter": "world",
+      "seconds": 8,
+      "caption": "Three rooms. One world. 69,046 points, 15 objects.",
+      "narration": "Every room you scan lands in one world, on a machine in your house. Three rooms here. Sixty-nine thousand points, and fifteen objects that came back named.",
+      "_editNote": "THIS IS THE SCENE THE FILM'S CENTRAL CLAIM MOVED ONTO. The previous cut made 'Every object named, placed and yours' over the scanner's cartoon feed. Here the same claim is made over a frame that carries its own evidence: the world readout reads 3 scans loaded / 69,046 points / 15 detections, the point clouds are real GLB geometry that went through the real optimize jobs, and plant 89% / sofa 79% / shelf 86% / chair 82% are stored detections with stored confidences. The rooms are generated fixtures rather than a real house — stated in the _honestyNote — but nothing on this frame is drawn by a fixture pretending to be a camera.",
       "shots": [
         {
           "id": "world-editor-scans",
           "url": "companion-scan.local/viewer.html",
-          "alt": "The World Editor with three room scans listed in the sidebar, each one ready and optimized, and the camera framed on the selected room",
+          "alt": "The World Editor with three room scans listed in the sidebar, each ready and optimized, the world readout counting 69,046 points and 15 detections, and named objects labelled in the point cloud",
           "motion": "drift-down",
           "capture": {
             "path": "/viewer.html?world=default",
@@ -447,48 +310,17 @@
             ],
             "settle": 1200
           }
-        },
-        {
-          "id": "world-editor-focus",
-          "url": "companion-scan.local/viewer.html",
-          "alt": "The same world after picking the second room from the sidebar: the camera has flown to that scan and the Edit tab has opened on its name, confidence and tags",
-          "motion": "push-in",
-          "capture": {
-            "path": "/viewer.html?world=default",
-            "waitFor": "#scan-list .scan-item",
-            "before": [
-              {
-                "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')"
-              },
-              {
-                "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')"
-              },
-              {
-                "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')"
-              },
-              {
-                "click": "#scan-list .scan-item:nth-child(2)"
-              },
-              {
-                "waitFor": "#tab-edit.active #edit-selected-info"
-              },
-              {
-                "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')"
-              }
-            ],
-            "settle": 1200
-          }
         }
       ]
     },
     {
-      "id": "semantic-world",
+      "id": "named-not-numbered",
       "kind": "screen",
       "transition": "cut",
-      "chapter": "editor",
-      "seconds": 7.5,
-      "caption": "Named objects, not an anonymous point cloud.",
-      "narration": "The map is not just geometry. Every object keeps the label it was given.",
+      "chapter": "world",
+      "seconds": 7,
+      "caption": "Not an anonymous cloud of dots.",
+      "narration": "The map is not just geometry. Every object keeps the label it was given, and the confidence it was given with.",
       "shots": [
         {
           "id": "world-editor-semantic",
@@ -530,13 +362,55 @@
       ]
     },
     {
-      "id": "map-quality",
+      "id": "pick-a-room",
       "kind": "screen",
       "transition": "cut",
-      "chapter": "editor",
+      "chapter": "world",
+      "seconds": 6.5,
+      "caption": "Pick a room. The label is yours to correct.",
+      "narration": "Pick any room and the camera flies to it. Its name, its confidence and its tags are all yours to change.",
+      "shots": [
+        {
+          "id": "world-editor-focus",
+          "url": "companion-scan.local/viewer.html",
+          "alt": "The same world after picking the second room from the sidebar: the camera has flown to that scan and the Edit tab has opened on its name, confidence and tags",
+          "motion": "push-in",
+          "capture": {
+            "path": "/viewer.html?world=default",
+            "waitFor": "#scan-list .scan-item",
+            "before": [
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(1) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(2) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "waitFor": "#scan-list .scan-item:nth-child(3) .scan-status:has-text('Ready - optimized')"
+              },
+              {
+                "click": "#scan-list .scan-item:nth-child(2)"
+              },
+              {
+                "waitFor": "#tab-edit.active #edit-selected-info"
+              },
+              {
+                "eval": "() => document.head.insertAdjacentHTML('beforeend', '<style>#coord-readout{display:none!important}</style>')"
+              }
+            ],
+            "settle": 1200
+          }
+        }
+      ]
+    },
+    {
+      "id": "how-good-a-map",
+      "kind": "screen",
+      "transition": "cut",
+      "chapter": "world",
       "seconds": 7,
-      "caption": "Preview, Reconstructed, Photoreal — and what each tier needs.",
-      "narration": "Three tiers of map quality, and the app names what the next one needs: keyframes, streamed while you scan.",
+      "caption": "Preview, Reconstructed, Photoreal — and what the next tier needs.",
+      "narration": "Three tiers of map quality, and the app names exactly what the next one would need.",
       "shots": [
         {
           "id": "world-editor-quality",
@@ -578,11 +452,11 @@
       ]
     },
     {
-      "id": "what-you-get",
+      "id": "what-stays-yours",
       "kind": "feature",
-      "seconds": 6,
-      "caption": "Local capture, self-hosted pipeline.",
-      "narration": "It runs in the browser on your phone and sends scans to your own server.",
+      "seconds": 6.5,
+      "caption": "Nothing to cancel. Nothing to ask for back.",
+      "narration": "It runs in the browser on your phone, and it sends the scan to hardware you can point at.",
       "items": [
         {
           "label": "Monthly fee",
@@ -608,6 +482,7 @@
       "kind": "outro",
       "transition": "cut",
       "seconds": 5,
+      "minSeconds": 3.5,
       "cta": "UnCloud your life.",
       "url": "ci.computer",
       "narration": "Companion Scan, from Companion Intelligence. UnCloud your life.",
