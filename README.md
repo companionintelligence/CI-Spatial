@@ -312,8 +312,18 @@ In WebXR mode the point cloud accumulates from per-frame hit-test samples (WebXR
                              #   mocks, webxr-emulated, xr8-scan, project, server) + fixtures/
 ```
 
-Four `deno test` unit suites live at repo root alongside the server modules:
-`lingbot_map.test.ts`, `lingbot_map_glb.test.ts`, `splat_detect.test.ts`, `splat_train.test.ts`.
+`deno test` unit suites live at repo root alongside the server modules they cover:
+`inference_mock.test.ts`, `lingbot_map.test.ts`, `memory_push.test.ts`, `portal_auth.test.ts`,
+`splat_detect.test.ts`, `splat_finish.test.ts`, `splat_train.test.ts` — run them all with
+`deno task test` (see `deno.json`). `lingbot_map_glb.test.ts` is the one exception: it runs
+under `node --experimental-strip-types --test` (`npm run test:lingbot:glb`) because it exercises
+`@gltf-transform/functions`, which pulls in the `sharp` native binary — not something Deno's
+npm compat layer permissions today.
+
+CI runs `deno task check` (type-check) and `deno task test` on every push/PR via
+[`.github/workflows/deno-ci.yml`](.github/workflows/deno-ci.yml); the full containerized
+smoke test (Docker build + `/health` + static UI gate) is manual via
+[`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml).
 
 ---
 
@@ -339,8 +349,9 @@ The repo defines ~30 npm scripts. The most common:
 | `npm run ingest:video` | Ingest a walkthrough video into a session scan |
 | `npm run links:house` | Print the house-validation scanner/viewer links |
 | `npm run gen:test-data` / `seed:test-data` | Generate / seed test fixtures |
-| `npm run test:splat:unit` / `test:splat:make-fixture` | Playwright splat unit test + fixture builder |
-| `npm run test:lingbot:glb` / `test:lingbot:fetch-video` / `test:lingbot:make-fixture` | LingBot-Map test + fixture scripts |
+| `npm run test:splat:unit` / `test:splat:make-fixture` | `deno test` for splat_train/detect/finish + Playwright fixture builder |
+| `npm run test:mock:unit` | `deno test` for the mock inference engine |
+| `npm run test:lingbot:glb` / `test:lingbot:fetch-video` / `test:lingbot:make-fixture` | LingBot-Map GLB test (Node, needs `sharp`) + fixture scripts |
 | `npm run gen-icons` | Regenerate PWA icons |
 | `npm run qr` / `logs:watch` / `logs:iphone` | Dev QR link + log tailing helpers |
 
