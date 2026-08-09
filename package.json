@@ -17,6 +17,8 @@
     "test:splat:make-fixture": "node scripts/make-splat-fixture.mjs",
     "test:splat:unit": "deno test --allow-read --allow-write --allow-env --allow-run splat_train.test.ts splat_detect.test.ts splat_finish.test.ts",
     "test:mock:unit": "deno test --allow-read --allow-env --allow-net inference_mock.test.ts",
+    "test:auth:unit": "deno test --allow-read --allow-write --allow-env --allow-net --allow-run portal_auth.test.ts memory_push.test.ts lingbot_map.test.ts",
+    "test:deno": "deno task test",
     "gen:test-data": "node scripts/generate-test-homes.mjs && node scripts/generate-cv-images.mjs",
     "seed:test-data": "node scripts/seed-test-homes.mjs",
     "eval:cv": "node scripts/eval-cv.mjs",
