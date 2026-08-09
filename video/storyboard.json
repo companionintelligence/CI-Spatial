@@ -144,10 +144,10 @@
           "_focusNote": "The onboarding cards are the only shots in the film where the subject is a small object on a large empty ground. The modal measures w 0.24 x h 0.45 of the plate and sits dead centre; the rest of the 16:9 frame is unlit app shell that carries nothing. Unfocused, the body copy renders at about a 10px x-height on a 1080p frame — technically present, actually unread. The 9:16 cut has no such problem and gets NO focus: the phone frame already crops to the card.\n\n0.64 square at (0.18, 0.18), 2.016x, honoured exactly — deliberately looser than the 0.538 the clamp would allow. At 0.538 (the tightest 16:9 permits) the window anchors and slices the card's icon off the top edge. At 0.60 the whole card fits but 'Skip tutorial' lands on the caption band. 0.64 clears both. Same rect on both cards so they read as one carousel being paged through rather than two unrelated pushes.\n\nWorth stating plainly, because it is the reason these two cards carry the walk beat at all: the onboarding overlay is opaque. Nothing of the xr8 mock's cartoon room is visible behind it — verified against the committed plates, which are flat #0A222E outside the card. These are clean product frames.",
           "focus": {
             "landscape": {
-              "x": 0.18,
-              "y": 0.18,
-              "w": 0.64,
-              "h": 0.64
+              "x": 0.131,
+              "y": 0.131,
+              "w": 0.538,
+              "h": 0.538
             }
           },
           "capture": {
@@ -183,10 +183,10 @@
           "_focusNote": "Same 0.64 rect and the same reasoning as `onboard-sweep` above — see that note. Keeping the two rects identical is what makes the pair read as one carousel.",
           "focus": {
             "landscape": {
-              "x": 0.18,
-              "y": 0.18,
-              "w": 0.64,
-              "h": 0.64
+              "x": 0.131,
+              "y": 0.131,
+              "w": 0.538,
+              "h": 0.538
             }
           },
           "capture": {
