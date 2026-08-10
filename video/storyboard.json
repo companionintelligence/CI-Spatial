@@ -98,6 +98,7 @@
     {
       "id": "title",
       "kind": "intro",
+      "transition": "cut",
       "seconds": 5,
       "minSeconds": 3.5,
       "title": "Companion Scan",
@@ -119,6 +120,32 @@
           "url": "companion-scan-living-room-server-acme.ci.computer",
           "alt": "Start screen offering two equal paths: scan a room, or upload a video",
           "motion": "push-in",
+          "_focusNote": "The beat is the PAIR of cards, not the app's own title — we have just come off the title card, so re-reading the wordmark is dead weight.\n\nA FOCUS RECTANGLE IS NOT THE WINDOW YOU GET, and every landscape y in this file is set from `ci-video focus-preview`'s reported window rather than from the rectangle. Measured: the delivered window lands 0.029 of the plate BELOW the authored y at scale 2.398. The browser frame is not centred on the canvas centre — the stage reserves the caption band, so frameCentre.y is 479.5 against a canvas centre of 540 — and the screenshot sits below the chrome inside the frame. Author a y from a rectangle alone and the crop arrives a couple of dozen plate pixels lower than the one you looked at.\n\nLandscape: the two cards occupy x 0.381-0.619, y 0.518-0.735 — 0.24 wide, far under the 0.538 floor, so no rectangle frames them tighter and the floor square is authored directly (scale 2.398, honoured exactly, nothing clamped). y 0.376 delivers a window top of 0.405, which is chosen and not rounded: the descender of 'Companion' ends at 0.404 and the cap of 'Scan' starts at 0.407, so the crop lands in the gap BETWEEN the two wordmark lines. Verified on the reconstructed end frame — 'Scan' is whole, no descender fragment rides the top edge. Cards land at 0.21-0.61 of the frame; the caption band starts at 0.853 of the canvas, over empty ground.\n\nPortrait: the cards are 0.86 of the plate wide, so the tightest window that still contains them both is 0.90 -> scale 1.549, against the 1.045 the legacy push gives. Modest, but it is the difference between the cards being an element of the page and being the page. The preview reports the window anchored to the bottom canvas edge rather than centred; the picture was checked and the whole title block still fits above the cards.",
+          "focus": {
+            "landscape": {
+              "x": 0.231,
+              "y": 0.376,
+              "w": 0.538,
+              "h": 0.538
+            },
+            "portrait": {
+              "x": 0.04,
+              "y": 0.1,
+              "w": 0.9,
+              "h": 0.9
+            }
+          },
+          "_pointerNote": "The caption is 'Two ways in' and the narration names both of them; 'Scan a room' is the one the film then follows, because the very next scene is that path's onboarding. Clicking the other card and cutting to the AR walkthrough would be a continuity error.\n\nBoth coordinates are the centre of the teal card as measured on the committed plate: landscape card x 0.381-0.619 / y 0.518-0.735, portrait card x 0.056-0.916 / y 0.505-0.625. Verified by crosshair crop, not derived.",
+          "pointer": {
+            "landscape": {
+              "x": 0.5,
+              "y": 0.567
+            },
+            "portrait": {
+              "x": 0.5,
+              "y": 0.565
+            }
+          },
           "capture": {
             "path": "/?mock=xr8",
             "waitFor": "#start-ar-btn",
@@ -150,6 +177,17 @@
               "h": 0.538
             }
           },
+          "_pointerNote": "This is the one pointer in the film whose control the caption does not name, and it is here on purpose: the click is not decoration, it is the edit. `what-it-watches` was captured by this shot's own capture config clicking #onboard-next-btn three more times, so the cursor is replaying the interaction that actually produced the next plate. The cut lands on the card the click paged to.\n\nLandscape 0.500/0.590: the pill measures x 0.457-0.543, y 0.578-0.629 on the plate, so this is the upper-middle of the button, deliberately not its centre. At the end of the push the button's lower edge is under the caption band (measured with focus-preview: the band starts at 0.622 of the plate, and the button ends at 0.629); 0.590 keeps the hotspot and its ripple clear of it, and the click fires at 58% of the shot, before the push has finished tightening.\n\nPortrait 0.500/0.615 is the dead centre of the pill (x 0.345-0.655, y 0.585-0.645). There is no portrait focus on this shot, so the phone frame sits at rest and the caption is below it, not over it — no band to clear. Phone frame means a tap ripple rather than a travelling cursor, which the kit chooses off `frame`; nothing is declared here for it.",
+          "pointer": {
+            "landscape": {
+              "x": 0.5,
+              "y": 0.59
+            },
+            "portrait": {
+              "x": 0.5,
+              "y": 0.615
+            }
+          },
           "capture": {
             "path": "/?mock=xr8&onboarding=1",
             "waitFor": "#onboarding-overlay.visible",
@@ -179,7 +217,8 @@
           "id": "onboard-quality",
           "url": "companion-scan-living-room-server-acme.ci.computer",
           "alt": "Onboarding step four explaining live scan-quality tracking for low light, reflective surfaces and sparse coverage",
-          "motion": "push-in",
+          "motion": "drift-down",
+          "_motionNote": "Was `push-in`, which made this shot and `onboard-sweep` the same move over the same rectangle back to back — two pushes at an identical card, which is the 'screenshots being panned' reading this pass exists to remove. `drift-down` opens AT the focus instead of travelling to it, so the cut from `onboard-sweep`'s tight ending is continuous — the carousel pages and the camera stays where it was — and the move then reads down the card, which is what a reader's eye does to a paragraph. There is 0.331 of plate below the focus window, so the drift has room and does not degrade to a push.",
           "_focusNote": "Same 0.64 rect and the same reasoning as `onboard-sweep` above — see that note. Keeping the two rects identical is what makes the pair read as one carousel.",
           "focus": {
             "landscape": {
@@ -274,6 +313,7 @@
     {
       "id": "one-world",
       "kind": "screen",
+      "transition": "cut",
       "chapter": "world",
       "seconds": 8,
       "caption": "Three rooms. One world. 69,046 points, 15 objects.",
@@ -284,7 +324,17 @@
           "id": "world-editor-scans",
           "url": "companion-scan-living-room-server-acme.ci.computer/viewer.html",
           "alt": "The World Editor with three room scans listed in the sidebar, each ready and optimized, the world readout counting 69,046 points and 15 detections, and named objects labelled in the point cloud",
-          "motion": "drift-down",
+          "motion": "push-in",
+          "_motionNote": "Was `drift-down`. Every number the caption cites lives in the top-left quadrant — the three scan rows (x 0-0.16, y 0.14-0.37) and the world readout '3 scans loaded / 69,046 points / 15 detections' (x 0.196-0.30, y 0.07-0.145) — so the beat is an arrival on a fact, not a read down a list. It also breaks the drift the previous screen scene ends on.",
+          "_focusNote": "LANDSCAPE ONLY. The evidence for 'Three rooms. One world. 69,046 points, 15 objects' spans x 0-0.43, y 0.07-0.43 of the plate, which is inside the 0.538 floor, so the floor square is authored directly: scale 2.398, honoured exactly, nothing clamped. The delivered window is x 0-0.538, y 0.049-0.587 — it holds the sidebar's three rows, the world readout, and the left cloud's own labels (plant 89%, sofa 79%, table 95%, shelf 93%, shelf 86%), so the count and the named objects it counts are in one frame.\n\nWHY y IS 0.02 AND NOT 0. See the offset note on `start-screen`: the delivered window sits 0.029 of the plate below the authored y. y 0 would land the window top at 0.029 and slice the Solid / Points / Wire / Semantic mode bar (0.01-0.045) through the middle of its buttons. 0.02 puts the top edge just under it — confirmed on the reconstructed end frame, which opens on 'Companion Scan' and the tab row with the mode bar gone.\n\nNO PORTRAIT FOCUS, and this is a measurement not an omission. The portrait plate drops the world readout entirely and puts a full-width 'Home Office A' detail panel across x 0.47-0.99 at y 0.44-0.585. The tightest portrait window is 0.738, and every 0.738 window that keeps the scan rows readable cuts that panel through its values. A sliced panel reads as a broken render, so the portrait cut keeps its legacy push.",
+          "focus": {
+            "landscape": {
+              "x": 0,
+              "y": 0.02,
+              "w": 0.538,
+              "h": 0.538
+            }
+          },
           "capture": {
             "path": "/viewer.html?world=default",
             "waitFor": "#scan-list .scan-item",
@@ -327,6 +377,15 @@
           "url": "companion-scan-living-room-server-acme.ci.computer/viewer.html",
           "alt": "Semantic view of the same world, colouring the scene by the label attached to each detected object",
           "motion": "drift-down",
+          "_focusNote": "LANDSCAPE ONLY. The subject is the labels, and nothing else on this plate: the eleven detection chips run x 0.208-0.685, y 0.34-0.632 (plant 89%, sofa 79%, table 95%, shelf 93%, shelf 86%, chair 82%, shelf 72%, chair 78%, plant 77%, lamp 89%, chair 86%). Longest side 0.477, under the 0.538 floor, so the floor square is authored centred on that cluster — window 0.178-0.716 x 0.217-0.755, scale 2.398 exactly. It deliberately starts right of the sidebar (which ends at 0.16): the caption says 'not an anonymous cloud of dots', so the frame should contain the dots and their names and nothing administrative. `drift-down` then travels down through the cluster rather than at it.\n\nNO PORTRAIT FOCUS. Same detail-panel collision as `one-world`: the portrait plate's 'Home Office A' panel sits at x 0.47-0.99 and no 0.738 window keeps both it and the table 95% / shelf 86% labels at x 0.01-0.14 intact.",
+          "focus": {
+            "landscape": {
+              "x": 0.178,
+              "y": 0.188,
+              "w": 0.538,
+              "h": 0.538
+            }
+          },
           "capture": {
             "path": "/viewer.html?world=default",
             "waitFor": "#scan-list .scan-item",
@@ -375,6 +434,22 @@
           "url": "companion-scan-living-room-server-acme.ci.computer/viewer.html",
           "alt": "The same world after picking the second room from the sidebar: the camera has flown to that scan and the Edit tab has opened on its name, confidence and tags",
           "motion": "push-in",
+          "_focusNote": "LANDSCAPE ONLY. The subject is the Edit panel the pick opened — SELECTED OBJECT / Kitchen A at y 0.17, TRANSFORM at 0.285, SEMANTIC TAG and its chip grid from 0.40 down. That column is 0.165 wide, nowhere near the 0.538 floor, so the floor square is authored at x 0, y 0.10. The top edge is picked to include the tab row (SCANS / WORLD / LAYERS / EDIT at y 0.119) so the frame shows WHICH tab the pick landed on, and the bottom at 0.638 keeps the five chip rows above the caption band, which starts at 0.563 of the plate at this framing.\n\nNO PORTRAIT FOCUS AND NO PORTRAIT POINTER. On the portrait plate the panel is full width and the semantic-tag chips are sliced by the viewport at y 0.432 — 'wall floor ceiling window' is rendered as half a row of half chips. There is no honest coordinate for a control that is only half on the plate, so the portrait cut gets neither.",
+          "focus": {
+            "landscape": {
+              "x": 0,
+              "y": 0.071,
+              "w": 0.538,
+              "h": 0.538
+            }
+          },
+          "_pointerNote": "'The label is yours to correct' — the semantic-tag chips are the control that does the correcting, and the narration names them outright ('its tags are all yours to change'). The cursor lands on `cabinet`, measured at the centre of that chip on the plate and confirmed by crosshair crop; `cabinet` rather than any other because the selected object is Kitchen A, so the tag being reached for should be one a kitchen would take.\n\nAt this focus the chip sits at 0.71 of the frame height at the end of the push, with the caption band starting at 0.859 — the ripple (42 canvas px) clears it. The click fires at 58% of the shot, earlier in the push, where the clearance is larger still.",
+          "pointer": {
+            "landscape": {
+              "x": 0.08,
+              "y": 0.483
+            }
+          },
           "capture": {
             "path": "/viewer.html?world=default",
             "waitFor": "#scan-list .scan-item",
@@ -416,7 +491,28 @@
           "id": "world-editor-quality",
           "url": "companion-scan-living-room-server-acme.ci.computer/viewer.html",
           "alt": "The Layers tab showing the Map Quality stepper — Preview, Reconstructed, Photoreal — with the selected scan's current tier lit and the next step spelled out",
-          "motion": "push-in",
+          "motion": "drift-down",
+          "_motionNote": "Was `push-in`, which is what the two preceding world scenes already do. `drift-down` opens on MAP QUALITY at the top of the Layers panel and travels down into what it is made of — Point cloud 49,000 items, Meshes 41 objects, Detections 15 items, Labels 15 items. The tier stepper is the claim; the layer list underneath is the receipt, and the drift is what puts them in one shot in that order.",
+          "_focusNote": "LANDSCAPE ONLY. MAP QUALITY and its three steps occupy x 0.009-0.152, y 0.19-0.24 — a control about a seventh of the plate wide, so far under the 0.538 floor that the rectangle's shape is irrelevant and the floor square is authored flush left. y 0.02 for the same measured reason as `one-world`: the delivered window sits 0.029 lower than the authored y, and y 0 would slice the mode bar. Delivered window travels 0.049-0.587 to 0.112-0.650 across the drift, which carries the stepper from 0.27-0.36 of the frame up to 0.15-0.24 while the Detections / Labels rows rise out from under the caption band.\n\nNO PORTRAIT FOCUS. The portrait stepper is laid out full width (Preview 0.048-0.34, Reconstructed 0.354-0.646, Photoreal 0.658-0.951) and the caption names all three tiers, so any 0.738 window amputates one of the three words the caption just said. The portrait cut keeps the whole plate — where, in fairness, the stepper is already large.",
+          "_pointerNote": "The caption's second half is 'and what the next tier needs', so the cursor goes to the NEXT tier — Reconstructed — and not to the lit one. Both coordinates are the centre of that step as measured on their own plate and confirmed by crosshair crop: landscape x 0.059-0.100 / y 0.192-0.240, portrait x 0.354-0.646 / y 0.160-0.219. The two differ because the panel is a narrow rail at 1280px and a full-width row at 360px, which is exactly why `pointer` resolves per format.\n\nBoth sit in the upper half of their frame, well clear of the caption band; the landscape drift moves the step further up as the shot runs, not down.",
+          "pointer": {
+            "landscape": {
+              "x": 0.077,
+              "y": 0.218
+            },
+            "portrait": {
+              "x": 0.5,
+              "y": 0.19
+            }
+          },
+          "focus": {
+            "landscape": {
+              "x": 0,
+              "y": 0.02,
+              "w": 0.538,
+              "h": 0.538
+            }
+          },
           "capture": {
             "path": "/viewer.html?world=default",
             "waitFor": "#scan-list .scan-item",
