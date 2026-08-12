@@ -258,12 +258,20 @@
       "seconds": 7.5,
       "caption": "One scripted session, two moments. Sparse, then Good.",
       "narration": "Coverage is scored while you walk, off the point count itself. It goes from sparse to good, and the app is the thing that says so.",
-      "_editNote": "THE ONLY MOCK FRAME IN THE FILM, AND THE REASON IT IS A `split`.\n\nSee the top-level _honestyNote for why the xr8 mock's camera feed cannot be shown as a room. The coverage meter, however, IS the product: #verdict-chip and the COVERAGE bar are computed from pointCloud.count (src/main.ts:726, 751-757), so the difference between these two plates is the app's own accumulation over the same scripted walk — tick 90 against tick 700 — not two staged screenshots.\n\n`split` is the form that makes that honest. Side by side in two browser frames, two identical cartoon rooms read as a controlled comparison rather than as anybody's living room; the eye goes to the thing that CHANGED, which is the meter. Shown one at a time, full-bleed, the same plate reads as 'here is the room I scanned', which is the claim the film must not make. The caption names the session as scripted, on the frame, where the frame is.\n\n`split` is unused fleet-wide; this is the first cut to reach for it. It ignores `focus` and `motion` by design (scenes.mjs `split` takes only shotSrc), so no camera note applies here.\n\nBoth plates keep `mockFreeze` — see capture.config.mjs hazard 1. The freeze is what makes the pair a genuine before-and-after of one session instead of a wall-clock race, and it is also what makes the two plates byte-stable.",
+      "_editNote": "THE ONLY MOCK FRAME IN THE FILM, AND THE REASON IT IS A `split`.\n\nSee the top-level _honestyNote for why the xr8 mock's camera feed cannot be shown as a room. The coverage meter, however, IS the product: #verdict-chip and the COVERAGE bar are computed from pointCloud.count (src/main.ts:726, 751-757), so the difference between these two plates is the app's own accumulation over the same scripted walk — tick 90 against tick 700 — not two staged screenshots.\n\n`split` is the form that makes that honest. Side by side in two browser frames, two identical cartoon rooms read as a controlled comparison rather than as anybody's living room; the eye goes to the thing that CHANGED, which is the meter. Shown one at a time, full-bleed, the same plate reads as 'here is the room I scanned', which is the claim the film must not make. The caption names the session as scripted, on the frame, where the frame is.\n\n`split` is unused fleet-wide; this is the first cut to reach for it. It has no camera and still ignores `motion`. It did also ignore `focus` — silently — and that cost this scene its proof in 16:9: a cell is 42% of the canvas, so the 3840px desktop plate arrives 806px wide and the HUD, a corner overlay covering 17% of the plate, landed about 5px tall on a 1080-tall canvas. The caption says \"Sparse, then Good\" and nobody could read either word on the frame. The 9:16 cut was fine the whole time, because there the cell holds the 1080px MOBILE plate whose HUD is a full-width banner. video-kit 0.25.0 makes a split cell honour `focus` as a static crop; see the `_focusNote` on the shots.\n\nBoth plates keep `mockFreeze` — see capture.config.mjs hazard 1. The freeze is what makes the pair a genuine before-and-after of one session instead of a wall-clock race, and it is also what makes the two plates byte-stable.",
       "shots": [
         {
           "id": "live-scan-early",
           "url": "companion-scan-living-room-server-acme.ci.computer",
           "alt": "The scanning HUD early in a scripted session: a SPARSE badge, 2110 points, a coverage bar reading Low and the app's own recommendation to sweep more slowly",
+          "focus": {
+            "landscape": {
+              "x": 0,
+              "y": 0,
+              "w": 0.3,
+              "h": 0.3
+            }
+          },
           "capture": {
             "path": "/?mock=xr8&mockFreeze=90",
             "waitFor": "#start-ar-btn",
@@ -282,12 +290,21 @@
               }
             ],
             "settle": 600
-          }
+          },
+          "_focusNote": "LANDSCAPE ONLY, AND THE SAME RECTANGLE ON BOTH CELLS. A before/after is the comparison; two framings would make it two unrelated pictures.\n\n0.30 square from (0, 0) delivers a window over plate x 0..0.30 by y 0..0.30, which holds the whole HUD (x 0.008..0.185, y 0.012..0.180) with margin down two edges and nothing else. video-kit 0.25.0's floor for a 16:9 split cell is 0.283 of the plate — a cell is 806px of a 3840px capture, so it can crop far tighter than the camera's 0.538 before it starts inventing pixels — and 0.30 sits just above it, honoured exactly rather than capped.\n\nMEASURED, not estimated: crop the committed PNG to 1152x648 at (0,0) and scale it to 806x453, which is exactly what the cell renders, and `SPARSE 2110 pts` / `COVERAGE Low — keep scanning` against `REVIEW 14235 pts` / `COVERAGE Good` come out at about 19px on a 1080-tall canvas. At the uncropped plate they were 5px.\n\nTHE CARTOON ROOM LEAVES THE 16:9 FRAME ENTIRELY, and that is a gain rather than a loss. The room is the one thing on this plate that must not read as anybody's living room (see the _honestyNote); the meter is the thing the caption is about. There is no third option — the furniture starts at plate y 0.48, so any window holding both it and the HUD needs y 0.62, which puts the HUD text back under 9px. The room is still in the 9:16 cut, and in the two onboarding scenes before this one.\n\nNO PORTRAIT FOCUS, and this is a measurement rather than an omission. The 9:16 cell loads the MOBILE plate, where the HUD is a full-width banner across the top third; it reads at cell size today. Cropping it would only throw away the walk it is a HUD over."
         },
         {
           "id": "live-scan-hud",
           "url": "companion-scan-living-room-server-acme.ci.computer",
           "alt": "The same scanning HUD later in the same scripted session, with the point count in the thousands and the coverage bar reading Good",
+          "focus": {
+            "landscape": {
+              "x": 0,
+              "y": 0,
+              "w": 0.3,
+              "h": 0.3
+            }
+          },
           "capture": {
             "path": "/?mock=xr8&mockFreeze=700",
             "waitFor": "#start-ar-btn",
@@ -306,7 +323,8 @@
               }
             ],
             "settle": 600
-          }
+          },
+          "_focusNote": "The same rectangle as `live-scan-early`, deliberately — see the note there."
         }
       ]
     },
@@ -316,7 +334,7 @@
       "transition": "cut",
       "chapter": "world",
       "seconds": 8,
-      "caption": "Three rooms. One world. 69,046 points, 15 objects.",
+      "caption": "Three rooms, one world — on a machine in your house.",
       "narration": "Every room you scan lands in one world, on a machine in your house. Three rooms here. Sixty-nine thousand points, and fifteen objects that came back named.",
       "_editNote": "THIS IS THE SCENE THE FILM'S CENTRAL CLAIM MOVED ONTO. The previous cut made 'Every object named, placed and yours' over the scanner's cartoon feed. Here the same claim is made over a frame that carries its own evidence: the world readout reads 3 scans loaded / 69,046 points / 15 detections, the point clouds are real GLB geometry that went through the real optimize jobs, and plant 89% / sofa 79% / shelf 86% / chair 82% are stored detections with stored confidences. The rooms are generated fixtures rather than a real house — stated in the _honestyNote — but nothing on this frame is drawn by a fixture pretending to be a camera.",
       "shots": [
@@ -326,7 +344,7 @@
           "alt": "The World Editor with three room scans listed in the sidebar, each ready and optimized, the world readout counting 69,046 points and 15 detections, and named objects labelled in the point cloud",
           "motion": "push-in",
           "_motionNote": "Was `drift-down`. Every number the caption cites lives in the top-left quadrant — the three scan rows (x 0-0.16, y 0.14-0.37) and the world readout '3 scans loaded / 69,046 points / 15 detections' (x 0.196-0.30, y 0.07-0.145) — so the beat is an arrival on a fact, not a read down a list. It also breaks the drift the previous screen scene ends on.",
-          "_focusNote": "LANDSCAPE ONLY. The evidence for 'Three rooms. One world. 69,046 points, 15 objects' spans x 0-0.43, y 0.07-0.43 of the plate, which is inside the 0.538 floor, so the floor square is authored directly: scale 2.398, honoured exactly, nothing clamped. The delivered window is x 0-0.538, y 0.049-0.587 — it holds the sidebar's three rows, the world readout, and the left cloud's own labels (plant 89%, sofa 79%, table 95%, shelf 93%, shelf 86%), so the count and the named objects it counts are in one frame.\n\nWHY y IS 0.02 AND NOT 0. See the offset note on `start-screen`: the delivered window sits 0.029 of the plate below the authored y. y 0 would land the window top at 0.029 and slice the Solid / Points / Wire / Semantic mode bar (0.01-0.045) through the middle of its buttons. 0.02 puts the top edge just under it — confirmed on the reconstructed end frame, which opens on 'Companion Scan' and the tab row with the mode bar gone.\n\nNO PORTRAIT FOCUS, and this is a measurement not an omission. The portrait plate drops the world readout entirely and puts a full-width 'Home Office A' detail panel across x 0.47-0.99 at y 0.44-0.585. The tightest portrait window is 0.738, and every 0.738 window that keeps the scan rows readable cuts that panel through its values. A sliced panel reads as a broken render, so the portrait cut keeps its legacy push.",
+          "_focusNote": "LANDSCAPE ONLY. The evidence for 'Three rooms. One world. 69,046 points, 15 objects' spans x 0-0.43, y 0.07-0.43 of the plate, which is inside the 0.538 floor, so the floor square is authored directly: scale 2.398, honoured exactly, nothing clamped. The delivered window is x 0-0.538, y 0.049-0.587 — it holds the sidebar's three rows, the world readout, and the left cloud's own labels (plant 89%, sofa 79%, table 95%, shelf 93%, shelf 86%), so the count and the named objects it counts are in one frame.\n\nWHY y IS 0.02 AND NOT 0. See the offset note on `start-screen`: the delivered window sits 0.029 of the plate below the authored y. y 0 would land the window top at 0.029 and slice the Solid / Points / Wire / Semantic mode bar (0.01-0.045) through the middle of its buttons. 0.02 puts the top edge just under it — confirmed on the reconstructed end frame, which opens on 'Companion Scan' and the tab row with the mode bar gone.\n\nTHE CAPTION NO LONGER CITES THE READOUT — see this scene's `_captionNote`. The landscape window still holds it, and that is still what this rectangle is for; the change is that the words over the 9:16 cut no longer claim a number that plate does not carry.\n\nNO PORTRAIT FOCUS, and this is a measurement not an omission. The portrait plate drops the world readout entirely and puts a full-width 'Home Office A' detail panel across x 0.47-0.99 at y 0.44-0.585. The tightest portrait window is 0.738, and every 0.738 window that keeps the scan rows readable cuts that panel through its values. A sliced panel reads as a broken render, so the portrait cut keeps its legacy push.",
           "focus": {
             "landscape": {
               "x": 0,
@@ -361,7 +379,8 @@
             "settle": 1200
           }
         }
-      ]
+      ],
+      "_captionNote": "THE OLD CAPTION READ \"Three rooms. One world. 69,046 points, 15 objects.\" Both numbers are on the LANDSCAPE plate — the world readout at x 0.196..0.30, y 0.07..0.145 — and NEITHER is on the portrait one. viewer.html:952 hides `#hud-info` whenever `#inspector-panel` is visible below 720px, because 171px of readout and a 230px inspector do not both fit across a 360px canvas, and this shot films the inspector open. So in the 9:16 cut the caption cited two figures that appear nowhere on the frame it sits over. One caption is read against both plates; it can only claim what both of them show.\n\nWhat both plates DO show is the three scan rows — Home Office A, Kitchen A, Living Room A, each \"Ready - optimized\" — so \"three rooms, one world\" is carried by the picture in either cut. The second clause is the film's thesis rather than a reading off the screen, which is the same standing the `what-stays-yours` captions have.\n\nTHE NARRATION IS UNCHANGED and still says sixty-nine thousand points and fifteen objects. That is a true statement about the product, made over a frame that proves it in 16:9; the bar this edit answers is that a CAPTION must not point at numbers the frame does not carry.\n\nTHE BETTER FIX IS A RE-SHOOT, and it is not done here because it is a capture change rather than an edit: closing `#inspector-panel` before the shutter would un-hide `#hud-info` on the mobile plate and put the readout in both cuts. It would also change the LANDSCAPE plate, which currently carries the inspector, so it is a re-capture of this shot in both viewports and a diff to review — not something to smuggle in under a caption fix."
     },
     {
       "id": "named-not-numbered",
