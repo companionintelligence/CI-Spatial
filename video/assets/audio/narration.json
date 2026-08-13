@@ -3,135 +3,27 @@
   "engine": "edge",
   "voice": "en-GB-SoniaNeural",
   "scenes": {
-    "map-quality": {
-      "text": "Three tiers of map quality, and the app names what the next one needs: keyframes, streamed while you scan.",
-      "seconds": 6.864
-    },
-    "open": {
-      "text": "The scan leaves your phone. It lands on your own server.",
-      "seconds": 4.152
-    },
-    "choose-your-path": {
-      "text": "Scan a room with the camera, or upload a walkthrough video you already have.",
-      "seconds": 4.752,
-      "adopted": true
-    },
-    "ftue-permissions": {
-      "text": "The camera sees the room, motion tracks you, and a slow sweep keeps tracking locked.",
-      "seconds": 5.616,
-      "adopted": true
-    },
-    "ftue-capture-modes": {
-      "text": "Tap a frame, auto-capture as you walk, or stream keyframes.",
-      "seconds": 4.536,
-      "adopted": true
-    },
-    "ftue-quality": {
-      "text": "You know when a room is finished scanning, before you walk out of it.",
-      "seconds": 4.128,
-      "adopted": true
-    },
-    "ftue-finish": {
-      "text": "When you're done, export the scan and open it in the desktop editor.",
-      "seconds": 4.416,
-      "adopted": true
-    },
-    "live-scan": {
-      "text": "Walk the room and the map fills in, with coverage scored live as you go.",
-      "seconds": 4.704,
-      "adopted": true
-    },
-    "objects-named": {
-      "text": "Objects come back named and placed, identified on hardware you own.",
-      "seconds": 4.824,
-      "adopted": true
-    },
-    "review-and-export": {
-      "text": "Review everything the scan found, then export it as a file you own.",
-      "seconds": 4.584,
-      "adopted": true
-    },
-    "world-editor": {
-      "text": "Every room you scan lands in one 3D world, stored on your own server.",
-      "seconds": 4.992,
-      "adopted": true
-    },
-    "semantic-world": {
-      "text": "The map is not just geometry. Every object keeps the label it was given.",
-      "seconds": 5.304,
-      "adopted": true
-    },
-    "what-you-get": {
-      "text": "It runs in the browser on your phone and sends scans to your own server.",
-      "seconds": 4.488,
-      "adopted": true
-    },
     "close": {
-      "text": "Companion Scan, from Companion Intelligence. UnCloud your life.",
-      "seconds": 5.714,
+      "text": "Map a room with Companion Scan. Visit ci dot computer. UnCloud your life.",
+      "seconds": 6.711,
       "prosody": {
         "rate": "-8%",
         "pitch": "-2Hz",
         "volume": "+0%"
       }
     },
-    "pain-measure": {
-      "text": "How wide is that alcove? You have lived here four years, and the honest answer is that you would have to go and measure it.",
-      "seconds": 7.388,
+    "the-walk": {
+      "text": "Walk the room and watch a spatial map form as you move.",
+      "seconds": 3.677,
       "prosody": {
-        "rate": "-5%",
-        "pitch": "-1Hz",
-        "volume": "+0%"
-      }
-    },
-    "pain-not-a-file": {
-      "text": "Your photos are files. Your messages are files. The place all of it happened in is the one thing you have never captured.",
-      "seconds": 8.022,
-      "prosody": {
-        "rate": "-5%",
-        "pitch": "-1Hz",
-        "volume": "+0%"
-      }
-    },
-    "quit": {
-      "text": "The tools that fix this want a lidar rig, a subscription, and a copy of your floor plan on somebody else's server. Most people quit right about here.",
-      "seconds": 9.544,
-      "prosody": {
-        "rate": "-5%",
-        "pitch": "-1Hz",
-        "volume": "+0%"
-      }
-    },
-    "title": {
-      "text": "There is a shorter way, and it needs the phone already in your pocket.",
-      "seconds": 4.416,
-      "prosody": {
-        "rate": "-6%",
-        "pitch": "-2Hz",
+        "rate": "-3%",
+        "pitch": "+0Hz",
         "volume": "+0%"
       }
     },
     "two-ways-in": {
-      "text": "Walk a room with the camera, or hand it a walkthrough video you already have.",
-      "seconds": 4.682,
-      "prosody": {
-        "rate": "-3%",
-        "pitch": "+0Hz",
-        "volume": "+0%"
-      }
-    },
-    "the-walk": {
-      "text": "It asks you for one thing. Sweep the room slowly, and the map fills in behind you.",
-      "seconds": 5.735,
-      "prosody": {
-        "rate": "-3%",
-        "pitch": "+0Hz",
-        "volume": "+0%"
-      }
-    },
-    "what-it-watches": {
-      "text": "It watches the light, the reflections and the gaps, and it tells you before you walk out of the room.",
-      "seconds": 6.185,
+      "text": "Start with a guided scan, or open the advanced controls when you need them.",
+      "seconds": 4.824,
       "prosody": {
         "rate": "-3%",
         "pitch": "+0Hz",
@@ -139,17 +31,8 @@
       }
     },
     "the-meter": {
-      "text": "Coverage is scored while you walk, off the point count itself. It goes from sparse to good, and the app is the thing that says so.",
-      "seconds": 8.022,
-      "prosody": {
-        "rate": "-3%",
-        "pitch": "+0Hz",
-        "volume": "+0%"
-      }
-    },
-    "one-world": {
-      "text": "Every room you scan lands in one world, on a machine in your house. Three rooms here. Sixty-nine thousand points, and fifteen objects that came back named.",
-      "seconds": 10.51,
+      "text": "Choose the quality profile that fits this room and this device.",
+      "seconds": 4.221,
       "prosody": {
         "rate": "-3%",
         "pitch": "+0Hz",
@@ -157,8 +40,8 @@
       }
     },
     "named-not-numbered": {
-      "text": "The map is not just geometry. Every object keeps the label it was given, and the confidence it was given with.",
-      "seconds": 7.178,
+      "text": "Detected objects become named parts of the room instead of anonymous geometry.",
+      "seconds": 5.145,
       "prosody": {
         "rate": "-3%",
         "pitch": "+0Hz",
@@ -166,8 +49,8 @@
       }
     },
     "pick-a-room": {
-      "text": "Pick any room and the camera flies to it. Its name, its confidence and its tags are all yours to change.",
-      "seconds": 7.306,
+      "text": "Review the scan, its coverage, and its objects before export.",
+      "seconds": 4.583,
       "prosody": {
         "rate": "-3%",
         "pitch": "+0Hz",
@@ -175,20 +58,11 @@
       }
     },
     "how-good-a-map": {
-      "text": "Three tiers of map quality, and the app names exactly what the next one would need.",
-      "seconds": 5.203,
+      "text": "Then open the world editor to clean up and organize the result.",
+      "seconds": 4.227,
       "prosody": {
         "rate": "-3%",
         "pitch": "+0Hz",
-        "volume": "+0%"
-      }
-    },
-    "what-stays-yours": {
-      "text": "It runs in the browser on your phone, and it sends the scan to hardware you can point at.",
-      "seconds": 5.551,
-      "prosody": {
-        "rate": "-5%",
-        "pitch": "-1Hz",
         "volume": "+0%"
       }
     }
