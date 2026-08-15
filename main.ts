@@ -64,11 +64,52 @@ import type {
 
 const PORT = Number(Deno.env.get('PORT') ?? 8000)
 const SERVER_STARTED_AT = Date.now()
-// Origin phones arrive from. Precedence: explicit prefix → TAILSCALE_HOSTNAME
-// (shared with vite.config.ts) → historical default.
-const TAILSCALE_HOSTNAME = Deno.env.get('TAILSCALE_HOSTNAME')
-const ALLOWED_ORIGIN_PREFIX = Deno.env.get('ALLOWED_ORIGIN_PREFIX')
-  ?? (TAILSCALE_HOSTNAME ? `https://${TAILSCALE_HOSTNAME}` : 'https://liambook.capybara-ulmer.ts.net')
+
+// Hostname phones use to reach this box. Auto-detected with the same precedence order
+// as vite.config.ts's resolveHostname() — env var → `tailscale status --json` → a
+// *.ts.net.crt file in cwd → historical default — ported to Deno's subprocess/fs APIs
+// since Vite runs under Node. The two are genuinely parallel implementations of one
+// algorithm, not a shared module (see docs/foundation-updates/0002).
+const FALLBACK_HOSTNAME = 'liambook.capybara-ulmer.ts.net'
+
+async function resolveHostname(): Promise<{ hostname: string; source: string }> {
+  const fromEnv = Deno.env.get('TAILSCALE_HOSTNAME') ?? Deno.env.get('VITE_HOSTNAME')
+  if (fromEnv) return { hostname: fromEnv, source: 'env' }
+
+  for (const bin of ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale']) {
+    try {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 3000)
+      const { success, stdout } = await new Deno.Command(bin, {
+        args: ['status', '--json'],
+        stdout: 'piped',
+        stderr: 'null',
+        stdin: 'null',
+        signal: controller.signal,
+      }).output()
+      clearTimeout(timer)
+      if (!success) continue
+      const dns = JSON.parse(new TextDecoder().decode(stdout))?.Self?.DNSName
+      if (typeof dns === 'string' && dns.length > 0) {
+        return { hostname: dns.replace(/\.$/, ''), source: 'tailscale cli' }
+      }
+    } catch { /* not installed / not running / timed out — try next */ }
+  }
+
+  try {
+    for await (const entry of Deno.readDir(Deno.cwd())) {
+      if (entry.isFile && entry.name.endsWith('.ts.net.crt')) {
+        return { hostname: entry.name.replace(/\.crt$/, ''), source: 'cert file' }
+      }
+    }
+  } catch { /* unreadable cwd — fall through */ }
+
+  return { hostname: FALLBACK_HOSTNAME, source: 'default' }
+}
+
+const { hostname: TAILSCALE_HOSTNAME, source: HOSTNAME_SOURCE } = await resolveHostname()
+console.log(`[server] Hostname: ${TAILSCALE_HOSTNAME} (via ${HOSTNAME_SOURCE})`)
+const ALLOWED_ORIGIN_PREFIX = Deno.env.get('ALLOWED_ORIGIN_PREFIX') ?? `https://${TAILSCALE_HOSTNAME}`
 
 const SCANS_DIR    = Deno.env.get('SCANS_DIR')    ?? './scans'
 // Companion Memory (CI-Server) target. Read once at boot so the job guard and
