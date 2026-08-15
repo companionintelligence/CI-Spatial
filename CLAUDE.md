@@ -1,0 +1,82 @@
+# CLAUDE.md — CI-Spatial (Companion Scan)
+
+## What this repo does
+
+A browser-based AR room scanner. A phone (Safari via 8th Wall SLAM, or Chrome/Quest via
+native WebXR) walks through a space; a Deno server (`main.ts`, `:8000`) receives
+keyframes and detections; a Vite/Three.js frontend (`:5173`) renders the scan and a
+multi-scan World Editor. Reconstruction runs through two independent pipelines — a
+fast GLB-optimizer (`jobs.ts` → `pipeline.ts`) and a slower, higher-fidelity chain
+(LingBot-Map point clouds → Brush Gaussian-splat training → splat detection/finish).
+Tailscale is the deployment backbone: hostnames, HTTPS certs, and CORS are all built
+around `*.ts.net`.
+
+## Key commands
+
+```bash
+npm start                    # Deno API (:8000) + Vite HTTPS dev server (:5173)
+deno task check              # type-check main.ts (do this after any main.ts change)
+deno task test                # Deno unit tests
+npm run qr -- "/scanner.html?world=default"   # QR code for on-device testing
+npm run logs:watch           # stream a phone's console over the wire (?debug=remote)
+```
+
+`OLLAMA_HOST` must be a full URL (`http://localhost:11434`) — if this machine's
+`OLLAMA_HOST` env var is set to a bind address like `0.0.0.0:11434` (common when
+Ollama itself is configured to listen on all interfaces), override it explicitly for
+this process or the inference engine's client fetch will fail.
+
+## Hard rule: reuse, don't duplicate
+
+This is a cohesive system organized around **things** and **places** — not a
+collection of independent features. See
+[ADR 0001](docs/adr/0001-reuse-existing-domain-model.md) for the full reasoning.
+
+- **Places** — `WorldProject`, `ScanManifest` (the `src/world/types.ts` one),
+  `GeoPose`/`LocalFrame`, a capture Session. Everything that represents *where*.
+- **Things** — `WorldDetection`, `DetectObject`, `FurnitureItem`. Everything that
+  represents *what's in a place*.
+
+**Before adding a new type, env var, job queue, or connection, search for one that
+already does the job.** This codebase already has two cautionary examples of not
+doing that:
+
+- Two unrelated types are both named `ScanManifest` (`jobs.ts` vs
+  `src/world/types.ts`) — same name, different shapes.
+- Two entirely separate job-queue systems exist side by side: `jobs.ts`'s `JobQueue`
+  (only handles `optimize-scan`) and the `WorldJob` system in `main.ts` (ingest,
+  lingbot-map-reconstruct, splat-train/detect/finish, memory-push). They never call
+  each other.
+
+New background job types extend `WorldJob`, not `jobs.ts`. New "thing" data extends
+`WorldDetection`/`DetectObject`. New "place" data extends `ScanManifest`/
+`WorldProject`/`GeoPose` in `src/world/types.ts`. If you're about to define a schema
+field, env var, or connection that already exists under a different name, you're
+about to create this codebase's third `ScanManifest` — don't.
+
+## Ticket workflow (Factory) — local only
+
+- Tickets are drafted **locally only**, under `docs/factory/<wave-name>/`, one
+  markdown file per ticket, from `docs/factory/TICKET_TEMPLATE.md`.
+- **Do not** run `scripts/factory/factory.sh create`, `gh issue create`, or otherwise
+  push a ticket to GitHub. This repo's Factory workflow has no issue board and no
+  issue-comment telemetry — everything stays in the repo as files.
+- Decisions that outlive a single ticket get promoted to an ADR in `docs/adr/`
+  (`scripts/factory/factory.sh adr new "<title>"` — this subcommand is local-only and
+  still fine to use).
+- `/factory <idea>` drafts a new wave's tickets — see `.claude/commands/factory.md`
+  for the full workflow, and `docs/FACTORY.md` for background.
+- A ticket that touches schema, a config variable, or a client↔server connection must
+  cite ADR 0001 in its Pinned conventions and state what it's reusing or extending.
+
+## Known contradictions to watch for
+
+- `LICENSE.md` (a restrictive Commercial Standard License) has previously conflicted
+  with a doc claiming MIT — fixed once in
+  `docs/factory/foundation-updates/0001-reconcile-license-contradiction.md`, but
+  don't assume every doc in the repo agrees; grep before trusting a license claim.
+- Hostname resolution (`TAILSCALE_HOSTNAME`/`ALLOWED_ORIGIN_PREFIX`) must stay in sync
+  between `vite.config.ts`'s `resolveHostname()` and `main.ts`'s copy of the same
+  algorithm — they're deliberately parallel implementations (different runtimes), not
+  a shared module. See
+  `docs/factory/foundation-updates/0002-fix-allowed-origin-prefix-autodetect.md`.
