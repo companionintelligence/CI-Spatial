@@ -477,4 +477,13 @@ The 8th Wall engine ships with a desktop simulator that replays pre-recorded SLA
 
 ## License
 
-MIT
+This repository is licensed under LifeScope INC's **Commercial Standard License**
+(`CI-Commercial-1.0`) — see [`LICENSE.md`](LICENSE.md) for the full text. This is a
+restrictive commercial license, **not MIT** (a prior version of this section incorrectly
+stated MIT).
+
+> **Open question:** whether the Commercial Standard License is the license this repo is
+> actually intended to carry (vs. MIT, as this section previously stated) has not been
+> confirmed by whoever owns licensing at LifeScope INC. Do not treat this repo as
+> MIT-licensed, and do not share it externally, until that's resolved. See
+> [docs/foundation-updates/0001-reconcile-license-contradiction.md](docs/foundation-updates/0001-reconcile-license-contradiction.md).
