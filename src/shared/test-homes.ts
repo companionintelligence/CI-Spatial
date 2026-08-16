@@ -9,6 +9,9 @@
  */
 import { paletteColorFor } from './cv-palette.ts'
 
+// Intentionally NOT part of the RawDetection -> WorldDetection -> StoredDetection
+// lineage (ADR 0001): this is synthetic ground-truth data for generating deterministic
+// test fixtures, not a VLM detection — do not unify it with WorldDetection.
 export interface FurnitureItem {
   label: string
   /** Box centre in room space, metres.  y is the centre height. */

@@ -15,6 +15,7 @@
  */
 import * as THREE from 'three'
 import type { ScanManifest } from '../world/types'
+import { parseLingBotMapPLY } from '../../lingbot_map_ply.ts'
 
 export interface LingBotMapManifest {
   status: 'ok' | 'skipped' | 'error'
@@ -48,72 +49,6 @@ export interface LingBotMapOverlay {
   poseCount: number
 }
 
-/**
- * Parse a binary-little-endian PLY containing `property float x|y|z` and an
- * optional `property uchar red|green|blue` block. Returns flat Float32 / Uint8
- * arrays sized to the vertex count. Ignores any other vertex properties.
- *
- * Exported so the unit test can hit it without spinning up Three.js.
- */
-export function parseBinaryPLY(bytes: Uint8Array): {
-  xyz: Float32Array
-  rgb: Uint8Array | null
-  count: number
-} {
-  const headerEnd = _findHeaderEnd(bytes)
-  if (headerEnd < 0) throw new Error('PLY: missing end_header')
-  const header = new TextDecoder().decode(bytes.subarray(0, headerEnd))
-  const lines = header.split(/\r?\n/)
-  if (lines[0] !== 'ply') throw new Error('PLY: missing magic')
-  const format = lines.find((l) => l.startsWith('format '))
-  if (!format || !format.includes('binary_little_endian')) {
-    throw new Error('PLY: only binary_little_endian is supported')
-  }
-  let count = 0
-  const properties: string[] = []
-  for (const line of lines) {
-    const m = line.match(/^element vertex (\d+)$/)
-    if (m) count = Number(m[1])
-    const p = line.match(/^property (float|uchar) (\w+)$/)
-    if (p) properties.push(`${p[1]}:${p[2]}`)
-  }
-  const expected = ['float:x', 'float:y', 'float:z']
-  for (let i = 0; i < expected.length; i++) {
-    if (properties[i] !== expected[i]) {
-      throw new Error(`PLY: expected XYZ floats first, got ${properties.slice(0, 3).join(',')}`)
-    }
-  }
-  const hasRGB = properties[3] === 'uchar:red' && properties[4] === 'uchar:green' && properties[5] === 'uchar:blue'
-  const stride = hasRGB ? 15 : 12
-
-  const xyz = new Float32Array(count * 3)
-  const rgb = hasRGB ? new Uint8Array(count * 3) : null
-  const view = new DataView(bytes.buffer, bytes.byteOffset + headerEnd, bytes.byteLength - headerEnd)
-  for (let i = 0; i < count; i++) {
-    const offset = i * stride
-    xyz[i * 3 + 0] = view.getFloat32(offset + 0, true)
-    xyz[i * 3 + 1] = view.getFloat32(offset + 4, true)
-    xyz[i * 3 + 2] = view.getFloat32(offset + 8, true)
-    if (hasRGB && rgb) {
-      rgb[i * 3 + 0] = view.getUint8(offset + 12)
-      rgb[i * 3 + 1] = view.getUint8(offset + 13)
-      rgb[i * 3 + 2] = view.getUint8(offset + 14)
-    }
-  }
-  return { xyz, rgb, count }
-}
-
-function _findHeaderEnd(bytes: Uint8Array): number {
-  const needle = new TextEncoder().encode('end_header\n')
-  outer: for (let i = 0; i + needle.length <= bytes.length; i++) {
-    for (let j = 0; j < needle.length; j++) {
-      if (bytes[i + j] !== needle[j]) continue outer
-    }
-    return i + needle.length
-  }
-  return -1
-}
-
 const POINTS_MATERIAL = new THREE.PointsMaterial({
   size: 0.018,
   vertexColors: true,
@@ -142,7 +77,7 @@ const FRUSTUM_MATERIAL = new THREE.LineBasicMaterial({
   opacity: 0.6,
 })
 
-function _buildPoints(parsed: ReturnType<typeof parseBinaryPLY>): THREE.Points {
+function _buildPoints(parsed: ReturnType<typeof parseLingBotMapPLY>): THREE.Points {
   const geom = new THREE.BufferGeometry()
   geom.setAttribute('position', new THREE.BufferAttribute(parsed.xyz, 3))
   let material: THREE.PointsMaterial
@@ -261,7 +196,7 @@ export async function fetchLingBotMapArtifacts(
   let pointCount = 0
   if (plyResp.ok) {
     try {
-      const parsed = parseBinaryPLY(new Uint8Array(await plyResp.arrayBuffer()))
+      const parsed = parseLingBotMapPLY(new Uint8Array(await plyResp.arrayBuffer()))
       pointsGroup.add(_buildPoints(parsed))
       pointCount = parsed.count
     } catch (e) {

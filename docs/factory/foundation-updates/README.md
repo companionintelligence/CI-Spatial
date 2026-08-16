@@ -18,13 +18,13 @@ this wave enforces retroactively.
 |---|--------|---------------|--------|
 | 0001 | [reconcile-license-contradiction](0001-reconcile-license-contradiction.md) | README license claim matches LICENSE.md | ✅ merged (#68) |
 | 0002 | [fix-allowed-origin-prefix-autodetect](0002-fix-allowed-origin-prefix-autodetect.md) | main.ts auto-detects the Tailscale hostname like vite.config.ts | ✅ merged (#68) |
-| 0003 | [rename-jobs-scanmanifest](0003-rename-jobs-scanmanifest.md) | end the `ScanManifest` name collision (jobs.ts side, zero importers) | ⬜ |
-| 0004 | [dedupe-ply-parser](0004-dedupe-ply-parser.md) | delete the viewer's verbatim copy of the binary PLY parser | ⬜ |
+| 0003 | [rename-jobs-scanmanifest](0003-rename-jobs-scanmanifest.md) | end the `ScanManifest` name collision (jobs.ts side, zero importers) | ✅ merged (#71) |
+| 0004 | [dedupe-ply-parser](0004-dedupe-ply-parser.md) | delete the viewer's verbatim copy of the binary PLY parser | ✅ merged (#71) |
 | 0005 | [shared-manifest-envelope](0005-shared-manifest-envelope.md) | one `PipelineManifestBase`; viewer imports real types instead of 5 redeclarations | ⬜ |
-| 0006 | [shared-event-type-constants](0006-shared-event-type-constants.md) | `/events` message types declared once, producers/consumers documented | ⬜ |
-| 0007 | [worlddetection-extends-rawdetection](0007-worlddetection-extends-rawdetection.md) | make the thing-shape lineage real in the type system | ⬜ |
+| 0006 | [shared-event-type-constants](0006-shared-event-type-constants.md) | `/events` message types declared once, producers/consumers documented | ⬜ unblocked (0003 landed) |
+| 0007 | [worlddetection-extends-rawdetection](0007-worlddetection-extends-rawdetection.md) | make the thing-shape lineage real in the type system | ✅ merged (#71) |
 | 0008 | [storage-keys-and-palette-sync](0008-storage-keys-and-palette-sync.md) | central storage-key constants + a test that catches cv-palette drift | ⬜ |
-| 0009 | [config-docs-and-naming-cleanup](0009-config-docs-and-naming-cleanup.md) | document every env var, fix stale repo names, freeze protected identifiers | ⬜ |
+| 0009 | [config-docs-and-naming-cleanup](0009-config-docs-and-naming-cleanup.md) | document every env var, fix stale repo names, freeze protected identifiers | ✅ merged (#71) |
 | 0010 | [single-source-vite-port](0010-single-source-vite-port.md) | `VITE_PORT` env var replaces six magic 5173s | ⬜ |
 
 ## Execution order & parallelization
@@ -57,6 +57,37 @@ Each ticket is one PR to `main` (no stacking — verify landings in git, not by 
 The whole wave is ~10 focused PRs; nothing in it blocks feature work happening in
 parallel elsewhere, except that in-flight feature branches touching `main.ts` should
 land before Batch B starts or rebase after.
+
+## Batch A — landed 2026-08-16
+
+0003, 0004, 0007, and 0009 shipped together as one PR: [#71](https://github.com/companionintelligence/CI-Spatial/pull/71)
+(four isolated worktrees, merged and verified together, one Copilot review comment
+addressed post-merge). No new ADR was created — all four tickets implemented ADR 0001
+directly rather than establishing a new standing rule, so the only ADR in the repo
+remains [0001](../../adr/0001-reuse-existing-domain-model.md) (already linked above).
+
+**What this means for Batch B / Batch C:**
+
+- **0006 is now unblocked.** Its `Dependencies: 0003` is satisfied — `jobs.ts` now
+  declares `OptimizeScanManifest`, not `ScanManifest`. Batch B can start.
+- **0005 needs no rework.** It already wrote its Non-goals and grep-exclusion list
+  against the post-0003 name (`OptimizeScanManifest`), and its Files-impacted list for
+  `src/viewer/lingbot-map.ts` already anticipated 0004's shared-parser import existing
+  there. One line-number drift to be aware of: `LingBotMapManifest`'s declaration
+  in that file moved from line 19 to line 20 (0004 added one import line above it) —
+  re-grep before trusting the cited line, per this wave's own "grep ground truth
+  yourself" convention.
+- **0008 can cite 0009's registry directly.** 0008's Non-goals references "0009's
+  do-not-rename list" abstractly; that list is now live at `CLAUDE.md`'s "Do not
+  rename" section and can be linked directly.
+- **0009's naming Open Question is still unresolved** — "Companion Scan" vs
+  "CI-Spatial" — and continues to block the cosmetic renames noted below in
+  "Explicitly deferred." No later ticket in this wave depends on it, but it's still
+  an open owner decision.
+- **Unplanned files touched:** a post-merge PR review caught a JSDoc comment 0007
+  dropped in the `WorldDetection extends RawDetection` refactor. The fix landed on
+  `src/inference/prompt.ts` and root `prompt.ts` (not originally in 0007's Files
+  impacted) — worth knowing if a later ticket also touches those files.
 
 ## Explicitly deferred (found, not ticketed — needs an owner decision first)
 

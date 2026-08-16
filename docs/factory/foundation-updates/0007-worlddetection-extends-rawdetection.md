@@ -4,6 +4,11 @@
 > **Commit style:** `refactor(spatial): WorldDetection extends RawDetection; document thing-shape lineage`
 > **Design:** this ticket is the spec
 > **Dependencies:** None
+> **Status:** ✅ Done — merged via [PR #71](https://github.com/companionintelligence/CI-Spatial/pull/71)
+> (commit `1e52f56`, plus a review follow-up `4d24989`), 2026-08-16. Note: `RawDetection`
+> actually lives at `src/inference/prompt.ts:15` (the browser-safe copy resolver.ts
+> already imported), not root `prompt.ts:13` as this ticket's Goal section says — the
+> root `prompt.ts` is the Deno-side twin, kept hand-in-sync per its own header comment.
 
 ## Goal
 
@@ -51,15 +56,27 @@ thing shapes (`DetectObject`, `FurnitureItem`) at their declaration sites so nob
 ## Open questions & answers
 
 - Q: Import RawDetection straight from `prompt.ts` or re-export via
-  `src/world/types.ts`? — OPEN, implementer's call after checking the Vite build;
-  record here.
+  `src/world/types.ts`? — A: **Straight import**, and it turned out to already exist:
+  `resolver.ts:16` already had `import type { RawDetection } from '../inference/prompt'`
+  (used elsewhere in the file for a `RawDetection[]` parameter), so no new import or
+  `src/world/types.ts` re-export was needed — just changing the interface declaration
+  to `extends RawDetection` and deleting the restated fields.
+- Q: (found during review, not originally listed) — `WorldDetection`'s doc comment on
+  `bbox` (`/** Normalised [x1,y1,x2,y2] bounding box from VLM inference */`) was lost
+  when the field moved to the inherited base. — A: restored on `RawDetection.bbox` in
+  `src/inference/prompt.ts` (and mirrored to root `prompt.ts` per its own
+  must-stay-in-sync header) rather than re-added to `WorldDetection`, since duplicating
+  it there would recreate the drift risk this ticket removes. See PR #71 review thread.
 
 ## Files impacted
 
 - Changed: `src/spatial/resolver.ts` (extends; delete 4 restated fields)
 - Changed: `src/viewer/splat-detect-layer.ts`, `src/shared/test-homes.ts` (doc
   comments stating why these shapes are intentionally separate, citing ADR 0001)
-- Possibly changed: `src/world/types.ts` (re-export, per Open question)
+- ~~Possibly changed: `src/world/types.ts` (re-export, per Open question)~~ — not
+  needed; see Open Q&A.
+- Changed (post-merge review follow-up, not originally scoped): `src/inference/prompt.ts`,
+  `prompt.ts` (restored the `bbox` JSDoc onto `RawDetection` — see Open Q&A).
 
 ## Schema required
 
@@ -67,17 +84,19 @@ None — `extends` produces an identical structural type; zero runtime change.
 
 ## Definition of Done
 
-- [ ] `WorldDetection extends RawDetection`; the restated field block is gone.
-- [ ] `DetectObject` and `FurnitureItem` carry declaration-site comments naming their
+- [x] `WorldDetection extends RawDetection`; the restated field block is gone.
+- [x] `DetectObject` and `FurnitureItem` carry declaration-site comments naming their
       producer and why they are not part of the detection lineage.
-- [ ] No runtime diff: scanning, detection pinning, session storage, and GLB export
+- [x] No runtime diff: scanning, detection pinning, session storage, and GLB export
       behave identically.
 
 ## Tests
 
-- [ ] `deno task check` passes.
-- [ ] `npm run test:mock` passes (mock-engine scan flow exercises
-      RawDetection→WorldDetection→StoredDetection end to end).
+- [x] `deno task check` passes.
+- [x] `npm run test:mock` passes (mock-engine scan flow exercises
+      RawDetection→WorldDetection→StoredDetection end to end). 27 passed / 23 skipped;
+      3 pre-existing failures unrelated to this ticket (verified identical against the
+      pre-batch base commit — headless-Chromium mock-SLAM limitation of the sandbox).
 
 ```
 deno task check
@@ -86,7 +105,7 @@ npm run test:mock
 
 ## Acceptance Criteria
 
-- [ ] Given a future field added to `RawDetection`, when `deno task check` runs, then
+- [x] Given a future field added to `RawDetection`, when `deno task check` runs, then
       `WorldDetection` and `StoredDetection` inherit it automatically instead of
       silently drifting.
 
@@ -99,7 +118,9 @@ npm run test:mock
 
 ## Subtasks
 
-1. [ ] Apply the `extends`, delete the restated block, resolve the import path (Open
+1. [x] Apply the `extends`, delete the restated block, resolve the import path (Open
        question).
-2. [ ] Add the two declaration-site comments.
-3. [ ] Run verification.
+2. [x] Add the two declaration-site comments.
+3. [x] Run verification.
+4. [x] (Review follow-up) Restore the `bbox` JSDoc lost in the restatement, on
+       `RawDetection` rather than `WorldDetection`.

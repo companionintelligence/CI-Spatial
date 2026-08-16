@@ -4,6 +4,10 @@
 > **Commit style:** `docs(config): sync env-var docs, fix stale repo names, freeze protected identifiers`
 > **Design:** this ticket is the spec
 > **Dependencies:** None
+> **Status:** ✅ Done — merged via [PR #71](https://github.com/companionintelligence/CI-Spatial/pull/71)
+> (commit `1af3686`), 2026-08-16. The product-naming Open Question below is still
+> genuinely unresolved and continues to block the cosmetic renames in this wave
+> README's "Explicitly deferred" section.
 
 ## Goal
 
@@ -62,10 +66,13 @@ about the system" with zero runtime risk:
 ## Open questions & answers
 
 - Q: Is the product name going forward "Companion Scan" or "CI-Spatial" (affects
-  package.json name, glTF generator tag, UA string)? — OPEN — owner decision;
+  package.json name, glTF generator tag, UA string)? — **Still OPEN** — owner decision;
   cosmetic renames blocked on it, tracked here so it isn't lost.
 - Q: `SPLAT_FINISH_SH_ITERS` — documented but unread, or read somewhere the audit
-  missed? — OPEN until the Before-implementation grep resolves it; fix accordingly.
+  missed? — A: **It is read** — `splat_finish.ts`'s `resolveParams()` calls
+  `intFromEnv('SPLAT_FINISH_SH_ITERS', 10)` (`splat_finish.ts:113`, declared
+  `splat_finish.ts:51`). `deploy/cscan.env.example`'s existing documentation of it was
+  already correct; no fix was needed on either side.
 
 ## Files impacted
 
@@ -79,18 +86,20 @@ None.
 
 ## Definition of Done
 
-- [ ] Every env var read by code at repo root, `vite.config.ts`, and `scripts/*.mjs`
+- [x] Every env var read by code at repo root, `vite.config.ts`, and `scripts/*.mjs`
       appears in at least one example file (or is explicitly listed as test-only).
-- [ ] No doc instructs cloning or targeting `CI-Web-XR-Scan`.
-- [ ] `CLAUDE.md` carries the do-not-rename registry with break-consequences.
-- [ ] The `SPLAT_FINISH_SH_ITERS` question is resolved and the wrong side fixed.
+- [x] No doc instructs cloning or targeting `CI-Web-XR-Scan`.
+- [x] `CLAUDE.md` carries the do-not-rename registry with break-consequences.
+- [x] The `SPLAT_FINISH_SH_ITERS` question is resolved and the wrong side fixed
+      (it was already correct — see Open Q&A).
 
 ## Tests
 
-- [ ] Docs-only change: `deno task check` still passes (proves no code was touched
+- [x] Docs-only change: `deno task check` still passes (proves no code was touched
       accidentally).
-- [ ] Manual: follow README's clone instructions verbatim on a scratch path — they
-      work.
+- [x] Manual: follow README's clone instructions verbatim on a scratch path — they
+      work (re-verified independently post-merge with a real
+      `git clone https://github.com/companionintelligence/CI-Spatial.git` + `cd CI-Spatial`).
 
 ```
 deno task check
@@ -99,10 +108,10 @@ git clone https://github.com/companionintelligence/CI-Spatial.git /tmp/clone-che
 
 ## Acceptance Criteria
 
-- [ ] Given a new operator reading only the example env files, when they configure a
+- [x] Given a new operator reading only the example env files, when they configure a
       box, then no behavior-changing variable is invisible to them
       (`WORLD_STRICT_AUTH` above all).
-- [ ] Given a future contributor tempted to "clean up" `ci-xr-scan`-style names, when
+- [x] Given a future contributor tempted to "clean up" `ci-xr-scan`-style names, when
       they read `CLAUDE.md`, then they know exactly which renames destroy user data.
 
 ## Risks / potential issues
@@ -114,8 +123,8 @@ git clone https://github.com/companionintelligence/CI-Spatial.git /tmp/clone-che
 
 ## Subtasks
 
-1. [ ] Re-grep env reads; reconcile against both example files; resolve the
+1. [x] Re-grep env reads; reconcile against both example files; resolve the
        `SPLAT_FINISH_SH_ITERS` question.
-2. [ ] Add missing vars with audience-appropriate comments.
-3. [ ] Fix the two stale repo references.
-4. [ ] Add the do-not-rename registry to `CLAUDE.md`.
+2. [x] Add missing vars with audience-appropriate comments.
+3. [x] Fix the two stale repo references.
+4. [x] Add the do-not-rename registry to `CLAUDE.md`.

@@ -35,6 +35,10 @@ export interface SplatDetectManifest {
   timing?: { elapsedMs?: number }
 }
 
+// Intentionally NOT part of the RawDetection -> WorldDetection -> StoredDetection
+// lineage (ADR 0001): this is the external splat_analyzer tool's own output shape
+// (oriented 3D boxes), a different producer with a different contract than a VLM
+// detection — do not unify it with WorldDetection.
 export interface DetectObject {
   label: string
   position: { x: number; y: number; z: number }

@@ -19,12 +19,7 @@ import type { PointCloud } from '../scene/pointcloud'
 const DEDUP_RADIUS_M = 0.3
 const FALLBACK_DEPTH_M = 2.0
 
-export interface WorldDetection {
-  label: string
-  confidence: number
-  description: string
-  /** Normalised [x1,y1,x2,y2] bounding box from VLM inference */
-  bbox: [number, number, number, number]
+export interface WorldDetection extends RawDetection {
   worldPos: { x: number; y: number; z: number }
   worldRot: { x: number; y: number; z: number; w: number }
   captureTimestamp: number

@@ -4,6 +4,10 @@
 > **Commit style:** `refactor(viewer): import the shared PLY parser instead of a copied one`
 > **Design:** this ticket is the spec
 > **Dependencies:** None
+> **Status:** ✅ Done — merged via [PR #71](https://github.com/companionintelligence/CI-Spatial/pull/71)
+> (commit `dcfa7b9`), 2026-08-16. `LingBotMapManifest`'s declaration in
+> `src/viewer/lingbot-map.ts` shifted from line 19 to line 20 (one import line added)
+> — 0005 cites the old line number, re-grep before relying on it there.
 
 ## Goal
 
@@ -47,18 +51,16 @@ did. Make the viewer import it and delete the copy.
 ## Open questions & answers
 
 - Q: Does Vite bundle a root-level `.ts` import into the browser build without config
-  changes? — A: verify by building; `vite.config.ts` has no `src/`-only restriction,
-  and TS type-only imports from `src/world/types.ts` already cross that boundary. If
-  the *value* import fails at build time, move `lingbot_map_ply.ts` to
-  `src/shared/ply.ts` and update the two Deno-side importers instead — both outcomes
-  are acceptable; record which happened here. — OPEN until build verified.
+  changes? — A: **Yes, confirmed by `npm run build`.** `import { parseLingBotMapPLY }
+  from '../../lingbot_map_ply.ts'` bundles cleanly with no config changes — `vite.config.ts`
+  has no `src/`-only restriction. The `src/shared/ply.ts` fallback was not needed.
 
 ## Files impacted
 
 - Changed: `src/viewer/lingbot-map.ts` (delete `parseBinaryPLY`/`_findHeaderEnd`,
-  import the shared parser)
-- Possibly moved: `lingbot_map_ply.ts` → `src/shared/ply.ts` (only if the Open
-  question resolves that way; then also update `lingbot_map_glb.ts`'s import)
+  import the shared parser) — 3 insertions, 68 deletions.
+- ~~Possibly moved: `lingbot_map_ply.ts` → `src/shared/ply.ts`~~ — not needed; the
+  Open question resolved in favor of the direct import.
 
 ## Schema required
 
@@ -66,16 +68,16 @@ None.
 
 ## Definition of Done
 
-- [ ] Exactly one binary-PLY full parser exists in the repo.
-- [ ] The viewer's LingBot-Map overlay still renders a reconstructed point cloud
+- [x] Exactly one binary-PLY full parser exists in the repo.
+- [x] The viewer's LingBot-Map overlay still renders a reconstructed point cloud
       (same `{xyz, rgb, count}` consumption).
-- [ ] The Open question above is resolved and recorded.
+- [x] The Open question above is resolved and recorded.
 
 ## Tests
 
-- [ ] `deno task check` passes.
-- [ ] `npm run build` succeeds (proves Vite can bundle the import).
-- [ ] `deno task test` passes (`lingbot_map.test.ts`, `lingbot_map_glb.test.ts` cover
+- [x] `deno task check` passes.
+- [x] `npm run build` succeeds (proves Vite can bundle the import).
+- [x] `deno task test` passes (`lingbot_map.test.ts`, `lingbot_map_glb.test.ts` cover
       the server-side consumer).
 
 ```
@@ -86,7 +88,7 @@ deno task test
 
 ## Acceptance Criteria
 
-- [ ] Given a session with `lingbot-map.point-cloud.ply` present, when the viewer
+- [x] Given a session with `lingbot-map.point-cloud.ply` present, when the viewer
       loads its LingBot-Map overlay, then the point cloud renders exactly as before.
 
 ## Risks / potential issues
@@ -100,8 +102,8 @@ deno task test
 
 ## Subtasks
 
-1. [ ] Diff the two implementations; record any difference found in Open Q&A.
-2. [ ] Replace the viewer's copy with the shared import (or move the module to
-       `src/shared/ply.ts` per the Open question).
-3. [ ] Run verification commands; exercise the viewer overlay against
+1. [x] Diff the two implementations; record any difference found in Open Q&A. No
+       behavioral difference found — only local variable naming and export visibility.
+2. [x] Replace the viewer's copy with the shared import.
+3. [x] Run verification commands; exercise the viewer overlay against
        `scripts/make-lingbot-fixture.mjs` output.
