@@ -28,7 +28,7 @@ export interface Job {
   note?: string
 }
 
-export interface ScanManifest {
+export interface OptimizeScanManifest {
   source: string
   createdAt: string
   stats: Record<string, number>
@@ -153,7 +153,7 @@ export class JobQueue {
     await Deno.writeFile(`${this.scansDir}/${optimizedName}`, result.optimized.bytes)
 
     // pipeline returns coarsest-first; name finest as lod1, coarser as lod2…
-    const lodEntries: ScanManifest['artifacts']['lods'] = []
+    const lodEntries: OptimizeScanManifest['artifacts']['lods'] = []
     const finestFirst = [...result.lods].sort((a, b) => (a.voxelM ?? 0) - (b.voxelM ?? 0))
     for (let i = 0; i < finestFirst.length; i++) {
       const lod = finestFirst[i]
@@ -168,7 +168,7 @@ export class JobQueue {
     }
     lodEntries.sort((a, b) => b.voxelM - a.voxelM) // coarsest first for the manifest
 
-    const manifest: ScanManifest = {
+    const manifest: OptimizeScanManifest = {
       source: job.target,
       createdAt: new Date().toISOString(),
       stats: result.stats as unknown as Record<string, number>,

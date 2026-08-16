@@ -41,8 +41,8 @@ collection of independent features. See
 already does the job.** This codebase already has two cautionary examples of not
 doing that:
 
-- Two unrelated types are both named `ScanManifest` (`jobs.ts` vs
-  `src/world/types.ts`) — same name, different shapes.
+- Two unrelated types used to both be named `ScanManifest` (`jobs.ts` vs
+  `src/world/types.ts`) — fixed by renaming the `jobs.ts` one to `OptimizeScanManifest`.
 - Two entirely separate job-queue systems exist side by side: `jobs.ts`'s `JobQueue`
   (only handles `optimize-scan`) and the `WorldJob` system in `main.ts` (ingest,
   lingbot-map-reconstruct, splat-train/detect/finish, memory-push). They never call
