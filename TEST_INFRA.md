@@ -1,6 +1,6 @@
-# Test Infrastructure Guide — Companion Scan
+# Test Infrastructure Guide — CI-Spatial
 
-This guide details the test architecture, configuration, commands, and setups for testing the **CI-Web-XR-Scan** project.
+This guide details the test architecture, configuration, commands, and setups for testing the **CI-Spatial** project.
 
 ---
 

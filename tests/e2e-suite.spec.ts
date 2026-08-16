@@ -7,6 +7,8 @@ import { mergeDetections } from '../src/spatial/resolver'
 import { normalizeDetections, parseDetections } from '../prompt.ts'
 import { ONBOARDING_KEY } from '../src/shared/storage-keys'
 
+// 5173 here is just the last-resort default (matches VITE_PORT's own default in
+// main.ts/vite.config.ts). Set VITE_URL to point at a differently-ported instance.
 const BASE = process.env['VITE_URL'] ?? 'https://liambook.capybara-ulmer.ts.net:5173'
 
 test.beforeEach(async ({ context }) => {

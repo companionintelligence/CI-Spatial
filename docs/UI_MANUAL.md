@@ -1,6 +1,6 @@
-# Companion Scan — UI/UX Manual
+# CI-Spatial — UI/UX Manual
 
-A surface-by-surface guide to every screen and interactive control in Companion Scan:
+A surface-by-surface guide to every screen and interactive control in CI-Spatial:
 the mobile AR scanner (`index.html` + `src/main.ts` + `src/ui/*`), the WebXR landing
 page (`webxr.html`), the phone smoke-test page (`public/smoke.html`), and the desktop
 World Scan Editor (`viewer.html` + `src/viewer/*`).

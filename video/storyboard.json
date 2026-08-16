@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/companionintelligence/CI-Common/main/packages/video-kit/schema/storyboard.schema.json",
   "app": {
     "id": "ci-web-xr-scan",
-    "name": "Companion Scan",
+    "name": "CI-Spatial",
     "repo": "companionintelligence/CI-Web-XR-Scan",
     "marketplaceId": "ci-web-xr-scan",
     "website": "ci.computer"
@@ -100,7 +100,7 @@
       "transition": "cut",
       "seconds": 5,
       "minSeconds": 3.5,
-      "title": "Companion Scan",
+      "title": "CI-Spatial",
       "caption": "Walk the room. Keep the map.",
       "narration": "There is a shorter way, and it needs the phone already in your pocket.",
       "mark": "./assets/app-icon.png",

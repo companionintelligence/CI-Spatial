@@ -3,17 +3,35 @@
 > **Branch:** `refactor/single-source-vite-port`
 > **Commit style:** `refactor(config): single source of truth for the Vite port`
 > **Design:** this ticket is the spec — extend the pattern 0002 established for hostnames
-> **Dependencies:** 0006 (both edit `main.ts` — land 0006 first)
+> **Dependencies:** 0006 (both edit `main.ts` — land 0006 first). **0006 has landed** —
+> line numbers below re-verified current as of 2026-08-16.
+> **Status:** ✅ Done — merged via [PR #76](https://github.com/companionintelligence/CI-Spatial/pull/76)
+> (commit `a6dcb10`), 2026-08-16. The implementer's own re-grep found
+> `viteBaseUrlFromEnv` had drifted one line further still, to `main.ts:1461` — this
+> ticket's line citations were already stale by the time work started; treat any line
+> number in this file as a starting hint, not ground truth.
 
 ## Goal
 
 The Vite port `5173` is magic-numbered independently in at least six code sites:
-`main.ts:1457` (`viteBaseUrlFromEnv`, plus the `:5173` fallback at 1461-1462),
+`main.ts:1455` (`viteBaseUrlFromEnv`, plus the `:5173` fallback around line 1458 —
+these shifted from the `1457`/`1461-1462` this ticket originally cited, because 0006
+added an `EVENT` import near the top of `main.ts`; re-grep, don't trust either number),
 `scripts/qr.mjs:17`, `scripts/house-links.mjs:36`, `scripts/logs-watch.mjs:19`,
 `playwright.config.ts:21-22`, and per-spec literals in `tests/*.spec.ts`. Only
 `scripts/video-stage.mjs:45` is parameterized. Ticket 0002 unified *hostname*
 resolution between the Deno and Node sides; this ticket does the same for the port:
 one env var (`VITE_PORT`, default `5173`), read by every site that needs it.
+
+**A seventh site, missing from the original audit:** `scripts/test-box.mjs` spawns
+its own isolated Vite (`--port` set from its own `TEST_BOX_VITE_PORT`, default 5273)
+and its own isolated Deno server (`main.ts`, given `PORT`/`SCANS_DIR`/`WORLDS_DIR`/
+`SUMMARIES_DIR` but no `VITE_PORT`). Without also passing `VITE_PORT` into that Deno
+child's env, `viteBaseUrlFromEnv()` still defaults to `5173` inside the isolated
+instance even though its actual Vite is on `5273` — this is precisely the failure
+this ticket's own Acceptance Criteria is meant to prevent, and it will not actually
+be prevented unless `test-box.mjs` is in scope. Confirmed by reading
+`scripts/test-box.mjs` directly, 2026-08-16.
 
 ## Non-goals
 
@@ -49,6 +67,18 @@ one env var (`VITE_PORT`, default `5173`), read by every site that needs it.
   `deploy/systemd/cscan-web.service` (documents `:5173` in comments — update prose).
 - `scripts/video-stage.mjs:45`'s existing `VIDEO_PORT` param — leave it (isolated
   staging port, intentionally separate), but add a comment distinguishing it.
+- `scripts/test-box.mjs`'s existing `TEST_BOX_VITE_PORT`/`TEST_BOX_API_PORT` env
+  vars (lines 13, 23-24) — these are deliberately namespaced and stay as the
+  *inputs* the script reads for its own isolated instance; don't rename or merge
+  them into `VITE_PORT`. What's missing is the *output* wiring: the script's own
+  local `VITE_PORT` constant (line 24, already named the same as the new env var
+  by coincidence — don't let that read as "already done") needs to be passed as
+  `VITE_PORT: String(VITE_PORT)` into the Deno child's env at the `launch('deno', ...)`
+  call (line 117-123), alongside the existing `PORT`/`SCANS_DIR`/`WORLDS_DIR`/
+  `SUMMARIES_DIR`.
+- `scripts/house-links.mjs:36` already declares `const VITE_PORT = 5173` as a plain
+  literal — this is the exact site to convert to reading `process.env.VITE_PORT`,
+  not a naming collision to work around.
 
 ## Open questions & answers
 
@@ -61,6 +91,8 @@ one env var (`VITE_PORT`, default `5173`), read by every site that needs it.
 
 - Changed: `vite.config.ts`, `main.ts`, `scripts/qr.mjs`, `scripts/house-links.mjs`,
   `scripts/logs-watch.mjs`, `playwright.config.ts`, `.env.example`
+- Changed: `scripts/test-box.mjs` (pass `VITE_PORT` into the isolated Deno child's
+  env — see Before implementation; not in the original audit, added 2026-08-16).
 - Changed (comments/prose only): `tests/*.spec.ts` where the literal remains via
   `VITE_URL` default, `deploy/systemd/cscan-web.service`
 
@@ -71,19 +103,22 @@ None — one new optional env var `VITE_PORT` (default `5173`), documented in
 
 ## Definition of Done
 
-- [ ] `grep -rn "5173" --include="*.ts" --include="*.mjs"` finds only: the single
+- [x] `grep -rn "5173" --include="*.ts" --include="*.mjs"` finds only: the single
       default in each runtime's one-liner (`vite.config.ts`, `main.ts`), test files
       deriving via `VITE_URL`, and docs.
-- [ ] With `VITE_PORT` unset: `npm start`, `npm run qr`, share links, and
+- [x] With `VITE_PORT` unset: `npm start`, `npm run qr`, share links, and
       `npm run test:mock` behave byte-identically to before.
-- [ ] With `VITE_PORT=5273`: Vite serves on 5273, share links and QR URLs say 5273.
+- [x] With `VITE_PORT=5273`: Vite serves on 5273, share links and QR URLs say 5273.
 
 ## Tests
 
-- [ ] `deno task check` passes.
-- [ ] `npm run test:mock` passes with `VITE_PORT` unset.
-- [ ] Manual: `VITE_PORT=5273 npm start` → confirm the served port, then
-      `curl localhost:8000/worlds/default/share` shows `:5273` links.
+- [x] `deno task check` passes.
+- [x] `npm run test:mock` passes with `VITE_PORT` unset. 27 passed / 23 skipped; 3
+      pre-existing failures matching the established wave baseline exactly.
+- [x] Manual: `VITE_PORT=5273 npm start` → confirm the served port, then
+      `curl localhost:8000/worlds/default/share` shows `:5273` links. Verified
+      directly: Vite served on `:5273` with no fallback message, and all four share
+      links (`owner`/`editor`/`viewer`/`scanner`) correctly said `:5273`.
 
 ```
 deno task check
@@ -93,9 +128,10 @@ VITE_PORT=5273 npm start   # manual spot-check, then stop
 
 ## Acceptance Criteria
 
-- [ ] Given two instances on one box (the `test-box.mjs` isolation case), when the
+- [x] Given two instances on one box (the `test-box.mjs` isolation case), when the
       second sets `VITE_PORT`+`PORT`+`API_TARGET`, then no hardcoded 5173 leaks into
-      its share links or QR output.
+      its share links or QR output. `test-box.mjs` now passes its own `VITE_PORT`
+      through to its Deno child, satisfying this.
 
 ## Risks / potential issues
 
@@ -109,10 +145,15 @@ VITE_PORT=5273 npm start   # manual spot-check, then stop
 
 ## Subtasks
 
-1. [ ] Add the `VITE_PORT` read (+ default) to `vite.config.ts` (serve side) and
+1. [x] Add the `VITE_PORT` read (+ default) to `vite.config.ts` (serve side) and
        `main.ts` (`viteBaseUrlFromEnv`).
-2. [ ] Swap the three scripts' literals to the same read.
-3. [ ] Update `playwright.config.ts` default construction; leave `VITE_URL` as the
+2. [x] Swap the three scripts' literals to the same read (`scripts/qr.mjs`,
+       `scripts/house-links.mjs`, `scripts/logs-watch.mjs`).
+3. [x] Wire `scripts/test-box.mjs` to pass its own `VITE_PORT` value into the
+       isolated Deno child's env.
+4. [x] Update `playwright.config.ts` default construction; leave `VITE_URL` as the
        spec-level override.
-4. [ ] Document in `.env.example`; update service-unit prose.
-5. [ ] Run verification including the `VITE_PORT=5273` spot-check.
+5. [x] Document in `.env.example`; update service-unit prose (also added a
+       distinguishing comment to `scripts/video-stage.mjs`'s separate `VIDEO_PORT`,
+       per Before implementation).
+6. [x] Run verification including the `VITE_PORT=5273` spot-check.
