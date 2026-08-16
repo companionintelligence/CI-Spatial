@@ -64,6 +64,10 @@ import type {
 } from './src/world/types.ts'
 
 const PORT = Number(Deno.env.get('PORT') ?? 8000)
+// Vite dev-server port. Same variable name and default as vite.config.ts's read of
+// process.env.VITE_PORT — deliberately parallel one-liners (see docs/foundation-updates/0002
+// for the hostname precedent this follows), not a shared module.
+const VITE_PORT = Deno.env.get('VITE_PORT') ?? '5173'
 const SERVER_STARTED_AT = Date.now()
 
 // Hostname phones use to reach this box. Auto-detected with the same precedence order
@@ -1455,12 +1459,12 @@ function clientBaseUrl(c: { req: { url: string; header: (name: string) => string
 function viteBaseUrlFromEnv(): string {
   try {
     const url = new URL(ALLOWED_ORIGIN_PREFIX)
-    if (!url.port) url.port = '5173'
+    if (!url.port) url.port = VITE_PORT
     return url.toString().replace(/\/$/, '')
   } catch {
     return TAILSCALE_HOSTNAME
-      ? `https://${TAILSCALE_HOSTNAME}:5173`
-      : 'https://liambook.capybara-ulmer.ts.net:5173'
+      ? `https://${TAILSCALE_HOSTNAME}:${VITE_PORT}`
+      : `https://liambook.capybara-ulmer.ts.net:${VITE_PORT}`
   }
 }
 

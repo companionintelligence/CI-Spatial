@@ -14,7 +14,7 @@
 import { execFileSync } from 'node:child_process'
 import qrcode from 'qrcode-terminal'
 
-const PORT = 5173
+const PORT = process.env.VITE_PORT ?? 5173
 
 function resolveHostname() {
   const fromEnv = process.env.TAILSCALE_HOSTNAME ?? process.env.VITE_HOSTNAME

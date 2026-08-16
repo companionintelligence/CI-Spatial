@@ -42,6 +42,8 @@ import { tmpdir } from 'node:os'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
+// VIDEO_PORT is intentionally its own isolated staging-port knob, separate from
+// the app-wide VITE_PORT (main.ts/vite.config.ts) — don't conflate the two.
 const PORT = process.env.VIDEO_PORT ?? '5173'
 const API_PORT = process.env.VIDEO_API_PORT ?? '8000'
 const SCAN_COUNT = Number(process.env.VIDEO_SCANS ?? 3)
