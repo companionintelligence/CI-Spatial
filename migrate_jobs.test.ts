@@ -217,6 +217,28 @@ Deno.test('migrateJobsToWorldJob: no jobs.json is a clean no-op, not an error', 
   }
 })
 
+Deno.test('migrateJobsToWorldJob: a malformed jobs.json throws instead of silently no-op-ing', async () => {
+  // Regression guard: treating a parse failure like "file absent" would report
+  // "nothing to migrate" for a file that genuinely holds history, inviting an
+  // operator to delete it — the exact data loss this migration exists to avoid.
+  const scansDir = await Deno.makeTempDir({ prefix: 'migrate-jobs-scans-bad-' })
+  const worldsDir = await Deno.makeTempDir({ prefix: 'migrate-jobs-worlds-bad-' })
+  try {
+    await Deno.writeTextFile(`${worldsDir}/default.json`, JSON.stringify(makeWorldFixture(), null, 2))
+    await Deno.writeTextFile(`${scansDir}/jobs.json`, '[{"id":"job-1","target":"a.glb",')
+    let threw = false
+    try {
+      await migrateJobsToWorldJob({ scansDir, worldsDir, log: () => {} })
+    } catch (err) {
+      threw = true
+      assert(String(err).includes('not valid JSON'))
+    }
+    assert(threw, 'a malformed jobs.json must not be mistaken for an absent one')
+  } finally {
+    await cleanup(scansDir, worldsDir)
+  }
+})
+
 Deno.test('migrateJobsToWorldJob: missing default world is a clear, actionable error, not a crash', async () => {
   const scansDir = await Deno.makeTempDir({ prefix: 'migrate-jobs-scans-noworld-' })
   const worldsDir = await Deno.makeTempDir({ prefix: 'migrate-jobs-worlds-noworld-' })

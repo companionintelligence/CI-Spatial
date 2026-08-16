@@ -1892,6 +1892,12 @@ async function recoverWorldJobsOnBoot(): Promise<void> {
   for (const { worldId, shareSlug, jobs } of recoveredByWorld) {
     for (const job of jobs) {
       broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId, job })
+      // Requeue is a real status transition, so it fires the legacy
+      // 'job-update' event too (no-op for every type but optimize-scan) —
+      // same pairing every other optimize-scan transition uses, per ticket
+      // 0004. Nothing is listening this early at boot, but keeping the two
+      // events paired means the rule holds wherever recovery is called from.
+      broadcastLegacyJobUpdate(job)
       // Recovery doesn't get its own execution path — it just seeds the
       // normal pump (ADR 0003 "Crash recovery", step 4).
       worldJobPump.enqueue(shareSlug, job.jobId)
@@ -3234,13 +3240,23 @@ app.get('/events', (c) => {
     // named surfaces, found via this ticket's closing grep and folded into
     // scope here. Same translate-then-count as the other surfaces so the
     // legacy queued|running vocabulary is preserved.
+    // Guarded: an unhandled rejection here would terminate the Deno process,
+    // so a client that disconnects between 'open' and this send (or a
+    // transiently unreadable world file) must not be able to take the server
+    // down. The handshake is best-effort — no in-repo listener branches on
+    // 'hello', so dropping it degrades nothing.
     void (async () => {
-      const world = await loadWorld('default')
-      const pending = world.jobs
-        .filter(j => j.type === 'optimize-scan')
-        .map(worldJobToLegacyJob)
-        .filter(j => j.status === 'queued' || j.status === 'running').length
-      socket.send(JSON.stringify({ type: 'hello', jobs: pending }))
+      try {
+        const world = await loadWorld('default')
+        if (socket.readyState !== WebSocket.OPEN) return
+        const pending = world.jobs
+          .filter(j => j.type === 'optimize-scan')
+          .map(worldJobToLegacyJob)
+          .filter(j => j.status === 'queued' || j.status === 'running').length
+        socket.send(JSON.stringify({ type: 'hello', jobs: pending }))
+      } catch (err) {
+        console.error('[events] hello handshake failed:', err)
+      }
     })()
   })
   socket.addEventListener('close', () => eventSockets.delete(socket))

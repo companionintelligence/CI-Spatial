@@ -152,12 +152,31 @@ export async function migrateJobsToWorldJob(opts: MigrateJobsOptions): Promise<M
 
   const summary: MigrationSummary = { migrated: [], skippedAlreadyMigrated: [], skippedMissingScan: [] }
 
+  // "File absent" is the expected no-op; anything else (malformed JSON, a
+  // permission error) must NOT be swallowed. A silent no-op here reads as
+  // "nothing to migrate" — and since this migration exists precisely so
+  // history isn't lost on upgrade, an operator could then delete a jobs.json
+  // that was never actually read.
+  let raw: string
+  try {
+    raw = await Deno.readTextFile(jobsPath)
+  } catch (err) {
+    if (err instanceof Deno.errors.NotFound) {
+      log(`[migrate-jobs] no legacy jobs.json found at ${jobsPath} — nothing to migrate.`)
+      return summary
+    }
+    throw err
+  }
+
   let legacyJobs: Job[]
   try {
-    legacyJobs = JSON.parse(await Deno.readTextFile(jobsPath)) as Job[]
-  } catch {
-    log(`[migrate-jobs] no legacy jobs.json found at ${jobsPath} — nothing to migrate.`)
-    return summary
+    legacyJobs = JSON.parse(raw) as Job[]
+  } catch (err) {
+    throw new Error(
+      `[migrate-jobs] ${jobsPath} exists but is not valid JSON, so its history cannot be migrated. ` +
+        `Refusing to skip it silently — fix or move the file, then re-run. ` +
+        `Parse error: ${err instanceof Error ? err.message : String(err)}`,
+    )
   }
   if (!Array.isArray(legacyJobs) || legacyJobs.length === 0) {
     log(`[migrate-jobs] ${jobsPath} has no job entries — nothing to migrate.`)
