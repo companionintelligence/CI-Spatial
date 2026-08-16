@@ -6,6 +6,11 @@
 > **Dependencies:** 0009 (hard — 0009 logs the naming decision as an open question;
 > this ticket implements whichever answer that question gets, and must not start
 > until it's actually answered by an owner)
+> **Status:** ⬜ Still blocked, 2026-08-16 — 0009's Open Question is still unanswered.
+> Files impacted re-verified against current `main` ahead of the decision landing
+> (two file-list corrections and a line-number fix — see Goal/Non-goals/Files
+> impacted); no code changed, since the Non-goals section still forbids opening a
+> PR before the decision is recorded.
 
 ## Goal
 
@@ -13,9 +18,11 @@
 `CI-Spatial` on GitHub, but the running product still calls itself "Companion Scan"
 internally — `package.json`'s name (`companion-scan-web`), the glTF `generator` tag
 (`src/export/gltf.ts:110`, `'ci-xr-scan'`), the geo-tracker's User-Agent string
-(`src/geo/geo-tracker.ts:196`, `'ci-xr-scan/1.0'`), plus prose across
-`scripts/generate-test-homes.mjs`, `TEST_INFRA.md`, `history/ORIGINAL_REQUEST.md`,
-`video/package.json`, and `video/storyboard.json`. **This ticket does not decide the
+(`src/geo/geo-tracker.ts:197` — shifted from `:196` since 0008 added an import above
+it; re-grep, `'ci-xr-scan/1.0'`), plus prose across `TEST_INFRA.md` and
+`video/storyboard.json` (see the corrected file list below — the original audit's
+`scripts/generate-test-homes.mjs` and `history/ORIGINAL_REQUEST.md` hits do not
+actually hold up on re-verification, 2026-08-16). **This ticket does not decide the
 name.** It exists only to execute the rename once an owner answers 0009's open
 question, so the decision and the mechanical work stay separate and the mechanical
 work doesn't stall the decision.
@@ -29,6 +36,22 @@ work doesn't stall the decision.
   (`'ci-web-xr-scan'`), or `memory_push.ts`'s `sourceSystem` default
   (`'companion-scan'`). Every one of those breaks persisted user data or an external
   integration if renamed — 0009 froze them for a reason that doesn't change here.
+- Do not touch `history/ORIGINAL_REQUEST.md` — removed from Files impacted,
+  2026-08-16. It doesn't contain a "Companion Scan" hit at all (only an unrelated
+  literal working-directory path, `/Users/liam/devel/3d/CI-Web-XR-Scan`, from the
+  original request record), and 0009's implementation already established the
+  precedent that this file is an immutable historical record, not live docs — editing
+  it would be revisionist regardless of what naming decision this ticket implements.
+- Do not touch `video/storyboard.json`'s `_focusNote` prose fields — they describe,
+  in pixel-level detail, where the words "Companion" and "Scan" actually land in an
+  **already-rendered** video frame (used to compute crop/zoom windows for a video
+  editing pipeline). Renaming the product doesn't re-render that video; touching this
+  prose would desync the metadata from the real asset it describes without fixing
+  anything. Scope this file to its `"name"`/`"title"` fields only (see Files impacted).
+- Do not touch `video/package.json`'s `@companionintelligence/video-kit` dependency
+  — that's the GitHub org/npm-scope name (`companionintelligence`, matching the repo
+  path used everywhere, including 0009's own fixes), not the product display name.
+  Renaming it would break the actual package resolution.
 - Do not open a PR for this ticket until the naming decision (0009's open question)
   has an explicit, dated answer from an owner recorded in this ticket's Open
   Questions section. A ticket implementing an unmade decision is exactly the kind of
@@ -62,11 +85,38 @@ work doesn't stall the decision.
 
 ## Files impacted
 
-Per 0009's cosmetic-safe list (re-verified at implementation time):
-`package.json`, `package-lock.json`, `src/export/gltf.ts`,
-`src/geo/geo-tracker.ts`, `scripts/generate-test-homes.mjs`, `TEST_INFRA.md`,
-`history/ORIGINAL_REQUEST.md`, `video/package.json`, `video/storyboard.json`, and any
-remaining prose hits in `docs/*.md`.
+Re-verified against `main` at 2026-08-16 (corrected from the original audit — see
+Non-goals for what changed and why):
+
+- `package.json` (`"name": "companion-scan-web"`), `package-lock.json` (regenerate
+  after the `package.json` name change — `npm install`, don't hand-edit).
+- `src/export/gltf.ts:110` (`generator: 'ci-xr-scan'`).
+- `src/geo/geo-tracker.ts:197` (UA string `'ci-xr-scan/1.0'`).
+- `deploy/systemd/cscan-web.service` (comments only — "Companion Scan" at lines 1
+  and 6; not in the original audit's file list, found during this re-verification).
+- `TEST_INFRA.md` — two independent things, don't conflate them: line 1's title
+  ("Companion Scan") is the naming-decision-dependent rename this ticket handles;
+  line 3's `**CI-Web-XR-Scan**` is the *separate*, already-known-stale repo-name
+  issue 0009 explicitly declined to fix here (out of its scope, not this ticket's
+  either, strictly — but trivial to fix in the same pass if touching the file
+  anyway; use judgment). Ignore line 57's "companion JSON metadata" — generic
+  English, not a brand reference.
+- `video/storyboard.json` — narrowly, its `"name": "Companion Scan"` (line 5) and
+  `"title": "Companion Scan"` (line 103) fields only. Its `"repo":
+  "companionintelligence/CI-Web-XR-Scan"` field (line 6) is the same separate
+  stale-repo-name category as `TEST_INFRA.md` above, not this ticket's core scope.
+  Do NOT touch the `_focusNote` prose (see Non-goals) or the
+  `companion-scan-living-room-server-acme.ci.computer` placeholder hostname
+  strings (used repeatedly as example video-staging data, not a real identifier —
+  confirm before touching, don't assume).
+- Any remaining prose hits in `docs/*.md` (re-grep; don't trust this list blindly —
+  it has already been wrong once, see above).
+
+~~`scripts/generate-test-homes.mjs`~~ — dropped. Its only match on re-verification
+is the phrase "companion metadata" in a comment, meaning "an accompanying file,"
+not the product name — a false positive in the original audit.
+
+~~`history/ORIGINAL_REQUEST.md`~~ — dropped; see Non-goals.
 
 ## Schema required
 
