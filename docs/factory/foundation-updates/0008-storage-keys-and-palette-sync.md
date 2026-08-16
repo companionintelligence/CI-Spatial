@@ -4,6 +4,10 @@
 > **Commit style:** `refactor(shared): central storage-key constants + cv-palette sync test`
 > **Design:** this ticket is the spec
 > **Dependencies:** None
+> **Status:** ✅ Done — merged via [PR #73](https://github.com/companionintelligence/CI-Spatial/pull/73)
+> (commit `43f896c`), 2026-08-16. `video/capture.config.mjs:315` (mentioned in Goal as
+> another site with the `'companion-scan-onboarded'` literal) was intentionally left
+> untouched — it was never in this ticket's own Files impacted / Files to change list.
 
 ## Goal
 
@@ -80,20 +84,25 @@ None — constant declarations only; every value byte-identical to today's liter
 
 ## Definition of Done
 
-- [ ] `src/shared/storage-keys.ts` declares every key with a comment stating what
-      breaks if it's ever renamed.
-- [ ] All `src/` and `tests/` literal sites import from it; `public/` files carry
+- [x] `src/shared/storage-keys.ts` declares every key with a comment stating what
+      breaks if it's ever renamed (citing CLAUDE.md's "Do not rename" registry
+      directly for the four keys already listed there, landed by 0009).
+- [x] All `src/` and `tests/` literal sites import from it; `public/` files carry
       pointer comments.
-- [ ] The sync test fails if (a) xr8-mock's palette colours drift from `CV_PALETTE`,
+- [x] The sync test fails if (a) xr8-mock's palette colours drift from `CV_PALETTE`,
       (b) sw.js's queue/cache/sync literals drift from the constants file, or
-      (c) `src/pwa.ts`'s sync tag differs from `sw.js`'s.
+      (c) `src/pwa.ts`'s sync tag differs from `sw.js`'s. All three verified with a
+      deliberate perturb-then-revert of a `CV_PALETTE` colour.
 
 ## Tests
 
-- [ ] `deno task check` passes.
-- [ ] The new sync test passes, and fails when a palette colour is deliberately
-      perturbed (verify once, revert).
-- [ ] `npm run test:mock` passes (mock fixture + FTUE keys exercised).
+- [x] `deno task check` passes.
+- [x] The new sync test passes, and fails when a palette colour is deliberately
+      perturbed (verify once, revert). Done: changed the sofa RGB by one value,
+      confirmed only the palette-sync test failed with a clear diff, reverted,
+      confirmed all 5 `sync.test.ts` tests pass again.
+- [x] `npm run test:mock` passes (mock fixture + FTUE keys exercised). 27 passed /
+      23 skipped; 3 pre-existing failures matching the known baseline.
 
 ```
 deno task check
@@ -103,7 +112,7 @@ npm run test:mock
 
 ## Acceptance Criteria
 
-- [ ] Given a future edit to `CV_PALETTE`, when tests run, then the stale xr8-mock
+- [x] Given a future edit to `CV_PALETTE`, when tests run, then the stale xr8-mock
       copy is caught mechanically instead of by the "keep in sync" comment.
 
 ## Risks / potential issues
@@ -115,8 +124,11 @@ npm run test:mock
 
 ## Subtasks
 
-1. [ ] Create `storage-keys.ts` with all keys + rename-consequence comments.
-2. [ ] Swap literal sites to imports (src + tests); add pointer comments (public).
-3. [ ] Write the sync test (palette + SW literals + sync-tag pair); wire into
-       `deno task test`.
-4. [ ] Run verification, including the deliberate-perturbation check.
+1. [x] Create `storage-keys.ts` with all keys + rename-consequence comments.
+2. [x] Swap literal sites to imports (src + tests); add pointer comments (public).
+       The three Playwright specs pass the constant into `addInitScript`/
+       `page.evaluate` as an argument, since those closures serialize into the
+       browser context and can't close over an outer import directly.
+3. [x] Write the sync test (palette + SW literals + sync-tag pair); wire into
+       `deno task test` (via `deno.json`).
+4. [x] Run verification, including the deliberate-perturbation check.

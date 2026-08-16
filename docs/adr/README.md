@@ -15,3 +15,4 @@ shape future work, promote it to an ADR and link back to the issue.
 <!-- Add a line per ADR: `- [NNNN. Title](NNNN-title.md) — Status` -->
 
 - [0001. Reuse existing schema, variables, and connections — organize around things and places](0001-reuse-existing-domain-model.md) — Accepted
+- [0002. Shared types importable by the browser must live in Deno-API-free files](0002-shared-types-importable-by-the-browser-must-live-in-deno-api-free-files.md) — Accepted
