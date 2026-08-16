@@ -1,7 +1,7 @@
 ---
 description: Turn a feature idea into commit-recipe Factory tickets, drafted locally as a wave under docs/factory/.
 argument-hint: [rough feature idea]
-allowed-tools: Bash(scripts/factory/factory.sh:*), Bash(git:*), Bash(grep:*), Bash(find:*), Read, Write
+allowed-tools: Bash(scripts/factory/factory.sh:*), Bash(git:*), Bash(grep:*), Bash(find:*), Read, Write, Edit
 ---
 
 You are running the **Factory ticket workflow**. Turn a rough feature idea into a set
@@ -52,7 +52,20 @@ short follow-up batch.
 Present a numbered list: each ticket's **title** + one-line **goal** + **type**. Prefer
 several small, independently-mergeable tickets over one big one. Note ordering / `blocked by`.
 Also propose the **wave name** (a short kebab-case slug for this batch of work — the
-folder will be `docs/factory/<wave-name>/`). Get explicit approval before proceeding.
+folder will be `docs/factory/<wave-name>/`).
+
+**Justify the wave against the atlas.** Read `docs/factory/atlas.html` and state, as
+part of this proposal, which of its entries this wave would change — one line each, in
+before/after form ("today X; after this wave, Y"). This is the wave's justification,
+and it is a real gate, not a formality:
+
+- If an entry won't diff legibly ("improves consistency", "tidies types"), the work
+  isn't pinned to anything real yet — return to Phase 1/2 and read more code before
+  proposing.
+- If the "before" isn't described in the atlas at all, say so — the atlas has a gap,
+  and filling it is part of this wave's Phase 6.
+
+Get explicit approval before proceeding.
 
 ## Phase 4 — Pin conventions (inspect before drafting)
 
@@ -123,6 +136,27 @@ No GitHub issues are created. Once the drafts are approved, the wave folder
 (`docs/factory/<wave-name>/`) *is* the finished deliverable. Confirm the folder
 contains one file per approved ticket and nothing else pending.
 
+Write a `README.md` in the wave folder: the ticket table, the execution order and
+which tickets are safe to run in parallel (name the shared files that force any
+ordering constraint), and anything found-but-deferred with the reason.
+
+**Then update the atlas** (`docs/factory/atlas.html`) — the Phase 3 justification,
+now made concrete. This is part of finalizing the wave, not optional follow-up:
+
+1. Add a wave card to the **Development waves** section: name, folder path, progress
+   bar, what it does, and a one-line **impact** statement for once it ships.
+2. Add a `class="diff is-planned"` block to every atlas entry the wave changes —
+   `<span class="was">` with the current fact struck through, `<span class="now">`
+   with what the wave makes true, and a `<span class="tag">` citing wave/ticket.
+   Mark the surrounding feature card `class="fcard changing"` or table row
+   `class="row-changing"`.
+3. If the wave's "before" was missing from the atlas, add that description first —
+   a diff against nothing is not a diff.
+
+Keep it to one line of before and one of after per entry, plus the citation. **Never
+copy ticket content into the atlas** — it points at tickets, it doesn't restate them.
+See `docs/FACTORY.md` § "The atlas" for the full markup vocabulary and rules.
+
 If any ticket's decision will outlive it (i.e. it should govern future tickets too),
 promote it to an ADR now: `scripts/factory/factory.sh adr new "<title>"`, then link
 the new ADR from the ticket's Pinned conventions.
@@ -144,5 +178,13 @@ Instead:
 - As you complete each item, check its box in **Definition of Done** / **Tests** /
   **Acceptance Criteria** / **Subtasks** directly in the ticket file. A ticket with
   unchecked boxes is not done.
+- **When the ticket lands, update the atlas** (`docs/factory/atlas.html`): flip its
+  diff block from `is-planned` to `is-done`, swap the badge to
+  `<span class="status-badge done">✅ done</span>` with the merged PR number, and
+  advance the wave card's progress bar. A landed ticket the atlas still shows as
+  planned is how the atlas stops being trustworthy.
+- **If landing the ticket made an atlas sentence false, fix the sentence** — not just
+  the badge. Once a wave fully lands, its changes are the system's *base* description,
+  not a pending diff.
 - If a decision made while implementing should govern future work, promote it:
   `scripts/factory/factory.sh adr new "<title>"`.

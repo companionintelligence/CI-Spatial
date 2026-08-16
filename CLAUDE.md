@@ -68,6 +68,12 @@ about to create this codebase's third `ScanManifest` — don't.
   for the full workflow, and `docs/FACTORY.md` for background.
 - A ticket that touches schema, a config variable, or a client↔server connection must
   cite ADR 0001 in its Pinned conventions and state what it's reusing or extending.
+- **`docs/factory/atlas.html` is the living picture of the system, and it is how a
+  wave justifies itself.** Planning a wave includes stating which atlas entries it
+  changes (before/after) and writing that markup; landing a ticket includes flipping
+  its badge to done and fixing any sentence the change made false. A wave whose diff
+  won't state legibly isn't ready to plan. Full rules: `docs/FACTORY.md` § "The
+  atlas". Never copy ticket content into it — it points, it doesn't restate.
 
 ## Known contradictions to watch for
 
