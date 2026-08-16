@@ -29,6 +29,7 @@
  *   the Ollama/torch GPUs on this box. Writing .compressed.ply needs no GPU.
  */
 
+import { fromFileUrl } from '@std/path'
 import { countPlyVertices } from './splat_train.ts'
 // The manifest types live in src/world/manifests.ts, not here — see that
 // file's header (it's the canonical, Deno-API-free home so the browser
@@ -38,7 +39,11 @@ import { countPlyVertices } from './splat_train.ts'
 import type { SplatFinishManifest, SplatFinishSizes } from './src/world/types.ts'
 export type { SplatFinishManifest, SplatFinishSizes }
 
-const DEFAULT_CLI_PATH = new URL('./node_modules/@playcanvas/splat-transform/bin/cli.mjs', import.meta.url).pathname
+// fromFileUrl, not `.pathname`: the latter yields "/C:/…" on Windows, which
+// Deno.Command resolves against the drive root and fails to find.
+const DEFAULT_CLI_PATH = fromFileUrl(
+  new URL('./node_modules/@playcanvas/splat-transform/bin/cli.mjs', import.meta.url),
+)
 
 export interface SplatFinishRunOptions {
   /** Absolute path to the scan's trained splat (<SCANS>/<base>.splat.ply). */

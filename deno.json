@@ -11,6 +11,7 @@
     "test:auth": "deno test --allow-read --allow-write --allow-env --allow-net --allow-run portal_auth.test.ts memory_push.test.ts lingbot_map.test.ts"
   },
   "imports": {
+    "@std/path": "jsr:@std/path@^1.0.0",
     "hono": "npm:hono@^4.7.0",
     "hono/cors": "npm:hono@^4.7.0/cors",
     "hono/logger": "npm:hono@^4.7.0/logger",

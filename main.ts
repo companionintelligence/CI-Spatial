@@ -34,6 +34,7 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
+import { fromFileUrl } from '@std/path'
 import { InferenceEngine } from './inference.ts'
 import type { Job, JobStatus, OptimizeScanManifest } from './jobs.ts'
 import { optimizeScan } from './pipeline.ts'
@@ -146,8 +147,20 @@ const SPLAT_FINISH_AUTO = Deno.env.get('SPLAT_FINISH_AUTO') !== '0'
 const ENGINE_LOAD_WAIT_MS = 15_000 // max time /infer waits for the model to finish loading
 const INFER_TIMEOUT_MS = 60_000    // hard cap on a single engine.infer() call
 
+/**
+ * Path to a script shipped next to this file, as a native OS path.
+ *
+ * `new URL(rel, import.meta.url).pathname` is *not* that: on Windows it yields
+ * `/C:/devel/…`, which `Deno.Command` then resolves against the drive root as
+ * `C:\C:\devel\…` and the spawned process fails with "Cannot find module".
+ * `fromFileUrl` is the conversion that respects the platform.
+ */
+function localScriptPath(relative: string): string {
+  return fromFileUrl(new URL(relative, import.meta.url))
+}
+
 const LINGBOT_MAP_SCRIPT = Deno.env.get('LINGBOT_MAP_SCRIPT') ??
-  new URL('./scripts/lingbot_map_worker.py', import.meta.url).pathname
+  localScriptPath('./scripts/lingbot_map_worker.py')
 
 function isAllowedOrigin(origin: string): boolean {
   try {
@@ -808,7 +821,7 @@ app.post('/sessions/:id/finalize', async (c) => {
 // registers a session-backed scan in the default world and auto-enqueues a
 // lingbot-map-reconstruct job (which estimates the per-frame poses splat-train +
 // splat-detect later consume). Returns 202 { sessionId, scanId, jobId, frameCount }.
-const INGEST_VIDEO_SCRIPT = new URL('./scripts/ingest-video.mjs', import.meta.url).pathname
+const INGEST_VIDEO_SCRIPT = localScriptPath('./scripts/ingest-video.mjs')
 
 app.post('/ingest-video', async (c) => {
   // Guard oversized uploads up front via Content-Length (before buffering).
@@ -906,7 +919,7 @@ app.post('/ingest-video', async (c) => {
 // then registers a session-backed scan and auto-enqueues lingbot-map-reconstruct
 // exactly like /ingest-video. Returns 202 { sessionId, scanId, jobId, frameCount,
 // droppedBlurry }.
-const INGEST_PHOTOS_SCRIPT = new URL('./scripts/ingest-photos.mjs', import.meta.url).pathname
+const INGEST_PHOTOS_SCRIPT = localScriptPath('./scripts/ingest-photos.mjs')
 
 app.post('/ingest-photos', async (c) => {
   // Guard oversized uploads up front via Content-Length (before buffering).
