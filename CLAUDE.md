@@ -6,10 +6,12 @@ A browser-based AR room scanner. A phone (Safari via 8th Wall SLAM, or Chrome/Qu
 native WebXR) walks through a space; a Deno server (`main.ts`, `:8000`) receives
 keyframes and detections; a Vite/Three.js frontend (`:5173`) renders the scan and a
 multi-scan World Editor. Reconstruction runs through two independent pipelines — a
-fast GLB-optimizer (`jobs.ts` → `pipeline.ts`) and a slower, higher-fidelity chain
-(LingBot-Map point clouds → Brush Gaussian-splat training → splat detection/finish).
-Tailscale is the deployment backbone: hostnames, HTTPS certs, and CORS are all built
-around `*.ts.net`.
+fast GLB-optimizer (the `optimize-scan` `WorldJob` type → `pipeline.ts`) and a slower,
+higher-fidelity chain (LingBot-Map point clouds → Brush Gaussian-splat training →
+splat detection/finish). Both pipelines run as `WorldJob`s through the single job
+system in `main.ts` (`docs/adr/0003-merged-job-system.md`) — see "Hard rule: reuse,
+don't duplicate" below. Tailscale is the deployment backbone: hostnames, HTTPS certs,
+and CORS are all built around `*.ts.net`.
 
 ## Key commands
 
@@ -38,18 +40,24 @@ collection of independent features. See
   represents *what's in a place*.
 
 **Before adding a new type, env var, job queue, or connection, search for one that
-already does the job.** This codebase already has two cautionary examples of not
-doing that:
+already does the job.** This codebase has two cautionary examples of not doing that
+— both since fixed, but worth knowing so a third doesn't happen:
 
 - Two unrelated types used to both be named `ScanManifest` (`jobs.ts` vs
   `src/world/types.ts`) — fixed by renaming the `jobs.ts` one to `OptimizeScanManifest`.
-- Two entirely separate job-queue systems exist side by side: `jobs.ts`'s `JobQueue`
-  (only handles `optimize-scan`) and the `WorldJob` system in `main.ts` (ingest,
-  lingbot-map-reconstruct, splat-train/detect/finish, memory-push). They never call
-  each other.
+- Two entirely separate job-queue systems used to exist side by side: `jobs.ts`'s
+  `JobQueue` (only handled `optimize-scan`) and the `WorldJob` system in `main.ts`
+  (ingest, lingbot-map-reconstruct, splat-train/detect/finish, memory-push). They never
+  called each other. Merged into one system, `WorldJob`, per
+  `docs/adr/0003-merged-job-system.md` and `docs/factory/01-merge-jobs/`: `JobQueue`
+  was ported onto `WorldJob` (which gained crash recovery, single-flight execution,
+  dedupe, and bounded history to match what `JobQueue` already guaranteed) and then
+  retired — the class no longer exists, and `jobs.ts` now holds only the legacy
+  `Job`/`JobStatus`/`OptimizeScanManifest` shape definitions the `/jobs` API shim and
+  the on-disk manifest format still use.
 
-New background job types extend `WorldJob`, not `jobs.ts`. New "thing" data extends
-`WorldDetection`/`DetectObject`. New "place" data extends `ScanManifest`/
+New background job types extend `WorldJob`, not a new parallel queue. New "thing" data
+extends `WorldDetection`/`DetectObject`. New "place" data extends `ScanManifest`/
 `WorldProject`/`GeoPose` in `src/world/types.ts`. If you're about to define a schema
 field, env var, or connection that already exists under a different name, you're
 about to create this codebase's third `ScanManifest` — don't.

@@ -38,13 +38,13 @@ splat-train, which holds a GPU for minutes).
 
 ## Tickets
 
-| # | Ticket | One-line goal |
-|---|--------|---------------|
-| 0001 | [design-adr-merged-job-system](0001-design-adr-merged-job-system.md) | ADR: field/status mapping, persistence, recovery, event plan — the contract every later ticket implements |
-| 0002 | [worldjob-runner-hardening](0002-worldjob-runner-hardening.md) | Give the WorldJob runner JobQueue's guarantees: boot recovery, single-flight, dedupe, bounded history |
-| 0003 | [port-optimize-scan-to-worldjob](0003-port-optimize-scan-to-worldjob.md) | `optimize-scan` becomes a `WorldJobType`; the three auto-enqueue routes re-point |
-| 0004 | [legacy-api-and-event-shims](0004-legacy-api-and-event-shims.md) | `/jobs`, `/jobs/:id`, `GET /scans` job fields, and the `'job-update'` event keep working unchanged |
-| 0005 | [retire-jobqueue](0005-retire-jobqueue.md) | One-shot `jobs.json` migration, delete `JobQueue`, update docs |
+| # | Ticket | One-line goal | Status |
+|---|--------|---------------|--------|
+| 0001 | [design-adr-merged-job-system](0001-design-adr-merged-job-system.md) | ADR: field/status mapping, persistence, recovery, event plan — the contract every later ticket implements | ✅ done — [ADR 0003](../../adr/0003-merged-job-system.md) |
+| 0002 | [worldjob-runner-hardening](0002-worldjob-runner-hardening.md) | Give the WorldJob runner JobQueue's guarantees: boot recovery, single-flight, dedupe, bounded history | ✅ done |
+| 0003 | [port-optimize-scan-to-worldjob](0003-port-optimize-scan-to-worldjob.md) | `optimize-scan` becomes a `WorldJobType`; the three auto-enqueue routes re-point | ✅ done |
+| 0004 | [legacy-api-and-event-shims](0004-legacy-api-and-event-shims.md) | `/jobs`, `/jobs/:id`, `GET /scans` job fields, and the `'job-update'` event keep working unchanged | ✅ done |
+| 0005 | [retire-jobqueue](0005-retire-jobqueue.md) | One-shot `jobs.json` migration, delete `JobQueue`, update docs | ✅ done |
 
 ## Execution order & parallelization
 
@@ -97,6 +97,46 @@ and all five tickets:
 
 - Distributed/multi-worker execution (`WorldJob.workerId`/`capabilities` hint at it) —
   the merged runner stays single-process, single-flight.
-- Removing the five placeholder `WorldJobType`s that have no runner
+- Removing the seven placeholder `WorldJobType`s that have no runner
   (`extract-layers`, `align-scan`, `merge-points`, `semantic-pass`,
-  `depth-reconstruct`) — ticket 0001 documents them; removal is an owner call.
+  `depth-reconstruct`, plus `ingest`/`export-world` — found while drafting ADR 0003;
+  the original count here was wrong, see the ADR) — documented as out of scope;
+  removal is an owner call.
+
+## Landed — 2026-08-16
+
+All five tickets implemented and adversarially verified against
+[ADR 0003](../../adr/0003-merged-job-system.md) in one pass, landing as a single PR
+(this wave is small enough, and serial enough, that per-ticket PRs would have meant
+reviewing four intermediate states of `main.ts` that were never independently
+deployable — unlike foundation-updates' disjoint batches).
+
+- **New:** `world_job_pump.ts` (single-flight pump, dedupe, bounded history, boot
+  recovery — unit-testable in isolation from `main.ts`'s side effects) and its test
+  suite; `migrate_jobs.ts` (the one-shot `jobs.json` → `WorldJob` migration,
+  idempotent by reusing the legacy job's own `id` as `jobId`) and its test suite;
+  `tests/api-optimize-scan-worldjob.spec.ts`; `tests/mock-optimize-scan-job-update.spec.ts`.
+- **`jobs.ts`** kept (not deleted) — `main.ts` still needs `Job`/`JobStatus`/
+  `OptimizeScanManifest`, so it was trimmed to just those type definitions; the
+  `JobQueue` class and `MAX_JOB_HISTORY` are gone. 225 lines → 51.
+- **`CLAUDE.md`, ADR 0001, `src/shared/events.ts`** updated to past tense — the "two
+  job systems" they described no longer exist.
+- **Two real bugs caught by adversarial verification before landing:** 0004's first
+  pass never broadcast the `'job-update'`/`queued` event on job creation (the chip
+  the viewer shows for "queued" was permanently unreachable for `optimize-scan`);
+  fixed and re-verified live. 0001's original Non-goals list undercounted the
+  no-runner `WorldJobType`s as five when it's actually seven (`ingest`/`export-world`
+  have the identical shape) — corrected in the ADR.
+- **One pre-existing, unrelated bug found, not fixed:** `src/viewer/viewer.ts` has a
+  race between its bulk initial scan load and the job-completion reload for the same
+  scan, which can show a stale error instead of "Optimized" under a large world —
+  confirmed pre-existing (`git diff --stat -- src/viewer/viewer.ts` across this
+  entire wave is empty) and out of scope (not in any ticket's Files impacted; this
+  wave's Non-goals rule out viewer code changes). Flagged as a follow-up.
+- **Also pre-existing, confirmed via `git diff`/`git stash` and unrelated:** 9
+  `splat_detect.test.ts`/`splat_train.test.ts` failures from a Windows exec-bit
+  detection gap in `isRunnable()`, reproducing identically with or without this
+  wave's changes.
+- **Deferred, out of this wave's given scope:** `README.md`/`architecture.md` still
+  describe `JobQueue` as live (only `CLAUDE.md`/ADR 0001/`events.ts` were in ticket
+  0005's scope) — flagged as a follow-up.

@@ -281,19 +281,19 @@
         </div>
 
         <div class="wave-card">
-          <div class="whead"><h3>01-merge-jobs</h3><span class="status-badge planned">0 / 5 done</span></div>
+          <div class="whead"><h3>01-merge-jobs</h3><span class="status-badge done">5 / 5 done</span></div>
           <div class="path">docs/factory/01-merge-jobs/</div>
-          <div class="wave-progress" title="all 5 tickets planned; unblocked now that foundation-updates is fully merged"><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span></div>
-          <div class="wave-progress-label">design → runner hardening → port optimize-scan → shims → retirement (strictly serial) — unblocked, ready to start</div>
-          <p>Merges the two background-job systems this atlas flagged — <code class="v">jobs.ts</code>'s <code class="v">JobQueue</code> and the <code class="v">WorldJob</code> system — into one, canonical survivor <code class="v">WorldJob</code>. Strictly serial: the runner gains crash recovery and single-flight execution <em>before</em> optimize-scan moves onto it, so the merge is a strict upgrade, not a regression.</p>
-          <p class="impact"><strong>Impact once shipped:</strong> <code class="v">jobs.ts</code>/<code class="v">JobQueue</code> is retired. Every background job — GLB optimize, LingBot-Map, splat train/detect/finish, memory-push — runs through one queue, one status vocabulary, one event stream, with crash recovery for job types that never had it.</p>
+          <div class="wave-progress" title="all 5 tickets landed"><span class="seg done"></span><span class="seg done"></span><span class="seg done"></span><span class="seg done"></span><span class="seg done"></span></div>
+          <div class="wave-progress-label">design → runner hardening → port optimize-scan → shims → retirement — landed 2026-08-16</div>
+          <p>Merged the two background-job systems this atlas flagged — <code class="v">jobs.ts</code>'s <code class="v">JobQueue</code> and the <code class="v">WorldJob</code> system — into one, canonical survivor <code class="v">WorldJob</code>. Strictly serial: the runner gained crash recovery and single-flight execution <em>before</em> optimize-scan moved onto it, so the merge was a strict upgrade, not a regression.</p>
+          <p class="impact"><strong>Impact:</strong> <code class="v">jobs.ts</code>'s <code class="v">JobQueue</code> class is retired (the file survives, trimmed to the legacy type definitions the back-compat shim still needs). Every background job — GLB optimize, LingBot-Map, splat train/detect/finish, memory-push — runs through one queue (<code class="v">world_job_pump.ts</code>), one status vocabulary, one event stream, with crash recovery, dedupe, and bounded history for job types that never had them. See <a href="01-merge-jobs/README.md">the wave README's "Landed" section</a> for what was found along the way — including a pre-existing, unrelated <code class="v">viewer.ts</code> race flagged as a follow-up.</p>
         </div>
 
         <div class="wave-card">
           <div class="whead"><h3>02-typed-event-payloads</h3><span class="status-badge planned">0 / 3 done</span></div>
           <div class="path">docs/factory/02-typed-event-payloads/</div>
-          <div class="wave-progress" title="all 3 tickets planned; sequenced after 01-merge-jobs"><span class="seg"></span><span class="seg"></span><span class="seg"></span></div>
-          <div class="wave-progress-label">sequenced after 01-merge-jobs — see its own README for why</div>
+          <div class="wave-progress" title="all 3 tickets planned; unblocked now that 01-merge-jobs has landed"><span class="seg"></span><span class="seg"></span><span class="seg"></span></div>
+          <div class="wave-progress-label">was sequenced after 01-merge-jobs — that wave landed 2026-08-16, so this one is now unblocked</div>
           <p>Gives every <code class="v">/events</code> WebSocket message a real, discriminated-union TypeScript type. Deliberately sequenced <em>after</em> 01-merge-jobs — typing job-event payloads before the merge means typing two independently-drifting shapes; after it, both the legacy <code class="v">'job-update'</code> shim and <code class="v">'world-job-update'</code> derive from one settled model.</p>
           <p class="impact"><strong>Impact once shipped:</strong> a mistyped event field becomes a compile error, not a runtime surprise — its own design ticket cites a real near-miss from this atlas's audit, where a duplicated string literal for an event type almost got a live branch misdiagnosed as dead code.</p>
         </div>
@@ -328,11 +328,11 @@
         <div class="fcard"><h4>ONNX local VLM</h4><p>A hand-rolled 3-stage (embed_tokens / embed_images / decoder) autoregressive pipeline for LFM2.5-VL-1.6B, with a manually managed KV-cache, run fully offline via onnxruntime-node.</p><div class="files"><span class="chip">inference.ts</span></div></div>
         <div class="fcard"><h4>Mock colour-blob detector</h4><p>A deterministic, model-free detector for CI/dev — grid-samples pixels against a shared palette and clusters them with union-find, so tests never need a GPU.</p><div class="files"><span class="chip">inference.ts</span><span class="chip">cv-palette.ts</span></div></div>
         <div class="fcard"><h4>On-device WebGPU inference</h4><p>A second, user-toggleable inference path that runs the same ONNX model directly in the browser via Transformers.js/WebGPU instead of hitting the server.</p><div class="files"><span class="chip">src/inference/router.ts</span><span class="chip">webgpu.worker.ts</span></div></div>
-        <div class="fcard job changing"><h4>Background job queue</h4><p>Deliberately single-worker (concurrency 1 — the box already runs the VLM); persists state to <code class="v">jobs.json</code> and re-queues jobs interrupted by a crash or restart.</p><div class="files"><span class="chip">jobs.ts</span></div>
-          <div class="diff is-planned"><span class="was"><span class="strike">jobs.ts's JobQueue — a separate system</span></span><span class="now"><span class="arrow">→</span>merged into WorldJob, same guarantees ported forward</span><span class="tag"><span class="status-badge planned">🔜 planned</span> docs/factory/01-merge-jobs</span></div>
+        <div class="fcard job changing"><h4>Legacy job-shape definitions</h4><p><code class="v">Job</code>/<code class="v">JobStatus</code>/<code class="v">OptimizeScanManifest</code> — no longer a live queue, just the on-the-wire shape <code class="v">main.ts</code>'s back-compat shim translates <code class="v">optimize-scan</code> <code class="v">WorldJob</code>s into for <code class="v">GET /jobs</code>/<code class="v">GET /jobs/:id</code>.</p><div class="files"><span class="chip">jobs.ts</span></div>
+          <div class="diff is-done"><span class="was"><span class="strike">jobs.ts's JobQueue — a separate system, single-worker, persists to jobs.json, re-queues jobs on restart</span></span><span class="now"><span class="arrow">→</span>merged into <code class="v">WorldJob</code> (<code class="v">world_job_pump.ts</code>) — same guarantees, one system; <code class="v">jobs.ts</code> trimmed from 225 to 51 lines</span><span class="tag"><span class="status-badge done">✅ done</span> docs/factory/01-merge-jobs, merged 2026-08-16</span></div>
         </div>
         <div class="fcard job"><h4>GLB optimization pipeline</h4><p>dedup/prune → voxel-downsampled point-cloud LODs (0.30m / 0.12m) → quantize → Draco-compress. Runtime-agnostic: the same module runs inside Deno and inside a plain Node smoke test.</p><div class="files"><span class="chip">pipeline.ts</span></div>
-          <div class="diff is-planned"><span class="was"><span class="strike">called by JobQueue only</span></span><span class="now"><span class="arrow">→</span>caller becomes a WorldJob runner; pipeline.ts itself untouched</span><span class="tag"><span class="status-badge planned">🔜 planned</span> 01-merge-jobs/0003</span></div>
+          <div class="diff is-done"><span class="was"><span class="strike">called by JobQueue only</span></span><span class="now"><span class="arrow">→</span>caller is a WorldJob runner (<code class="v">_runOptimizeScanJob</code>); pipeline.ts itself untouched</span><span class="tag"><span class="status-badge done">✅ done</span> 01-merge-jobs/0003, merged 2026-08-16</span></div>
         </div>
       </div>
     </section>
@@ -347,8 +347,8 @@
         <div class="fcard world"><h4>Gaussian-splat training</h4><p>Builds a Nerfstudio dataset from keyframes and trains a 3DGS splat via the external <strong>Brush</strong> CLI (Rust/wgpu), falling back to LingBot-Map's estimated poses for pose-less video/photo ingests.</p><div class="files"><span class="chip">splat_train.ts</span></div></div>
         <div class="fcard world"><h4>Splat-based object detection</h4><p>Renders the trained splat and runs an external open-vocabulary OWLv2 detector (<strong>splat_analyzer</strong>) to produce 3D bounding boxes, with tunable score/vote thresholds.</p><div class="files"><span class="chip">splat_detect.ts</span></div></div>
         <div class="fcard world"><h4>Splat web-delivery compression</h4><p>Runs <strong>@playcanvas/splat-transform</strong> to produce a ~8× smaller SOG bundle and a ~4× smaller compressed PLY. Auto-chained the moment training succeeds (kill switch: <code class="v">SPLAT_FINISH_AUTO=0</code>).</p><div class="files"><span class="chip">splat_finish.ts</span></div></div>
-        <div class="fcard changing"><h4>optimize-scan was a different system</h4><p>The older raw-GLB optimizer (jobs.ts/pipeline.ts, above) and this WorldJob-based splat/LingBot chain were two <em>separate</em> job systems with different manifest schemas that never called each other.</p><div class="files"><span class="chip">jobs.ts</span><span class="chip">src/world/types.ts</span></div>
-          <div class="diff is-planned"><span class="was"><span class="strike">two job systems, two manifest schemas, never call each other</span></span><span class="now"><span class="arrow">→</span>one queue (WorldJob), one status vocabulary, optimize-scan joins the chain</span><span class="tag"><span class="status-badge planned">🔜 planned</span> docs/factory/01-merge-jobs — this card's whole premise is what that wave retires</span></div>
+        <div class="fcard"><h4>optimize-scan used to be a different system</h4><p>The older raw-GLB optimizer (jobs.ts/pipeline.ts, above) and this WorldJob-based splat/LingBot chain were two <em>separate</em> job systems with different manifest schemas that never called each other — until 01-merge-jobs merged them.</p><div class="files"><span class="chip">jobs.ts</span><span class="chip">src/world/types.ts</span></div>
+          <div class="diff is-done"><span class="was"><span class="strike">two job systems, two manifest schemas, never call each other</span></span><span class="now"><span class="arrow">→</span>one queue (WorldJob), one status vocabulary, optimize-scan joins the chain</span><span class="tag"><span class="status-badge done">✅ done</span> docs/factory/01-merge-jobs, merged 2026-08-16</span></div>
         </div>
       </div>
     </section>
@@ -366,7 +366,7 @@
         <div class="fcard"><h4>GLB scan export</h4><p>Packs point cloud, camera path, floor plane and labelled boxes into a Three.js scene, colours points by a floor→ceiling heatmap, and uploads the binary GLB.</p><div class="files"><span class="chip">export/gltf.ts</span></div></div>
         <div class="fcard"><h4>Markdown summary export</h4><p>A human-readable report: geo fix + map link, synthesized scene description, and full object tables.</p><div class="files"><span class="chip">export/summary.ts</span></div></div>
         <div class="fcard world"><h4>World / scan data model</h4><p><code class="v">WorldProject</code> / <code class="v">ScanManifest</code> / <code class="v">EditPatch</code> / <code class="v">WorldJob</code> / <code class="v">WorldMember</code> plus ENU↔lat/lng geo math, shared verbatim by client and server.</p><div class="files"><span class="chip">world/types.ts</span><span class="chip">world/geo.ts</span></div>
-          <div class="diff is-planned"><span class="was"><span class="strike"><code class="v">WorldJobType</code> has no <code class="v">'optimize-scan'</code></span></span><span class="now"><span class="arrow">→</span>gains <code class="v">'optimize-scan'</code> as a first-class WorldJobType</span><span class="tag"><span class="status-badge planned">🔜 planned</span> 01-merge-jobs/0003</span></div>
+          <div class="diff is-done"><span class="was"><span class="strike"><code class="v">WorldJobType</code> has no <code class="v">'optimize-scan'</code></span></span><span class="now"><span class="arrow">→</span>gained <code class="v">'optimize-scan'</code> as a first-class WorldJobType</span><span class="tag"><span class="status-badge done">✅ done</span> 01-merge-jobs/0003, merged 2026-08-16</span></div>
         </div>
         <div class="fcard world"><h4>Multi-scan World Editor</h4><p>Places every scan's GLB in one shared ENU scene with progressive LOD loading, per-layer visibility, view modes (points/solid/wireframe/semantic), and pick-to-edit.</p><div class="files"><span class="chip">viewer/viewer.ts</span><span class="chip">editor.ts</span></div></div>
         <div class="fcard world"><h4>Live phone → editor feed</h4><p>The desktop-side WebRTC receiver: renders the phone's video in a PiP panel and grows a live point cloud / detections / camera frustum from the data channel.</p><div class="files"><span class="chip">viewer/livefeed.ts</span></div></div>
@@ -390,14 +390,14 @@
         </div>
         <div class="fcard"><h4>/infer</h4><p>Proxies to the InferenceEngine with a size cap and a 60s timeout; returns detections with Server-Timing headers.</p><div class="files"><span class="chip">main.ts</span></div></div>
         <div class="fcard"><h4>Scan storage</h4><p><code class="v">/upload-scan</code>, <code class="v">/scans</code> — stores GLBs, auto-enqueues optimization, serves every splat-pipeline sidecar with the correct MIME type.</p><div class="files"><span class="chip">main.ts</span></div>
-          <div class="diff is-planned"><span class="was"><span class="strike">auto-enqueues via jobQueue.enqueue('optimize-scan')</span></span><span class="now"><span class="arrow">→</span>creates a WorldJob instead — same auto-enqueue trigger, new backend</span><span class="tag"><span class="status-badge planned">🔜 planned</span> 01-merge-jobs/0003</span></div>
+          <div class="diff is-done"><span class="was"><span class="strike">auto-enqueued via jobQueue.enqueue('optimize-scan')</span></span><span class="now"><span class="arrow">→</span>creates a WorldJob instead — same auto-enqueue trigger, new backend</span><span class="tag"><span class="status-badge done">✅ done</span> 01-merge-jobs/0003, merged 2026-08-16</span></div>
         </div>
         <div class="fcard"><h4>Capture sessions</h4><p><code class="v">/sessions/*</code> — streaming keyframe ingestion, capped at 2000 frames per session.</p><div class="files"><span class="chip">main.ts</span></div></div>
         <div class="fcard"><h4>Video / photo ingest</h4><p><code class="v">/ingest-video</code>, <code class="v">/ingest-photos</code> — shells out to ffmpeg-based extraction scripts, then auto-enqueues LingBot-Map reconstruction.</p><div class="files"><span class="chip">main.ts</span></div></div>
         <div class="fcard world"><h4>/worlds CRUD, sharing &amp; patches</h4><p>World data, per-role share links, and edit-patch persistence (transform / label / category / notes).</p><div class="files"><span class="chip">main.ts</span></div></div>
         <div class="fcard world"><h4>Capability-token world auth</h4><p>Per-world member tokens (owner / editor / viewer / scanner) are the app's <em>sole</em> authorization mechanism. <code class="v">WORLD_STRICT_AUTH</code> toggles anonymous access on or off.</p><div class="files"><span class="chip">main.ts</span></div></div>
-        <div class="fcard world"><h4>/worlds/:slug/jobs</h4><p>The WorldJob queue that dispatches to every reconstruction worker in the section above.</p><div class="files"><span class="chip">main.ts</span></div>
-          <div class="diff is-planned"><span class="was"><span class="strike">runs every WorldJob immediately &amp; concurrently (setTimeout, no queue discipline)</span></span><span class="now"><span class="arrow">→</span>single-flight + crash recovery, matching JobQueue's existing guarantees</span><span class="tag"><span class="status-badge planned">🔜 planned</span> 01-merge-jobs/0002 — lands before optimize-scan joins this queue</span></div>
+        <div class="fcard world"><h4>/worlds/:slug/jobs</h4><p>The WorldJob queue that dispatches to every reconstruction worker in the section above (now including <code class="v">optimize-scan</code>) — single-flight, with boot-time crash recovery, dedupe, and bounded history.</p><div class="files"><span class="chip">main.ts</span><span class="chip">world_job_pump.ts</span></div>
+          <div class="diff is-done"><span class="was"><span class="strike">ran every WorldJob immediately &amp; concurrently (setTimeout, no queue discipline)</span></span><span class="now"><span class="arrow">→</span>single-flight + crash recovery, matching JobQueue's old guarantees</span><span class="tag"><span class="status-badge done">✅ done</span> 01-merge-jobs/0002, merged 2026-08-16</span></div>
         </div>
         <div class="fcard"><h4>/events &amp; /rtc-signal</h4><p>A broadcast WebSocket for state changes (scan added, job updated, …), and a bare SDP/ICE relay for phone↔viewer WebRTC that never inspects payloads.</p><div class="files"><span class="chip">main.ts</span></div>
           <div class="diff is-done"><span class="was"><span class="strike">event <code class="v">type:</code> strings are raw literals, duplicated producer/consumer</span></span><span class="now"><span class="arrow">→</span>shared constants (full discriminated-union payload type still to come)</span><span class="tag"><span class="status-badge done">✅ done</span> foundation-updates/0006, merged in #73 — payload typing next in docs/factory/02-typed-event-payloads</span></div>
@@ -485,12 +485,12 @@
         <thead><tr><th>Type</th><th>Fields</th><th>File</th></tr></thead>
         <tbody>
           <tr><td class="name">RawDetection</td><td class="fields">label; bbox [x0,y0,x1,y1]; confidence; description</td><td class="fields">prompt.ts</td></tr>
-          <tr class="row-changing"><td class="name">Job / JobStatus <span class="status-badge planned" style="margin-left:6px;">🔜</span></td><td class="fields">id; type: 'optimize-scan'; target; status: queued|running|done|error; note?</td><td class="fields">jobs.ts</td></tr>
+          <tr><td class="name">Job / JobStatus <span class="status-badge done" style="margin-left:6px;">✅</span></td><td class="fields">id; type: 'optimize-scan'; target; status: queued|running|done|error; note? — legacy shim shape only, no longer backed by a live queue</td><td class="fields">jobs.ts</td></tr>
           <tr><td class="name">PipelineResult</td><td class="fields">optimized: PipelineArtifact; lods[] (coarsest-first); stats; stages[]</td><td class="fields">pipeline.ts</td></tr>
           <tr><td class="name">PipelineStats</td><td class="fields">sourceBytes; points; triangles; meshes; nodes; textures</td><td class="fields">pipeline.ts</td></tr>
         </tbody>
       </table></div>
-      <div class="diff is-planned"><span class="was"><span class="strike">Job / JobStatus — a second status vocabulary (queued|running|done|error)</span></span><span class="now"><span class="arrow">→</span>retired; optimize-scan adopts WorldJobStatus (queued|processing|completed|failed) below</span><span class="tag"><span class="status-badge planned">🔜 planned</span> docs/factory/01-merge-jobs</span></div>
+      <div class="diff is-done"><span class="was"><span class="strike">Job / JobStatus — a second status vocabulary (queued|running|done|error)</span></span><span class="now"><span class="arrow">→</span>retired as a live vocabulary; optimize-scan runs on WorldJobStatus (queued|processing|completed|failed) below, translated back to this shape only for the legacy <code class="v">GET /jobs</code> shim</span><span class="tag"><span class="status-badge done">✅ done</span> docs/factory/01-merge-jobs, merged 2026-08-16</span></div>
 
       <h3 class="subgrp">World &amp; viewer</h3>
       <div class="twrap"><table>
@@ -504,12 +504,12 @@
           <tr><td class="name">FrameObservation</td><td class="fields">frameId; scanId; rgbUrl; pose; intrinsics; frustum; depthUrl?</td><td class="fields">world/types.ts</td></tr>
           <tr><td class="name">EditPatch / TransformPatch</td><td class="fields">patchId; scope: scan|object|point-selection|layer|world; transform?; label?; category?</td><td class="fields">world/types.ts</td></tr>
           <tr><td class="name">WorldMember / MemberRole</td><td class="fields">memberId; role: scanner|viewer|editor|owner; token; expiresAt?</td><td class="fields">world/types.ts</td></tr>
-          <tr class="row-changing"><td class="name">WorldJob / WorldJobType <span class="status-badge planned" style="margin-left:6px;">🔜</span></td><td class="fields">jobId; type; status: queued|processing|completed|failed; artifacts[]; progress?</td><td class="fields">world/types.ts</td></tr>
+          <tr><td class="name">WorldJob / WorldJobType <span class="status-badge done" style="margin-left:6px;">✅</span></td><td class="fields">jobId; type (incl. 'optimize-scan'); status: queued|processing|completed|failed; artifacts[]; progress?</td><td class="fields">world/types.ts</td></tr>
           <tr><td class="name">WorldDetection <span class="status-badge done" style="margin-left:6px;">✅</span></td><td class="fields">label; confidence; bbox; worldPos {x,y,z}; worldRot; captureTimestamp</td><td class="fields">spatial/resolver.ts</td></tr>
         </tbody>
       </table></div>
       <div class="diff is-done"><span class="was"><span class="strike">WorldDetection restated RawDetection's label/bbox/confidence/description inline</span></span><span class="now"><span class="arrow">→</span><code class="v">interface WorldDetection extends RawDetection</code></span><span class="tag"><span class="status-badge done">✅ done</span> foundation-updates/0007, merged in #71</span></div>
-      <div class="diff is-planned"><span class="was"><span class="strike">WorldJobType has no 'optimize-scan'; runner has no single-flight or crash recovery</span></span><span class="now"><span class="arrow">→</span>gains 'optimize-scan'; runner hardened first (01-merge-jobs/0002) so the merge is a strict upgrade</span><span class="tag"><span class="status-badge planned">🔜 planned</span> docs/factory/01-merge-jobs</span></div>
+      <div class="diff is-done"><span class="was"><span class="strike">WorldJobType had no 'optimize-scan'; runner had no single-flight or crash recovery</span></span><span class="now"><span class="arrow">→</span>gained 'optimize-scan'; runner was hardened first (01-merge-jobs/0002) so the merge was a strict upgrade</span><span class="tag"><span class="status-badge done">✅ done</span> docs/factory/01-merge-jobs, merged 2026-08-16</span></div>
 
       <h3 class="subgrp">Splat &amp; LingBot-Map</h3>
       <div class="twrap"><table>
@@ -617,11 +617,11 @@
     <section class="block" id="connections">
       <div class="eyebrow">reference</div>
       <h2>Architecture &amp; connections</h2>
-      <p class="dek">Two views: how the running system fits together, and the order a single scan actually moves through the reconstruction pipeline. The amber dashed outline below marks what <a href="#waves">01-merge-jobs</a> changes.</p>
+      <p class="dek">Two views: how the running system fits together, and the order a single scan actually moves through the reconstruction pipeline.</p>
 
       <figure class="diagram">
         <div class="svgwrap">
-          <svg viewBox="0 0 1180 760" role="img" aria-label="System architecture: a browser scanner reaches the Deno server over a Tailscale HTTPS tunnel; the server fans out to an inference engine, a GLB job queue, and a WorldJob system that drives four external reconstruction tools; everything lands on the filesystem, which the desktop World Editor reads back, while the phone also streams live video straight to the editor over WebRTC. The GLB job queue is outlined in amber, marking it as planned to merge into the WorldJob system.">
+          <svg viewBox="0 0 1180 760" role="img" aria-label="System architecture: a browser scanner reaches the Deno server over a Tailscale HTTPS tunnel; the server fans out to an inference engine, the pipeline.ts artifact stage, and a WorldJob system that drives five reconstruction/optimization job types including optimize-scan; everything lands on the filesystem, which the desktop World Editor reads back, while the phone also streams live video straight to the editor over WebRTC.">
             <defs>
               <marker id="arrFaint" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
                 <path d="M0,0 L10,5 L0,10 z" fill="var(--ink-faint)"/>
@@ -679,24 +679,19 @@
             <text class="lbl-dim" x="56" y="397">ollama · onnx · mock</text>
 
             <rect class="box-job" x="410" y="330" width="330" height="90" rx="8"/>
-            <text class="lbl" x="426" y="355">JobQueue → pipeline.ts</text>
-            <text class="lbl-sub" x="426" y="374">optimize-scan (single worker)</text>
+            <text class="lbl" x="426" y="355">pipeline.ts</text>
+            <text class="lbl-sub" x="426" y="374">GLB artifact stage — called by WorldJob →</text>
             <text class="lbl-dim" x="426" y="397">dedup · LOD · quantize · Draco</text>
 
             <rect class="box-world" x="780" y="330" width="360" height="90" rx="8"/>
             <text class="lbl" x="796" y="355">WorldJob System</text>
             <text class="lbl-sub" x="796" y="374">/worlds/:slug/jobs</text>
-            <text class="lbl-dim" x="796" y="397">lingbot-map · splat-train/detect/finish · memory-push</text>
+            <text class="lbl-dim" x="796" y="397">optimize-scan · lingbot-map · splat-train/detect/finish · memory-push</text>
 
             <path class="edge" d="M205,288 L205,330" marker-end="url(#arrFaint)"/>
             <path class="edge" d="M575,288 L575,330" marker-end="url(#arrFaint)"/>
             <path class="edge" d="M960,288 L960,330" marker-end="url(#arrFaint)"/>
-
-            <!-- wave overlay: 01-merge-jobs retires this box into the WorldJob System -->
-            <rect x="410" y="330" width="330" height="90" rx="8" fill="none" stroke="var(--job)" stroke-width="1.6" stroke-dasharray="6 3"/>
-            <text class="elbl-job" x="760" y="306" text-anchor="middle">merging</text>
-            <text class="elbl-job" x="760" y="319" text-anchor="middle">01-merge-jobs →</text>
-            <path d="M740,375 L778,375" stroke="var(--job)" stroke-width="1.6" stroke-dasharray="5 3" fill="none" marker-end="url(#arrJob2)"/>
+            <path d="M740,375 L778,375" stroke="var(--job)" stroke-width="1.4" fill="none" marker-end="url(#arrJob2)"/>
 
             <!-- Ollama external -->
             <rect class="box-ext" x="40" y="450" width="190" height="46" rx="8"/>
@@ -741,7 +736,7 @@
 
           </svg>
         </div>
-        <figcaption>The scanner reaches the server only through a Tailscale <code class="v">*.ts.net</code> HTTPS tunnel. The server fans out to three independent subsystems — none of which call each other directly — and the World Editor reads their combined output back off disk, plus a live WebRTC feed that skips storage entirely. <strong style="color:var(--job);">Planned:</strong> the amber-outlined <code class="v">JobQueue</code> box is what <a href="#waves">01-merge-jobs</a> retires — its work moves into the WorldJob System box to its right, once that system's runner is hardened.</figcaption>
+        <figcaption>The scanner reaches the server only through a Tailscale <code class="v">*.ts.net</code> HTTPS tunnel. The server fans out to InferenceEngine and the WorldJob System — the only two things that dispatch background work; <code class="v">pipeline.ts</code> is not a third dispatcher, it's the GLB-artifact stage the WorldJob System's <code class="v">optimize-scan</code> runner calls into. The World Editor reads the combined output back off disk, plus a live WebRTC feed that skips storage entirely. <a href="#waves">01-merge-jobs</a> merged the old <code class="v">jobs.ts</code> <code class="v">JobQueue</code> into the WorldJob System shown here — see <a href="#waves">Development waves</a>.</figcaption>
       </figure>
 
       <figure class="diagram">
@@ -805,7 +800,7 @@
         <tbody>
           <tr><td class="fields">KeyframeStreamer</td><td class="fields">POST /sessions/:id/keyframes</td><td class="purpose">Multipart upload, retried 3× with backoff, offline-paused</td></tr>
           <tr><td class="fields">POST /infer</td><td class="fields">InferenceEngine.infer()</td><td class="purpose">Raced against a 60s timeout; waits up to 15s for model load</td></tr>
-          <tr class="row-changing"><td class="fields">POST /upload-scan <span class="status-badge planned" style="margin-left:6px;">🔜</span></td><td class="fields">JobQueue.enqueue('optimize-scan')</td><td class="purpose">Auto-enqueued on every new/updated GLB — target becomes WorldJob creation, see 01-merge-jobs/0003</td></tr>
+          <tr><td class="fields">POST /upload-scan <span class="status-badge done" style="margin-left:6px;">✅</span></td><td class="fields">createWorldJob(..., 'optimize-scan')</td><td class="purpose">Auto-enqueued on every new/updated GLB as a WorldJob under the 'default' world, see 01-merge-jobs/0003</td></tr>
           <tr><td class="fields">/ingest-video, /ingest-photos</td><td class="fields">scripts/ingest-*.mjs subprocess</td><td class="purpose">ffmpeg/EXIF extraction, then auto-enqueues lingbot-map-reconstruct</td></tr>
           <tr><td class="fields">splat-train job (on success)</td><td class="fields">splat-finish job</td><td class="purpose">Auto-chained unless SPLAT_FINISH_AUTO=0</td></tr>
           <tr><td class="fields">Every WorldJob transition</td><td class="fields">WS /events broadcast</td><td class="purpose">Viewer invalidates cached overlays and refreshes the quality-tier stepper</td></tr>
@@ -830,15 +825,15 @@
         <div class="diff is-done"><span class="was"><span class="strike">main.ts read only the raw TAILSCALE_HOSTNAME env var</span></span><span class="now"><span class="arrow">→</span>ports vite.config.ts's tailscale status --json auto-detection into main.ts</span><span class="tag"><span class="status-badge done">✅ done</span> foundation-updates/0002, merged in #68 — verified live on everxr-01, share links now resolve to the real host</span></div>
       </div>
 
-      <div class="callout"><strong>Two job systems, same repo — being unified.</strong> <code class="v">jobs.ts</code>'s <code class="v">JobQueue</code> (GLB optimize) and the WorldJob system (lingbot-map/splat/*) are entirely separate — different manifest schemas, different queues, and they never call into each other.
-        <div class="diff is-planned"><span class="was"><span class="strike">don't assume a change to one affects the other</span></span><span class="now"><span class="arrow">→</span>won't be true much longer: WorldJob becomes the one queue, per ADR 0001's "no third system" rule</span><span class="tag"><span class="status-badge planned">🔜 planned</span> docs/factory/01-merge-jobs — see <a href="#waves">Development waves</a> for the full plan and why it's strictly serial</span></div>
+      <div class="callout ok"><strong>Two job systems, same repo — unified.</strong> <code class="v">jobs.ts</code>'s <code class="v">JobQueue</code> (GLB optimize) and the WorldJob system (lingbot-map/splat/*) used to be entirely separate — different manifest schemas, different queues, and they never called into each other.
+        <div class="diff is-done"><span class="was"><span class="strike">don't assume a change to one affects the other</span></span><span class="now"><span class="arrow">→</span>WorldJob is the one queue now, per ADR 0001's "no third system" rule and <a href="../adr/0003-merged-job-system.md">ADR 0003</a>'s merge design</span><span class="tag"><span class="status-badge done">✅ done</span> docs/factory/01-merge-jobs, merged 2026-08-16 — see <a href="#waves">Development waves</a> for what landed and what it caught along the way</span></div>
       </div>
 
       <footer>
         <p>Built by reading the source directly: 9 parallel research passes over <code class="v">C:\devel\ci\CI-Spatial</code> (cloned locally from the private companionintelligence/CI-Spatial repo), plus a completeness pass that surfaced the PWA, Docker, GitHub Actions, and marketing-video sections. Every file path is exact; every description is condensed from what was actually read, not inferred from naming.</p>
         <p>Feature and variable counts are exact for what's indexed here; deeper per-file detail (every exported helper, every Playwright spec) exists in the source but isn't reproduced — this atlas maps the shape of the system, not a full API reference.</p>
         <p><strong>Maintaining this file.</strong> It lives at <code class="v">docs/factory/atlas.html</code> and is updated as part of planning each wave — that update is where a wave <em>justifies itself</em>, by showing in one place what it changes about the system as described here. A wave with no legible atlas diff is a wave whose value nobody can see. Full instructions: <code class="v">docs/FACTORY.md</code> § “The atlas”. Ticket content is never reproduced here; the wave folders own it.</p>
-        <p><strong>Last updated 2026-08-16</strong> — reflecting <code class="v">foundation-updates/</code> (11/11 merged, wave complete), <code class="v">01-merge-jobs/</code> (unblocked, ready to start), and <code class="v">02-typed-event-payloads/</code>. Everything not carrying a status badge is the original 2026-08-15 source read, unchanged.</p>
+        <p><strong>Last updated 2026-08-16</strong> — reflecting <code class="v">foundation-updates/</code> (11/11 merged, wave complete), <code class="v">01-merge-jobs/</code> (5/5 merged, wave complete), and <code class="v">02-typed-event-payloads/</code> (now unblocked). Everything not carrying a status badge is the original 2026-08-15 source read, unchanged.</p>
       </footer>
     </section>
 

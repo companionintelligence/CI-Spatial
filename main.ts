@@ -35,7 +35,15 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
 import { InferenceEngine } from './inference.ts'
-import { JobQueue } from './jobs.ts'
+import type { Job, JobStatus, OptimizeScanManifest } from './jobs.ts'
+import { optimizeScan } from './pipeline.ts'
+import {
+  findDuplicateWorldJob,
+  recoverStuckWorldJobs,
+  trimWorldJobHistory,
+  worldJobTarget,
+  WorldJobPump,
+} from './world_job_pump.ts'
 import { runLingBotMapReconstruction } from './lingbot_map.ts'
 import { runSplatTrain } from './splat_train.ts'
 import { runSplatDetect } from './splat_detect.ts'
@@ -58,6 +66,7 @@ import type {
   ScanManifestStatus,
   ScanQualitySummary,
   WorldJob,
+  WorldJobStatus,
   WorldJobType,
   WorldMember,
   WorldProject,
@@ -171,8 +180,31 @@ function broadcast(event: Record<string, unknown>): void {
   }
 }
 
-const jobQueue = new JobQueue(SCANS_DIR, broadcast)
-await jobQueue.init()
+// Module-level single-flight WorldJob pump (ADR 0003 "Single-flight
+// execution") — mirrors the retired JobQueue's _jobs/_pump()/_working
+// pattern (docs/factory/01-merge-jobs/0005 retired the class itself; see
+// jobs.ts's header). Dispatch itself (`_dispatchWorldJob`, defined further
+// down) stays in main.ts since it needs loadWorld/saveWorld/broadcast and
+// the per-type _run*Job functions; only the queue + pump primitive lives in
+// world_job_pump.ts, so it's unit-testable in isolation.
+const worldJobPump = new WorldJobPump((slug, jobId) => _dispatchWorldJob(slug, jobId))
+
+// Boot-time crash recovery (ADR 0003 "Crash recovery") runs at the bottom of
+// this file, right before `Deno.serve(...)` — NOT here. Recovery seeds the
+// pump synchronously (`worldJobPump.enqueue`), and dispatch for a recovered
+// job can reach the generic placeholder-completion path (`sleep`, defined
+// below) or any `_run*Job` helper's module-level `const` dependencies
+// (`WORLD_JOB_TYPES`, `LINGBOT_MAP_ARTIFACTS`, the ingest script path
+// consts, …) while those top-level statements haven't executed yet —
+// calling it this early raced ahead of their initializers and threw
+// "Cannot access '<name>' before initialization" (TDZ), silently swallowed
+// by `_dispatchWorldJob`'s own try/catch, permanently stranding the
+// recovered job in `processing` (verified with a standalone repro: the
+// first pump dispatch reliably hit the TDZ before the later `const`
+// initializer ran). Running recovery only once every other top-level
+// statement has executed — immediately before `Deno.serve` — removes the
+// race while still satisfying ADR 0003's actual requirement: recovery
+// completes before the server starts accepting requests.
 
 let modelLoaded = false
 let engineLoadSettled = false
@@ -355,10 +387,10 @@ app.post('/upload-scan', async (c) => {
     }
 
     // Every uploaded scan is optimized automatically (quantize/Draco/LODs)
-    const job = jobQueue.enqueue('optimize-scan', filename)
+    const job = await enqueueOptimizeScanJob(filename)
     broadcast({ type: EVENT.SCAN_ADDED, filename, size: buffer.byteLength })
 
-    return c.json({ filename, size: buffer.byteLength, job: job.id })
+    return c.json({ filename, size: buffer.byteLength, job: job.jobId })
   } catch (err) {
     console.error('[scan upload error]', err)
     return c.json({ error: String(err) }, 500)
@@ -385,6 +417,12 @@ app.get('/scans', async (c) => {
       optimized: boolean
       job: { status: string; note: string | null } | null
     }> = []
+    // Shim (ADR 0003 / ticket 0004): per-file job status used to come from
+    // jobQueue.jobForTarget(); optimize-scan jobs now live as WorldJobs
+    // parked under the 'default' world (enqueueOptimizeScanJob) — load once
+    // outside the loop and translate through worldJobToLegacyJob.
+    const jobWorld = await loadWorld('default')
+    const optimizeScanJobs = jobWorld.jobs.filter(j => j.type === 'optimize-scan')
     for await (const entry of Deno.readDir(SCANS_DIR)) {
       if (!entry.isFile || !entry.name.endsWith('.glb')) continue
       if (isDerivedScanFile(entry.name)) continue
@@ -394,7 +432,11 @@ app.get('/scans', async (c) => {
         await Deno.stat(`${SCANS_DIR}/${entry.name.replace(/\.glb$/, '.manifest.json')}`)
         optimized = true
       } catch { /* not optimized yet */ }
-      const job = jobQueue.jobForTarget(entry.name)
+      // world.jobs is newest-first (createWorldJob unshifts), so the first
+      // match is the latest job for this target — mirrors jobForTarget()'s
+      // "scan from the end" semantics on JobQueue's oldest-first array.
+      const wj = optimizeScanJobs.find(j => worldJobTarget(j) === entry.name)
+      const job = wj ? worldJobToLegacyJob(wj) : undefined
       entries.push({
         filename: entry.name,
         size: stat.size,
@@ -435,17 +477,30 @@ app.post('/scans/:filename/optimize', async (c) => {
   } catch {
     return c.json({ error: 'Scan not found' }, 404)
   }
-  const job = jobQueue.enqueue('optimize-scan', filename)
+  const job = await enqueueOptimizeScanJob(filename)
   return c.json(job, 202)
 })
 
 // ── Job queue state ───────────────────────────────────────────────────────────
+// Shim (ADR 0003 / ticket 0004): both routes used to read `jobQueue` directly.
+// optimize-scan jobs now run as WorldJobs under the 'default' world — filter
+// to that type (the only type JobQueue ever held) and translate through
+// worldJobToLegacyJob so the response shape and job population are
+// byte-identical to before ticket 0003.
 
-app.get('/jobs', (c) => c.json([...jobQueue.jobs].reverse()))
+app.get('/jobs', async (c) => {
+  const world = await loadWorld('default')
+  // world.jobs is already newest-first (createWorldJob unshifts), matching
+  // what `[...jobQueue.jobs].reverse()` produced from JobQueue's
+  // oldest-first array — no extra reverse needed here.
+  const jobs = world.jobs.filter(j => j.type === 'optimize-scan').map(worldJobToLegacyJob)
+  return c.json(jobs)
+})
 
-app.get('/jobs/:id', (c) => {
-  const job = jobQueue.job(c.req.param('id'))
-  return job ? c.json(job) : c.json({ error: 'Not found' }, 404)
+app.get('/jobs/:id', async (c) => {
+  const world = await loadWorld('default')
+  const wj = world.jobs.find(j => j.type === 'optimize-scan' && j.jobId === c.req.param('id'))
+  return wj ? c.json(worldJobToLegacyJob(wj)) : c.json({ error: 'Not found' }, 404)
 })
 
 // ── Splat-train + splat-detect + splat-finish artifacts ──────────────────────
@@ -737,7 +792,7 @@ app.post('/sessions/:id/finalize', async (c) => {
       try {
         await Deno.stat(`${SCANS_DIR}/${glbFilename.replace(/\.glb$/, '.manifest.json')}`)
       } catch {
-        jobQueue.enqueue('optimize-scan', glbFilename)
+        await enqueueOptimizeScanJob(glbFilename)
       }
     } catch { /* glb not uploaded yet — upload-scan enqueues on arrival */ }
   }
@@ -830,7 +885,6 @@ app.post('/ingest-video', async (c) => {
       sessionId,
       frameCount,
     })
-    world.jobs.unshift(job)
     await saveWorld(world)
     await completeJobSoon(world.shareSlug, job.jobId)
 
@@ -928,7 +982,6 @@ app.post('/ingest-photos', async (c) => {
       sessionId,
       frameCount,
     })
-    world.jobs.unshift(job)
     await saveWorld(world)
     await completeJobSoon(world.shareSlug, job.jobId)
 
@@ -1547,9 +1600,32 @@ function applyPatchToWorld(world: WorldProject, patch: EditPatch): void {
   }
 }
 
+/**
+ * Creates (or reuses) a WorldJob and appends it to `world.jobs`. Per ADR 0003
+ * "Dedupe" and "Bounded history": every call site routes through this single
+ * function, so both guarantees apply uniformly — no call site pushes onto
+ * `world.jobs` directly anymore.
+ *
+ * Also fires the legacy `'job-update'` broadcast (via
+ * `broadcastLegacyJobUpdate`, which no-ops for every type but
+ * `optimize-scan`) immediately on creation, mirroring `JobQueue.enqueue()`
+ * (`jobs.ts:88-111`), which calls `this._emit(job)` right after construction
+ * — before the job ever runs — so a client polling/listening the way it did
+ * against `JobQueue` still observes a `status: 'queued'` event, not just the
+ * later `processing`/`completed` ones from `_dispatchWorldJob`. Only fires
+ * for a genuinely new job: the dedupe early-return above skips it, exactly
+ * like `jobs.ts:88-93`'s own `if (existing) return existing` never re-emits
+ * for a reused job.
+ */
 function createWorldJob(world: WorldProject, type: WorldJobType, scanId?: string, payload?: Record<string, unknown>): WorldJob {
+  // Dedupe (ADR 0003 "Dedupe"): reuse an existing queued/processing job for
+  // the same type+target in this world instead of creating a duplicate —
+  // jobs.ts:88-93's exact predicate, applied per-world.
+  const existing = findDuplicateWorldJob(world.jobs, type, worldJobTarget({ scanId, payload }))
+  if (existing) return existing
+
   const now = new Date().toISOString()
-  return {
+  const job: WorldJob = {
     jobId: `job-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
     worldId: world.worldId,
     type,
@@ -1561,6 +1637,82 @@ function createWorldJob(world: WorldProject, type: WorldJobType, scanId?: string
     createdAt: now,
     updatedAt: now,
   }
+  world.jobs.unshift(job)
+  // Bounded history (ADR 0003 "Bounded history"): cap at 200, trimming
+  // completed/failed jobs to the most recent 100 once exceeded.
+  world.jobs = trimWorldJobHistory(world.jobs)
+  broadcastLegacyJobUpdate(job)
+  return job
+}
+
+// ── Legacy /jobs, /jobs/:id, GET /scans job-status shim ──────────────────────
+// (ADR 0003 / ticket docs/factory/01-merge-jobs/0004)
+//
+// `GET /jobs`, `GET /jobs/:id`, and GET /scans's per-file job-status field
+// used to read `JobQueue` directly. Real optimize-scan work now happens as a
+// `WorldJob` (ticket 0003), so those three surfaces — plus the 'job-update'
+// event below — are re-pointed to read/derive from `WorldJob` data instead,
+// translated through this one function (ADR 0001: one conversion, reused)
+// so nothing external (the viewer, a script, a future integration) has to
+// change to keep working.
+
+const WORLD_JOB_STATUS_TO_LEGACY: Record<WorldJobStatus, JobStatus> = {
+  queued: 'queued',
+  processing: 'running',
+  completed: 'done',
+  failed: 'error',
+}
+
+/**
+ * Translates an `optimize-scan` `WorldJob` into the legacy `Job` shape
+ * (jobs.ts), per ADR 0003's field-mapping table: `id`←`jobId`,
+ * `type`←`'optimize-scan'`, `target`←`payload.filename` (via the shared
+ * `worldJobTarget` helper, mirroring `Job.target`), `status`← mapped through
+ * the table above, `createdAt`←`createdAt`, `error`←`error`, `note`←`result`.
+ * `startedAt`/`finishedAt` have no dedicated `WorldJob` field (no second
+ * timestamp was added — the ADR reuses `updatedAt` for both); populated only
+ * once the job has actually reached that transition, matching `Job`'s
+ * optional fields staying unset while still `queued`.
+ */
+function worldJobToLegacyJob(wj: WorldJob): Job {
+  const job: Job = {
+    id: wj.jobId,
+    type: 'optimize-scan',
+    target: worldJobTarget(wj) ?? '',
+    status: WORLD_JOB_STATUS_TO_LEGACY[wj.status],
+    createdAt: wj.createdAt,
+  }
+  if (wj.status !== 'queued') job.startedAt = wj.updatedAt
+  if (wj.status === 'completed' || wj.status === 'failed') job.finishedAt = wj.updatedAt
+  if (wj.error !== undefined) job.error = wj.error
+  if (wj.result !== undefined) job.note = wj.result
+  return job
+}
+
+/**
+ * Fires the legacy `'job-update'` event (`EVENT.JOB_UPDATE`) for
+ * `optimize-scan` `WorldJob` transitions, alongside the `'world-job-update'`
+ * broadcast every caller already sends — matching `JobQueue`'s old
+ * `_emit()` payload shape exactly (`jobs.ts:212-224`:
+ * `{ id, jobType, target, status, error, note }`, `error`/`note` `null`
+ * rather than absent). Scoped to `optimize-scan` only, matching its old
+ * scope (ticket 0004 Pinned conventions) — a no-op for every other
+ * `WorldJobType`, so it's safe to call from the shared dispatch path.
+ */
+function broadcastLegacyJobUpdate(wj: WorldJob): void {
+  if (wj.type !== 'optimize-scan') return
+  const legacy = worldJobToLegacyJob(wj)
+  broadcast({
+    type: EVENT.JOB_UPDATE,
+    job: {
+      id: legacy.id,
+      jobType: legacy.type,
+      target: legacy.target,
+      status: legacy.status,
+      error: legacy.error ?? null,
+      note: legacy.note ?? null,
+    },
+  })
 }
 
 async function enqueueLegacyProcessJob(action: string, filename: string): Promise<string | null> {
@@ -1576,89 +1728,176 @@ async function enqueueLegacyProcessJob(action: string, filename: string): Promis
   const world = await loadWorld('default')
   const scan = world.scans.find(s => s.filename === filename)
   const job = createWorldJob(world, type, scan?.scanId, { legacyAction: action, filename })
-  world.jobs.unshift(job)
   await saveWorld(world)
   await completeJobSoon(world.shareSlug, job.jobId)
   return job.jobId
 }
 
+/**
+ * Creates (or reuses) an `optimize-scan` `WorldJob` and kicks the pump — the
+ * shared implementation for all three call sites that used to do
+ * `jobQueue.enqueue('optimize-scan', filename)` (`POST /upload-scan`,
+ * `POST /scans/:filename/optimize`, `POST /sessions/:id/finalize`).
+ *
+ * Per ADR 0003 "Which world does an optimize-scan WorldJob belong to?": these
+ * routes operate on raw `SCANS_DIR` filenames with no `WorldProject`
+ * association, so the job is parked under the `'default'` world — exactly
+ * `enqueueLegacyProcessJob`'s existing pattern (`loadWorld('default')`,
+ * `scanId` left `undefined`, target carried in `payload.filename`) — reused
+ * here rather than inventing a second "raw scan job" shape (ADR 0001).
+ */
+async function enqueueOptimizeScanJob(filename: string): Promise<WorldJob> {
+  const world = await loadWorld('default')
+  const job = createWorldJob(world, 'optimize-scan', undefined, { filename })
+  await saveWorld(world)
+  await completeJobSoon(world.shareSlug, job.jobId)
+  return job
+}
+
+/**
+ * Enqueues a WorldJob for execution and kicks the single-flight pump — does
+ * not itself wait for the job to run (matches the previous behaviour: the
+ * old `setTimeout(..., 25)` body also returned long before its callback
+ * fired). ADR 0003 "Single-flight execution": actual dispatch happens in
+ * `_dispatchWorldJob`, called one-at-a-time by `worldJobPump`.
+ */
 async function completeJobSoon(slug: string, jobId: string): Promise<void> {
-  setTimeout(async () => {
-    try {
-      const world = await loadWorld(slug)
-      const job = world.jobs.find(j => j.jobId === jobId)
-      if (!job || job.status !== 'queued') return
-      job.status = 'processing'
-      job.workerId = job.type === 'lingbot-map-reconstruct'
-        ? 'lingbot-map'
-        : job.type === 'splat-train'
-          ? 'brush'
-          : job.type === 'splat-detect'
-            ? 'splat-analyzer'
-            : job.type === 'splat-finish'
-              ? 'splat-transform'
-              : job.type === 'memory-push'
-                ? 'companion-memory'
-                : 'local-coordinator'
-      job.progress = 0.35
-      job.updatedAt = new Date().toISOString()
-      await saveWorld(world)
-      broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job })
+  worldJobPump.enqueue(slug, jobId)
+}
 
-      if (job.type === 'lingbot-map-reconstruct') {
-        await _runLingBotMapJob(slug, jobId)
-        return
-      }
+/**
+ * Pump dispatch callback — runs exactly one WorldJob to a terminal state.
+ * This is `completeJobSoon`'s old inline body, unchanged in what it does
+ * (set `processing` + `workerId` + progress, broadcast, dispatch to the
+ * per-type `_run*Job` function, or the generic placeholder-completion path)
+ * — only how it's invoked changed: `worldJobPump` now awaits this call to
+ * fully settle before dequeuing the next pending job (ADR 0003
+ * "Single-flight execution"), instead of each call scheduling its own
+ * independent, concurrent `setTimeout`.
+ */
+async function _dispatchWorldJob(slug: string, jobId: string): Promise<void> {
+  try {
+    const world = await loadWorld(slug)
+    const job = world.jobs.find(j => j.jobId === jobId)
+    if (!job || job.status !== 'queued') return
+    job.status = 'processing'
+    job.workerId = job.type === 'lingbot-map-reconstruct'
+      ? 'lingbot-map'
+      : job.type === 'splat-train'
+        ? 'brush'
+        : job.type === 'splat-detect'
+          ? 'splat-analyzer'
+          : job.type === 'splat-finish'
+            ? 'splat-transform'
+            : job.type === 'memory-push'
+              ? 'companion-memory'
+              : 'local-coordinator'
+    job.progress = 0.35
+    job.updatedAt = new Date().toISOString()
+    await saveWorld(world)
+    broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job })
+    broadcastLegacyJobUpdate(job)
 
-      if (job.type === 'splat-train') {
-        await _runSplatTrainJob(slug, jobId)
-        return
-      }
-
-      if (job.type === 'splat-detect') {
-        await _runSplatDetectJob(slug, jobId)
-        return
-      }
-
-      if (job.type === 'splat-finish') {
-        await _runSplatFinishJob(slug, jobId)
-        return
-      }
-
-      if (job.type === 'memory-push') {
-        await _runMemoryPushJob(slug, jobId)
-        return
-      }
-
-      setTimeout(async () => {
-        try {
-          const current = await loadWorld(slug)
-          const currentJob = current.jobs.find(j => j.jobId === jobId)
-          if (!currentJob || currentJob.status === 'failed') return
-          const failure = jobFailureReason(currentJob, current)
-          if (failure) {
-            currentJob.status = 'failed'
-            currentJob.error = failure
-            currentJob.result = failure
-            currentJob.progress = 1
-          } else {
-            currentJob.status = 'completed'
-            currentJob.result = jobResultFor(currentJob)
-            currentJob.artifacts = jobArtifactsFor(currentJob, current)
-            currentJob.progress = 1
-            applyCompletedJobToWorld(currentJob, current)
-          }
-          currentJob.updatedAt = new Date().toISOString()
-          await saveWorld(current)
-          broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: current.worldId, job: currentJob })
-        } catch (err) {
-          console.error('[world-job complete error]', err)
-        }
-      }, 650)
-    } catch (err) {
-      console.error('[world-job start error]', err)
+    if (job.type === 'lingbot-map-reconstruct') {
+      await _runLingBotMapJob(slug, jobId)
+      return
     }
-  }, 25)
+
+    if (job.type === 'splat-train') {
+      await _runSplatTrainJob(slug, jobId)
+      return
+    }
+
+    if (job.type === 'splat-detect') {
+      await _runSplatDetectJob(slug, jobId)
+      return
+    }
+
+    if (job.type === 'splat-finish') {
+      await _runSplatFinishJob(slug, jobId)
+      return
+    }
+
+    if (job.type === 'memory-push') {
+      await _runMemoryPushJob(slug, jobId)
+      return
+    }
+
+    if (job.type === 'optimize-scan') {
+      await _runOptimizeScanJob(slug, jobId)
+      return
+    }
+
+    // Generic placeholder-type completion path (the seven WorldJobTypes with
+    // no dedicated runner — ADR 0003 "Placeholder WorldJobTypes"). Was its
+    // own detached `setTimeout(..., 650)`; now `await sleep(650)` so the pump
+    // waits for it to settle before dequeuing the next entry, per ADR 0003
+    // "Single-flight execution".
+    await sleep(650)
+    try {
+      const current = await loadWorld(slug)
+      const currentJob = current.jobs.find(j => j.jobId === jobId)
+      if (!currentJob || currentJob.status === 'failed') return
+      const failure = jobFailureReason(currentJob, current)
+      if (failure) {
+        currentJob.status = 'failed'
+        currentJob.error = failure
+        currentJob.result = failure
+        currentJob.progress = 1
+      } else {
+        currentJob.status = 'completed'
+        currentJob.result = jobResultFor(currentJob)
+        currentJob.artifacts = jobArtifactsFor(currentJob, current)
+        currentJob.progress = 1
+        applyCompletedJobToWorld(currentJob, current)
+      }
+      currentJob.updatedAt = new Date().toISOString()
+      await saveWorld(current)
+      broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: current.worldId, job: currentJob })
+    } catch (err) {
+      console.error('[world-job complete error]', err)
+    }
+  } catch (err) {
+    console.error('[world-job start error]', err)
+  }
+}
+
+/**
+ * Boot-time crash recovery (ADR 0003 "Crash recovery"). Requeues every
+ * WorldJob left `'processing'` or `'queued'` by a previous process — both
+ * are unreachable otherwise: a `'processing'` job's process died mid-run,
+ * and a `'queued'` job has no poller once it's off the in-memory pending
+ * queue that died with the old process (nothing scans for queued WorldJobs
+ * the way jobs.ts's `_pump()` does). Reuses `mutateWorldFiles()` (the same
+ * "iterate every world file, apply logic, save only if changed" helper
+ * `removeScanFromWorlds` already uses) instead of a second `WORLDS_DIR`
+ * directory-scan implementation — ADR 0001, and this ticket's own Open
+ * Questions answer. Called once, at boot, right before `Deno.serve(...)`
+ * (see the call site's comment for why not earlier — TDZ on later
+ * module-level consts the seeded pump dispatch can reach).
+ */
+async function recoverWorldJobsOnBoot(): Promise<void> {
+  // Broadcasting/enqueueing happens after the mutateWorldFiles() pass below
+  // (not inside the mutator) so every recovered job is persisted via
+  // saveWorld() before anything is broadcast or handed to the pump —
+  // mirrors the save-before-broadcast ordering every other job transition
+  // in this file follows (e.g. _runLingBotMapJob).
+  const recoveredByWorld: Array<{ worldId: string; shareSlug: string; jobs: WorldJob[] }> = []
+  await mutateWorldFiles((world) => {
+    const recovered = recoverStuckWorldJobs(world.jobs)
+    if (recovered.length === 0) return false
+    recoveredByWorld.push({ worldId: world.worldId, shareSlug: world.shareSlug, jobs: recovered })
+    return true
+  })
+  for (const { worldId, shareSlug, jobs } of recoveredByWorld) {
+    for (const job of jobs) {
+      broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId, job })
+      // Recovery doesn't get its own execution path — it just seeds the
+      // normal pump (ADR 0003 "Crash recovery", step 4).
+      worldJobPump.enqueue(shareSlug, job.jobId)
+    }
+    console.log(`[world-jobs] recovered ${jobs.length} stuck job(s) in world '${shareSlug}'`)
+  }
 }
 
 async function _runLingBotMapJob(slug: string, jobId: string): Promise<void> {
@@ -1840,7 +2079,6 @@ async function _runSplatTrainJob(slug: string, jobId: string): Promise<void> {
           trainJobId: jobId,
           sessionId,
         })
-        current.jobs.unshift(finishJob)
         chainedFinishJobId = finishJob.jobId
       }
       // Promote the scan's reserved 'splat' layer from 'future' to a real
@@ -2192,6 +2430,143 @@ async function _runSplatFinishJob(slug: string, jobId: string): Promise<void> {
   }
 }
 
+/**
+ * Runs `pipeline.ts`'s `optimizeScan()` on a stored .glb and writes the same
+ * three artifact files `jobs.ts`'s `JobQueue._runOptimize()` always has:
+ *   <base>.opt.glb            quantized (+Draco) full-quality scan
+ *   <base>.lodN.glb           voxel-downsampled point-cloud previews
+ *   <base>.manifest.json      artifact index + stats + per-stage log
+ * Ported near-verbatim from `_runOptimize()` (jobs.ts) — same filenames, same
+ * manifest shape, same content — only the caller changed (ADR 0003
+ * "optimize-scan", ticket 01-merge-jobs/0003). Unlike every other `_run*Job`,
+ * this type has no associated scan: `optimize-scan` `WorldJob`s carry their
+ * target in `payload.filename` (mirroring `Job.target`), not `scanId` — see
+ * `enqueueOptimizeScanJob` — so this function doesn't use `scanForJob`/
+ * `jobFailureReason`, which are keyed on `job.scanId`.
+ */
+async function _runOptimizeScanJob(slug: string, jobId: string): Promise<void> {
+  try {
+    const world = await loadWorld(slug)
+    const job = world.jobs.find(j => j.jobId === jobId)
+    if (!job) return
+    const filename = objectKey(job.payload?.['filename'])
+    if (!filename) {
+      job.status = 'failed'
+      job.error = 'optimize-scan requires payload.filename.'
+      job.result = job.error
+      job.progress = 1
+      job.updatedAt = new Date().toISOString()
+      await saveWorld(world)
+      broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job })
+      broadcastLegacyJobUpdate(job)
+      return
+    }
+
+    // ── Ported near-verbatim from jobs.ts's JobQueue._runOptimize() ──────────
+    const sourcePath = `${SCANS_DIR}/${filename}`
+    const glb = await Deno.readFile(sourcePath)
+    console.log(`[world-jobs] optimizing ${filename} (${(glb.byteLength / 1024).toFixed(0)} KB)`)
+
+    const result = await optimizeScan(glb)
+    const base = filename.replace(/\.glb$/, '')
+
+    const optimizedName = `${base}.opt.glb`
+    await Deno.writeFile(`${SCANS_DIR}/${optimizedName}`, result.optimized.bytes)
+
+    // pipeline returns coarsest-first; name finest as lod1, coarser as lod2…
+    const lodEntries: OptimizeScanManifest['artifacts']['lods'] = []
+    const finestFirst = [...result.lods].sort((a, b) => (a.voxelM ?? 0) - (b.voxelM ?? 0))
+    for (let i = 0; i < finestFirst.length; i++) {
+      const lod = finestFirst[i]
+      const lodFilename = `${base}.lod${i + 1}.glb`
+      await Deno.writeFile(`${SCANS_DIR}/${lodFilename}`, lod.bytes)
+      lodEntries.push({
+        filename: lodFilename,
+        bytes: lod.bytes.byteLength,
+        points: lod.points ?? 0,
+        voxelM: lod.voxelM ?? 0,
+      })
+    }
+    lodEntries.sort((a, b) => b.voxelM - a.voxelM) // coarsest first for the manifest
+
+    const manifest: OptimizeScanManifest = {
+      source: filename,
+      createdAt: new Date().toISOString(),
+      stats: result.stats as unknown as Record<string, number>,
+      stages: result.stages,
+      artifacts: {
+        optimized: {
+          filename: optimizedName,
+          bytes: result.optimized.bytes.byteLength,
+          draco: result.optimized.draco,
+          quantized: result.optimized.quantized,
+        },
+        lods: lodEntries,
+      },
+    }
+    await Deno.writeTextFile(
+      `${SCANS_DIR}/${base}.manifest.json`,
+      JSON.stringify(manifest, null, 2),
+    )
+
+    const ratio = result.optimized.bytes.byteLength / glb.byteLength
+    const note = `${(glb.byteLength / 1024).toFixed(0)} KB → ${(result.optimized.bytes.byteLength / 1024).toFixed(0)} KB (${Math.round(ratio * 100)}%)` +
+      (lodEntries.length ? ` + ${lodEntries.length} LODs` : '')
+    console.log(`[world-jobs] ${filename}: ${note}`)
+    // ── End ported section ────────────────────────────────────────────────
+
+    const current = await loadWorld(slug)
+    const currentJob = current.jobs.find(j => j.jobId === jobId)
+    if (!currentJob) return
+    currentJob.status = 'completed'
+    currentJob.result = note // Job.note → WorldJob.result, per ADR 0003's field mapping
+    currentJob.artifacts = [
+      {
+        type: 'optimized-glb',
+        label: `${filename} optimized (.opt.glb)`,
+        url: `/scans/${encodeURIComponent(optimizedName)}`,
+        metadata: {
+          bytes: result.optimized.bytes.byteLength,
+          draco: result.optimized.draco,
+          quantized: result.optimized.quantized,
+        },
+      },
+      ...lodEntries.map(lod => ({
+        type: 'optimized-lod',
+        label: `${filename} LOD (${lod.filename})`,
+        url: `/scans/${encodeURIComponent(lod.filename)}`,
+        metadata: { bytes: lod.bytes, points: lod.points, voxelM: lod.voxelM },
+      })),
+      {
+        type: 'optimize-manifest',
+        label: `${filename} optimization manifest`,
+        url: `/scans/${encodeURIComponent(`${base}.manifest.json`)}`,
+      },
+    ]
+    currentJob.progress = 1
+    currentJob.updatedAt = new Date().toISOString()
+    await saveWorld(current)
+    broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: current.worldId, job: currentJob })
+    broadcastLegacyJobUpdate(currentJob)
+  } catch (err) {
+    console.error('[optimize-scan] job failed:', err)
+    try {
+      const recovered = await loadWorld(slug)
+      const recoveredJob = recovered.jobs.find(j => j.jobId === jobId)
+      if (recoveredJob) {
+        recoveredJob.status = 'failed'
+        recoveredJob.error = err instanceof Error ? err.message : String(err)
+        recoveredJob.result = recoveredJob.error
+        recoveredJob.progress = 1
+        recoveredJob.updatedAt = new Date().toISOString()
+        await saveWorld(recovered)
+        broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: recovered.worldId, job: recoveredJob })
+        broadcastLegacyJobUpdate(recoveredJob)
+      }
+    } catch { /* nothing more we can do */ }
+  }
+}
+
 function scanForJob(job: WorldJob, world: WorldProject): ScanManifest | null {
   if (!job.scanId) return null
   return world.scans.find(scan => scan.scanId === job.scanId || scan.filename === job.scanId) ?? null
@@ -2261,6 +2636,13 @@ function jobResultFor(job: WorldJob): string {
       return 'Scan pushed to Companion Memory as a capture.scan event with the GLB attached.'
     case 'export-world':
       return 'World export manifest is ready for a combined GLB and semantic JSON worker.'
+    case 'optimize-scan':
+      // Dead branch at runtime: _runOptimizeScanJob always sets
+      // currentJob.result itself (the size-reduction note, ADR 0003's
+      // Job.note → WorldJob.result mapping) and never calls jobResultFor —
+      // present only so this switch stays exhaustive under `deno check`
+      // now that WorldJobType includes 'optimize-scan'.
+      return 'Scan optimized: quantized (+Draco) GLB and coarse-to-fine LOD previews written.'
   }
 }
 
@@ -2549,7 +2931,6 @@ app.post('/worlds/:slug/jobs', async (c) => {
     return c.json({ error: `type must be one of ${[...WORLD_JOB_TYPES].join(', ')}` }, 400)
   }
   const job = createWorldJob(world, type, body.scanId, body.payload)
-  world.jobs.unshift(job)
   await saveWorld(world)
   await completeJobSoon(slug, job.jobId)
   return c.json(job, 202)
@@ -2848,7 +3229,19 @@ app.get('/events', (c) => {
   const { socket, response } = Deno.upgradeWebSocket(c.req.raw)
   socket.addEventListener('open', () => {
     eventSockets.add(socket)
-    socket.send(JSON.stringify({ type: 'hello', jobs: jobQueue.jobs.filter(j => j.status === 'queued' || j.status === 'running').length }))
+    // Shim (ADR 0003 / ticket 0004): this "pending jobs" count used to read
+    // jobQueue.jobs directly — a fifth JobQueue consumer beyond the four
+    // named surfaces, found via this ticket's closing grep and folded into
+    // scope here. Same translate-then-count as the other surfaces so the
+    // legacy queued|running vocabulary is preserved.
+    void (async () => {
+      const world = await loadWorld('default')
+      const pending = world.jobs
+        .filter(j => j.type === 'optimize-scan')
+        .map(worldJobToLegacyJob)
+        .filter(j => j.status === 'queued' || j.status === 'running').length
+      socket.send(JSON.stringify({ type: 'hello', jobs: pending }))
+    })()
   })
   socket.addEventListener('close', () => eventSockets.delete(socket))
   socket.addEventListener('error', () => eventSockets.delete(socket))
@@ -3009,5 +3402,12 @@ if (staticAvailable) {
     }
   })
 }
+
+// Boot-time crash recovery (ADR 0003 "Crash recovery") — called once, after
+// every module-level const/function this module's job dispatch chain
+// depends on has been initialized (see the comment where `worldJobPump` is
+// constructed, above, for why this can't run any earlier), and before the
+// server starts accepting requests.
+await recoverWorldJobsOnBoot()
 
 Deno.serve({ hostname: '0.0.0.0', port: PORT }, app.fetch)

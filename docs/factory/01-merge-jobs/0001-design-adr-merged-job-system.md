@@ -69,6 +69,18 @@ loop, `enqueue()`'s dedupe check), `src/world/types.ts`'s `WorldJob`/`WorldJobTy
   queue across all worlds, matching `JobQueue`'s current global (not per-scan)
   single-flight; splat-train genuinely holds one GPU regardless of which world asked.
   Write this into the ADR's Decision section explicitly.
+- Q: (found while drafting the ADR, not originally listed here) `/upload-scan`,
+  `/scans/:filename/optimize`, and `/sessions/:id/finalize` operate on raw filenames
+  with no `WorldProject` association at all — but `WorldJob.worldId` is required.
+  Which world does an `optimize-scan` `WorldJob` belong to? — A: the `'default'`
+  world, via `payload.filename` (not `scanId`) — reusing the exact pattern
+  `enqueueLegacyProcessJob` (`main.ts:1566-1583`) already established for this same
+  problem with legacy per-file actions. See ADR 0003's "Which world does an
+  optimize-scan WorldJob belong to?" section.
+- Q: (found while drafting) is the "five placeholder `WorldJobType`s" list in
+  Non-goals complete? — A: No — it's seven. `ingest` and `export-world` have the
+  identical no-runner shape and were missing from the original list. Corrected in
+  Non-goals above and in ADR 0003.
 
 ## Files impacted
 
@@ -95,21 +107,24 @@ The ADR must specify, exactly:
 
 ## Definition of Done
 
-- [ ] ADR 0003 is written, accepted, and answers every Open Question above inline.
-- [ ] The guarantee table from the wave README is fully mapped: for each row, the ADR
-      states which field/mechanism in the merged system provides it.
-- [ ] ADR 0003 is linked from `docs/adr/README.md`'s index.
-- [ ] Tickets 0002-0005 are reviewed against the finished ADR and need no design
+- [x] ADR 0003 is written, accepted, and answers every Open Question above inline.
+- [x] The guarantee table from the wave README is fully mapped: for each row, the ADR
+      states which field/mechanism in the merged system provides it. (Also extended:
+      dedupe and bounded-history are assigned to ticket 0002, since neither ticket's
+      own prose named them explicitly even though the wave-level guarantee table
+      requires both.)
+- [x] ADR 0003 is linked from `docs/adr/README.md`'s index.
+- [x] Tickets 0002-0005 are reviewed against the finished ADR and need no design
       decisions of their own during implementation (mechanical fixups only).
 
 ## Tests
 
-- [ ] N/A — no code. Verification is a re-read: walk `jobs.ts` line by line and
-      confirm every behavior it implements has an explicit answer in the ADR.
+- [x] N/A — no code. Verification is a re-read: walked `jobs.ts` line by line and
+      confirmed every behavior it implements has an explicit answer in the ADR.
 
 ## Acceptance Criteria
 
-- [ ] Given the finished ADR, when someone implements 0002 without talking to anyone,
+- [x] Given the finished ADR, when someone implements 0002 without talking to anyone,
       then every design choice they'd otherwise have to guess at is already answered.
 
 ## Risks / potential issues
@@ -125,7 +140,7 @@ The ADR must specify, exactly:
 
 ## Subtasks
 
-1. [ ] Read all source listed in Before Implementation.
-2. [ ] Draft ADR 0003 answering every Open Question and covering the guarantee table.
-3. [ ] Self-review against the Definition of Done checklist.
-4. [ ] Add the ADR to `docs/adr/README.md`'s index.
+1. [x] Read all source listed in Before Implementation.
+2. [x] Draft ADR 0003 answering every Open Question and covering the guarantee table.
+3. [x] Self-review against the Definition of Done checklist.
+4. [x] Add the ADR to `docs/adr/README.md`'s index.

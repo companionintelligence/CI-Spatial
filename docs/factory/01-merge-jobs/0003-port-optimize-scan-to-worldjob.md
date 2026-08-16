@@ -73,23 +73,50 @@ LOD list, size-reduction note) — map field-for-field per ADR 0003's guidance; 
 
 ## Definition of Done
 
-- [ ] Uploading a scan (`POST /upload-scan`) creates a `WorldJob` of type
-      `optimize-scan`, not a legacy `Job`.
-- [ ] The produced `<base>.opt.glb`/`.lodN.glb`/`.manifest.json` files are
-      byte-identical to what the old path produced for the same input.
-- [ ] `POST /scans/:filename/optimize` and `POST /sessions/:id/finalize` both create
-      `WorldJob`s the same way.
-- [ ] The hardened runner from 0002 applies: optimize-scan jobs respect single-flight
-      and are recovered on crash exactly like every other WorldJobType.
+- [x] Uploading a scan (`POST /upload-scan`) creates a `WorldJob` of type
+      `optimize-scan`, not a legacy `Job`. Verified live: uploaded a scan against a
+      running server, confirmed `job.jobId` matches an entry in
+      `GET /worlds/default/jobs` with `type: 'optimize-scan'`, and confirmed
+      `GET /jobs` (legacy) never saw the target filename.
+- [x] The produced `<base>.opt.glb`/`.lodN.glb`/`.manifest.json` files are
+      byte-identical to what the old path produced for the same input. Verified by
+      running the same fixture GLB through both the untouched `jobs.ts` `JobQueue`
+      and the new `_runOptimizeScanJob` and diffing output: `.opt.glb` is
+      byte-identical (`cmp`), and `.manifest.json` is identical modulo the
+      `source`/`createdAt` fields (which vary run-to-run under the old path too).
+- [x] `POST /scans/:filename/optimize` and `POST /sessions/:id/finalize` both create
+      `WorldJob`s the same way. Both call the same new `enqueueOptimizeScanJob`
+      helper `POST /upload-scan` uses. `/scans/:filename/optimize` verified live
+      (manually re-triggered optimize on an already-uploaded scan — dedupe correctly
+      returned the in-flight job, then a fresh call after completion produced a new
+      completed `optimize-scan` `WorldJob`). `/sessions/:id/finalize` verified by
+      code inspection only (same helper call, not separately exercised live — no
+      session fixture was built for this pass).
+- [x] The hardened runner from 0002 applies: optimize-scan jobs respect single-flight
+      and are recovered on crash exactly like every other WorldJobType. Dispatch goes
+      through the same `worldJobPump`/`_dispatchWorldJob` used by every other type
+      (no bypass), and `recoverStuckWorldJobs`/boot recovery key off `status` only,
+      never `job.type`, so optimize-scan jobs are recovered identically to every
+      other type by construction.
 
 ## Tests
 
-- [ ] `deno task check` passes.
-- [ ] `npm run smoke:pipeline` passes unchanged (exercises `pipeline.ts` directly,
+- [x] `deno task check` passes.
+- [x] `npm run smoke:pipeline` passes unchanged (exercises `pipeline.ts` directly,
       unaffected by the caller change — proves the artifact logic itself is untouched).
-- [ ] New/updated test: upload a scan via the real route, assert a `WorldJob` of type
+- [x] New/updated test: upload a scan via the real route, assert a `WorldJob` of type
       `optimize-scan` appears in `GET /worlds/:slug/jobs` and reaches `completed`.
-- [ ] Existing `deno task test` suite still passes.
+      Added `tests/api-optimize-scan-worldjob.spec.ts` (Playwright `api` project,
+      matching `tests/api-test-homes.spec.ts`'s conventions); ran it live against a
+      real server and it passes.
+- [ ] Existing `deno task test` suite still passes. **Not fully true as written**: 9
+      of 97 tests fail (`splat_detect.test.ts` ×6, `splat_train.test.ts` ×3), but
+      these are pre-existing and unrelated to this ticket — confirmed by
+      `git stash`-ing this ticket's entire diff and re-running: the identical 9 tests
+      fail with none of this ticket's changes present. Looks like an environment
+      issue (python venv / CLI binary detection returning `error`/`ok` instead of
+      `skipped` on this box) in code this ticket never touches. The 88 unaffected
+      tests, including the new `world_job_pump.test.ts` suite (11/11), pass.
 
 ```
 deno task check
@@ -99,9 +126,11 @@ deno task test
 
 ## Acceptance Criteria
 
-- [ ] Given a fresh scan upload, when optimization finishes, then `GET
+- [x] Given a fresh scan upload, when optimization finishes, then `GET
       /worlds/:slug/jobs` shows an `optimize-scan` WorldJob in `completed` status with
       the correct artifact references — with no `jobs.json` entry created for it.
+      Verified live end-to-end (see Definition of Done above) and covered by
+      `tests/api-optimize-scan-worldjob.spec.ts`.
 
 ## Risks / potential issues
 
@@ -116,8 +145,10 @@ deno task test
 
 ## Subtasks
 
-1. [ ] Add `'optimize-scan'` to `WorldJobType`.
-2. [ ] Port `_runOptimize()`'s body into a new `_runOptimizeScanJob`.
-3. [ ] Re-point the three route call sites.
-4. [ ] Add the new WorldJob-based upload test.
-5. [ ] Run full verification; diff artifact output against a pre-change baseline.
+1. [x] Add `'optimize-scan'` to `WorldJobType`.
+2. [x] Port `_runOptimize()`'s body into a new `_runOptimizeScanJob`.
+3. [x] Re-point the three route call sites.
+4. [x] Add the new WorldJob-based upload test.
+5. [x] Run full verification; diff artifact output against a pre-change baseline
+       (ran the identical fixture through the untouched `jobs.ts` `JobQueue` and
+       compared byte-for-byte; see Definition of Done).
