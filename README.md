@@ -457,6 +457,10 @@ For the two-story-house field acceptance protocol see [docs/HOUSE_VALIDATION.md]
 ## Testing
 
 ```bash
+# Fast, hermetic gate — server type-check + full Deno suite + frontend
+# type-check. No servers, browsers, or seeded corpus needed (~3s).
+npm run verify
+
 # Unit + E2E tests (desktop WebKit)
 npm test
 
@@ -465,9 +469,27 @@ npm run test:mobile
 
 # Real iPhone over USB (requires ios-webkit-debug-proxy)
 npm run test:iphone
+
+# Full isolated browser loop: boots its own Deno + Vite on scratch ports and
+# data dirs, seeds a corpus, runs the api + chromium-mock Playwright projects.
+npm run test:box
 ```
 
 See `playwright.config.ts` for project configurations.
+
+### Pre-push guard
+
+`.githooks/pre-push` runs `npm run verify` and refuses the push if it fails, so
+a red `main` can't leave your machine. It's opt-in per clone (git doesn't track
+`.git/hooks`):
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The hook covers only the hermetic gates — the Playwright suites need servers, a
+browser binary, and a seeded corpus, so they stay in `npm run test:box` rather
+than in front of every push. Emergency escape hatch: `git push --no-verify`.
 
 ### 8th Wall Simulator
 

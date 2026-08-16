@@ -5,7 +5,7 @@
     "start": "deno run --allow-net --allow-read --allow-write --allow-env --allow-ffi --allow-run main.ts",
     "check": "deno check main.ts",
     "migrate-jobs": "deno run --allow-read --allow-write --allow-env migrate_jobs.ts",
-    "test": "deno test --allow-read --allow-write --allow-env --allow-net --allow-run inference_mock.test.ts lingbot_map.test.ts memory_push.test.ts portal_auth.test.ts splat_detect.test.ts splat_finish.test.ts splat_train.test.ts sync.test.ts world_job_pump.test.ts migrate_jobs.test.ts",
+    "test": "deno test --allow-read --allow-write --allow-env --allow-net --allow-run inference_mock.test.ts lingbot_map.test.ts memory_push.test.ts portal_auth.test.ts splat_detect.test.ts splat_finish.test.ts splat_train.test.ts sync.test.ts world_job_pump.test.ts migrate_jobs.test.ts exec_probe.test.ts",
     "test:mock": "deno test --allow-read --allow-env --allow-net inference_mock.test.ts",
     "test:splat": "deno test --allow-read --allow-write --allow-env --allow-run splat_train.test.ts splat_detect.test.ts splat_finish.test.ts",
     "test:auth": "deno test --allow-read --allow-write --allow-env --allow-net --allow-run portal_auth.test.ts memory_push.test.ts lingbot_map.test.ts"

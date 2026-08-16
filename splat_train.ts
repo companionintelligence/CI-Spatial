@@ -22,6 +22,7 @@
  */
 
 import { buildBrushDataset } from './splat_train_dataset.ts'
+import { isRunnable } from './exec_probe.ts'
 // The manifest type lives in src/world/manifests.ts, not here — see that
 // file's header (it's the canonical, Deno-API-free home so the browser
 // viewer can type-import it without dragging this file's `Deno.*` calls into
@@ -299,20 +300,9 @@ async function findExportedPly(
   return best
 }
 
-async function isRunnable(bin: string): Promise<boolean> {
-  try {
-    const info = await Deno.stat(bin)
-    if (!info.isFile) return false
-    // On Unix, mode is available; treat any exec bit as runnable. When mode is
-    // null (unsupported platform) fall back to "exists".
-    if (typeof info.mode === 'number') {
-      return (info.mode & 0o111) !== 0
-    }
-    return true
-  } catch {
-    return false
-  }
-}
+// isRunnable now lives in ./exec_probe.ts — it was duplicated here and in
+// splat_detect.ts, and both copies mis-detected every binary as non-runnable
+// on Windows (see that file's header for the mode-bit reason).
 
 async function defaultSpawn(
   bin: string,
