@@ -1,3 +1,5 @@
+import { SW_SYNC_TAG } from './shared/storage-keys'
+
 export function registerPWA(): void {
   if (typeof window === 'undefined') return
   if (!('serviceWorker' in navigator)) return
@@ -11,7 +13,7 @@ export function registerPWA(): void {
             sync?: { register(tag: string): Promise<void> }
           }
           registration.active?.postMessage({ type: 'flushQueue' })
-          syncRegistration.sync?.register('companion-scan-flush').catch(() => {
+          syncRegistration.sync?.register(SW_SYNC_TAG).catch(() => {
             // Background Sync is not available in every browser, especially iOS.
           })
         }

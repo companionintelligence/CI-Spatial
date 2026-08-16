@@ -14,13 +14,14 @@
  * against a fixed recorded session without needing a physical device.
  */
 import { test, expect, type Page } from '@playwright/test'
+import { ONBOARDING_KEY } from '../src/shared/storage-keys'
 
 const BASE_URL = process.env['VITE_URL'] ?? 'https://liambook.capybara-ulmer.ts.net:5173'
 
 test.beforeEach(async ({ context }) => {
-  await context.addInitScript(() => {
-    window.localStorage.setItem('companion-scan-onboarded', '1')
-  })
+  await context.addInitScript((key) => {
+    window.localStorage.setItem(key, '1')
+  }, ONBOARDING_KEY)
 })
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

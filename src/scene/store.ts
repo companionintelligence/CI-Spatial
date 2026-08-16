@@ -10,6 +10,7 @@
  *   Each record: { sessionId, startedAt, detections: StoredDetection[] }
  */
 import type { WorldDetection } from '../spatial/resolver'
+import { SCAN_DB_NAME } from '../shared/storage-keys'
 
 export interface StoredDetection extends WorldDetection {
   thumbnailDataUrl?: string
@@ -23,7 +24,7 @@ export interface Session {
 
 type ChangeListener = (detections: Map<string, StoredDetection>, selected: Set<string>) => void
 
-const DB_NAME = 'ci-xr-scan'
+const DB_NAME = SCAN_DB_NAME
 const STORE_NAME = 'sessions'
 const DB_VERSION = 1
 const OPEN_TIMEOUT_MS = 5000 // give up on IndexedDB after 5 s (private mode, hung backends)

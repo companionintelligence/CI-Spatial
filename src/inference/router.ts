@@ -15,6 +15,7 @@
  */
 import { inferViaServer } from './server'
 import type { RawDetection } from './prompt'
+import { INFER_MODE_KEY } from '../shared/storage-keys'
 
 export type InferMode = 'server' | 'webgpu'
 
@@ -59,7 +60,7 @@ export class InferenceRouter {
     this.onProgress = onProgress ?? null
     this.onModeChange = onModeChange ?? null
 
-    const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('infer-mode') as InferMode | null : null
+    const saved = typeof localStorage !== 'undefined' ? localStorage.getItem(INFER_MODE_KEY) as InferMode | null : null
     const wantsWebGPU = saved === 'webgpu' && this.hasWebGPU
     this.useWorker = wantsWebGPU
 
@@ -71,7 +72,7 @@ export class InferenceRouter {
    * Spawns the WebGPU worker on first switch to 'webgpu'.
    */
   setMode(mode: InferMode): void {
-    if (typeof localStorage !== 'undefined') localStorage.setItem('infer-mode', mode)
+    if (typeof localStorage !== 'undefined') localStorage.setItem(INFER_MODE_KEY, mode)
     const want = mode === 'webgpu' && this.hasWebGPU
     if (want === this.useWorker) return
     this.useWorker = want
