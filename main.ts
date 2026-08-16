@@ -44,6 +44,7 @@ import {
   worldJobTarget,
   WorldJobPump,
 } from './world_job_pump.ts'
+import { withWorldLock } from './world_lock.ts'
 import { runLingBotMapReconstruction } from './lingbot_map.ts'
 import { runSplatTrain } from './splat_train.ts'
 import { runSplatDetect } from './splat_detect.ts'
@@ -184,7 +185,7 @@ function broadcast(event: Record<string, unknown>): void {
 // execution") — mirrors the retired JobQueue's _jobs/_pump()/_working
 // pattern (docs/factory/01-merge-jobs/0005 retired the class itself; see
 // jobs.ts's header). Dispatch itself (`_dispatchWorldJob`, defined further
-// down) stays in main.ts since it needs loadWorld/saveWorld/broadcast and
+// down) stays in main.ts since it needs loadWorld/updateWorld/broadcast and
 // the per-type _run*Job functions; only the queue + pump primitive lives in
 // world_job_pump.ts, so it's unit-testable in isolation.
 const worldJobPump = new WorldJobPump((slug, jobId) => _dispatchWorldJob(slug, jobId))
@@ -878,14 +879,15 @@ app.post('/ingest-video', async (c) => {
     }
 
     // Register a session-backed scan in the default world + enqueue reconstruction.
-    const world = await loadWorld('default')
-    const scan = registerSessionScan(world, sessionId, scanName ?? undefined, frameCount)
-    const job = createWorldJob(world, 'lingbot-map-reconstruct', scan.scanId, {
-      source: 'video-ingest',
-      sessionId,
-      frameCount,
+    const { world, value: { scan, job } } = await updateWorld('default', (world) => {
+      const scan = registerSessionScan(world, sessionId, scanName ?? undefined, frameCount)
+      const job = createWorldJob(world, 'lingbot-map-reconstruct', scan.scanId, {
+        source: 'video-ingest',
+        sessionId,
+        frameCount,
+      })
+      return { scan, job }
     })
-    await saveWorld(world)
     await completeJobSoon(world.shareSlug, job.jobId)
 
     broadcast({ type: EVENT.VIDEO_INGESTED, sessionId, scanId: scan.scanId, jobId: job.jobId, frameCount })
@@ -975,14 +977,15 @@ app.post('/ingest-photos', async (c) => {
 
     // Register a session-backed scan in the default world + enqueue reconstruction
     // (mirrors /ingest-video).
-    const world = await loadWorld('default')
-    const scan = registerSessionScan(world, sessionId, scanName ?? undefined, frameCount, 'photo-ingest')
-    const job = createWorldJob(world, 'lingbot-map-reconstruct', scan.scanId, {
-      source: 'photo-ingest',
-      sessionId,
-      frameCount,
+    const { world, value: { scan, job } } = await updateWorld('default', (world) => {
+      const scan = registerSessionScan(world, sessionId, scanName ?? undefined, frameCount, 'photo-ingest')
+      const job = createWorldJob(world, 'lingbot-map-reconstruct', scan.scanId, {
+        source: 'photo-ingest',
+        sessionId,
+        frameCount,
+      })
+      return { scan, job }
     })
-    await saveWorld(world)
     await completeJobSoon(world.shareSlug, job.jobId)
 
     broadcast({ type: EVENT.PHOTOS_INGESTED, sessionId, scanId: scan.scanId, jobId: job.jobId, frameCount })
@@ -1367,7 +1370,14 @@ function createWorldMembers(): WorldMember[] {
   }))
 }
 
-async function saveWorld(world: WorldProject): Promise<void> {
+/**
+ * Atomic single write of a world file. Atomic is not the same as isolated —
+ * this must only be called from inside a `withWorldLock(slug, …)` critical
+ * section (i.e. from `loadWorld`/`updateWorld`/`mutateWorldFiles`), or a
+ * concurrent cycle holding an older snapshot can overwrite what it saves.
+ * See `world_lock.ts`.
+ */
+async function writeWorldUnlocked(world: WorldProject): Promise<void> {
   world.updatedAt = new Date().toISOString()
   const tmp = `${worldPath(world.shareSlug)}.${crypto.randomUUID()}.tmp`
   await Deno.writeTextFile(tmp, JSON.stringify(world, null, 2))
@@ -1398,27 +1408,39 @@ async function synthesizeWorld(slug: string): Promise<WorldProject> {
     createdAt: now,
     updatedAt: now,
   }
-  await saveWorld(world)
+  await writeWorldUnlocked(world)
   return world
 }
 
-/** Apply a mutator to every stored world file; returns how many were updated */
+/**
+ * Apply a mutator to every stored world file; returns how many were updated.
+ * Each file's read-modify-write runs inside that slug's lock, so it can't
+ * clobber (or be clobbered by) a concurrent `updateWorld` on the same world.
+ * The lock key comes from the filename — the same name the read below uses —
+ * which is `world.shareSlug` for every world this server writes.
+ */
 async function mutateWorldFiles(mutator: (world: WorldProject) => boolean | Promise<boolean>): Promise<number> {
-  let updated = 0
+  const names: string[] = []
   try {
     for await (const entry of Deno.readDir(WORLDS_DIR)) {
-      if (!entry.isFile || !entry.name.endsWith('.json')) continue
-      try {
-        const world = JSON.parse(await Deno.readTextFile(`${WORLDS_DIR}/${entry.name}`)) as WorldProject
-        if (await mutator(world)) {
-          await saveWorld(world)
-          updated += 1
-        }
-      } catch (error) {
-        console.warn(`[world] Could not mutate ${entry.name}:`, error)
-      }
+      if (entry.isFile && entry.name.endsWith('.json')) names.push(entry.name)
     }
   } catch { /* worlds directory may be empty */ }
+
+  let updated = 0
+  for (const name of names) {
+    try {
+      const changed = await withWorldLock(safeSlug(name.replace(/\.json$/, '')), async () => {
+        const world = JSON.parse(await Deno.readTextFile(`${WORLDS_DIR}/${name}`)) as WorldProject
+        if (!await mutator(world)) return false
+        await writeWorldUnlocked(world)
+        return true
+      })
+      if (changed) updated += 1
+    } catch (error) {
+      console.warn(`[world] Could not mutate ${name}:`, error)
+    }
+  }
   return updated
 }
 
@@ -1447,7 +1469,12 @@ async function removeAllScansFromWorlds(): Promise<number> {
   })
 }
 
-async function loadWorld(slug: string): Promise<WorldProject> {
+/**
+ * Read (or synthesize) a world. Unlocked, and it can itself write — via
+ * `refreshWorldScans` — so callers must hold that slug's lock: use
+ * `loadWorld` to read, `updateWorld` to read-modify-write.
+ */
+async function readWorldUnlocked(slug: string): Promise<WorldProject> {
   const safe = safeSlug(slug)
   try {
     const world = JSON.parse(await Deno.readTextFile(worldPath(safe))) as WorldProject
@@ -1456,6 +1483,39 @@ async function loadWorld(slug: string): Promise<WorldProject> {
   } catch {
     return synthesizeWorld(safe)
   }
+}
+
+/** Read a world under its lock — a snapshot no in-flight cycle is mid-write on. */
+function loadWorld(slug: string): Promise<WorldProject> {
+  return withWorldLock(safeSlug(slug), () => readWorldUnlocked(slug))
+}
+
+/**
+ * The one way to change a world on disk: load, mutate, save, all inside that
+ * slug's lock, so two concurrent cycles serialize instead of one silently
+ * overwriting the other (`world_lock.ts` explains what that cost us).
+ *
+ * The write is unconditional — a mutator can't forget to persist what it
+ * changed, which is the failure mode this whole helper exists to remove. Do
+ * only world-file work inside `mutate`: broadcasts, pump enqueues, and any
+ * long-running worker call belong outside it, after the lock is released.
+ * `mutate` must not call `loadWorld`/`updateWorld` for the same slug (the
+ * lock is not reentrant); it gets the live `world` object already.
+ *
+ * Returns the saved world alongside whatever `mutate` returned, so a caller
+ * that needs both (a created job plus `world.shareSlug`, say) gets them from
+ * one cycle.
+ */
+async function updateWorld<T>(
+  slug: string,
+  mutate: (world: WorldProject) => T | Promise<T>,
+): Promise<{ world: WorldProject; value: T }> {
+  return await withWorldLock(safeSlug(slug), async () => {
+    const world = await readWorldUnlocked(slug)
+    const value = await mutate(world)
+    await writeWorldUnlocked(world)
+    return { world, value }
+  })
 }
 
 async function refreshWorldScans(world: WorldProject): Promise<void> {
@@ -1481,14 +1541,14 @@ async function refreshWorldScans(world: WorldProject): Promise<void> {
     .filter(scan => !existing.has(scan.filename))
     .slice(0, 12)
   if (additions.length === 0) {
-    if (changed) await saveWorld(world)
+    if (changed) await writeWorldUnlocked(world)
     return
   }
 
   const origin = world.originGeoPose
   const nextIndex = world.scans.length
   world.scans.push(...additions.map((scan, i) => scanManifestFromStored(scan, origin, nextIndex + i, world.shareSlug)))
-  await saveWorld(world)
+  await writeWorldUnlocked(world)
 }
 
 /** Best client-facing base URL: request origin → forwarded host → Vite default */
@@ -1725,10 +1785,10 @@ async function enqueueLegacyProcessJob(action: string, filename: string): Promis
   }
   const type = mapping[action]
   if (!type) return null
-  const world = await loadWorld('default')
-  const scan = world.scans.find(s => s.filename === filename)
-  const job = createWorldJob(world, type, scan?.scanId, { legacyAction: action, filename })
-  await saveWorld(world)
+  const { world, value: job } = await updateWorld('default', (world) => {
+    const scan = world.scans.find(s => s.filename === filename)
+    return createWorldJob(world, type, scan?.scanId, { legacyAction: action, filename })
+  })
   await completeJobSoon(world.shareSlug, job.jobId)
   return job.jobId
 }
@@ -1747,9 +1807,10 @@ async function enqueueLegacyProcessJob(action: string, filename: string): Promis
  * here rather than inventing a second "raw scan job" shape (ADR 0001).
  */
 async function enqueueOptimizeScanJob(filename: string): Promise<WorldJob> {
-  const world = await loadWorld('default')
-  const job = createWorldJob(world, 'optimize-scan', undefined, { filename })
-  await saveWorld(world)
+  const { world, value: job } = await updateWorld(
+    'default',
+    (world) => createWorldJob(world, 'optimize-scan', undefined, { filename }),
+  )
   await completeJobSoon(world.shareSlug, job.jobId)
   return job
 }
@@ -1777,24 +1838,26 @@ async function completeJobSoon(slug: string, jobId: string): Promise<void> {
  */
 async function _dispatchWorldJob(slug: string, jobId: string): Promise<void> {
   try {
-    const world = await loadWorld(slug)
-    const job = world.jobs.find(j => j.jobId === jobId)
-    if (!job || job.status !== 'queued') return
-    job.status = 'processing'
-    job.workerId = job.type === 'lingbot-map-reconstruct'
-      ? 'lingbot-map'
-      : job.type === 'splat-train'
-        ? 'brush'
-        : job.type === 'splat-detect'
-          ? 'splat-analyzer'
-          : job.type === 'splat-finish'
-            ? 'splat-transform'
-            : job.type === 'memory-push'
-              ? 'companion-memory'
-              : 'local-coordinator'
-    job.progress = 0.35
-    job.updatedAt = new Date().toISOString()
-    await saveWorld(world)
+    const { world, value: job } = await updateWorld(slug, (world) => {
+      const job = world.jobs.find(j => j.jobId === jobId)
+      if (!job || job.status !== 'queued') return null
+      job.status = 'processing'
+      job.workerId = job.type === 'lingbot-map-reconstruct'
+        ? 'lingbot-map'
+        : job.type === 'splat-train'
+          ? 'brush'
+          : job.type === 'splat-detect'
+            ? 'splat-analyzer'
+            : job.type === 'splat-finish'
+              ? 'splat-transform'
+              : job.type === 'memory-push'
+                ? 'companion-memory'
+                : 'local-coordinator'
+      job.progress = 0.35
+      job.updatedAt = new Date().toISOString()
+      return job
+    })
+    if (!job) return
     broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job })
     broadcastLegacyJobUpdate(job)
 
@@ -1835,24 +1898,26 @@ async function _dispatchWorldJob(slug: string, jobId: string): Promise<void> {
     // "Single-flight execution".
     await sleep(650)
     try {
-      const current = await loadWorld(slug)
-      const currentJob = current.jobs.find(j => j.jobId === jobId)
-      if (!currentJob || currentJob.status === 'failed') return
-      const failure = jobFailureReason(currentJob, current)
-      if (failure) {
-        currentJob.status = 'failed'
-        currentJob.error = failure
-        currentJob.result = failure
-        currentJob.progress = 1
-      } else {
-        currentJob.status = 'completed'
-        currentJob.result = jobResultFor(currentJob)
-        currentJob.artifacts = jobArtifactsFor(currentJob, current)
-        currentJob.progress = 1
-        applyCompletedJobToWorld(currentJob, current)
-      }
-      currentJob.updatedAt = new Date().toISOString()
-      await saveWorld(current)
+      const { world: current, value: currentJob } = await updateWorld(slug, (current) => {
+        const currentJob = current.jobs.find(j => j.jobId === jobId)
+        if (!currentJob || currentJob.status === 'failed') return null
+        const failure = jobFailureReason(currentJob, current)
+        if (failure) {
+          currentJob.status = 'failed'
+          currentJob.error = failure
+          currentJob.result = failure
+          currentJob.progress = 1
+        } else {
+          currentJob.status = 'completed'
+          currentJob.result = jobResultFor(currentJob)
+          currentJob.artifacts = jobArtifactsFor(currentJob, current)
+          currentJob.progress = 1
+          applyCompletedJobToWorld(currentJob, current)
+        }
+        currentJob.updatedAt = new Date().toISOString()
+        return currentJob
+      })
+      if (!currentJob) return
       broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: current.worldId, job: currentJob })
     } catch (err) {
       console.error('[world-job complete error]', err)
@@ -1879,7 +1944,7 @@ async function _dispatchWorldJob(slug: string, jobId: string): Promise<void> {
 async function recoverWorldJobsOnBoot(): Promise<void> {
   // Broadcasting/enqueueing happens after the mutateWorldFiles() pass below
   // (not inside the mutator) so every recovered job is persisted via
-  // saveWorld() before anything is broadcast or handed to the pump —
+  // mutateWorldFiles' locked write before anything is broadcast or handed to the pump —
   // mirrors the save-before-broadcast ordering every other job transition
   // in this file follows (e.g. _runLingBotMapJob).
   const recoveredByWorld: Array<{ worldId: string; shareSlug: string; jobs: WorldJob[] }> = []
@@ -1908,140 +1973,77 @@ async function recoverWorldJobsOnBoot(): Promise<void> {
 
 async function _runLingBotMapJob(slug: string, jobId: string): Promise<void> {
   try {
-    const world = await loadWorld(slug)
-    const job = world.jobs.find(j => j.jobId === jobId)
-    if (!job) return
-    const scan = scanForJob(job, world)
-    const failure = jobFailureReason(job, world)
-    if (failure) {
-      job.status = 'failed'
-      job.error = failure
-      job.result = failure
-      job.progress = 1
-      job.updatedAt = new Date().toISOString()
-      await saveWorld(world)
-      broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job })
-      return
-    }
-    const sessionId = scan!.sessionId!
-    const sessionPath = sessionDir(sessionId)
-    if (!sessionPath) {
-      job.status = 'failed'
-      job.error = `Invalid session id: ${sessionId}`
-      job.result = job.error
-      job.progress = 1
-      job.updatedAt = new Date().toISOString()
-      await saveWorld(world)
-      broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job })
-      return
-    }
+    const start = await claimSessionJob(slug, jobId)
+    if (!start) return
+    const { scan, sessionId, sessionPath } = start
 
-    const base = scan!.filename.replace(/\.glb$/, '')
+    const base = scan.filename.replace(/\.glb$/, '')
     const glbSidecarPath = `${SCANS_DIR}/${base}.lingbot.glb`
     const result = await runLingBotMapReconstruction({
       sessionDir: sessionPath,
       scriptPath: LINGBOT_MAP_SCRIPT,
       glbSidecarPath,
-      glbExtras: { sessionId, scanId: scan!.scanId },
+      glbExtras: { sessionId, scanId: scan.scanId },
     })
 
-    const current = await loadWorld(slug)
-    const currentJob = current.jobs.find(j => j.jobId === jobId)
-    if (!currentJob) return
-    currentJob.progress = 1
-    if (result.status === 'ok') {
-      currentJob.status = 'completed'
-      currentJob.result = jobResultFor(currentJob)
-      currentJob.artifacts = jobArtifactsFor(currentJob, current)
-      if (result.glbSidecarPath) {
-        const glbName = result.glbSidecarPath.split('/').pop()!
-        currentJob.artifacts ??= []
-        currentJob.artifacts.push({
-          type: 'lingbot-map-glb',
-          label: `${scan!.name} LingBot-Map GLB`,
-          url: `/scans/${encodeURIComponent(glbName)}`,
-          metadata: { points: result.glbPointCount ?? null },
-        })
-        const targetScan = current.scans.find(s => s.scanId === scan!.scanId)
-        if (targetScan && !targetScan.layerIndex.some(l => l.id === 'lingbot-map')) {
-          targetScan.layerIndex.push({
-            id: 'lingbot-map',
-            type: 'points',
-            label: 'LingBot-Map reconstruction',
-            visibleByDefault: false,
-            encodedInGlb: true,
-            source: 'derived',
-            count: result.glbPointCount ?? null,
+    await commitWorldJob(slug, jobId, (currentJob, current) => {
+      currentJob.progress = 1
+      if (result.status === 'ok') {
+        currentJob.status = 'completed'
+        currentJob.result = jobResultFor(currentJob)
+        currentJob.artifacts = jobArtifactsFor(currentJob, current)
+        if (result.glbSidecarPath) {
+          const glbName = result.glbSidecarPath.split('/').pop()!
+          currentJob.artifacts ??= []
+          currentJob.artifacts.push({
+            type: 'lingbot-map-glb',
+            label: `${scan.name} LingBot-Map GLB`,
+            url: `/scans/${encodeURIComponent(glbName)}`,
+            metadata: { points: result.glbPointCount ?? null },
           })
+          const targetScan = current.scans.find(s => s.scanId === scan.scanId)
+          if (targetScan && !targetScan.layerIndex.some(l => l.id === 'lingbot-map')) {
+            targetScan.layerIndex.push({
+              id: 'lingbot-map',
+              type: 'points',
+              label: 'LingBot-Map reconstruction',
+              visibleByDefault: false,
+              encodedInGlb: true,
+              source: 'derived',
+              count: result.glbPointCount ?? null,
+            })
+          }
         }
+        applyCompletedJobToWorld(currentJob, current)
+      } else if (result.status === 'skipped') {
+        currentJob.status = 'completed'
+        currentJob.result = `LingBot-Map skipped: ${result.skippedReason ?? 'unknown reason'}`
+        currentJob.artifacts = [{
+          type: 'lingbot-map-skip',
+          label: 'LingBot-Map run skipped',
+          url: `/sessions/${encodeURIComponent(sessionId)}/lingbot-map.manifest.json`,
+          metadata: { sessionId, skippedReason: result.skippedReason ?? null },
+        }]
+      } else {
+        currentJob.status = 'failed'
+        currentJob.error = result.error ?? `worker exit ${result.exitCode}`
+        currentJob.result = currentJob.error
       }
-      applyCompletedJobToWorld(currentJob, current)
-    } else if (result.status === 'skipped') {
-      currentJob.status = 'completed'
-      currentJob.result = `LingBot-Map skipped: ${result.skippedReason ?? 'unknown reason'}`
-      currentJob.artifacts = [{
-        type: 'lingbot-map-skip',
-        label: 'LingBot-Map run skipped',
-        url: `/sessions/${encodeURIComponent(sessionId)}/lingbot-map.manifest.json`,
-        metadata: { sessionId, skippedReason: result.skippedReason ?? null },
-      }]
-    } else {
-      currentJob.status = 'failed'
-      currentJob.error = result.error ?? `worker exit ${result.exitCode}`
-      currentJob.result = currentJob.error
-    }
-    currentJob.updatedAt = new Date().toISOString()
-    await saveWorld(current)
-    broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: current.worldId, job: currentJob })
+      currentJob.updatedAt = new Date().toISOString()
+    })
   } catch (err) {
     console.error('[lingbot-map job error]', err)
-    try {
-      const recovered = await loadWorld(slug)
-      const recoveredJob = recovered.jobs.find(j => j.jobId === jobId)
-      if (recoveredJob) {
-        recoveredJob.status = 'failed'
-        recoveredJob.error = err instanceof Error ? err.message : String(err)
-        recoveredJob.result = recoveredJob.error
-        recoveredJob.progress = 1
-        recoveredJob.updatedAt = new Date().toISOString()
-        await saveWorld(recovered)
-        broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: recovered.worldId, job: recoveredJob })
-      }
-    } catch { /* nothing more we can do */ }
+    await failWorldJob(slug, jobId, errorMessage(err))
   }
 }
 
 async function _runSplatTrainJob(slug: string, jobId: string): Promise<void> {
   try {
-    const world = await loadWorld(slug)
-    const job = world.jobs.find(j => j.jobId === jobId)
-    if (!job) return
-    const scan = scanForJob(job, world)
-    const failure = jobFailureReason(job, world)
-    if (failure) {
-      job.status = 'failed'
-      job.error = failure
-      job.result = failure
-      job.progress = 1
-      job.updatedAt = new Date().toISOString()
-      await saveWorld(world)
-      broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job })
-      return
-    }
-    const sessionId = scan!.sessionId!
-    const sessionPath = sessionDir(sessionId)
-    if (!sessionPath) {
-      job.status = 'failed'
-      job.error = `Invalid session id: ${sessionId}`
-      job.result = job.error
-      job.progress = 1
-      job.updatedAt = new Date().toISOString()
-      await saveWorld(world)
-      broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job })
-      return
-    }
+    const start = await claimSessionJob(slug, jobId)
+    if (!start) return
+    const { scan, sessionId, sessionPath } = start
 
-    const base = scan!.filename.replace(/\.glb$/, '')
+    const base = scan.filename.replace(/\.glb$/, '')
     const outputPlyPath = `${SCANS_DIR}/${base}.splat.ply`
     const outputCompressedPlyPath = `${SCANS_DIR}/${base}.compressed.ply`
     const manifestPath = `${SCANS_DIR}/${base}.splat-train.manifest.json`
@@ -2050,137 +2052,112 @@ async function _runSplatTrainJob(slug: string, jobId: string): Promise<void> {
       outputPlyPath,
       outputCompressedPlyPath,
       manifestPath,
-      provenance: { sessionId, scanId: scan!.scanId },
+      provenance: { sessionId, scanId: scan.scanId },
     })
 
-    const current = await loadWorld(slug)
-    const currentJob = current.jobs.find(j => j.jobId === jobId)
-    if (!currentJob) return
-    currentJob.progress = 1
-    let chainedFinishJobId: string | null = null
-    if (result.status === 'ok') {
-      currentJob.status = 'completed'
-      currentJob.result = jobResultFor(currentJob)
-      currentJob.artifacts = jobArtifactsFor(currentJob, current)
-      const plyName = `${base}.splat.ply`
-      currentJob.artifacts ??= []
-      currentJob.artifacts.push({
-        type: 'splat-ply',
-        label: `${scan!.name} Gaussian splat`,
-        url: `/scans/${encodeURIComponent(plyName)}`,
-        metadata: {
-          gaussianCount: result.gaussianCount ?? null,
-          compressedUrl: result.compressedPlyPath
-            ? `/scans/${encodeURIComponent(`${base}.compressed.ply`)}`
-            : null,
-          manifestUrl: `/scans/${encodeURIComponent(`${base}.splat-train.manifest.json`)}`,
-        },
-      })
-      // Auto-chain Stage 4: enqueue splat-finish (sog + compressed.ply) for the
-      // same scan, mirroring how /ingest-video auto-enqueues reconstruction.
-      // Kill switch: SPLAT_FINISH_AUTO=0.
-      if (SPLAT_FINISH_AUTO) {
-        const finishJob = createWorldJob(current, 'splat-finish', scan!.scanId, {
-          source: 'auto-chain',
-          trainJobId: jobId,
-          sessionId,
+    const chainedFinishJobId = await commitWorldJob(slug, jobId, (currentJob, current) => {
+      let chained: string | null = null
+      currentJob.progress = 1
+      if (result.status === 'ok') {
+        currentJob.status = 'completed'
+        currentJob.result = jobResultFor(currentJob)
+        currentJob.artifacts = jobArtifactsFor(currentJob, current)
+        const plyName = `${base}.splat.ply`
+        currentJob.artifacts ??= []
+        currentJob.artifacts.push({
+          type: 'splat-ply',
+          label: `${scan.name} Gaussian splat`,
+          url: `/scans/${encodeURIComponent(plyName)}`,
+          metadata: {
+            gaussianCount: result.gaussianCount ?? null,
+            compressedUrl: result.compressedPlyPath
+              ? `/scans/${encodeURIComponent(`${base}.compressed.ply`)}`
+              : null,
+            manifestUrl: `/scans/${encodeURIComponent(`${base}.splat-train.manifest.json`)}`,
+          },
         })
-        chainedFinishJobId = finishJob.jobId
-      }
-      // Promote the scan's reserved 'splat' layer from 'future' to a real
-      // 'sidecar' layer carrying the trained gaussian count. Falls back to a
-      // fresh entry if the default index somehow lacked one.
-      const targetScan = current.scans.find(s => s.scanId === scan!.scanId)
-      if (targetScan) {
-        const existing = targetScan.layerIndex.find(l => l.type === 'splat')
-        if (existing) {
-          existing.source = 'sidecar'
-          existing.count = result.gaussianCount ?? existing.count ?? null
-        } else {
-          targetScan.layerIndex.push({
-            id: 'layer-splat',
-            type: 'splat',
-            label: 'Gaussian splat',
-            visibleByDefault: false,
-            encodedInGlb: false,
-            source: 'sidecar',
-            count: result.gaussianCount ?? null,
+        // Auto-chain Stage 4: enqueue splat-finish (sog + compressed.ply) for the
+        // same scan, mirroring how /ingest-video auto-enqueues reconstruction.
+        // Kill switch: SPLAT_FINISH_AUTO=0. The pump is kicked after the world
+        // is saved and the lock released, below.
+        if (SPLAT_FINISH_AUTO) {
+          const finishJob = createWorldJob(current, 'splat-finish', scan.scanId, {
+            source: 'auto-chain',
+            trainJobId: jobId,
+            sessionId,
           })
+          chained = finishJob.jobId
         }
+        // Promote the scan's reserved 'splat' layer from 'future' to a real
+        // 'sidecar' layer carrying the trained gaussian count. Falls back to a
+        // fresh entry if the default index somehow lacked one.
+        const targetScan = current.scans.find(s => s.scanId === scan.scanId)
+        if (targetScan) {
+          const existing = targetScan.layerIndex.find(l => l.type === 'splat')
+          if (existing) {
+            existing.source = 'sidecar'
+            existing.count = result.gaussianCount ?? existing.count ?? null
+          } else {
+            targetScan.layerIndex.push({
+              id: 'layer-splat',
+              type: 'splat',
+              label: 'Gaussian splat',
+              visibleByDefault: false,
+              encodedInGlb: false,
+              source: 'sidecar',
+              count: result.gaussianCount ?? null,
+            })
+          }
+        }
+        applyCompletedJobToWorld(currentJob, current)
+      } else if (result.status === 'skipped') {
+        currentJob.status = 'completed'
+        currentJob.result = `Splat train skipped: ${result.manifest.skippedReason ?? 'unknown reason'}`
+        currentJob.artifacts = [{
+          type: 'splat-skip',
+          label: 'Splat training skipped',
+          url: `/scans/${encodeURIComponent(`${base}.splat-train.manifest.json`)}`,
+          metadata: {
+            sessionId,
+            skippedReason: result.manifest.skippedReason ?? null,
+            remediation: result.manifest.remediation ?? null,
+          },
+        }]
+      } else {
+        currentJob.status = 'failed'
+        currentJob.error = result.manifest.error ?? `brush exit ${result.exitCode}`
+        currentJob.result = currentJob.error
       }
-      applyCompletedJobToWorld(currentJob, current)
-    } else if (result.status === 'skipped') {
-      currentJob.status = 'completed'
-      currentJob.result = `Splat train skipped: ${result.manifest.skippedReason ?? 'unknown reason'}`
-      currentJob.artifacts = [{
-        type: 'splat-skip',
-        label: 'Splat training skipped',
-        url: `/scans/${encodeURIComponent(`${base}.splat-train.manifest.json`)}`,
-        metadata: {
-          sessionId,
-          skippedReason: result.manifest.skippedReason ?? null,
-          remediation: result.manifest.remediation ?? null,
-        },
-      }]
-    } else {
-      currentJob.status = 'failed'
-      currentJob.error = result.manifest.error ?? `brush exit ${result.exitCode}`
-      currentJob.result = currentJob.error
-    }
-    currentJob.updatedAt = new Date().toISOString()
-    await saveWorld(current)
-    broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: current.worldId, job: currentJob })
+      currentJob.updatedAt = new Date().toISOString()
+      return chained
+    })
     if (chainedFinishJobId) await completeJobSoon(slug, chainedFinishJobId)
   } catch (err) {
     console.error('[splat-train job error]', err)
-    try {
-      const recovered = await loadWorld(slug)
-      const recoveredJob = recovered.jobs.find(j => j.jobId === jobId)
-      if (recoveredJob) {
-        recoveredJob.status = 'failed'
-        recoveredJob.error = err instanceof Error ? err.message : String(err)
-        recoveredJob.result = recoveredJob.error
-        recoveredJob.progress = 1
-        recoveredJob.updatedAt = new Date().toISOString()
-        await saveWorld(recovered)
-        broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: recovered.worldId, job: recoveredJob })
-      }
-    } catch { /* nothing more we can do */ }
+    await failWorldJob(slug, jobId, errorMessage(err))
   }
 }
 
 async function _runSplatDetectJob(slug: string, jobId: string): Promise<void> {
   try {
-    const world = await loadWorld(slug)
-    const job = world.jobs.find(j => j.jobId === jobId)
-    if (!job) return
-    const scan = scanForJob(job, world)
-    const failure = jobFailureReason(job, world)
-    if (failure) {
-      job.status = 'failed'
-      job.error = failure
-      job.result = failure
-      job.progress = 1
-      job.updatedAt = new Date().toISOString()
-      await saveWorld(world)
-      broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job })
-      return
-    }
+    const claimed = await claimJobScan(slug, jobId)
+    if (!claimed) return
+    const { scan, payload } = claimed
 
-    const base = scan!.filename.replace(/\.glb$/, '')
+    const base = scan.filename.replace(/\.glb$/, '')
     const splatPlyPath = `${SCANS_DIR}/${base}.splat.ply`
-    const sessionId = scan!.sessionId ?? undefined
+    const sessionId = scan.sessionId ?? undefined
     const sessionPath = sessionId ? sessionDir(sessionId) ?? undefined : undefined
     const outputInteractionsPath = `${SCANS_DIR}/${base}.interactions.json`
     const manifestPath = `${SCANS_DIR}/${base}.splat-detect.manifest.json`
     // Prompt: explicit job param wins; the driver defaults the env prompt otherwise.
-    const prompt = typeof job.payload?.['prompt'] === 'string' && (job.payload['prompt'] as string).trim().length > 0
-      ? (job.payload['prompt'] as string).trim()
+    const prompt = typeof payload?.['prompt'] === 'string' && (payload['prompt'] as string).trim().length > 0
+      ? (payload['prompt'] as string).trim()
       : undefined
     // Tuning knobs: forwarded from the job payload as strings; unset lets the
     // driver fall back to its env defaults / run_local.py's own defaults.
     const payloadStr = (key: string): string | undefined => {
-      const v = job.payload?.[key]
+      const v = payload?.[key]
       if (typeof v === 'number') return String(v)
       return typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined
     }
@@ -2195,86 +2172,71 @@ async function _runSplatDetectJob(slug: string, jobId: string): Promise<void> {
       scoreThreshold: payloadStr('scoreThreshold'),
       minVotes: payloadStr('minVotes'),
       minPeakScore: payloadStr('minPeakScore'),
-      provenance: { sessionId, scanId: scan!.scanId },
+      provenance: { sessionId, scanId: scan.scanId },
     })
 
-    const current = await loadWorld(slug)
-    const currentJob = current.jobs.find(j => j.jobId === jobId)
-    if (!currentJob) return
-    currentJob.progress = 1
-    if (result.status === 'ok') {
-      currentJob.status = 'completed'
-      currentJob.result = jobResultFor(currentJob)
-      currentJob.artifacts = jobArtifactsFor(currentJob, current)
-      const interactionsName = `${base}.interactions.json`
-      currentJob.artifacts ??= []
-      currentJob.artifacts.push({
-        type: 'splat-detections',
-        label: `${scan!.name} splat detections`,
-        url: `/scans/${encodeURIComponent(interactionsName)}`,
-        metadata: {
-          objectCount: result.objectCount ?? null,
-          prompt: result.manifest.prompt,
-          manifestUrl: `/scans/${encodeURIComponent(`${base}.splat-detect.manifest.json`)}`,
-        },
-      })
-      // Promote a 'detections' layer carrying the detected object count.
-      const targetScan = current.scans.find(s => s.scanId === scan!.scanId)
-      if (targetScan) {
-        const existing = targetScan.layerIndex.find(l => l.type === 'detections')
-        if (existing) {
-          existing.source = 'sidecar'
-          existing.count = result.objectCount ?? existing.count ?? null
-        } else {
-          targetScan.layerIndex.push({
-            id: 'layer-splat-detections',
-            type: 'detections',
-            label: 'Splat detections',
-            visibleByDefault: false,
-            encodedInGlb: false,
-            source: 'sidecar',
-            count: result.objectCount ?? null,
-          })
+    await commitWorldJob(slug, jobId, (currentJob, current) => {
+      currentJob.progress = 1
+      if (result.status === 'ok') {
+        currentJob.status = 'completed'
+        currentJob.result = jobResultFor(currentJob)
+        currentJob.artifacts = jobArtifactsFor(currentJob, current)
+        const interactionsName = `${base}.interactions.json`
+        currentJob.artifacts ??= []
+        currentJob.artifacts.push({
+          type: 'splat-detections',
+          label: `${scan.name} splat detections`,
+          url: `/scans/${encodeURIComponent(interactionsName)}`,
+          metadata: {
+            objectCount: result.objectCount ?? null,
+            prompt: result.manifest.prompt,
+            manifestUrl: `/scans/${encodeURIComponent(`${base}.splat-detect.manifest.json`)}`,
+          },
+        })
+        // Promote a 'detections' layer carrying the detected object count.
+        const targetScan = current.scans.find(s => s.scanId === scan.scanId)
+        if (targetScan) {
+          const existing = targetScan.layerIndex.find(l => l.type === 'detections')
+          if (existing) {
+            existing.source = 'sidecar'
+            existing.count = result.objectCount ?? existing.count ?? null
+          } else {
+            targetScan.layerIndex.push({
+              id: 'layer-splat-detections',
+              type: 'detections',
+              label: 'Splat detections',
+              visibleByDefault: false,
+              encodedInGlb: false,
+              source: 'sidecar',
+              count: result.objectCount ?? null,
+            })
+          }
+          if (typeof result.objectCount === 'number') targetScan.detectionCount = result.objectCount
         }
-        if (typeof result.objectCount === 'number') targetScan.detectionCount = result.objectCount
+        applyCompletedJobToWorld(currentJob, current)
+      } else if (result.status === 'skipped') {
+        currentJob.status = 'completed'
+        currentJob.result = `Splat detect skipped: ${result.manifest.skippedReason ?? 'unknown reason'}`
+        currentJob.artifacts = [{
+          type: 'splat-detect-skip',
+          label: 'Splat detection skipped',
+          url: `/scans/${encodeURIComponent(`${base}.splat-detect.manifest.json`)}`,
+          metadata: {
+            sessionId: sessionId ?? null,
+            skippedReason: result.manifest.skippedReason ?? null,
+            remediation: result.manifest.remediation ?? null,
+          },
+        }]
+      } else {
+        currentJob.status = 'failed'
+        currentJob.error = result.manifest.error ?? `splat-analyzer exit ${result.exitCode}`
+        currentJob.result = currentJob.error
       }
-      applyCompletedJobToWorld(currentJob, current)
-    } else if (result.status === 'skipped') {
-      currentJob.status = 'completed'
-      currentJob.result = `Splat detect skipped: ${result.manifest.skippedReason ?? 'unknown reason'}`
-      currentJob.artifacts = [{
-        type: 'splat-detect-skip',
-        label: 'Splat detection skipped',
-        url: `/scans/${encodeURIComponent(`${base}.splat-detect.manifest.json`)}`,
-        metadata: {
-          sessionId: sessionId ?? null,
-          skippedReason: result.manifest.skippedReason ?? null,
-          remediation: result.manifest.remediation ?? null,
-        },
-      }]
-    } else {
-      currentJob.status = 'failed'
-      currentJob.error = result.manifest.error ?? `splat-analyzer exit ${result.exitCode}`
-      currentJob.result = currentJob.error
-    }
-    currentJob.updatedAt = new Date().toISOString()
-    await saveWorld(current)
-    broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: current.worldId, job: currentJob })
+      currentJob.updatedAt = new Date().toISOString()
+    })
   } catch (err) {
     console.error('[splat-detect job error]', err)
-    try {
-      const recovered = await loadWorld(slug)
-      const recoveredJob = recovered.jobs.find(j => j.jobId === jobId)
-      if (recoveredJob) {
-        recoveredJob.status = 'failed'
-        recoveredJob.error = err instanceof Error ? err.message : String(err)
-        recoveredJob.result = recoveredJob.error
-        recoveredJob.progress = 1
-        recoveredJob.updatedAt = new Date().toISOString()
-        await saveWorld(recovered)
-        broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: recovered.worldId, job: recoveredJob })
-      }
-    } catch { /* nothing more we can do */ }
+    await failWorldJob(slug, jobId, errorMessage(err))
   }
 }
 
@@ -2286,84 +2248,46 @@ async function _runSplatDetectJob(slug: string, jobId: string): Promise<void> {
  */
 async function _runMemoryPushJob(slug: string, jobId: string): Promise<void> {
   try {
-    const world = await loadWorld(slug)
-    const job = world.jobs.find(j => j.jobId === jobId)
-    if (!job) return
-    const scan = scanForJob(job, world)
-    const failure = jobFailureReason(job, world)
-    if (failure) {
-      job.status = 'failed'
-      job.error = failure
-      job.result = failure
-      job.progress = 1
-      job.updatedAt = new Date().toISOString()
-      await saveWorld(world)
-      broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job })
-      return
-    }
+    const claimed = await claimJobScan(slug, jobId)
+    if (!claimed) return
+    const { scan } = claimed
 
-    const pushed = await pushScanToMemory(memoryPushCfg, scan!, { scansDir: SCANS_DIR })
+    const pushed = await pushScanToMemory(memoryPushCfg, scan, { scansDir: SCANS_DIR })
 
-    const current = await loadWorld(slug)
-    const currentJob = current.jobs.find(j => j.jobId === jobId)
-    if (!currentJob) return
-    currentJob.progress = 1
-    currentJob.status = 'completed'
-    currentJob.result = pushed.eventDuplicate > 0
-      ? 'Scan was already in Companion Memory — nothing to add.'
-      : jobResultFor(currentJob)
-    currentJob.artifacts = [{
-      type: 'memory-event',
-      label: `${scan!.name} in Companion Memory`,
-      metadata: {
-        sourceSystem: memoryPushCfg.sourceSystem,
-        sourceId: pushed.sourceId,
-        glbFileId: pushed.glbFileId,
-        glbSkippedReason: pushed.glbSkippedReason ?? null,
-        detectionCount: pushed.detectionCount,
-        ingested: pushed.eventIngested,
-        duplicate: pushed.eventDuplicate,
-      },
-    }]
-    currentJob.updatedAt = new Date().toISOString()
-    await saveWorld(current)
-    broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: current.worldId, job: currentJob })
+    await commitWorldJob(slug, jobId, (currentJob) => {
+      currentJob.progress = 1
+      currentJob.status = 'completed'
+      currentJob.result = pushed.eventDuplicate > 0
+        ? 'Scan was already in Companion Memory — nothing to add.'
+        : jobResultFor(currentJob)
+      currentJob.artifacts = [{
+        type: 'memory-event',
+        label: `${scan.name} in Companion Memory`,
+        metadata: {
+          sourceSystem: memoryPushCfg.sourceSystem,
+          sourceId: pushed.sourceId,
+          glbFileId: pushed.glbFileId,
+          glbSkippedReason: pushed.glbSkippedReason ?? null,
+          detectionCount: pushed.detectionCount,
+          ingested: pushed.eventIngested,
+          duplicate: pushed.eventDuplicate,
+        },
+      }]
+      currentJob.updatedAt = new Date().toISOString()
+    })
   } catch (err) {
     console.error('[memory-push] job failed:', err)
-    try {
-      const current = await loadWorld(slug)
-      const currentJob = current.jobs.find(j => j.jobId === jobId)
-      if (!currentJob) return
-      currentJob.status = 'failed'
-      currentJob.progress = 1
-      currentJob.error = err instanceof Error ? err.message : String(err)
-      currentJob.result = currentJob.error
-      currentJob.updatedAt = new Date().toISOString()
-      await saveWorld(current)
-      broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: current.worldId, job: currentJob })
-    } catch { /* world unreadable — the error is already logged */ }
+    await failWorldJob(slug, jobId, errorMessage(err))
   }
 }
 
 async function _runSplatFinishJob(slug: string, jobId: string): Promise<void> {
   try {
-    const world = await loadWorld(slug)
-    const job = world.jobs.find(j => j.jobId === jobId)
-    if (!job) return
-    const scan = scanForJob(job, world)
-    const failure = jobFailureReason(job, world)
-    if (failure) {
-      job.status = 'failed'
-      job.error = failure
-      job.result = failure
-      job.progress = 1
-      job.updatedAt = new Date().toISOString()
-      await saveWorld(world)
-      broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job })
-      return
-    }
+    const claimed = await claimJobScan(slug, jobId)
+    if (!claimed) return
+    const { scan } = claimed
 
-    const base = scan!.filename.replace(/\.glb$/, '')
+    const base = scan.filename.replace(/\.glb$/, '')
     const splatPlyPath = `${SCANS_DIR}/${base}.splat.ply`
     const outputSogPath = `${SCANS_DIR}/${base}.sog`
     const outputCompressedPlyPath = `${SCANS_DIR}/${base}.compressed.ply`
@@ -2373,66 +2297,51 @@ async function _runSplatFinishJob(slug: string, jobId: string): Promise<void> {
       outputSogPath,
       outputCompressedPlyPath,
       manifestPath,
-      provenance: { sessionId: scan!.sessionId ?? undefined, scanId: scan!.scanId },
+      provenance: { sessionId: scan.sessionId ?? undefined, scanId: scan.scanId },
     })
 
-    const current = await loadWorld(slug)
-    const currentJob = current.jobs.find(j => j.jobId === jobId)
-    if (!currentJob) return
-    currentJob.progress = 1
-    if (result.status === 'ok') {
-      currentJob.status = 'completed'
-      currentJob.result = jobResultFor(currentJob)
-      currentJob.artifacts = jobArtifactsFor(currentJob, current)
-      currentJob.artifacts ??= []
-      currentJob.artifacts.push({
-        type: 'splat-sog',
-        label: `${scan!.name} web-optimized splat (.sog)`,
-        url: `/scans/${encodeURIComponent(`${base}.sog`)}`,
-        metadata: {
-          inputBytes: result.sizes?.inputBytes ?? null,
-          sogBytes: result.sizes?.sogBytes ?? null,
-          compressedBytes: result.sizes?.compressedBytes ?? null,
-          compressedPlyUrl: `/scans/${encodeURIComponent(`${base}.compressed.ply`)}`,
-          manifestUrl: `/scans/${encodeURIComponent(`${base}.splat-finish.manifest.json`)}`,
-        },
-      })
-      applyCompletedJobToWorld(currentJob, current)
-    } else if (result.status === 'skipped') {
-      currentJob.status = 'completed'
-      currentJob.result = `Splat finish skipped: ${result.manifest.skippedReason ?? 'unknown reason'}`
-      currentJob.artifacts = [{
-        type: 'splat-finish-skip',
-        label: 'Splat finish skipped',
-        url: `/scans/${encodeURIComponent(`${base}.splat-finish.manifest.json`)}`,
-        metadata: {
-          skippedReason: result.manifest.skippedReason ?? null,
-          remediation: result.manifest.remediation ?? null,
-        },
-      }]
-    } else {
-      currentJob.status = 'failed'
-      currentJob.error = result.manifest.error ?? `splat-transform exit ${result.exitCode}`
-      currentJob.result = currentJob.error
-    }
-    currentJob.updatedAt = new Date().toISOString()
-    await saveWorld(current)
-    broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: current.worldId, job: currentJob })
+    await commitWorldJob(slug, jobId, (currentJob, current) => {
+      currentJob.progress = 1
+      if (result.status === 'ok') {
+        currentJob.status = 'completed'
+        currentJob.result = jobResultFor(currentJob)
+        currentJob.artifacts = jobArtifactsFor(currentJob, current)
+        currentJob.artifacts ??= []
+        currentJob.artifacts.push({
+          type: 'splat-sog',
+          label: `${scan.name} web-optimized splat (.sog)`,
+          url: `/scans/${encodeURIComponent(`${base}.sog`)}`,
+          metadata: {
+            inputBytes: result.sizes?.inputBytes ?? null,
+            sogBytes: result.sizes?.sogBytes ?? null,
+            compressedBytes: result.sizes?.compressedBytes ?? null,
+            compressedPlyUrl: `/scans/${encodeURIComponent(`${base}.compressed.ply`)}`,
+            manifestUrl: `/scans/${encodeURIComponent(`${base}.splat-finish.manifest.json`)}`,
+          },
+        })
+        applyCompletedJobToWorld(currentJob, current)
+      } else if (result.status === 'skipped') {
+        currentJob.status = 'completed'
+        currentJob.result = `Splat finish skipped: ${result.manifest.skippedReason ?? 'unknown reason'}`
+        currentJob.artifacts = [{
+          type: 'splat-finish-skip',
+          label: 'Splat finish skipped',
+          url: `/scans/${encodeURIComponent(`${base}.splat-finish.manifest.json`)}`,
+          metadata: {
+            skippedReason: result.manifest.skippedReason ?? null,
+            remediation: result.manifest.remediation ?? null,
+          },
+        }]
+      } else {
+        currentJob.status = 'failed'
+        currentJob.error = result.manifest.error ?? `splat-transform exit ${result.exitCode}`
+        currentJob.result = currentJob.error
+      }
+      currentJob.updatedAt = new Date().toISOString()
+    })
   } catch (err) {
     console.error('[splat-finish job error]', err)
-    try {
-      const recovered = await loadWorld(slug)
-      const recoveredJob = recovered.jobs.find(j => j.jobId === jobId)
-      if (recoveredJob) {
-        recoveredJob.status = 'failed'
-        recoveredJob.error = err instanceof Error ? err.message : String(err)
-        recoveredJob.result = recoveredJob.error
-        recoveredJob.progress = 1
-        recoveredJob.updatedAt = new Date().toISOString()
-        await saveWorld(recovered)
-        broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: recovered.worldId, job: recoveredJob })
-      }
-    } catch { /* nothing more we can do */ }
+    await failWorldJob(slug, jobId, errorMessage(err))
   }
 }
 
@@ -2452,19 +2361,11 @@ async function _runSplatFinishJob(slug: string, jobId: string): Promise<void> {
  */
 async function _runOptimizeScanJob(slug: string, jobId: string): Promise<void> {
   try {
+    // Read-only: this job's target. `failWorldJob` no-ops if the job is gone.
     const world = await loadWorld(slug)
-    const job = world.jobs.find(j => j.jobId === jobId)
-    if (!job) return
-    const filename = objectKey(job.payload?.['filename'])
+    const filename = objectKey(world.jobs.find(j => j.jobId === jobId)?.payload?.['filename'])
     if (!filename) {
-      job.status = 'failed'
-      job.error = 'optimize-scan requires payload.filename.'
-      job.result = job.error
-      job.progress = 1
-      job.updatedAt = new Date().toISOString()
-      await saveWorld(world)
-      broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job })
-      broadcastLegacyJobUpdate(job)
+      await failWorldJob(slug, jobId, 'optimize-scan requires payload.filename.')
       return
     }
 
@@ -2521,56 +2422,162 @@ async function _runOptimizeScanJob(slug: string, jobId: string): Promise<void> {
     console.log(`[world-jobs] ${filename}: ${note}`)
     // ── End ported section ────────────────────────────────────────────────
 
-    const current = await loadWorld(slug)
-    const currentJob = current.jobs.find(j => j.jobId === jobId)
-    if (!currentJob) return
-    currentJob.status = 'completed'
-    currentJob.result = note // Job.note → WorldJob.result, per ADR 0003's field mapping
-    currentJob.artifacts = [
-      {
-        type: 'optimized-glb',
-        label: `${filename} optimized (.opt.glb)`,
-        url: `/scans/${encodeURIComponent(optimizedName)}`,
-        metadata: {
-          bytes: result.optimized.bytes.byteLength,
-          draco: result.optimized.draco,
-          quantized: result.optimized.quantized,
+    await commitWorldJob(slug, jobId, (currentJob) => {
+      currentJob.status = 'completed'
+      currentJob.result = note // Job.note → WorldJob.result, per ADR 0003's field mapping
+      currentJob.artifacts = [
+        {
+          type: 'optimized-glb',
+          label: `${filename} optimized (.opt.glb)`,
+          url: `/scans/${encodeURIComponent(optimizedName)}`,
+          metadata: {
+            bytes: result.optimized.bytes.byteLength,
+            draco: result.optimized.draco,
+            quantized: result.optimized.quantized,
+          },
         },
-      },
-      ...lodEntries.map(lod => ({
-        type: 'optimized-lod',
-        label: `${filename} LOD (${lod.filename})`,
-        url: `/scans/${encodeURIComponent(lod.filename)}`,
-        metadata: { bytes: lod.bytes, points: lod.points, voxelM: lod.voxelM },
-      })),
-      {
-        type: 'optimize-manifest',
-        label: `${filename} optimization manifest`,
-        url: `/scans/${encodeURIComponent(`${base}.manifest.json`)}`,
-      },
-    ]
-    currentJob.progress = 1
-    currentJob.updatedAt = new Date().toISOString()
-    await saveWorld(current)
-    broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: current.worldId, job: currentJob })
-    broadcastLegacyJobUpdate(currentJob)
+        ...lodEntries.map(lod => ({
+          type: 'optimized-lod',
+          label: `${filename} LOD (${lod.filename})`,
+          url: `/scans/${encodeURIComponent(lod.filename)}`,
+          metadata: { bytes: lod.bytes, points: lod.points, voxelM: lod.voxelM },
+        })),
+        {
+          type: 'optimize-manifest',
+          label: `${filename} optimization manifest`,
+          url: `/scans/${encodeURIComponent(`${base}.manifest.json`)}`,
+        },
+      ]
+      currentJob.progress = 1
+      currentJob.updatedAt = new Date().toISOString()
+    })
   } catch (err) {
     console.error('[optimize-scan] job failed:', err)
-    try {
-      const recovered = await loadWorld(slug)
-      const recoveredJob = recovered.jobs.find(j => j.jobId === jobId)
-      if (recoveredJob) {
-        recoveredJob.status = 'failed'
-        recoveredJob.error = err instanceof Error ? err.message : String(err)
-        recoveredJob.result = recoveredJob.error
-        recoveredJob.progress = 1
-        recoveredJob.updatedAt = new Date().toISOString()
-        await saveWorld(recovered)
-        broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: recovered.worldId, job: recoveredJob })
-        broadcastLegacyJobUpdate(recoveredJob)
-      }
-    } catch { /* nothing more we can do */ }
+    await failWorldJob(slug, jobId, errorMessage(err))
   }
+}
+
+/** Mark a job failed in place — the status/error/result/progress/updatedAt set every runner writes. */
+function markJobFailed(job: WorldJob, reason: string): WorldJob {
+  job.status = 'failed'
+  job.error = reason
+  job.result = reason
+  job.progress = 1
+  job.updatedAt = new Date().toISOString()
+  return job
+}
+
+/**
+ * The opening move every scan-backed `_run*Job` makes, as one mutation:
+ * find the job, and either hand back its scan or mark it failed in place.
+ * Returns `null` when the job is gone (nothing to broadcast), `ok: false`
+ * when it was just failed (caller broadcasts and returns). Must be called
+ * from inside an `updateWorld` mutator — it mutates `world`.
+ */
+function claimScanJob(
+  world: WorldProject,
+  jobId: string,
+): { ok: true; job: WorldJob; scan: ScanManifest } | { ok: false; job: WorldJob } | null {
+  const job = world.jobs.find(j => j.jobId === jobId)
+  if (!job) return null
+  const failure = jobFailureReason(job, world)
+  if (failure) return { ok: false, job: markJobFailed(job, failure) }
+  // jobFailureReason already rejected every scan-backed type without a scan.
+  return { ok: true, job, scan: scanForJob(job, world)! }
+}
+
+/**
+ * Locked start step for the scan-backed runners that don't need a session
+ * directory (splat-detect, splat-finish, memory-push): claim the job and hand
+ * back its scan (plus its payload, which splat-detect reads its tuning knobs
+ * from), or mark it failed and broadcast. `null` means "stop here".
+ */
+async function claimJobScan(
+  slug: string,
+  jobId: string,
+): Promise<{ scan: ScanManifest; payload: WorldJob['payload'] } | null> {
+  const { world, value: claimed } = await updateWorld(slug, (world) => claimScanJob(world, jobId))
+  if (!claimed) return null
+  if (!claimed.ok) {
+    broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job: claimed.job })
+    return null
+  }
+  return { scan: claimed.scan, payload: claimed.job.payload }
+}
+
+/**
+ * Locked start step for the session-backed runners (lingbot-map-reconstruct,
+ * splat-train): the above plus resolving the scan's keyframe session
+ * directory, which is its own failure the two shared verbatim.
+ */
+async function claimSessionJob(
+  slug: string,
+  jobId: string,
+): Promise<{ scan: ScanManifest; sessionId: string; sessionPath: string } | null> {
+  const { world, value: start } = await updateWorld(slug, (world) => {
+    const claimed = claimScanJob(world, jobId)
+    if (!claimed?.ok) return claimed
+    const sessionPath = claimed.scan.sessionId ? sessionDir(claimed.scan.sessionId) : null
+    if (!sessionPath) {
+      return {
+        ok: false as const,
+        job: markJobFailed(claimed.job, `Invalid session id: ${claimed.scan.sessionId}`),
+      }
+    }
+    return { ok: true as const, job: claimed.job, scan: claimed.scan, sessionPath }
+  })
+  if (!start) return null
+  if (!start.ok) {
+    broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job: start.job })
+    return null
+  }
+  return { scan: start.scan, sessionId: start.scan.sessionId!, sessionPath: start.sessionPath }
+}
+
+/**
+ * How every `_run*Job` records a job transition: re-find the job in a fresh,
+ * locked snapshot (the one the runner loaded before the worker ran is stale
+ * by now), apply `mutate`, persist, then broadcast. Returns false when the
+ * job has vanished — nothing was written or broadcast.
+ *
+ * Broadcasting after the lock is released, never inside `mutate`, keeps the
+ * save-before-broadcast ordering every transition in this file follows.
+ *
+ * Returns whatever `mutate` returned (`null` if the job was gone), which is
+ * how a runner gets a follow-on job id back out of the critical section
+ * without capturing a `let` across it.
+ */
+async function commitWorldJob<T>(
+  slug: string,
+  jobId: string,
+  mutate: (job: WorldJob, world: WorldProject) => T,
+): Promise<T | null> {
+  const { world, value } = await updateWorld(slug, (world) => {
+    const job = world.jobs.find(j => j.jobId === jobId)
+    if (!job) return null
+    return { job, out: mutate(job, world) }
+  })
+  if (!value) return null
+  broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job: value.job })
+  // No-op for every type but optimize-scan (ticket 0004's paired events).
+  broadcastLegacyJobUpdate(value.job)
+  return value.out
+}
+
+/**
+ * Terminal failure path shared by every `_run*Job`'s catch block. Swallows
+ * its own errors — it is already the error path, and the original failure has
+ * been logged by the caller.
+ */
+async function failWorldJob(slug: string, jobId: string, reason: string): Promise<void> {
+  try {
+    await commitWorldJob(slug, jobId, (job) => { markJobFailed(job, reason) })
+  } catch { /* nothing more we can do */ }
+}
+
+/** The message `failWorldJob` records for a thrown error. */
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }
 
 function scanForJob(job: WorldJob, world: WorldProject): ScanManifest | null {
@@ -2854,11 +2861,11 @@ app.post('/worlds', async (c) => {
     await Deno.stat(existingPath)
     return c.json({ error: 'World already exists', shareSlug: slug }, 409)
   } catch { /* create */ }
-  const world = await synthesizeWorld(slug)
-  if (body.name?.trim()) {
-    world.name = body.name.trim()
-    await saveWorld(world)
-  }
+  const { world } = await updateWorld(slug, (world) => {
+    // synthesizeWorld already wrote the file; renaming it is a second cycle,
+    // so it goes through the lock like every other world mutation.
+    if (body.name?.trim()) world.name = body.name.trim()
+  })
   return c.json(world, 201)
 })
 
@@ -2885,8 +2892,8 @@ app.get('/worlds/:slug/patches', async (c) => {
 })
 
 app.post('/worlds/:slug/patches', async (c) => {
-  const world = await loadWorld(c.req.param('slug'))
-  const denied = denyUnlessWorldRole(c, world, 'editor')
+  const slug = c.req.param('slug')
+  const denied = denyUnlessWorldRole(c, await loadWorld(slug), 'editor')
   if (denied) return denied
   const body = await c.req.json().catch(() => ({})) as Partial<EditPatch>
   const targetId = objectKey(body.targetId)
@@ -2895,23 +2902,25 @@ app.post('/worlds/:slug/patches', async (c) => {
   if (!['scan', 'object', 'point-selection', 'layer', 'world'].includes(scope)) {
     return c.json({ error: 'Invalid patch scope' }, 400)
   }
-  const patch: EditPatch = {
-    patchId: `patch-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
-    worldId: world.worldId,
-    scanId: objectKey(body.scanId) ?? undefined,
-    targetId,
-    scope,
-    transform: body.transform,
-    label: objectKey(body.label) ?? undefined,
-    category: objectKey(body.category) ?? undefined,
-    notes: objectKey(body.notes) ?? undefined,
-    visible: typeof body.visible === 'boolean' ? body.visible : undefined,
-    actorId: objectKey(body.actorId) ?? 'local-editor',
-    createdAt: new Date().toISOString(),
-  }
-  world.editPatches.push(patch)
-  applyPatchToWorld(world, patch)
-  await saveWorld(world)
+  const { world, value: patch } = await updateWorld(slug, (world) => {
+    const patch: EditPatch = {
+      patchId: `patch-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
+      worldId: world.worldId,
+      scanId: objectKey(body.scanId) ?? undefined,
+      targetId,
+      scope,
+      transform: body.transform,
+      label: objectKey(body.label) ?? undefined,
+      category: objectKey(body.category) ?? undefined,
+      notes: objectKey(body.notes) ?? undefined,
+      visible: typeof body.visible === 'boolean' ? body.visible : undefined,
+      actorId: objectKey(body.actorId) ?? 'local-editor',
+      createdAt: new Date().toISOString(),
+    }
+    world.editPatches.push(patch)
+    applyPatchToWorld(world, patch)
+    return patch
+  })
   return c.json({ ok: true, patch, world })
 })
 
@@ -2924,8 +2933,7 @@ app.get('/worlds/:slug/jobs', async (c) => {
 
 app.post('/worlds/:slug/jobs', async (c) => {
   const slug = c.req.param('slug')
-  const world = await loadWorld(slug)
-  const denied = denyUnlessWorldRole(c, world, 'editor')
+  const denied = denyUnlessWorldRole(c, await loadWorld(slug), 'editor')
   if (denied) return denied
   const body = await c.req.json().catch(() => ({})) as {
     type?: WorldJobType
@@ -2936,8 +2944,7 @@ app.post('/worlds/:slug/jobs', async (c) => {
   if (!type || !WORLD_JOB_TYPES.has(type)) {
     return c.json({ error: `type must be one of ${[...WORLD_JOB_TYPES].join(', ')}` }, 400)
   }
-  const job = createWorldJob(world, type, body.scanId, body.payload)
-  await saveWorld(world)
+  const { value: job } = await updateWorld(slug, (world) => createWorldJob(world, type, body.scanId, body.payload))
   await completeJobSoon(slug, job.jobId)
   return c.json(job, 202)
 })
