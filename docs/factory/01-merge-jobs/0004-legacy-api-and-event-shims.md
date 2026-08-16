@@ -2,13 +2,13 @@
 > **Wave:** 01-merge-jobs
 > **Branch:** `refactor/legacy-job-api-shims`
 > **Commit style:** `refactor(jobs): shim legacy /jobs API and job-update event onto WorldJob`
-> **Design:** implements ADR 0002 (`docs/adr/0002-merged-job-system.md`)
+> **Design:** implements ADR 0003 (`docs/adr/0003-merged-job-system.md`)
 > **Dependencies:** 0003 (hard — needs optimize-scan actually producing WorldJobs to shim from)
 
 ## Goal
 
 `GET /jobs`, `GET /jobs/:id`, `GET /scans`'s per-scan job-status field, and the
-`'job-update'` broadcast event (consumed by `src/viewer/viewer.ts:2589`) all currently
+`'job-update'` broadcast event (consumed by `src/viewer/viewer.ts:2590`) all currently
 read `JobQueue`. After 0003, real optimize-scan work happens as `WorldJob`s. Make
 every one of those four surfaces keep working, unchanged in shape, by reading/
 deriving from `WorldJob` data instead — so nothing external (the viewer, any script,
@@ -21,13 +21,17 @@ any future integration) has to change to keep working.
   today's `JobQueue`-backed versions. This ticket is a shim, not an API redesign.
 - Do not add `'job-update'` as a *new* permanent event going forward — per
   foundation-updates/0006 (shared event constants), it's documented there as the
-  legacy name; this ticket makes it correctly-sourced, not renamed.
+  legacy name; this ticket makes it correctly-sourced, not renamed. Since 0006
+  landed, both `'job-update'` and `'world-job-update'` are sourced from
+  `src/shared/events.ts`'s `EVENT.JOB_UPDATE`/`EVENT.WORLD_JOB_UPDATE` constants, not
+  raw string literals — the shim's broadcast call must use `EVENT.JOB_UPDATE`, not a
+  bare `'job-update'` string, or it reintroduces the duplication 0006 just removed.
 - Do not shim anything beyond these four surfaces — if another undiscovered consumer
   of `JobQueue` state exists, find it now (grep) rather than discovering it in 0005.
 
 ## Pinned conventions
 
-- Per ADR 0002's status-vocabulary mapping (`queued|running|done|error` ↔
+- Per ADR 0003's status-vocabulary mapping (`queued|running|done|error` ↔
   `queued|processing|completed|failed`) — the shim's translation layer uses that
   exact table, not an ad-hoc guess.
 - `GET /jobs` and `/jobs/:id` currently only ever show `optimize-scan` jobs (it's the
@@ -44,9 +48,9 @@ any future integration) has to change to keep working.
 
 - `main.ts`'s current `GET /jobs`, `GET /jobs/:id` handlers and the `GET /scans`
   per-file job-status lookup (`jobQueue.jobForTarget()`).
-- `src/viewer/viewer.ts:2585-2595` — the exact fields the `'job-update'` branch reads
+- `src/viewer/viewer.ts:2586-2596` — the exact fields the `'job-update'` branch reads
   off the event payload; the shim must supply all of them.
-- ADR 0002's status/field mapping table.
+- ADR 0003's status/field mapping table.
 
 ## Open questions & answers
 
@@ -66,15 +70,15 @@ any future integration) has to change to keep working.
 
 `worldJobToLegacyJob(wj: WorldJob): Job` — output type is the *existing* `Job`
 interface from `jobs.ts` (imported, not redeclared, per ADR 0001), populated from the
-`WorldJob` per ADR 0002's field mapping.
+`WorldJob` per ADR 0003's field mapping.
 
 ## Definition of Done
 
 - [ ] `GET /jobs` and `GET /jobs/:id` return the same shape and the same job
       population (optimize-scan only) as before 0003, now sourced from `WorldJob`s.
 - [ ] `GET /scans`'s per-file job-status field is unchanged.
-- [ ] The viewer's existing `'job-update'` handling path (`viewer.ts:2589`) fires
-      correctly for optimize-scan jobs with no viewer-side code changes.
+- [ ] The viewer's existing `'job-update'` handling path (`src/viewer/viewer.ts:2590`)
+      fires correctly for optimize-scan jobs with no viewer-side code changes.
 - [ ] A full repo grep for `JobQueue`/`jobQueue\.` usage outside `jobs.ts` itself
       turns up nothing this ticket missed (or, if it does, it's added to scope here
       before closing).
@@ -114,7 +118,7 @@ npm run test:mock
 
 ## Subtasks
 
-1. [ ] Write `worldJobToLegacyJob()` per ADR 0002's mapping.
+1. [ ] Write `worldJobToLegacyJob()` per ADR 0003's mapping.
 2. [ ] Re-point `GET /jobs`, `GET /jobs/:id`, `GET /scans`'s job-status field.
 3. [ ] Fire `'job-update'` for optimize-scan WorldJob transitions alongside the
        existing `'world-job-update'`.

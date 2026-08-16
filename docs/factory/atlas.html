@@ -270,21 +270,21 @@
 
       <div class="wave-cards">
         <div class="wave-card">
-          <div class="whead"><h3>foundation-updates</h3><span class="status-badge done">6 / 11 done</span></div>
+          <div class="whead"><h3>foundation-updates</h3><span class="status-badge done">11 / 11 done</span></div>
           <div class="path">docs/factory/foundation-updates/</div>
-          <div class="wave-progress" title="0001–0004 done, 0005–0006 planned, 0007 done, 0008 planned, 0009 done, 0010 planned, 0011 blocked">
-            <span class="seg done"></span><span class="seg done"></span><span class="seg done"></span><span class="seg done"></span><span class="seg"></span><span class="seg"></span><span class="seg done"></span><span class="seg"></span><span class="seg done"></span><span class="seg"></span><span class="seg blocked"></span>
+          <div class="wave-progress" title="all 11 tickets merged">
+            <span class="seg done"></span><span class="seg done"></span><span class="seg done"></span><span class="seg done"></span><span class="seg done"></span><span class="seg done"></span><span class="seg done"></span><span class="seg done"></span><span class="seg done"></span><span class="seg done"></span><span class="seg done"></span>
           </div>
-          <div class="wave-progress-label">0001–0004 ✓ · 0005–0006 planned · 0007 ✓ · 0008 planned · 0009 ✓ · 0010 planned · 0011 blocked</div>
+          <div class="wave-progress-label">0001–0011 ✓ — wave complete (PRs #68, #71, #73, #76)</div>
           <p>The wave this atlas's own review kicked off: reconcile the license docs, fix a live hostname bug, then work through every duplication the review found — two <code class="v">ScanManifest</code> types, a copy-pasted PLY parser, five copies of the manifest envelope, raw event-type strings, undocumented env vars, a magic-numbered port, and the Companion-Scan/CI-Spatial naming split.</p>
-          <p class="impact"><strong>Impact so far:</strong> 6 of 11 tickets merged (PRs #68, #71). Nothing user-facing changed — every fix is internal: a doc now tells the truth, a hostname bug that broke share links is fixed, a name collision is gone, a copy-pasted parser is one function again, a type lineage is real instead of restated.</p>
+          <p class="impact"><strong>Impact:</strong> all 11 tickets merged (PRs #68, #71, #73, #76). Nothing user-facing changed — every fix is internal: a doc now tells the truth, a hostname bug that broke share links is fixed, a name collision is gone, a copy-pasted parser is one function again, a type lineage is real instead of restated, storage keys are centralized, the port is single-sourced, and the repo is consistently named CI-Spatial.</p>
         </div>
 
         <div class="wave-card">
           <div class="whead"><h3>01-merge-jobs</h3><span class="status-badge planned">0 / 5 done</span></div>
           <div class="path">docs/factory/01-merge-jobs/</div>
-          <div class="wave-progress" title="all 5 tickets planned"><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span></div>
-          <div class="wave-progress-label">design → runner hardening → port optimize-scan → shims → retirement (strictly serial)</div>
+          <div class="wave-progress" title="all 5 tickets planned; unblocked now that foundation-updates is fully merged"><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span></div>
+          <div class="wave-progress-label">design → runner hardening → port optimize-scan → shims → retirement (strictly serial) — unblocked, ready to start</div>
           <p>Merges the two background-job systems this atlas flagged — <code class="v">jobs.ts</code>'s <code class="v">JobQueue</code> and the <code class="v">WorldJob</code> system — into one, canonical survivor <code class="v">WorldJob</code>. Strictly serial: the runner gains crash recovery and single-flight execution <em>before</em> optimize-scan moves onto it, so the merge is a strict upgrade, not a regression.</p>
           <p class="impact"><strong>Impact once shipped:</strong> <code class="v">jobs.ts</code>/<code class="v">JobQueue</code> is retired. Every background job — GLB optimize, LingBot-Map, splat train/detect/finish, memory-push — runs through one queue, one status vocabulary, one event stream, with crash recovery for job types that never had it.</p>
         </div>
@@ -371,7 +371,7 @@
         <div class="fcard world"><h4>Multi-scan World Editor</h4><p>Places every scan's GLB in one shared ENU scene with progressive LOD loading, per-layer visibility, view modes (points/solid/wireframe/semantic), and pick-to-edit.</p><div class="files"><span class="chip">viewer/viewer.ts</span><span class="chip">editor.ts</span></div></div>
         <div class="fcard world"><h4>Live phone → editor feed</h4><p>The desktop-side WebRTC receiver: renders the phone's video in a PiP panel and grows a live point cloud / detections / camera frustum from the data channel.</p><div class="files"><span class="chip">viewer/livefeed.ts</span></div></div>
         <div class="fcard world"><h4>Splat &amp; detection overlays</h4><p>Renders .sog / .ply splat assets (via @sparkjsdev/spark) and splat-detect's 3D boxes as togglable layers, auto-discovering the best available artifact.</p><div class="files"><span class="chip">splat-layer.ts</span><span class="chip">splat-detect-layer.ts</span></div>
-          <div class="diff is-planned"><span class="was"><span class="strike">splat-layer.ts / splat-detect-layer.ts redeclare their own manifest interfaces</span></span><span class="now"><span class="arrow">→</span>import one shared <code class="v">PipelineManifestBase</code> instead of 2 hand-written subsets</span><span class="tag"><span class="status-badge planned">🔜 planned</span> foundation-updates/0005</span></div>
+          <div class="diff is-done"><span class="was"><span class="strike">splat-layer.ts / splat-detect-layer.ts redeclare their own manifest interfaces</span></span><span class="now"><span class="arrow">→</span>import one shared <code class="v">PipelineManifestBase</code> instead of 2 hand-written subsets</span><span class="tag"><span class="status-badge done">✅ done</span> foundation-updates/0005, merged in #73</span></div>
         </div>
         <div class="fcard"><h4>Map-quality tier</h4><p>Derives a Preview → Reconstructed → Photoreal headline purely from which pipeline manifests exist for a scan.</p><div class="files"><span class="chip">quality-tier.ts</span></div></div>
         <div class="fcard"><h4>Distance measurement tool</h4><p>Two-click raycast measurement against any visible mesh or point cloud, with a live metre-readout label.</p><div class="files"><span class="chip">measure.ts</span></div></div>
@@ -400,7 +400,7 @@
           <div class="diff is-planned"><span class="was"><span class="strike">runs every WorldJob immediately &amp; concurrently (setTimeout, no queue discipline)</span></span><span class="now"><span class="arrow">→</span>single-flight + crash recovery, matching JobQueue's existing guarantees</span><span class="tag"><span class="status-badge planned">🔜 planned</span> 01-merge-jobs/0002 — lands before optimize-scan joins this queue</span></div>
         </div>
         <div class="fcard"><h4>/events &amp; /rtc-signal</h4><p>A broadcast WebSocket for state changes (scan added, job updated, …), and a bare SDP/ICE relay for phone↔viewer WebRTC that never inspects payloads.</p><div class="files"><span class="chip">main.ts</span></div>
-          <div class="diff is-planned"><span class="was"><span class="strike">event <code class="v">type:</code> strings are raw literals, duplicated producer/consumer</span></span><span class="now"><span class="arrow">→</span>shared constants, then a full discriminated-union payload type</span><span class="tag"><span class="status-badge planned">🔜 planned</span> foundation-updates/0006, then docs/factory/02-typed-event-payloads</span></div>
+          <div class="diff is-done"><span class="was"><span class="strike">event <code class="v">type:</code> strings are raw literals, duplicated producer/consumer</span></span><span class="now"><span class="arrow">→</span>shared constants (full discriminated-union payload type still to come)</span><span class="tag"><span class="status-badge done">✅ done</span> foundation-updates/0006, merged in #73 — payload typing next in docs/factory/02-typed-event-payloads</span></div>
         </div>
         <div class="fcard"><h4>OIDC portal auth</h4><p>"Sign in with Companion Account" against CI-Portal via PKCE, gated behind an email allowlist — inert (all routes 404) unless explicitly enabled.</p><div class="files"><span class="chip">portal_auth.ts</span></div></div>
       </div>
@@ -417,7 +417,7 @@
         <div class="fcard"><h4>AR overlay</h4><p>Live object pins, capture button, and status/progress HUD — re-projected into screen space every frame.</p><div class="files"><span class="chip">ui/overlay.ts</span></div></div>
         <div class="fcard"><h4>Side panel &amp; session history</h4><p>The detection manifest, export actions, and a drawer of past sessions loaded from IndexedDB.</p><div class="files"><span class="chip">ui/panel.ts</span><span class="chip">ui/history.ts</span></div></div>
         <div class="fcard"><h4>Remote debug console</h4><p><code class="v">?debug=remote</code> mirrors console errors to the server every 3s so a developer can watch a phone's console output from a terminal.</p><div class="files"><span class="chip">debug/remote-log.ts</span></div>
-          <div class="diff is-planned"><span class="was"><span class="strike">localStorage key 'remote-log' is a per-file literal</span></span><span class="now"><span class="arrow">→</span>imported from a central storage-key constants file</span><span class="tag"><span class="status-badge planned">🔜 planned</span> foundation-updates/0008</span></div>
+          <div class="diff is-done"><span class="was"><span class="strike">localStorage key 'remote-log' is a per-file literal</span></span><span class="now"><span class="arrow">→</span>imported from a central storage-key constants file</span><span class="tag"><span class="status-badge done">✅ done</span> foundation-updates/0008, merged in #73</span></div>
         </div>
         <div class="fcard"><h4>Synthetic test-home fixtures</h4><p>24 deterministic, seeded room layouts used to generate GLBs, CV test images, and Playwright fixtures without ever running a real scan.</p><div class="files"><span class="chip">shared/test-homes.ts</span></div></div>
       </div>
@@ -434,7 +434,7 @@
         <div class="fcard"><h4>Vision-model benchmarking</h4><p>Scores candidate Ollama models on precision / recall / mean-IoU / latency to pick the deploy default.</p><div class="files"><span class="chip">bench-models.mjs</span></div></div>
         <div class="fcard"><h4>Ingest quality gate</h4><p>A shared variance-of-Laplacian blur filter used by both the video and photo ingest scripts — never drops an entire session even if every frame is soft.</p><div class="files"><span class="chip">ingest-quality.mjs</span></div></div>
         <div class="fcard"><h4>Isolated test-box loop</h4><p>A self-contained CI run on isolated ports and data dirs that never touches the real <code class="v">:8000</code>/<code class="v">:5173</code> server.</p><div class="files"><span class="chip">test-box.mjs</span></div>
-          <div class="diff is-planned"><span class="was"><span class="strike">port 5173 magic-numbered in 6+ places (scripts, main.ts, tests)</span></span><span class="now"><span class="arrow">→</span>single <code class="v">VITE_PORT</code> env var, default unchanged</span><span class="tag"><span class="status-badge planned">🔜 planned</span> foundation-updates/0010</span></div>
+          <div class="diff is-done"><span class="was"><span class="strike">port 5173 magic-numbered in 6+ places (scripts, main.ts, tests)</span></span><span class="now"><span class="arrow">→</span>single <code class="v">VITE_PORT</code> env var, default unchanged</span><span class="tag"><span class="status-badge done">✅ done</span> foundation-updates/0010, merged in #76</span></div>
         </div>
         <div class="fcard"><h4>House-readiness validation</h4><p>A field runbook with hard pass/fail thresholds (SLAM points, coverage %, detections, gaussians) per room of a real house.</p><div class="files"><span class="chip">docs/HOUSE_VALIDATION.md</span></div></div>
         <div class="fcard"><h4>Local CI pipeline (ci-local)</h4><p>GitHub Actions triggers are gated off for cost reasons ($563/mo); <code class="v">ci-local run</code> mirrors <code class="v">npm ci + test + build</code> on local hardware instead.</p><div class="files"><span class="chip">docs/CI.md</span></div>
@@ -515,15 +515,15 @@
       <div class="twrap"><table>
         <thead><tr><th>Type</th><th>Fields</th><th>File</th></tr></thead>
         <tbody>
-          <tr class="row-changing"><td class="name">SplatTrainManifest <span class="status-badge planned" style="margin-left:6px;">🔜</span></td><td class="fields">schemaVersion; tool:'brush'; status; gaussianCount?; plyPath?; params {trainIters, shDegree, …}</td><td class="fields">splat_train.ts</td></tr>
-          <tr class="row-changing"><td class="name">SplatDetectManifest <span class="status-badge planned" style="margin-left:6px;">🔜</span></td><td class="fields">tool:'splat-analyzer'; status; objectCount?; prompt; params {scoreThreshold?, minVotes?, …}</td><td class="fields">splat_detect.ts</td></tr>
-          <tr class="row-changing"><td class="name">SplatFinishManifest <span class="status-badge planned" style="margin-left:6px;">🔜</span></td><td class="fields">tool:'splat-transform'; status; sogPath?; compressedPlyPath?; sizes {inputBytes, sogBytes?}</td><td class="fields">splat_finish.ts</td></tr>
+          <tr><td class="name">SplatTrainManifest <span class="status-badge done" style="margin-left:6px;">✅</span></td><td class="fields">schemaVersion; tool:'brush'; status; gaussianCount?; plyPath?; params {trainIters, shDegree, …}</td><td class="fields">splat_train.ts</td></tr>
+          <tr><td class="name">SplatDetectManifest <span class="status-badge done" style="margin-left:6px;">✅</span></td><td class="fields">tool:'splat-analyzer'; status; objectCount?; prompt; params {scoreThreshold?, minVotes?, …}</td><td class="fields">splat_detect.ts</td></tr>
+          <tr><td class="name">SplatFinishManifest <span class="status-badge done" style="margin-left:6px;">✅</span></td><td class="fields">tool:'splat-transform'; status; sogPath?; compressedPlyPath?; sizes {inputBytes, sogBytes?}</td><td class="fields">splat_finish.ts</td></tr>
           <tr><td class="name">LingBotMapResult</td><td class="fields">status: ok|skipped|error; pointCloudFile?; posesFile?; manifestFile; glbSidecarPath?</td><td class="fields">lingbot_map.ts</td></tr>
           <tr><td class="name">NerfstudioTransforms/Frame</td><td class="fields">camera_model; frames[] {file_path, transform_matrix 4×4, fl_x, fl_y, cx, cy}</td><td class="fields">splat_train_dataset.ts</td></tr>
         </tbody>
       </table></div>
       <div class="diff is-done"><span class="was"><span class="strike">src/viewer/lingbot-map.ts carried a verbatim-copied binary PLY parser</span></span><span class="now"><span class="arrow">→</span>imports the shared parser from lingbot_map_ply.ts</span><span class="tag"><span class="status-badge done">✅ done</span> foundation-updates/0004, merged in #71</span></div>
-      <div class="diff is-planned"><span class="was"><span class="strike">the 11-field manifest envelope above is declared 5 separate times (3 server + 2 viewer redeclarations), no shared base</span></span><span class="now"><span class="arrow">→</span>one <code class="v">PipelineManifestBase</code>, extended per tool, imported everywhere</span><span class="tag"><span class="status-badge planned">🔜 planned</span> foundation-updates/0005</span></div>
+      <div class="diff is-done"><span class="was"><span class="strike">the 11-field manifest envelope above is declared 5 separate times (3 server + 2 viewer redeclarations), no shared base</span></span><span class="now"><span class="arrow">→</span>one <code class="v">PipelineManifestBase</code>, extended per tool, imported everywhere</span><span class="tag"><span class="status-badge done">✅ done</span> foundation-updates/0005, merged in #73</span></div>
 
       <h3 class="subgrp">Server, auth &amp; shared</h3>
       <div class="twrap"><table>
@@ -546,7 +546,7 @@
       <p class="dek">57 environment variables across eight concerns. None are required to boot — everything has a working default — but a handful (GPU pins, the OIDC allowlist) change behavior sharply once set.</p>
 
       <div class="diff is-done"><span class="was"><span class="strike">15 env vars (incl. WORLD_STRICT_AUTH, VITE_HOSTNAME) were read in code but documented in neither .env.example nor deploy/cscan.env.example</span></span><span class="now"><span class="arrow">→</span>all 15 documented; stale CI-Web-XR-Scan repo references fixed; a do-not-rename registry added to CLAUDE.md</span><span class="tag"><span class="status-badge done">✅ done</span> foundation-updates/0009, merged in #71</span></div>
-      <div class="diff is-planned"><span class="was"><span class="strike">Vite's port (5173) is magic-numbered in 6+ places, no env var</span></span><span class="now"><span class="arrow">→</span>single <code class="v">VITE_PORT</code> env var, default unchanged</span><span class="tag"><span class="status-badge planned">🔜 planned</span> foundation-updates/0010</span></div>
+      <div class="diff is-done"><span class="was"><span class="strike">Vite's port (5173) is magic-numbered in 6+ places, no env var</span></span><span class="now"><span class="arrow">→</span>single <code class="v">VITE_PORT</code> env var, default unchanged</span><span class="tag"><span class="status-badge done">✅ done</span> foundation-updates/0010, merged in #76</span></div>
 
       <h3 class="subgrp">Core server</h3>
       <div class="twrap"><table>
@@ -838,7 +838,7 @@
         <p>Built by reading the source directly: 9 parallel research passes over <code class="v">C:\devel\ci\CI-Spatial</code> (cloned locally from the private companionintelligence/CI-Spatial repo), plus a completeness pass that surfaced the PWA, Docker, GitHub Actions, and marketing-video sections. Every file path is exact; every description is condensed from what was actually read, not inferred from naming.</p>
         <p>Feature and variable counts are exact for what's indexed here; deeper per-file detail (every exported helper, every Playwright spec) exists in the source but isn't reproduced — this atlas maps the shape of the system, not a full API reference.</p>
         <p><strong>Maintaining this file.</strong> It lives at <code class="v">docs/factory/atlas.html</code> and is updated as part of planning each wave — that update is where a wave <em>justifies itself</em>, by showing in one place what it changes about the system as described here. A wave with no legible atlas diff is a wave whose value nobody can see. Full instructions: <code class="v">docs/FACTORY.md</code> § “The atlas”. Ticket content is never reproduced here; the wave folders own it.</p>
-        <p><strong>Last updated 2026-08-16</strong> — reflecting <code class="v">foundation-updates/</code> (6/11 merged), <code class="v">01-merge-jobs/</code>, and <code class="v">02-typed-event-payloads/</code>. Everything not carrying a status badge is the original 2026-08-15 source read, unchanged.</p>
+        <p><strong>Last updated 2026-08-16</strong> — reflecting <code class="v">foundation-updates/</code> (11/11 merged, wave complete), <code class="v">01-merge-jobs/</code> (unblocked, ready to start), and <code class="v">02-typed-event-payloads/</code>. Everything not carrying a status badge is the original 2026-08-15 source read, unchanged.</p>
       </footer>
     </section>
 

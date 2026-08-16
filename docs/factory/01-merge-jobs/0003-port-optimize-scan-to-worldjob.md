@@ -2,7 +2,7 @@
 > **Wave:** 01-merge-jobs
 > **Branch:** `refactor/port-optimize-scan-to-worldjob`
 > **Commit style:** `refactor(jobs): optimize-scan becomes a WorldJobType`
-> **Design:** implements ADR 0002 (`docs/adr/0002-merged-job-system.md`)
+> **Design:** implements ADR 0003 (`docs/adr/0003-merged-job-system.md`)
 > **Dependencies:** 0002 (hard — needs the hardened, recovering, single-flight runner)
 
 ## Goal
@@ -23,12 +23,14 @@ caller moves.
 - Do not delete `jobs.ts`/`JobQueue` yet — 0004 (shims) must land and be verified
   before 0005 retires it. This ticket adds the new path alongside the old one; it does
   not remove the old one.
-- Do not change `main.ts` line 1580's dispatch structure beyond adding one more
-  `if (job.type === 'optimize-scan')` branch (ADR 0001: extend, don't rebuild).
+- Do not change `completeJobSoon()`'s dispatch structure (the `if (job.type === ...)`
+  chain, currently `main.ts:1608-1631`, immediately before the generic-completion
+  fallback) beyond adding one more `if (job.type === 'optimize-scan')` branch (ADR
+  0001: extend, don't rebuild).
 
 ## Pinned conventions
 
-- Per ADR 0002: the exact `WorldJobType` string to use for optimize-scan (confirm
+- Per ADR 0003: the exact `WorldJobType` string to use for optimize-scan (confirm
   it's `'optimize-scan'` verbatim, reusing the string `Job['type']` already used, per
   ADR 0001's reuse principle) and the status-vocabulary mapping table.
 - `jobs.ts`'s `OptimizeScanManifest` (renamed from `ScanManifest` by
@@ -41,8 +43,8 @@ caller moves.
 
 - `jobs.ts`'s `_runOptimize()` (the current implementation) — port its body, don't
   rewrite it.
-- One existing `_run*Job` function in full (e.g. `_runSplatFinishJob`, the simplest)
-  as the structural template.
+- One existing `_run*Job` function in full (e.g. `_runMemoryPushJob`, the simplest —
+  a single linear try/catch with no result-branching) as the structural template.
 - The three call sites: grep `jobQueue.enqueue` in `main.ts`.
 - Confirm foundation-updates/0003 (jobs.ts ScanManifest rename) has landed — if not,
   this ticket's `Files impacted` below still applies to the pre-rename name; note
@@ -66,7 +68,7 @@ caller moves.
 
 `WorldJobType` gains `'optimize-scan'`. `WorldJob.payload`/`.artifacts`/`.result` for
 this job type carry what `_runOptimize()` currently produces (the manifest path,
-LOD list, size-reduction note) — map field-for-field per ADR 0002's guidance; extend
+LOD list, size-reduction note) — map field-for-field per ADR 0003's guidance; extend
 `WorldJob`, don't invent a parallel shape (ADR 0001).
 
 ## Definition of Done

@@ -7,21 +7,32 @@
 
 ## Goal
 
-Before any code moves, write **ADR 0002** (`docs/adr/0002-merged-job-system.md`)
+Before any code moves, write **ADR 0003** (`docs/adr/0003-merged-job-system.md`)
 specifying exactly how `jobs.ts`'s `JobQueue` (`optimize-scan` only) and `main.ts`'s
 `WorldJob` system merge into one, with the WorldJob system as the canonical survivor.
 The ADR is the deliverable; it must be precise enough that tickets 0002-0005 require
 no further design decisions, only implementation.
+
+*(Numbered 0003, not 0002 — foundation-updates' own `0005-shared-manifest-envelope`
+ticket independently claimed `docs/adr/0002-*.md` for an unrelated ADR, "Shared types
+importable by the browser must live in Deno-API-free files", which landed Accepted
+shortly after this wave was first drafted. Confirm `0003` is still free — check
+`docs/adr/README.md`'s index — before writing the file, in case another ADR lands
+first.)*
 
 ## Non-goals
 
 - Do not write or change any implementation code in this ticket — ADR only.
 - Do not decide to distribute or parallelize job execution — the merged system stays
   single-process, single-flight (matching `JobQueue`'s current guarantee).
-- Do not remove the five placeholder `WorldJobType`s with no runner
-  (`extract-layers`, `align-scan`, `merge-points`, `semantic-pass`,
-  `depth-reconstruct`) — document them as out of scope for this merge, pending an
-  owner decision.
+- Do not remove the placeholder `WorldJobType`s with no dedicated runner — document
+  them as out of scope for this merge, pending an owner decision. Verified
+  2026-08-15: this is seven types, not five — `extract-layers`, `align-scan`,
+  `merge-points`, `semantic-pass`, `depth-reconstruct` have no `_run*Job` function at
+  all, and `ingest`/`export-world` are the same shape (generic placeholder branches in
+  `jobResultFor`/`jobArtifactsFor`, no dedicated runner, no active producer anywhere in
+  `src/`) even though they're easy to miss since they sound implemented. The ADR
+  should say what happens to all seven, not just the original five.
 
 ## Pinned conventions
 
@@ -29,14 +40,16 @@ no further design decisions, only implementation.
   of the two existing systems deliberately" work it named as a follow-up. Cite it.
 - ADR template: `docs/adr/0000-adr-template.md` (Status/Date/Related issue,
   Context/Decision/Consequences).
-- The guarantee table below is the floor, verified against source on 2026-08-15/16 —
-  the ADR must account for every row, not silently drop one.
+- The guarantee table in the wave README ("What must not regress") is the floor,
+  verified against source on 2026-08-15/16 (re-verified 2026-08-15 after
+  foundation-updates landed — line numbers refreshed, no claim invalidated) — the ADR
+  must account for every row, not silently drop one.
 
 ## Before implementation
 
 Read in full: `jobs.ts` (`Job`, `JobStatus`, `MAX_JOB_HISTORY`, `init()`, the pump
 loop, `enqueue()`'s dedupe check), `src/world/types.ts`'s `WorldJob`/`WorldJobType`/
-`WorldJobStatus`, and `main.ts`'s `completeJobSoon()` (~line 1580) plus every
+`WorldJobStatus`, and `main.ts`'s `completeJobSoon()` (~line 1585) plus every
 `_run*Job` function it dispatches to.
 
 ## Open questions & answers
@@ -59,7 +72,7 @@ loop, `enqueue()`'s dedupe check), `src/world/types.ts`'s `WorldJob`/`WorldJobTy
 
 ## Files impacted
 
-- New: `docs/adr/0002-merged-job-system.md`
+- New: `docs/adr/0003-merged-job-system.md`
 - Changed: `docs/adr/README.md` (index entry)
 
 ## Schema required
@@ -82,10 +95,10 @@ The ADR must specify, exactly:
 
 ## Definition of Done
 
-- [ ] ADR 0002 is written, accepted, and answers every Open Question above inline.
+- [ ] ADR 0003 is written, accepted, and answers every Open Question above inline.
 - [ ] The guarantee table from the wave README is fully mapped: for each row, the ADR
       states which field/mechanism in the merged system provides it.
-- [ ] ADR 0002 is linked from `docs/adr/README.md`'s index.
+- [ ] ADR 0003 is linked from `docs/adr/README.md`'s index.
 - [ ] Tickets 0002-0005 are reviewed against the finished ADR and need no design
       decisions of their own during implementation (mechanical fixups only).
 
@@ -113,6 +126,6 @@ The ADR must specify, exactly:
 ## Subtasks
 
 1. [ ] Read all source listed in Before Implementation.
-2. [ ] Draft ADR 0002 answering every Open Question and covering the guarantee table.
+2. [ ] Draft ADR 0003 answering every Open Question and covering the guarantee table.
 3. [ ] Self-review against the Definition of Done checklist.
 4. [ ] Add the ADR to `docs/adr/README.md`'s index.
