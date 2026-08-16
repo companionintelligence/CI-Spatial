@@ -12,6 +12,7 @@ RIGHT: {"label": "potted plant", "bbox": [0.22, 0.24, 0.78, 0.68], "confidence":
 
 export interface RawDetection {
   label: string
+  /** Normalised [x1,y1,x2,y2] bounding box from VLM inference */
   bbox: [number, number, number, number]
   confidence: number
   description: string
