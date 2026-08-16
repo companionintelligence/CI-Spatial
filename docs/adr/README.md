@@ -16,3 +16,4 @@ shape future work, promote it to an ADR and link back to the issue.
 
 - [0001. Reuse existing schema, variables, and connections — organize around things and places](0001-reuse-existing-domain-model.md) — Accepted
 - [0002. Shared types importable by the browser must live in Deno-API-free files](0002-shared-types-importable-by-the-browser-must-live-in-deno-api-free-files.md) — Accepted
+- [0003. Merged job system: WorldJob absorbs JobQueue](0003-merged-job-system.md) — Accepted

@@ -267,11 +267,11 @@ The everyday user must understand there are **four distinct capture pipelines**,
 
 **User goal:** turn raw scans into richer artifacts (dense point clouds, splats, detected objects) without understanding the pipeline.
 
-**Two queues exist — do not conflate them:**
-- The **World `/jobs` queue** (async, 10 `WorldJobType`s) — driven from the editor.
-- The `jobs.ts` **`optimize-scan`** queue — a separate server-side GLB optimizer that writes `.opt.glb` / `.lodN.glb` / `.manifest.json` and surfaces only as transient scan-status text ("Optimizing (quantize/draco/LODs)…"), not in the Processing Queue list. This is where **progressive LOD** comes from.
+**One queue, two UI surfaces — do not conflate them:**
+- The **Processing Queue panel** (World tab) shows the editor-driven job types — reconstruction, splats, alignment, etc.
+- **`optimize-scan`** — the GLB optimizer that writes `.opt.glb` / `.lodN.glb` / `.manifest.json` — runs through the *same* WorldJob queue since the 01-merge-jobs wave (`docs/adr/0003-merged-job-system.md`; it used to be a separate `jobs.ts` system), but deliberately keeps its original UI surface: transient scan-status text ("Optimization queued…" / "Optimizing (quantize/draco/LODs)…"), filtered *out* of the Processing Queue list so upload bursts can't crowd out the reconstruction jobs that panel exists to show. This is where **progressive LOD** comes from.
 
-**World job types (10):** `ingest`, `extract-layers`, `align-scan`, `merge-points`, `semantic-pass`, `depth-reconstruct`, `lingbot-map-reconstruct`, `splat-train`, `splat-detect`, `export-world`. The Queue-Job dropdown exposes 9 (omits `splat-detect`, fired from the Splat Toolbox). Keep these distinct from the **sync `/process-scan` actions** (`object-count`, `scene-description`, `floor-plan`) — a different route and pipeline, surfaced on the phone panel's `Server Processing` block.
+**World job types (13):** `ingest`, `extract-layers`, `align-scan`, `merge-points`, `semantic-pass`, `depth-reconstruct`, `lingbot-map-reconstruct`, `splat-train`, `splat-detect`, `splat-finish`, `memory-push`, `export-world`, `optimize-scan`. The Queue-Job dropdown exposes 10 of them (`#job-type` → `POST /worlds/:slug/jobs`); the other three are reached differently — `splat-detect` from the Splat Toolbox, `optimize-scan` automatically on upload (see above), and `memory-push` only via the API, with no UI entry point. Keep these distinct from the **sync `/process-scan` actions** (`object-count`, `scene-description`, `floor-plan`) — a different route and pipeline, surfaced on the phone panel's `Server Processing` block.
 
 **Screens/controls today:**
 - **Processing Queue** (World tab): `#job-type` select + `#btn-queue-job` "Queue Job" + `#job-list` (renders type + status + time only — no artifact links).
@@ -290,12 +290,15 @@ The everyday user must understand there are **four distinct capture pipelines**,
 | `lingbot-map-reconstruct` | ✅ | `lingbot-map.manifest.json` + `.point-cloud.ply` + `.poses.json` + `.lingbot.glb`; **Layers → LingBot-Map Reconstruction** section |
 | `splat-train` | ✅ | `.splat.ply` (+ `.compressed.ply` + manifest); **Splat Toolbox** status "Trained splat ready — N gaussians", toggle, Download .ply |
 | `splat-detect` | ✅ | `.interactions.json` (+ manifest); **Splat Toolbox → Detect objects**; 3D boxes + labels in viewport |
+| `splat-finish` | ✅ | `.sog` + `.compressed.ply` (+ manifest); auto-chains after `splat-train` unless `SPLAT_FINISH_AUTO=0` |
+| `memory-push` | ✅ | `memory-event` (a `capture.scan` push to CI-Server); job list only — inert unless `CI_SERVER_URL` + token are set |
 | `export-world` | ⚠ | `world-export-plan` at `/worlds/<slug>`; job list only — **not yet a bundled download** |
+| `optimize-scan` | ✅ | `.opt.glb` + `.lodN.glb` + `.manifest.json`; surfaces as the per-scan status chip and progressive LOD loading — deliberately **not** in the job list (see above) |
 
 **Guidance signals:** on the `/events` WebSocket, a `world-job-update` with `status:completed` for the three real job types invalidates the scan's cached layer and re-runs the relevant panel refresh, so Layers updates without a manual reload. Failure reasons (`jobFailureReason`) are human-ish: `depth-reconstruct` / `lingbot-map-reconstruct` / `splat-train` fail fast without a `sessionId` ("requires RGB keyframe observations. Start keyframe streaming before export."); `align-scan` needs ≥2 scans; missing binaries (Brush, splat-analyzer, lingbot python) yield a **`skipped` manifest with a remediation hint** — the job still shows `completed`.
 
 **Gaps:**
-- **Planned-vs-real is invisible.** Six of ten job types write only plan/placeholder metadata yet report `completed` identically to the real ones. The distinction is only legible if the user reads status fine-print.
+- **Planned-vs-real is invisible.** Seven of thirteen job types write only plan/placeholder metadata yet report `completed` identically to the real ones. The distinction is only legible if the user reads status fine-print.
 - **When-to-run-which is undocumented in-UI.** `splat-detect` needs a trained `.splat.ply` (or lingbot cloud) first; `splat-train` needs a keyframe session; video-ingest scans silently need `lingbot-map-reconstruct` before training. The only feedback is a failure string *after* running.
 - **Job outputs aren't linked from where jobs launch.** `#job-list` shows type/status/time; results surface in a different tab (Layers) after re-selecting the scan. `#splat-download-link` is the sole download affordance.
 - Two queues both called "jobs" (`optimize-scan` LOD text vs the World queue) blur one mental model.
