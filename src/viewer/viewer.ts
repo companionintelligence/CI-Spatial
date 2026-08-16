@@ -115,6 +115,14 @@ const liveFeed = new LiveFeed(initialWorldSlug)
 const labelContainer = document.getElementById('viewport')!
 const loadedScans = new Map<string, LoadedScan>()
 const scanItems = new Map<string, HTMLElement>()
+// Serializes loadScanIntoWorld() calls per scanId. The initial world load
+// (loadWorldProject) and the optimize-scan job-completion reload
+// (handleJobUpdate) can both target the same scan; without this, a slow or
+// failing initial load can resolve after the job-completion reload already
+// set the correct ".scan-status" chip, clobbering it. Queuing a second call
+// behind the first (rather than racing it) guarantees the caller that fires
+// later also finishes later, so its status always wins.
+const scanLoadChains = new Map<string, Promise<void>>()
 const globalLayerVisible = LAYER_ORDER.reduce((acc, type) => {
   acc[type] = type !== 'rgbFrames' && type !== 'depth' && type !== 'semanticMasks' && type !== 'splat'
   return acc
@@ -531,7 +539,7 @@ async function loadWorldProject(): Promise<void> {
       return
     }
 
-    const results = await Promise.allSettled(loadedWorld.scans.map(loadScanIntoWorld))
+    const results = await Promise.allSettled(loadedWorld.scans.map(enqueueScanLoad))
     const loadedCount = results.filter(result => result.status === 'fulfilled').length
     if (loadedCount > 0 && worldGroup) {
       fitCamera(worldGroup)
@@ -627,6 +635,22 @@ function buildScanItem(scan: ScanManifest): HTMLElement {
  * and the full-quality (quantized/Draco) GLB streams in behind it and swaps
  * atomically.  Unoptimized scans fall back to a single-pass load.
  */
+/**
+ * Queue a loadScanIntoWorld() call behind any already-in-flight load for the
+ * same scanId, instead of racing a fresh call against it. All external
+ * callers (initial world load, world refresh, job-completion reload) must go
+ * through this instead of calling loadScanIntoWorld() directly.
+ */
+function enqueueScanLoad(scan: ScanManifest): Promise<void> {
+  const previous = scanLoadChains.get(scan.scanId) ?? Promise.resolve()
+  const chained = previous.catch(() => {}).then(() => loadScanIntoWorld(scan))
+  scanLoadChains.set(scan.scanId, chained)
+  void chained.finally(() => {
+    if (scanLoadChains.get(scan.scanId) === chained) scanLoadChains.delete(scan.scanId)
+  })
+  return chained
+}
+
 async function loadScanIntoWorld(scan: ScanManifest): Promise<void> {
   if (!worldGroup) throw new Error('World scene was not initialized')
   setScanStatus(scan.scanId, 'Loading GLB...')
@@ -2644,7 +2668,7 @@ async function refreshWorldScans(): Promise<void> {
       const item = buildScanItem(scan)
       scanItems.set(scan.scanId, item)
       listEl.prepend(item)
-      void loadScanIntoWorld(scan).catch(() => { /* status chip shows the error */ })
+      void enqueueScanLoad(scan).catch(() => { /* status chip shows the error */ })
     }
     renderWorldPanel()
     updateHudInfo()
@@ -2665,7 +2689,7 @@ function handleJobUpdate(job: { target?: string; status?: string; note?: string 
     setScanStatus(scan.scanId, `Optimized - ${job.note ?? 'artifacts ready'}`)
     // Re-load to swap in the optimized artifact (preview → quantized/draco)
     if (loadedScans.get(scan.scanId)?.loaded) {
-      void loadScanIntoWorld(scan).catch(() => { /* status chip shows the error */ })
+      void enqueueScanLoad(scan).catch(() => { /* status chip shows the error */ })
     }
   }
 }
