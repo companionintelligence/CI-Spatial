@@ -4,6 +4,10 @@
 > **Commit style:** `refactor(events): shared /events message-type constants`
 > **Design:** this ticket is the spec
 > **Dependencies:** 0003 (both edit `jobs.ts` — land 0003 first)
+> **Status:** ✅ Done — merged via [PR #73](https://github.com/companionintelligence/CI-Spatial/pull/73)
+> (commit `9eb43cc`), 2026-08-16. Adding `src/shared/events.ts`'s import to `main.ts`
+> shifted line numbers below it — `viteBaseUrlFromEnv` (0010's concern) is now at
+> `main.ts:1455`, not `1457`; re-grep before trusting either number.
 
 ## Goal
 
@@ -74,19 +78,25 @@ new one).
 
 ## Definition of Done
 
-- [ ] Every event-type literal in `main.ts`, `jobs.ts`, and `src/viewer/viewer.ts`
-      comes from `src/shared/events.ts`.
-- [ ] `src/shared/events.ts` documents, per event, its producer(s) and known
+- [x] Every event-type literal in `main.ts`, `jobs.ts`, and `src/viewer/viewer.ts`
+      comes from `src/shared/events.ts`. Confirmed the site counts before editing:
+      27 `broadcast()` sites / 9 distinct strings in `main.ts` (19 of them
+      `world-job-update`), matching the Goal section exactly.
+- [x] `src/shared/events.ts` documents, per event, its producer(s) and known
       consumer(s) — including "no in-repo listener" notes for the six, so the next
       auditor doesn't have to re-derive liveness.
-- [ ] Wire strings byte-identical to before.
+- [x] Wire strings byte-identical to before.
 
 ## Tests
 
-- [ ] `deno task check` passes.
-- [ ] `npm run test:mock` passes (viewer specs assert live updates on scan upload).
-- [ ] Manual: with `npm start` running, upload a scan and confirm the viewer refreshes
-      (proves `scan-added`/`job-update` round-trip still works).
+- [x] `deno task check` passes.
+- [x] `npm run test:mock` passes (viewer specs assert live updates on scan upload).
+      27 passed / 23 skipped; 3 pre-existing failures matching the known baseline.
+- [x] Manual: with `npm start` running, upload a scan and confirm the viewer
+      refreshes (proves `scan-added`/`job-update` round-trip still works). Verified
+      via the automated equivalent — `mock-editor-homes.spec.ts`'s "scan list
+      populates and scans reach Ready" test uploads scans and asserts the UI reaches
+      Ready via exactly this event chain, and passes on a clean server.
 
 ```
 deno task check
@@ -95,7 +105,7 @@ npm run test:mock
 
 ## Acceptance Criteria
 
-- [ ] Given `src/shared/events.ts`, when a reader wants to know who produces and who
+- [x] Given `src/shared/events.ts`, when a reader wants to know who produces and who
       consumes any event, then the answer is in that one file's comments.
 
 ## Risks / potential issues
@@ -108,8 +118,9 @@ npm run test:mock
 
 ## Subtasks
 
-1. [ ] Create `src/shared/events.ts` with all 10 event types, producer/consumer
+1. [x] Create `src/shared/events.ts` with all 10 event types, producer/consumer
        documentation per event.
-2. [ ] Replace literals in `main.ts` (27 sites), `jobs.ts` (1), `viewer.ts` (4).
-3. [ ] Add the pointer comment to `logs-watch.mjs`.
-4. [ ] Run verification + the manual round-trip check.
+2. [x] Replace literals in `main.ts` (27 sites), `jobs.ts` (1), `viewer.ts` (4).
+3. [x] Add the pointer comment to `logs-watch.mjs`.
+4. [x] Run verification + the manual round-trip check (via automated equivalent —
+       see Tests).

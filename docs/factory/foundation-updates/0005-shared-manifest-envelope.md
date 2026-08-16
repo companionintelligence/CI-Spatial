@@ -4,6 +4,12 @@
 > **Commit style:** `refactor(manifests): one PipelineManifest envelope, imported everywhere`
 > **Design:** this ticket is the spec
 > **Dependencies:** None — but coordinate with 0004 if it moves files into `src/shared/`
+> **Status:** ✅ Done — merged via [PR #73](https://github.com/companionintelligence/CI-Spatial/pull/73)
+> (commit `3a7ad1d`, plus a review follow-up `5c2b47a`), 2026-08-16. 0004 did not move
+> `lingbot_map_ply.ts` into `src/shared/`, so that coordination note turned out to be
+> moot. This ticket's implementation surfaced a general hazard significant enough to
+> promote to [ADR 0002](../../adr/0002-shared-types-importable-by-the-browser-must-live-in-deno-api-free-files.md)
+> — see the Open Q&A resolution below.
 
 ## Goal
 
@@ -52,20 +58,43 @@ per-tool, and make the viewer import the real types instead of redeclaring subse
 
 ## Open questions & answers
 
-- Q: `src/world/types.ts` or a new `src/world/manifests.ts`? — OPEN, implementer's
-  call; record here.
+- Q: `src/world/types.ts` or a new `src/world/manifests.ts`? — A: **New
+  `src/world/manifests.ts`, re-exported from `types.ts`** — and not for the
+  "types.ts is getting long" reason this question anticipated. The real reason:
+  a browser file that `import type`s straight from a Deno driver file
+  (`splat_train.ts` etc.) still pulls that file's entire body — including its
+  `Deno.*` calls — into `tsc`'s type-check graph, since `import type` is only
+  erased for bundling, not for type-checking. This broke `npm run build`'s `tsc
+  --noEmit` step with 30+ "Cannot find name 'Deno'" errors before the fix.
+  `manifests.ts` is dependency-free and has zero `Deno.*` references, so it's
+  a safe browser-import target. Written up as
+  [ADR 0002](../../adr/0002-shared-types-importable-by-the-browser-must-live-in-deno-api-free-files.md)
+  since this is a general hazard for any future cross-runtime type, not just
+  manifests.
 - Q: Should `LingBotMapManifest` join the base? — A: Give it the envelope fields it
   actually shares (`status`, `skippedReason?`, `error?`) via the base, but keep its
   flat `elapsedMs?` as its own field with a comment noting the divergence from
   `timing.elapsedMs` (decided by ticket author, 2026-08-15 — reader tolerance per
-  Non-goals).
+  Non-goals). Implemented as specified.
 
 ## Files impacted
 
-- Changed: `src/world/types.ts` (or new `src/world/manifests.ts`)
-- Changed: `splat_train.ts`, `splat_detect.ts`, `splat_finish.ts` (extend the base)
+- New: `src/world/manifests.ts` (canonical `PipelineManifestBase` + the three full
+  per-tool interfaces).
+- Changed: `src/world/types.ts` (re-exports from `manifests.ts`).
+- Changed: `splat_train.ts`, `splat_detect.ts`, `splat_finish.ts` (import + re-export
+  the canonical type under its original name — the driver file no longer *declares*
+  it, but still exports it, so nothing importing from the driver files broke).
 - Changed: `src/viewer/splat-layer.ts`, `src/viewer/splat-detect-layer.ts`,
-  `src/viewer/lingbot-map.ts` (delete local redeclarations, import)
+  `src/viewer/lingbot-map.ts` (delete local redeclarations, import).
+
+Field-by-field disposition confirmed during implementation: `params` stays per-tool
+(shape genuinely differs — Brush training options vs. splat_analyzer options vs.
+splat-transform options), not part of the base. Viewer-side looseness was real and
+preserved: `splat-layer.ts` and `splat-detect-layer.ts` both had `timing.elapsedMs`
+optional where the server type requires it (older on-disk manifests predate the
+field), and `splat-detect-layer.ts` also had `schemaVersion`/`tool`/`prompt` optional
+for the same reason.
 
 ## Schema required
 
@@ -77,18 +106,25 @@ unchanged. Extends existing types per ADR 0001; no serialized format change.
 
 ## Definition of Done
 
-- [ ] One base interface; three server manifests extend it; zero viewer-side
+- [x] One base interface; three server manifests extend it; zero viewer-side
       redeclarations remain.
-- [ ] Serialized manifest output is unchanged (compare a fixture manifest before/after).
-- [ ] The viewer still renders splat layers, detect boxes, and lingbot overlays from
+- [x] Serialized manifest output is unchanged (compare a fixture manifest before/after).
+- [x] The viewer still renders splat layers, detect boxes, and lingbot overlays from
       fixture manifests, including 'skipped'/'error' states.
 
 ## Tests
 
-- [ ] `deno task check` passes.
-- [ ] `deno task test` passes (splat_train/detect/finish tests serialize manifests).
-- [ ] `npm run test:mock` passes (viewer specs load fixture manifests via
-      `scripts/make-splat-fixture.mjs`, including the error-state fixture).
+- [x] `deno task check` passes.
+- [x] `deno task test` passes (splat_train/detect/finish tests serialize manifests).
+      77 passed / 1 ignored; the 9 pre-existing `splat_detect.test.ts`/
+      `splat_train.test.ts` failures are a Windows spawn/python environment issue,
+      confirmed identical against the pre-batch baseline — not caused by this ticket.
+- [x] `npm run test:mock` passes (viewer specs load fixture manifests via
+      `scripts/make-splat-fixture.mjs`, including the error-state fixture). 27 passed
+      / 23 skipped; 3 pre-existing failures matching the known baseline exactly.
+- [x] `npm run build` (not originally listed, but the decisive test for this ticket's
+      real risk — see Open Q&A): passes, confirming `manifests.ts`'s placement
+      actually avoids the Deno-global type leakage into the browser build.
 
 ```
 deno task check
@@ -98,7 +134,7 @@ npm run test:mock
 
 ## Acceptance Criteria
 
-- [ ] Given the repo, when a new pipeline stage is added later, then it has exactly
+- [x] Given the repo, when a new pipeline stage is added later, then it has exactly
       one obvious envelope type to extend — and the viewer imports it rather than
       redeclaring.
 
@@ -108,14 +144,26 @@ npm run test:mock
   (tolerating older on-disk manifests from before some field existed).
   — **Mitigation:** the field-by-field table in "Before implementation" decides
   strictness per field from evidence; when in doubt keep the viewer-facing type
-  lenient (`Partial<Pick<...>>`) and note it.
+  lenient (`Partial<Pick<...>>`) and note it. **Realized:** yes, confirmed real in
+  three places — see Files impacted.
 - **Risk:** import cycle if manifests.ts imports from types.ts and vice versa.
   — **Mitigation:** the envelope has no dependencies on other world types; keep it
-  dependency-free.
+  dependency-free. No cycle occurred.
+- **Realized risk not anticipated by this ticket:** a browser file `import type`-ing
+  straight from a Deno driver file breaks `npm run build` even though `deno check`
+  passes — see Open Q&A and ADR 0002.
 
 ## Subtasks
 
-1. [ ] Build the field-by-field comparison table (paste into Open Q&A).
-2. [ ] Add the base type; extend the three server manifests.
-3. [ ] Replace the three viewer redeclarations with imports.
-4. [ ] Run verification; compare a before/after fixture manifest byte-for-byte.
+1. [x] Build the field-by-field comparison table (paste into Open Q&A). See Files
+       impacted for the summary.
+2. [x] Add the base type; extend the three server manifests.
+3. [x] Replace the three viewer redeclarations with imports.
+4. [x] Run verification; compare a before/after fixture manifest byte-for-byte.
+5. [x] (Discovered mid-implementation, not an original subtask) Move the base +
+       per-tool interfaces to a new dependency-free `src/world/manifests.ts` instead
+       of the driver files, after `npm run build` surfaced 30+ type errors from the
+       straightforward approach; promoted the general lesson to ADR 0002.
+6. [x] (Review follow-up) Fixed `manifests.ts`'s header comment, which stated the
+       on-disk filename convention as `<tool>.manifest.json` — the actual convention,
+       confirmed against the three driver files, is `<base>.splat-<stage>.manifest.json`.

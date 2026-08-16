@@ -10,7 +10,9 @@ are all byte-identical after this wave.
 Grounding: the Companion Scan Atlas review (full feature/schema/connection map) plus
 two line-level audits (2026-08-15) verifying each duplication before it became a
 ticket. ADR 0001 (`docs/adr/0001-reuse-existing-domain-model.md`) is the standing rule
-this wave enforces retroactively.
+this wave enforces retroactively. ADR 0002
+(`docs/adr/0002-shared-types-importable-by-the-browser-must-live-in-deno-api-free-files.md`)
+was added mid-wave, during 0005 — see "Batch B — landed" below.
 
 ## Tickets
 
@@ -20,12 +22,12 @@ this wave enforces retroactively.
 | 0002 | [fix-allowed-origin-prefix-autodetect](0002-fix-allowed-origin-prefix-autodetect.md) | main.ts auto-detects the Tailscale hostname like vite.config.ts | ✅ merged (#68) |
 | 0003 | [rename-jobs-scanmanifest](0003-rename-jobs-scanmanifest.md) | end the `ScanManifest` name collision (jobs.ts side, zero importers) | ✅ merged (#71) |
 | 0004 | [dedupe-ply-parser](0004-dedupe-ply-parser.md) | delete the viewer's verbatim copy of the binary PLY parser | ✅ merged (#71) |
-| 0005 | [shared-manifest-envelope](0005-shared-manifest-envelope.md) | one `PipelineManifestBase`; viewer imports real types instead of 5 redeclarations | ⬜ |
-| 0006 | [shared-event-type-constants](0006-shared-event-type-constants.md) | `/events` message types declared once, producers/consumers documented | ⬜ unblocked (0003 landed) |
+| 0005 | [shared-manifest-envelope](0005-shared-manifest-envelope.md) | one `PipelineManifestBase`; viewer imports real types instead of 5 redeclarations | ✅ merged (#73) |
+| 0006 | [shared-event-type-constants](0006-shared-event-type-constants.md) | `/events` message types declared once, producers/consumers documented | ✅ merged (#73) |
 | 0007 | [worlddetection-extends-rawdetection](0007-worlddetection-extends-rawdetection.md) | make the thing-shape lineage real in the type system | ✅ merged (#71) |
-| 0008 | [storage-keys-and-palette-sync](0008-storage-keys-and-palette-sync.md) | central storage-key constants + a test that catches cv-palette drift | ⬜ |
+| 0008 | [storage-keys-and-palette-sync](0008-storage-keys-and-palette-sync.md) | central storage-key constants + a test that catches cv-palette drift | ✅ merged (#73) |
 | 0009 | [config-docs-and-naming-cleanup](0009-config-docs-and-naming-cleanup.md) | document every env var, fix stale repo names, freeze protected identifiers | ✅ merged (#71) |
-| 0010 | [single-source-vite-port](0010-single-source-vite-port.md) | `VITE_PORT` env var replaces six magic 5173s | ⬜ |
+| 0010 | [single-source-vite-port](0010-single-source-vite-port.md) | `VITE_PORT` env var replaces six magic 5173s | ⬜ unblocked (0006 landed) |
 | 0011 | [name-ci-spatial](0011-name-ci-spatial.md) | cosmetic Companion-Scan→CI-Spatial rename, once an owner picks the name | ⬜ blocked on 0009's open question |
 
 ## Execution order & parallelization
@@ -99,13 +101,57 @@ remains [0001](../../adr/0001-reuse-existing-domain-model.md) (already linked ab
   do-not-rename list" abstractly; that list is now live at `CLAUDE.md`'s "Do not
   rename" section and can be linked directly.
 - **0009's naming Open Question is still unresolved** — "Companion Scan" vs
-  "CI-Spatial" — and continues to block the cosmetic renames noted below in
-  "Explicitly deferred." No later ticket in this wave depends on it, but it's still
-  an open owner decision.
+  "CI-Spatial" — and blocks 0011 (ticketed since; see the table above), which starts
+  the moment an owner answers it.
 - **Unplanned files touched:** a post-merge PR review caught a JSDoc comment 0007
   dropped in the `WorldDetection extends RawDetection` refactor. The fix landed on
   `src/inference/prompt.ts` and root `prompt.ts` (not originally in 0007's Files
   impacted) — worth knowing if a later ticket also touches those files.
+
+## Batch B — landed 2026-08-16
+
+0005, 0006, and 0008 shipped together as one PR: [#73](https://github.com/companionintelligence/CI-Spatial/pull/73)
+(three isolated worktrees off latest `main`, merged and verified together, one
+Copilot review comment addressed post-merge). The three had zero real file overlaps
+with each other — 0006 touches root `main.ts` (the Deno server), 0008 touches the
+separate `src/main.ts` (the browser entry point); despite the similar names these are
+different files, so the "only common file" caution in "Execution order &
+parallelization" above turned out not to matter in practice.
+
+**A new ADR landed this batch:** [0002](../../adr/0002-shared-types-importable-by-the-browser-must-live-in-deno-api-free-files.md)
+— "shared types importable by the browser must live in Deno-API-free files."
+0005 discovered that a browser file `import type`-ing straight from a Deno driver
+file (`splat_train.ts` etc.) still drags that file's `Deno.*` calls into `tsc`'s
+type-check graph and breaks `npm run build`, even though `deno check` stays clean.
+Read it before adding any new type meant to be shared between server and browser
+code.
+
+**What this means for Batch C and the two new waves planned the same day ([#72](https://github.com/companionintelligence/CI-Spatial/pull/72)):**
+
+- **0010 is now unblocked.** Its `Dependencies: 0006` is satisfied.
+- **Re-grep `main.ts` line numbers before trusting 0010's citations.** 0006 added an
+  `EVENT` import near the top of `main.ts`, shifting everything below it.
+  `viteBaseUrlFromEnv` (0010's primary concern) is now at `main.ts:1455`, not the
+  `1457` the ticket cites; the `:5173` fallback is now around line 1458.
+- **`npm run build` is now part of this wave's real verification surface**, not just
+  `deno task check` — ADR 0002 is the reason why. If 0010 (or any later ticket) adds
+  or moves a type touched by both runtimes, run the real build, not just `deno check`.
+- **Relevant precedent for `docs/factory/01-merge-jobs/` and
+  `docs/factory/02-typed-event-payloads/`** (planned the same day, in parallel with
+  this batch's implementation): `src/shared/events.ts` now exists with both
+  `EVENT.JOB_UPDATE` and `EVENT.WORLD_JOB_UPDATE` centralized side by side, each with
+  producer/consumer doc comments — `02-typed-event-payloads` can build its
+  discriminated union on top of this file rather than re-deriving the event list.
+  Likewise, `01-merge-jobs` retiring `jobs.ts`'s `JobQueue` will need to decide what
+  happens to `jobs.ts`'s `OptimizeScanManifest` (renamed by 0003) and whether it
+  should extend `PipelineManifestBase`/live in `src/world/manifests.ts` (added by
+  0005) once optimize-scan moves onto `WorldJob` — neither of those two waves'
+  existing tickets mention this yet since they were drafted before 0005 landed.
+- One environmental lesson from this batch, not code-related: running `npm run
+  test:mock` against a dev server with many accumulated scans from repeated local
+  test runs can produce false-looking failures (timeouts waiting for scan status)
+  that look like regressions but are just UI-rendering load — clear `scans/` and
+  restart the server before trusting a surprising `test:mock` result.
 
 ## Explicitly deferred (found, not ticketed — needs an owner decision first)
 
