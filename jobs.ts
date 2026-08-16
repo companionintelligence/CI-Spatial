@@ -12,6 +12,7 @@
  *   <base>.manifest.json      artifact index + stats + per-stage log
  */
 import { optimizeScan } from './pipeline.ts'
+import { EVENT } from './src/shared/events.ts'
 
 export type JobStatus = 'queued' | 'running' | 'done' | 'error'
 
@@ -210,7 +211,7 @@ export class JobQueue {
 
   private _emit(job: Job): void {
     this.onEvent({
-      type: 'job-update',
+      type: EVENT.JOB_UPDATE,
       job: {
         id: job.id,
         jobType: job.type,

@@ -18,6 +18,7 @@
  * Run: npx playwright test --project=chromium-mock mock-ftue
  */
 import { test, expect } from '@playwright/test'
+import { ONBOARDING_KEY } from '../src/shared/storage-keys'
 
 // iPhone-15-ish viewport on the chromium-mock browser (a webkit device
 // descriptor can't be used under the chromium project, so set the metrics
@@ -126,7 +127,7 @@ test.describe('FTUE two-path start screen', () => {
     }
     await expect(overlay).toBeHidden({ timeout: 5_000 })
 
-    const flag = await page.evaluate(() => localStorage.getItem('companion-scan-onboarded'))
+    const flag = await page.evaluate((key) => localStorage.getItem(key), ONBOARDING_KEY)
     expect(flag).toBe('1')
 
     // Reload with the same forced-on flag: because localStorage records the

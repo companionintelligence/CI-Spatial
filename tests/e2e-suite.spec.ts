@@ -5,13 +5,14 @@
 import { test, expect } from '@playwright/test'
 import { mergeDetections } from '../src/spatial/resolver'
 import { normalizeDetections, parseDetections } from '../prompt.ts'
+import { ONBOARDING_KEY } from '../src/shared/storage-keys'
 
 const BASE = process.env['VITE_URL'] ?? 'https://liambook.capybara-ulmer.ts.net:5173'
 
 test.beforeEach(async ({ context }) => {
-  await context.addInitScript(() => {
-    window.localStorage.setItem('companion-scan-onboarded', '1')
-  })
+  await context.addInitScript((key) => {
+    window.localStorage.setItem(key, '1')
+  }, ONBOARDING_KEY)
 })
 
 // Helper to build a minimal valid GLB buffer (~50 bytes)

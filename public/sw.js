@@ -1,3 +1,10 @@
+// NOTE: this is a classic (non-module) service worker, so it cannot import
+// src/shared/storage-keys.ts. CACHE_VERSION, QUEUE_DB (below), and the
+// 'companion-scan-flush' sync tag (self.addEventListener('sync', ...) and
+// registerFlushSync() below) are hand-kept in sync with SW_CACHE_NAME,
+// OFFLINE_QUEUE_DB_NAME, and SW_SYNC_TAG in that file; sync.test.ts
+// (repo root) asserts they haven't drifted. Do not rename any of them —
+// see CLAUDE.md's "Do not rename" registry.
 const CACHE_VERSION = 'companion-scan-v3'
 const APP_SHELL = [
   '/',
@@ -30,6 +37,8 @@ const API_PREFIXES = [
   '/client-logs',
 ]
 
+// Mirrors OFFLINE_QUEUE_DB_NAME in src/shared/storage-keys.ts — see the
+// note above CACHE_VERSION.
 const QUEUE_DB = 'companion-scan-offline-queue'
 const QUEUE_STORE = 'requests'
 const QUEUEABLE_WRITE_PREFIXES = [
@@ -86,6 +95,8 @@ self.addEventListener('fetch', (event) => {
 })
 
 self.addEventListener('sync', (event) => {
+  // 'companion-scan-flush' mirrors SW_SYNC_TAG in src/shared/storage-keys.ts
+  // and src/pwa.ts's registration call — see the note above CACHE_VERSION.
   if (event.tag === 'companion-scan-flush') {
     event.waitUntil(flushQueuedRequests())
   }
@@ -195,6 +206,8 @@ async function flushQueuedRequests() {
 async function registerFlushSync() {
   try {
     if ('sync' in self.registration) {
+      // 'companion-scan-flush' mirrors SW_SYNC_TAG in
+      // src/shared/storage-keys.ts — see the note above CACHE_VERSION.
       await self.registration.sync.register('companion-scan-flush')
     }
   } catch {

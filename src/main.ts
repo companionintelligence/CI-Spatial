@@ -34,6 +34,7 @@ import { RtcBroadcaster } from './rtc/broadcaster'
 import { registerPWA } from './pwa'
 import { installRemoteLog } from './debug/remote-log'
 import { iconLabel } from './ui/icons'
+import { ONBOARDING_KEY } from './shared/storage-keys'
 import * as THREE from 'three'
 
 const CAPTURE_FRAME_TIMEOUT_MS = 8000
@@ -500,7 +501,7 @@ async function main() {
   })
 
   // ── 4b. Onboarding overlay — show once on first visit ────────────────────────
-  const ONBOARD_KEY = 'companion-scan-onboarded'
+  const ONBOARD_KEY = ONBOARDING_KEY
 
   function runOnboarding(_isReplay = false): Promise<void> {
     return new Promise<void>((resolve) => {

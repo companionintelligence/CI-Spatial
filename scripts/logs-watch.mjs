@@ -57,6 +57,9 @@ ws.on('open', () => console.log('Connected — waiting for client logs\n'))
 ws.on('message', (data) => {
   let msg
   try { msg = JSON.parse(data.toString()) } catch { return }
+  // 'client-log' is the wire value of EVENT.CLIENT_LOG in src/shared/events.ts —
+  // that file is the source of truth for all /events message types (this plain
+  // .mjs script isn't converted to import it, but keep this literal in sync).
   if (msg.type !== 'client-log') return
   // Server may broadcast one message per entry or a batch in `entries`.
   for (const entry of msg.entries ?? [msg]) printEntry({ ip: msg.ip, ...entry })

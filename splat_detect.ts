@@ -26,6 +26,14 @@
  *     PLY via $SPLAT_DETECT_DIR/pointcloud_to_gs.py first, then detect on that.
  */
 
+// The manifest type lives in src/world/manifests.ts, not here — see that
+// file's header (it's the canonical, Deno-API-free home so the browser
+// viewer can type-import it without dragging this file's `Deno.*` calls into
+// its DOM-lib type-check program). Re-exported below so
+// `import type { SplatDetectManifest } from './splat_detect.ts'` still works.
+import type { SplatDetectManifest } from './src/world/types.ts'
+export type { SplatDetectManifest }
+
 const DEFAULT_DETECT_PYTHON = `${Deno.env.get('HOME') ?? '~'}/.venvs/splat-analyzer/bin/python`
 const DEFAULT_DETECT_DIR = `${Deno.env.get('HOME') ?? '~'}/splat_analyzer`
 const DEFAULT_DETECT_PROMPT = 'sofa, chair, table, tv, lamp, plant, bed, desk, shelf, door, window'
@@ -65,37 +73,6 @@ export interface SplatDetectRunOptions {
 }
 
 export type SplatDetectStatus = 'ok' | 'skipped' | 'error'
-
-export interface SplatDetectManifest {
-  schemaVersion: number
-  tool: 'splat-analyzer'
-  status: SplatDetectStatus
-  createdAt: string
-  /** Basename of the landed interactions.json (relative to SCANS_DIR), when 'ok'. */
-  interactionsPath?: string
-  /** Number of detected interactive objects. */
-  objectCount?: number
-  /** The open-vocab prompt fed to the detector. */
-  prompt: string
-  params: {
-    python: string
-    detectDir: string
-    hipVisibleDevices: string
-    pointSplatSize: string
-    quality: string
-    renderer: string
-    scoreThreshold?: string
-    minVotes?: string
-    minPeakScore?: string
-  }
-  timing?: { elapsedMs: number }
-  skippedReason?: string
-  remediation?: string
-  error?: string
-  /** Provenance from the world job. */
-  sessionId?: string
-  scanId?: string
-}
 
 export interface SplatDetectResult {
   status: SplatDetectStatus

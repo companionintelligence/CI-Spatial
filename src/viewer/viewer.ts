@@ -32,6 +32,7 @@ import { enuToGeo, hasGeoPose, matrixTranslation } from '../world/geo'
 import { LAYER_LABELS, LAYER_ORDER } from '../world/layers'
 import { registerPWA } from '../pwa'
 import { iconLabel } from '../ui/icons'
+import { EVENT } from '../shared/events'
 import type {
   EditPatch,
   FrameObservation,
@@ -2584,11 +2585,11 @@ function connectServerEvents(): void {
   ws.addEventListener('message', (event) => {
     try {
       const msg = JSON.parse(String(event.data)) as Record<string, unknown>
-      if (msg['type'] === 'scan-added' || msg['type'] === 'session-finalized') {
+      if (msg['type'] === EVENT.SCAN_ADDED || msg['type'] === EVENT.SESSION_FINALIZED) {
         scheduleWorldRefresh()
-      } else if (msg['type'] === 'job-update') {
+      } else if (msg['type'] === EVENT.JOB_UPDATE) {
         handleJobUpdate(msg['job'] as { target?: string; status?: string; note?: string | null })
-      } else if (msg['type'] === 'world-job-update') {
+      } else if (msg['type'] === EVENT.WORLD_JOB_UPDATE) {
         const wj = msg['job'] as { jobType?: string; type?: string; status?: string; scanId?: string } | undefined
         const t = wj?.type ?? wj?.jobType
         if (t === 'lingbot-map-reconstruct' && wj?.status === 'completed' && wj?.scanId) {

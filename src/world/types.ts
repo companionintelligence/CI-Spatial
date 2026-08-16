@@ -200,3 +200,18 @@ export interface WorldProject {
   createdAt: string
   updatedAt: string
 }
+
+// ─── Pipeline-stage manifests ──────────────────────────────────────────────
+// The canonical interfaces live in ./manifests.ts (split out of this file so
+// pipeline-stage envelopes — a third family alongside this file's "places"
+// types — can be imported standalone from browser code without dragging in
+// Deno-only driver code; see that file's header for why). Re-exported here
+// because src/world/types.ts is the established cross-runtime import point
+// (main.ts and all src/viewer/* already import from it).
+export type {
+  PipelineManifestBase,
+  SplatTrainManifest,
+  SplatDetectManifest,
+  SplatFinishManifest,
+  SplatFinishSizes,
+} from './manifests.ts'
