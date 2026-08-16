@@ -17,8 +17,9 @@
     "world": "The world it lands in"
   },
   "media": {
-    "music": "assets/media/ci-campaign-bed.mp3",
-    "musicLufs": -22
+    "music": "assets/media/ci-campaign-bed-110.mp3",
+    "musicLufs": -22,
+    "_mediaNote": "The 65.374s bed is shorter than this cut. The kit shortens the audio slot to the media length rather than looping, so the last twelve seconds would have played dry — and it is a warning, never an error, so nothing would have said so. `ci-campaign-bed-110.mp3` is the same bed crossfaded into itself and cut at 110s.\n\nThe join is EQUAL-POWER, not the fleet's usual `c1=tri`. Measured in 1s windows: a tri crossfade of this bed dips 2.7 dB at the join (-21.5 dB against a -18.7 dB baseline), because a linear amplitude fade between two uncorrelated signals loses power in the middle. `c1=qsin:c2=qsin` holds it flat — -19.0, -18.6, -18.2, -17.8 across t=59-63, inside the bed's own ±0.6 dB drift, LRA 0.9 LU over the whole 110s. The source's own 0.6s fade-out (from 63.9s) and 0.5s fade-in are trimmed off before the fade, so neither side arrives already ducking:\n\n  ffmpeg -y -i ci-campaign-bed.mp3 -i ci-campaign-bed.mp3 -filter_complex \\\n    \"[0:a]atrim=0:63.9,asetpts=N/SR/TB[a0];[1:a]atrim=start=0.5,asetpts=N/SR/TB[a1];\\\n     [a0][a1]acrossfade=d=4:c1=qsin:c2=qsin[a]\" \\\n    -map \"[a]\" -t 110 -c:a libmp3lame -b:a 192k -ar 48000 -ac 2 ci-campaign-bed-110.mp3\n\nNot gitignored in this repo — `git check-ignore` returns 1 for `video/assets/media/`, so a plain `git add` is enough here. Check before assuming; several repos carry a bare `media` rule that swallows this directory and leaves the storyboard pointing at a file no clean checkout has."
   },
   "scenes": [
     {
@@ -119,13 +120,13 @@
           "url": "companion-scan-living-room-server-acme.ci.computer",
           "alt": "Start screen offering two equal paths: scan a room, or upload a video",
           "motion": "push-in",
-          "_focusNote": "The beat is the PAIR of cards, not the app's own title — we have just come off the title card, so re-reading the wordmark is dead weight.\n\nA FOCUS RECTANGLE IS NOT THE WINDOW YOU GET, and every landscape y in this file is set from `ci-video focus-preview`'s reported window rather than from the rectangle. Measured: the delivered window lands 0.029 of the plate BELOW the authored y at scale 2.398. The browser frame is not centred on the canvas centre — the stage reserves the caption band, so frameCentre.y is 479.5 against a canvas centre of 540 — and the screenshot sits below the chrome inside the frame. Author a y from a rectangle alone and the crop arrives a couple of dozen plate pixels lower than the one you looked at.\n\nLandscape: the two cards occupy x 0.381-0.619, y 0.518-0.735 — 0.24 wide, far under the 0.538 floor, so no rectangle frames them tighter and the floor square is authored directly (scale 2.398, honoured exactly, nothing clamped). y 0.376 delivers a window top of 0.405, which is chosen and not rounded: the descender of 'Companion' ends at 0.404 and the cap of 'Scan' starts at 0.407, so the crop lands in the gap BETWEEN the two wordmark lines. Verified on the reconstructed end frame — 'Scan' is whole, no descender fragment rides the top edge. Cards land at 0.21-0.61 of the frame; the caption band starts at 0.853 of the canvas, over empty ground.\n\nPortrait: the cards are 0.86 of the plate wide, so the tightest window that still contains them both is 0.90 -> scale 1.549, against the 1.045 the legacy push gives. Modest, but it is the difference between the cards being an element of the page and being the page. The preview reports the window anchored to the bottom canvas edge rather than centred; the picture was checked and the whole title block still fits above the cards.",
+          "_focusNote": "The beat is the PAIR of cards, not the app's own title — we have just come off the title card, so re-reading the wordmark is dead weight.\n\nTHE RECTANGLE IS 0.538 x 0.477 AND NOT A SQUARE, and that is the whole correction on this shot. HEIGHT BINDS BEFORE WIDTH: the kit takes scale = min(1.290323 / w, 1.145758 / h), so a 0.538 SQUARE asks for 2.398 on its width and gets 2.130 from its height — a delivered window of 0.606 of the plate, 12.6% looser than the note here used to claim. Reaching the real 16:9 floor of 0.538 needs h <= 0.4774. Confirmed by `ci-video focus-preview`, which now reports `focus 0.538x0.477 -> scale 2.398, honoured exactly, window 0.538 from (0.23, 0.405)`.\n\nWHAT THE LOOSE WINDOW COST, on a frame grabbed off build/landscape rather than reasoned about: at 0.606 the crop opened at plate y 0.375 and sliced the word 'Companion' horizontally through its middle, which is the one thing this rectangle was drawn to avoid. A 0.606 window cannot avoid it at any y — it is 0.606 tall, so its top can never exceed 0.394, and the gap between the two wordmark lines is at 0.4032-0.4065.\n\nTHE THREE OTHER LANDSCAPE FOCUS RECTANGLES IN THIS FILM ARE STILL SQUARES and still deliver 0.606. They were left alone deliberately: their frames were checked the same way and all three read correctly at the looser window — the extra 12.6% only costs them margin, where here it cost a whole word. Tightening them to h 0.477 would deliver exactly the windows their notes describe and is worth doing behind a render.\n\nGLYPH ROWS, measured on the committed 3840x2160 plate by row-profiling bright pixels across x 0.30-0.70, not estimated: orb 0.2602-0.2792, 'COMPANION INTELLIGENCE' 0.3144-0.3227, 'Companion' 0.3431-0.4032 (the descender of the p is the 0.4032), 'Scan' 0.4065-0.4523, tagline 0.4755-0.4880, cards 0.5167-0.735. y 0.4063 lands the crop at plate row 874 of 2160 — inside the 872..877 gap, 3px clear of 'Companion' and 4px clear of 'Scan'. Verified on the focus-preview end frame: 'Scan' is whole and nothing rides the top edge.\n\nLandscape x is unchanged at 0.231: the cards are centred at 0.5 and 0.24 wide, far under any reachable window, so the rectangle's width is only there to centre it. Cards land at 0.21-0.61 of the finished frame; the caption band is over empty ground.\n\nPortrait is unchanged and is NOT a crop: `focus 0.9x0.9` asks for 1.364 and is raised to the coverage floor 1.399, delivering 0.997 of the plate — effectively full-bleed with the phone bezel gone. The preview reports the window slid back to the canvas edge; the picture was checked and the whole title block still fits above the cards.",
           "focus": {
             "landscape": {
               "x": 0.231,
-              "y": 0.376,
+              "y": 0.4063,
               "w": 0.538,
-              "h": 0.538
+              "h": 0.477
             },
             "portrait": {
               "x": 0.04,
@@ -134,7 +135,7 @@
               "h": 0.9
             }
           },
-          "_pointerNote": "The caption is 'Two ways in' and the narration names both of them; 'Scan a room' is the one the film then follows, because the very next scene is that path's onboarding. Clicking the other card and cutting to the AR walkthrough would be a continuity error.\n\nBoth coordinates are the centre of the teal card as measured on the committed plate: landscape card x 0.381-0.619 / y 0.518-0.735, portrait card x 0.056-0.916 / y 0.505-0.625. Verified by crosshair crop, not derived.",
+          "_pointerNote": "The caption is 'Two ways in' and the narration names both of them; 'Scan a room' is the one the film then follows, because the very next scene is that path running — `the-meter`, the scanning HUD mid-session. (It used to be `the-walk`, that path's onboarding; see the `_cutNote`. The cursor still lands on the card the film then follows, which is what this pointer is for.) Clicking the other card and cutting to a scan in progress would be a continuity error.\n\nBoth coordinates are the centre of the teal card as measured on the committed plate: landscape card x 0.381-0.619 / y 0.518-0.735, portrait card x 0.056-0.916 / y 0.505-0.625. Verified by crosshair crop, not derived.",
           "pointer": {
             "landscape": {
               "x": 0.5,
@@ -269,6 +270,12 @@
               "y": 0,
               "w": 0.3,
               "h": 0.3
+            },
+            "portrait": {
+              "x": 0,
+              "y": 0,
+              "w": 0.72,
+              "h": 0.72
             }
           },
           "capture": {
@@ -290,7 +297,7 @@
             ],
             "settle": 600
           },
-          "_focusNote": "LANDSCAPE ONLY, AND THE SAME RECTANGLE ON BOTH CELLS. A before/after is the comparison; two framings would make it two unrelated pictures.\n\n0.30 square from (0, 0) delivers a window over plate x 0..0.30 by y 0..0.30, which holds the whole HUD (x 0.008..0.185, y 0.012..0.180) with margin down two edges and nothing else. video-kit 0.25.0's floor for a 16:9 split cell is 0.283 of the plate — a cell is 806px of a 3840px capture, so it can crop far tighter than the camera's 0.538 before it starts inventing pixels — and 0.30 sits just above it, honoured exactly rather than capped.\n\nMEASURED, not estimated: crop the committed PNG to 1152x648 at (0,0) and scale it to 806x453, which is exactly what the cell renders, and `SPARSE 2110 pts` / `COVERAGE Low — keep scanning` against `REVIEW 14235 pts` / `COVERAGE Good` come out at about 19px on a 1080-tall canvas. At the uncropped plate they were 5px.\n\nTHE CARTOON ROOM LEAVES THE 16:9 FRAME ENTIRELY, and that is a gain rather than a loss. The room is the one thing on this plate that must not read as anybody's living room (see the _honestyNote); the meter is the thing the caption is about. There is no third option — the furniture starts at plate y 0.48, so any window holding both it and the HUD needs y 0.62, which puts the HUD text back under 9px. The room is still in the 9:16 cut, and in the two onboarding scenes before this one.\n\nNO PORTRAIT FOCUS, and this is a measurement rather than an omission. The 9:16 cell loads the MOBILE plate, where the HUD is a full-width banner across the top third; it reads at cell size today. Cropping it would only throw away the walk it is a HUD over."
+          "_focusNote": "LANDSCAPE ONLY, AND THE SAME RECTANGLE ON BOTH CELLS. A before/after is the comparison; two framings would make it two unrelated pictures.\n\n0.30 square from (0, 0) delivers a window over plate x 0..0.30 by y 0..0.30, which holds the whole HUD (x 0.008..0.185, y 0.012..0.180) with margin down two edges and nothing else. video-kit 0.25.0's floor for a 16:9 split cell is 0.283 of the plate — a cell is 806px of a 3840px capture, so it can crop far tighter than the camera's 0.538 before it starts inventing pixels — and 0.30 sits just above it, honoured exactly rather than capped.\n\nMEASURED, not estimated: crop the committed PNG to 1152x648 at (0,0) and scale it to 806x453, which is exactly what the cell renders, and `SPARSE 2110 pts` / `COVERAGE Low — keep scanning` against `REVIEW 14235 pts` / `COVERAGE Good` come out at about 19px on a 1080-tall canvas. At the uncropped plate they were 5px.\n\nTHE CARTOON ROOM LEAVES THE 16:9 FRAME ENTIRELY, and that is a gain rather than a loss. The room is the one thing on this plate that must not read as anybody's living room (see the _honestyNote); the meter is the thing the caption is about. There is no third option — the furniture starts at plate y 0.48, so any window holding both it and the HUD needs y 0.62, which puts the HUD text back under 9px. The room is still in the 9:16 cut, and in the two onboarding scenes before this one.\n\nPORTRAIT NOW CROPS TOO, at 0.72, and the note this replaces was right about the reading and wrong about the framing. It said there was no portrait focus because the 9:16 cell loads the MOBILE plate, where the HUD is a full-width banner that already reads at cell size. Checked against a frame grabbed off the built portrait composition: it does read — SPARSE 2110 pts and COVERAGE Low — keep scanning are legible uncropped. But the cartoon room is then 54% of the cell, and this scene's whole `_editNote` is an argument that the room must not be the subject. In 16:9 the crop takes it to zero; leaving 9:16 uncropped made the two cuts disagree about what the beat is of.\n\n0.72 AND NOT TIGHTER, measured on the plate rather than guessed. The HUD card runs x 0.031-0.68 (dark-run profile across the mobile PNG, sampled every row from y 0.03 to 0.24). A 0.6 window was tried first and rendered with the caption's own words sliced by the right edge — \"Go[od]\", \"Low — keep scanni[ng]\", \"2110 p[ts]\" — because a split crop is one fraction on both axes and 0.6 lands inside a card that reaches 0.68. 0.72 clears it by 0.04 of the plate, 43px. The floor for a 9:16 split cell is 0.594, so nothing is clamped and no pixel is invented.\n\nWhat it costs: the `?` help button (x 0.89-0.968) and the floor, the Done button and the right-hand tool rail leave the frame, and the table at the right edge is cut by the crop. What it buys: the HUD goes from 65% to 90% of the cell width, and the room from 54% to about 28% of its height — the meter becomes the subject in both cuts, which is what the caption claims. Verified on a frame grabbed from build/portrait, not predicted."
         },
         {
           "id": "live-scan-hud",
@@ -302,6 +309,12 @@
               "y": 0,
               "w": 0.3,
               "h": 0.3
+            },
+            "portrait": {
+              "x": 0,
+              "y": 0,
+              "w": 0.72,
+              "h": 0.72
             }
           },
           "capture": {
@@ -445,7 +458,8 @@
       "chapter": "world",
       "seconds": 6.5,
       "caption": "Pick a room. The label is yours to correct.",
-      "narration": "Pick any room and the camera flies to it. Its name, its confidence and its tags are all yours to change.",
+      "narration": "Pick any room and the camera frames it. Its tag, its notes and where it sits are all yours to change.",
+      "_narrationNote": "REWRITTEN, and the only line in this film that is not the authored one. It read: \"Pick any room and the camera flies to it. Its name, its confidence and its tags are all yours to change.\" Two of those three are capability the Edit panel does not have, checked against source rather than against the picture:\n\n  NAME — viewer.html:1194, `#edit-obj-name` is a `div`, not an input. The panel\n    displays the scan's name; nothing on it renames one.\n  CONFIDENCE — there is no confidence control anywhere in the Edit panel. The\n    only match for the word in viewer.html is the `.inspector-confidence` CSS\n    class, which styles the READ-OUT of a stored detection score. The plate\n    behind this caption also has a scan selected (Kitchen A), and a scan has no\n    confidence to edit in the first place.\n\nWhat the panel does have, all of it on the plate: SEMANTIC TAG chips with Save Tags, a NOTES textarea with Save Notes, and TRANSFORM Move / Rotate / Scale with Save Transform — so \"its tag, its notes and where it sits\". \"Flies to\" also went: `selectScan` calls `fitCamera` (src/viewer/viewer.ts:1096, 2198), which sets `camera.position` and `controls.target` outright. It is a jump, not a tween, and a still frame cannot show the difference — which is exactly why the word had to go rather than be trusted.",
       "shots": [
         {
           "id": "world-editor-focus",
@@ -504,6 +518,7 @@
       "seconds": 7,
       "caption": "Preview, Reconstructed, Photoreal — and what the next tier needs.",
       "narration": "Three tiers of map quality, and the app names exactly what the next one would need.",
+      "_cutNote": "NOT IN THE FILM as of the aspirational re-cut, and do not restore it against this plate. The `drift-down` below is authored to travel from the tier stepper down into the layer list — \"the tier stepper is the claim; the layer list underneath is the receipt\" — and on the committed plate four of that list's ten rows read `planned · future` (RGB frames, Depth, Semantic masks) or `planned · derived` (Camera frustums), with LINGBOT-MAP RECONSTRUCTION reading \"No LingBot-Map manifest yet. Queue the lingbot-map-reconstruct job to create one.\" underneath. Photoreal is greyed. The app is being honest about what it does not do yet; a film that pushes in on that is filming roadmap, and an acquisition cut should not.\n\nTo bring the beat back, re-capture with the layer list scrolled or filtered to the shipped rows (Point cloud, Meshes, Floors, Detections, Labels, Camera path — all real, all populated), or hold the framing on the stepper alone and drop the drift. Either is a capture change, not an edit.",
       "shots": [
         {
           "id": "world-editor-quality",
@@ -604,53 +619,25 @@
     }
   ],
   "_honestyNote": "WHAT THIS FILM IS ALLOWED TO CLAIM, AND WHY IT IS SHAPED LIKE THIS.\n\nThis repo cannot photograph a real scan. Two independent facts make that true, and both were checked against source rather than assumed:\n\n  1. THE CAMERA FEED IS A CARTOON. Every `?mock=xr8` shot runs\n     public/test-fixtures/xr8-mock.js, whose `drawScene` paints the 'room' with\n     Canvas-2D fillRect/ellipse calls — a cyan TV, an orange sofa, a walnut\n     table, a lollipop plant, on a two-stop wall gradient. It is a fixture for a\n     colour-blob detector, not a photograph. It cannot be cropped out either:\n     the HUD occupies about 0.23 of the plate width, which needs roughly a 4x\n     push, and video-kit's MAX_SCALE is 2.4 (camera.mjs:64). At the tightest\n     framing 16:9 permits, the top of the sofa and the TV are still in shot.\n  2. THERE IS NO REAL CAPTURED GEOMETRY IN THE REPO TO SUBSTITUTE.\n     worlds/default.json is an orphaned manifest: every glbUrl it lists under\n     /scans/ is gone from the checkout (verified — 0 of its referenced GLBs\n     resolve). It also carries a real street address and GPS fix in its\n     geoPose blocks, so it should not be revived for filming as-is.\n\nCapturing a real phone scan and committing it is the option that would fix this\nproperly. It is not available to this pipeline: there is no device, video-kit\ncaptures product screens through Playwright only, and the house rule for these\nfilms is that no footage may be shot that the pipeline cannot shoot. Faking one\nwas never on the table.\n\nSo the film re-frames and says less, which is the remaining honest pair:\n\n  RE-FRAME. The claims that need real data — objects named, objects placed,\n  one world, a map you own — are now made ONLY over the World Editor. That is\n  the one surface where the product is doing real work on real data: three GLBs\n  uploaded through the real /upload-scan path, put through the real optimize\n  jobs, rendered as a real point cloud (69,046 points), carrying 15 real\n  detections with real confidences and real metric dimensions. The rooms are\n  generated fixtures rather than someone's house — that is a limit worth\n  knowing — but the geometry, the pipeline and the readout are the product.\n\n  SAY LESS. Four of the five scanner-over-cartoon shots are cut from this film\n  outright: `detections-panel`, `objects-manifest`, `review-export-panel` and\n  the single-shot uses of the live HUD. The previous cut carried the caption\n  'Every object named, placed and yours.' over a frame whose objects were\n  fillRect calls; that claim now lands on `one-world`, where fifteen genuinely\n  detected objects are on screen.\n\n  The ONE surviving mock frame is the `the-meter` scene, and it is deliberately\n  a `split`: the same scripted session at tick 90 and at tick 700, side by side.\n  Two identical rooms in two browser frames read as a controlled comparison\n  rather than as somebody's living room, the subject becomes the coverage meter\n  (which is a real product behaviour, computed from the real point count), and\n  the caption says on the frame that the session is scripted. That is the only\n  place in the film where the mock appears, and it is labelled where it appears.\n\nThe detector is also a mock: INFERENCE_MODE=mock is a colour-blob CV matcher\n(inference.ts `_inferMock`), not the VLM the product ships. No scene in this cut\nclaims a vision model, names one, or shows its output — the confidences on\nscreen belong to the World Editor's stored detections.",
+  "_cutNote": "WHY THE FILM IS THESE ELEVEN BEATS AND NOT THE SEVEN IT HAD.\n\nThe acquisition pass authored a four-move opening — `pain-measure`, `pain-not-a-file`, `quit`, `title` — recorded all four, and then left every one of them out of `master`. So the rendered film opened cold on a product screenshot, carried no title card and no CI mark, and never said what a map of your own room is FOR. Those four are restored in their authored order and their copy is verbatim.\n\nThe seven master amendments it shipped instead were also, four times over, captions about a different app: `the-meter` films the scanning HUD at two ticks of one session and was captioned \"Choose the quality profile before capture\"; `pick-a-room` films the Edit panel and was captioned \"Review the scan before you export it\"; `how-good-a-map` films the Map Quality stepper and was narrated \"then open the world editor\" — over the world editor. Dropping the amendments restores each scene's own authored line, which is the line that was written against the frame.\n\nTHE THREE BEATS THAT LEFT THE CUT, and why they are still in the library:\n\n  `the-walk` (onboard-sweep) and `two-ways-in` (start-screen) are both a centred\n  card on a near-black ground, and back to back they are two frames a contact\n  sheet cannot tell apart. `the-walk` is also a tutorial modal — four lines of\n  body copy about SLAM drift — where `the-meter`'s own early HUD says \"Sweep the\n  room more slowly to improve surface coverage\" in the product's voice, over the\n  product's own point count. The demonstration outranks the promise, so the\n  promise goes and `two-ways-in` keeps the slot: it is the FTUE, and \"Upload a\n  video — no AR needed\" is the direct answer to the lidar rig `quit` just named.\n\n  `what-it-watches` (onboard-quality) is the same problem one card further on —\n  \"we will show you clear status alerts ... if low light, reflections, or sparse\n  coverage are detected\" is a tutorial promising exactly what `the-meter` shows\n  happening.\n\n  `how-good-a-map` (world-editor-quality) is cut for honesty as much as for\n  pace. Its `drift-down` was authored to travel from the tier stepper down into\n  the layer list \"receipt\" — and four of that list's ten rows read `planned ·\n  future` (RGB frames, Depth, Semantic masks) or `planned · derived` (Camera\n  frustums), with LINGBOT-MAP RECONSTRUCTION reading \"No LingBot-Map manifest\n  yet\" underneath. The app is being honest; a film that pushes in on it is\n  filming roadmap. If this beat comes back it needs a plate captured with the\n  layer list scrolled to the shipped rows.\n\nRUNTIME. Every master `minSeconds` is gone. They floored seven scenes between\n6.5s and 8.5s against reads of 3.4-6.2s and produced 17.8s of dead air in a 48s\nfilm — 37.1%, the worst number in the fleet. Under `meta.pacing: \"fit\"` the\nnarration sizes the scene; a floor above the read is silence on a held frame.",
   "master": [
-    {
-      "ref": "the-walk",
-      "caption": "Walk the room. Watch the map form.",
-      "narration": "Walk the room and watch a spatial map form as you move.",
-      "minSeconds": 7
-    },
-    {
-      "ref": "two-ways-in",
-      "chapter": "capture",
-      "caption": "Use a guided scan or open the advanced controls.",
-      "narration": "Start with a guided scan, or open the advanced controls when you need them.",
-      "minSeconds": 7
-    },
-    {
-      "ref": "the-meter",
-      "chapter": "capture",
-      "caption": "Choose the quality profile before capture.",
-      "narration": "Choose the quality profile that fits this room and this device.",
-      "minSeconds": 6.5
-    },
-    {
-      "ref": "named-not-numbered",
-      "caption": "Objects become named parts of the room.",
-      "narration": "Detected objects become named parts of the room instead of anonymous geometry.",
-      "minSeconds": 6.5
-    },
-    {
-      "ref": "pick-a-room",
-      "caption": "Review the scan before you export it.",
-      "narration": "Review the scan, its coverage, and its objects before export.",
-      "minSeconds": 6.5
-    },
-    {
-      "ref": "how-good-a-map",
-      "caption": "Edit the spatial world after capture.",
-      "narration": "Then open the world editor to clean up and organize the result.",
-      "minSeconds": 6.5
-    },
+    "pain-measure",
+    "pain-not-a-file",
+    "quit",
+    "title",
+    "two-ways-in",
+    "the-meter",
+    "one-world",
+    "named-not-numbered",
+    "pick-a-room",
+    "what-stays-yours",
     {
       "ref": "close",
       "caption": "ci.computer",
       "cta": "Map a room with Companion Scan",
       "tagline": "UnCloud your life.",
       "url": "ci.computer",
-      "narration": "Map a room with Companion Scan. Visit ci dot computer. UnCloud your life.",
-      "minSeconds": 8.5
+      "narration": "Map a room with Companion Scan. Visit ci dot computer. UnCloud your life."
     }
   ]
 }
