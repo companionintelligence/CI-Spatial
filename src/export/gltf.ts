@@ -107,7 +107,7 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
   const scanName   = scanEntry?.name     ?? `scan-${store.sessionId.slice(-6)}`
 
   scene.userData = {
-    generator:       'ci-xr-scan',
+    generator:       'ci-spatial',
     version:         '2.0',
     capturedAt:      new Date().toISOString(),
     sessionId:       store.sessionId,
