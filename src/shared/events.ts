@@ -9,16 +9,23 @@
  * event type, add it here first, then reference `EVENT.XXX` from the
  * producer/consumer — never re-introduce a raw string literal.
  *
- * Runtime-agnostic: imported by Deno (`main.ts`, `jobs.ts`) and the Vite/
- * browser bundle (`src/viewer/viewer.ts`), following the `src/shared/`
- * precedent (`cv-palette.ts`, `test-homes.ts`).
+ * Runtime-agnostic: imported by Deno (`main.ts`) and the Vite/browser bundle
+ * (`src/viewer/viewer.ts`), following the `src/shared/` precedent
+ * (`cv-palette.ts`, `test-homes.ts`).
  *
- * Two independent job systems both broadcast over `/events` (ADR 0001,
- * "Hard rule: reuse, don't duplicate" — they are deliberately kept separate,
- * not merged): `JOB_UPDATE` comes from `jobs.ts`'s `JobQueue` (the
- * GLB-optimizer pipeline), `WORLD_JOB_UPDATE` comes from the `WorldJob`
- * system in `main.ts` (ingest / lingbot-map-reconstruct / splat-train /
- * splat-detect / splat-finish / memory-push).
+ * The two job systems named below have been merged
+ * (docs/adr/0003-merged-job-system.md, docs/factory/01-merge-jobs/):
+ * `WorldJob` (`main.ts`) was the designated survivor, and `JobQueue`
+ * (`jobs.ts`) was ported onto it and retired (ticket 0005) — the class no
+ * longer exists. `JOB_UPDATE` is now produced solely by `main.ts`
+ * (`broadcastLegacyJobUpdate`, ticket 0004) for `optimize-scan` `WorldJob`
+ * transitions, translated through `worldJobToLegacyJob` so the payload shape
+ * stays byte-identical to `JobQueue`'s original `_emit()` — kept as a
+ * distinct event (not folded into `WORLD_JOB_UPDATE`) because
+ * `src/viewer/viewer.ts`'s existing `'job-update'` consumer still expects
+ * this exact shape, scoped to `optimize-scan` only. `WORLD_JOB_UPDATE` comes
+ * from the `WorldJob` system in `main.ts` (ingest / lingbot-map-reconstruct /
+ * splat-train / splat-detect / splat-finish / memory-push / optimize-scan).
  */
 
 export const EVENT = {
@@ -90,10 +97,13 @@ export const EVENT = {
   WORLD_JOB_UPDATE: 'world-job-update',
 
   /**
-   * Producer: `jobs.ts` (`JobQueue['_emit']`, 1 site), emitted through the
-   * `broadcast` callback `JobQueue` receives from `main.ts` at construction
-   * (`new JobQueue(SCANS_DIR, broadcast)`) — the literal itself lives in
-   * `jobs.ts`, not `main.ts`.
+   * Producer: `main.ts` (`broadcastLegacyJobUpdate`, since ticket
+   * 01-merge-jobs/0004) — fires for `optimize-scan` `WorldJob` transitions,
+   * translated through `worldJobToLegacyJob` so the payload shape stays
+   * byte-identical to the retired `JobQueue`'s original `_emit()`
+   * (`jobs.ts`, before ticket 01-merge-jobs/0005 retired the class — see
+   * file-header note). No other producer remains: `JobQueue` itself no
+   * longer exists, so this event now comes from exactly one site.
    * Consumer: `src/viewer/viewer.ts` (`connectServerEvents` → `handleJobUpdate`).
    *
    * Not the same event as `WORLD_JOB_UPDATE` above — see file-header note.

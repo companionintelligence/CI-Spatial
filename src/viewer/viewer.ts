@@ -1721,11 +1721,18 @@ function serializeTransform(obj: THREE.Object3D): EditPatch['transform'] {
 function renderWorldPanel(): void {
   if (!world) return
 
+  // optimize-scan runs as a WorldJob since the 01-merge-jobs wave (ADR 0003),
+  // but the Processing Queue panel keeps its pre-merge scope: optimize-scan
+  // surfaces only as the per-scan status chip (via the 'job-update' event),
+  // never in this list — every upload would otherwise push a row here and,
+  // with the list capped at 8, crowd out the reconstruction jobs this panel
+  // exists to show.
+  const queueJobs = world.jobs.filter(job => job.type !== 'optimize-scan')
   setText('world-scan-count', String(world.scans.length))
   setText('world-layer-count', String(LAYER_ORDER.length))
-  setText('world-job-count', String(world.jobs.length))
+  setText('world-job-count', String(queueJobs.length))
   setText('world-origin-label', hasGeoPose(world.originGeoPose) ? 'GPS' : 'Local')
-  renderJobs(world.jobs)
+  renderJobs(queueJobs)
   if (selectedScanId) renderQualityProcessing(selectedScanId)
 }
 

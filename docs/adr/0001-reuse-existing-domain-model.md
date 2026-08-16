@@ -16,13 +16,14 @@ existed.
    (the GLB-optimizer's output record) and a much richer one in `src/world/types.ts`
    (a scan's place inside a World). They share a name and nothing else; confusing them
    is an easy, silent bug.
-2. **Two entirely separate job-queue systems exist side by side** — `jobs.ts`'s
+2. **Two entirely separate job-queue systems existed side by side** — `jobs.ts`'s
    `JobQueue` (single job type: `optimize-scan`, on raw GLBs) and the `WorldJob`
    system defined in `main.ts` / `src/world/types.ts` (`ingest`,
    `lingbot-map-reconstruct`, `splat-train`/`splat-detect`/`splat-finish`,
-   `memory-push`). Neither knows the other exists. A contributor adding a new
-   background job has to already know which of the two systems to extend, because
-   nothing in the code says "there are two."
+   `memory-push`). Neither knew the other existed. A contributor adding a new
+   background job had to already know which of the two systems to extend, because
+   nothing in the code said "there are two." (Resolved 2026-08-16: merged into one —
+   see "Follow-up," below.)
 
 Both are the same root cause: a new need showed up, and rather than extending the
 existing schema, queue, or connection, a parallel one was created next to it. The
@@ -49,8 +50,9 @@ Concretely:
   (`grep`/`Glob` across `src/world/types.ts`, `main.ts`, and the relevant subsystem
   file first — not just a naming-convention guess).
 - New background job types extend the `WorldJob` system (`src/world/types.ts`'s
-  `WorldJobType` + `main.ts`'s `completeJobSoon()` dispatch) — not `jobs.ts`'s
-  `JobQueue`, which stays scoped to `optimize-scan` only, and not a third system.
+  `WorldJobType` + `main.ts`'s `completeJobSoon()` dispatch) — the sole job system as
+  of ADR 0003 (`jobs.ts`'s `JobQueue` was ported onto `WorldJob` and retired) — not a
+  new parallel system.
 - New "thing" data (a detected/placed object) extends `WorldDetection`
   (`src/spatial/resolver.ts`) or the `DetectObject`/`FurnitureItem` shapes already in
   use — not a new parallel object-record type.
@@ -71,10 +73,15 @@ Concretely:
   `WorldJob`/`WorldDetection`/`ScanManifest` shapes and will need a real extension (a
   new field, a new `WorldJobType` member) instead of a quick bolt-on. That friction is
   intentional — it's the cost of not adding a third parallel system.
-- **Follow-up:** `jobs.ts`'s `JobQueue` and the `WorldJob` system are not being
-  unified by this ADR — that would be a larger, separate migration. This ADR only
-  stops a *third* system from appearing, and requires new work to join one of the two
-  existing ones deliberately, not by accident.
-- **Revisit this ADR** if `jobs.ts`'s `JobQueue` and `WorldJob` are ever actually
-  merged — at that point the "extend WorldJob, not JobQueue" guidance above becomes
-  moot and should be rewritten.
+- **Follow-up:** `jobs.ts`'s `JobQueue` and the `WorldJob` system were not unified by
+  this ADR at the time it was written — that was flagged as a larger, separate
+  migration. That migration happened: `docs/adr/0003-merged-job-system.md` and
+  `docs/factory/01-merge-jobs/` ported `JobQueue` onto `WorldJob` (gaining crash
+  recovery, single-flight execution, dedupe, and bounded history in the process) and
+  then retired the class. `WorldJob` is now the one job system this ADR's reuse
+  principle points at; `jobs.ts` survives only as the legacy `Job`/`JobStatus`/
+  `OptimizeScanManifest` shape definitions the `/jobs` API shim and the on-disk
+  manifest format still use.
+- **Revisited 2026-08-16:** the merge described above is that revisit. The "extend
+  WorldJob, not JobQueue" guidance in the Decision section is updated accordingly —
+  there is no longer a second system to accidentally extend instead.
