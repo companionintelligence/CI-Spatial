@@ -4,6 +4,8 @@
 > **Commit style:** `refactor(jobs): rename jobs.ts ScanManifest to OptimizeScanManifest`
 > **Design:** this ticket is the spec
 > **Dependencies:** None — but must land before 0006 (both touch `jobs.ts`)
+> **Status:** ✅ Done — merged via [PR #71](https://github.com/companionintelligence/CI-Spatial/pull/71)
+> (commit `1e4cfe0`), 2026-08-16. Unblocks 0006.
 
 ## Goal
 
@@ -57,16 +59,16 @@ None — TypeScript identifier rename only; the serialized manifest JSON is unch
 
 ## Definition of Done
 
-- [ ] `jobs.ts` no longer declares a type named `ScanManifest`.
-- [ ] `grep -rn "ScanManifest" --include="*.ts"` resolves every remaining hit to
+- [x] `jobs.ts` no longer declares a type named `ScanManifest`.
+- [x] `grep -rn "ScanManifest" --include="*.ts"` resolves every remaining hit to
       `src/world/types.ts`.
-- [ ] A freshly produced `<base>.manifest.json` is structurally identical to one
+- [x] A freshly produced `<base>.manifest.json` is structurally identical to one
       produced before the change.
 
 ## Tests
 
-- [ ] `deno task check` passes.
-- [ ] `npm run smoke:pipeline` passes (exercises the optimize pipeline that writes the
+- [x] `deno task check` passes.
+- [x] `npm run smoke:pipeline` passes (exercises the optimize pipeline that writes the
       manifest).
 
 ```
@@ -76,7 +78,7 @@ npm run smoke:pipeline
 
 ## Acceptance Criteria
 
-- [ ] Given the full repo, when a reader greps `ScanManifest`, then every definition
+- [x] Given the full repo, when a reader greps `ScanManifest`, then every definition
       and import refers to exactly one type (`src/world/types.ts:145`).
 
 ## Risks / potential issues
@@ -86,7 +88,9 @@ npm run smoke:pipeline
 
 ## Subtasks
 
-1. [ ] Rename the interface and its two usages in `jobs.ts`.
-2. [ ] Update doc mentions (`architecture.md`, `CLAUDE.md` if it names the collision
-       as current fact — reword to past tense there).
-3. [ ] Run the verification commands.
+1. [x] Rename the interface and its two usages in `jobs.ts`.
+2. [x] Update doc mentions (`architecture.md`, `CLAUDE.md` if it names the collision
+       as current fact — reword to past tense there). `architecture.md` had no line
+       asserting the collision as current fact (only generic `ScanManifest` mentions
+       referring to the canonical type), so only `CLAUDE.md`'s bullet needed rewording.
+3. [x] Run the verification commands.
