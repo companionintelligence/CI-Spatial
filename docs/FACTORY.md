@@ -44,6 +44,71 @@ The first wave, `docs/factory/foundation-updates/`, holds the two tickets from t
 initial post-setup review (license doc reconciliation, Tailscale hostname
 auto-detection) — both already implemented and merged.
 
+## The atlas — where a wave justifies itself
+
+`docs/factory/atlas.html` is a self-contained page describing the system as it
+actually is: every feature, data type, config variable, and connection, read from
+source rather than from docs. Threaded through it is **before/after markup** showing
+what each planned wave changes, plus a **Development waves** section summarizing the
+waves themselves.
+
+**The atlas is not a status report you write after the fact — it is how a wave earns
+its keep.** A wave proposal is a claim that some work is worth doing; the atlas diff
+is where that claim becomes checkable, because it forces the "before" to be stated in
+the same terms as the rest of the system. Two things fall out of that, and both are
+the point:
+
+- **If you can't write a legible before/after, the wave probably isn't ready.** Vague
+  entries ("improves consistency", "cleans up types") mean the work isn't yet pinned
+  to something real. Go back to Phase 1/2 and read more code before proposing.
+- **If the "before" isn't in the atlas at all, add it first.** A wave fixing something
+  the atlas never described means the atlas has a gap — fill the gap, then diff it.
+  That gap is itself a finding worth knowing about.
+
+### When to update it
+
+| Moment | What to do |
+| --- | --- |
+| **Proposing a wave** (Phase 3) | State which atlas entries the wave would change. This is the wave's justification — carry it into the approval gate. |
+| **Finalizing a wave** (Phase 6) | Write the actual markup: `planned` diffs on every entry the wave touches, plus a wave card in the Development waves section. |
+| **A ticket lands** | Flip that entry's badge `planned` → `done`, add the merged PR number, and update the wave card's progress. |
+| **A wave fully lands** | Rewrite any prose the wave made false. A merged wave means the atlas's *base* description changed, not just its badges. |
+| **A wave is blocked** | Mark it `blocked` and say what decision it waits on — an unexplained stall is worse than a documented one. |
+
+### Markup vocabulary
+
+The page is hand-written HTML with no build step and no external dependencies — edit
+it directly. The classes that carry meaning:
+
+```html
+<!-- status badge: done | planned | blocked -->
+<span class="status-badge planned">🔜 planned</span>
+
+<!-- a before/after diff block; is-done (green) or is-planned (amber) -->
+<div class="diff is-planned">
+  <span class="was"><span class="strike">what is true today</span></span>
+  <span class="now"><span class="arrow">→</span>what the wave makes true</span>
+  <span class="tag"><span class="status-badge planned">🔜 planned</span> wave-name/00NN</span>
+</div>
+
+<!-- highlight a whole feature card or table row as changing -->
+<div class="fcard changing">…</div>
+<tr class="row-changing">…</tr>
+```
+
+Every diff block cites its wave and ticket number so a reader can go read the real
+thing. **Never reproduce ticket content in the atlas** — one-line before/after and a
+pointer, nothing more. The wave folders own the tickets; the atlas owns the picture.
+
+### Rules
+
+- One atlas, always at `docs/factory/atlas.html` — no `atlas-v2.html`, no dated
+  copies. Git is the version history (ADR 0001 applies to documentation too).
+- It must stay self-contained: no external scripts, styles, fonts, or images, so it
+  opens correctly straight from a file path or a published artifact.
+- Anything not carrying a status badge is base description — keep it true. When a
+  landed wave makes a sentence false, fix the sentence.
+
 ## Recording the reasoning trail
 
 Since there's no GitHub issue thread, the reasoning trail lives **in the ticket file

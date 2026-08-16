@@ -1,0 +1,846 @@
+<title>Companion Scan Atlas</title>
+<style>
+  :root {
+    --paper: #f1f4f2;
+    --surface: #ffffff;
+    --surface-2: #e6ebe7;
+    --ink: #171b19;
+    --ink-dim: #4b544f;
+    --ink-faint: #7b847e;
+    --line: rgba(23,27,25,0.13);
+    --line-strong: rgba(23,27,25,0.22);
+    --accent: #147a72;
+    --accent-ink: #0c4a45;
+    --accent-soft: rgba(20,122,114,0.10);
+    --job: #9c5f14;
+    --job-soft: rgba(156,95,20,0.10);
+    --world: #5b48b8;
+    --world-soft: rgba(91,72,184,0.10);
+    --ok: #2f8f5b;
+    --warn: #9c5f14;
+    --err: #ab362c;
+    --err-soft: rgba(171,54,44,0.09);
+    --mono: ui-monospace, "Cascadia Code", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", monospace;
+    --serif: Georgia, "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #0e1312;
+      --surface: #161c1a;
+      --surface-2: #1c2321;
+      --ink: #e8ece9;
+      --ink-dim: #a9b2ac;
+      --ink-faint: #75807a;
+      --line: rgba(232,236,233,0.14);
+      --line-strong: rgba(232,236,233,0.24);
+      --accent: #4fd6c7;
+      --accent-ink: #bdf3ea;
+      --accent-soft: rgba(79,214,199,0.13);
+      --job: #e8a33d;
+      --job-soft: rgba(232,163,61,0.13);
+      --world: #a596f2;
+      --world-soft: rgba(165,150,242,0.13);
+      --ok: #63c68f;
+      --warn: #e8a33d;
+      --err: #e2685f;
+      --err-soft: rgba(226,104,95,0.13);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #0e1312;
+    --surface: #161c1a;
+    --surface-2: #1c2321;
+    --ink: #e8ece9;
+    --ink-dim: #a9b2ac;
+    --ink-faint: #75807a;
+    --line: rgba(232,236,233,0.14);
+    --line-strong: rgba(232,236,233,0.24);
+    --accent: #4fd6c7;
+    --accent-ink: #bdf3ea;
+    --accent-soft: rgba(79,214,199,0.13);
+    --job: #e8a33d;
+    --job-soft: rgba(232,163,61,0.13);
+    --world: #a596f2;
+    --world-soft: rgba(165,150,242,0.13);
+    --ok: #63c68f;
+    --warn: #e8a33d;
+    --err: #e2685f;
+    --err-soft: rgba(226,104,95,0.13);
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 16px;
+    line-height: 1.6;
+  }
+  ::selection { background: var(--accent-soft); }
+  a { color: var(--accent-ink); }
+  h1, h2, h3, h4 { font-family: var(--mono); font-weight: 700; text-wrap: balance; margin: 0; color: var(--ink); }
+  code, .mono { font-family: var(--mono); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .page { display: grid; grid-template-columns: 250px 1fr; max-width: 1440px; margin: 0 auto; }
+
+  /* ---- TOC ---- */
+  nav.toc {
+    position: sticky; top: 0; align-self: start;
+    height: 100vh; overflow-y: auto;
+    padding: 30px 18px 40px 28px;
+    border-right: 1px solid var(--line);
+    font-family: var(--mono); font-size: 0.78rem;
+  }
+  nav.toc .brand { font-size: 0.72rem; letter-spacing: 0.06em; color: var(--ink-faint); text-transform: uppercase; margin-bottom: 22px; }
+  nav.toc ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+  nav.toc li.grp { margin-top: 14px; color: var(--ink-faint); font-size: 0.68rem; letter-spacing: 0.05em; text-transform: uppercase; }
+  nav.toc a { display: block; padding: 5px 8px; margin-left: -8px; border-radius: 4px; color: var(--ink-dim); text-decoration: none; }
+  nav.toc a:hover { background: var(--surface-2); color: var(--ink); }
+  nav.toc a.is-new { color: var(--job); font-weight: 700; }
+
+  @media (max-width: 900px) {
+    .page { grid-template-columns: 1fr; }
+    nav.toc {
+      position: sticky; top: 0; height: auto; max-height: none;
+      border-right: none; border-bottom: 1px solid var(--line);
+      background: var(--paper);
+      padding: 12px 16px; z-index: 5;
+      overflow-x: auto; overflow-y: hidden;
+    }
+    nav.toc .brand { display: none; }
+    nav.toc ol { flex-direction: row; gap: 4px; white-space: nowrap; }
+    nav.toc li.grp { display: none; }
+    nav.toc a { padding: 6px 10px; border: 1px solid var(--line); border-radius: 999px; }
+  }
+
+  main { min-width: 0; padding: 56px clamp(20px, 4vw, 64px) 140px; }
+
+  /* ---- Hero ---- */
+  .hero { margin-bottom: 44px; }
+  .hero .kicker { font-family: var(--mono); font-size: 0.78rem; color: var(--accent-ink); letter-spacing: 0.04em; margin-bottom: 10px; }
+  .hero h1 { font-size: clamp(1.9rem, 3.4vw, 2.5rem); line-height: 1.15; }
+  .hero p.lede { font-family: var(--serif); font-size: 1.08rem; color: var(--ink-dim); max-width: 62ch; margin-top: 14px; }
+  .hero .livenote { margin-top: 14px; font-size: 0.86rem; color: var(--job); font-family: var(--mono); }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin-top: 28px; }
+  .stat { background: var(--surface); padding: 16px 18px; }
+  .stat .n { font-family: var(--mono); font-size: 1.5rem; font-weight: 700; color: var(--accent-ink); font-variant-numeric: tabular-nums; }
+  .stat .l { font-size: 0.76rem; color: var(--ink-faint); margin-top: 2px; }
+
+  /* ---- Sections ---- */
+  section.block { margin-top: 68px; padding-top: 4px; scroll-margin-top: 16px; }
+  section.block .eyebrow { font-family: var(--mono); font-size: 0.76rem; color: var(--ink-faint); margin-bottom: 8px; }
+  section.block h2 { font-size: 1.5rem; }
+  section.block > p.dek { color: var(--ink-dim); max-width: 68ch; margin-top: 10px; font-size: 0.98rem; }
+
+  .fcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; margin-top: 24px; }
+  .fcard { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+  .fcard h4 { font-size: 0.92rem; margin-bottom: 6px; }
+  .fcard p { margin: 0; font-size: 0.9rem; color: var(--ink-dim); }
+  .fcard .files { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { font-family: var(--mono); font-size: 0.68rem; background: var(--surface-2); color: var(--ink-dim); padding: 2px 7px; border-radius: 4px; }
+  .fcard.job h4 { color: var(--job); }
+  .fcard.world h4 { color: var(--world); }
+  .fcard.accent h4 { color: var(--accent-ink); }
+  .fcard.changing { border-color: var(--job); border-style: dashed; }
+
+  /* ---- Tables ---- */
+  .twrap { overflow-x: auto; margin-top: 18px; border: 1px solid var(--line); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 0.86rem; background: var(--surface); }
+  caption { text-align: left; font-family: var(--mono); font-size: 0.82rem; padding: 12px 16px; color: var(--ink); background: var(--surface-2); caption-side: top; }
+  th, td { text-align: left; padding: 9px 16px; border-top: 1px solid var(--line); vertical-align: top; }
+  th { font-family: var(--mono); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-faint); border-top: none; }
+  td.name, td code.v { font-family: var(--mono); font-size: 0.82rem; color: var(--accent-ink); white-space: nowrap; }
+  td.def { font-family: var(--mono); font-size: 0.78rem; color: var(--ink-dim); white-space: nowrap; }
+  td.purpose, td.fields { color: var(--ink-dim); }
+  tr:hover td { background: var(--accent-soft); }
+  tr.row-changing td { background: var(--job-soft); }
+
+  h3.subgrp { font-family: var(--mono); font-size: 0.95rem; margin-top: 34px; padding-bottom: 8px; border-bottom: 1px solid var(--line-strong); }
+  h3.subgrp:first-of-type { margin-top: 22px; }
+
+  /* ---- Diagram ---- */
+  figure.diagram { margin: 28px 0 8px; padding: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+  figure.diagram .svgwrap { overflow-x: auto; }
+  figure.diagram svg { width: 100%; height: auto; min-width: 640px; display: block; }
+  figcaption { font-size: 0.84rem; color: var(--ink-faint); margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+
+  /* ---- Callouts ---- */
+  .callout { border: 1px solid var(--line); border-left: 3px solid var(--warn); background: var(--job-soft); border-radius: 8px; padding: 16px 18px; margin-top: 20px; font-size: 0.92rem; }
+  .callout strong { color: var(--job); }
+  .callout.ok { border-left-color: var(--ok); background: var(--accent-soft); }
+  .callout.ok strong { color: var(--accent-ink); }
+
+  /* ---- wave tracking: status badges + before/after diff blocks ---- */
+  .status-badge { display: inline-block; font-family: var(--mono); font-size: 0.68rem; padding: 2px 9px; border-radius: 999px; font-weight: 700; letter-spacing: 0.02em; white-space: nowrap; vertical-align: middle; }
+  .status-badge.done { background: var(--accent-soft); color: var(--accent-ink); border: 1px solid var(--accent); }
+  .status-badge.planned { background: var(--job-soft); color: var(--job); border: 1px solid var(--job); }
+  .status-badge.blocked { background: var(--err-soft); color: var(--err); border: 1px solid var(--err); }
+
+  .diff { margin-top: 12px; padding: 10px 14px; border-radius: 6px; background: var(--surface-2); font-size: 0.85rem; border-left: 3px solid var(--line-strong); font-family: var(--mono); }
+  .diff .was { display: block; color: var(--ink-faint); }
+  .diff .was .strike { text-decoration: line-through; text-decoration-color: var(--err); text-decoration-thickness: 1.5px; }
+  .diff .now { display: block; margin-top: 5px; color: var(--ink); }
+  .diff .now .arrow { color: var(--accent-ink); font-weight: 700; margin-right: 4px; }
+  .diff.is-done { border-left-color: var(--ok); }
+  .diff.is-planned { border-left-color: var(--job); }
+  .diff.is-planned .now { color: var(--job); }
+  .diff .tag { font-family: var(--serif); font-size: 0.78rem; color: var(--ink-faint); display: block; margin-top: 6px; }
+
+  /* ---- Development Waves section ---- */
+  .legend { display: flex; flex-wrap: wrap; gap: 18px; margin: 22px 0 6px; padding: 13px 18px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; font-size: 0.82rem; align-items: center; color: var(--ink-dim); }
+  .legend .item { display: flex; align-items: center; gap: 7px; }
+  .legend .swatch-strike { text-decoration: line-through; text-decoration-color: var(--err); color: var(--ink-faint); font-family: var(--mono); font-size: 0.8rem; }
+  .legend .swatch-arrow { color: var(--accent-ink); font-family: var(--mono); font-size: 0.8rem; font-weight: 700; }
+
+  .wave-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; margin-top: 24px; }
+  .wave-card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px; display: flex; flex-direction: column; }
+  .wave-card .whead { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+  .wave-card h3 { font-size: 1.05rem; }
+  .wave-card .path { font-family: var(--mono); font-size: 0.74rem; color: var(--ink-faint); margin: 4px 0 12px; }
+  .wave-card p { font-size: 0.9rem; color: var(--ink-dim); margin: 8px 0; }
+  .wave-card .impact { font-size: 0.88rem; margin-top: auto; padding-top: 12px; border-top: 1px solid var(--line); }
+  .wave-card .impact strong { color: var(--ink); }
+
+  .wave-progress { display: flex; gap: 3px; margin: 4px 0 14px; }
+  .wave-progress .seg { flex: 1; height: 7px; border-radius: 3px; background: var(--line-strong); }
+  .wave-progress .seg.done { background: var(--ok); }
+  .wave-progress .seg.blocked { background: var(--err); opacity: 0.6; }
+  .wave-progress-label { font-family: var(--mono); font-size: 0.72rem; color: var(--ink-faint); }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .fcard, nav.toc a { transition: background 0.15s ease, border-color 0.15s ease; }
+  }
+</style>
+
+<div class="page">
+
+  <nav class="toc" aria-label="Table of contents">
+    <div class="brand">Companion&nbsp;Scan&nbsp;/&nbsp;Atlas</div>
+    <ol>
+      <li><a href="#overview">Overview</a></li>
+      <li><a href="#waves" class="is-new">Development waves ✦</a></li>
+      <li class="grp">Features</li>
+      <li><a href="#f-capture">AR Capture</a></li>
+      <li><a href="#f-inference">Inference &amp; Jobs</a></li>
+      <li><a href="#f-recon">Spatial Reconstruction</a></li>
+      <li><a href="#f-world">World &amp; Viewer</a></li>
+      <li><a href="#f-server">Server &amp; Auth</a></li>
+      <li><a href="#f-rtc">RTC, Geo &amp; UI</a></li>
+      <li><a href="#f-ops">Ops &amp; Tooling</a></li>
+      <li><a href="#f-delivery">Delivery</a></li>
+      <li class="grp">Reference</li>
+      <li><a href="#schema">Data schema</a></li>
+      <li><a href="#config">Config variables</a></li>
+      <li><a href="#connections">Architecture &amp; connections</a></li>
+      <li><a href="#notes">Review notes</a></li>
+    </ol>
+  </nav>
+
+  <main>
+
+    <div class="hero" id="overview">
+      <div class="kicker">// C:\devel\ci\CI-Spatial — companionintelligence/CI-Spatial</div>
+      <h1>Companion Scan, mapped</h1>
+      <p class="lede">A browser-based AR room scanner: point your phone at a room over Tailscale, and a Deno server turns the walk-through into a labelled 3D world — point clouds, Gaussian splats, and a shared multi-scan editor. This atlas indexes every feature, the data it moves, the variables that steer it, and how its pieces actually talk to each other, built by reading the source directly rather than the docs.</p>
+      <p class="livenote">Living document — <code>docs/factory/atlas.html</code>, versioned by git. The base research is the 2026-08-15 source read; <a href="#waves">Development waves</a> and the before/after markup threaded through it track what each planned wave changes. Every new wave updates this file as part of its planning — see <code>docs/FACTORY.md</code> § “The atlas”.</p>
+      <div class="stats">
+        <div class="stat"><div class="n">56</div><div class="l">features indexed</div></div>
+        <div class="stat"><div class="n">46</div><div class="l">data types</div></div>
+        <div class="stat"><div class="n">57</div><div class="l">config variables</div></div>
+        <div class="stat"><div class="n">40+</div><div class="l">HTTP / WS routes</div></div>
+      </div>
+    </div>
+
+    <!-- ============================================================ -->
+    <section class="block" id="waves">
+      <div class="eyebrow">docs/factory/</div>
+      <h2>Development waves</h2>
+      <p class="dek">Everything else in this atlas describes the codebase as read on 2026-08-15. Since then, three planning waves in <code class="v">docs/factory/</code> have turned the duplication this atlas found into tracked, ticketed work — some of it already shipped. This section maps that work; the diff blocks threaded through the rest of the atlas mark exactly where each wave lands. Ticket content itself lives only in <code class="v">docs/factory/</code> — nothing here duplicates or replaces it.</p>
+
+      <div class="legend">
+        <span class="item"><span class="status-badge done">✅ done</span> merged to main</span>
+        <span class="item"><span class="status-badge planned">🔜 planned</span> ticketed, not started</span>
+        <span class="item"><span class="status-badge blocked">⛔ blocked</span> waiting on an owner decision</span>
+        <span class="item"><span class="swatch-strike">old fact</span> <span class="swatch-arrow">→</span> new fact — before/after, inline</span>
+      </div>
+
+      <div class="wave-cards">
+        <div class="wave-card">
+          <div class="whead"><h3>foundation-updates</h3><span class="status-badge done">6 / 11 done</span></div>
+          <div class="path">docs/factory/foundation-updates/</div>
+          <div class="wave-progress" title="0001–0004 done, 0005–0006 planned, 0007 done, 0008 planned, 0009 done, 0010 planned, 0011 blocked">
+            <span class="seg done"></span><span class="seg done"></span><span class="seg done"></span><span class="seg done"></span><span class="seg"></span><span class="seg"></span><span class="seg done"></span><span class="seg"></span><span class="seg done"></span><span class="seg"></span><span class="seg blocked"></span>
+          </div>
+          <div class="wave-progress-label">0001–0004 ✓ · 0005–0006 planned · 0007 ✓ · 0008 planned · 0009 ✓ · 0010 planned · 0011 blocked</div>
+          <p>The wave this atlas's own review kicked off: reconcile the license docs, fix a live hostname bug, then work through every duplication the review found — two <code class="v">ScanManifest</code> types, a copy-pasted PLY parser, five copies of the manifest envelope, raw event-type strings, undocumented env vars, a magic-numbered port, and the Companion-Scan/CI-Spatial naming split.</p>
+          <p class="impact"><strong>Impact so far:</strong> 6 of 11 tickets merged (PRs #68, #71). Nothing user-facing changed — every fix is internal: a doc now tells the truth, a hostname bug that broke share links is fixed, a name collision is gone, a copy-pasted parser is one function again, a type lineage is real instead of restated.</p>
+        </div>
+
+        <div class="wave-card">
+          <div class="whead"><h3>01-merge-jobs</h3><span class="status-badge planned">0 / 5 done</span></div>
+          <div class="path">docs/factory/01-merge-jobs/</div>
+          <div class="wave-progress" title="all 5 tickets planned"><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span><span class="seg"></span></div>
+          <div class="wave-progress-label">design → runner hardening → port optimize-scan → shims → retirement (strictly serial)</div>
+          <p>Merges the two background-job systems this atlas flagged — <code class="v">jobs.ts</code>'s <code class="v">JobQueue</code> and the <code class="v">WorldJob</code> system — into one, canonical survivor <code class="v">WorldJob</code>. Strictly serial: the runner gains crash recovery and single-flight execution <em>before</em> optimize-scan moves onto it, so the merge is a strict upgrade, not a regression.</p>
+          <p class="impact"><strong>Impact once shipped:</strong> <code class="v">jobs.ts</code>/<code class="v">JobQueue</code> is retired. Every background job — GLB optimize, LingBot-Map, splat train/detect/finish, memory-push — runs through one queue, one status vocabulary, one event stream, with crash recovery for job types that never had it.</p>
+        </div>
+
+        <div class="wave-card">
+          <div class="whead"><h3>02-typed-event-payloads</h3><span class="status-badge planned">0 / 3 done</span></div>
+          <div class="path">docs/factory/02-typed-event-payloads/</div>
+          <div class="wave-progress" title="all 3 tickets planned; sequenced after 01-merge-jobs"><span class="seg"></span><span class="seg"></span><span class="seg"></span></div>
+          <div class="wave-progress-label">sequenced after 01-merge-jobs — see its own README for why</div>
+          <p>Gives every <code class="v">/events</code> WebSocket message a real, discriminated-union TypeScript type. Deliberately sequenced <em>after</em> 01-merge-jobs — typing job-event payloads before the merge means typing two independently-drifting shapes; after it, both the legacy <code class="v">'job-update'</code> shim and <code class="v">'world-job-update'</code> derive from one settled model.</p>
+          <p class="impact"><strong>Impact once shipped:</strong> a mistyped event field becomes a compile error, not a runtime surprise — its own design ticket cites a real near-miss from this atlas's audit, where a duplicated string literal for an event type almost got a live branch misdiagnosed as dead code.</p>
+        </div>
+      </div>
+
+      <div class="callout ok"><strong>Nothing here changes what the system does.</strong> Every ticket across all three waves preserves current behavior — wire formats, on-disk formats, storage keys, and defaults stay byte-identical throughout. This is the "harden" half of "unify and harden the repo," not a feature wave.</div>
+    </section>
+
+    <!-- ============================================================ -->
+    <section class="block" id="f-capture">
+      <div class="eyebrow">src/ar/ · src/capture/</div>
+      <h2>AR Capture</h2>
+      <p class="dek">The phone-side pipeline: track the camera in 3D, decide when to capture, and watch scan quality in real time.</p>
+      <div class="fcards">
+        <div class="fcard"><h4>AR provider abstraction</h4><p>A single <code class="v">ARProvider</code> interface (pose, hit-test, capture, tracking state) so the rest of the app never knows whether 8th Wall or WebXR is running underneath.</p><div class="files"><span class="chip">provider.ts</span></div></div>
+        <div class="fcard"><h4>8th Wall SLAM provider</h4><p>Wraps the 8th Wall engine for 6-DoF pose, per-frame SLAM point harvesting, and hit-testing (0.08–50m sanity filter). A 5s fallback force-unlocks capture if SLAM never reports a pose.</p><div class="files"><span class="chip">eighthwall.ts</span></div></div>
+        <div class="fcard"><h4>WebXR fallback provider</h4><p>Native <code class="v">immersive-ar</code> for Android/Quest. WebXR exposes no SLAM feature points, so it substitutes a rolling buffer of hit-test rays and opens a companion camera stream for pixel capture.</p><div class="files"><span class="chip">webxr.ts</span></div></div>
+        <div class="fcard"><h4>Manual frame capture</h4><p>Downsamples to a 1280px long edge, JPEG-encodes at quality 0.8 (drops to 0.65 past 1.5MB), and crops per-detection thumbnails for the review panel.</p><div class="files"><span class="chip">capture.ts</span></div></div>
+        <div class="fcard"><h4>Auto-capture on movement</h4><p>Fires automatically once the camera has moved ≥0.35m <em>and</em> ≥2.5s has elapsed since the last shot — no button needed while sweeping a room.</p><div class="files"><span class="chip">auto-capture.ts</span></div></div>
+        <div class="fcard"><h4>Keyframe streaming</h4><p>Uploads a keyframe on ≥0.30m movement or ≥20° rotation via a depth-3 drop-not-buffer queue with retry+backoff and an offline pause window, so flaky Wi-Fi degrades gracefully instead of stalling.</p><div class="files"><span class="chip">keyframes.ts</span></div></div>
+        <div class="fcard"><h4>Real-time scan quality monitor</h4><p>Scores coverage against a 600 pts/m² target, flags low-light / reflective frames and camera-speed drift risk, and gates export with a ready / needs-review / needs-rescan verdict.</p><div class="files"><span class="chip">quality-monitor.ts</span></div></div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <section class="block" id="f-inference">
+      <div class="eyebrow">inference.ts · jobs.ts · pipeline.ts · src/inference/</div>
+      <h2>Inference &amp; Jobs</h2>
+      <p class="dek">Turning a captured frame into labelled objects, and a raw scan into a web-ready 3D asset.</p>
+      <div class="fcards">
+        <div class="fcard accent"><h4>Ollama VLM detection (default)</h4><p>POSTs the JPEG to a local Ollama model (default <code class="v">moondream:latest</code>) with a strict-JSON detection prompt; salvages truncated model output rather than discarding it.</p><div class="files"><span class="chip">inference.ts</span><span class="chip">prompt.ts</span></div></div>
+        <div class="fcard"><h4>ONNX local VLM</h4><p>A hand-rolled 3-stage (embed_tokens / embed_images / decoder) autoregressive pipeline for LFM2.5-VL-1.6B, with a manually managed KV-cache, run fully offline via onnxruntime-node.</p><div class="files"><span class="chip">inference.ts</span></div></div>
+        <div class="fcard"><h4>Mock colour-blob detector</h4><p>A deterministic, model-free detector for CI/dev — grid-samples pixels against a shared palette and clusters them with union-find, so tests never need a GPU.</p><div class="files"><span class="chip">inference.ts</span><span class="chip">cv-palette.ts</span></div></div>
+        <div class="fcard"><h4>On-device WebGPU inference</h4><p>A second, user-toggleable inference path that runs the same ONNX model directly in the browser via Transformers.js/WebGPU instead of hitting the server.</p><div class="files"><span class="chip">src/inference/router.ts</span><span class="chip">webgpu.worker.ts</span></div></div>
+        <div class="fcard job changing"><h4>Background job queue</h4><p>Deliberately single-worker (concurrency 1 — the box already runs the VLM); persists state to <code class="v">jobs.json</code> and re-queues jobs interrupted by a crash or restart.</p><div class="files"><span class="chip">jobs.ts</span></div>
+          <div class="diff is-planned"><span class="was"><span class="strike">jobs.ts's JobQueue — a separate system</span></span><span class="now"><span class="arrow">→</span>merged into WorldJob, same guarantees ported forward</span><span class="tag"><span class="status-badge planned">🔜 planned</span> docs/factory/01-merge-jobs</span></div>
+        </div>
+        <div class="fcard job"><h4>GLB optimization pipeline</h4><p>dedup/prune → voxel-downsampled point-cloud LODs (0.30m / 0.12m) → quantize → Draco-compress. Runtime-agnostic: the same module runs inside Deno and inside a plain Node smoke test.</p><div class="files"><span class="chip">pipeline.ts</span></div>
+          <div class="diff is-planned"><span class="was"><span class="strike">called by JobQueue only</span></span><span class="now"><span class="arrow">→</span>caller becomes a WorldJob runner; pipeline.ts itself untouched</span><span class="tag"><span class="status-badge planned">🔜 planned</span> 01-merge-jobs/0003</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <section class="block" id="f-recon">
+      <div class="eyebrow">splat_train.ts · splat_detect.ts · splat_finish.ts · lingbot_map.ts</div>
+      <h2>Spatial Reconstruction</h2>
+      <p class="dek">A second, higher-fidelity pipeline that turns a session into a dense point cloud and a trained 3D Gaussian splat — each stage shells out to an external native tool and degrades to a "skipped" manifest instead of crashing when that tool is unavailable.</p>
+      <div class="fcards">
+        <div class="fcard world"><h4>LingBot-Map reconstruction</h4><p>Spawns a Python worker running the LingBot-Map transformer to merge a session's keyframes into a dense point cloud + per-frame poses. Missing torch/checkpoint → graceful skip, not a crash.</p><div class="files"><span class="chip">lingbot_map.ts</span><span class="chip">lingbot_map_worker.py</span></div></div>
+        <div class="fcard world"><h4>Gaussian-splat training</h4><p>Builds a Nerfstudio dataset from keyframes and trains a 3DGS splat via the external <strong>Brush</strong> CLI (Rust/wgpu), falling back to LingBot-Map's estimated poses for pose-less video/photo ingests.</p><div class="files"><span class="chip">splat_train.ts</span></div></div>
+        <div class="fcard world"><h4>Splat-based object detection</h4><p>Renders the trained splat and runs an external open-vocabulary OWLv2 detector (<strong>splat_analyzer</strong>) to produce 3D bounding boxes, with tunable score/vote thresholds.</p><div class="files"><span class="chip">splat_detect.ts</span></div></div>
+        <div class="fcard world"><h4>Splat web-delivery compression</h4><p>Runs <strong>@playcanvas/splat-transform</strong> to produce a ~8× smaller SOG bundle and a ~4× smaller compressed PLY. Auto-chained the moment training succeeds (kill switch: <code class="v">SPLAT_FINISH_AUTO=0</code>).</p><div class="files"><span class="chip">splat_finish.ts</span></div></div>
+        <div class="fcard changing"><h4>optimize-scan was a different system</h4><p>The older raw-GLB optimizer (jobs.ts/pipeline.ts, above) and this WorldJob-based splat/LingBot chain were two <em>separate</em> job systems with different manifest schemas that never called each other.</p><div class="files"><span class="chip">jobs.ts</span><span class="chip">src/world/types.ts</span></div>
+          <div class="diff is-planned"><span class="was"><span class="strike">two job systems, two manifest schemas, never call each other</span></span><span class="now"><span class="arrow">→</span>one queue (WorldJob), one status vocabulary, optimize-scan joins the chain</span><span class="tag"><span class="status-badge planned">🔜 planned</span> docs/factory/01-merge-jobs — this card's whole premise is what that wave retires</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <section class="block" id="f-world">
+      <div class="eyebrow">src/world/ · src/viewer/ · src/export/ · src/scene/ · src/spatial/</div>
+      <h2>World &amp; Viewer</h2>
+      <p class="dek">Where individual scans become one shared, editable 3D "world" — the desktop side of the app.</p>
+      <div class="fcards">
+        <div class="fcard"><h4>2D→3D spatial resolver</h4><p>Places each VLM detection with a 4-stage fallback: AR hit-test → async WebXR hit-test → point-cloud raycast → camera-ray placement. Dedupes same-label detections within 0.3m.</p><div class="files"><span class="chip">resolver.ts</span></div>
+          <div class="diff is-done"><span class="was"><span class="strike">WorldDetection restates RawDetection's 4 fields inline</span></span><span class="now"><span class="arrow">→</span><code class="v">WorldDetection extends RawDetection</code> — one lineage, not a copy</span><span class="tag"><span class="status-badge done">✅ done</span> foundation-updates/0007, merged in #71</span></div>
+        </div>
+        <div class="fcard"><h4>SLAM point-cloud accumulator</h4><p>A growing, voxel-deduped (5cm grid) point buffer capped at 250k points — decimates in place rather than growing unbounded.</p><div class="files"><span class="chip">pointcloud.ts</span></div></div>
+        <div class="fcard"><h4>GLB scan export</h4><p>Packs point cloud, camera path, floor plane and labelled boxes into a Three.js scene, colours points by a floor→ceiling heatmap, and uploads the binary GLB.</p><div class="files"><span class="chip">export/gltf.ts</span></div></div>
+        <div class="fcard"><h4>Markdown summary export</h4><p>A human-readable report: geo fix + map link, synthesized scene description, and full object tables.</p><div class="files"><span class="chip">export/summary.ts</span></div></div>
+        <div class="fcard world"><h4>World / scan data model</h4><p><code class="v">WorldProject</code> / <code class="v">ScanManifest</code> / <code class="v">EditPatch</code> / <code class="v">WorldJob</code> / <code class="v">WorldMember</code> plus ENU↔lat/lng geo math, shared verbatim by client and server.</p><div class="files"><span class="chip">world/types.ts</span><span class="chip">world/geo.ts</span></div>
+          <div class="diff is-planned"><span class="was"><span class="strike"><code class="v">WorldJobType</code> has no <code class="v">'optimize-scan'</code></span></span><span class="now"><span class="arrow">→</span>gains <code class="v">'optimize-scan'</code> as a first-class WorldJobType</span><span class="tag"><span class="status-badge planned">🔜 planned</span> 01-merge-jobs/0003</span></div>
+        </div>
+        <div class="fcard world"><h4>Multi-scan World Editor</h4><p>Places every scan's GLB in one shared ENU scene with progressive LOD loading, per-layer visibility, view modes (points/solid/wireframe/semantic), and pick-to-edit.</p><div class="files"><span class="chip">viewer/viewer.ts</span><span class="chip">editor.ts</span></div></div>
+        <div class="fcard world"><h4>Live phone → editor feed</h4><p>The desktop-side WebRTC receiver: renders the phone's video in a PiP panel and grows a live point cloud / detections / camera frustum from the data channel.</p><div class="files"><span class="chip">viewer/livefeed.ts</span></div></div>
+        <div class="fcard world"><h4>Splat &amp; detection overlays</h4><p>Renders .sog / .ply splat assets (via @sparkjsdev/spark) and splat-detect's 3D boxes as togglable layers, auto-discovering the best available artifact.</p><div class="files"><span class="chip">splat-layer.ts</span><span class="chip">splat-detect-layer.ts</span></div>
+          <div class="diff is-planned"><span class="was"><span class="strike">splat-layer.ts / splat-detect-layer.ts redeclare their own manifest interfaces</span></span><span class="now"><span class="arrow">→</span>import one shared <code class="v">PipelineManifestBase</code> instead of 2 hand-written subsets</span><span class="tag"><span class="status-badge planned">🔜 planned</span> foundation-updates/0005</span></div>
+        </div>
+        <div class="fcard"><h4>Map-quality tier</h4><p>Derives a Preview → Reconstructed → Photoreal headline purely from which pipeline manifests exist for a scan.</p><div class="files"><span class="chip">quality-tier.ts</span></div></div>
+        <div class="fcard"><h4>Distance measurement tool</h4><p>Two-click raycast measurement against any visible mesh or point cloud, with a live metre-readout label.</p><div class="files"><span class="chip">measure.ts</span></div></div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <section class="block" id="f-server">
+      <div class="eyebrow">main.ts · portal_auth.ts</div>
+      <h2>Server &amp; Auth</h2>
+      <p class="dek">The Deno process that every other piece talks to — routing, storage, and the app's one authorization mechanism.</p>
+      <div class="fcards">
+        <div class="fcard"><h4>Health check</h4><p><code class="v">GET /health</code> reports model readiness, engine load state, and last-inference latency.</p><div class="files"><span class="chip">main.ts</span></div></div>
+        <div class="fcard accent"><h4>Tailscale/LAN CORS allowlist</h4><p>Accepts localhost, any <code class="v">*.ts.net</code>, RFC1918 ranges, and Tailscale's <code class="v">100.64.0.0/10</code> CGNAT range by construction — no per-deploy allowlist edits needed.</p><div class="files"><span class="chip">main.ts</span></div>
+          <div class="diff is-done"><span class="was"><span class="strike">ALLOWED_ORIGIN_PREFIX fell back to a hardcoded liambook host</span></span><span class="now"><span class="arrow">→</span>auto-detects via <code class="v">tailscale status --json</code>, same as vite.config.ts</span><span class="tag"><span class="status-badge done">✅ done</span> foundation-updates/0002, merged in #68</span></div>
+        </div>
+        <div class="fcard"><h4>/infer</h4><p>Proxies to the InferenceEngine with a size cap and a 60s timeout; returns detections with Server-Timing headers.</p><div class="files"><span class="chip">main.ts</span></div></div>
+        <div class="fcard"><h4>Scan storage</h4><p><code class="v">/upload-scan</code>, <code class="v">/scans</code> — stores GLBs, auto-enqueues optimization, serves every splat-pipeline sidecar with the correct MIME type.</p><div class="files"><span class="chip">main.ts</span></div>
+          <div class="diff is-planned"><span class="was"><span class="strike">auto-enqueues via jobQueue.enqueue('optimize-scan')</span></span><span class="now"><span class="arrow">→</span>creates a WorldJob instead — same auto-enqueue trigger, new backend</span><span class="tag"><span class="status-badge planned">🔜 planned</span> 01-merge-jobs/0003</span></div>
+        </div>
+        <div class="fcard"><h4>Capture sessions</h4><p><code class="v">/sessions/*</code> — streaming keyframe ingestion, capped at 2000 frames per session.</p><div class="files"><span class="chip">main.ts</span></div></div>
+        <div class="fcard"><h4>Video / photo ingest</h4><p><code class="v">/ingest-video</code>, <code class="v">/ingest-photos</code> — shells out to ffmpeg-based extraction scripts, then auto-enqueues LingBot-Map reconstruction.</p><div class="files"><span class="chip">main.ts</span></div></div>
+        <div class="fcard world"><h4>/worlds CRUD, sharing &amp; patches</h4><p>World data, per-role share links, and edit-patch persistence (transform / label / category / notes).</p><div class="files"><span class="chip">main.ts</span></div></div>
+        <div class="fcard world"><h4>Capability-token world auth</h4><p>Per-world member tokens (owner / editor / viewer / scanner) are the app's <em>sole</em> authorization mechanism. <code class="v">WORLD_STRICT_AUTH</code> toggles anonymous access on or off.</p><div class="files"><span class="chip">main.ts</span></div></div>
+        <div class="fcard world"><h4>/worlds/:slug/jobs</h4><p>The WorldJob queue that dispatches to every reconstruction worker in the section above.</p><div class="files"><span class="chip">main.ts</span></div>
+          <div class="diff is-planned"><span class="was"><span class="strike">runs every WorldJob immediately &amp; concurrently (setTimeout, no queue discipline)</span></span><span class="now"><span class="arrow">→</span>single-flight + crash recovery, matching JobQueue's existing guarantees</span><span class="tag"><span class="status-badge planned">🔜 planned</span> 01-merge-jobs/0002 — lands before optimize-scan joins this queue</span></div>
+        </div>
+        <div class="fcard"><h4>/events &amp; /rtc-signal</h4><p>A broadcast WebSocket for state changes (scan added, job updated, …), and a bare SDP/ICE relay for phone↔viewer WebRTC that never inspects payloads.</p><div class="files"><span class="chip">main.ts</span></div>
+          <div class="diff is-planned"><span class="was"><span class="strike">event <code class="v">type:</code> strings are raw literals, duplicated producer/consumer</span></span><span class="now"><span class="arrow">→</span>shared constants, then a full discriminated-union payload type</span><span class="tag"><span class="status-badge planned">🔜 planned</span> foundation-updates/0006, then docs/factory/02-typed-event-payloads</span></div>
+        </div>
+        <div class="fcard"><h4>OIDC portal auth</h4><p>"Sign in with Companion Account" against CI-Portal via PKCE, gated behind an email allowlist — inert (all routes 404) unless explicitly enabled.</p><div class="files"><span class="chip">portal_auth.ts</span></div></div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <section class="block" id="f-rtc">
+      <div class="eyebrow">src/rtc/ · src/geo/ · src/ui/ · src/debug/ · src/shared/</div>
+      <h2>RTC, Geo &amp; UI</h2>
+      <p class="dek">The rest of the on-phone experience, plus the fixtures that make it testable without a real scan.</p>
+      <div class="fcards">
+        <div class="fcard"><h4>WebRTC live streaming</h4><p>Captures the AR canvas at 24fps and streams point/pose/detection updates over a data channel, with backpressure-aware batching and exponential-backoff reconnect.</p><div class="files"><span class="chip">rtc/broadcaster.ts</span></div></div>
+        <div class="fcard"><h4>GPS + compass geo-tracking</h4><p>Continuous position/bearing fixes, reverse-geocoded via the public Nominatim API directly from the browser — the server is never involved in address lookup.</p><div class="files"><span class="chip">geo/geo-tracker.ts</span></div></div>
+        <div class="fcard"><h4>AR overlay</h4><p>Live object pins, capture button, and status/progress HUD — re-projected into screen space every frame.</p><div class="files"><span class="chip">ui/overlay.ts</span></div></div>
+        <div class="fcard"><h4>Side panel &amp; session history</h4><p>The detection manifest, export actions, and a drawer of past sessions loaded from IndexedDB.</p><div class="files"><span class="chip">ui/panel.ts</span><span class="chip">ui/history.ts</span></div></div>
+        <div class="fcard"><h4>Remote debug console</h4><p><code class="v">?debug=remote</code> mirrors console errors to the server every 3s so a developer can watch a phone's console output from a terminal.</p><div class="files"><span class="chip">debug/remote-log.ts</span></div>
+          <div class="diff is-planned"><span class="was"><span class="strike">localStorage key 'remote-log' is a per-file literal</span></span><span class="now"><span class="arrow">→</span>imported from a central storage-key constants file</span><span class="tag"><span class="status-badge planned">🔜 planned</span> foundation-updates/0008</span></div>
+        </div>
+        <div class="fcard"><h4>Synthetic test-home fixtures</h4><p>24 deterministic, seeded room layouts used to generate GLBs, CV test images, and Playwright fixtures without ever running a real scan.</p><div class="files"><span class="chip">shared/test-homes.ts</span></div></div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <section class="block" id="f-ops">
+      <div class="eyebrow">deploy/ · scripts/ · docs/</div>
+      <h2>Ops &amp; Tooling</h2>
+      <p class="dek">Keeping a box running unattended, and the ~25 scripts that support development, calibration, and field testing.</p>
+      <div class="fcards">
+        <div class="fcard job"><h4>Systemd persistent deploy</h4><p><code class="v">cscan-server</code> + <code class="v">cscan-web</code> units turn a Linux box into an always-on server, soft-gated on Ollama/health so they start even if a dependency isn't ready yet.</p><div class="files"><span class="chip">deploy/systemd/</span></div></div>
+        <div class="fcard job"><h4>Weekly Tailscale cert renewal</h4><p>A systemd timer reissues the HTTPS cert and bounces the web unit to pick it up (vite preview only reads the cert file at startup).</p><div class="files"><span class="chip">cscan-cert.timer</span></div></div>
+        <div class="fcard"><h4>Vision-model benchmarking</h4><p>Scores candidate Ollama models on precision / recall / mean-IoU / latency to pick the deploy default.</p><div class="files"><span class="chip">bench-models.mjs</span></div></div>
+        <div class="fcard"><h4>Ingest quality gate</h4><p>A shared variance-of-Laplacian blur filter used by both the video and photo ingest scripts — never drops an entire session even if every frame is soft.</p><div class="files"><span class="chip">ingest-quality.mjs</span></div></div>
+        <div class="fcard"><h4>Isolated test-box loop</h4><p>A self-contained CI run on isolated ports and data dirs that never touches the real <code class="v">:8000</code>/<code class="v">:5173</code> server.</p><div class="files"><span class="chip">test-box.mjs</span></div>
+          <div class="diff is-planned"><span class="was"><span class="strike">port 5173 magic-numbered in 6+ places (scripts, main.ts, tests)</span></span><span class="now"><span class="arrow">→</span>single <code class="v">VITE_PORT</code> env var, default unchanged</span><span class="tag"><span class="status-badge planned">🔜 planned</span> foundation-updates/0010</span></div>
+        </div>
+        <div class="fcard"><h4>House-readiness validation</h4><p>A field runbook with hard pass/fail thresholds (SLAM points, coverage %, detections, gaussians) per room of a real house.</p><div class="files"><span class="chip">docs/HOUSE_VALIDATION.md</span></div></div>
+        <div class="fcard"><h4>Local CI pipeline (ci-local)</h4><p>GitHub Actions triggers are gated off for cost reasons ($563/mo); <code class="v">ci-local run</code> mirrors <code class="v">npm ci + test + build</code> on local hardware instead.</p><div class="files"><span class="chip">docs/CI.md</span></div>
+          <div class="diff is-done"><span class="was"><span class="strike">docs/CI.md pointed clone/repo commands at CI-Web-XR-Scan</span></span><span class="now"><span class="arrow">→</span>corrected to CI-Spatial</span><span class="tag"><span class="status-badge done">✅ done</span> foundation-updates/0009, merged in #71</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <section class="block" id="f-delivery">
+      <div class="eyebrow">public/sw.js · Dockerfile · .github/workflows/ · video/</div>
+      <h2>Delivery &amp; Distribution</h2>
+      <p class="dek">How the app reaches a device and stays usable when the network doesn't cooperate — surfaced by a completeness pass after the first read of the codebase.</p>
+      <div class="fcards">
+        <div class="fcard"><h4>PWA offline support</h4><p>A service worker with app-shell caching and an IndexedDB-backed offline write-queue that background-syncs uploads (<code class="v">/upload-scan</code>, <code class="v">/sessions</code>, …) once connectivity returns.</p><div class="files"><span class="chip">public/sw.js</span><span class="chip">src/pwa.ts</span></div></div>
+        <div class="fcard"><h4>Docker containerization</h4><p>A single-container build — Deno serving the built Vite bundle — published to GHCR. Distinct from, and independent of, the systemd bare-metal path above.</p><div class="files"><span class="chip">Dockerfile</span></div></div>
+        <div class="fcard"><h4>GitHub Actions CI/CD</h4><p>Type-check + Deno test suite on push/PR; a gated multi-arch container build + publish on manual dispatch only.</p><div class="files"><span class="chip">.github/workflows/</span></div></div>
+        <div class="fcard"><h4>Marketing-video pipeline</h4><p>A storyboard-driven renderer that assembles a 16:9 desktop cut and a 9:16 mobile cut from committed screenshots and narration audio.</p><div class="files"><span class="chip">video/</span></div></div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <section class="block" id="schema">
+      <div class="eyebrow">reference</div>
+      <h2>Data schema</h2>
+      <p class="dek">CI-Spatial has no schema library — no Zod, no io-ts. Every type below is a hand-written TypeScript interface, validated (where it's validated at all) with ad-hoc type guards. The core domain model lives in <code class="v">src/world/types.ts</code> and is imported verbatim by both client and server.</p>
+
+      <div class="callout ok"><strong>Naming collision — fixed.</strong> Two unrelated types were both called <code class="v">ScanManifest</code> — the flat one in <code class="v">jobs.ts</code> (GLB-optimizer output) and the richer one in <code class="v">src/world/types.ts</code> (a scan's place in a World).
+        <div class="diff is-done"><span class="was"><span class="strike">jobs.ts: interface ScanManifest</span></span><span class="now"><span class="arrow">→</span>jobs.ts: interface OptimizeScanManifest</span><span class="tag"><span class="status-badge done">✅ done</span> foundation-updates/0003, merged in #71 — <code class="v">ScanManifest</code> now names exactly one thing in this codebase</span></div>
+      </div>
+
+      <h3 class="subgrp">Capture &amp; AR</h3>
+      <div class="twrap"><table>
+        <thead><tr><th>Type</th><th>Fields</th><th>File</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Pose</td><td class="fields">position {x,y,z}; rotation {x,y,z,w} quaternion</td><td class="fields">provider.ts</td></tr>
+          <tr><td class="name">RawFrame</td><td class="fields">pixels: Uint8ClampedArray; width; height; pose; timestamp</td><td class="fields">provider.ts</td></tr>
+          <tr><td class="name">ARProvider</td><td class="fields">interface — start, stop, captureFrame, hitTest, featurePoints, getPose, isTracking, getCameraFovY/Aspect</td><td class="fields">provider.ts</td></tr>
+          <tr><td class="name">CaptureResult</td><td class="fields">blob: Blob; pose; timestamp</td><td class="fields">capture.ts</td></tr>
+          <tr><td class="name">AutoCaptureStatus</td><td class="fields">enabled; captureCount; inFlight</td><td class="fields">auto-capture.ts</td></tr>
+          <tr><td class="name">StreamerStatus</td><td class="fields">active; sessionId; sent; queued; skipped; failed; offline</td><td class="fields">keyframes.ts</td></tr>
+          <tr><td class="name">ScanQualitySummary</td><td class="fields">coverageScore; pointCount; detectionCount; driftEvents; missingAreas; status; recommendations[]</td><td class="fields">world/types.ts</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3 class="subgrp">Inference &amp; jobs</h3>
+      <div class="twrap"><table>
+        <thead><tr><th>Type</th><th>Fields</th><th>File</th></tr></thead>
+        <tbody>
+          <tr><td class="name">RawDetection</td><td class="fields">label; bbox [x0,y0,x1,y1]; confidence; description</td><td class="fields">prompt.ts</td></tr>
+          <tr class="row-changing"><td class="name">Job / JobStatus <span class="status-badge planned" style="margin-left:6px;">🔜</span></td><td class="fields">id; type: 'optimize-scan'; target; status: queued|running|done|error; note?</td><td class="fields">jobs.ts</td></tr>
+          <tr><td class="name">PipelineResult</td><td class="fields">optimized: PipelineArtifact; lods[] (coarsest-first); stats; stages[]</td><td class="fields">pipeline.ts</td></tr>
+          <tr><td class="name">PipelineStats</td><td class="fields">sourceBytes; points; triangles; meshes; nodes; textures</td><td class="fields">pipeline.ts</td></tr>
+        </tbody>
+      </table></div>
+      <div class="diff is-planned"><span class="was"><span class="strike">Job / JobStatus — a second status vocabulary (queued|running|done|error)</span></span><span class="now"><span class="arrow">→</span>retired; optimize-scan adopts WorldJobStatus (queued|processing|completed|failed) below</span><span class="tag"><span class="status-badge planned">🔜 planned</span> docs/factory/01-merge-jobs</span></div>
+
+      <h3 class="subgrp">World &amp; viewer</h3>
+      <div class="twrap"><table>
+        <thead><tr><th>Type</th><th>Fields</th><th>File</th></tr></thead>
+        <tbody>
+          <tr><td class="name">WorldProject</td><td class="fields">worldId; name; shareSlug; originGeoPose; localFrame; scans[]; members[]; jobs[]; editPatches[]</td><td class="fields">world/types.ts</td></tr>
+          <tr><td class="name">ScanManifest <em>(world)</em></td><td class="fields">scanId; sessionId; glbUrl; geoPose; localToWorld [16]; pointCount; layerIndex[]; qualitySummary; status</td><td class="fields">world/types.ts</td></tr>
+          <tr><td class="name">GeoPose</td><td class="fields">lat; lng; altitudeM; bearing; accuracyM; address?; displayAddress?</td><td class="fields">world/types.ts</td></tr>
+          <tr><td class="name">LocalFrame</td><td class="fields">type 'ENU_Y_UP'; origin: GeoPose; units 'meters'; axes {x:east,y:up,z:north}</td><td class="fields">world/types.ts</td></tr>
+          <tr><td class="name">LayerManifest / LayerType</td><td class="fields">points | mesh | floor | detections | labels | cameraPath | splat | semanticMasks …</td><td class="fields">world/types.ts</td></tr>
+          <tr><td class="name">FrameObservation</td><td class="fields">frameId; scanId; rgbUrl; pose; intrinsics; frustum; depthUrl?</td><td class="fields">world/types.ts</td></tr>
+          <tr><td class="name">EditPatch / TransformPatch</td><td class="fields">patchId; scope: scan|object|point-selection|layer|world; transform?; label?; category?</td><td class="fields">world/types.ts</td></tr>
+          <tr><td class="name">WorldMember / MemberRole</td><td class="fields">memberId; role: scanner|viewer|editor|owner; token; expiresAt?</td><td class="fields">world/types.ts</td></tr>
+          <tr class="row-changing"><td class="name">WorldJob / WorldJobType <span class="status-badge planned" style="margin-left:6px;">🔜</span></td><td class="fields">jobId; type; status: queued|processing|completed|failed; artifacts[]; progress?</td><td class="fields">world/types.ts</td></tr>
+          <tr><td class="name">WorldDetection <span class="status-badge done" style="margin-left:6px;">✅</span></td><td class="fields">label; confidence; bbox; worldPos {x,y,z}; worldRot; captureTimestamp</td><td class="fields">spatial/resolver.ts</td></tr>
+        </tbody>
+      </table></div>
+      <div class="diff is-done"><span class="was"><span class="strike">WorldDetection restated RawDetection's label/bbox/confidence/description inline</span></span><span class="now"><span class="arrow">→</span><code class="v">interface WorldDetection extends RawDetection</code></span><span class="tag"><span class="status-badge done">✅ done</span> foundation-updates/0007, merged in #71</span></div>
+      <div class="diff is-planned"><span class="was"><span class="strike">WorldJobType has no 'optimize-scan'; runner has no single-flight or crash recovery</span></span><span class="now"><span class="arrow">→</span>gains 'optimize-scan'; runner hardened first (01-merge-jobs/0002) so the merge is a strict upgrade</span><span class="tag"><span class="status-badge planned">🔜 planned</span> docs/factory/01-merge-jobs</span></div>
+
+      <h3 class="subgrp">Splat &amp; LingBot-Map</h3>
+      <div class="twrap"><table>
+        <thead><tr><th>Type</th><th>Fields</th><th>File</th></tr></thead>
+        <tbody>
+          <tr class="row-changing"><td class="name">SplatTrainManifest <span class="status-badge planned" style="margin-left:6px;">🔜</span></td><td class="fields">schemaVersion; tool:'brush'; status; gaussianCount?; plyPath?; params {trainIters, shDegree, …}</td><td class="fields">splat_train.ts</td></tr>
+          <tr class="row-changing"><td class="name">SplatDetectManifest <span class="status-badge planned" style="margin-left:6px;">🔜</span></td><td class="fields">tool:'splat-analyzer'; status; objectCount?; prompt; params {scoreThreshold?, minVotes?, …}</td><td class="fields">splat_detect.ts</td></tr>
+          <tr class="row-changing"><td class="name">SplatFinishManifest <span class="status-badge planned" style="margin-left:6px;">🔜</span></td><td class="fields">tool:'splat-transform'; status; sogPath?; compressedPlyPath?; sizes {inputBytes, sogBytes?}</td><td class="fields">splat_finish.ts</td></tr>
+          <tr><td class="name">LingBotMapResult</td><td class="fields">status: ok|skipped|error; pointCloudFile?; posesFile?; manifestFile; glbSidecarPath?</td><td class="fields">lingbot_map.ts</td></tr>
+          <tr><td class="name">NerfstudioTransforms/Frame</td><td class="fields">camera_model; frames[] {file_path, transform_matrix 4×4, fl_x, fl_y, cx, cy}</td><td class="fields">splat_train_dataset.ts</td></tr>
+        </tbody>
+      </table></div>
+      <div class="diff is-done"><span class="was"><span class="strike">src/viewer/lingbot-map.ts carried a verbatim-copied binary PLY parser</span></span><span class="now"><span class="arrow">→</span>imports the shared parser from lingbot_map_ply.ts</span><span class="tag"><span class="status-badge done">✅ done</span> foundation-updates/0004, merged in #71</span></div>
+      <div class="diff is-planned"><span class="was"><span class="strike">the 11-field manifest envelope above is declared 5 separate times (3 server + 2 viewer redeclarations), no shared base</span></span><span class="now"><span class="arrow">→</span>one <code class="v">PipelineManifestBase</code>, extended per tool, imported everywhere</span><span class="tag"><span class="status-badge planned">🔜 planned</span> foundation-updates/0005</span></div>
+
+      <h3 class="subgrp">Server, auth &amp; shared</h3>
+      <div class="twrap"><table>
+        <thead><tr><th>Type</th><th>Fields</th><th>File</th></tr></thead>
+        <tbody>
+          <tr><td class="name">PortalAuthConfig</td><td class="fields">enabled; issuerUrl; clientId; allowedEmails[]; jwksUri; sessionTtlSec</td><td class="fields">portal_auth.ts</td></tr>
+          <tr><td class="name">SessionClaims</td><td class="fields">sub; email; name?; exp — payload of the HMAC-signed <code class="v">cs_session</code> cookie</td><td class="fields">portal_auth.ts</td></tr>
+          <tr><td class="name">RtcPeer</td><td class="fields">ws: WebSocket; role: 'phone' | 'viewer'</td><td class="fields">main.ts</td></tr>
+          <tr><td class="name">BroadcasterStatus</td><td class="fields">state: idle|connecting|streaming|error|stopped; message</td><td class="fields">rtc/broadcaster.ts</td></tr>
+          <tr><td class="name">GeoFix</td><td class="fields">lat; lng; accuracy; bearing; address; addressComponents</td><td class="fields">geo/geo-tracker.ts</td></tr>
+          <tr><td class="name">FurnitureItem / TestHome</td><td class="fields">label; position [x,y,z]; size; confidence; rgb — synthetic fixture data</td><td class="fields">shared/test-homes.ts</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <!-- ============================================================ -->
+    <section class="block" id="config">
+      <div class="eyebrow">reference</div>
+      <h2>Config variables</h2>
+      <p class="dek">57 environment variables across eight concerns. None are required to boot — everything has a working default — but a handful (GPU pins, the OIDC allowlist) change behavior sharply once set.</p>
+
+      <div class="diff is-done"><span class="was"><span class="strike">15 env vars (incl. WORLD_STRICT_AUTH, VITE_HOSTNAME) were read in code but documented in neither .env.example nor deploy/cscan.env.example</span></span><span class="now"><span class="arrow">→</span>all 15 documented; stale CI-Web-XR-Scan repo references fixed; a do-not-rename registry added to CLAUDE.md</span><span class="tag"><span class="status-badge done">✅ done</span> foundation-updates/0009, merged in #71</span></div>
+      <div class="diff is-planned"><span class="was"><span class="strike">Vite's port (5173) is magic-numbered in 6+ places, no env var</span></span><span class="now"><span class="arrow">→</span>single <code class="v">VITE_PORT</code> env var, default unchanged</span><span class="tag"><span class="status-badge planned">🔜 planned</span> foundation-updates/0010</span></div>
+
+      <h3 class="subgrp">Core server</h3>
+      <div class="twrap"><table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td class="name">PORT</td><td class="def">8000</td><td class="purpose">Deno API listen port</td></tr>
+          <tr><td class="name">TAILSCALE_HOSTNAME</td><td class="def">auto (tailscale status)</td><td class="purpose">HTTPS hostname phones use to reach the box</td></tr>
+          <tr><td class="name">ALLOWED_ORIGIN_PREFIX</td><td class="def">https://$TAILSCALE_HOSTNAME</td><td class="purpose">CORS fallback + share-link base — see review note below</td></tr>
+          <tr><td class="name">SCANS_DIR / SESSIONS_DIR / WORLDS_DIR / SUMMARIES_DIR</td><td class="def">./scans, ./scans/sessions, ./worlds, ./summaries</td><td class="purpose">Where every artifact and manifest lands</td></tr>
+          <tr><td class="name">WORLD_STRICT_AUTH</td><td class="def">unset (lenient)</td><td class="purpose">'1' enforces world member-role tokens on every route</td></tr>
+          <tr><td class="name">STATIC_DIR</td><td class="def">./dist</td><td class="purpose">Pre-built bundle served in prod; skipped entirely in dev</td></tr>
+          <tr><td class="name">PROJECTS_FILE</td><td class="def">./projects.json</td><td class="purpose">Backing store for /projects CRUD</td></tr>
+          <tr><td class="name">DEBUG_CORS</td><td class="def">off</td><td class="purpose">Logs every CORS origin check to the console</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3 class="subgrp">Inference</h3>
+      <div class="twrap"><table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td class="name">INFERENCE_MODE</td><td class="def">ollama</td><td class="purpose">ollama | onnx | mock — anything unrecognized falls back to ollama</td></tr>
+          <tr><td class="name">OLLAMA_HOST</td><td class="def">http://localhost:11434</td><td class="purpose">Must be a full URL — a bind address like <code class="v">0.0.0.0:11434</code> breaks the client fetch (hit this firsthand during setup)</td></tr>
+          <tr><td class="name">OLLAMA_MODEL</td><td class="def">moondream:latest</td><td class="purpose">Falls back to a known vision model, then the first available, if unpulled</td></tr>
+          <tr><td class="name">MODEL_DIR / TOKENIZER_DIR</td><td class="def">./public/models/LiquidAI/…</td><td class="purpose">ONNX model + tokenizer location for onnx mode</td></tr>
+          <tr><td class="name">INFER_MAX_IMAGE_BYTES</td><td class="def">12,000,000</td><td class="purpose">Upload cap enforced before /infer even loads the engine</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3 class="subgrp">Splat pipeline</h3>
+      <div class="twrap"><table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td class="name">BRUSH_BIN</td><td class="def">~/brush/src/target/release/brush-cli</td><td class="purpose">Gaussian-splat trainer binary</td></tr>
+          <tr><td class="name">BRUSH_DEVICE</td><td class="def">DiscreteGpu(1)</td><td class="purpose">wgpu adapter pin — <em>not</em> a HIP id</td></tr>
+          <tr><td class="name">BRUSH_TRAIN_ITERS / SH_DEGREE / MAX_RES</td><td class="def">15000 / 2 / 1280</td><td class="purpose">Training iteration count, spherical-harmonics degree, image resolution</td></tr>
+          <tr><td class="name">SPLAT_DETECT_PYTHON / _DIR</td><td class="def">~/.venvs/splat-analyzer/… / ~/splat_analyzer</td><td class="purpose">Detector venv + checkout location</td></tr>
+          <tr><td class="name">SPLAT_DETECT_QUALITY</td><td class="def">medium</td><td class="purpose">Camera-coverage preset: low=24 views, medium=90, high=192</td></tr>
+          <tr><td class="name">SPLAT_DETECT_SCORE_THRESHOLD / MIN_VOTES / MIN_PEAK_SCORE</td><td class="def">unset → 0.12 / 8 / 0.40</td><td class="purpose">Clustering knobs — leave unset until calibrated with tune-splat-detect.mjs</td></tr>
+          <tr><td class="name">HIP_VISIBLE_DEVICES</td><td class="def">1</td><td class="purpose">ROCm GPU pin for the detector — inverted vs rocm-smi numbering</td></tr>
+          <tr><td class="name">SPLAT_FINISH_AUTO</td><td class="def">on</td><td class="purpose">'0' disables auto-chaining splat-finish after a successful splat-train</td></tr>
+          <tr><td class="name">SPLAT_FINISH_GPU</td><td class="def">cpu</td><td class="purpose">splat-transform adapter index — a dawn/Vulkan id, a third distinct GPU-numbering scheme</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3 class="subgrp">LingBot-Map &amp; ingest</h3>
+      <div class="twrap"><table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td class="name">LINGBOT_MAP_PYTHON / MODEL_PATH</td><td class="def">python3 / unset</td><td class="purpose">Interpreter + checkpoint; empty path → graceful skip, not a crash</td></tr>
+          <tr><td class="name">INGEST_MAX_VIDEO_BYTES / PHOTOS_BYTES</td><td class="def">1.5GB / 500MB</td><td class="purpose">Upload caps for /ingest-video and /ingest-photos</td></tr>
+          <tr><td class="name">INGEST_MIN_SHARPNESS</td><td class="def">60</td><td class="purpose">Blur-gate floor; 0 disables the gate entirely</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3 class="subgrp">Auth &amp; memory push</h3>
+      <div class="twrap"><table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td class="name">PORTAL_OIDC_ENABLED</td><td class="def">off</td><td class="purpose">Master switch — every /authenticate/* route 404s unless '1'</td></tr>
+          <tr><td class="name">PORTAL_OIDC_ALLOWED_EMAILS</td><td class="def">'' (fail-closed)</td><td class="purpose">Empty list rejects <em>every</em> sign-in, not none</td></tr>
+          <tr><td class="name">SESSION_SECRET</td><td class="def">random per boot</td><td class="purpose">Unset → every restart invalidates all sessions</td></tr>
+          <tr><td class="name">CI_SERVER_URL / TOKEN</td><td class="def">unset (inert)</td><td class="purpose">Companion Memory push destination + API key — needs its own key, a Portal token is not accepted here</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <!-- ============================================================ -->
+    <section class="block" id="connections">
+      <div class="eyebrow">reference</div>
+      <h2>Architecture &amp; connections</h2>
+      <p class="dek">Two views: how the running system fits together, and the order a single scan actually moves through the reconstruction pipeline. The amber dashed outline below marks what <a href="#waves">01-merge-jobs</a> changes.</p>
+
+      <figure class="diagram">
+        <div class="svgwrap">
+          <svg viewBox="0 0 1180 760" role="img" aria-label="System architecture: a browser scanner reaches the Deno server over a Tailscale HTTPS tunnel; the server fans out to an inference engine, a GLB job queue, and a WorldJob system that drives four external reconstruction tools; everything lands on the filesystem, which the desktop World Editor reads back, while the phone also streams live video straight to the editor over WebRTC. The GLB job queue is outlined in amber, marking it as planned to merge into the WorldJob system.">
+            <defs>
+              <marker id="arrFaint" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="var(--ink-faint)"/>
+              </marker>
+              <marker id="arrAccent" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"/>
+              </marker>
+              <marker id="arrJob2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="var(--job)"/>
+              </marker>
+            </defs>
+            <style>
+              .box { fill: var(--surface); stroke: var(--line-strong); stroke-width: 1.2; }
+              .box-accent { fill: var(--accent-soft); stroke: var(--accent); }
+              .box-job { fill: var(--job-soft); stroke: var(--job); }
+              .box-world { fill: var(--world-soft); stroke: var(--world); }
+              .box-ext { fill: none; stroke: var(--ink-faint); stroke-dasharray: 4 3; }
+              .lbl { font-family: var(--mono); font-size: 12.5px; fill: var(--ink); }
+              .lbl-dim { font-family: var(--mono); font-size: 11px; fill: var(--ink-faint); }
+              .lbl-sub { font-family: var(--serif); font-size: 11px; fill: var(--ink-dim); }
+              .edge { fill: none; stroke: currentColor; stroke-width: 1.3; color: var(--ink-faint); }
+              .edge-main { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+              .edge-dim { fill: none; stroke: var(--ink-faint); stroke-width: 1; stroke-dasharray: 3 3; }
+              .elbl { font-family: var(--mono); font-size: 10.5px; fill: var(--ink-faint); }
+              .elbl-job { font-family: var(--mono); font-size: 10.5px; fill: var(--job); font-weight: 700; }
+            </style>
+
+            <!-- Client -->
+            <rect class="box-accent" x="40" y="30" width="330" height="120" rx="8"/>
+            <text class="lbl" x="56" y="55">Browser Scanner (phone)</text>
+            <text class="lbl-sub" x="56" y="76">AR Provider · Capture · Auto-capture</text>
+            <text class="lbl-sub" x="56" y="93">Keyframe Streamer · RTC Broadcaster</text>
+            <text class="lbl-sub" x="56" y="110">Geo Tracker · Overlay / Panel UI</text>
+            <text class="lbl-dim" x="56" y="132">src/ar · src/capture · src/rtc · src/ui</text>
+
+            <!-- 8th Wall external -->
+            <rect class="box-ext" x="430" y="55" width="230" height="52" rx="8"/>
+            <text class="lbl-dim" x="446" y="76">8th Wall Engine</text>
+            <text class="lbl-dim" x="446" y="92">public/xr.js (SLAM)</text>
+            <path class="edge-dim" d="M430,81 L378,90" marker-end="url(#arrFaint)"/>
+
+            <!-- Tailscale boundary -->
+            <text class="elbl" x="205" y="185" text-anchor="middle">HTTPS · *.ts.net · Tailscale CORS allowlist</text>
+            <path class="edge-main" d="M205,150 L205,220" marker-end="url(#arrAccent)"/>
+
+            <!-- Deno server hub -->
+            <rect class="box" x="40" y="222" width="1100" height="66" rx="8"/>
+            <text class="lbl" x="56" y="248">Deno Server — main.ts</text>
+            <text class="lbl-sub" x="56" y="267">HTTP + WebSocket routes · CORS allowlist · capability-token auth · /health</text>
+
+            <!-- three lanes -->
+            <rect class="box" x="40" y="330" width="330" height="90" rx="8"/>
+            <text class="lbl" x="56" y="355">InferenceEngine</text>
+            <text class="lbl-sub" x="56" y="374">POST /infer</text>
+            <text class="lbl-dim" x="56" y="397">ollama · onnx · mock</text>
+
+            <rect class="box-job" x="410" y="330" width="330" height="90" rx="8"/>
+            <text class="lbl" x="426" y="355">JobQueue → pipeline.ts</text>
+            <text class="lbl-sub" x="426" y="374">optimize-scan (single worker)</text>
+            <text class="lbl-dim" x="426" y="397">dedup · LOD · quantize · Draco</text>
+
+            <rect class="box-world" x="780" y="330" width="360" height="90" rx="8"/>
+            <text class="lbl" x="796" y="355">WorldJob System</text>
+            <text class="lbl-sub" x="796" y="374">/worlds/:slug/jobs</text>
+            <text class="lbl-dim" x="796" y="397">lingbot-map · splat-train/detect/finish · memory-push</text>
+
+            <path class="edge" d="M205,288 L205,330" marker-end="url(#arrFaint)"/>
+            <path class="edge" d="M575,288 L575,330" marker-end="url(#arrFaint)"/>
+            <path class="edge" d="M960,288 L960,330" marker-end="url(#arrFaint)"/>
+
+            <!-- wave overlay: 01-merge-jobs retires this box into the WorldJob System -->
+            <rect x="410" y="330" width="330" height="90" rx="8" fill="none" stroke="var(--job)" stroke-width="1.6" stroke-dasharray="6 3"/>
+            <text class="elbl-job" x="760" y="306" text-anchor="middle">merging</text>
+            <text class="elbl-job" x="760" y="319" text-anchor="middle">01-merge-jobs →</text>
+            <path d="M740,375 L778,375" stroke="var(--job)" stroke-width="1.6" stroke-dasharray="5 3" fill="none" marker-end="url(#arrJob2)"/>
+
+            <!-- Ollama external -->
+            <rect class="box-ext" x="40" y="450" width="190" height="46" rx="8"/>
+            <text class="lbl-dim" x="56" y="470">Ollama</text>
+            <text class="lbl-dim" x="56" y="485">local VLM :11434</text>
+            <path class="edge-dim" d="M135,420 L135,450" marker-end="url(#arrFaint)"/>
+
+            <!-- Native tools external -->
+            <rect class="box-ext" x="780" y="450" width="360" height="46" rx="8"/>
+            <text class="lbl-dim" x="796" y="470">Brush CLI · splat_analyzer · LingBot-Map model</text>
+            <text class="lbl-dim" x="796" y="485">spawned as native subprocesses</text>
+            <path class="edge-dim" d="M960,420 L960,450" marker-end="url(#arrFaint)"/>
+
+            <!-- Storage -->
+            <rect class="box" x="410" y="520" width="330" height="66" rx="8"/>
+            <text class="lbl" x="426" y="546">Filesystem</text>
+            <text class="lbl-sub" x="426" y="565">scans/ · worlds/ · scans/sessions/</text>
+            <path class="edge" d="M575,420 L575,520" marker-end="url(#arrFaint)"/>
+            <path class="edge" d="M960,420 L720,520" marker-end="url(#arrFaint)"/>
+
+            <!-- Viewer -->
+            <rect class="box-world" x="330" y="630" width="450" height="90" rx="8"/>
+            <text class="lbl" x="346" y="656">Desktop World Editor</text>
+            <text class="lbl-sub" x="346" y="675">viewer.ts · editor.ts · splat/detect overlays</text>
+            <text class="lbl-dim" x="346" y="697">GET /worlds/:slug · WS /events</text>
+
+            <path class="edge" d="M575,586 L575,630" marker-end="url(#arrFaint)"/>
+
+            <!-- WS /events: hub -> viewer, routed down the left margin to avoid crossing other boxes -->
+            <path class="edge-dim" d="M60,288 L34,300 L34,665 L330,665" marker-end="url(#arrFaint)"/>
+            <text class="elbl" x="44" y="656">WS /events</text>
+
+            <!-- direct RTC bypass: client -> viewer, routed further out on the left margin -->
+            <path class="edge-dim" d="M60,150 L16,165 L16,690 L330,690" marker-end="url(#arrFaint)"/>
+            <text class="elbl" x="20" y="681">WebRTC live feed · bypasses storage</text>
+
+            <!-- Portal external -->
+            <rect class="box-ext" x="890" y="30" width="250" height="46" rx="8"/>
+            <text class="lbl-dim" x="906" y="50">CI-Portal (OIDC)</text>
+            <text class="lbl-dim" x="906" y="65">sign-in, PKCE</text>
+            <path class="edge-dim" d="M1015,76 L1000,222" marker-end="url(#arrFaint)"/>
+
+          </svg>
+        </div>
+        <figcaption>The scanner reaches the server only through a Tailscale <code class="v">*.ts.net</code> HTTPS tunnel. The server fans out to three independent subsystems — none of which call each other directly — and the World Editor reads their combined output back off disk, plus a live WebRTC feed that skips storage entirely. <strong style="color:var(--job);">Planned:</strong> the amber-outlined <code class="v">JobQueue</code> box is what <a href="#waves">01-merge-jobs</a> retires — its work moves into the WorldJob System box to its right, once that system's runner is hardened.</figcaption>
+      </figure>
+
+      <figure class="diagram">
+        <div class="svgwrap">
+          <svg viewBox="0 0 1180 260" role="img" aria-label="Reconstruction pipeline sequence: a capture session feeds LingBot-Map reconstruction, which feeds splat training, which auto-chains into splat-finish unless disabled, with splat-detect branching off the trained splat independently.">
+            <defs>
+              <marker id="arr2Accent" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"/>
+              </marker>
+              <marker id="arr2Job" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="var(--job)"/>
+              </marker>
+            </defs>
+            <style>
+              .box2 { fill: var(--surface); stroke: var(--line-strong); stroke-width: 1.2; }
+              .box2-world { fill: var(--world-soft); stroke: var(--world); }
+              .lbl2 { font-family: var(--mono); font-size: 12.5px; fill: var(--ink); }
+              .lbl2-sub { font-family: var(--serif); font-size: 10.5px; fill: var(--ink-dim); }
+              .edge2 { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+              .edge2-auto { fill: none; stroke: var(--job); stroke-width: 1.5; stroke-dasharray: 5 3; }
+              .elbl2 { font-family: var(--mono); font-size: 10.5px; fill: var(--ink-faint); }
+            </style>
+
+            <rect class="box2" x="20" y="80" width="180" height="80" rx="8"/>
+            <text class="lbl2" x="34" y="112">Capture session</text>
+            <text class="lbl2-sub" x="34" y="130">keyframes · ingest-video/photos</text>
+
+            <rect class="box2-world" x="250" y="80" width="200" height="80" rx="8"/>
+            <text class="lbl2" x="264" y="112">lingbot-map-reconstruct</text>
+            <text class="lbl2-sub" x="264" y="130">dense point cloud + poses</text>
+
+            <rect class="box2-world" x="500" y="80" width="180" height="80" rx="8"/>
+            <text class="lbl2" x="514" y="112">splat-train</text>
+            <text class="lbl2-sub" x="514" y="130">Brush CLI → *.splat.ply</text>
+
+            <rect class="box2-world" x="730" y="20" width="200" height="70" rx="8"/>
+            <text class="lbl2" x="744" y="50">splat-finish</text>
+            <text class="lbl2-sub" x="744" y="68">SOG + compressed PLY</text>
+
+            <rect class="box2-world" x="730" y="150" width="200" height="70" rx="8"/>
+            <text class="lbl2" x="744" y="180">splat-detect</text>
+            <text class="lbl2-sub" x="744" y="198">splat_analyzer → 3D boxes</text>
+
+            <path class="edge2" d="M200,120 L250,120" marker-end="url(#arr2Accent)"/>
+            <path class="edge2" d="M450,120 L500,120" marker-end="url(#arr2Accent)"/>
+            <path class="edge2-auto" d="M680,105 C700,90 710,75 730,58" marker-end="url(#arr2Job)"/>
+            <text class="elbl2" x="678" y="75">auto-chain</text>
+            <text class="elbl2" x="678" y="88">unless SPLAT_FINISH_AUTO=0</text>
+            <path class="edge2" d="M680,140 C700,155 710,165 730,180" marker-end="url(#arr2Accent)"/>
+            <text class="elbl2" x="676" y="165">needs a trained splat</text>
+
+            <text class="elbl2" x="20" y="225">Every stage writes its own *.manifest.json — status ok / skipped / error — even on failure, so the WorldJob queue and viewer always know why.</text>
+          </svg>
+        </div>
+        <figcaption>A scan's path from raw capture to a finished, web-ready splat. Training auto-chains into finishing; detection is a separate branch that only needs a trained splat to exist, in either order. Unaffected by 01-merge-jobs — this diagram's boxes are already all WorldJob types.</figcaption>
+      </figure>
+
+      <h3 class="subgrp">Key integration points</h3>
+      <div class="twrap"><table>
+        <thead><tr><th>From</th><th>To</th><th>Mechanism</th></tr></thead>
+        <tbody>
+          <tr><td class="fields">KeyframeStreamer</td><td class="fields">POST /sessions/:id/keyframes</td><td class="purpose">Multipart upload, retried 3× with backoff, offline-paused</td></tr>
+          <tr><td class="fields">POST /infer</td><td class="fields">InferenceEngine.infer()</td><td class="purpose">Raced against a 60s timeout; waits up to 15s for model load</td></tr>
+          <tr class="row-changing"><td class="fields">POST /upload-scan <span class="status-badge planned" style="margin-left:6px;">🔜</span></td><td class="fields">JobQueue.enqueue('optimize-scan')</td><td class="purpose">Auto-enqueued on every new/updated GLB — target becomes WorldJob creation, see 01-merge-jobs/0003</td></tr>
+          <tr><td class="fields">/ingest-video, /ingest-photos</td><td class="fields">scripts/ingest-*.mjs subprocess</td><td class="purpose">ffmpeg/EXIF extraction, then auto-enqueues lingbot-map-reconstruct</td></tr>
+          <tr><td class="fields">splat-train job (on success)</td><td class="fields">splat-finish job</td><td class="purpose">Auto-chained unless SPLAT_FINISH_AUTO=0</td></tr>
+          <tr><td class="fields">Every WorldJob transition</td><td class="fields">WS /events broadcast</td><td class="purpose">Viewer invalidates cached overlays and refreshes the quality-tier stepper</td></tr>
+          <tr><td class="fields">RtcBroadcaster (phone)</td><td class="fields">WS /rtc-signal → livefeed.ts (desktop)</td><td class="purpose">Server is a bare SDP/ICE relay; media + data flow peer-to-peer after</td></tr>
+          <tr><td class="fields">GeoTracker</td><td class="fields">nominatim.openstreetmap.org</td><td class="purpose">Direct from the browser — bypasses the CI-Spatial server entirely</td></tr>
+          <tr><td class="fields">OIDC callback (success)</td><td class="fields">default world's owner token</td><td class="purpose">World-role tokens remain the single authorization mechanism app-wide</td></tr>
+          <tr><td class="fields">memory-push job</td><td class="fields">CI-Server /v1/events</td><td class="purpose">Idempotent on (source_system, scanId); inert until both CI_SERVER_URL and _TOKEN are set</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <!-- ============================================================ -->
+    <section class="block" id="notes">
+      <div class="eyebrow">reference</div>
+      <h2>Review notes</h2>
+
+      <div class="callout ok"><strong>License contradiction — fixed.</strong> README.md's License section said MIT. <code class="v">LICENSE.md</code> is actually a restrictive "Commercial Standard License" (CI-Commercial-1.0, © 2019–2026 LifeScope INC).
+        <div class="diff is-done"><span class="was"><span class="strike">README.md § License: "MIT"</span></span><span class="now"><span class="arrow">→</span>correctly names the Commercial Standard License, links to LICENSE.md, flags which-license-is-intended as an open owner question rather than resolving it</span><span class="tag"><span class="status-badge done">✅ done</span> foundation-updates/0001, merged in #68</span></div>
+      </div>
+
+      <div class="callout ok"><strong>Confirmed live — fixed.</strong> <code class="v">ALLOWED_ORIGIN_PREFIX</code> defaulted to a hardcoded fallback host (<code class="v">liambook.capybara-ulmer.ts.net</code>) rather than the machine's own auto-detected Tailscale hostname. Harmless for CORS (the allowlist independently trusts any <code class="v">*.ts.net</code> origin) but broke share-link generation.
+        <div class="diff is-done"><span class="was"><span class="strike">main.ts read only the raw TAILSCALE_HOSTNAME env var</span></span><span class="now"><span class="arrow">→</span>ports vite.config.ts's tailscale status --json auto-detection into main.ts</span><span class="tag"><span class="status-badge done">✅ done</span> foundation-updates/0002, merged in #68 — verified live on everxr-01, share links now resolve to the real host</span></div>
+      </div>
+
+      <div class="callout"><strong>Two job systems, same repo — being unified.</strong> <code class="v">jobs.ts</code>'s <code class="v">JobQueue</code> (GLB optimize) and the WorldJob system (lingbot-map/splat/*) are entirely separate — different manifest schemas, different queues, and they never call into each other.
+        <div class="diff is-planned"><span class="was"><span class="strike">don't assume a change to one affects the other</span></span><span class="now"><span class="arrow">→</span>won't be true much longer: WorldJob becomes the one queue, per ADR 0001's "no third system" rule</span><span class="tag"><span class="status-badge planned">🔜 planned</span> docs/factory/01-merge-jobs — see <a href="#waves">Development waves</a> for the full plan and why it's strictly serial</span></div>
+      </div>
+
+      <footer>
+        <p>Built by reading the source directly: 9 parallel research passes over <code class="v">C:\devel\ci\CI-Spatial</code> (cloned locally from the private companionintelligence/CI-Spatial repo), plus a completeness pass that surfaced the PWA, Docker, GitHub Actions, and marketing-video sections. Every file path is exact; every description is condensed from what was actually read, not inferred from naming.</p>
+        <p>Feature and variable counts are exact for what's indexed here; deeper per-file detail (every exported helper, every Playwright spec) exists in the source but isn't reproduced — this atlas maps the shape of the system, not a full API reference.</p>
+        <p><strong>Maintaining this file.</strong> It lives at <code class="v">docs/factory/atlas.html</code> and is updated as part of planning each wave — that update is where a wave <em>justifies itself</em>, by showing in one place what it changes about the system as described here. A wave with no legible atlas diff is a wave whose value nobody can see. Full instructions: <code class="v">docs/FACTORY.md</code> § “The atlas”. Ticket content is never reproduced here; the wave folders own it.</p>
+        <p><strong>Last updated 2026-08-16</strong> — reflecting <code class="v">foundation-updates/</code> (6/11 merged), <code class="v">01-merge-jobs/</code>, and <code class="v">02-typed-event-payloads/</code>. Everything not carrying a status badge is the original 2026-08-15 source read, unchanged.</p>
+      </footer>
+    </section>
+
+  </main>
+</div>
