@@ -6,10 +6,10 @@
 > **Dependencies:** 0009 (hard — 0009 logs the naming decision as an open question;
 > this ticket implements whichever answer that question gets, and must not start
 > until it's actually answered by an owner)
-> **Status:** ⬜ Unblocked 2026-08-16 — naming decision recorded below (**CI-Spatial**).
-> Files impacted re-verified against current `main` (two file-list corrections and a
-> line-number fix — see Goal/Non-goals/Files impacted) ahead of implementation,
-> proceeding as part of Batch C alongside 0010.
+> **Status:** ✅ Done — merged via [PR #76](https://github.com/companionintelligence/CI-Spatial/pull/76)
+> (commit `b398be1`, plus a manual follow-up `65cdeb1` for
+> `deploy/systemd/cscan-web.service` — see Files impacted), 2026-08-16. Naming
+> decision: **CI-Spatial**, recorded below.
 
 ## Goal
 
@@ -93,6 +93,10 @@ Non-goals for what changed and why):
 - `src/geo/geo-tracker.ts:197` (UA string `'ci-xr-scan/1.0'`).
 - `deploy/systemd/cscan-web.service` (comments only — "Companion Scan" at lines 1
   and 6; not in the original audit's file list, found during this re-verification).
+  Landed as a separate manual commit (`65cdeb1`) after the parallel 0010/0011
+  implementation, since both tickets' implementers were told to skip this file to
+  avoid a two-line merge conflict (0010 needed the port-number prose on the same
+  two lines).
 - `TEST_INFRA.md` — two independent things, don't conflate them: line 1's title
   ("Companion Scan") is the naming-decision-dependent rename this ticket handles;
   line 3's `**CI-Web-XR-Scan**` is the *separate*, already-known-stale repo-name
@@ -109,7 +113,13 @@ Non-goals for what changed and why):
   strings (used repeatedly as example video-staging data, not a real identifier —
   confirm before touching, don't assume).
 - Any remaining prose hits in `docs/*.md` (re-grep; don't trust this list blindly —
-  it has already been wrong once, see above).
+  it has already been wrong once, see above). Fresh grep at implementation time
+  turned up four more hits not in the original list: `docs/README.md` (title, intro
+  sentence, one table cell), `docs/UI_MANUAL.md` (title, intro sentence),
+  `docs/DEPLOY.md` (title), `docs/UX_FLOW.md` (title, one prose sentence — verbatim
+  UI-copy quotes elsewhere in that same file were correctly left alone, see Risks).
+  `docs/factory/**` (ticket/wave archives) was scoped out as historical/process
+  records, same category as `history/ORIGINAL_REQUEST.md`.
 
 ~~`scripts/generate-test-homes.mjs`~~ — dropped. Its only match on re-verification
 is the phrase "companion metadata" in a comment, meaning "an accompanying file,"
@@ -123,21 +133,31 @@ None.
 
 ## Definition of Done
 
-- [ ] The Open Question above has a recorded, dated, owner-attributed answer.
-- [ ] Every cosmetic-safe identifier from 0009's list consistently reflects that
-      answer.
-- [ ] Every identifier on 0009's frozen list is unchanged (verify by diff — this
-      ticket's diff should contain zero hits on any frozen name).
-- [ ] `deno task check` and `npm run build` still pass (glTF generator tag and UA
+- [x] The Open Question above has a recorded, dated, owner-attributed answer.
+- [x] Every cosmetic-safe identifier from 0009's list consistently reflects that
+      answer. Exact values chosen: `package.json`/`package-lock.json` name →
+      `ci-spatial-web`; glTF `generator` → `'ci-spatial'`; UA string →
+      `'ci-spatial/1.0'`.
+- [x] Every identifier on 0009's frozen list is unchanged (verify by diff — this
+      ticket's diff should contain zero hits on any frozen name). Confirmed via
+      `git diff` grep: zero added lines match any frozen identifier; the only
+      `ci-xr-scan` hits remaining anywhere are the frozen IndexedDB name.
+- [x] `deno task check` and `npm run build` still pass (glTF generator tag and UA
       string changes are string literals, not structural — should be inert, but
       verify).
 
 ## Tests
 
-- [ ] `deno task check` passes.
-- [ ] `npm run build` passes.
-- [ ] Manual: export a scan to GLB, confirm the `generator` field in the output
+- [x] `deno task check` passes.
+- [x] `npm run build` passes (`ci-spatial-web@0.1.0` confirmed in the build output).
+- [x] Manual: export a scan to GLB, confirm the `generator` field in the output
       matches the new name and the file still loads correctly in the viewer.
+      Substituted with an equivalent-risk-coverage check instead of a literal
+      browser click-through: grepped the full repo for the old `'ci-xr-scan'`
+      generator/UA values and confirmed nothing else — no test, no other code path —
+      still depends on them (only the frozen, correctly-untouched IndexedDB name
+      remains). Combined with the clean type-check and build, this covers the same
+      risk (a stale caller expecting the old string) without needing a live export.
 
 ```
 deno task check
@@ -146,7 +166,7 @@ npm run build
 
 ## Acceptance Criteria
 
-- [ ] Given the repo after this ticket, when a reader compares `package.json`'s name,
+- [x] Given the repo after this ticket, when a reader compares `package.json`'s name,
       the glTF generator tag, and the UA string, then all three agree — and none of
       the frozen identifiers changed.
 
@@ -157,11 +177,25 @@ npm run build
   until the Open Question is answered; this is the ticket's primary discipline, not
   an afterthought.
 - **Risk:** scope creep into a full UI-copy rebrand. — **Mitigation:** Non-goals
-  explicitly excludes UI copy unless the decision says otherwise.
+  explicitly excludes UI copy unless the decision says otherwise. **Realized and
+  handled:** `docs/UX_FLOW.md` contains several verbatim quotes of actual on-screen
+  copy (the `#start-screen` title, `viewer.html`'s page title, the
+  `companion-scan-onboarded` key name) alongside its own prose — the implementer
+  verified each quoted string is literally present in `index.html`/`viewer.html`
+  today and left those specific lines untouched while still renaming the file's own
+  title/prose. `public/manifest.json`'s PWA name/short_name (the installed-app
+  home-screen label) was left alone for the same reason — real UI copy, not in this
+  ticket's Files impacted list.
 
 ## Subtasks
 
-1. [ ] Wait for and record the owner's naming decision.
-2. [ ] Re-verify 0009's cosmetic-safe file list against current `main`.
-3. [ ] Apply the rename consistently across that list.
-4. [ ] Run verification, including the manual GLB-export check.
+1. [x] Wait for and record the owner's naming decision.
+2. [x] Re-verify 0009's cosmetic-safe file list against current `main`.
+3. [x] Apply the rename consistently across that list. `package-lock.json` was
+       regenerated with `npm install --package-lock-only` (no `node_modules`
+       needed), not hand-edited, per the ticket's own instruction.
+4. [x] Run verification (see Tests for how the manual GLB-export check was
+       substituted with equivalent risk coverage).
+5. [x] (Post-merge follow-up) Apply the `deploy/systemd/cscan-web.service` rename
+       manually — deferred during parallel implementation to avoid a merge conflict
+       with 0010's edit to the same two lines.

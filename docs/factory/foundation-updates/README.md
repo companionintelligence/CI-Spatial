@@ -27,8 +27,8 @@ was added mid-wave, during 0005 — see "Batch B — landed" below.
 | 0007 | [worlddetection-extends-rawdetection](0007-worlddetection-extends-rawdetection.md) | make the thing-shape lineage real in the type system | ✅ merged (#71) |
 | 0008 | [storage-keys-and-palette-sync](0008-storage-keys-and-palette-sync.md) | central storage-key constants + a test that catches cv-palette drift | ✅ merged (#73) |
 | 0009 | [config-docs-and-naming-cleanup](0009-config-docs-and-naming-cleanup.md) | document every env var, fix stale repo names, freeze protected identifiers | ✅ merged (#71) |
-| 0010 | [single-source-vite-port](0010-single-source-vite-port.md) | `VITE_PORT` env var replaces six magic 5173s | ⬜ unblocked (0006 landed) |
-| 0011 | [name-ci-spatial](0011-name-ci-spatial.md) | cosmetic Companion-Scan→CI-Spatial rename, once an owner picks the name | ⬜ blocked on 0009's open question |
+| 0010 | [single-source-vite-port](0010-single-source-vite-port.md) | `VITE_PORT` env var replaces six magic 5173s | ✅ merged (#76) |
+| 0011 | [name-ci-spatial](0011-name-ci-spatial.md) | cosmetic Companion-Scan→CI-Spatial rename, once an owner picks the name | ✅ merged (#76) |
 
 ## Execution order & parallelization
 
@@ -152,6 +152,39 @@ code.
   test runs can produce false-looking failures (timeouts waiting for scan status)
   that look like regressions but are just UI-rendering load — clear `scans/` and
   restart the server before trusting a surprising `test:mock` result.
+
+## Batch C — landed 2026-08-16 — wave complete
+
+0010 and 0011 shipped together as one PR: [#76](https://github.com/companionintelligence/CI-Spatial/pull/76)
+(two isolated worktrees off latest `main`, merged and verified together). This is
+the last batch — **all 11 tickets in `foundation-updates` are now merged.** No new
+ADR was created this batch; both tickets extended existing patterns (0010 followed
+0002's Deno/Node-parallel-env-var precedent exactly; 0011 was a mechanical rename
+once the naming decision landed) rather than surfacing a new standing rule, so ADR
+0001 and 0002 (linked above) remain the complete set.
+
+**0011's naming decision, made during this batch:** the repo owner picked
+**CI-Spatial** over "Companion Scan" for every cosmetic-safe identifier 0009
+catalogued. Frozen identifiers (IndexedDB name, storage keys, GHCR image, OIDC
+client id, memory-push `sourceSystem`) are unaffected either way — see 0009's and
+0011's Non-goals for the list.
+
+**0010 found a real gap the original design missed:** `scripts/test-box.mjs` (the
+two-instance isolated-test-run tool) never passed its own `VITE_PORT` value to its
+isolated Deno child, so the ticket's own Acceptance Criteria couldn't have held true
+without adding that file to scope — a good example of why this wave's tickets ask
+implementers to re-verify against current code rather than trust the original audit.
+
+**Two things worth knowing for whoever picks up `01-merge-jobs` or
+`02-typed-event-payloads` next:**
+
+- `package.json`'s name is now `ci-spatial-web` (was `companion-scan-web`) and the
+  glTF `generator`/UA-string identifiers are now `ci-spatial`/`ci-spatial/1.0` (were
+  `ci-xr-scan`/`ci-xr-scan/1.0`) — if either of those two waves' tickets cite the old
+  values anywhere, they're stale now.
+- `main.ts` gained a `VITE_PORT` read and `scripts/test-box.mjs` gained a new env
+  key passed to its Deno child — neither should conflict with either wave's scope,
+  but re-grep rather than assume if either wave also touches those files.
 
 ## Explicitly deferred (found, not ticketed — needs an owner decision first)
 

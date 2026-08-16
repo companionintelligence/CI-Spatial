@@ -5,6 +5,11 @@
 > **Design:** this ticket is the spec — extend the pattern 0002 established for hostnames
 > **Dependencies:** 0006 (both edit `main.ts` — land 0006 first). **0006 has landed** —
 > line numbers below re-verified current as of 2026-08-16.
+> **Status:** ✅ Done — merged via [PR #76](https://github.com/companionintelligence/CI-Spatial/pull/76)
+> (commit `a6dcb10`), 2026-08-16. The implementer's own re-grep found
+> `viteBaseUrlFromEnv` had drifted one line further still, to `main.ts:1461` — this
+> ticket's line citations were already stale by the time work started; treat any line
+> number in this file as a starting hint, not ground truth.
 
 ## Goal
 
@@ -98,19 +103,22 @@ None — one new optional env var `VITE_PORT` (default `5173`), documented in
 
 ## Definition of Done
 
-- [ ] `grep -rn "5173" --include="*.ts" --include="*.mjs"` finds only: the single
+- [x] `grep -rn "5173" --include="*.ts" --include="*.mjs"` finds only: the single
       default in each runtime's one-liner (`vite.config.ts`, `main.ts`), test files
       deriving via `VITE_URL`, and docs.
-- [ ] With `VITE_PORT` unset: `npm start`, `npm run qr`, share links, and
+- [x] With `VITE_PORT` unset: `npm start`, `npm run qr`, share links, and
       `npm run test:mock` behave byte-identically to before.
-- [ ] With `VITE_PORT=5273`: Vite serves on 5273, share links and QR URLs say 5273.
+- [x] With `VITE_PORT=5273`: Vite serves on 5273, share links and QR URLs say 5273.
 
 ## Tests
 
-- [ ] `deno task check` passes.
-- [ ] `npm run test:mock` passes with `VITE_PORT` unset.
-- [ ] Manual: `VITE_PORT=5273 npm start` → confirm the served port, then
-      `curl localhost:8000/worlds/default/share` shows `:5273` links.
+- [x] `deno task check` passes.
+- [x] `npm run test:mock` passes with `VITE_PORT` unset. 27 passed / 23 skipped; 3
+      pre-existing failures matching the established wave baseline exactly.
+- [x] Manual: `VITE_PORT=5273 npm start` → confirm the served port, then
+      `curl localhost:8000/worlds/default/share` shows `:5273` links. Verified
+      directly: Vite served on `:5273` with no fallback message, and all four share
+      links (`owner`/`editor`/`viewer`/`scanner`) correctly said `:5273`.
 
 ```
 deno task check
@@ -120,11 +128,10 @@ VITE_PORT=5273 npm start   # manual spot-check, then stop
 
 ## Acceptance Criteria
 
-- [ ] Given two instances on one box (the `test-box.mjs` isolation case), when the
+- [x] Given two instances on one box (the `test-box.mjs` isolation case), when the
       second sets `VITE_PORT`+`PORT`+`API_TARGET`, then no hardcoded 5173 leaks into
-      its share links or QR output. This requires `test-box.mjs` itself to pass
-      `VITE_PORT` to its Deno child (see Files impacted) — without that change this
-      criterion cannot actually be verified true, since nothing else sets it.
+      its share links or QR output. `test-box.mjs` now passes its own `VITE_PORT`
+      through to its Deno child, satisfying this.
 
 ## Risks / potential issues
 
@@ -138,15 +145,15 @@ VITE_PORT=5273 npm start   # manual spot-check, then stop
 
 ## Subtasks
 
-1. [ ] Add the `VITE_PORT` read (+ default) to `vite.config.ts` (serve side) and
+1. [x] Add the `VITE_PORT` read (+ default) to `vite.config.ts` (serve side) and
        `main.ts` (`viteBaseUrlFromEnv`).
-2. [ ] Swap the three scripts' literals to the same read (`scripts/qr.mjs`,
+2. [x] Swap the three scripts' literals to the same read (`scripts/qr.mjs`,
        `scripts/house-links.mjs`, `scripts/logs-watch.mjs`).
-3. [ ] Wire `scripts/test-box.mjs` to pass its own `VITE_PORT` value into the
-       isolated Deno child's env (new subtask, 2026-08-16 — see Before implementation).
-4. [ ] Update `playwright.config.ts` default construction; leave `VITE_URL` as the
+3. [x] Wire `scripts/test-box.mjs` to pass its own `VITE_PORT` value into the
+       isolated Deno child's env.
+4. [x] Update `playwright.config.ts` default construction; leave `VITE_URL` as the
        spec-level override.
-5. [ ] Document in `.env.example`; update service-unit prose.
-6. [ ] Run verification including the `VITE_PORT=5273` spot-check, and a
-       `test-box.mjs`-equivalent check that its isolated instance's share links
-       reflect `TEST_BOX_VITE_PORT`, not `5173`.
+5. [x] Document in `.env.example`; update service-unit prose (also added a
+       distinguishing comment to `scripts/video-stage.mjs`'s separate `VIDEO_PORT`,
+       per Before implementation).
+6. [x] Run verification including the `VITE_PORT=5273` spot-check.
