@@ -21,7 +21,7 @@ Default branch: `main`
 ### Test locally
 
 ```bash
-ci-local run --repo CI-Web-XR-Scan
+ci-local run --repo CI-Spatial
 ```
 
 Equivalent to:
@@ -37,5 +37,5 @@ npm run --silent build
 **Publish container** — `docker-publish.yml`
 
 ```bash
-gh workflow run docker-publish.yml --repo companionintelligence/CI-Web-XR-Scan --ref main
+gh workflow run docker-publish.yml --repo companionintelligence/CI-Spatial --ref main
 ```
