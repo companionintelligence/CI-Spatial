@@ -26,13 +26,17 @@ this wave enforces retroactively.
 | 0008 | [storage-keys-and-palette-sync](0008-storage-keys-and-palette-sync.md) | central storage-key constants + a test that catches cv-palette drift | ⬜ |
 | 0009 | [config-docs-and-naming-cleanup](0009-config-docs-and-naming-cleanup.md) | document every env var, fix stale repo names, freeze protected identifiers | ✅ merged (#71) |
 | 0010 | [single-source-vite-port](0010-single-source-vite-port.md) | `VITE_PORT` env var replaces six magic 5173s | ⬜ |
+| 0011 | [name-ci-spatial](0011-name-ci-spatial.md) | cosmetic Companion-Scan→CI-Spatial rename, once an owner picks the name | ⬜ blocked on 0009's open question |
 
 ## Execution order & parallelization
 
-Two ordering constraints exist, both from shared files:
+Three ordering constraints exist:
 
 - **0003 → 0006** (both edit `jobs.ts`)
 - **0006 → 0010** (both edit `main.ts`)
+- **0009 → 0011** (0011 implements whichever naming decision 0009 surfaces as an open
+  question — it cannot start until an owner actually answers it, independent of any
+  other batch's timing)
 
 Everything else is disjoint. Safe schedule:
 
@@ -54,9 +58,23 @@ Batch C (after 0006):       0010
   overlap with 0009 is append-only from both sides.
 
 Each ticket is one PR to `main` (no stacking — verify landings in git, not by badge).
-The whole wave is ~10 focused PRs; nothing in it blocks feature work happening in
+The whole wave is ~11 focused PRs; nothing in it blocks feature work happening in
 parallel elsewhere, except that in-flight feature branches touching `main.ts` should
-land before Batch B starts or rebase after.
+land before Batch B starts or rebase after. 0011 sits outside the batch schedule
+entirely — it starts whenever the naming decision lands, whether that's before Batch A
+or after Batch C.
+
+## Now separate waves (found here, scoped elsewhere)
+
+- **Unifying the two job systems** (`jobs.ts` `JobQueue` vs `WorldJob`) — ADR 0001
+  deliberately stopped at "no third system" here; the actual merge is
+  [`docs/factory/01-merge-jobs/`](../01-merge-jobs/README.md), a migration with
+  crash-recovery semantics to preserve, not a cleanup.
+- **Typed `/events` payloads** (discriminated union per event) — 0006 does constants
+  only; full payload typing is
+  [`docs/factory/02-typed-event-payloads/`](../02-typed-event-payloads/README.md),
+  sequenced after `01-merge-jobs` so it types the merged job-event shapes once, not
+  the two independently-drifting ones.
 
 ## Batch A — landed 2026-08-16
 
@@ -91,13 +109,5 @@ remains [0001](../../adr/0001-reuse-existing-domain-model.md) (already linked ab
 
 ## Explicitly deferred (found, not ticketed — needs an owner decision first)
 
-- **Unifying the two job systems** (`jobs.ts` `JobQueue` vs `WorldJob`) — ADR 0001
-  deliberately stops at "no third system"; an actual merge is a migration with crash-
-  recovery semantics to preserve, not a cleanup.
-- **Cosmetic product-name renames** (`companion-scan-web` package name, glTF
-  `generator` tag, UA string) — blocked on the "Companion Scan vs CI-Spatial" naming
-  decision (open question in 0009).
-- **Typed `/events` payloads** (discriminated union per event) — 0006 does constants
-  only; payload typing is real signature churn, logged in 0006's Open Q&A.
 - **Normalizing lingbot-map's flat `elapsedMs`** to the splat manifests' nested
   `timing.elapsedMs` — requires a data-tolerant reader window; noted in 0005.
