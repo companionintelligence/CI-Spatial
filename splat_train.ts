@@ -22,6 +22,13 @@
  */
 
 import { buildBrushDataset } from './splat_train_dataset.ts'
+// The manifest type lives in src/world/manifests.ts, not here — see that
+// file's header (it's the canonical, Deno-API-free home so the browser
+// viewer can type-import it without dragging this file's `Deno.*` calls into
+// its DOM-lib type-check program). Re-exported below so
+// `import type { SplatTrainManifest } from './splat_train.ts'` still works.
+import type { SplatTrainManifest } from './src/world/types.ts'
+export type { SplatTrainManifest }
 
 export interface SplatTrainRunOptions {
   /** Absolute path to the session directory (scans/sessions/<id>). */
@@ -51,37 +58,6 @@ export interface SplatTrainRunOptions {
 }
 
 export type SplatTrainStatus = 'ok' | 'skipped' | 'error'
-
-export interface SplatTrainManifest {
-  schemaVersion: number
-  tool: 'brush'
-  status: SplatTrainStatus
-  createdAt: string
-  sessionDir: string
-  /** Basename of the landed .ply (relative to SCANS_DIR), when status is 'ok'. */
-  plyPath?: string
-  /** Basename of the compressed .ply, when Brush produced one. */
-  compressedPlyPath?: string
-  /** Number of gaussians in the exported PLY. */
-  gaussianCount?: number
-  /** Frames fed to the trainer. */
-  frameCount?: number
-  params: {
-    brushBin: string
-    device: string
-    trainIters: number
-    shDegree: number
-    maxResolution: number
-    evalEvery: number
-  }
-  timing?: { elapsedMs: number }
-  skippedReason?: string
-  remediation?: string
-  error?: string
-  /** Provenance from the world job. */
-  sessionId?: string
-  scanId?: string
-}
 
 export interface SplatTrainResult {
   status: SplatTrainStatus

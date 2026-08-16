@@ -20,18 +20,21 @@
  * positions + text so the caller can create them.
  */
 import * as THREE from 'three'
-import type { ScanManifest } from '../world/types'
+import type { ScanManifest, SplatDetectManifest as ServerSplatDetectManifest } from '../world/types'
 import { scanArtifactBase } from './splat-layer'
 
-export interface SplatDetectManifest {
+/**
+ * Viewer-side read of a splat-detect manifest — the real server type
+ * (SplatDetectManifest, defined in src/world/manifests.ts as an extension of
+ * PipelineManifestBase and re-exported from src/world/types.ts), loosened
+ * for older on-disk manifests: `schemaVersion`/`tool` predate this ticket's
+ * shared envelope, `prompt` predates detect's open-vocab prompt support, and
+ * `timing.elapsedMs` predates timing being recorded at all.
+ */
+export type SplatDetectManifest = Omit<ServerSplatDetectManifest, 'schemaVersion' | 'tool' | 'prompt' | 'timing'> & {
   schemaVersion?: number
   tool?: string
-  status: 'ok' | 'skipped' | 'error'
-  objectCount?: number
   prompt?: string
-  interactionsPath?: string
-  skippedReason?: string
-  error?: string
   timing?: { elapsedMs?: number }
 }
 
