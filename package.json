@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "vite --host",
     "build": "tsc --noEmit && vite build",
+    "verify": "deno task check && deno task test && tsc --noEmit",
     "preview": "vite preview --host",
     "server": "deno run --watch --allow-net --allow-read --allow-write --allow-env --allow-ffi --allow-run main.ts",
     "start": "concurrently --raw --names \"infer,vite\" -c \"cyan,green\" \"npm run server\" \"npm run dev\"",

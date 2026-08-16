@@ -32,6 +32,7 @@
 // its DOM-lib type-check program). Re-exported below so
 // `import type { SplatDetectManifest } from './splat_detect.ts'` still works.
 import type { SplatDetectManifest } from './src/world/types.ts'
+import { isRunnable } from './exec_probe.ts'
 export type { SplatDetectManifest }
 
 const DEFAULT_DETECT_PYTHON = `${Deno.env.get('HOME') ?? '~'}/.venvs/splat-analyzer/bin/python`
@@ -324,18 +325,9 @@ export function isValidSessionDir(sessionDir: string): boolean {
   return SESSION_ID_RE.test(base)
 }
 
-async function isRunnable(bin: string): Promise<boolean> {
-  try {
-    const info = await Deno.stat(bin)
-    if (!info.isFile) return false
-    if (typeof info.mode === 'number') {
-      return (info.mode & 0o111) !== 0
-    }
-    return true
-  } catch {
-    return false
-  }
-}
+// isRunnable now lives in ./exec_probe.ts — it was duplicated here and in
+// splat_train.ts, and both copies mis-detected every binary as non-runnable
+// on Windows (see that file's header for the mode-bit reason).
 
 async function exists(path: string): Promise<boolean> {
   try {
