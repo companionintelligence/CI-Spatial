@@ -267,9 +267,9 @@ The everyday user must understand there are **four distinct capture pipelines**,
 
 **User goal:** turn raw scans into richer artifacts (dense point clouds, splats, detected objects) without understanding the pipeline.
 
-**Two queues exist — do not conflate them:**
-- The **World `/jobs` queue** (async, 10 `WorldJobType`s) — driven from the editor.
-- The `jobs.ts` **`optimize-scan`** queue — a separate server-side GLB optimizer that writes `.opt.glb` / `.lodN.glb` / `.manifest.json` and surfaces only as transient scan-status text ("Optimizing (quantize/draco/LODs)…"), not in the Processing Queue list. This is where **progressive LOD** comes from.
+**One queue, two UI surfaces — do not conflate them:**
+- The **Processing Queue panel** (World tab) shows the editor-driven job types — reconstruction, splats, alignment, etc.
+- **`optimize-scan`** — the GLB optimizer that writes `.opt.glb` / `.lodN.glb` / `.manifest.json` — runs through the *same* WorldJob queue since the 01-merge-jobs wave (`docs/adr/0003-merged-job-system.md`; it used to be a separate `jobs.ts` system), but deliberately keeps its original UI surface: transient scan-status text ("Optimization queued…" / "Optimizing (quantize/draco/LODs)…"), filtered *out* of the Processing Queue list so upload bursts can't crowd out the reconstruction jobs that panel exists to show. This is where **progressive LOD** comes from.
 
 **World job types (10):** `ingest`, `extract-layers`, `align-scan`, `merge-points`, `semantic-pass`, `depth-reconstruct`, `lingbot-map-reconstruct`, `splat-train`, `splat-detect`, `export-world`. The Queue-Job dropdown exposes 9 (omits `splat-detect`, fired from the Splat Toolbox). Keep these distinct from the **sync `/process-scan` actions** (`object-count`, `scene-description`, `floor-plan`) — a different route and pipeline, surfaced on the phone panel's `Server Processing` block.
 

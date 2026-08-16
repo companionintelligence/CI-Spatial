@@ -30,7 +30,7 @@ flowchart TB
 
     subgraph ServerBackend ["Deno Server Backend (:8000)"]
         HTTPGateway["Deno HTTP Server (main.ts)"]
-        JobRunner["Async Job Queue Coordinator (jobs.ts)"]
+        JobRunner["WorldJob Queue (single-flight pump - world_job_pump.ts)"]
         OptimizationPipeline["Scan Optimization (Draco/LODs - pipeline.ts)"]
     end
 
@@ -66,6 +66,7 @@ flowchart TB
     HTTPGateway --> WorldsStore
     
     JobRunner --> HeavyWorkers
+    JobRunner -->|optimize-scan job| OptimizationPipeline
     HeavyWorkers --> ScansStore
     HeavyWorkers --> WorldsStore
     OptimizationPipeline --> ScansStore
@@ -127,10 +128,11 @@ graph TD
         Server_Infer -->|Local ONNX| LFM["LiquidAI ONNX Runtime (LFM-2.5)"]
         Server_Storage -->|Write GLB & sidecars| ScansDir["/scans/ directory"]
         Server_Storage -->|World Manifests & Patches| WorldsDir["/worlds/ directory"]
-        Server_Storage -->|Trigger Job /jobs| JobQueue["Async Job Queue"]
-        JobQueue -->|Run Reconstruction| LingBot["LingBot-Map (PLY + poses)"]
-        JobQueue -->|Run Splat Training| Brush["Brush 3DGS (splat.ply)"]
-        JobQueue -->|Run 3D Object Detection| SplatDetect["Splat-Detect (boxes)"]
+        Server_Storage -->|Create WorldJob| WorldJobs["WorldJob Queue (single-flight)"]
+        WorldJobs -->|optimize-scan| Optimize["pipeline.ts (Draco/LODs)"]
+        WorldJobs -->|Run Reconstruction| LingBot["LingBot-Map (PLY + poses)"]
+        WorldJobs -->|Run Splat Training| Brush["Brush 3DGS (splat.ply)"]
+        WorldJobs -->|Run 3D Object Detection| SplatDetect["Splat-Detect (boxes)"]
     end
 
     Ollama & LFM -->|Bounding Box JSON| Server_Infer
@@ -155,7 +157,7 @@ graph TD
 - **GLTF export** — exports the full scan (point cloud + camera path + labelled boxes) as a `.glb` file, saved locally and uploaded to the server.
 - **Shareable scanner/viewer links** — editor/owner share links carry capability tokens; regular world manifests redact stored tokens, and strict role enforcement is available with `WORLD_STRICT_AUTH=1`.
 - **Processing queue foundation** — world jobs cover ingest, layer extraction, alignment, point merging, semantic passes, depth reconstruction, splat training, and world export; the local coordinator validates inputs and records artifacts while heavier Open3D/CV/splat workers remain pluggable.
-- **Automatic scan optimization** — every upload runs through a persistent job queue: quantization + Draco + point-cloud LODs (`.opt.glb`, `.lodN.glb`, `.manifest.json`), roughly halving file size.
+- **Automatic scan optimization** — every upload is queued as an `optimize-scan` WorldJob (single-flight, crash-recovering): quantization + Draco + point-cloud LODs (`.opt.glb`, `.lodN.glb`, `.manifest.json`), roughly halving file size.
 - **Keyframe streaming** — ☁ button streams pose+intrinsics-tagged keyframes to the server while you walk: reconstruction-ready `FrameObservation` sidecars under `scans/sessions/`.
 - **Live geometry to desktop** — the WebRTC live stream also carries point-cloud deltas, detections, and camera pose; the desktop editor shows the scan growing in real time.
 - **Desktop world editor** — `/viewer` places scans in a shared ENU world with transform gizmos, semantic tagging, layer toggles, and progressive LOD-first loading (Draco-aware).
@@ -256,7 +258,9 @@ In WebXR mode the point cloud accumulates from per-frame hit-test samples (WebXR
 ├── main.ts                  # Deno HTTP server (inference + scan storage)
 ├── inference.ts             # Engine-agnostic inference (ollama / onnx / mock)
 ├── prompt.ts                # VLM prompt builder + JSON parser (server)
-├── jobs.ts                  # Async world-job queue runner (server)
+├── jobs.ts                  # Legacy Job/OptimizeScanManifest shapes (queue retired — ADR 0003)
+├── world_job_pump.ts        # WorldJob single-flight pump, dedupe, recovery (server)
+├── migrate_jobs.ts          # One-shot jobs.json → WorldJob migration (server)
 ├── pipeline.ts              # Scan-optimization pipeline (server)
 ├── lingbot_map*.ts          # LingBot-Map reconstruction glue (server)
 ├── splat_train.ts           # Brush splat-training job (server)
@@ -384,7 +388,7 @@ The full, canonical route table lives in [architecture.md](architecture.md); the
 | `GET` | `/worlds/:slug/share` | Returns owner/editor/viewer/scanner role links |
 | `POST` | `/worlds/:slug/patches` | Persists transform, label, category, notes, visibility edit patches |
 | `GET`/`POST` | `/worlds/:slug/jobs` | List / queue async world jobs (`align-scan`, `semantic-pass`, `splat-train`, `lingbot-map-reconstruct`, …) |
-| `GET` | `/jobs` / `/jobs/:id` | Global async job queue + single-job status |
+| `GET` | `/jobs` / `/jobs/:id` | Legacy view of `optimize-scan` jobs (shimmed from WorldJob data, shape unchanged) |
 | `GET` | `/worlds/:slug/frames/:scanId` | Pose, intrinsics, RGB URL, frustum for streamed keyframes |
 | `POST` | `/rtc-signal` | WebRTC signalling for live geometry |
 | `GET` | `/events` | Server-Sent Events stream |
