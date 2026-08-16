@@ -1,10 +1,10 @@
-# Companion Scan — production web frontend (vite build + vite preview on :5173,
+# CI-Spatial — production web frontend (vite build + vite preview on :5173,
 # or $VITE_PORT if set — see vite.config.ts's preview.port).
 # `vite preview` inherits server.https/proxy from vite.config.ts, so phones get
 # the same TLS cert + API proxy wiring as the dev server, without HMR overhead.
 # For dev iteration: systemctl --user stop cscan-web cscan-server && npm start
 [Unit]
-Description=Companion Scan web frontend (vite preview, :5173 by default)
+Description=CI-Spatial web frontend (vite preview, :5173 by default)
 Wants=cscan-server.service
 After=cscan-server.service
 
