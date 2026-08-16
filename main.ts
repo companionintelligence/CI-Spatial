@@ -48,6 +48,7 @@ import {
 } from './memory_push.ts'
 import { composeYUpTransform, geoToEnu, hasGeoPose } from './src/world/geo.ts'
 import { defaultLayerIndex } from './src/world/layers.ts'
+import { EVENT } from './src/shared/events.ts'
 import type {
   EditPatch,
   FrameObservation,
@@ -309,7 +310,7 @@ app.post('/client-logs', async (c) => {
     } catch (e) {
       console.warn('[client-logs] append failed:', e)
     }
-    broadcast({ type: 'client-log', ...record })
+    broadcast({ type: EVENT.CLIENT_LOG, ...record })
   }
   return c.body(null, 204)
 })
@@ -351,7 +352,7 @@ app.post('/upload-scan', async (c) => {
 
     // Every uploaded scan is optimized automatically (quantize/Draco/LODs)
     const job = jobQueue.enqueue('optimize-scan', filename)
-    broadcast({ type: 'scan-added', filename, size: buffer.byteLength })
+    broadcast({ type: EVENT.SCAN_ADDED, filename, size: buffer.byteLength })
 
     return c.json({ filename, size: buffer.byteLength, job: job.id })
   } catch (err) {
@@ -551,7 +552,7 @@ app.delete('/scans/:filename', async (c) => {
     }
     if (!deletedGlb && !deletedMetadata && deletedSidecars === 0) return c.json({ error: 'Scan not found' }, 404)
     await removeScanFromWorlds(filename)
-    broadcast({ type: 'scan-deleted', filename })
+    broadcast({ type: EVENT.SCAN_DELETED, filename })
     return c.json({ ok: true, filename, deleted: { glb: deletedGlb, metadata: deletedMetadata, sidecars: deletedSidecars } })
   } catch (err) {
     console.error('[scan delete error]', err)
@@ -572,7 +573,7 @@ app.delete('/scans', async (c) => {
       if (await removeIfExists(`${SCANS_DIR}/${entry.name}`)) deleted += 1
     }
     await removeAllScansFromWorlds()
-    broadcast({ type: 'scans-cleared', deleted })
+    broadcast({ type: EVENT.SCANS_CLEARED, deleted })
     return c.json({ ok: true, deleted })
   } catch (err) {
     console.error('[scans clear error]', err)
@@ -602,7 +603,7 @@ app.post('/sessions', async (c) => {
   const record = { sessionId, startedAt: new Date().toISOString(), keyframeCount: 0 }
   await Deno.writeTextFile(`${SESSIONS_DIR}/${sessionId}/session.json`, JSON.stringify(record, null, 2))
   console.log(`[session] opened ${sessionId}`)
-  broadcast({ type: 'session-started', sessionId })
+  broadcast({ type: EVENT.SESSION_STARTED, sessionId })
   return c.json(record, 201)
 })
 
@@ -736,7 +737,7 @@ app.post('/sessions/:id/finalize', async (c) => {
       }
     } catch { /* glb not uploaded yet — upload-scan enqueues on arrival */ }
   }
-  broadcast({ type: 'session-finalized', sessionId: record['sessionId'], keyframeCount, glbFilename })
+  broadcast({ type: EVENT.SESSION_FINALIZED, sessionId: record['sessionId'], keyframeCount, glbFilename })
   return c.json(record)
 })
 
@@ -829,7 +830,7 @@ app.post('/ingest-video', async (c) => {
     await saveWorld(world)
     await completeJobSoon(world.shareSlug, job.jobId)
 
-    broadcast({ type: 'video-ingested', sessionId, scanId: scan.scanId, jobId: job.jobId, frameCount })
+    broadcast({ type: EVENT.VIDEO_INGESTED, sessionId, scanId: scan.scanId, jobId: job.jobId, frameCount })
     return c.json({ sessionId, scanId: scan.scanId, jobId: job.jobId, frameCount }, 202)
   } finally {
     // Always drop the temp video — the keyframe session is the durable artifact.
@@ -927,7 +928,7 @@ app.post('/ingest-photos', async (c) => {
     await saveWorld(world)
     await completeJobSoon(world.shareSlug, job.jobId)
 
-    broadcast({ type: 'photos-ingested', sessionId, scanId: scan.scanId, jobId: job.jobId, frameCount })
+    broadcast({ type: EVENT.PHOTOS_INGESTED, sessionId, scanId: scan.scanId, jobId: job.jobId, frameCount })
     return c.json({
       sessionId,
       scanId: scan.scanId,
@@ -1598,7 +1599,7 @@ async function completeJobSoon(slug: string, jobId: string): Promise<void> {
       job.progress = 0.35
       job.updatedAt = new Date().toISOString()
       await saveWorld(world)
-      broadcast({ type: 'world-job-update', worldId: world.worldId, job })
+      broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job })
 
       if (job.type === 'lingbot-map-reconstruct') {
         await _runLingBotMapJob(slug, jobId)
@@ -1645,7 +1646,7 @@ async function completeJobSoon(slug: string, jobId: string): Promise<void> {
           }
           currentJob.updatedAt = new Date().toISOString()
           await saveWorld(current)
-          broadcast({ type: 'world-job-update', worldId: current.worldId, job: currentJob })
+          broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: current.worldId, job: currentJob })
         } catch (err) {
           console.error('[world-job complete error]', err)
         }
@@ -1670,7 +1671,7 @@ async function _runLingBotMapJob(slug: string, jobId: string): Promise<void> {
       job.progress = 1
       job.updatedAt = new Date().toISOString()
       await saveWorld(world)
-      broadcast({ type: 'world-job-update', worldId: world.worldId, job })
+      broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job })
       return
     }
     const sessionId = scan!.sessionId!
@@ -1682,7 +1683,7 @@ async function _runLingBotMapJob(slug: string, jobId: string): Promise<void> {
       job.progress = 1
       job.updatedAt = new Date().toISOString()
       await saveWorld(world)
-      broadcast({ type: 'world-job-update', worldId: world.worldId, job })
+      broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job })
       return
     }
 
@@ -1742,7 +1743,7 @@ async function _runLingBotMapJob(slug: string, jobId: string): Promise<void> {
     }
     currentJob.updatedAt = new Date().toISOString()
     await saveWorld(current)
-    broadcast({ type: 'world-job-update', worldId: current.worldId, job: currentJob })
+    broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: current.worldId, job: currentJob })
   } catch (err) {
     console.error('[lingbot-map job error]', err)
     try {
@@ -1755,7 +1756,7 @@ async function _runLingBotMapJob(slug: string, jobId: string): Promise<void> {
         recoveredJob.progress = 1
         recoveredJob.updatedAt = new Date().toISOString()
         await saveWorld(recovered)
-        broadcast({ type: 'world-job-update', worldId: recovered.worldId, job: recoveredJob })
+        broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: recovered.worldId, job: recoveredJob })
       }
     } catch { /* nothing more we can do */ }
   }
@@ -1775,7 +1776,7 @@ async function _runSplatTrainJob(slug: string, jobId: string): Promise<void> {
       job.progress = 1
       job.updatedAt = new Date().toISOString()
       await saveWorld(world)
-      broadcast({ type: 'world-job-update', worldId: world.worldId, job })
+      broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job })
       return
     }
     const sessionId = scan!.sessionId!
@@ -1787,7 +1788,7 @@ async function _runSplatTrainJob(slug: string, jobId: string): Promise<void> {
       job.progress = 1
       job.updatedAt = new Date().toISOString()
       await saveWorld(world)
-      broadcast({ type: 'world-job-update', worldId: world.worldId, job })
+      broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job })
       return
     }
 
@@ -1880,7 +1881,7 @@ async function _runSplatTrainJob(slug: string, jobId: string): Promise<void> {
     }
     currentJob.updatedAt = new Date().toISOString()
     await saveWorld(current)
-    broadcast({ type: 'world-job-update', worldId: current.worldId, job: currentJob })
+    broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: current.worldId, job: currentJob })
     if (chainedFinishJobId) await completeJobSoon(slug, chainedFinishJobId)
   } catch (err) {
     console.error('[splat-train job error]', err)
@@ -1894,7 +1895,7 @@ async function _runSplatTrainJob(slug: string, jobId: string): Promise<void> {
         recoveredJob.progress = 1
         recoveredJob.updatedAt = new Date().toISOString()
         await saveWorld(recovered)
-        broadcast({ type: 'world-job-update', worldId: recovered.worldId, job: recoveredJob })
+        broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: recovered.worldId, job: recoveredJob })
       }
     } catch { /* nothing more we can do */ }
   }
@@ -1914,7 +1915,7 @@ async function _runSplatDetectJob(slug: string, jobId: string): Promise<void> {
       job.progress = 1
       job.updatedAt = new Date().toISOString()
       await saveWorld(world)
-      broadcast({ type: 'world-job-update', worldId: world.worldId, job })
+      broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job })
       return
     }
 
@@ -2010,7 +2011,7 @@ async function _runSplatDetectJob(slug: string, jobId: string): Promise<void> {
     }
     currentJob.updatedAt = new Date().toISOString()
     await saveWorld(current)
-    broadcast({ type: 'world-job-update', worldId: current.worldId, job: currentJob })
+    broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: current.worldId, job: currentJob })
   } catch (err) {
     console.error('[splat-detect job error]', err)
     try {
@@ -2023,7 +2024,7 @@ async function _runSplatDetectJob(slug: string, jobId: string): Promise<void> {
         recoveredJob.progress = 1
         recoveredJob.updatedAt = new Date().toISOString()
         await saveWorld(recovered)
-        broadcast({ type: 'world-job-update', worldId: recovered.worldId, job: recoveredJob })
+        broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: recovered.worldId, job: recoveredJob })
       }
     } catch { /* nothing more we can do */ }
   }
@@ -2049,7 +2050,7 @@ async function _runMemoryPushJob(slug: string, jobId: string): Promise<void> {
       job.progress = 1
       job.updatedAt = new Date().toISOString()
       await saveWorld(world)
-      broadcast({ type: 'world-job-update', worldId: world.worldId, job })
+      broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job })
       return
     }
 
@@ -2078,7 +2079,7 @@ async function _runMemoryPushJob(slug: string, jobId: string): Promise<void> {
     }]
     currentJob.updatedAt = new Date().toISOString()
     await saveWorld(current)
-    broadcast({ type: 'world-job-update', worldId: current.worldId, job: currentJob })
+    broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: current.worldId, job: currentJob })
   } catch (err) {
     console.error('[memory-push] job failed:', err)
     try {
@@ -2091,7 +2092,7 @@ async function _runMemoryPushJob(slug: string, jobId: string): Promise<void> {
       currentJob.result = currentJob.error
       currentJob.updatedAt = new Date().toISOString()
       await saveWorld(current)
-      broadcast({ type: 'world-job-update', worldId: current.worldId, job: currentJob })
+      broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: current.worldId, job: currentJob })
     } catch { /* world unreadable — the error is already logged */ }
   }
 }
@@ -2110,7 +2111,7 @@ async function _runSplatFinishJob(slug: string, jobId: string): Promise<void> {
       job.progress = 1
       job.updatedAt = new Date().toISOString()
       await saveWorld(world)
-      broadcast({ type: 'world-job-update', worldId: world.worldId, job })
+      broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job })
       return
     }
 
@@ -2168,7 +2169,7 @@ async function _runSplatFinishJob(slug: string, jobId: string): Promise<void> {
     }
     currentJob.updatedAt = new Date().toISOString()
     await saveWorld(current)
-    broadcast({ type: 'world-job-update', worldId: current.worldId, job: currentJob })
+    broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: current.worldId, job: currentJob })
   } catch (err) {
     console.error('[splat-finish job error]', err)
     try {
@@ -2181,7 +2182,7 @@ async function _runSplatFinishJob(slug: string, jobId: string): Promise<void> {
         recoveredJob.progress = 1
         recoveredJob.updatedAt = new Date().toISOString()
         await saveWorld(recovered)
-        broadcast({ type: 'world-job-update', worldId: recovered.worldId, job: recoveredJob })
+        broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: recovered.worldId, job: recoveredJob })
       }
     } catch { /* nothing more we can do */ }
   }
