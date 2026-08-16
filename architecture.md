@@ -306,7 +306,7 @@ On the client, WebGPU (on-device ONNX in a Web Worker) versus server inference i
 
 ### API Routes & Interface Specification
 
-Routes are registered at the top level of `main.ts`. (Server-side Deno modules live at the **repo root** — `main.ts`, `inference.ts`, `jobs.ts`, `pipeline.ts`, `lingbot_map*.ts`, `splat_train.ts`, `splat_detect.ts` — there is no `server/` subdirectory.)
+Routes are registered at the top level of `main.ts`. (Server-side Deno modules live at the **repo root** — `main.ts`, `inference.ts`, `jobs.ts` (legacy type shapes only), `world_job_pump.ts`, `pipeline.ts`, `lingbot_map*.ts`, `splat_train.ts`, `splat_detect.ts` — there is no `server/` subdirectory.)
 
 | Endpoint | Method | Payload | Success Response | Notes |
 |---|---|---|---|---|
@@ -317,7 +317,7 @@ Routes are registered at the top level of `main.ts`. (Server-side Deno modules l
 | `/scans` | GET | None | `[{ filename, size, uploadedAt }]` | Lists uploaded files, newest first. |
 | `/scans/:filename` | GET | Filename param | Binary stream (`model/gltf-binary`) | Serves GLB with `public, max-age=3600`. |
 | `/scans/:filename/manifest` | GET | Filename param | `ScanManifest` JSON | Optimization artifact index (optimized + LODs + stage log). 404 until the job runs. |
-| `/scans/:filename/optimize` | POST | Filename param | `Job` (202) | Manually (re-)enqueue the optimization job. |
+| `/scans/:filename/optimize` | POST | Filename param | `WorldJob` (202) | Manually (re-)enqueue the optimization job (dedupes against an in-flight one). |
 | `/scan-locations` | GET | None | `[{ filename, geoLat, geoLng, geoBearing, … }]` | Geo metadata for all scans (map view). |
 | `/upload-summary` | POST | Multipart `{ file: File(.md) }` | `{"filename":"..."}` | Saves a summary document to `./summaries/`. |
 | `/sessions` | POST | None | `{"sessionId":"sess-..."}` (201) | Opens a keyframe capture session (`scans/sessions/<id>/`). |
@@ -332,7 +332,7 @@ Routes are registered at the top level of `main.ts`. (Server-side Deno modules l
 | `/worlds/:slug` | GET | Slug param | `WorldProject` | Fetch a world (read-only view when opened via a `shareSlug`). |
 | `/worlds/:slug/frames/:scanId` | GET | — | Frame observations | Per-scan camera-path / frame stream. |
 | `/worlds/:slug/*.splat` | GET | — | Splat binary | Trained 3DGS splat sidecar. |
-| `/jobs` / `/jobs/:id` | GET | — | `WorldJob[]` / `WorldJob` | Async world job queue state (`scans/jobs.json`). |
+| `/jobs` / `/jobs/:id` | GET | — | legacy `Job[]` / `Job` | Back-compat view of `optimize-scan` WorldJobs, translated to the retired JobQueue's response shape (ADR 0003) — response is byte-identical to the pre-merge API. |
 | `/rtc-signal` | GET | Query `room`, `role` | WebSocket upgrade (101) | WebRTC signaling relay between `phone` and `viewer`. |
 | `/events` | GET | None | WebSocket upgrade (101) | Broadcast stream: `scan-added`, `job-update`, `session-*`. The viewer subscribes to refresh scans and job chips live. |
 | `/client-logs` | POST | JSON log batch | `{"ok":true}` | Remote debug-log sink from mobile clients. |
@@ -355,9 +355,9 @@ A **world** (`WorldProject`, `src/world/types.ts`) is an anchored spatial contai
 
 Worlds carry role-scoped membership (`MemberRole`: `owner | editor | viewer | scanner`) and share slugs. The environment flag `WORLD_STRICT_AUTH=1` (`main.ts`) turns on strict token enforcement: requests must present a valid role token, and anonymous access is rejected. When unset (default), routes allow anonymous access — appropriate for a single-owner LAN/Tailnet deployment. Recipients of a `shareSlug` open `/worlds/:slug` at their granted role (e.g. a `viewer` link is read-only).
 
-### World Job Types & Processing (`/jobs`)
+### World Job Types & Processing (`/worlds/:slug/jobs`)
 
-The `/jobs` queue runs **asynchronous** world jobs (`WorldJobType`, status `queued | processing | completed | failed`). These are distinct from the synchronous `/process-scan` actions (`object-count`, `scene-description`, `floor-plan`). Ten job types:
+The `/worlds/:slug/jobs` queue runs **asynchronous** world jobs (`WorldJobType`, status `queued | processing | completed | failed`) — this is the real job queue; `GET /jobs` is only the legacy `optimize-scan` compatibility shim described in the route table above. World jobs are distinct from the synchronous `/process-scan` actions (`object-count`, `scene-description`, `floor-plan`). Thirteen job types:
 
 | Job type | Worker / method | Produces |
 |---|---|---|
@@ -370,17 +370,25 @@ The `/jobs` queue runs **asynchronous** world jobs (`WorldJobType`, status `queu
 | `lingbot-map-reconstruct` | LingBot-Map (Python, `LINGBOT_MAP_PYTHON` / `LINGBOT_MAP_MODEL_PATH`) | `*.point-cloud.ply` + `*.poses.json` + manifest |
 | `splat-train` | **Brush** (wgpu/AMD, GPU-pinned) 3D Gaussian Splatting | `*.splat.ply` |
 | `splat-detect` | **OWLv2** open-vocabulary detection over the splat | `*.interactions.json` (3D boxes) |
+| `splat-finish` | **@playcanvas/splat-transform** web-delivery compression | `*.sog` + `*.compressed.ply` |
+| `memory-push` | CI-Server `/v1/events` push (`memory_push.ts`) | a `capture.scan` memory event with the GLB attached |
 | `export-world` | world composition | combined GLB + semantic JSON |
+| `optimize-scan` | `pipeline.ts` (quantize / Draco / point-cloud LODs) | `*.opt.glb` + `*.lodN.glb` + `*.manifest.json` |
 
-The editor's Queue-Job dropdown exposes nine of these; `splat-detect` is fired from the Splat Toolbox section instead. Many runners emit a **plan/placeholder** artifact and report a "hint" when the real worker (Brush, LingBot-Map Python, Open3D) is not wired via env vars — the planned-vs-real distinction is intentional so the queue works end-to-end in CI.
+The editor's Queue-Job dropdown exposes ten of these. The other three are reached differently: `splat-detect` is fired from the Splat Toolbox section, `optimize-scan` is queued automatically on every upload (never manually — and filtered out of the Processing Queue panel; see [`docs/UX_FLOW.md`](docs/UX_FLOW.md) § Phase 3), and `memory-push` has no UI entry point at all, only the generic `POST /worlds/:slug/jobs` API. Many runners emit a **plan/placeholder** artifact and report a "hint" when the real worker (Brush, LingBot-Map Python, Open3D) is not wired via env vars — the planned-vs-real distinction is intentional so the queue works end-to-end in CI.
 
-### Scan Optimization Pipeline (`pipeline.ts` + `jobs.ts`)
+### Scan Optimization Pipeline (`pipeline.ts`, dispatched as a WorldJob)
 
-Every uploaded `.glb` is processed by an in-process, persistent job queue
-(sequential worker — the box also runs VLM inference):
+Every uploaded `.glb` is queued as an `optimize-scan` **WorldJob** — the same
+single-flight, crash-recovering queue (`world_job_pump.ts`) that runs every
+other job type (sequential worker — the box also runs VLM inference). The
+standalone `JobQueue` that used to own this was retired by the 01-merge-jobs
+wave (`docs/adr/0003-merged-job-system.md`); `jobs.ts` survives only as the
+legacy `Job`/`JobStatus`/`OptimizeScanManifest` type shapes the `/jobs`
+back-compat shim still responds in:
 
 ```
-upload-scan ──▶ JobQueue('optimize-scan') ──▶ pipeline.ts (gltf-transform)
+upload-scan ──▶ WorldJob('optimize-scan') ──▶ pipeline.ts (gltf-transform)
                                                   │ dedup + prune
                                                   │ point-cloud LODs (voxel 0.12 m / 0.30 m)
                                                   │ KHR_mesh_quantization (no decoder needed)
