@@ -17,7 +17,7 @@ import { spawn, execSync } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, openSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const API_PORT = Number(process.env.TEST_BOX_API_PORT ?? 8100)
@@ -31,10 +31,28 @@ const denoBin = (() => {
   return join(homedir(), '.deno', 'bin', 'deno')
 })()
 
+// Launch the two npm-installed CLIs through node with their own JS entry
+// points instead of `npx`. On Windows `npx` is a .cmd shim: bare 'npx' is
+// ENOENT (spawn() calls CreateProcess directly and never tries PATHEXT), and
+// 'npx.cmd' is EINVAL on Node 18.20+/20.12+/22+ unless spawned with a shell.
+// The .js entry points are plain files on every platform, so no shim, no
+// shell quoting, and one less process between us and the server.
+const VITE_CLI = join(root, 'node_modules', 'vite', 'bin', 'vite.js')
+const PLAYWRIGHT_CLI = join(root, 'node_modules', '@playwright', 'test', 'cli.js')
+
 const children = []
 function shutdown(code) {
   for (const child of children) {
-    try { process.kill(-child.pid, 'SIGTERM') } catch { /* already gone */ }
+    try {
+      // Windows has no process groups: kill(-pid) throws, and swallowing that
+      // leaves the API server holding :8100, so the next run dies AddrInUse
+      // against its own orphan. taskkill /T is the equivalent tree kill.
+      if (process.platform === 'win32') {
+        execSync(`taskkill /pid ${child.pid} /T /F`, { stdio: 'ignore' })
+      } else {
+        process.kill(-child.pid, 'SIGTERM')
+      }
+    } catch { /* already gone */ }
   }
   process.exit(code)
 }
@@ -133,10 +151,12 @@ launch('deno', denoBin, ['run', '--allow-net', '--allow-read', '--allow-write', 
 const NOWATCH_CONFIG = join(RUN_DIR, '.vite.nowatch.mjs')
 writeFileSync(
   NOWATCH_CONFIG,
-  `import base from '${join(root, 'vite.config.ts')}'\n` +
+  // A file:// URL, not a bare path: on Windows a raw absolute path is a
+  // 'c:' URL scheme the ESM loader rejects (ERR_UNSUPPORTED_ESM_URL_SCHEME).
+  `import base from '${pathToFileURL(join(root, 'vite.config.ts')).href}'\n` +
     `export default { ...base, server: { ...(base.server || {}), watch: null } }\n`,
 )
-launch('vite', 'npx', ['vite', '--config', NOWATCH_CONFIG, '--host', '--port', String(VITE_PORT), '--strictPort'], {
+launch('vite', process.execPath, [VITE_CLI, '--config', NOWATCH_CONFIG, '--host', '--port', String(VITE_PORT), '--strictPort'], {
   API_TARGET: API_URL,
 })
 
@@ -162,7 +182,7 @@ try {
 
   // 4. Test suites
   console.log('[test-box] running playwright: api + chromium-mock')
-  const pw = spawn('npx', ['playwright', 'test', '--project=api', '--project=chromium-mock'], {
+  const pw = spawn(process.execPath, [PLAYWRIGHT_CLI, 'test', '--project=api', '--project=chromium-mock'], {
     cwd: root,
     stdio: 'inherit',
     env: {
