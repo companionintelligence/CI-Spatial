@@ -17,6 +17,10 @@
  * testing" pattern, reduced to what CI needs.
  *
  * NOTE: furniture colours mirror src/shared/cv-palette.ts — keep in sync.
+ * This is a classic (non-module) script loaded via a plain <script> tag, so
+ * it cannot import CV_PALETTE directly; sync.test.ts (repo root) reads this
+ * file as text and asserts the SCENE_OBJECTS colours below haven't drifted
+ * from src/shared/cv-palette.ts.
  */
 ;(function () {
   'use strict'

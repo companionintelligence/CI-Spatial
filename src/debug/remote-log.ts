@@ -12,6 +12,8 @@
  * swallowed.
  */
 
+import { REMOTE_LOG_KEY } from '../shared/storage-keys'
+
 type LogLevel = 'error' | 'warn'
 
 interface LogEntry {
@@ -32,7 +34,7 @@ let buffer: LogEntry[] = []
 function isArmed(): boolean {
   try {
     if (new URLSearchParams(location.search).get('debug') === 'remote') return true
-    return localStorage.getItem('remote-log') === '1'
+    return localStorage.getItem(REMOTE_LOG_KEY) === '1'
   } catch {
     // localStorage can throw (private mode / blocked storage) — stay disarmed.
     return false
