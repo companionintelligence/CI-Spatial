@@ -355,9 +355,9 @@ A **world** (`WorldProject`, `src/world/types.ts`) is an anchored spatial contai
 
 Worlds carry role-scoped membership (`MemberRole`: `owner | editor | viewer | scanner`) and share slugs. The environment flag `WORLD_STRICT_AUTH=1` (`main.ts`) turns on strict token enforcement: requests must present a valid role token, and anonymous access is rejected. When unset (default), routes allow anonymous access — appropriate for a single-owner LAN/Tailnet deployment. Recipients of a `shareSlug` open `/worlds/:slug` at their granted role (e.g. a `viewer` link is read-only).
 
-### World Job Types & Processing (`/jobs`)
+### World Job Types & Processing (`/worlds/:slug/jobs`)
 
-The `/jobs` queue runs **asynchronous** world jobs (`WorldJobType`, status `queued | processing | completed | failed`). These are distinct from the synchronous `/process-scan` actions (`object-count`, `scene-description`, `floor-plan`). Ten job types:
+The `/worlds/:slug/jobs` queue runs **asynchronous** world jobs (`WorldJobType`, status `queued | processing | completed | failed`) — this is the real job queue; `GET /jobs` is only the legacy `optimize-scan` compatibility shim described in the route table above. World jobs are distinct from the synchronous `/process-scan` actions (`object-count`, `scene-description`, `floor-plan`). Thirteen job types:
 
 | Job type | Worker / method | Produces |
 |---|---|---|
@@ -370,9 +370,12 @@ The `/jobs` queue runs **asynchronous** world jobs (`WorldJobType`, status `queu
 | `lingbot-map-reconstruct` | LingBot-Map (Python, `LINGBOT_MAP_PYTHON` / `LINGBOT_MAP_MODEL_PATH`) | `*.point-cloud.ply` + `*.poses.json` + manifest |
 | `splat-train` | **Brush** (wgpu/AMD, GPU-pinned) 3D Gaussian Splatting | `*.splat.ply` |
 | `splat-detect` | **OWLv2** open-vocabulary detection over the splat | `*.interactions.json` (3D boxes) |
+| `splat-finish` | **@playcanvas/splat-transform** web-delivery compression | `*.sog` + `*.compressed.ply` |
+| `memory-push` | CI-Server `/v1/events` push (`memory_push.ts`) | a `capture.scan` memory event with the GLB attached |
 | `export-world` | world composition | combined GLB + semantic JSON |
+| `optimize-scan` | `pipeline.ts` (quantize / Draco / point-cloud LODs) | `*.opt.glb` + `*.lodN.glb` + `*.manifest.json` |
 
-The editor's Queue-Job dropdown exposes nine of these; `splat-detect` is fired from the Splat Toolbox section instead. Many runners emit a **plan/placeholder** artifact and report a "hint" when the real worker (Brush, LingBot-Map Python, Open3D) is not wired via env vars — the planned-vs-real distinction is intentional so the queue works end-to-end in CI.
+The editor's Queue-Job dropdown exposes ten of these. The other three are reached differently: `splat-detect` is fired from the Splat Toolbox section, `optimize-scan` is queued automatically on every upload (never manually — and filtered out of the Processing Queue panel; see [`docs/UX_FLOW.md`](docs/UX_FLOW.md) § Phase 3), and `memory-push` has no UI entry point at all, only the generic `POST /worlds/:slug/jobs` API. Many runners emit a **plan/placeholder** artifact and report a "hint" when the real worker (Brush, LingBot-Map Python, Open3D) is not wired via env vars — the planned-vs-real distinction is intentional so the queue works end-to-end in CI.
 
 ### Scan Optimization Pipeline (`pipeline.ts`, dispatched as a WorldJob)
 
