@@ -6,11 +6,10 @@
 > **Dependencies:** 0009 (hard — 0009 logs the naming decision as an open question;
 > this ticket implements whichever answer that question gets, and must not start
 > until it's actually answered by an owner)
-> **Status:** ⬜ Still blocked, 2026-08-16 — 0009's Open Question is still unanswered.
-> Files impacted re-verified against current `main` ahead of the decision landing
-> (two file-list corrections and a line-number fix — see Goal/Non-goals/Files
-> impacted); no code changed, since the Non-goals section still forbids opening a
-> PR before the decision is recorded.
+> **Status:** ⬜ Unblocked 2026-08-16 — naming decision recorded below (**CI-Spatial**).
+> Files impacted re-verified against current `main` (two file-list corrections and a
+> line-number fix — see Goal/Non-goals/Files impacted) ahead of implementation,
+> proceeding as part of Batch C alongside 0010.
 
 ## Goal
 
@@ -80,8 +79,8 @@ work doesn't stall the decision.
 ## Open questions & answers
 
 - Q: Companion Scan or CI-Spatial, for the cosmetic-safe identifiers listed above? —
-  OPEN — owner decision required before this ticket can start. Record the answer,
-  who made it, and the date here the moment it's available.
+  A: **CI-Spatial.** Decided by the repo owner (Alexandra Hartman / FzzySwtr),
+  2026-08-16. Unblocks this ticket — proceeding as part of Batch C.
 
 ## Files impacted
 
