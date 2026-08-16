@@ -14,16 +14,28 @@
  * but has no manifest yet shows "not yet reconstructed".
  */
 import * as THREE from 'three'
-import type { ScanManifest } from '../world/types'
+import type { ScanManifest, PipelineManifestBase } from '../world/types'
 import { parseLingBotMapPLY } from '../../lingbot_map_ply.ts'
 
-export interface LingBotMapManifest {
-  status: 'ok' | 'skipped' | 'error'
+/**
+ * lingbot-map.manifest.json is written by a Python worker
+ * (scripts/lingbot_map_worker.py), not one of the three TS pipeline-stage
+ * drivers, so it has no server-side TS type to import — it only shares part
+ * of PipelineManifestBase's envelope in practice (see ticket 0005's Open
+ * Q&A). Pull in just the fields it actually shares rather than redeclaring
+ * them.
+ */
+export interface LingBotMapManifest extends Pick<PipelineManifestBase, 'status' | 'skippedReason' | 'error'> {
   pointCount?: number
   frameCount?: number
+  /**
+   * Flat elapsedMs, NOT nested under `timing.elapsedMs` like the splat
+   * pipeline-stage manifests (PipelineManifestBase) — lingbot_map_worker.py
+   * has always written it this way. Per ADR 0001 / ticket 0005's non-goals,
+   * this reader keeps tolerating the flat shape rather than normalizing the
+   * writer; that would be a separate, data-migration-aware change.
+   */
   elapsedMs?: number
-  skippedReason?: string
-  error?: string
 }
 
 export interface LingBotMapPoseFrame {

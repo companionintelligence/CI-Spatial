@@ -25,31 +25,35 @@
  * The manual URL/file panel from PR#9 is untouched — this is the automatic,
  * per-scan surface that mirrors the LingBot-Map overlay.
  */
-import type { ScanManifest } from '../world/types'
+import type {
+  ScanManifest,
+  SplatTrainManifest as ServerSplatTrainManifest,
+  SplatFinishManifest as ServerSplatFinishManifest,
+} from '../world/types'
 import { loadSplat, disposeSplat, type LoadedSplat } from './splat-viewer'
 
-export interface SplatTrainManifest {
-  status: 'ok' | 'skipped' | 'error'
-  gaussianCount?: number
-  frameCount?: number
-  plyPath?: string
-  compressedPlyPath?: string
-  skippedReason?: string
-  remediation?: string
-  error?: string
+/**
+ * Viewer-side read of a splat-train manifest — the real server type
+ * (SplatTrainManifest, defined in src/world/manifests.ts as an extension of
+ * PipelineManifestBase and re-exported from src/world/types.ts), with
+ * `timing.elapsedMs` loosened to optional: older on-disk manifests written
+ * before that field existed still need to parse, and every read here already
+ * goes through `m.timing?.elapsedMs` so nothing depends on it being present.
+ */
+export type SplatTrainManifest = Omit<ServerSplatTrainManifest, 'timing'> & {
   timing?: { elapsedMs?: number }
 }
 
-export interface SplatFinishManifest {
-  status: 'ok' | 'skipped' | 'error'
-  sogPath?: string
-  compressedPlyPath?: string
-  sizes?: { inputBytes?: number | null; sogBytes?: number | null; compressedBytes?: number | null }
-  gaussianCount?: number
-  skippedReason?: string
-  remediation?: string
-  error?: string
+/**
+ * Viewer-side read of a splat-finish manifest — the real server type
+ * (SplatFinishManifest, see src/world/manifests.ts), with the same
+ * `timing.elapsedMs` leniency as SplatTrainManifest above, plus
+ * `sizes.inputBytes` loosened to optional/nullable for the same reason
+ * (older manifests predating the sizes field, or a partially-written one).
+ */
+export type SplatFinishManifest = Omit<ServerSplatFinishManifest, 'timing' | 'sizes'> & {
   timing?: { elapsedMs?: number }
+  sizes?: { inputBytes?: number | null; sogBytes?: number | null; compressedBytes?: number | null }
 }
 
 /** Which served artifact actually backs the loaded SplatMesh. */
