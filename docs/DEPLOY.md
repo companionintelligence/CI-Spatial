@@ -1,4 +1,4 @@
-# Deploying Companion Scan as a persistent server (Linux + systemd)
+# Deploying CI-Spatial as a persistent server (Linux + systemd)
 
 Turn any Linux box on your tailnet into an always-on scan server: production
 web bundle over HTTPS on `:5173`, Deno API on `:8000`, GPU inference via the

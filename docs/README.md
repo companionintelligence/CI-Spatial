@@ -1,6 +1,6 @@
-# Companion Scan — Documentation Index
+# CI-Spatial — Documentation Index
 
-Companion Scan turns a phone walk-through of a place you own into a private,
+CI-Spatial turns a phone walk-through of a place you own into a private,
 structured, explorable **4D map** — scanned on the phone, composed and
 reconstructed in a desktop editor, and shareable as a world. Inference is
 **engine-agnostic**: `INFERENCE_MODE=ollama` (default) runs whatever
@@ -14,7 +14,7 @@ see the group headers for where to look.
 ## Getting started
 | Doc | What it covers |
 |---|---|
-| [../README.md](../README.md) | Front door: what Companion Scan is, quick start, the engine-agnostic inference explainer, and pointers into every other doc. |
+| [../README.md](../README.md) | Front door: what CI-Spatial is, quick start, the engine-agnostic inference explainer, and pointers into every other doc. |
 
 ## Architecture
 | Doc | What it covers |

@@ -1,5 +1,5 @@
 {
-  "name": "companion-scan-web",
+  "name": "ci-spatial-web",
   "version": "0.1.0",
   "type": "module",
   "scripts": {
