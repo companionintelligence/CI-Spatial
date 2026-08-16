@@ -181,8 +181,8 @@ An iOS or Android device with camera is required for AR scanning. The 3D viewer 
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/companionintelligence/CI-Web-XR-Scan.git
-cd CI-Web-XR-Scan
+git clone https://github.com/companionintelligence/CI-Spatial.git
+cd CI-Spatial
 npm install
 ```
 

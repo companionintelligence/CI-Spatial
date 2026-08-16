@@ -80,3 +80,24 @@ about to create this codebase's third `ScanManifest` — don't.
   algorithm — they're deliberately parallel implementations (different runtimes), not
   a shared module. See
   `docs/factory/foundation-updates/0002-fix-allowed-origin-prefix-autodetect.md`.
+
+## Do not rename
+
+These identifiers look like stale or inconsistent legacy names — a mix of
+`ci-xr-scan`, `ci-web-xr-scan`, and `companion-scan` naming — and are tempting
+"cleanup" targets. They are load-bearing. Renaming any of them silently breaks
+persisted user data or an external integration instead of erroring.
+
+| Identifier | Where it lives | What breaks if renamed |
+| --- | --- | --- |
+| IndexedDB database name `'ci-xr-scan'` | `src/scene/store.ts` | Orphans every existing user's persisted session data — the browser opens a fresh, empty database under the new name. |
+| sessionStorage key `'ci-xr-geo-fix'` | `src/geo/geo-tracker.ts` | Breaks in-flight geo-anchoring state for any tab that already wrote the old key. |
+| localStorage key `'companion-scan-onboarded'` | `src/main.ts` | Every existing user sees the onboarding flow again on next launch. |
+| Service-worker cache/queue names `'companion-scan-offline-queue'`, `'companion-scan-v3'`, `'companion-scan-flush'` | `public/sw.js` (also referenced from `src/pwa.ts`) | Breaks the offline upload queue for anyone with a stale service worker still installed — queued uploads become unreachable under the new name. |
+| GHCR image name `ghcr.io/companionintelligence/ci-web-xr-scan` | `.github/workflows/docker-publish.yml` | Breaks every existing deploy pointing at that image tag — pulls start 404ing. |
+| OIDC client id `'ci-web-xr-scan'` | `portal_auth.ts` | Must exactly match the client registration in the CI-Portal identity provider — "Sign in with Companion Account" breaks until the IdP registration is updated too. |
+| memory-push `sourceSystem` `'companion-scan'` | `memory_push.ts` | Namespaces the idempotency keys sent to CI-Server — renaming it makes every previously-pushed memory look new, so re-pushes duplicate instead of deduping. |
+
+If one of these truly needs to change, it's a coordinated migration (data
+backfill, IdP update, or image-tag redirect), not a rename — treat it as its
+own ticket, not a drive-by cleanup.
