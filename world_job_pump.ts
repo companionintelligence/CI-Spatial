@@ -7,9 +7,11 @@
  * jobs.ts's `_jobs`/`_pump()`/`_working` pattern (jobs.ts:47, 115-143) — the
  * reference implementation docs/factory/01-merge-jobs/0002's Pinned
  * conventions point at — but WorldJobs live inside potentially many
- * per-world JSON files (persisted via main.ts's `saveWorld()`) instead of
- * one `jobs.json`, so this module owns only the in-process scheduling
- * primitive and the pure predicates; main.ts owns persistence, dispatch to
+ * per-world JSON files (persisted via main.ts's `updateWorld()`, which
+ * serializes each world's read-modify-write cycle through `world_lock.ts`)
+ * instead of one `jobs.json`, so this module owns only the in-process
+ * scheduling primitive and the pure predicates; main.ts owns persistence,
+ * dispatch to
  * the per-type `_run*Job` functions, and the boot-time `WORLDS_DIR` scan
  * (reusing `GET /worlds`'s directory-scan shape, per ADR 0001).
  *

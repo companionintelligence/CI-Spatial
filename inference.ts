@@ -7,6 +7,7 @@
  * 3. "mock"             — deterministic colour-blob detector for tests/CI; recognises the
  *                         shared CV palette colours (test-data/cv images, xr8-mock feed)
  */
+import { fromFileUrl } from '@std/path'
 import { SPATIAL_DETECTION_PROMPT, parseDetections } from './prompt.ts'
 import type { RawDetection } from './prompt.ts'
 import { classifyPixel, paletteColorNameFor } from './src/shared/cv-palette.ts'
@@ -18,14 +19,16 @@ export type { RawDetection }
 let ort: any = null
 let JimpClass: any = null
 
-const MODEL_DIR = new URL(
+// fromFileUrl, not `.pathname`: the latter yields "/C:/…" on Windows, which
+// onnxruntime/Jimp then fail to open.
+const MODEL_DIR = fromFileUrl(new URL(
   Deno.env.get('MODEL_DIR') ?? './public/models/LiquidAI/LFM2.5-VL-1.6B-ONNX/onnx/',
   import.meta.url,
-).pathname
-const TOKENIZER_DIR = new URL(
+))
+const TOKENIZER_DIR = fromFileUrl(new URL(
   Deno.env.get('TOKENIZER_DIR') ?? './public/models/LiquidAI/LFM2.5-VL-1.6B-ONNX/',
   import.meta.url,
-).pathname
+))
 
 const MAX_NEW_TOKENS = 256
 const NUM_THREADS = (() => { try { return Math.max(1, navigator?.hardwareConcurrency ?? 4) } catch { return 4 } })()
