@@ -33,7 +33,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import qrcode from 'qrcode-terminal'
 
-const VITE_PORT = 5173
+const VITE_PORT = process.env.VITE_PORT ?? 5173
 const DEFAULT_HOSTNAME = 'beta-1.capybara-ulmer.ts.net'
 const ROOT = path.resolve(import.meta.dirname, '..')
 const DEFAULT_WORLD_FILE = path.join(ROOT, 'worlds', 'default.json')

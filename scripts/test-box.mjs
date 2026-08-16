@@ -120,6 +120,10 @@ launch('deno', denoBin, ['run', '--allow-net', '--allow-read', '--allow-write', 
   SCANS_DIR: join(RUN_DIR, 'scans'),
   WORLDS_DIR: join(RUN_DIR, 'worlds'),
   SUMMARIES_DIR: join(RUN_DIR, 'summaries'),
+  // Without this, the isolated Deno's viteBaseUrlFromEnv() defaults to 5173 even
+  // though this run's real Vite is on TEST_BOX_VITE_PORT — its share links/QR
+  // output would then leak the wrong port instead of this instance's own.
+  VITE_PORT: String(VITE_PORT),
 })
 // Vite's default recursive file watcher watches every GLB the seed dumps into
 // .test-run/scans (plus node_modules) — on this shared box that exhausts the

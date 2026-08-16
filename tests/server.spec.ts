@@ -2,7 +2,7 @@
  * Backend API tests — exercises the Deno/Hono server directly via the Vite proxy.
  *
  * All requests go through:
- *   Playwright → Vite dev server (port 5173) → Deno server (port 8000)
+ *   Playwright → Vite dev server (port 5173, or VITE_PORT if set) → Deno server (port 8000)
  *
  * Tests are project-agnostic (no browser) and run under the webkit-desktop
  * project so they execute once per CI run.
@@ -10,6 +10,8 @@
 import { test, expect } from '@playwright/test'
 import { createHash } from 'crypto'
 
+// 5173 here is just the last-resort default (matches VITE_PORT's own default in
+// main.ts/vite.config.ts). Set VITE_URL to point at a differently-ported instance.
 const BASE = process.env['VITE_URL'] ?? 'https://liambook.capybara-ulmer.ts.net:5173'
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
