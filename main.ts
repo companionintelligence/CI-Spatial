@@ -46,6 +46,7 @@ import {
   WorldJobPump,
 } from './world_job_pump.ts'
 import { withWorldLock } from './world_lock.ts'
+import { pruneScansMissingFromDisk } from './world_prune.ts'
 import { runLingBotMapReconstruction } from './lingbot_map.ts'
 import { runSplatTrain } from './splat_train.ts'
 import { runSplatDetect } from './splat_detect.ts'
@@ -1614,18 +1615,26 @@ async function refreshWorldScans(world: WorldProject): Promise<void> {
   // manifest would grow without bound. Deletions through DELETE /scans do prune
   // via removeScanFromWorlds(); this is the self-heal for everything else.
   //
-  // Guarded: only prune when the directory listing actually returned scans. An
-  // empty listing is ambiguous (genuinely empty vs. scans/ unmounted or moved
-  // aside), and pruning on that reading would destroy the whole manifest —
-  // including manual localToWorld alignment — for a transient condition.
-  if (stored.length > 0) {
-    const before = world.scans.length
-    world.scans = world.scans.filter(scan => !scan.filename || storedByFilename.has(scan.filename))
-    const pruned = before - world.scans.length
-    if (pruned > 0) {
-      changed = true
-      console.log(`[worlds] pruned ${pruned} scan entr${pruned === 1 ? 'y' : 'ies'} with no .glb on disk`)
-    }
+  // Guarded by pruneScansMissingFromDisk(): the manifest is the durable record
+  // and scans/ is the volatile side, so a listing thinner than the manifest is
+  // read as a stale directory rather than as 250-odd deletions. world_prune.ts
+  // documents the incident this guard exists for.
+  const prune = pruneScansMissingFromDisk(
+    world.scans,
+    new Set(storedByFilename.keys()),
+    stored.filter(shouldIncludeInWorld).length,
+  )
+  if (prune.pruned > 0) {
+    world.scans = prune.scans
+    changed = true
+    console.log(`[worlds] pruned ${prune.pruned} scan entr${prune.pruned === 1 ? 'y' : 'ies'} with no .glb on disk`)
+  } else if (prune.skipped && prune.missing > 0) {
+    // Not an error — the manifest is intact and the editor shows these as stale
+    // rows. Logged because it is also how a lost scans/ dir announces itself.
+    console.warn(
+      `[worlds] kept ${prune.missing} scan entr${prune.missing === 1 ? 'y' : 'ies'} with no .glb on disk `
+      + `(${prune.skipped}) — refusing to prune against a listing of ${stored.length}`,
+    )
   }
 
   world.scans = world.scans.map((scan, index) => {
