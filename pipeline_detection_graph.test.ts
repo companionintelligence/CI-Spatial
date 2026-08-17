@@ -24,7 +24,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as THREE from 'three'
 import { Document, NodeIO } from '@gltf-transform/core'
-import { KHRDracoMeshCompression, KHRMeshQuantization } from '@gltf-transform/extensions'
+import { ALL_EXTENSIONS, KHRDracoMeshCompression, KHRMaterialsUnlit, KHRMeshQuantization } from '@gltf-transform/extensions'
 import { optimizeScan } from './pipeline.ts'
 import { collectDetections, resolveDetectionMesh } from './src/viewer/detections.ts'
 
@@ -229,4 +229,57 @@ test('collectDetections: an LOD-wrapped detection counts once, not once per leve
 
   assert.equal(found.length, 1, 'one detection, however many levels of detail it has')
   assert.equal(found[0]!.node, lod, 'the outermost labelled node represents the detection')
+})
+
+// ── Material fidelity: extensions must survive the round trip ────────────────
+// glTF-Transform discards any extension the IO has not registered, at read
+// time, with no signal. KHR_materials_unlit sat on the floor plane and every
+// detection wireframe in a real capture and vanished from the optimized file,
+// so those surfaces silently switched from flat to lit shading.
+
+/** Read `extensionsUsed` from a GLB's JSON chunk. */
+function declaredExtensions(glb: Uint8Array): string[] {
+  const view = new DataView(glb.buffer, glb.byteOffset, glb.byteLength)
+  const jsonLength = view.getUint32(12, true)
+  const json = JSON.parse(new TextDecoder().decode(glb.subarray(20, 20 + jsonLength)))
+  return (json.extensionsUsed ?? []) as string[]
+}
+
+/** A scan whose floor plane is unlit, the way exportToGLB writes one. */
+async function buildUnlitScan(): Promise<Uint8Array> {
+  const doc = new Document()
+  const buffer = doc.createBuffer()
+  const scene = doc.createScene('Scene')
+  const unlit = doc.createExtension(KHRMaterialsUnlit)
+
+  const pos = doc.createAccessor('floor-pos').setType('VEC3').setArray(CUBE_POSITIONS).setBuffer(buffer)
+  const idx = doc.createAccessor('floor-idx').setType('SCALAR').setArray(CUBE_INDICES).setBuffer(buffer)
+  const material = doc.createMaterial('floor').setExtension('KHR_materials_unlit', unlit.createUnlit())
+  const prim = doc.createPrimitive().setMode(4).setAttribute('POSITION', pos).setIndices(idx).setMaterial(material)
+  scene.addChild(doc.createNode('floor').setMesh(doc.createMesh('floor').addPrimitive(prim)))
+
+  const io = new NodeIO().registerExtensions(ALL_EXTENSIONS)
+  return await io.writeBinary(doc)
+}
+
+test('optimizeScan: KHR_materials_unlit survives optimization', async () => {
+  const source = await buildUnlitScan()
+  assert.ok(
+    declaredExtensions(source).includes('KHR_materials_unlit'),
+    'fixture should declare the unlit extension',
+  )
+
+  const result = await optimizeScan(source)
+
+  assert.ok(
+    declaredExtensions(result.optimized.bytes).includes('KHR_materials_unlit'),
+    'the optimized scan lost KHR_materials_unlit — unlit surfaces come back shaded as lit PBR',
+  )
+})
+
+test('optimizeScan: a dropped extension is reported rather than lost quietly', async () => {
+  const result = await optimizeScan(await buildUnlitScan())
+  const dropped = result.stages.filter((s) => s.name === 'extensions')
+
+  assert.equal(dropped.length, 0, 'nothing should be dropped for a scan using only known extensions')
 })

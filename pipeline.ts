@@ -19,7 +19,7 @@
  * in the Deno server and under Node for tests (`npm run smoke:pipeline`).
  */
 import { Document, NodeIO, Primitive, type Accessor } from '@gltf-transform/core'
-import { KHRDracoMeshCompression, KHRMeshQuantization } from '@gltf-transform/extensions'
+import { ALL_EXTENSIONS, KHRDracoMeshCompression, KHRMeshQuantization } from '@gltf-transform/extensions'
 import { cloneDocument, dedup, prune, quantize, draco } from '@gltf-transform/functions'
 // @ts-ignore — draco3dgltf ships no type declarations
 import draco3d from 'draco3dgltf'
@@ -77,8 +77,16 @@ function getIO(): Promise<NodeIO> {
       draco3d.createEncoderModule({}),
       draco3d.createDecoderModule({}),
     ])
+    // ALL_EXTENSIONS, not just the two this pipeline writes: glTF-Transform
+    // discards any extension the IO has not registered, silently, at read time.
+    // Registering only Draco and mesh-quantization meant every other extension
+    // in a scan was dropped on the way through — KHR_materials_unlit sat on 10
+    // of 19 materials in a real capture (the floor plane and every detection
+    // wireframe) and was absent from the optimized file's extensionsUsed, so
+    // those surfaces silently switched from flat to lit shading. Draco and
+    // quantization are both in ALL_EXTENSIONS, so this is a superset.
     return new NodeIO()
-      .registerExtensions([KHRDracoMeshCompression, KHRMeshQuantization])
+      .registerExtensions(ALL_EXTENSIONS)
       .registerDependencies({ 'draco3d.encoder': encoder, 'draco3d.decoder': decoder })
   })()
   return ioPromise
@@ -154,11 +162,40 @@ export async function optimizeScan(
     }
   }
 
+  // An extension the IO cannot round-trip disappears without raising anything,
+  // and the symptom (surfaces shading differently) never points back here. Say
+  // so instead — a vendor extension outside ALL_EXTENSIONS still drops.
+  const keptExtensions = declaredExtensions(optimizedBytes)
+  const lostExtensions = declaredExtensions(glb).filter((ext) => !keptExtensions.includes(ext))
+  if (lostExtensions.length > 0) {
+    stages.push({ name: 'extensions', ok: false, ms: 0, note: `dropped ${lostExtensions.join(', ')}` })
+    console.warn(`[pipeline] optimization dropped glTF extension(s): ${lostExtensions.join(', ')}`)
+  }
+
   return {
     optimized: { bytes: optimizedBytes, draco: usedDraco, quantized: true },
     lods,
     stats,
     stages,
+  }
+}
+
+/**
+ * `extensionsUsed` straight from a GLB's JSON chunk.
+ *
+ * Deliberately not a glTF parse: this has to report what the *file* declares,
+ * including extensions the IO would discard on read — which is the whole point.
+ * Returns nothing for a malformed file rather than throwing; this runs on the
+ * reporting path, and a parse problem will surface with better context above.
+ */
+function declaredExtensions(glb: Uint8Array): string[] {
+  try {
+    const view = new DataView(glb.buffer, glb.byteOffset, glb.byteLength)
+    const jsonLength = view.getUint32(12, true)
+    const json = JSON.parse(new TextDecoder().decode(glb.subarray(20, 20 + jsonLength)))
+    return Array.isArray(json.extensionsUsed) ? json.extensionsUsed : []
+  } catch {
+    return []
   }
 }
 
