@@ -158,16 +158,15 @@ export class DetectionStore {
    * scan. Returns how many detections came back; 0 means there was nothing to
    * resume and this store keeps its own fresh session id.
    *
-   * Empty sessions are skipped deliberately — they carry nothing to restore,
-   * and resuming one would only pin the id of a session that never held
-   * anything.
+   * The most recent record wins even when it is empty. An empty record now
+   * only exists because the user pressed "Clear session" — boot no longer
+   * writes one — so skipping empties would resume the scan *before* the one
+   * they just cleared, handing back an older scan they never asked for.
    */
   async resumeLatestSession(): Promise<number> {
     if (!this.db) return 0
     const sessions = await getAllSessions(this.db)
-    const latest = sessions
-      .filter((s) => (s.detections as unknown[]).length > 0)
-      .sort((a, b) => b.startedAt - a.startedAt)[0]
+    const latest = sessions.sort((a, b) => b.startedAt - a.startedAt)[0]
     if (!latest) return 0
 
     this.adopt(latest)

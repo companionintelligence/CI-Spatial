@@ -108,3 +108,32 @@ test.describe('scan persistence across a reload', () => {
     expect(await storedSessions(page)).toHaveLength(0)
   })
 })
+
+test('clearing a session does not resurrect an older scan on reload', async ({ page }) => {
+  // Resume used to skip empty sessions, so clearing the current scan made the
+  // next boot fall through to the previous one — handing back a scan the user
+  // had just deliberately thrown away.
+  await scanAndCapture(page)
+
+  await page.click('#panel-toggle')
+  await page.locator('#side-panel').waitFor({ state: 'visible', timeout: 10_000 })
+  page.on('dialog', (d) => d.accept().catch(() => {}))
+  await page.click('#panel-clear-session-btn')
+  // Wait on the *persisted* state, not the panel: clear() notifies listeners
+  // before awaiting its write, so the UI reads empty while the record on disk
+  // is still the full one.
+  await expect
+    .poll(async () => (await storedSessions(page))[0]?.count ?? -1,
+      { timeout: 15_000, message: 'clear() should have persisted an empty session' })
+    .toBe(0)
+
+  await page.reload()
+  await bootComplete(page)
+
+  // data-count is blank rather than "0" when the panel is empty, so compare
+  // numerically — the point is that nothing came back, not how it is spelled.
+  await expect
+    .poll(async () => Number(await page.locator('#panel-toggle').getAttribute('data-count') ?? '0'),
+      { timeout: 10_000, message: 'a cleared session must not resurrect an older scan' })
+    .toBe(0)
+})
