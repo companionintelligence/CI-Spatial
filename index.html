@@ -1549,6 +1549,12 @@
                 <a id="export-view-link" href="/viewer.html?world=default" style="display:none; color:#72ddd4; font-weight:700; text-decoration:none; margin-left:8px;">View in 3D →</a>
                 <span id="scan-stats"></span>
               </div>
+              <!-- Scan-quality guidance. Deliberately its own line rather than
+                   #status-text: this is persistent state refreshed on every
+                   750ms scanner tick, and writing it into the status line
+                   erased every transient message within one tick. -->
+              <div id="verdict-hint" aria-live="polite"
+                style="display:none; font-size:11px; line-height:1.4; color:#ffb74d; margin-top:2px; max-width:34ch;"></div>
               <div id="geo-chip">
                 <div id="geo-text">
                   <span id="geo-address">Locating…</span>

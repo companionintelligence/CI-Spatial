@@ -44,6 +44,10 @@ const TRACKING_WAIT_MS = 2500
 let quotaWarningShown = false
 let decimationNoticeShown = false
 
+// Last verdict state written to the HUD, so the 750 ms scanner tick only
+// touches the DOM when the verdict or its recommendation actually changes.
+let lastVerdictKey: string | null = null
+
 async function main() {
   const searchParams = new URLSearchParams(location.search)
   // Onboarding is skipped under mocks (so scan-flow tests don't stall on it) and
@@ -810,6 +814,17 @@ async function main() {
 
   function updateVerdictUI(): void {
     const summary = currentQualitySummary()
+    const hintText = summary.status !== 'ready' && summary.recommendations.length > 0
+      ? `⚠ ${summary.recommendations[0]}`
+      : ''
+
+    // Runs on every 750 ms scanner tick, and both targets are announced to
+    // screen readers — rewriting them unchanged re-announces the same sentence
+    // twice a second. Bail unless something actually moved.
+    const key = `${summary.status}|${hintText}`
+    if (key === lastVerdictKey) return
+    lastVerdictKey = key
+
     const chip = document.getElementById('verdict-chip')
     if (chip) {
       chip.textContent = summary.status === 'ready'
@@ -831,9 +846,17 @@ async function main() {
           : '#ef7070'
     }
 
-    // Also surface the top recommendation on the HUD status-text if status is not ready
-    if (summary.status !== 'ready' && summary.recommendations.length > 0) {
-      overlay.setStatus(`⚠ ${summary.recommendations[0]}`)
+    // The recommendation belongs beside the verdict, not in #status-text.
+    // Written there, this tick overwrote every transient message within 750 ms:
+    // the typed inference-error ladder, "Camera access denied", "Export failed",
+    // "Scan exported & synced ✓", the low-light and reflection warnings. Every
+    // carefully-worded failure string in this file was unreadable in practice,
+    // because scan quality is persistent state and was competing for a line
+    // that reports events.
+    const hint = document.getElementById('verdict-hint')
+    if (hint) {
+      hint.textContent = hintText
+      hint.style.display = hintText ? 'block' : 'none'
     }
   }
 }
