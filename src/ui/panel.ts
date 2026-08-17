@@ -381,19 +381,24 @@ export class SidePanel {
     // Inline edit form
     const editForm = document.createElement('div')
     editForm.style.cssText = 'display:none;margin-top:8px;'
-    const safeLabel = det.label.replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    const safeDesc = det.description.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    // Structure only — the label/description are user- and VLM-authored text and
+    // are assigned as DOM properties below, never interpolated. Interpolating them
+    // into the value="" attribute truncated any label containing a double quote
+    // (a plausible one: `Samsung 27" monitor`), and reopening the form then saved
+    // the truncated string back over the real one.
     editForm.innerHTML = `
-      <input type="text" value="${safeLabel}" placeholder="Label"
+      <input type="text" placeholder="Label"
         class="ci-field"
         style="margin-bottom:5px;" />
       <textarea placeholder="Description" rows="2"
-        class="ci-field ci-textarea">${safeDesc}</textarea>
+        class="ci-field ci-textarea"></textarea>
       <div style="display:flex;gap:6px;margin-top:5px;">
         <button class="edit-save ci-inline-btn ci-inline-btn--primary" style="flex:1;">Save</button>
         <button class="edit-cancel ci-inline-btn ci-inline-btn--muted" style="flex:1;">Cancel</button>
       </div>
     `
+    editForm.querySelector<HTMLInputElement>('input')!.value = det.label
+    editForm.querySelector<HTMLTextAreaElement>('textarea')!.value = det.description
 
     editBtn.addEventListener('click', (e) => {
       e.stopPropagation()

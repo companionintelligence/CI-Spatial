@@ -297,15 +297,19 @@ export class SessionHistory {
 
       const editForm = document.createElement('div')
       editForm.style.cssText = 'display:none;position:absolute;inset-x:24px;background:rgba(8,28,38,0.98);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:10px;z-index:1;margin-top:4px;'
+      // Structure only — label/description are assigned as DOM properties below so
+      // a quote in the text cannot terminate the value="" attribute and truncate it.
       editForm.innerHTML = `
-        <input type="text" value="${det.label.replace(/</g, '&lt;')}"
+        <input type="text"
           class="ci-field" style="margin-bottom:5px;" />
-        <textarea rows="2" class="ci-field ci-textarea">${det.description.replace(/</g, '&lt;')}</textarea>
+        <textarea rows="2" class="ci-field ci-textarea"></textarea>
         <div style="display:flex;gap:6px;margin-top:6px;">
           <button class="ef-save ci-inline-btn ci-inline-btn--primary" style="flex:1;">Save</button>
           <button class="ef-cancel ci-inline-btn ci-inline-btn--muted" style="flex:1;">Cancel</button>
         </div>
       `
+      editForm.querySelector<HTMLInputElement>('input')!.value = det.label
+      editForm.querySelector<HTMLTextAreaElement>('textarea')!.value = det.description
       row.style.position = 'relative'
 
       editBtn.addEventListener('click', () => {

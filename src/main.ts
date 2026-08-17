@@ -618,17 +618,29 @@ async function main() {
   // Best-effort teardown when the tab goes away. pagehide is the only
   // teardown event that fires reliably on iOS Safari (beforeunload does not) —
   // stop streams and finalize the keyframe session, fire-and-forget.
+  //
+  // The broadcaster is only constructed further down (after the AR provider has
+  // started), so it is reached through this nullable ref rather than the `const`
+  // binding: the handler is armed here, but a pagehide during onboarding or while
+  // the camera permission prompt is up would otherwise hit the const's temporal
+  // dead zone and abort the whole teardown — losing the keyframe-session finalize.
+  let rtc: RtcBroadcaster | null = null
+
+  // Each step is isolated: a teardown is best-effort, so one failing resource
+  // must not skip the ones after it (finalizing the session matters most).
   window.addEventListener('pagehide', () => {
-    if (broadcaster.isRunning) broadcaster.stop()
-    if (autoCapture.enabled) autoCapture.disable()
-    if (kfStreamer.active) {
-      void kfStreamer.stop({
-        pointCount: pointCloud.count,
-        detectionCount: store.detections.size,
-        poseCount: poseHistory.length,
-        qualitySummary: currentQualitySummary(),
-      })
-    }
+    try { if (rtc?.isRunning) rtc.stop() } catch (e) { console.warn('[teardown] rtc', e) }
+    try { if (autoCapture.enabled) autoCapture.disable() } catch (e) { console.warn('[teardown] autoCapture', e) }
+    try {
+      if (kfStreamer.active) {
+        void kfStreamer.stop({
+          pointCount: pointCloud.count,
+          detectionCount: store.detections.size,
+          poseCount: poseHistory.length,
+          qualitySummary: currentQualitySummary(),
+        })
+      }
+    } catch (e) { console.warn('[teardown] keyframes', e) }
   })
 
   // Confirmation guards when navigating away from an active scan session
@@ -689,6 +701,7 @@ async function main() {
 
   // ── WebRTC live-feed broadcaster (optional) ───────────────────────────────
   const broadcaster = new RtcBroadcaster('default')
+  rtc = broadcaster   // hand it to the pagehide teardown armed above
   broadcaster.onStatus = ({ state, message }) => {
     const btn = document.getElementById('rtc-stream-btn') as HTMLButtonElement | null
     if (btn) {
@@ -1126,22 +1139,44 @@ function showInferDialog(dets: Array<{ label: string; description: string; confi
 
   if (dets.length === 0) return
 
-  body.innerHTML = dets.map((d) => {
-    const conf = Math.round(d.confidence * 100)
+  // `label` and `description` come straight from the inference engine. A real VLM
+  // (ollama/onnx) can emit angle brackets or stray markup, so they are set as text
+  // nodes rather than interpolated into innerHTML — otherwise a reply containing
+  // markup renders as a broken/blank row instead of the text the model returned.
+  body.replaceChildren()
+  for (const d of dets) {
     const p = d.worldPos
-    return `
-      <div style="display:flex;flex-direction:column;gap:2px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.06);">
-        <div style="display:flex;align-items:center;justify-content:space-between;">
-          <span style="color:#fff;font-size:13px;font-weight:700;">${d.label}</span>
-          <span style="color:rgba(255,255,255,0.4);font-size:11px;font-family:monospace;">${conf}%</span>
-        </div>
-        <p style="color:rgba(255,255,255,0.55);font-size:12px;line-height:1.4;margin:0;">${d.description}</p>
-        <span style="color:rgba(255,255,255,0.25);font-size:10px;font-family:monospace;">(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})</span>
-      </div>`
-  }).join('')
+
+    const row = document.createElement('div')
+    row.style.cssText = 'display:flex;flex-direction:column;gap:2px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.06);'
+
+    const head = document.createElement('div')
+    head.style.cssText = 'display:flex;align-items:center;justify-content:space-between;'
+    const label = document.createElement('span')
+    label.style.cssText = 'color:#fff;font-size:13px;font-weight:700;'
+    label.textContent = d.label
+    const conf = document.createElement('span')
+    conf.style.cssText = 'color:rgba(255,255,255,0.4);font-size:11px;font-family:monospace;'
+    conf.textContent = `${Math.round(d.confidence * 100)}%`
+    head.append(label, conf)
+
+    const desc = document.createElement('p')
+    desc.style.cssText = 'color:rgba(255,255,255,0.55);font-size:12px;line-height:1.4;margin:0;'
+    desc.textContent = d.description
+
+    const pos = document.createElement('span')
+    pos.style.cssText = 'color:rgba(255,255,255,0.25);font-size:10px;font-family:monospace;'
+    pos.textContent = `(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})`
+
+    row.append(head, desc, pos)
+    body.appendChild(row)
+  }
 
   // Add a "tap to dismiss" hint at the bottom
-  body.innerHTML += `<div style="text-align:center;padding:6px 0 2px;color:rgba(255,255,255,0.25);font-size:10px;">tap to dismiss</div>`
+  const hint = document.createElement('div')
+  hint.style.cssText = 'text-align:center;padding:6px 0 2px;color:rgba(255,255,255,0.25);font-size:10px;'
+  hint.textContent = 'tap to dismiss'
+  body.appendChild(hint)
 
   dialog.classList.add('visible')
 

@@ -52,10 +52,16 @@ test.describe('Tier 1: Feature Coverage', () => {
         image: { name: 'test.jpg', mimeType: 'image/jpeg', buffer: dummyJpeg }
       }
     })
-    expect([200, 503]).toContain(resp.status())
+    // The payload above is a 134-byte JPEG header with no scan data — no decoder
+    // can read it. A 400 (`bad-image`) is the correct classification; the point of
+    // this test is that /infer answers deliberately rather than throwing a 500.
+    expect([200, 400, 503]).toContain(resp.status())
     if (resp.status() === 200) {
       const list = await resp.json()
       expect(Array.isArray(list)).toBeTruthy()
+    }
+    if (resp.status() === 400) {
+      expect((await resp.json() as { code?: string }).code).toBe('bad-image')
     }
   })
 
@@ -1083,12 +1089,16 @@ test.describe('Tier 4: Real-World Application Scenarios', () => {
 
     const responses = await Promise.all(promises)
     for (const resp of responses) {
-      expect([200, 503]).toContain(resp.status())
+      // Same undecodable payload as Test 2 — what matters under rapid fire is that
+      // every concurrent request is classified the same way and none 500s.
+      expect([200, 400, 503]).toContain(resp.status())
       if (resp.status() === 200) {
         const list = await resp.json()
         expect(Array.isArray(list)).toBeTruthy()
       }
     }
+    expect(new Set(responses.map(r => r.status())).size,
+      'concurrent identical requests must not diverge in status').toBe(1)
   })
 
   test('Test 37: Offline Scanning and Delayed Server Sync (F2 + F1)', async ({ page }) => {
