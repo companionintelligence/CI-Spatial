@@ -36,7 +36,7 @@ export type PruneSkipReason =
   | 'listing-thinner-than-manifest'
 
 export interface PruneResult<T> {
-  /** The surviving entries. Identity-equal to the input array when nothing was pruned. */
+  /** The surviving entries. Always a new array — never the caller’s. */
   scans: T[]
   /** How many entries were removed. */
   pruned: number
