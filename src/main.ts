@@ -854,14 +854,19 @@ async function checkStorageQuota(store: DetectionStore, overlay: ReturnType<type
 /**
  * Move #start-ar-btn out of its initial "preparing" state.
  *
- * The button paints from index.html's static markup within ~250 ms, but its
- * click handler can only be attached at the very end of main()'s async boot
- * (seconds later): the iOS motion-permission request must run synchronously
- * inside a real gesture handler, so an early click can't be buffered and
- * replayed. The markup therefore ships `disabled aria-busy="true"` with a
- * "Preparing…" line, and this is the only thing that clears it — a tap during
- * boot bounces off a visibly-not-ready button instead of vanishing with no
- * feedback.
+ * The button paints from index.html's static markup within ~250 ms, and its
+ * click handler is attached at the top of main() (section 0) — so 'ready'
+ * follows almost immediately, and a tap from then on is honoured even though
+ * AR itself only starts in section 5. The markup ships
+ * `disabled aria-busy="true"` with a "Preparing…" line to cover the gap that
+ * remains: the ~50 ms until section 0 runs, and the case where the bundle
+ * never loads at all, where staying disabled is the honest state. This is the
+ * only thing that clears it.
+ *
+ * The handler can't move any later than a real gesture — the iOS
+ * motion-permission request must run synchronously inside the click, so an
+ * early tap can never be buffered and replayed. Attaching early is what makes
+ * the tap land somewhere instead of vanishing with no feedback.
  *
  * 'unavailable' is terminal: the boot paths that give up (insecure context, no
  * AR runtime, a crash in main()) call it so the card stops advertising a wait
@@ -1197,8 +1202,9 @@ main().catch((e: unknown) => {
   console.error('[main]', e)
   const el = document.getElementById('status-text')
   if (el) el.textContent = `Error: ${e instanceof Error ? e.message : String(e)}`
-  // Boot died before section 5 could enable the button — stop it pulsing
-  // "Preparing…" for a boot that is never going to finish.
+  // Boot died. If it got as far as section 0 the button is enabled but its
+  // handler leads nowhere; if it died before that it is still pulsing
+  // "Preparing…" for a boot that will never finish. Either way, say so.
   setStartButtonState('unavailable', 'Start failed — reload the page')
 })
 

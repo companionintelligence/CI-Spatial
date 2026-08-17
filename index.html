@@ -1476,10 +1476,11 @@
       <div id="start-paths" role="group" aria-label="Choose how to capture your space">
         <!-- Path 1 — live AR (primary). Must stay a <button>: the iOS motion
              permission request in its click handler needs a real user gesture.
-             Ships `disabled aria-busy` on purpose — the click handler can only
-             be attached at the end of main.ts's async boot (see its section 5),
-             and a tap before that would be silently dropped. main.ts's
-             setStartButtonState() clears both once the handler is live. -->
+             Ships `disabled aria-busy` on purpose — this markup paints before
+             any script runs, and a tap then would be silently dropped. main.ts
+             attaches the handler at the top of its boot (section 0) and clears
+             both there, so the not-pressable state lasts ~50ms in practice —
+             and stays put if the bundle never loads at all. -->
         <button id="start-ar-btn" class="start-path" aria-label="Scan a room with live AR" disabled aria-busy="true">
           <span class="start-path-icon" aria-hidden="true"><svg width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="2.2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 16.2a6 6 0 0 0 0-8.4"/><path d="M4.8 4.8a10.2 10.2 0 0 0 0 14.4M19.2 19.2a10.2 10.2 0 0 0 0-14.4"/></svg></span>
           <span class="start-path-copy">
