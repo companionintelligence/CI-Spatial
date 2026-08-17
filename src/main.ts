@@ -80,6 +80,51 @@ async function main() {
   const canvas = document.getElementById('camerafeed') as HTMLCanvasElement
   const overlay = setupStatusOverlay()
 
+  // ── 0. Start-AR gesture gate ────────────────────────────────────────────────
+  // Wired here, at the top of the boot, even though AR itself only starts in
+  // section 5. #start-ar-btn is in the static markup and paints in ~250ms,
+  // while everything between here and section 5 is awaited work the button
+  // does not need — IndexedDB stores, and above all the inference router's
+  // model load. Registering the listener down there meant a tap in that
+  // window (~6.5s, measured on a mobile-emulated run) reached no listener at
+  // all: no feedback, start screen still up, nothing started.
+  //
+  // The handler is still the user gesture itself — a tap is never replayed or
+  // synthesized later, only allowed to arrive earlier — so iOS Safari's rule
+  // that DeviceOrientation/DeviceMotion requestPermission() be called
+  // synchronously inside a real click handler still holds.
+  //
+  // A first-run visitor can't tap through the onboarding overlay to get here:
+  // it covers the start screen and is dismissed before section 4b returns.
+  const startBtn = document.getElementById('start-ar-btn') as HTMLButtonElement | null
+  let startPressed = false
+  const startArPressed = new Promise<void>((resolve) => {
+    startBtn?.addEventListener('click', async () => {
+      startPressed = true
+      // ↓ Initiate BEFORE any await — this preserves the user-gesture context in Safari
+      type PermAPI = { requestPermission?(): Promise<string> }
+      const p1 = (DeviceOrientationEvent as unknown as PermAPI).requestPermission?.()
+      const p2 = (DeviceMotionEvent as unknown as PermAPI).requestPermission?.()
+
+      // Hide the start screen immediately
+      document.getElementById('start-screen')?.remove()
+      // Tapped before the boot reached section 5: say so, rather than leaving
+      // the last boot status (e.g. "AI: WebGPU") on screen as if nothing happened.
+      overlay.setStatus('Starting AR…')
+
+      try {
+        await Promise.all([p1, p2].filter(Boolean))
+      } catch (err) {
+        console.warn('[main] Motion/orientation permission denied — SLAM may not track', err)
+        showPermissionBanner('Enable motion & orientation access in Settings → Safari → Motion & Orientation Access.')
+      }
+      resolve()
+    }, { once: true })
+  })
+  // The button's contract: from here on, a tap is honoured. Tests wait on this
+  // instead of on mere visibility, which is true ~250ms too early.
+  startBtn?.setAttribute('data-ready', '1')
+
   // ── 1. Store + scan accumulators ────────────────────────────────────────────
   const store = new DetectionStore()
   await store.open()
@@ -628,31 +673,11 @@ async function main() {
     }
   }
 
-  // ── 5. Start AR — permission must be requested in the button click handler ───
-  // Safari iOS 13+ requires DeviceOrientationEvent/DeviceMotionEvent.requestPermission()
-  // to be called synchronously inside a click handler, with NO awaits before it.
-  // A real <button> click event is the only reliable trigger for this in Safari.
-  overlay.setStatus('Press Start AR to begin')
-  await new Promise<void>((resolve) => {
-    const startBtn = document.getElementById('start-ar-btn') as HTMLButtonElement
-    startBtn.addEventListener('click', async () => {
-      // ↓ Initiate BEFORE any await — this preserves the user-gesture context in Safari
-      type PermAPI = { requestPermission?(): Promise<string> }
-      const p1 = (DeviceOrientationEvent as unknown as PermAPI).requestPermission?.()
-      const p2 = (DeviceMotionEvent as unknown as PermAPI).requestPermission?.()
-
-      // Hide the start screen immediately
-      document.getElementById('start-screen')?.remove()
-
-      try {
-        await Promise.all([p1, p2].filter(Boolean))
-      } catch (err) {
-        console.warn('[main] Motion/orientation permission denied — SLAM may not track', err)
-        showPermissionBanner('Enable motion & orientation access in Settings → Safari → Motion & Orientation Access.')
-      }
-      resolve()
-    }, { once: true })
-  })
+  // ── 5. Start AR — the section-0 gesture gate resolves when the user taps ─────
+  // The listener lives at the top of main() (see there for why); all that is
+  // left here is to prompt, if they haven't already tapped, and wait.
+  if (!startPressed) overlay.setStatus('Press Start AR to begin')
+  await startArPressed
 
   overlay.setStatus('Starting AR…')
   try {

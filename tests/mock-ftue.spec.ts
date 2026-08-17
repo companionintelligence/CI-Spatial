@@ -67,18 +67,15 @@ test.describe('FTUE two-path start screen', () => {
 
   test('Scan path starts live AR and points accumulate', async ({ page }) => {
     await page.goto('/?mock=xr8')
-    // #start-ar-btn is in the static markup and paints in ~250ms, but its
-    // click listener is only attached at the very end of main.ts's async boot
-    // (IndexedDB stores, engine, AR provider) — measured at ~6.7s on this
-    // mobile-emulated context. Clicking on mere visibility lands before the
-    // listener exists, is silently dropped, and #start-screen never
-    // dismisses: that is exactly how this test failed, 3 runs out of 3.
-    // 'Press Start AR to begin' is set on the line above addEventListener, so
-    // it is the app's own signal that the button is now live.
-    // NOTE: the same window is a real UX bug for a user on a slow phone — the
-    // button looks ready and does nothing. Waiting here fixes the test, not
-    // that; see the PR discussion.
-    await expect(page.locator('#status-text')).toHaveText('Press Start AR to begin', { timeout: 30_000 })
+    // Wait for data-ready, not for visibility: #start-ar-btn is in the static
+    // markup and paints ~250ms before main() has wired its click handler, so a
+    // visibility-triggered click used to land on nothing and be silently
+    // dropped (this test failed 3 runs out of 3 that way).
+    //
+    // data-ready is set at the top of the boot, long before AR itself can
+    // start — so this click still lands in the middle of the async boot and
+    // is the regression test for that tap being honoured rather than lost.
+    await expect(page.locator('#start-ar-btn[data-ready="1"]')).toBeVisible({ timeout: 15_000 })
     await page.click('#start-ar-btn')
 
     // Start screen dismisses and the mock SLAM engine accumulates points.
