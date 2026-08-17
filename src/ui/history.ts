@@ -196,20 +196,17 @@ export class SessionHistory {
     if (isActive) {
       this._renderDetectionRows(container, this.store.detections, sessionId, isActive)
     } else {
-      // Load temporarily just to read — a lightweight approach using IndexedDB directly
-      // We read the session via the store's loadSession to get detections, then render
-      const saved = new Map(this.store.detections)  // snapshot current
-      const ok = await this.store.loadSession(sessionId)
-      if (!ok) {
+      // Read-only: previewing a past session must not disturb the live one.
+      // This used to load into the store and put the old data back afterwards,
+      // which cleared the user's selection on every expand and let a capture
+      // landing mid-preview persist the previewed session's detections under
+      // the active session id.
+      const detections = await this.store.readSession(sessionId)
+      if (!detections) {
         container.innerHTML = `<p style="color:rgba(255,255,255,0.3);font-size:12px;padding:12px 24px;">Could not load session.</p>`
-        // restore
-        await this.store.loadSession(this.store.sessionId)
         return
       }
-      this._renderDetectionRows(container, new Map(this.store.detections), sessionId, false)
-      // Restore the original active session state (without triggering full reload)
-      this.store['_detections'] = saved
-      this.store['notify']()
+      this._renderDetectionRows(container, detections, sessionId, false)
     }
   }
 
