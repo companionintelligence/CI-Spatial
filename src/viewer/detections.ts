@@ -54,8 +54,25 @@ export function collectDetections(root: THREE.Object3D): Array<{ node: THREE.Obj
   const found: Array<{ node: THREE.Object3D; mesh: THREE.Mesh }> = []
   root.traverse((node) => {
     if (!(node.userData as Record<string, unknown>)['label']) return
+    // One entry per detected object, not one per level of detail.
+    // upgradeSemanticMeshes() runs before buildDetectionBounds() and copies the
+    // label onto the LOD wrapper and every proxy level it adds, so a detection
+    // is reachable three ways by then. Without this, bounds and sample points
+    // were built once per copy — triple geometry, a wrong detections-layer
+    // count, and z-fighting wireframes. createSemanticLabels() guards the same
+    // hazard for the same reason.
+    if (hasLabelledAncestor(node, root)) return
     const mesh = resolveDetectionMesh(node)
     if (mesh) found.push({ node, mesh })
   })
   return found
+}
+
+/** True when some ancestor of `obj` (up to but excluding `root`) is itself labelled. */
+export function hasLabelledAncestor(obj: THREE.Object3D, root: THREE.Object3D): boolean {
+  if (obj === root) return false
+  for (let node = obj.parent; node && node !== root; node = node.parent) {
+    if ((node.userData as Record<string, unknown>)['label']) return true
+  }
+  return false
 }

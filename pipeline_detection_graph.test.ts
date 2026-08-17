@@ -206,3 +206,27 @@ test('collectDetections: finds both graph shapes and keeps metadata on the label
     assert.ok(node.userData['label'], 'metadata must come from the labelled node')
   }
 })
+
+test('collectDetections: an LOD-wrapped detection counts once, not once per level', () => {
+  // upgradeSemanticMeshes() wraps each labelled mesh in a THREE.LOD and copies
+  // the label onto the wrapper and every proxy level. buildDetectionBounds()
+  // runs after it, so without a dedupe guard each detection is found three
+  // ways and gets three sets of bounds and sample points.
+  const root = new THREE.Group()
+  const detection = freshDetection('monitor')
+  const data = { ...detection.userData }
+
+  const lod = new THREE.LOD()
+  lod.userData = data                      // wrapper carries the label
+  const proxy = new THREE.Group()
+  proxy.userData = data                    // and so does every proxy level
+  proxy.add(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial()))
+  lod.addLevel(proxy, 4)
+  lod.addLevel(detection, 8)               // the original, still labelled
+  root.add(lod)
+
+  const found = collectDetections(root)
+
+  assert.equal(found.length, 1, 'one detection, however many levels of detail it has')
+  assert.equal(found[0]!.node, lod, 'the outermost labelled node represents the detection')
+})

@@ -12,7 +12,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js'
 import { SceneEditor, SEMANTIC_TAGS, type ViewMode } from './editor'
 import { MeasureTool } from './measure'
-import { collectDetections } from './detections'
+import { collectDetections, hasLabelledAncestor } from './detections'
 import { GeoMap, type ScanLocationEntry } from './geomap'
 import { LiveFeed } from './livefeed'
 import { loadSemanticAsset, createMediumPolyAsset } from './assets'
@@ -1080,15 +1080,6 @@ function buildDetectionBounds(
       addLayerNode(layers, 'detections', points)
     }
   }
-}
-
-/** True when some ancestor of `obj` (up to but excluding `root`) is itself labelled. */
-function hasLabelledAncestor(obj: THREE.Object3D, root: THREE.Object3D): boolean {
-  if (obj === root) return false
-  for (let node = obj.parent; node && node !== root; node = node.parent) {
-    if ((node.userData as Record<string, unknown>)['label']) return true
-  }
-  return false
 }
 
 function createSemanticLabels(root: THREE.Object3D, scanId: string): void {
