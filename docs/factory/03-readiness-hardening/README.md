@@ -1,0 +1,102 @@
+# Wave: 03-readiness-hardening
+
+Close the six items a full readiness review of the scan → pin → export → editor path left
+open. One of them is the reason a clause of that bar does not hold today (an object you
+move in the editor comes back somewhere else); three are the reason nobody noticed.
+
+## Why one wave, and why the toolchain tickets come first
+
+The obvious split is "product defects" (0004, 0005, 0006) and "toolchain gaps" (0001,
+0002, 0003), and wave 02's own README set the precedent for separating changes with
+different review profiles. This wave deliberately does not split, because the two halves
+are one finding: **the WebKit tiers were executing zero tests on this host.**
+`npx playwright install` aborts on Ubuntu 26.04, so `npm test` and `npm run test:mobile`
+failed every test at browser launch rather than reporting "no browser". The editor
+transform bug lived behind that.
+
+So the sequencing is the argument: 0001–0003 make the suite able to run and the repo able
+to say what it needs, and 0004–0006 then land against a suite that actually executes.
+Splitting them into two waves would let the product fixes merge with their verification
+story still broken — which is exactly how the original defects survived.
+
+Ticket 0004 is the one that changes what the product does. The rest are the conditions
+under which anyone could have known.
+
+## Tickets
+
+| # | Ticket | One-line goal |
+|---|--------|---------------|
+| 0001 | [pin-node-version](0001-pin-node-version.md) | Declare the Node the repo actually requires, so three `.mjs` scripts stop dying with a bare `ERR_UNKNOWN_FILE_EXTENSION` |
+| 0002 | [document-npm-deno-node-modules-trap](0002-document-npm-deno-node-modules-trap.md) | Write down who owns `node_modules`, so a mixed npm/Deno install stops corrupting Playwright |
+| 0003 | [browser-install-on-unsupported-hosts](0003-browser-install-on-unsupported-hosts.md) | A bootstrap script so the two WebKit tiers run on a host Playwright does not support |
+| 0004 | [fix-editor-lod-transform-roundtrip](0004-fix-editor-lod-transform-roundtrip.md) | **An object moved in the editor comes back in the same place after a reload** |
+| 0005 | [make-scan-listing-linear](0005-make-scan-listing-linear.md) | Remove the O(scans × sessions) blowup that made `GET /scans` take 120 seconds |
+| 0006 | [bundle-leaflet-and-fix-loader-race](0006-bundle-leaflet-and-fix-loader-race.md) | Bundle Leaflet from npm and delete the loader race that hands `undefined` to `L.map()` |
+
+## Execution order & parallelization
+
+**Sequence the three toolchain tickets first (0001 → 0002 → 0003).** They are independent
+of each other in content, but 0001 lands the Node floor that 0003's script and 0005's
+verification both assume.
+
+**0004, 0005 and 0006 are then parallel by content** — they touch disjoint code:
+`src/viewer/editor.ts`, `main.ts`'s listing path, and the geomap/Leaflet path respectively.
+
+Ordering constraints come from **shared files**, not shared logic. Name them before
+branching:
+
+| Shared file | Tickets | Consequence |
+|---|---|---|
+| `package.json` | 0001 (`engines`), 0006 (`dependencies` + lockfile) | Land 0001 first; 0006 regenerates `package-lock.json`, so rebasing it over 0001 is cheaper than the reverse. |
+| `README.md` | 0001 (Node requirement), 0002 (`npm ci`) | Adjacent edits in the same setup prose — land 0001 then 0002, or expect a trivial conflict. |
+| `TEST_INFRA.md` | 0003 (host-setup section), 0006 (`:78` false claim) | Different sections; conflict is unlikely but land 0003 first since it adds structure 0006's line sits near. |
+| `docs/factory/atlas.html` | **every ticket** | Each flips its own diff block to `is-done`. Expect textual conflicts if two land the same day; they are one-line resolutions. |
+| `tests/e2e-suite.spec.ts` | 0006 (Test 30) | Only 0006 touches it in this wave. |
+
+Nothing in this wave blocks on `0004`, and `0004` blocks nothing. It is the highest-value
+ticket and can start the moment 0003 makes its verification runnable — its own regression
+test is a `chromium-mock` spec, which already runs via the `CHROMIUM_EXECUTABLE_PATH`
+hatch, so in practice it can start immediately.
+
+## Prerequisites (must already be merged)
+
+- PR #84 (`fix: eight defects on the scan → pin → export → editor path`) — merged as
+  `6217e0b`. Every line number pinned in these tickets is against that commit.
+- ADR 0004 (`world-file writes are serialized per slug`) — 0005 cites `withWorldLock` as a
+  thing it deliberately does **not** extend.
+
+## Found but deferred
+
+Real, verified, and out of scope here — recorded so they are not rediscovered as new:
+
+- **Patches persisted before 0004 carry a level's identity.** A patch whose `targetId` is
+  the far mesh's GLB id (e.g. `bed_001`) still resolves to that mesh rather than the LOD,
+  so it keeps behaving as it does today. Not a new break, and migrating it is a one-time
+  patch rewrite keyed on `scanId` — its own ticket if it ever bites.
+- **Can a misconfigured host produce a green run with zero tests?** In the observed case
+  every test failed at browser launch, so the run was red. Whether Playwright can ever
+  report success with nothing executed is an open question in 0003; if it can, that is a
+  reporting gap worth its own ticket.
+- **Widening the no-CDN assertion.** 0006's check is scoped to `unpkg.com` by design.
+  Asserting that *no* cross-origin script host is contacted would catch the next instance
+  of this class, but it is a different (and noisier) test.
+- **A possible duplicate-detection issue.** The review's mobile screenshot showed two `tv`
+  detections at 95% with identical descriptions at different x positions, which may mean
+  the spatial resolver is not merging the same object across frames. **Unverified** — it
+  was never reproduced or traced, and it may simply be two real televisions in the fixture
+  scene. Worth a look before it is assumed to be a bug.
+
+## Atlas
+
+Per `docs/FACTORY.md` § "The atlas", this wave's entries are diffed in
+`docs/factory/atlas.html`. Two of them had no "before" to diff against, so the wave adds
+the description first:
+
+- **"Multi-scan World Editor"** (`atlas.html:387`) — its `pick-to-edit` claim is currently
+  true only for selection, not for persistence. → 0004.
+- **"Scan storage"** (`atlas.html:411`) — gains the linearity note and the `scan_index.ts`
+  chip. → 0005.
+- **Geomap / Leaflet** — *gap*: the atlas describes no geomap feature and no browser→CDN
+  edge in "Key integration points". The wave adds both, then diffs them. → 0006.
+- **Node/toolchain requirements** — *gap*: nothing in the atlas states what the repo needs
+  to build and test. Added under Ops & Tooling. → 0001, 0002, 0003.
