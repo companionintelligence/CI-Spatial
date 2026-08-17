@@ -1242,13 +1242,16 @@
         transition: transform 0.15s ease-out, border-color 0.2s ease-out, background 0.2s ease-out, box-shadow 0.2s ease-out;
       }
 
-      .start-path:hover {
+      /* :not(:disabled) so the preparing/unavailable card doesn't light up on
+         hover as if it were pressable. A <label> never matches :disabled, so
+         the upload card is unaffected. */
+      .start-path:not(:disabled):hover {
         border-color: rgba(114, 221, 212, 0.42);
         background: var(--ci-bg-elevated-strong);
         box-shadow: var(--ci-shadow), 0 0 0 5px rgba(114, 221, 212, 0.06);
       }
 
-      .start-path:active {
+      .start-path:not(:disabled):active {
         transform: scale(0.98);
       }
 
@@ -1260,14 +1263,49 @@
         box-shadow: 0 18px 44px rgba(114,221,212,0.18);
       }
 
-      #start-ar-btn.start-path:hover {
+      #start-ar-btn.start-path:not(:disabled):hover {
         background: linear-gradient(180deg, rgba(114,221,212,1), rgba(114,221,212,0.88));
         box-shadow: 0 20px 54px rgba(114,221,212,0.22);
       }
 
+      /* Terminally unusable (no secure context, no AR runtime) — flat and dead. */
       #start-ar-btn.start-path:disabled {
         cursor: not-allowed;
         opacity: 0.4;
+        box-shadow: none;
+      }
+
+      /* Still booting: dimmed but visibly alive, so the wait reads as "not yet"
+         rather than "broken". Pairs with the "Preparing…" status line below. */
+      #start-ar-btn.start-path[aria-busy="true"]:disabled {
+        cursor: progress;
+        animation: start-preparing-pulse 1.7s ease-in-out infinite;
+      }
+
+      @keyframes start-preparing-pulse {
+        0%, 100% { opacity: 0.55; }
+        50%      { opacity: 0.85; }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        #start-ar-btn.start-path[aria-busy="true"]:disabled {
+          animation: none;
+          opacity: 0.7;
+        }
+      }
+
+      /* The status line exists only while the button can't be pressed. */
+      #start-ar-btn .start-path-status {
+        display: none;
+      }
+
+      #start-ar-btn:disabled .start-path-status {
+        display: block;
+        margin-top: 2px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        color: rgba(4, 22, 32, 0.72);
       }
 
       .start-path-icon {
@@ -1437,12 +1475,17 @@
 
       <div id="start-paths" role="group" aria-label="Choose how to capture your space">
         <!-- Path 1 — live AR (primary). Must stay a <button>: the iOS motion
-             permission request in its click handler needs a real user gesture. -->
-        <button id="start-ar-btn" class="start-path" aria-label="Scan a room with live AR">
+             permission request in its click handler needs a real user gesture.
+             Ships `disabled aria-busy` on purpose — the click handler can only
+             be attached at the end of main.ts's async boot (see its section 5),
+             and a tap before that would be silently dropped. main.ts's
+             setStartButtonState() clears both once the handler is live. -->
+        <button id="start-ar-btn" class="start-path" aria-label="Scan a room with live AR" disabled aria-busy="true">
           <span class="start-path-icon" aria-hidden="true"><svg width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="2.2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 16.2a6 6 0 0 0 0-8.4"/><path d="M4.8 4.8a10.2 10.2 0 0 0 0 14.4M19.2 19.2a10.2 10.2 0 0 0 0-14.4"/></svg></span>
           <span class="start-path-copy">
             <span class="start-path-title">Scan a room</span>
             <span class="start-path-sub">Point your phone and walk the room to build a 3D map.</span>
+            <span class="start-path-status" aria-live="polite">Preparing…</span>
           </span>
         </button>
 

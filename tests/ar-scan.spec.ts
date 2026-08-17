@@ -39,6 +39,9 @@ async function waitForStatus(page: Page, text: string, timeoutMs = 20_000) {
 /** Click the Start AR button and dismiss the motion permission dialog if it appears */
 async function clickStartAR(page: Page) {
   page.on('dialog', (dialog) => dialog.accept().catch(() => {}))
+  // The button ships disabled and is enabled only once main.ts has attached its
+  // click handler at the end of boot; wait for that rather than for paint.
+  await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
   await page.locator('#start-ar-btn').click()
 }
 
