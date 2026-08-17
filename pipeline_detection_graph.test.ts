@@ -229,6 +229,8 @@ test('collectDetections: an LOD-wrapped detection counts once, not once per leve
 
   assert.equal(found.length, 1, 'one detection, however many levels of detail it has')
   assert.equal(found[0]!.node, lod, 'the outermost labelled node represents the detection')
+})
+
 // ── Material fidelity: extensions must survive the round trip ────────────────
 // glTF-Transform discards any extension the IO has not registered, at read
 // time, with no signal. KHR_materials_unlit sat on the floor plane and every

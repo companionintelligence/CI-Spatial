@@ -165,7 +165,8 @@ export async function optimizeScan(
   // An extension the IO cannot round-trip disappears without raising anything,
   // and the symptom (surfaces shading differently) never points back here. Say
   // so instead — a vendor extension outside ALL_EXTENSIONS still drops.
-  const lostExtensions = declaredExtensions(glb).filter((ext) => !declaredExtensions(optimizedBytes).includes(ext))
+  const keptExtensions = declaredExtensions(optimizedBytes)
+  const lostExtensions = declaredExtensions(glb).filter((ext) => !keptExtensions.includes(ext))
   if (lostExtensions.length > 0) {
     stages.push({ name: 'extensions', ok: false, ms: 0, note: `dropped ${lostExtensions.join(', ')}` })
     console.warn(`[pipeline] optimization dropped glTF extension(s): ${lostExtensions.join(', ')}`)
