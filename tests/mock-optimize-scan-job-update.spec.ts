@@ -38,9 +38,22 @@ function makeMinimalGlb(): Buffer {
   return Buffer.concat([header, chunkHeader, padded])
 }
 
+/**
+ * Budget for "an optimize-scan job I just enqueued reaches a terminal state".
+ *
+ * Generous on purpose. ADR 0003's single-flight execution is *global* — one
+ * WorldJob processes at a time across every world — so this job's latency is
+ * the queue ahead of it, not its own work (the GLB below is ~50 bytes). Run
+ * alone, the whole spec takes ~2s; run as part of `npm run test:box`, the
+ * api project is concurrently uploading ~48 scans that each enqueue an
+ * optimize job, and a 20s budget expired here with the job still 'queued'.
+ * Waiting longer costs nothing on a quiet queue.
+ */
+const JOB_SETTLE_TIMEOUT_MS = 120_000
+
 test.describe('optimize-scan job-update event drives the viewer UI', () => {
   test.skip(!API_URL, 'requires API_URL — set to a directly reachable Deno server')
-  test.setTimeout(60_000)
+  test.setTimeout(JOB_SETTLE_TIMEOUT_MS * 2)
 
   test('re-optimizing a scan while the viewer is open updates the scan-status chip live', async ({ page, request }) => {
     const filename = `job-update-${Date.now()}.glb`
@@ -55,12 +68,18 @@ test.describe('optimize-scan job-update event drives the viewer UI', () => {
 
     // Let the upload's own optimize-scan job settle before the test's own
     // re-optimize call, so the chip transitions asserted below belong to the
-    // SECOND job, not a race against the first.
+    // SECOND job, not a race against the first. This wait is load-bearing:
+    // dedupe (ADR 0003) would otherwise hand the re-optimize POST back the
+    // still-pending first job, and its completion event could land before
+    // the viewer is even open.
     await expect.poll(async () => {
       const scans = await (await request.get(`${API_URL}/scans`)).json() as
         Array<{ filename: string; job: { status: string } | null }>
       return scans.find((s) => s.filename === storedFilename)?.job?.status
-    }, { timeout: 20_000 }).toBe('done')
+    }, {
+      timeout: JOB_SETTLE_TIMEOUT_MS,
+      message: 'upload\'s optimize-scan job never reached "done" — is the shared job queue backed up?',
+    }).toBe('done')
 
     page.on('pageerror', (err) => console.error('[page]', err))
     await page.goto('/viewer.html?world=default')
@@ -76,6 +95,8 @@ test.describe('optimize-scan job-update event drives the viewer UI', () => {
     const reoptResp = await request.post(`${API_URL}/scans/${encodeURIComponent(storedFilename)}/optimize`)
     expect(reoptResp.ok()).toBeTruthy()
 
-    await expect(statusEl).toContainText(/Optimized -/, { timeout: 30_000 })
+    // Same queue, same reason for the budget: the re-optimize job waits its
+    // turn behind whatever else is in flight before it can emit 'done'.
+    await expect(statusEl).toContainText(/Optimized -/, { timeout: JOB_SETTLE_TIMEOUT_MS })
   })
 })

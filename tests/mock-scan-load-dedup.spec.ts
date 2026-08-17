@@ -28,47 +28,65 @@
  * what this test is trying to exercise. A real optimize-scan re-run isn't
  * guaranteed to reuse the same artifact filenames either.
  *
- * Runs against the real worlds/default.json (250+ scans, not an isolated
- * fixture) per the bug report: the race needs the initial load's ~260
- * concurrent requests to still be contending for the browser's connection
- * pool when the job-completion event lands.
+ * Target scan and fixture GLB both come from the world the server under test
+ * is actually serving, fetched over the API — not from the repo's own
+ * worlds/default.json and scans/ on disk. Those are the same thing only when
+ * the test runs against the long-lived :8000 server; under `npm run test:box`
+ * the server has its own isolated WORLDS_DIR (the 24 seeded homes), so a
+ * target read off disk names a scan that world has never heard of, no
+ * `.scan-item` for it ever renders, and the spec fails on its first locator
+ * before exercising any of the behaviour it exists to check.
+ *
+ * The bug report reproduced the race via connection-pool contention among
+ * ~260 concurrent scan loads, but this spec does not depend on that: it holds
+ * the initial load's full-quality request open for 2.5s and does not fire the
+ * job-completion event until that request is confirmed in flight. The
+ * interleaving is forced by those mocks, so it holds at any world size.
  *
  * Run:
  *   API_URL=http://localhost:8000 VITE_URL=https://localhost:5173 \
  *     npx playwright test --project=chromium-mock mock-scan-load-dedup
  */
 import { test, expect } from '@playwright/test'
-import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
 
 const API_URL = process.env['API_URL'] ?? ''
-const world = JSON.parse(
-  readFileSync(join(process.cwd(), 'worlds', 'default.json'), 'utf8'),
-) as { scans: Array<{ scanId: string; filename: string; glbUrl: string }> }
 
-// A real, already-parseable GLB from the seeded corpus, used for every
-// response that should resolve successfully — so a successful load is
-// unambiguous in the assertions below. scans/ is gitignored and not always
-// seeded (npm run gen:test-data), so guard the read rather than let a
-// missing-file error break the whole spec before test.skip() can apply.
-const VALID_GLB_PATH = join(process.cwd(), 'scans', '1786840029324_home-00-studio-a.glb')
-const validGlbAvailable = existsSync(VALID_GLB_PATH)
-const VALID_GLB = validGlbAvailable ? readFileSync(VALID_GLB_PATH) : Buffer.alloc(0)
-
-test.skip(world.scans.length < 50, 'worlds/default.json fixture is too small to reproduce the race')
 test.skip(!API_URL, 'API_URL required — this test intercepts the real /worlds/default response')
-test.skip(!validGlbAvailable, `fixture GLB not present at ${VALID_GLB_PATH} — run npm run gen:test-data first`)
 
-// A scan far enough into the list that, under real (unmocked) network
-// conditions for the other 249+ scans' 404s, its initial load is still
-// plausibly in flight when the job-completion event arrives.
-const TARGET = world.scans[Math.floor(world.scans.length / 2)]!
+interface WorldScan { scanId: string; filename: string; glbUrl: string }
 
 test.describe('loadScanIntoWorld race between initial load and job-completion reload', () => {
   test.setTimeout(90_000)
 
-  test('a job-completion reload is not clobbered by a slow/failing initial load', async ({ page }) => {
+  test('a job-completion reload is not clobbered by a slow/failing initial load', async ({ page, request }) => {
     page.on('pageerror', (err) => console.error('[page]', err))
+
+    // Target: the middle scan of the world the server is actually serving.
+    // Far enough in that, under real (unmocked) network conditions for the
+    // other scans, its initial load is still plausibly in flight when the
+    // job-completion event arrives. Its own GLB is never fetched — the
+    // manifest below is mocked, so the load goes to the mocked artifact URLs
+    // — so a world listing scans whose files are long gone is still fine.
+    const worldResp = await request.get(`${API_URL}/worlds/default`)
+    expect(worldResp.status(), 'GET /worlds/default').toBe(200)
+    const scans = (await worldResp.json() as { scans: WorldScan[] }).scans
+    test.skip(scans.length === 0, 'served world has no scans — seed it first (npm run gen:test-data)')
+    const TARGET = scans[Math.floor(scans.length / 2)]!
+
+    // A real, already-parseable GLB, used as the body of every mocked
+    // response that should resolve successfully — so a successful load is
+    // unambiguous in the assertions below. Any served scan's GLB will do;
+    // take the first one that actually comes back, since a world routinely
+    // lists more scans than SCANS_DIR still holds files for.
+    let validGlb: Buffer | null = null
+    for (const candidate of scans) {
+      const resp = await request.get(`${API_URL}${candidate.glbUrl}`)
+      if (!resp.ok()) continue
+      const body = Buffer.from(await resp.body())
+      if (body.byteLength > 0) { validGlb = body; break }
+    }
+    test.skip(!validGlb, 'no scan in the served world has a fetchable GLB — seed it first')
+    const VALID_GLB = validGlb!
 
     // Optimize manifest: present on every fetch, with a preview LOD so each
     // load's first pass lands fast (flipping loaded=true, the condition

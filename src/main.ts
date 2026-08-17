@@ -66,12 +66,7 @@ async function main() {
     console.warn(`[main] Secure context (HTTPS) required. To test locally: tailscale cert ${location.hostname}`)
     const statusEl = document.getElementById('status-text')
     if (statusEl) statusEl.textContent = `This page must be opened over a secure HTTPS link — ask for the correct link`
-    const startBtn = document.getElementById('start-ar-btn') as HTMLButtonElement | null
-    if (startBtn) {
-      startBtn.disabled = true
-      startBtn.style.opacity = '0.4'
-      startBtn.style.cursor = 'not-allowed'
-    }
+    setStartButtonState('unavailable', 'Needs a secure (HTTPS) link')
     return
   }
 
@@ -79,6 +74,55 @@ async function main() {
 
   const canvas = document.getElementById('camerafeed') as HTMLCanvasElement
   const overlay = setupStatusOverlay()
+
+  // ── 0. Start-AR gesture gate ────────────────────────────────────────────────
+  // Wired here, at the top of the boot, even though AR itself only starts in
+  // section 5. #start-ar-btn is in the static markup and paints in ~250ms,
+  // while everything between here and section 5 is awaited work the button
+  // does not need — IndexedDB stores, and above all the inference router's
+  // model load. Registering the listener down there meant a tap in that
+  // window (~6.5s, measured on a mobile-emulated run) reached no listener at
+  // all: no feedback, start screen still up, nothing started.
+  //
+  // The handler is still the user gesture itself — a tap is never replayed or
+  // synthesized later, only allowed to arrive earlier — so iOS Safari's rule
+  // that DeviceOrientation/DeviceMotion requestPermission() be called
+  // synchronously inside a real click handler still holds.
+  //
+  // A first-run visitor can't tap through the onboarding overlay to get here:
+  // it covers the start screen and is dismissed before section 4b returns.
+  const startBtn = document.getElementById('start-ar-btn') as HTMLButtonElement | null
+  let startPressed = false
+  const startArPressed = new Promise<void>((resolve) => {
+    startBtn?.addEventListener('click', async () => {
+      startPressed = true
+      // ↓ Initiate BEFORE any await — this preserves the user-gesture context in Safari
+      type PermAPI = { requestPermission?(): Promise<string> }
+      const p1 = (DeviceOrientationEvent as unknown as PermAPI).requestPermission?.()
+      const p2 = (DeviceMotionEvent as unknown as PermAPI).requestPermission?.()
+
+      // Hide the start screen immediately
+      document.getElementById('start-screen')?.remove()
+      // Tapped before the boot reached section 5: say so, rather than leaving
+      // the last boot status (e.g. "AI: WebGPU") on screen as if nothing happened.
+      overlay.setStatus('Starting AR…')
+
+      try {
+        await Promise.all([p1, p2].filter(Boolean))
+      } catch (err) {
+        console.warn('[main] Motion/orientation permission denied — SLAM may not track', err)
+        showPermissionBanner('Enable motion & orientation access in Settings → Safari → Motion & Orientation Access.')
+      }
+      resolve()
+    }, { once: true })
+  })
+  // The button ships `disabled aria-busy="true"` with a "Preparing…" line in
+  // index.html, so it never advertises itself as pressable before this point —
+  // the gap is now only the ~50ms until this line runs, plus the case where
+  // the bundle never loads at all, where staying disabled is the honest state.
+  // Enabling here rather than at section 5 is the whole fix: the handler above
+  // is live, so the tap has somewhere to land.
+  setStartButtonState('ready')
 
   // ── 1. Store + scan accumulators ────────────────────────────────────────────
   const store = new DetectionStore()
@@ -628,31 +672,11 @@ async function main() {
     }
   }
 
-  // ── 5. Start AR — permission must be requested in the button click handler ───
-  // Safari iOS 13+ requires DeviceOrientationEvent/DeviceMotionEvent.requestPermission()
-  // to be called synchronously inside a click handler, with NO awaits before it.
-  // A real <button> click event is the only reliable trigger for this in Safari.
-  overlay.setStatus('Press Start AR to begin')
-  await new Promise<void>((resolve) => {
-    const startBtn = document.getElementById('start-ar-btn') as HTMLButtonElement
-    startBtn.addEventListener('click', async () => {
-      // ↓ Initiate BEFORE any await — this preserves the user-gesture context in Safari
-      type PermAPI = { requestPermission?(): Promise<string> }
-      const p1 = (DeviceOrientationEvent as unknown as PermAPI).requestPermission?.()
-      const p2 = (DeviceMotionEvent as unknown as PermAPI).requestPermission?.()
-
-      // Hide the start screen immediately
-      document.getElementById('start-screen')?.remove()
-
-      try {
-        await Promise.all([p1, p2].filter(Boolean))
-      } catch (err) {
-        console.warn('[main] Motion/orientation permission denied — SLAM may not track', err)
-        showPermissionBanner('Enable motion & orientation access in Settings → Safari → Motion & Orientation Access.')
-      }
-      resolve()
-    }, { once: true })
-  })
+  // ── 5. Start AR — the section-0 gesture gate resolves when the user taps ─────
+  // The listener lives at the top of main() (see there for why); all that is
+  // left here is to prompt, if they haven't already tapped, and wait.
+  if (!startPressed) overlay.setStatus('Press Start AR to begin')
+  await startArPressed
 
   overlay.setStatus('Starting AR…')
   try {
@@ -828,21 +852,69 @@ async function checkStorageQuota(store: DetectionStore, overlay: ReturnType<type
 }
 
 /**
+ * Move #start-ar-btn out of its initial "preparing" state.
+ *
+ * The button paints from index.html's static markup within ~250 ms, and its
+ * click handler is attached at the top of main() (section 0) — so 'ready'
+ * follows almost immediately, and a tap from then on is honoured even though
+ * AR itself only starts in section 5. The markup ships
+ * `disabled aria-busy="true"` with a "Preparing…" line to cover the gap that
+ * remains: the ~50 ms until section 0 runs, and the case where the bundle
+ * never loads at all, where staying disabled is the honest state. This is the
+ * only thing that clears it.
+ *
+ * The handler can't move any later than a real gesture — the iOS
+ * motion-permission request must run synchronously inside the click, so an
+ * early tap can never be buffered and replayed. Attaching early is what makes
+ * the tap land somewhere instead of vanishing with no feedback.
+ *
+ * 'unavailable' is terminal: the boot paths that give up (insecure context, no
+ * AR runtime, a crash in main()) call it so the card stops advertising a wait
+ * that will never end.
+ */
+function setStartButtonState(state: 'ready' | 'unavailable', label?: string): void {
+  const btn = document.getElementById('start-ar-btn') as HTMLButtonElement | null
+  if (!btn) return
+  btn.disabled = state !== 'ready'
+  btn.removeAttribute('aria-busy')   // no longer booting, either way
+
+  const status = btn.querySelector<HTMLElement>('.start-path-status')
+  if (status && state === 'unavailable') {
+    status.textContent = label ?? 'Not available on this device'
+  }
+}
+
+/**
  * Fills and reveals the #ar-help hint on the start screen when no AR runtime
  * is available — per-platform guidance for getting a working session.
  */
 function showArHelp(): void {
-  const el = document.getElementById('ar-help')
-  if (!el) return
+  setStartButtonState('unavailable')
   const ua = navigator.userAgent
-  if (/iPhone|iPad|iPod/i.test(ua)) {
+  const isIOS = /iPhone|iPad|iPod/i.test(ua)
+  const plain = isIOS
+    ? 'Open in Safari for 8th Wall SLAM, or install HelloXR for native WebXR'
+    : /Android/i.test(ua)
+      ? 'Use Chrome 90+ with Google Play Services for AR'
+      : 'Open this URL on a phone: ' + location.origin
+
+  const el = document.getElementById('ar-help')
+  if (!el) {
+    // #ar-help lives inside #start-screen, and a Start AR tap removes that
+    // screen — which, now that a tap is honoured during boot (section 0), can
+    // happen before AR runtime detection has failed. Fall back to the
+    // permission banner, a sibling of the start screen that survives it, so
+    // "no AR runtime" can never end as a blank screen with no explanation.
+    showPermissionBanner(`AR is not available on this device. ${plain}`)
+    return
+  }
+
+  if (isIOS) {
     el.innerHTML = 'Open in Safari for 8th Wall SLAM, or install '
       + '<a href="https://apps.apple.com/us/app/helloxr/id6757726359" style="color:var(--ci-accent);">HelloXR</a>'
       + ' for native WebXR'
-  } else if (/Android/i.test(ua)) {
-    el.textContent = 'Use Chrome 90+ with Google Play Services for AR'
   } else {
-    el.textContent = 'Open this URL on a phone: ' + location.origin
+    el.textContent = plain
   }
   el.hidden = false
 }
@@ -1130,6 +1202,10 @@ main().catch((e: unknown) => {
   console.error('[main]', e)
   const el = document.getElementById('status-text')
   if (el) el.textContent = `Error: ${e instanceof Error ? e.message : String(e)}`
+  // Boot died. If it got as far as section 0 the button is enabled but its
+  // handler leads nowhere; if it died before that it is still pulsing
+  // "Preparing…" for a boot that will never finish. Either way, say so.
+  setStartButtonState('unavailable', 'Start failed — reload the page')
 })
 
 // ─── Geo indicator (inside the unified top-left HUD) ─────────────────────────

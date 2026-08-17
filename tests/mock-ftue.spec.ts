@@ -65,9 +65,40 @@ test.describe('FTUE two-path start screen', () => {
     expect(await scan.evaluate((el) => el.tagName)).toBe('BUTTON')
   })
 
+  test('Scan button ships not-pressable and is enabled once its handler is live', async ({ page, request }) => {
+    // Half one — what index.html *ships*, asserted against the served markup
+    // rather than a live page. main() now enables the button ~300ms after
+    // load, so a browser-side assertion of the pre-boot state would be a race
+    // against that (it was a comfortable ~6.5s window only while the handler
+    // was attached at the end of the boot, which is the bug that was fixed).
+    const html = await (await request.get('/')).text()
+    const startBtnTag = /<button id="start-ar-btn"[^>]*>/.exec(html)?.[0] ?? ''
+    expect(startBtnTag, '#start-ar-btn tag in the served markup').toContain('disabled')
+    expect(startBtnTag).toContain('aria-busy="true"')
+    expect(html).toContain('class="start-path-status"')
+
+    // Half two — it does not stay that way. Enablement is the signal that a
+    // tap will now be honoured, and it lands during the boot, not after it.
+    await page.goto('/?mock=xr8')
+    const scan = page.locator('#start-ar-btn')
+    await expect(scan).toBeEnabled({ timeout: 30_000 })
+    await expect(scan).not.toHaveAttribute('aria-busy', 'true')
+    // The "Preparing…" line stays in the DOM and is hidden by CSS once the
+    // button is enabled, so assert on visibility rather than text content.
+    await expect(scan.locator('.start-path-status')).toBeHidden()
+  })
+
   test('Scan path starts live AR and points accumulate', async ({ page }) => {
     await page.goto('/?mock=xr8')
-    await expect(page.locator('#start-ar-btn')).toBeVisible({ timeout: 15_000 })
+    // toBeEnabled, not toBeVisible: the button paints from static markup
+    // ~250ms in, but ships disabled, and enablement is what marks its click
+    // handler as live. Clicking on visibility used to land on nothing and be
+    // silently dropped (this test failed 3 runs out of 3 that way).
+    //
+    // Enablement happens at the top of the boot, long before AR itself can
+    // start, so this click still lands mid-boot — which is the point: it is
+    // the regression test for that tap being honoured rather than lost.
+    await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
     await page.click('#start-ar-btn')
 
     // Start screen dismisses and the mock SLAM engine accumulates points.
