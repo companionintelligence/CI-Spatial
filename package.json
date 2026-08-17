@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "vite --host",
     "build": "tsc --noEmit && vite build",
-    "verify": "deno task check && deno task test && tsc --noEmit",
+    "verify": "deno task check && deno task test && tsc --noEmit && npm run test:pipeline:graph",
+    "test:pipeline:graph": "node --experimental-strip-types --no-warnings --test pipeline_detection_graph.test.ts",
     "preview": "vite preview --host",
     "server": "deno run --watch --allow-net --allow-read --allow-write --allow-env --allow-ffi --allow-run main.ts",
     "start": "concurrently --raw --names \"infer,vite\" -c \"cyan,green\" \"npm run server\" \"npm run dev\"",

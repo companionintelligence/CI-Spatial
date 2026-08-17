@@ -12,6 +12,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js'
 import { SceneEditor, SEMANTIC_TAGS, type ViewMode } from './editor'
 import { MeasureTool } from './measure'
+import { collectDetections, hasLabelledAncestor } from './detections'
 import { GeoMap, type ScanLocationEntry } from './geomap'
 import { LiveFeed } from './livefeed'
 import { loadSemanticAsset, createMediumPolyAsset } from './assets'
@@ -784,24 +785,19 @@ function formatKB(bytes: number): string {
 }
 
 function upgradeSemanticMeshes(root: THREE.Object3D, scanId: string): void {
-  const semanticMeshes: THREE.Mesh[] = []
-  root.traverse((obj) => {
-    const data = obj.userData as Record<string, unknown>
-    if (obj instanceof THREE.Mesh && data['label']) semanticMeshes.push(obj)
-  })
-
-  for (const mesh of semanticMeshes) {
-    const data = mesh.userData as Record<string, unknown>
+  for (const { node, mesh } of collectDetections(root)) {
+    const data = node.userData as Record<string, unknown>
     const label = String(data['label'])
     const parent = mesh.parent
     if (!parent) continue
 
+    const name = node.name || mesh.name || label
     const lod = new THREE.LOD()
-    lod.name = `LOD_${mesh.name || label}`
+    lod.name = `LOD_${name}`
     lod.userData = {
-      ...mesh.userData,
+      ...data,
       scanId,
-      objectId: `${scanId}:${mesh.name || label}:lod`,
+      objectId: `${scanId}:${name}:lod`,
     }
     lod.position.copy(mesh.position)
     lod.quaternion.copy(mesh.quaternion)
@@ -1049,22 +1045,23 @@ function buildDetectionBounds(
   scanId: string,
   layers: Map<LayerType, Set<THREE.Object3D>>,
 ): void {
-  root.traverse((obj) => {
-    if (!(obj instanceof THREE.Mesh)) return
-    const data = obj.userData as Record<string, unknown>
-    if (!data['label']) return
+  // Bounds attach to the mesh, not the labelled node: after optimization the
+  // mesh carries a dequantization transform, and a wire parented above it would
+  // render in quantized space — a box in the wrong place, at the wrong scale.
+  for (const { node, mesh } of collectDetections(root)) {
+    const data = node.userData as Record<string, unknown>
 
-    const edges = new THREE.EdgesGeometry(obj.geometry, 15)
+    const edges = new THREE.EdgesGeometry(mesh.geometry, 15)
     const wire = new THREE.LineSegments(edges, boundEdgeMaterial.clone())
-    wire.name = `${obj.name || data['label']} detection bounds`
+    wire.name = `${node.name || data['label']} detection bounds`
     wire.renderOrder = 2
     wire.userData['scanId'] = scanId
     wire.userData['layerType'] = 'detections'
-    obj.add(wire)
+    mesh.add(wire)
     detectionBoundsObjects.push(wire)
     addLayerNode(layers, 'detections', wire)
 
-    const positionAttr = obj.geometry.attributes['position']
+    const positionAttr = mesh.geometry.attributes['position']
     if (positionAttr instanceof THREE.BufferAttribute) {
       const step = Math.max(1, Math.floor(positionAttr.count / 200))
       const verts: number[] = []
@@ -1074,24 +1071,15 @@ function buildDetectionBounds(
       const geometry = new THREE.BufferGeometry()
       geometry.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3))
       const points = new THREE.Points(geometry, boundPointMaterial.clone())
-      points.name = `${obj.name || data['label']} detection samples`
+      points.name = `${node.name || data['label']} detection samples`
       points.renderOrder = 2
       points.userData['scanId'] = scanId
       points.userData['layerType'] = 'detections'
-      obj.add(points)
+      mesh.add(points)
       detectionBoundsObjects.push(points)
       addLayerNode(layers, 'detections', points)
     }
-  })
-}
-
-/** True when some ancestor of `obj` (up to but excluding `root`) is itself labelled. */
-function hasLabelledAncestor(obj: THREE.Object3D, root: THREE.Object3D): boolean {
-  if (obj === root) return false
-  for (let node = obj.parent; node && node !== root; node = node.parent) {
-    if ((node.userData as Record<string, unknown>)['label']) return true
   }
-  return false
 }
 
 function createSemanticLabels(root: THREE.Object3D, scanId: string): void {
