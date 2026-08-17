@@ -127,6 +127,15 @@ async function main() {
   // ── 1. Store + scan accumulators ────────────────────────────────────────────
   const store = new DetectionStore()
   await store.open()
+  // Continue the last scan rather than silently starting empty. Without this a
+  // reload lost every pin — the restore method existed but nothing called it,
+  // so the only way back to a scan was the history drawer. Announced rather
+  // than silent, so a resumed scan is never mistaken for a fresh one; "Clear
+  // session" in the panel is the way to start over.
+  const resumed = await store.resumeLatestSession()
+  if (resumed > 0) {
+    overlay.setStatus(`Resumed last scan — ${resumed} object${resumed === 1 ? '' : 's'}`)
+  }
   void checkStorageQuota(store, overlay)
   const projectStore = new ProjectStore()
   await projectStore.open()
@@ -184,7 +193,11 @@ async function main() {
   const history = new SessionHistory(store)
   history.mount()
 
-  void store.saveSnapshot().then(() => checkStorageQuota(store, overlay))
+  // Deliberately no saveSnapshot() here. Persisting at boot wrote an empty
+  // record on every page load, so the history drawer filled with "0 objects"
+  // rows that buried the real scans. The first capture persists; until then
+  // there is nothing worth storing.
+  void checkStorageQuota(store, overlay)
 
   document.getElementById('history-btn')?.addEventListener('click', () => {
     initDrawerGeoMap(geoTracker.snapshot())
