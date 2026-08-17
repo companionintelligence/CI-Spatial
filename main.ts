@@ -301,6 +301,12 @@ app.post('/infer', async (c) => {
       return c.json({ error: `Image too large (${buffer.byteLength} bytes; max ${INFER_MAX_IMAGE_BYTES})`, code: 'too-large' }, 413)
     }
     console.log(`[infer] Received image: ${buffer.byteLength} bytes`)
+    if (!looksLikeImage(new Uint8Array(buffer))) {
+      // Not an image at all — most often a proxy or dev-server fallback page that
+      // answered 200 with HTML. That is the caller's problem, not a server fault,
+      // so it gets a 400 like every other malformed upload rather than a 500.
+      return c.json({ error: 'Uploaded file is not a recognised image (expected JPEG, PNG or WebP)', code: 'bad-image' }, 400)
+    }
     const started = Date.now()
     const detections = await Promise.race([
       engine.infer(new Uint8Array(buffer)),
@@ -316,10 +322,44 @@ app.post('/infer', async (c) => {
     c.header('X-Inference-Ms', String(elapsed))
     return c.json(detections)
   } catch (err) {
+    // A decoder throwing on truncated or corrupt pixel data is bad input, not a
+    // server fault — a phone uploading a half-written frame must not read as a
+    // 500, or the client retries a request that can never succeed.
+    if (isDecodeError(err)) {
+      console.warn('[infer] undecodable image:', String(err))
+      return c.json({ error: `Image could not be decoded: ${String(err)}`, code: 'bad-image' }, 400)
+    }
     console.error('[infer error]', err)
     return c.json({ error: String(err) }, 500)
   }
 })
+
+/** Container sniff — JPEG (SOI), PNG, WebP (RIFF….WEBP). */
+function looksLikeImage(bytes: Uint8Array): boolean {
+  if (bytes.length < 12) return false
+  if (bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF) return true
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47) return true
+  const ascii = (i: number, s: string) => [...s].every((ch, k) => bytes[i + k] === ch.charCodeAt(0))
+  if (ascii(0, 'RIFF') && ascii(8, 'WEBP')) return true
+  return false
+}
+
+/**
+ * Distinguishes "these bytes are not decodable" from a genuine server fault.
+ *
+ * Matches the vocabulary the image decoders below us actually throw in — jpeg-js
+ * ("unknown JPEG marker 0x..", "marker was not found", "Invalid JPEG"), Jimp
+ * ("Could not find MIME for Buffer", "Unsupported MIME type"), and the PNG/WebP
+ * paths. It is deliberately broad: a frame the decoder rejects is the caller's
+ * problem, and calling it 500 tells the client to retry a request that can never
+ * succeed. The cost of the opposite mistake — reporting a real fault as 400, so
+ * the client gives up — is bounded here because these words do not appear in the
+ * I/O and resource errors this route can otherwise raise.
+ */
+function isDecodeError(err: unknown): boolean {
+  const msg = String(err instanceof Error ? err.message : err).toLowerCase()
+  return /marker|jpeg|jpg|png|webp|bitmap|mime|decode|corrupt|invalid|malformed|unsupported|unexpected end|truncat|huffman|scan data/.test(msg)
+}
 
 // ── Phone-side console relay (?debug=remote pages POST here) ─────────────────
 const clientLogHits = new Map<string, number[]>()
@@ -367,6 +407,31 @@ app.post('/client-logs', async (c) => {
 
 // ── Scan file storage ─────────────────────────────────────────────────────────
 
+/**
+ * Creates the scan file with `createNew`, so the name is claimed atomically by the
+ * filesystem rather than by a check-then-write that two concurrent uploads can both
+ * win. Returns the open handle and the name that was actually taken.
+ */
+async function createScanFileExclusive(
+  dir: string,
+  ts: number,
+  safeName: string,
+): Promise<{ file: Deno.FsFile; filename: string }> {
+  const stem = safeName.replace(/\.glb$/, '')
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const suffix = attempt === 0 ? '' : `-${crypto.randomUUID().slice(0, 8)}`
+    const filename = `${ts}_${stem}${suffix}.glb`
+    try {
+      const file = await Deno.open(`${dir}/${filename}`, { write: true, createNew: true })
+      return { file, filename }
+    } catch (err) {
+      if (err instanceof Deno.errors.AlreadyExists) continue
+      throw err
+    }
+  }
+  throw new Error(`could not allocate a unique filename for ${safeName} after 8 attempts`)
+}
+
 app.post('/upload-scan', async (c) => {
   console.log('[server] /upload-scan route triggered')
   const form = await c.req.formData()
@@ -382,14 +447,21 @@ app.post('/upload-scan', async (c) => {
     .replace(/\.\./g, '__')
     .replace(/^[._-]+/, '') || 'scan'
   const safeName = rawName.endsWith('.glb') ? rawName : `${rawName}.glb`
-  const ts = Date.now()
-  // Prefix with timestamp to guarantee uniqueness
-  const filename = `${ts}_${safeName}`
-  const filePath = `${SCANS_DIR}/${filename}`
 
   try {
     const buffer = await file.arrayBuffer()
-    await Deno.writeFile(filePath, new Uint8Array(buffer))
+    // A millisecond timestamp does NOT guarantee uniqueness: two uploads landing in
+    // the same millisecond with the same name produced identical paths, so the
+    // second silently overwrote the first and both callers were told they had
+    // stored a scan. Claim the name atomically instead and disambiguate on a real
+    // collision — the common case keeps the plain `<ts>_<name>` form.
+    const { file: handle, filename } = await createScanFileExclusive(SCANS_DIR, Date.now(), safeName)
+    const filePath = `${SCANS_DIR}/${filename}`
+    try {
+      await handle.write(new Uint8Array(buffer))
+    } finally {
+      handle.close()
+    }
     console.log(`[scan] Saved ${filename} (${(buffer.byteLength / 1024).toFixed(0)} KB)`)
 
     // Optional metadata JSON alongside the .glb
@@ -1535,6 +1607,26 @@ async function refreshWorldScans(world: WorldProject): Promise<void> {
   const stored = await listStoredScans()
   const storedByFilename = new Map(stored.map(scan => [scan.filename, scan]))
   let changed = false
+
+  // Reconcile against disk: a scan whose .glb has gone (deleted out of band, or a
+  // storage reset that never reached this manifest) must not survive here — the
+  // editor would keep fetching it and render a 404 row per stale entry, and the
+  // manifest would grow without bound. Deletions through DELETE /scans do prune
+  // via removeScanFromWorlds(); this is the self-heal for everything else.
+  //
+  // Guarded: only prune when the directory listing actually returned scans. An
+  // empty listing is ambiguous (genuinely empty vs. scans/ unmounted or moved
+  // aside), and pruning on that reading would destroy the whole manifest —
+  // including manual localToWorld alignment — for a transient condition.
+  if (stored.length > 0) {
+    const before = world.scans.length
+    world.scans = world.scans.filter(scan => !scan.filename || storedByFilename.has(scan.filename))
+    const pruned = before - world.scans.length
+    if (pruned > 0) {
+      changed = true
+      console.log(`[worlds] pruned ${pruned} scan entr${pruned === 1 ? 'y' : 'ies'} with no .glb on disk`)
+    }
+  }
 
   world.scans = world.scans.map((scan, index) => {
     const storedScan = storedByFilename.get(scan.filename)
@@ -3308,7 +3400,16 @@ app.get('/rtc-signal', (c) => {
   const room = rtcRooms.get(roomId)!
 
   const peer: RtcPeer = { ws: socket, role }
+  // A role has exactly one live socket. Reconnects (and a second editor tab) arrive
+  // while the previous socket is still half-open, so the incumbent is closed here
+  // rather than silently dropped — otherwise its later close event would delete the
+  // peer that replaced it and wedge the room for both sides.
+  const previous = room[role]
   room[role] = peer
+  if (previous && previous.ws !== socket) {
+    console.log(`[rtc] ${role} reconnected to room "${roomId}" — closing the superseded socket`)
+    try { previous.ws.close() } catch { /* already gone */ }
+  }
   console.log(`[rtc] ${role} joined room "${roomId}"`)
 
   // Notify each side when both peers are present
@@ -3340,6 +3441,13 @@ app.get('/rtc-signal', (c) => {
   })
 
   socket.addEventListener('close', () => {
+    // Only the socket that currently holds the slot may clear it. A superseded
+    // socket closing after its replacement registered must not evict the live peer,
+    // nor tell the other side that this role has left when it has not.
+    if (room[role] !== peer) {
+      console.log(`[rtc] superseded ${role} socket closed in room "${roomId}" — live peer kept`)
+      return
+    }
     console.log(`[rtc] ${role} left room "${roomId}"`)
     delete room[role]
     if (!room.phone && !room.viewer) rtcRooms.delete(roomId)

@@ -122,7 +122,10 @@ test.describe('Health endpoints', () => {
   test('/health includes model ID', async ({ request }) => {
     const resp = await request.get(`${BASE_URL}/health`)
     const body = await resp.json() as { model: string }
-    expect(body.model).toMatch(/(LFM2\.5|Ollama|qwen|llava|moondream)/i)
+    // `mock` is a documented first-class engine (INFERENCE_MODE=mock is the CI
+    // tier), so its model id must be accepted here the same way the
+    // house-readiness preflight accepts `ollama|mock`.
+    expect(body.model).toMatch(/(LFM2\.5|Ollama|qwen|llava|moondream|mock)/i)
   })
 })
 
@@ -348,8 +351,18 @@ test.describe('History drawer', () => {
   test('clicking backdrop closes the drawer', async ({ page }) => {
     await page.locator('#history-btn').click()
     await expect(page.locator('#history-drawer')).toHaveClass(/open/)
-    // Click the backdrop (the drawer element itself, not the panel)
-    await page.locator('#history-drawer').click({ position: { x: 290, y: 200 } })
+
+    // The backdrop is whatever the drawer covers to the right of the panel.
+    // #history-panel is left-anchored with width min(420px, 88vw), so a fixed
+    // x of 290 lands *inside* the panel on every viewport this suite runs —
+    // derive the point from the panel's real box instead.
+    const panel = await page.locator('#history-panel').boundingBox()
+    const view = page.viewportSize()
+    if (!panel || !view) throw new Error('history panel or viewport has no box')
+    const x = (panel.x + panel.width + view.width) / 2
+    expect(x, 'no backdrop is exposed beside the panel').toBeGreaterThan(panel.x + panel.width)
+
+    await page.mouse.click(x, Math.min(200, view.height - 20))
     await expect(page.locator('#history-drawer')).not.toHaveClass(/open/)
   })
 })
@@ -471,6 +484,7 @@ test.describe('UI element positions', () => {
         return {
           id,
           parent: el.parentElement?.id,
+          display: getComputedStyle(el).display,
           x: rect.x,
           y: rect.y,
           width: rect.width,
@@ -487,7 +501,16 @@ test.describe('UI element positions', () => {
     })
 
     expect(result.railExists).toBeTruthy()
-    for (const box of result.boxes) {
+
+    // #xr-mode-link is hidden by design on engines without WebXR (updateXrModeLink),
+    // so the user is not sent to a dead-end page — Safari/WebKit is exactly that
+    // case. Only the WebXR link may be hidden; anything else missing is a bug.
+    const hidden = result.boxes.filter((b) => b.display === 'none')
+    expect(hidden.map((b) => b.id)).toEqual(
+      hidden.length ? ['xr-mode-link'] : [])
+
+    const visible = result.boxes.filter((b) => b.display !== 'none')
+    for (const box of visible) {
       expect(box.parent).toBe('scanner-action-rail')
       expect(box.width).toBeGreaterThanOrEqual(47)
       expect(box.width).toBeLessThanOrEqual(49)
@@ -496,8 +519,9 @@ test.describe('UI element positions', () => {
       expect(box.right).toBeGreaterThan(result.viewportWidth - 70)
     }
 
-    for (let i = 0; i < result.boxes.length - 1; i++) {
-      expect(result.boxes[i].bottom).toBeLessThanOrEqual(result.boxes[i + 1].y)
+    // Stacking order is only meaningful between controls that actually render.
+    for (let i = 0; i < visible.length - 1; i++) {
+      expect(visible[i].bottom).toBeLessThanOrEqual(visible[i + 1].y)
     }
   })
 
