@@ -7,7 +7,9 @@
  *   - Clicking a pin selects that scan in the sidebar list
  *   - Compass bearing indicator on each pin
  *
- * Leaflet is loaded from CDN to avoid bundling it.
+ * Leaflet is bundled from npm and pulled in with a dynamic import, so the drawer
+ * costs nothing until it is opened. Tile imagery still comes from basemaps.cartocdn.com,
+ * so offline yields a dark canvas with correctly-placed pins rather than a full map.
  */
 
 export interface ScanLocationEntry {
@@ -24,34 +26,27 @@ export interface ScanLocationEntry {
 
 export type ScanSelectCallback = (filename: string) => void
 
-/** Dynamically load Leaflet CSS + JS from CDN */
+/**
+ * Load Leaflet from the bundle. Dynamic rather than static so the library lands in its
+ * own lazily-fetched chunk — the drawer is behind a click, and an eager import would put
+ * ~150 KB on the critical path of every page load.
+ *
+ * This replaced a CDN script-tag injector that resolved on the tag's *presence*
+ * (`document.querySelector('script[data-leaflet]')`) rather than its execution. A tag
+ * still in flight — or one that had already fired onerror — satisfied that selector, so
+ * the loader resolved immediately and returned `window.L`, which was `undefined`, hidden
+ * by an unchecked cast. Being same-origin now also makes it cacheable by the service
+ * worker's staleWhileRevalidate, which a cross-origin URL never could be.
+ */
 async function loadLeaflet(): Promise<typeof import('leaflet')> {
-  // Check if already loaded
-  if (typeof window !== 'undefined' && (window as unknown as Record<string, unknown>)['L']) {
-    return (window as unknown as Record<string, unknown>)['L'] as typeof import('leaflet')
-  }
-
-  // Inject CSS
-  if (!document.querySelector('link[data-leaflet]')) {
-    const link = document.createElement('link')
-    link.rel = 'stylesheet'
-    link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'
-    link.dataset['leaflet'] = '1'
-    document.head.appendChild(link)
-  }
-
-  // Inject JS
-  await new Promise<void>((resolve, reject) => {
-    if (document.querySelector('script[data-leaflet]')) { resolve(); return }
-    const script = document.createElement('script')
-    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
-    script.dataset['leaflet'] = '1'
-    script.onload  = () => resolve()
-    script.onerror = () => reject(new Error('Failed to load Leaflet'))
-    document.head.appendChild(script)
-  })
-
-  return (window as unknown as Record<string, unknown>)['L'] as typeof import('leaflet')
+  // The stylesheet is imported dynamically too, so it lands in the same lazy chunk
+  // rather than on the entry's eager CSS. It replaces the CDN <link> index.html used
+  // to carry, which is why deleting that tag does not leave the map unstyled.
+  const [lib] = await Promise.all([
+    import('leaflet'),
+    import('leaflet/dist/leaflet.css'),
+  ])
+  return lib
 }
 
 export class GeoMap {
@@ -118,7 +113,10 @@ export class GeoMap {
       }
     }
 
+    // `this._L` is only non-null when the import above resolved, so everything below
+    // that dereferences it is inside the same guarded path.
     const L = this._L
+    if (!L) { this._setEmptyState(true, 'Map unavailable'); return }
     const validLocs = locations.filter(l => l.lat !== 0 || l.lng !== 0)
     this._locations = validLocs
 

@@ -226,7 +226,7 @@ async function main() {
   void checkStorageQuota(store, overlay)
 
   document.getElementById('history-btn')?.addEventListener('click', () => {
-    initDrawerGeoMap(geoTracker.snapshot())
+    void initDrawerGeoMap(geoTracker.snapshot())
   })
 
   await router.init(
@@ -1350,24 +1350,30 @@ function updateGeoIndicator(fix: GeoFix): void {
 
 // ─── Drawer geo-map (Leaflet, lazy init on first open) ─────────────────────────
 
-type LeafletMap = {
-  setView(latlng: [number, number], zoom: number): LeafletMap
-  invalidateSize(): void
-}
-type LeafletMarker = { setLatLng(latlng: [number, number]): void }
-
-let _geoMap: LeafletMap | null = null
+// Types come from the already-vendored @types/leaflet rather than hand-rolled
+// structural subsets (ADR 0001 — the same collapse foundation-updates/0005 and /0007 did).
+let _geoMap: import('leaflet').Map | null = null
 let _geoMapReady = false
-let _currentMarker: LeafletMarker | null = null
+let _currentMarker: import('leaflet').Marker | null = null
 
 /**
  * Called by SessionHistory when the drawer opens.
  * Lazy-creates a Leaflet map, shows the current GPS fix, and plots
  * all server-side scan locations as markers.
  */
-function initDrawerGeoMap(fix: GeoFix | null): void {
-  const L = (window as unknown as Record<string, unknown>)['L'] as typeof import('leaflet') | undefined
-  if (!L) return // Leaflet script not yet loaded
+async function initDrawerGeoMap(fix: GeoFix | null): Promise<void> {
+  // Dynamic import: Leaflet is bundled, but only fetched when the drawer first opens.
+  let L: typeof import('leaflet')
+  try {
+    const [lib] = await Promise.all([
+      import('leaflet'),
+      import('leaflet/dist/leaflet.css'),
+    ])
+    L = lib
+  } catch (e) {
+    console.error('[geo-map] Leaflet load failed:', e)
+    return
+  }
 
   const container = document.getElementById('geo-map')
   const placeholder = document.getElementById('geo-map-placeholder')
@@ -1396,10 +1402,10 @@ function initDrawerGeoMap(fix: GeoFix | null): void {
         iconSize: [12, 12],
         iconAnchor: [6, 6],
       })
-      _currentMarker = L.marker([fix.lat, fix.lng], { icon }).addTo(map) as unknown as LeafletMarker
+      _currentMarker = L.marker([fix.lat, fix.lng], { icon }).addTo(map)
     }
 
-    _geoMap = map as unknown as LeafletMap
+    _geoMap = map
     _geoMapReady = true
 
     if (placeholder) placeholder.style.display = 'none'
@@ -1426,7 +1432,7 @@ function initDrawerGeoMap(fix: GeoFix | null): void {
     if (fix && _currentMarker) {
       _currentMarker.setLatLng([fix.lat, fix.lng])
     }
-    if (fix) (_geoMap as LeafletMap).setView([fix.lat, fix.lng], 16)
+    if (fix) _geoMap.setView([fix.lat, fix.lng], 16)
   }
 }
 

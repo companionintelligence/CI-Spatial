@@ -889,26 +889,44 @@ test.describe('Tier 2: Boundary & Corner Cases', () => {
     expect(cameraPosChanged.z).toBeGreaterThan(0)
   })
 
-  test('Test 30: CDN Load Rejections for Leaflet', async ({ page }) => {
-    await page.goto(`${BASE}/viewer.html`, { waitUntil: 'domcontentloaded' })
-    const errorHandled = await page.evaluate(async () => {
-      const container = document.createElement('div')
-      container.id = 'geomap-drawer'
-      document.body.appendChild(container)
+  test('Test 30: the geo map never reaches a CDN for Leaflet', async ({ page }) => {
+    // Leaflet is bundled from npm (wave 03 / ticket 0006). This owns the *network*
+    // assertion only: that the map works with unpkg unreachable. The render assertion
+    // against the real UI belongs to ar-scan.spec.ts's geomap test and is not repeated
+    // here — asserting it in both is the duplication this wave exists to avoid.
+    //
+    // The previous version of this test asserted nothing: its `return threw || geoMap
+    // !== null` was tautological, so it passed whether or not the CDN was reachable.
+    const cdnHits: string[] = []
+    page.on('request', (req) => {
+      if (/unpkg\.com/.test(req.url())) cdnHits.push(req.url())
+    })
+    // Installed before goto, so a render-blocking tag in <head> could not slip past.
+    await page.route('**unpkg.com/**', (route) => route.abort())
 
+    await page.goto(`${BASE}/viewer.html`, { waitUntil: 'domcontentloaded' })
+
+    const mapBuilt = await page.evaluate(async () => {
+      // No stray #geomap-drawer div here: mount() builds its own element with that id
+      // (geomap.ts), so creating one first would leave a locator resolving to the empty
+      // outer div rather than the mounted map.
       const { GeoMap } = await import('/src/viewer/geomap.ts')
       const geoMap = new GeoMap()
       geoMap.mount(document.body)
-
-      let threw = false
-      try {
-        await geoMap.updatePins([])
-      } catch {
-        threw = true
-      }
-      return threw || geoMap !== null
+      // _buildDrawer() sets display:none and only open() flips it to flex, so the
+      // container is present-but-hidden until opened.
+      geoMap.open()
+      await geoMap.updatePins([
+        {
+          filename: 'a.glb', lat: 51.5, lng: -0.09, bearing: null, address: null,
+          capturedAt: null, pointCount: null, detectionCount: null, scanName: 'a',
+        },
+      ])
+      return document.querySelectorAll('.leaflet-container').length
     })
-    expect(errorHandled).toBeTruthy()
+
+    expect(mapBuilt, 'Leaflet built its container from the bundle').toBeGreaterThan(0)
+    expect(cdnHits, 'no request reached unpkg.com').toEqual([])
   })
 })
 
