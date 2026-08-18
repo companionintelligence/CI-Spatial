@@ -856,13 +856,18 @@
         gap: 0;
       }
 
-      /* ── Finish Scan Button style ── */
+      /* ── Menu Button style ── */
       .finish-btn {
         pointer-events: all;
         position: absolute;
-        bottom: calc(53px + env(safe-area-inset-bottom));
-        left: calc(50% - 90px);
-        transform: translateX(-50%);
+        /* Bottom-right, sitting on the capture button's centre line: `bottom` is
+           raised to that line (the capture button's own 38px offset plus half of
+           its 78px height) and translateY(50%) drops this button back down by half
+           of its own height, so the two centres agree without hardcoding this
+           one's height. `right` clears the 48px action rail and its gutter. */
+        bottom: calc(38px + 39px + env(safe-area-inset-bottom));
+        right: calc(max(14px, env(safe-area-inset-right)) + 60px);
+        transform: translateY(50%);
         padding: 8px 16px;
         font-size: 13px;
         font-weight: 700;
@@ -880,8 +885,18 @@
         justify-content: center;
       }
       .finish-btn:active {
-        transform: translateX(-50%) scale(0.95);
+        transform: translateY(50%) scale(0.95);
         opacity: 0.9;
+      }
+
+      /* Narrow phones: the 78px capture button and the 48px action rail leave
+         only ~80px of clear width between them at 360px, which a 16px-padded
+         pill overruns. Tighten the padding rather than lift the button off the
+         capture button's centre line. */
+      @media (max-width: 380px) {
+        .finish-btn {
+          padding: 8px 10px;
+        }
       }
 
       /* Panel content scroll */
@@ -1601,7 +1616,7 @@
 
       </div>
 
-      <button id="finish-scan-btn" class="finish-btn">Done</button>
+      <button id="finish-scan-btn" class="finish-btn">Menu</button>
       <button id="capture-btn" aria-label="Capture"></button>
       <div id="scanner-action-rail" aria-label="Scanner actions">
         <a href="/webxr.html" id="xr-mode-link" aria-label="Switch AR runtime" title="Switch to WebXR scanner (HelloXR on iOS)"><svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3.4 9.6A1.7 1.7 0 0 1 5.1 8h13.8a1.7 1.7 0 0 1 1.7 1.6v4.3a1.7 1.7 0 0 1-1.7 1.7h-3.2l-1.9-2.2h-3.6l-1.9 2.2H5.1a1.7 1.7 0 0 1-1.7-1.7z"/></svg></a>

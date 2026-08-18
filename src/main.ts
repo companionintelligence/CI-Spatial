@@ -661,7 +661,7 @@ async function main() {
     })
   }
 
-  // Done/Finish Scan button opens side panel and scrolls to export section
+  // Menu button opens side panel and scrolls to export section
   const finishScanBtn = document.getElementById('finish-scan-btn')
   if (finishScanBtn) {
     finishScanBtn.addEventListener('click', () => {

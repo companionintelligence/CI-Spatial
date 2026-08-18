@@ -700,7 +700,7 @@ test.describe('Scan review edit export flow', () => {
     await expect(page.locator('#autosave-status')).toContainText('Autosave')
   })
 
-  test('Done button opens side panel', async ({ page }) => {
+  test('Menu button opens side panel', async ({ page }) => {
     await expect(page.locator('#finish-scan-btn')).toBeVisible()
     await page.locator('#finish-scan-btn').click()
     await expect(page.locator('#side-panel')).toHaveClass(/open/)
