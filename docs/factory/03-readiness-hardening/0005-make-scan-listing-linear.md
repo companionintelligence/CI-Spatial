@@ -5,6 +5,15 @@
 > **Design:** this ticket is the spec
 > **Dependencies:** `0001` (its verification runs `npm run gen:test-data`). Independent of `0004` and `0006`.
 
+> **Re-pinned 2026-08-18 against `d4f149c`.** PR #85 added one import to `main.ts` at
+> `:49` (`pruneScansMissingFromDisk`), so every reference **below** that line moved +1 —
+> including all of this ticket's. The `withWorldLock` import at `:48` sits above it and is
+> unchanged. One exception: the `listStoredScans()` call site inside `refreshWorldScans()`
+> moved +4, because #85 also added a per-slug memo above that function.
+>
+> Nothing this ticket touches changed behaviourally. The sweep it removes and the merge it
+> copies verbatim are byte-identical to when it was written.
+
 ## Goal
 
 Make `GET /scans` linear in the number of scans. It is currently **quadratic** — every
@@ -34,43 +43,43 @@ it reuses. Verified at `6217e0b`:
 
 | Existing | Where | How used |
 | --- | --- | --- |
-| `StoredScanInfo` | `main.ts:1174-1179` | return shape unchanged, so **both** call sites (`main.ts:1473` `synthesizeWorld`, `main.ts:1607` `refreshWorldScans`) are untouched — `:1329` is the definition, not a caller |
-| **`GET /sessions` sweep** | `main.ts:1102-1113` | **the sweep already exists here** — `readDir(SESSIONS_DIR)` → `isDirectory` guard → parse `session.json` → swallow. `loadSessionIndex` must be expressed so this route and the index share one implementation, not two. See Open questions. |
-| `readScanMeta()` | `main.ts:1223-1238` | extended with a second `index` parameter; merge at `:1232-1237` copied **verbatim** |
-| `isDerivedScanFile()` | `main.ts:487-489` | called; already used at `:514` and `:1333`, this adds the missing third site at `:1123` |
-| `SESSIONS_DIR` | `main.ts:135` | reused as-is — no new env var |
+| `StoredScanInfo` | `main.ts:1175-1180` | return shape unchanged, so **both** call sites (`main.ts:1474` `synthesizeWorld`, `main.ts:1611` `refreshWorldScans`) are untouched — `:1330` is the definition, not a caller |
+| **`GET /sessions` sweep** | `main.ts:1103-1114` | **the sweep already exists here** — `readDir(SESSIONS_DIR)` → `isDirectory` guard → parse `session.json` → swallow. `loadSessionIndex` must be expressed so this route and the index share one implementation, not two. See Open questions. |
+| `readScanMeta()` | `main.ts:1224-1239` | extended with a second `index` parameter; merge at `:1233-1238` copied **verbatim** |
+| `isDerivedScanFile()` | `main.ts:488-490` | called; already used at `:515` and `:1334`, this adds the missing third site at `:1124` |
+| `SESSIONS_DIR` | `main.ts:136` | reused as-is — no new env var |
 | `withWorldLock()` | `world_lock.ts:51` | **not** extended; read path needs no lock |
 | `world_lock.ts` module layout | `world_lock.ts:26-28` | the pattern for why a helper lives outside `main.ts` — importable and unit-testable without `main.ts`'s top-level `Deno.serve` |
 
 The quadratic, precisely:
 
-1. `listStoredScans()` (`main.ts:1329-1344`) loops every non-derived `.glb`, awaiting
-   `readScanMeta(entry.name)` (`:1339`) serially.
-2. `readScanMeta()` (`:1223-1238`) calls `readSessionRecordForScan(filename, meta)` (`:1230`).
-3. `readSessionRecordForScan()` (`:1240-1263`) does `Deno.readDir(SESSIONS_DIR)` (`:1247`)
+1. `listStoredScans()` (`main.ts:1330-1345`) loops every non-derived `.glb`, awaiting
+   `readScanMeta(entry.name)` (`:1340`) serially.
+2. `readScanMeta()` (`:1224-1239`) calls `readSessionRecordForScan(filename, meta)` (`:1231`).
+3. `readSessionRecordForScan()` (`:1241-1264`) does `Deno.readDir(SESSIONS_DIR)` (`:1248`)
    and reads `session.json` for **every** session directory — for **every** scan. The
-   `explicit` short-circuit at `:1249` only helps scans that carry a `sessionId`.
+   `explicit` short-circuit at `:1250` only helps scans that carry a `sessionId`.
 
 So the cost is O(scans × sessions), not merely "serial stats".
 
 **Why an mtime cache is wrong** (verified empirically, do not re-propose): POSIX directory
 mtime changes on entry add/remove/rename but **not** on in-place file rewrites. Rewriting
 `scans/a.json` and `scans/sessions/s1/session.json` left `scans/` mtime byte-identical;
-only creating/deleting a `.glb` bumped it. `POST /sessions/:id/finalize` (`main.ts:870`)
+only creating/deleting a `.glb` bumped it. `POST /sessions/:id/finalize` (`main.ts:871`)
 rewrites `session.json` in place, and `readScanMeta` merges that record's
 `qualitySummary` / `keyframeCount` / `pointCount` / `detectionCount` / `poseCount` into
 every scan. An mtime cache would serve stale quality summaries and a stale
-`ScanManifest.status` (`main.ts:1323-1327`) indefinitely after any finalize.
+`ScanManifest.status` (`main.ts:1324-1328`) indefinitely after any finalize.
 
 Measured on the live directory: 162 of 282 `.glb` (57%) are derived `.opt`/`.lodN`
 artifacts.
 
 ## Before implementation
 
-1. `main.ts:1329-1344` — `listStoredScans()`.
-2. `main.ts:1223-1238` — `readScanMeta()` and its merge block at `:1232-1237`.
-3. `main.ts:1240-1263` — `readSessionRecordForScan()`, the sweep to remove.
-4. `main.ts:1119-1153` — `/scan-locations`, which is missing the `isDerivedScanFile` filter.
+1. `main.ts:1330-1345` — `listStoredScans()`.
+2. `main.ts:1224-1239` — `readScanMeta()` and its merge block at `:1233-1238`.
+3. `main.ts:1241-1264` — `readSessionRecordForScan()`, the sweep to remove.
+4. `main.ts:1120-1154` — `/scan-locations`, which is missing the `isDerivedScanFile` filter.
 5. `world_lock.ts:1-60` — the module pattern and its header comment explaining why it is
    not in `main.ts`; `world_lock.test.ts` for the Deno test style to model.
 6. `deno.json` `tasks.test` — it enumerates every test file explicitly.
@@ -83,8 +92,8 @@ artifacts.
   corruption, migration and multi-process staleness, and only hides the quadratic behind a
   cold start. Once the work is linear the measured result beats the empty-directory
   baseline, so a cache buys nothing and costs an invalidation contract spanning
-  `/upload-scan` (`:471`), `DELETE /scans/:filename` (`:692`), `DELETE /scans` (`:718`),
-  session finalize (`:870`), and every job runner writing a `.manifest.json`. (decided
+  `/upload-scan` (`:472`), `DELETE /scans/:filename` (`:693`), `DELETE /scans` (`:719`),
+  session finalize (`:871`), and every job runner writing a `.manifest.json`. (decided
   during drafting, 2026-08-17)
 - Q: Why a new `scan_index.ts` module rather than a helper inside `main.ts`? — A: So it can
   be unit-tested without importing `main.ts`'s unconditional top-level `Deno.serve`. This
@@ -101,7 +110,7 @@ artifacts.
 - Q: Should a wall-clock budget be asserted? — A: **No.** Assert the **read count**, which
   is deterministic; absolute latency is flaky under `retries: 1` and a shared host. (decided
   during drafting, 2026-08-17)
-- Q: `GET /sessions` (`main.ts:1102-1113`) already performs exactly the sweep
+- Q: `GET /sessions` (`main.ts:1103-1114`) already performs exactly the sweep
   `loadSessionIndex` would add — same `readDir`, same `isDirectory` guard, same parse, same
   swallow. Does this ticket create the codebase's third `ScanManifest`? — A: **It would, as
   originally drafted.** The first draft's justification greps (`sessionIndex|sessionsBy|byGlb|
@@ -113,13 +122,13 @@ artifacts.
   the reuse audit, 2026-08-17)
 - Q: Is `sessionForScan` as a pure Map lookup actually parity with today's behaviour? — A:
   **No — this was a correctness bug in the first draft.** Building the index with
-  `if (!entry.isDirectory) continue` drops the direct-read fallback at `main.ts:1257-1261`.
+  `if (!entry.isDirectory) continue` drops the direct-read fallback at `main.ts:1258-1262`.
   When `meta.sessionId` is set and the map misses, `sessionForScan` must still do **one**
   direct `readTextFile` of `${SESSIONS_DIR}/${sessionId}/session.json` — O(1) per scan, no
   blowup, and it is the path the `sessionId`-carrying scans on this tree actually exercise.
   Cover it in the test. (found by the reuse audit, 2026-08-17)
 - Q: Is the proposed `api-test-homes.spec.ts` parity assertion meaningful? — A: **Not as
-  first written.** `GET /scans` (`main.ts:497-540`) returns only `{filename, size, uploadedAt}`,
+  first written.** `GET /scans` (`main.ts:498-541`) returns only `{filename, size, uploadedAt}`,
   so asserting merged session fields against it is vacuous. The assertion must be made against
   `GET /worlds/default`, where `scanManifestFromStored` surfaces the merged
   `qualitySummary`/`status`. (found by the reuse audit, 2026-08-17)
@@ -129,18 +138,18 @@ artifacts.
 - **New:** `scan_index.ts` — exports `loadSessionIndex(sessionsDir)` and
   `sessionForScan(index, filename, meta)`; sweeps sessions **once**, returning
   `{ byGlb: Map<string, Record<string, unknown>>, bySessionId: Map<string, Record<string, unknown>> }`.
-  `sessionForScan` keeps the `main.ts:1257-1261` direct-read fallback for an explicit
+  `sessionForScan` keeps the `main.ts:1258-1262` direct-read fallback for an explicit
   `sessionId` that the index missed.
-- **Changed:** `main.ts` — `GET /sessions` (`:1102-1113`) re-expressed in terms of
+- **Changed:** `main.ts` — `GET /sessions` (`:1103-1114`) re-expressed in terms of
   `loadSessionIndex` so the sweep exists once, not twice. Its JSON output must stay
   byte-identical.
 - **New:** `scan_index.test.ts` — Deno test, modelled on `world_lock.test.ts`.
-- **Changed:** `main.ts` — delete `readSessionRecordForScan` (`:1240-1263`); `readScanMeta`
-  (`:1223`) gains an `index: SessionIndex` parameter and `:1230` becomes a Map lookup;
-  `listStoredScans` (`:1329-1344`) collects names, calls `loadSessionIndex(SESSIONS_DIR)`
+- **Changed:** `main.ts` — delete `readSessionRecordForScan` (`:1241-1264`); `readScanMeta`
+  (`:1224`) gains an `index: SessionIndex` parameter and `:1231` becomes a Map lookup;
+  `listStoredScans` (`:1330-1345`) collects names, calls `loadSessionIndex(SESSIONS_DIR)`
   once, then resolves stat+meta in bounded `Promise.all` batches of 64; add the import
   beside the existing `withWorldLock` import at `:48`; add `isDerivedScanFile` to
-  `/scan-locations` at `:1123`.
+  `/scan-locations` at `:1124`.
 - **Changed:** `deno.json` — append `scan_index.test.ts` to `tasks.test`, which enumerates
   files explicitly and will otherwise not run it.
 - **Changed:** `tests/api-test-homes.spec.ts` — one parity test after `:107-116`.
@@ -148,8 +157,8 @@ artifacts.
 
 ## Schema required
 
-None. `StoredScanInfo` (`main.ts:1174-1179`) is unchanged, which is what keeps all three
-`listStoredScans()` call sites (`:1473`, `:1607`, and the `/scans` route) untouched.
+None. `StoredScanInfo` (`main.ts:1175-1180`) is unchanged, which is what keeps all three
+`listStoredScans()` call sites (`:1474`, `:1611`, and the `/scans` route) untouched.
 `SessionIndex` is a module-internal type in `scan_index.ts`, not a domain type — it indexes
 existing session records, it does not describe a new "place" or "thing" (ADR 0001).
 
@@ -157,7 +166,7 @@ existing session records, it does not describe a new "place" or "thing" (ADR 000
 
 - [ ] `scans/sessions/` is swept exactly **once** per `listStoredScans()` call, not once
       per scan.
-- [ ] `readScanMeta`'s merge (`main.ts:1232-1237`) is byte-for-byte the same behaviour.
+- [ ] `readScanMeta`'s merge (`main.ts:1233-1238`) is byte-for-byte the same behaviour.
 - [ ] `listStoredScans()` returns the same `StoredScanInfo[]`, in the same order, as before.
 - [ ] `/scan-locations` filters derived files via the existing `isDerivedScanFile()`.
 - [ ] `readSessionRecordForScan` is deleted (it has exactly one caller, `main.ts:1230`).
@@ -172,10 +181,10 @@ existing session records, it does not describe a new "place" or "thing" (ADR 000
       scans / 50 sessions, 15 carrying `sessionId`; count `Deno.readTextFile` calls via a
       shim and assert exactly 50 session reads. Current code counts 1,800.
 - [ ] `scan_index.test.ts` — resolves by explicit `sessionId` (directory name) even when
-      that record's `glbFilename` names a different `.glb` (pins `main.ts:1252`).
+      that record's `glbFilename` names a different `.glb` (pins `main.ts:1253`).
 - [ ] `scan_index.test.ts` — falls back to `glbFilename` match, first in readDir order.
 - [ ] `scan_index.test.ts` — returns null for an unmatched scan and for an unparseable
-      `session.json` (pins the `:1253` swallow and the `:1262` null).
+      `session.json` (pins the `:1254` swallow and the `:1263` null).
 - [ ] `scan_index.test.ts` — merge order unchanged: a session field and a scan-meta field
       with the same key resolve to the scan-meta value; `keyframeCount` falls back
       meta → session → 0.
@@ -218,12 +227,12 @@ cd scans && ls -1 *.glb | grep -cE '\.(opt|lod[0-9]+)\.glb$' && ls -1 *.glb | gr
 
 - **Risk:** Losing `readScanMeta`'s session merge silently blanks `qualitySummary` and
   `keyframeCount` across the world manifest — invisible to the type checker.
-  — **Mitigation:** Copy `main.ts:1232-1237` verbatim; pinned by both the merge-order unit
+  — **Mitigation:** Copy `main.ts:1233-1238` verbatim; pinned by both the merge-order unit
   test and the end-to-end parity test.
 - **Risk:** Collecting names before stat-ing could change tie-break order for scans sharing
   an `uploadedAt`, shifting the `index` passed to `scanManifestFromStored` and moving scans
-  on the fallback grid (`main.ts:1386`). — **Mitigation:** Preserve `Deno.readDir` order in
-  the names array and keep the single `localeCompare` sort (`:1342`); V8's sort is stable.
+  on the fallback grid (`main.ts:1387`). — **Mitigation:** Preserve `Deno.readDir` order in
+  the names array and keep the single `localeCompare` sort (`:1343`); V8's sort is stable.
   Diff `GET /worlds/default` before and after.
 - **Risk:** `scan_index.ts` importing helpers from `main.ts` would pull in its top-level
   `Deno.serve` and break the unit test — exactly what `world_lock.ts:26-28` documents.
@@ -243,7 +252,7 @@ cd scans && ls -1 *.glb | grep -cE '\.(opt|lod[0-9]+)\.glb$' && ls -1 *.glb | gr
        current `main.ts` before the refactor, then 50 after.
 5. [ ] Append `scan_index.test.ts` to `deno.json` `tasks.test`.
 6. [ ] Refactor `readScanMeta` and `listStoredScans`; delete `readSessionRecordForScan`.
-7. [ ] Add `isDerivedScanFile` to `/scan-locations` at `main.ts:1123`.
+7. [ ] Add `isDerivedScanFile` to `/scan-locations` at `main.ts:1124`.
 8. [ ] Add the parity test to `tests/api-test-homes.spec.ts`.
 9. [ ] Diff `GET /scans` and `GET /worlds/default` before/after on the real directory.
 10. [ ] Flip this ticket's atlas diff to `is-done` with the merged PR number.

@@ -5,6 +5,21 @@
 > **Design:** this ticket is the spec
 > **Dependencies:** `0001` (a supported Node) should land first so the script can assume it. Not a hard block.
 
+> **Scope check, 2026-08-18.** PR #95 also fixed a "tests could not run" problem, so it is
+> worth saying plainly that it does **not** reduce this ticket's scope. They are different
+> root causes:
+>
+> | | #95 (done) | This ticket |
+> | --- | --- | --- |
+> | Symptom | `navigator.serviceWorker.controller` stayed `null`, so no offline/PWA behaviour was testable | `npx playwright install` aborts, so the two WebKit tiers execute **zero** tests |
+> | Cause | Chromium enforces a valid cert for the service-worker script fetch, separately from `ignoreHTTPSErrors` | Playwright does not support this host OS |
+> | Tier | `chromium-mock`, which already ran | `webkit-desktop` and `webkit-iphone15`, which do not |
+> | Fix | one browser flag | a host bootstrap script |
+>
+> The mobile tier is still unexercised on this host, which is the gap this ticket closes.
+> #95 is only evidence that the "green run, nothing tested" family is real — see the wave
+> README's deferred question, which now has a concrete answer.
+
 ## Goal
 
 Make the two WebKit Playwright tiers installable on a host Playwright does not
@@ -19,8 +34,12 @@ undocumented manual steps.
 - Do not upgrade or change the pinned `@playwright/test` version (`1.59.0` in
   `package.json`). Version choice is a separate decision; this ticket makes the pinned
   version work on this host.
-- Do not modify `playwright.config.ts`. Its `CHROMIUM_EXECUTABLE_PATH` escape hatch
-  (`playwright.config.ts:30-33`) already exists and is the documented mechanism — reuse it.
+- Do not modify `playwright.config.ts` **for this ticket**. Its `CHROMIUM_EXECUTABLE_PATH`
+  escape hatch (`playwright.config.ts:30-33`, unchanged) already exists and is the
+  documented mechanism — reuse it. Note the file *has* been edited since this ticket was
+  written: PR #95 added `--ignore-certificate-errors` to the `chromium-mock` project's
+  args. That is a different problem (see below) and does not give this ticket licence to
+  keep editing the file.
 - Do not change `.github/workflows/deno-ci.yml`. CI runs `deno check` + `deno task test`
   only and never installs browsers, so it is unaffected.
 - Do not make this script run automatically from `postinstall`. It is an explicit,

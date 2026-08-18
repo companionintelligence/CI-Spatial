@@ -61,7 +61,12 @@ hatch, so in practice it can start immediately.
 ## Prerequisites (must already be merged)
 
 - PR #84 (`fix: eight defects on the scan → pin → export → editor path`) — merged as
-  `6217e0b`. Every line number pinned in these tickets is against that commit.
+  `6217e0b`. This wave was planned against that commit.
+- **Re-pinned 2026-08-18 against `d4f149c`.** Thirteen fixes landed between the two (PRs
+  #85–#101, from a separate readiness review), so `main.ts` and `src/viewer/viewer.ts`
+  moved under 0004 and 0005. Both have been re-measured and carry a banner saying what
+  shifted and why. 0001, 0002 and 0006 pin files that range did not touch and were
+  verified unchanged. 0003 gained a scope check against #95.
 - ADR 0004 (`world-file writes are serialized per slug`) — 0005 cites `withWorldLock` as a
   thing it deliberately does **not** extend.
 
@@ -84,10 +89,17 @@ Real, verified, and out of scope here — recorded so they are not rediscovered 
   Neither is a new break, and migrating is still a one-time patch rewrite keyed on
   `scanId` — its own ticket if it ever bites. Worth knowing that a migration would have to
   handle both shapes.
-- **Can a misconfigured host produce a green run with zero tests?** In the observed case
-  every test failed at browser launch, so the run was red. Whether Playwright can ever
-  report success with nothing executed is an open question in 0003; if it can, that is a
-  reporting gap worth its own ticket.
+- **Can a misconfigured host produce a green run with zero tests?** ~~Open.~~ **Answered,
+  and yes — a near miss of it.** In the originally observed case every test failed at
+  browser launch, so the run was red. But PR #101 found the adjacent failure for real: after
+  #95 made service workers install in `chromium-mock`, the worker began intercepting
+  `/upload-scan`, and `page.route` does not intercept service-worker-initiated requests.
+  Two tests' routes silently stopped firing and they began asserting against the real
+  server — passing while testing nothing they intended. Not zero *tests*, but zero
+  *assertions of the intended thing*, with a green result and no warning.
+  Found only by running the full suite; the spec alone still passed. So the family is
+  real, and 0003 should treat "reports success having verified nothing" as a live
+  possibility rather than a hypothetical.
 - **Widening the no-CDN assertion.** 0006's check is scoped to `unpkg.com` by design.
   Asserting that *no* cross-origin script host is contacted would catch the next instance
   of this class, but it is a different (and noisier) test.
