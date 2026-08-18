@@ -380,10 +380,17 @@ export class LiveFeed {
       </div>
       <div id="livefeed-room-row">
         <span id="livefeed-room-label">Room</span>
-        <input id="livefeed-room-input" type="text" value="default" maxlength="40" spellcheck="false">
+        <!-- Value assigned as a DOM property below, not baked in here: a
+             hardcoded "default" displayed a room the code was not using, and
+             the Connect handler reads this field back — so the wrong label
+             became the real room the moment anyone clicked it. -->
+        <input id="livefeed-room-input" type="text" maxlength="40" spellcheck="false">
         <button id="livefeed-connect-btn">Connect</button>
       </div>
     `
+
+    // Show the room actually in use — the world this editor is viewing.
+    el.querySelector<HTMLInputElement>('#livefeed-room-input')!.value = this._roomId
 
     // Close button
     el.querySelector<HTMLButtonElement>('#livefeed-close-btn')!.addEventListener('click', () => this.hide())
