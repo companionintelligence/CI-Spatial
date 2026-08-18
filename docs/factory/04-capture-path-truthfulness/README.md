@@ -44,8 +44,12 @@ because the offending frames stop being destroyed on the way out.
 stream can be re-acquired without killing the ARCore session — may mean the honest fix is
 to report the stall rather than recover from it.
 
-**0004 last, because it is a subtraction** and the only one that is purely a correction to
-what the product says about itself.
+**0004 last, because it is the only one that is purely a correction to what the product says
+about itself.** It gates the WebGPU toggle rather than removing it: an earlier draft proposed
+retirement, which was rejected because on-device inference is strategic for a product whose
+tagline is *"Private spatial memory for places you own"*. The capability is being built in
+wave 05 (`05-on-device-inference`); this ticket only stops the claim being made in the
+meantime, and leaves every line of the intended architecture in place for wave 05 to build on.
 
 0001 and 0002 were implemented on 2026-08-18 during the session that found all five; their
 tickets are written to match what shipped. 0003, 0004 and 0005 are open.
@@ -57,7 +61,7 @@ tickets are written to match what shipped. 0003, 0004 and 0005 are open.
 | 0001 | [swap-detection-model-and-pin-context](0001-swap-detection-model-and-pin-context.md) | **Stop writing invented objects to disk** — default to a model that can actually do the task, and pin the context window so it fits on the GPU |
 | 0002 | [webxr-hit-test-probe-grid](0002-webxr-hit-test-probe-grid.md) | Give the WebXR provider the 6×6 probe grid the scanner already asks it for |
 | 0003 | [persist-capture-before-inference](0003-persist-capture-before-inference.md) | Stop destroying the frame when detection fails — the capture is the part that cannot be repeated |
-| 0004 | [retire-webgpu-inference-toggle](0004-retire-webgpu-inference-toggle.md) | Remove a privacy claim the code cannot honour |
+| 0004 | [gate-webgpu-toggle-until-port](0004-gate-webgpu-toggle-until-port.md) | Stop offering an engine that throws on every capture — **without deleting it**; wave 05 makes it real |
 | 0005 | [webxr-stale-camera-frame](0005-webxr-stale-camera-frame.md) | Stop handing every capture the same frozen frame |
 
 0002 and 0005 touch `src/ar/webxr.ts` in disjoint regions and can be worked in either
@@ -74,8 +78,15 @@ is wrong *today*:
   parroted prompt example into 219 scans of confident detections. 0001 rewrites it to say
   what salvage costs as well as what it buys.
 - **`atlas.html:353` — the WebGPU path.** "runs the same ONNX model directly in the browser
-  via Transformers.js/WebGPU" is false now, not after this wave. 0004 replaces the entry
-  with the ONNX-driver route that could actually work.
+  via Transformers.js/WebGPU" is false now, not after this wave. 0004 marks it in-progress
+  and names wave 05; wave 05 rewrites it to describe what actually ships.
 
-No new atlas entries. Nothing here adds a subsystem; four tickets correct existing ones and
-the fifth deletes one.
+No new atlas entries. Nothing here adds a subsystem — all five tickets correct existing ones,
+and none deletes anything.
+
+## Successor
+
+Wave 05 (`05-on-device-inference`) delivers the capability 0004 gates: the LFM2.5-VL driver
+already in `inference.ts` extracted behind a runtime port and run on `onnxruntime-web`, since
+no released Transformers.js registers the pipeline task the current worker asks for. Its
+ticket 0004 reverses this wave's gate.
