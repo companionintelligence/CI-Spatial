@@ -55,6 +55,7 @@ tokenizer_config.json
 test-results/
 scans/
 summaries/
+worlds/
 
 # TLS certificates (tailscale cert output) — machine-local, never commit
 *.crt
