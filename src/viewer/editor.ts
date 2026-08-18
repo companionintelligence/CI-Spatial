@@ -174,12 +174,13 @@ export class SceneEditor {
     // THREE.LOD for a semantic object, or the nearest labelled node otherwise.
     //
     // The LOD test MUST run before the label test, and the order is load-bearing.
-    // upgradeSemanticMeshes() assigns lod.userData to each level *by reference*
-    // (viewer.ts), so every level reports the same label. With the label test first,
-    // the walk stopped at whichever level was visible when the user clicked, and the
-    // gizmo moved one level while the saved patch was replayed onto the LOD — so the
-    // object came back displaced and rescaled by the medium proxy's normalisation.
-    // Testing parent-is-LOD first resolves to the LOD from every level shape.
+    // In upgradeSemanticMeshes() (viewer.ts) the medium and high proxies are assigned
+    // lod.userData *by reference*, and the far level is the original mesh, which keeps
+    // its own userData — carrying the label the GLB gave it. So a label can be found on
+    // a level whichever one the ray reaches. With the label test first, the walk stopped
+    // at that level, and the gizmo moved it while the saved patch was replayed onto the
+    // LOD — so the object came back displaced, and rescaled by the medium proxy's
+    // normalisation. Testing parent-is-LOD first resolves to the LOD from every shape.
     // Labelled nodes outside an LOD (e.g. splat-detect boxes) still select as
     // themselves, because their parent is not an LOD and the label test still decides.
     while (obj && obj !== this._scene) {

@@ -2,10 +2,11 @@
  * SceneEditor.pick() — which node an edit is written against.
  *
  * upgradeSemanticMeshes() (src/viewer/viewer.ts) wraps each detected object in a
- * THREE.LOD and assigns `lod.userData` to every level **by reference**, so all three
- * levels report the same `label`. pick() walks up from the raycast hit looking for
- * either a labelled node or an LOD parent; because the label test used to run first,
- * the walk stopped at whichever level happened to be under the cursor.
+ * THREE.LOD. The medium and high proxies are assigned `lod.userData` **by reference**;
+ * the far level is the original mesh, which keeps its own userData and the label the GLB
+ * gave it. So whichever level the ray reaches, a `label` is reachable on it. pick() walks
+ * up from the raycast hit looking for either a labelled node or an LOD parent; because
+ * the label test used to run first, the walk stopped at that level.
  *
  * The gizmo then moved that level while saveSelectedTransform() persisted the patch
  * against the LOD's objectId, so on reload the matrix was replayed onto the LOD and
