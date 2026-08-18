@@ -185,7 +185,7 @@ An iOS or Android device with camera is required for AR scanning. The 3D viewer 
 ```bash
 git clone https://github.com/companionintelligence/CI-Spatial.git
 cd CI-Spatial
-npm install
+npm ci
 ```
 
 ### 2. (Optional) Download the ONNX model (~1.5 GB)

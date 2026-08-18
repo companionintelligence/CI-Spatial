@@ -76,11 +76,21 @@ Verified facts at `6217e0b`:
   && npm ci`.** `npm ci` is deterministic from the lockfile and rebuilds the tree wholesale,
   which is what makes it safe here; `npm install` mutates an existing tree in place, which
   is what corrupts it. (decided during drafting, 2026-08-17)
-- Q: Does the reverse order corrupt too (npm ci, then `deno task check`)? — OPEN. Not
-  observed in the session that found this; the observed corruption was `npm install` onto a
-  Deno-populated tree. **Answer this by experiment before writing the final wording** — the
-  doc must not overstate. If the reverse is safe, say so explicitly, because that is the
-  common local sequence.
+- Q: Does the reverse order corrupt too (npm ci, then `deno task check`)? — A: **No, the
+  reverse order is safe**, and the doc says so explicitly because it is the common local
+  sequence. Run on Windows 11 / Node v24.3.0 / npm 11 / Deno 2.9.5 on 2026-08-18:
+  `rm -rf node_modules && npm ci` → an npm-only tree with no `node_modules/.deno`;
+  `deno task check && deno task test` → 131 passed, and Deno adds its `.deno` layout
+  alongside the npm one; `npx playwright test --project=api --list` → clean, 34 tests in
+  7 files. (answered by experiment, 2026-08-18)
+- Q: Does the original corruption reproduce? — A: **Not on this host.** The documented
+  repro (`rm -rf node_modules && deno install`, then `npm install`, then a Playwright list)
+  ran clean here: `npm install` exited 0, `node_modules/@playwright/test/package.json` was
+  present, all three Playwright packages reported 1.59.0, and the list returned 34 tests.
+  Both layouts coexisted without harm. Per this ticket's own Risks section the entry is
+  therefore written as **observed once** on the reporting host, not as a reliable repro —
+  the symptom and the recovery are documented, but the doc does not claim `npm install`
+  always corrupts. (answered by experiment, 2026-08-18)
 
 ## Files impacted
 

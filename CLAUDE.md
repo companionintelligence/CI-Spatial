@@ -94,6 +94,22 @@ about to create this codebase's third `ScanManifest` — don't.
   algorithm — they're deliberately parallel implementations (different runtimes), not
   a shared module. See
   `docs/factory/foundation-updates/0002-fix-allowed-origin-prefix-autodetect.md`.
+- **Both npm and Deno materialise `node_modules`.** `deno.json:2` sets
+  `"nodeModulesDir": "auto"`, so `deno install` / any `deno task` builds its own
+  `node_modules/.deno/` layout for the eight `npm:` packages `main.ts` imports (hono,
+  onnxruntime-node, jimp, the `@gltf-transform/*` trio, draco3dgltf, jose). That setting
+  is load-bearing — it cannot simply be dropped — and `deno.json:26`'s `allowScripts`
+  expects `onnxruntime-node`'s install script to run, so Deno needs a real tree.
+  **Install with `npm ci`, not `npm install`.** `npm ci` rebuilds the tree wholesale from
+  the lockfile; `npm install` mutates an existing tree in place, which is what was once
+  observed to corrupt it. The symptom names the wrong cause: Playwright reports *"You have
+  two different versions of @playwright/test"* and points at a `test.describe()` call site,
+  while all three of `@playwright/test`, `playwright` and `playwright-core` report the same
+  version — the real state is one **incomplete** install, not two versions. Recovery is
+  `rm -rf node_modules && npm ci`. Running `npm ci` first and a `deno` task afterwards is
+  safe, and is the normal local sequence. CI never hits any of this:
+  `.github/workflows/deno-ci.yml:49-50` installs with `deno install` and never runs
+  Playwright, which is why this only bites locally.
 
 ## Do not rename
 
