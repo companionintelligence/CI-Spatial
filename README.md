@@ -338,8 +338,10 @@ The repo defines ~30 npm scripts. The most common:
 > **Node ≥ 22.18.0 is required.** `scripts/generate-test-homes.mjs`, `scripts/generate-cv-images.mjs`
 > and `scripts/smoke-pipeline.mjs` import TypeScript directly, which only works once Node strips
 > types by default (22.18.0+). On an older Node they fail with a bare `ERR_UNKNOWN_FILE_EXTENSION`.
-> `.node-version` selects it for nvm/asdf/fnm, and `engine-strict=true` in `.npmrc` makes `npm ci`
-> refuse rather than warn. This stays on the same major line as the Dockerfile’s floating
+> `.node-version` is read automatically by the version managers that support it (fnm, nodenv,
+> Volta); nvm and asdf read their own files (`.nvmrc`, `.tool-versions`), so on those you either
+> configure them to read `.node-version` or select 22.18.0 yourself. `engine-strict=true` in
+> `.npmrc` is the backstop either way — it makes `npm ci` refuse rather than warn. This stays on the same major line as the Dockerfile’s floating
 > `node:22-alpine` tag.
 
 | Script | Description |
