@@ -169,7 +169,7 @@ graph TD
 
 | Tool | Version | Purpose |
 |------|---------|---------|
-| [Node.js](https://nodejs.org) | ≥ 20 | Vite dev server + build |
+| [Node.js](https://nodejs.org) | ≥ 22.18.0 | Vite dev server + build; type stripping for the `.mjs` scripts that import `.ts` |
 | [Deno](https://deno.land) | ≥ 2.0 | Inference server |
 | [Python 3](https://python.org) | ≥ 3.8 | Model downloader |
 | 8th Wall OSS binary | any | `public/xr.js` — SLAM engine |
@@ -334,6 +334,13 @@ smoke test (Docker build + `/health` + static UI gate) is manual via
 ## Development Scripts
 
 The repo defines ~30 npm scripts. The most common:
+
+> **Node ≥ 22.18.0 is required.** `scripts/generate-test-homes.mjs`, `scripts/generate-cv-images.mjs`
+> and `scripts/smoke-pipeline.mjs` import TypeScript directly, which only works once Node strips
+> types by default (22.18.0+). On an older Node they fail with a bare `ERR_UNKNOWN_FILE_EXTENSION`.
+> `.node-version` selects it for nvm/asdf/fnm, and `engine-strict=true` in `.npmrc` makes `npm ci`
+> refuse rather than warn. This stays on the same major line as the Dockerfile’s floating
+> `node:22-alpine` tag.
 
 | Script | Description |
 |--------|-------------|
