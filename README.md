@@ -319,10 +319,17 @@ In WebXR mode the point cloud accumulates from per-frame hit-test samples (WebXR
 `deno test` unit suites live at repo root alongside the server modules they cover:
 `inference_mock.test.ts`, `lingbot_map.test.ts`, `memory_push.test.ts`, `portal_auth.test.ts`,
 `splat_detect.test.ts`, `splat_finish.test.ts`, `splat_train.test.ts` — run them all with
-`deno task test` (see `deno.json`). `lingbot_map_glb.test.ts` is the one exception: it runs
-under `node --experimental-strip-types --test` (`npm run test:lingbot:glb`) because it exercises
-`@gltf-transform/functions`, which pulls in the `sharp` native binary — not something Deno's
-npm compat layer permissions today.
+`deno task test` (see `deno.json`). Three root suites run under
+`node --experimental-strip-types --test` instead:
+
+| Suite | Script | Why not Deno |
+|-------|--------|--------------|
+| `lingbot_map_glb.test.ts` | `npm run test:lingbot:glb` | exercises `@gltf-transform/functions`, which pulls in the `sharp` native binary — not something Deno's npm compat layer permissions today |
+| `pipeline_detection_graph.test.ts` | `npm run test:pipeline:graph` | same `@gltf-transform` dependency; runs the real `optimizeScan()` |
+| `editor_pick.test.ts` | `npm run test:editor:pick` | covers frontend viewer code (`src/viewer/editor.ts` + `three`), not a server module |
+
+`test:pipeline:graph` and `test:editor:pick` are wired into `npm run verify`;
+`test:lingbot:glb` is not, and is run on its own.
 
 CI runs `deno task check` (type-check) and `deno task test` on every push/PR via
 [`.github/workflows/deno-ci.yml`](.github/workflows/deno-ci.yml); the full containerized
