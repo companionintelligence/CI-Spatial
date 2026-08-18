@@ -39,6 +39,13 @@ under which anyone could have known.
 of each other in content, but 0001 lands the Node floor that 0003's script and 0005's
 verification both assume.
 
+> **0003 is deferred as of 2026-08-18.** It is written against Ubuntu 26.04; the host this
+> wave is being worked on is Windows 11, where Playwright supports WebKit natively and
+> `npx playwright install` does not abort. Its bespoke path cannot be exercised or verified
+> here, so it would ship unrun. See the host-check banner at the top of the ticket for the
+> measurements and for how to re-scope it. **0001 and 0002 landed; 0004–0006 do not depend
+> on 0003** — 0004's regression test is a `chromium-mock` spec, and that tier already runs.
+
 **0004, 0005 and 0006 are then parallel by content** — they touch disjoint code:
 `src/viewer/editor.ts`, `main.ts`'s listing path, and the geomap/Leaflet path respectively.
 
@@ -54,9 +61,10 @@ branching:
 | `tests/e2e-suite.spec.ts` | 0006 (Test 30) | Only 0006 touches it in this wave. |
 
 Nothing in this wave blocks on `0004`, and `0004` blocks nothing. It is the highest-value
-ticket and can start the moment 0003 makes its verification runnable — its own regression
-test is a `chromium-mock` spec, which already runs via the `CHROMIUM_EXECUTABLE_PATH`
-hatch, so in practice it can start immediately.
+ticket, and it does **not** wait on 0003: its own regression test is a `chromium-mock`
+spec, and that tier already runs. (This paragraph used to say 0004 "can start the moment
+0003 makes its verification runnable"; with 0003 deferred that reading is wrong, so it is
+stated directly.)
 
 ## Prerequisites (must already be merged)
 
