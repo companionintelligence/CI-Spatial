@@ -25,7 +25,7 @@ import { resolveDetections, mergeDetections } from './spatial/resolver'
 import { DetectionStore } from './scene/store'
 import { ProjectStore } from './project/project-store'
 import { AROverlay } from './ui/overlay'
-import { SidePanel } from './ui/panel'
+import { SidePanel, type ExportOutcome } from './ui/panel'
 import { SessionHistory } from './ui/history'
 import { exportToGLB } from './export/gltf'
 import { exportSessionSummary } from './export/summary'
@@ -192,8 +192,10 @@ async function main() {
   const panel = new SidePanel(
     store,
     async () => {
-      const uploadedFilename = await exportManualScan()
-      if (keyframes?.active) {
+      const { outcome, uploadedFilename } = await exportManualScan()
+      // Nothing was written on a cancel or a failure, so there is no scan for
+      // a fresh keyframe session to be linked against.
+      if (outcome !== 'cancelled' && outcome !== 'failed' && keyframes?.active) {
         void keyframes.rotate({
           glbFilename: uploadedFilename,
           pointCount: pointCloud.count,
@@ -202,6 +204,7 @@ async function main() {
           qualitySummary: currentQualitySummary(),
         })
       }
+      return outcome
     },
     () => exportSessionSummary({ store, pointCloud, poseHistory, captureCount, geoFix: geoTracker.snapshot() ?? undefined }),
     (action) => requestServerProcessing(action, store),
@@ -439,14 +442,23 @@ async function main() {
     }
   }
 
-  async function exportManualScan(): Promise<string | undefined> {
+  /**
+   * Export on the user's command, reporting what actually happened.
+   *
+   * Returns the outcome instead of swallowing it. This used to catch its own
+   * errors and return undefined, so SidePanel's `await this.onExport()` never
+   * threw and the button read "Exported" for every path through here —
+   * cancelled, upload-failed, and export-threw included. Its "Export failed"
+   * branch was unreachable code.
+   */
+  async function exportManualScan(): Promise<{ outcome: ExportOutcome; uploadedFilename?: string }> {
     const summary = currentQualitySummary()
     if (summary.status === 'needs-rescan') {
       const ok = confirm('Scan quality is low. Review recommendations before exporting. Export anyway?')
       if (!ok) {
         overlay.setStatus('Export cancelled')
         setAutosaveStatus('Export cancelled')
-        return undefined
+        return { outcome: 'cancelled' }
       }
     }
 
@@ -457,27 +469,37 @@ async function main() {
         { store, pointCloud, poseHistory, geoFix: geoTracker.snapshot() ?? undefined, qualitySummary: currentQualitySummary() },
         { download: true, upload: true, filenamePrefix: 'room-scan', autoSaved: false },
       )
-      if (result.uploadedFilename) {
-        // Both download and upload succeeded
+      if (result.upload === 'uploaded' && result.uploadedFilename) {
         overlay.setStatus('Scan exported & synced ✓')
         setAutosaveStatus(`Scan exported & synced ✓ ${shortName(result.uploadedFilename)}`)
 
-        // Reveal the "View in 3D" link next to status
+        // Reveal the "View in 3D" link next to status — only now is there
+        // something on the server for that link to open.
         const link = document.getElementById('export-view-link')
         if (link) {
           link.style.display = 'inline-block'
         }
-      } else {
-        // Download succeeded but upload failed (no uploaded filename)
-        overlay.setStatus('Scan saved locally — server sync failed')
-        setAutosaveStatus('Scan saved locally — server sync failed')
+        return { outcome: 'exported', uploadedFilename: result.uploadedFilename }
       }
-      return result.uploadedFilename
+
+      if (result.upload === 'queued-offline') {
+        // Not a failure: the service worker holds it and replays on reconnect.
+        // Calling this "server sync failed" sent people hunting for a problem
+        // that did not exist.
+        overlay.setStatus('Scan saved — will sync when back online')
+        setAutosaveStatus('Scan saved — will sync when back online')
+        return { outcome: 'queued' }
+      }
+
+      // Downloaded, but the server refused it. The file is on the device.
+      overlay.setStatus('Scan saved locally — server sync failed')
+      setAutosaveStatus('Scan saved locally — server sync failed')
+      return { outcome: 'local-only' }
     } catch (error) {
       overlay.setStatus('Export failed — try again')
       setAutosaveStatus('Export failed — try again')
       console.error('[export]', error)
-      return undefined
+      return { outcome: 'failed' }
     }
   }
 

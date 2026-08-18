@@ -84,10 +84,30 @@ export interface ExportOptions {
   autoSaved?: boolean
 }
 
+/**
+ * What became of the server upload.
+ *
+ * `uploadedFilename` alone cannot say: it is absent for three different
+ * reasons — queued offline, rejected by the server, or never attempted — and
+ * callers were treating all three as "sync failed". A scan sitting safely in
+ * the offline queue is not a failure, and telling the user it is teaches them
+ * to distrust a message that is usually wrong.
+ */
+export type UploadOutcome =
+  /** The server has it; `uploadedFilename` is set. */
+  | 'uploaded'
+  /** The service worker queued it offline; it replays on reconnect. */
+  | 'queued-offline'
+  /** The server rejected it, or the request errored. */
+  | 'failed'
+  /** No upload was requested (`upload: false`). */
+  | 'skipped'
+
 export interface ExportResult {
   filename: string
   size: number
   uploadedFilename?: string
+  upload: UploadOutcome
 }
 
 export async function exportToGLB(data: ExportData, options: ExportOptions = {}): Promise<ExportResult> {
@@ -302,10 +322,13 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
   )
 
   let uploadedFilename: string | undefined
+  let uploadOutcome: UploadOutcome = 'skipped'
   if (upload) {
-    uploadedFilename = await uploadToServer(buffer, filename, data, autoSaved)
+    const result = await uploadToServer(buffer, filename, data, autoSaved)
+    uploadedFilename = result.filename
+    uploadOutcome = result.outcome
   }
-  return { filename, size: buffer.byteLength, uploadedFilename }
+  return { filename, size: buffer.byteLength, uploadedFilename, upload: uploadOutcome }
 }
 
 /**
@@ -318,7 +341,7 @@ async function uploadToServer(
   filename: string,
   data: ExportData,
   autoSaved: boolean,
-): Promise<string | undefined> {
+): Promise<{ filename?: string; outcome: UploadOutcome }> {
   const { store, pointCloud, poseHistory, geoFix, qualitySummary } = data
   try {
     const metadata = JSON.stringify({
@@ -359,18 +382,18 @@ async function uploadToServer(
     // log and the caller now describe what actually happened.
     if (isQueuedOffline(resp)) {
       console.log('[export] Offline — scan queued, will upload when the network returns')
-      return undefined
+      return { outcome: 'queued-offline' }
     }
     if (resp.ok) {
       const { filename: saved } = await resp.json() as { filename: string }
       console.log(`[export] Uploaded to server: ${saved}`)
-      return saved
+      return { filename: saved, outcome: 'uploaded' }
     }
     console.warn(`[export] Server upload failed: ${resp.status}`)
   } catch (err) {
     console.warn('[export] Server upload error:', err)
   }
-  return undefined
+  return { outcome: 'failed' }
 }
 
 function triggerDownload(buffer: ArrayBuffer, filename: string): void {
