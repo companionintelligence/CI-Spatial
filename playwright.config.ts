@@ -66,6 +66,14 @@ export default defineConfig({
           args: [
             '--use-fake-ui-for-media-stream',
             '--use-fake-device-for-media-stream',
+            // The dev server's cert is self-signed. `ignoreHTTPSErrors` covers
+            // page and fetch requests, but Chromium enforces a valid
+            // certificate for the service-worker script fetch separately — so
+            // registration failed with "An SSL certificate error occurred when
+            // fetching the script" and navigator.serviceWorker.controller
+            // stayed null forever. Every offline/PWA behaviour was therefore
+            // untestable: the worker was never installed to test against.
+            '--ignore-certificate-errors',
           ],
         },
       },
