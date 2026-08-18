@@ -69,10 +69,21 @@ hatch, so in practice it can start immediately.
 
 Real, verified, and out of scope here — recorded so they are not rediscovered as new:
 
-- **Patches persisted before 0004 carry a level's identity.** A patch whose `targetId` is
-  the far mesh's GLB id (e.g. `bed_001`) still resolves to that mesh rather than the LOD,
-  so it keeps behaving as it does today. Not a new break, and migrating it is a one-time
-  patch rewrite keyed on `scanId` — its own ticket if it ever bites.
+- **Patches persisted before 0004 carry a level's identity, and which level depends on
+  the scan.** A patch whose `targetId` is the far mesh's GLB id (e.g. `bed_001`) resolves
+  through `findObjectByTargetId`, which matches `objectId`, `id`, `name` or `uuid`
+  (`src/viewer/viewer.ts:2267`). Since #87 the two graph shapes diverge:
+  - **Freshly exported scan** — the labelled node *is* the mesh, so `upgradeSemanticMeshes`
+    moves it inside the LOD. The patch resolves to that level rather than the LOD, exactly
+    as this note originally described.
+  - **Optimized scan** — `quantize()` hoisted the mesh into an unnamed child, so the
+    labelled node survives as a container keeping its name and `objectId`, and the LOD is
+    attached *beneath* it. The patch resolves to the container, which encloses the LOD —
+    so it transforms the whole object rather than one level.
+
+  Neither is a new break, and migrating is still a one-time patch rewrite keyed on
+  `scanId` — its own ticket if it ever bites. Worth knowing that a migration would have to
+  handle both shapes.
 - **Can a misconfigured host produce a green run with zero tests?** In the observed case
   every test failed at browser launch, so the run was red. Whether Playwright can ever
   report success with nothing executed is an open question in 0003; if it can, that is a
