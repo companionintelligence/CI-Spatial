@@ -39,7 +39,8 @@ populated.
 ## Pinned conventions
 
 **ADR 0001** — this touches a server route's data path, so per `CLAUDE.md` it states what
-it reuses. Verified at `6217e0b`:
+it reuses. The reuse relationships were verified at `6217e0b` and are unchanged; the
+line numbers in this table are re-measured against `d4f149c` (see the banner above):
 
 | Existing | Where | How used |
 | --- | --- | --- |

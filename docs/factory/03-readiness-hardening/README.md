@@ -64,8 +64,10 @@ hatch, so in practice it can start immediately.
   `6217e0b`. This wave was planned against that commit.
 - **Re-pinned 2026-08-18 against `d4f149c`.** Thirteen fixes landed between the two (PRs
   #85–#101, from a separate readiness review), so `main.ts` and `src/viewer/viewer.ts`
-  moved under 0004 and 0005. Both have been re-measured and carry a banner saying what
-  shifted and why. 0001, 0002 and 0006 pin files that range did not touch and were
+  moved under 0005 and 0004 respectively. Both have been re-measured against `d4f149c` and
+  carry a re-pin banner saying what shifted and why. 0004's numbers were first re-measured
+  at `f8d0779`; `src/viewer/viewer.ts` is byte-identical between that and `d4f149c`, so
+  they still hold. 0001, 0002 and 0006 pin files that range did not touch and were
   verified unchanged. 0003 gained a scope check against #95.
 - ADR 0004 (`world-file writes are serialized per slug`) — 0005 cites `withWorldLock` as a
   thing it deliberately does **not** extend.
