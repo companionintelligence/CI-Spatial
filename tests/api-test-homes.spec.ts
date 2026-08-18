@@ -115,6 +115,60 @@ test.describe('test-home scan pipeline', () => {
     expect(scans.some((s) => /\.(opt|lod\d+)\.glb$/.test(s.filename))).toBe(false)
   })
 
+  test('a finalized session\'s qualitySummary reaches the world manifest', async ({ request }) => {
+    // Parity guard for the linear scan listing (wave 03 / ticket 0005). readScanMeta()
+    // merges the session record into the scan's meta, and that merge is what surfaces
+    // qualitySummary on the world manifest. It has to be asserted against
+    // GET /worlds/default: GET /scans returns only {filename, size, uploadedAt}, so
+    // asserting there would be vacuous.
+    //
+    // This exercises the glbFilename path deliberately — the one the old code swept the
+    // whole sessions directory to resolve, and so the one this change actually alters.
+    // The generated homes all carry a sessionId in their metadata (session-test-home-NN,
+    // for which no session directory exists), which pins them to the explicit-id path and
+    // resolves to null. So this uploads a scan whose metadata has no sessionId.
+    const index = JSON.parse(readFileSync(join(HOMES_DIR, 'index.json'), 'utf8')) as
+      Array<{ file: string; meta: string }>
+    const parityFile = 'parity-session-merge.glb'
+
+    const upload = await request.post(`${API}/upload-scan`, {
+      multipart: {
+        file: {
+          name: parityFile,
+          mimeType: 'model/gltf-binary',
+          buffer: readFileSync(join(HOMES_DIR, index[0].file)),
+        },
+        metadata: JSON.stringify({ scanName: 'ticket-0005 parity', geoLat: 0, geoLng: 0 }),
+      },
+    })
+    expect(upload.ok(), 'upload parity scan').toBeTruthy()
+    const stored = (await upload.json() as { filename: string }).filename
+
+    const session = await (await request.post(`${API}/sessions`)).json() as { sessionId: string }
+    const finalize = await request.post(`${API}/sessions/${session.sessionId}/finalize`, {
+      data: {
+        glbFilename: stored,
+        keyframeCount: 42,
+        qualitySummary: { coverageScore: 0.87, status: 'needs-review', pointCount: 1234 },
+      },
+    })
+    expect(finalize.ok(), 'finalize').toBeTruthy()
+
+    // refreshWorldScans() re-derives each entry from listStoredScans() on every read.
+    let scan: { filename: string; qualitySummary?: { coverageScore?: number; status?: string; pointCount?: number } } | undefined
+    await expect.poll(async () => {
+      const world = await (await request.get(`${API}/worlds/default`)).json() as
+        { scans: Array<{ filename: string; qualitySummary?: { coverageScore?: number; status?: string; pointCount?: number } }> }
+      scan = world.scans.find((entry) => entry.filename === stored)
+      return scan?.qualitySummary?.coverageScore ?? null
+    }, { timeout: 20_000 }).toBe(0.87)
+
+    expect(scan!.qualitySummary!.status).toBe('needs-review')
+    expect(scan!.qualitySummary!.pointCount).toBe(1234)
+
+    await request.delete(`${API}/scans/${encodeURIComponent(stored)}`)
+  })
+
   test('derived artifacts are downloadable', async ({ request }) => {
     const file = uploaded[0]
     const base = file.replace(/\.glb$/, '')

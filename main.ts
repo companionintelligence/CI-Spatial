@@ -46,6 +46,7 @@ import {
   WorldJobPump,
 } from './world_job_pump.ts'
 import { withWorldLock } from './world_lock.ts'
+import { loadSessionIndex, sessionForScan, type SessionIndex } from './scan_index.ts'
 import { pruneScansMissingFromDisk } from './world_prune.ts'
 import { runLingBotMapReconstruction } from './lingbot_map.ts'
 import { runSplatTrain } from './splat_train.ts'
@@ -1101,16 +1102,10 @@ app.get('/sessions/:id', async (c) => {
 })
 
 app.get('/sessions', async (c) => {
-  const sessions: unknown[] = []
-  try {
-    for await (const entry of Deno.readDir(SESSIONS_DIR)) {
-      if (!entry.isDirectory) continue
-      try {
-        sessions.push(JSON.parse(await Deno.readTextFile(`${SESSIONS_DIR}/${entry.name}/session.json`)))
-      } catch { /* incomplete session dir */ }
-    }
-  } catch { /* sessions dir missing */ }
-  return c.json(sessions)
+  // Same sweep the scan listing needs, so it exists once (scan_index.ts) rather than
+  // twice. bySessionId preserves Deno.readDir order, so this response is unchanged.
+  const index = await loadSessionIndex(SESSIONS_DIR)
+  return c.json([...index.bySessionId.values()])
 })
 
 // ── Upload session summary (.md) ──────────────────────────────────────────────
@@ -1122,6 +1117,7 @@ app.get('/scan-locations', async (c) => {
     const locations: Record<string, unknown>[] = []
     for await (const entry of Deno.readDir(SCANS_DIR)) {
       if (!entry.isFile || !entry.name.endsWith('.glb')) continue
+      if (isDerivedScanFile(entry.name)) continue // .opt/.lodN artifacts have no companion .json
       const metaPath = `${SCANS_DIR}/${entry.name.replace(/\.glb$/, '.json')}`
       let meta: Record<string, unknown> = {}
       try {
@@ -1221,14 +1217,17 @@ function geoPoseFromMeta(meta: Record<string, unknown>): GeoPose {
   }
 }
 
-async function readScanMeta(filename: string): Promise<Record<string, unknown>> {
+async function readScanMeta(
+  filename: string,
+  index: SessionIndex,
+): Promise<Record<string, unknown>> {
   let meta: Record<string, unknown> = {}
   try {
     meta = JSON.parse(await Deno.readTextFile(scanMetaPath(filename))) as Record<string, unknown>
   } catch {
     meta = {}
   }
-  const session = await readSessionRecordForScan(filename, meta)
+  const session = await sessionForScan(index, SESSIONS_DIR, filename, meta)
   if (!session) return meta
   return {
     ...session,
@@ -1236,31 +1235,6 @@ async function readScanMeta(filename: string): Promise<Record<string, unknown>> 
     keyframeCount: asNumber(meta['keyframeCount']) ?? asNumber(session['keyframeCount']) ?? 0,
     qualitySummary: meta['qualitySummary'] ?? session['qualitySummary'] ?? null,
   }
-}
-
-async function readSessionRecordForScan(
-  filename: string,
-  meta: Record<string, unknown>,
-): Promise<Record<string, unknown> | null> {
-  const explicit = asString(meta['sessionId'])
-  const candidates: string[] = explicit ? [explicit] : []
-  try {
-    for await (const entry of Deno.readDir(SESSIONS_DIR)) {
-      if (!entry.isDirectory) continue
-      if (explicit && entry.name !== explicit) continue
-      try {
-        const record = JSON.parse(await Deno.readTextFile(`${SESSIONS_DIR}/${entry.name}/session.json`)) as Record<string, unknown>
-        if (entry.name === explicit || record['glbFilename'] === filename) return record
-      } catch { /* incomplete session dir */ }
-    }
-  } catch { /* sessions dir missing */ }
-
-  for (const sessionId of candidates) {
-    try {
-      return JSON.parse(await Deno.readTextFile(`${SESSIONS_DIR}/${sessionId}/session.json`)) as Record<string, unknown>
-    } catch { /* not found */ }
-  }
-  return null
 }
 
 function qualitySummaryFromMeta(meta: Record<string, unknown>): ScanQualitySummary | null {
@@ -1327,19 +1301,38 @@ function scanStatusFromQuality(meta: Record<string, unknown>): ScanManifestStatu
   return quality.status
 }
 
+/** Bounded so a large scans directory cannot exhaust file descriptors. */
+const SCAN_LIST_CONCURRENCY = 64
+
 async function listStoredScans(): Promise<StoredScanInfo[]> {
-  const scans: StoredScanInfo[] = []
+  const names: string[] = []
   for await (const entry of Deno.readDir(SCANS_DIR)) {
     if (!entry.isFile || !entry.name.endsWith('.glb')) continue
     if (isDerivedScanFile(entry.name)) continue // .opt/.lodN artifacts aren't standalone scans
-    const stat = await Deno.stat(`${SCANS_DIR}/${entry.name}`)
-    scans.push({
-      filename: entry.name,
-      size: stat.size,
-      uploadedAt: (stat.mtime ?? new Date()).toISOString(),
-      meta: await readScanMeta(entry.name),
-    })
+    names.push(entry.name)
   }
+
+  // Once per call, not once per scan: this is what makes the listing linear.
+  const index = await loadSessionIndex(SESSIONS_DIR)
+
+  const scans: StoredScanInfo[] = []
+  for (let i = 0; i < names.length; i += SCAN_LIST_CONCURRENCY) {
+    const batch = await Promise.all(
+      names.slice(i, i + SCAN_LIST_CONCURRENCY).map(async (filename) => {
+        const stat = await Deno.stat(`${SCANS_DIR}/${filename}`)
+        return {
+          filename,
+          size: stat.size,
+          uploadedAt: (stat.mtime ?? new Date()).toISOString(),
+          meta: await readScanMeta(filename, index),
+        }
+      }),
+    )
+    // Batches are appended in order, so `scans` keeps Deno.readDir order and the
+    // stable sort below breaks uploadedAt ties exactly as it did before.
+    scans.push(...batch)
+  }
+
   scans.sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt))
   return scans
 }
