@@ -20,6 +20,15 @@ import { test, expect, type Page } from '@playwright/test'
 import { QUEUED_OFFLINE_HEADER } from '../src/shared/offline-queue'
 
 test.use({
+  // No service worker for this spec. Since the cert flag landed (#95) the
+  // worker actually installs in chromium-mock, and /upload-scan is one of its
+  // queueable prefixes — so the SW, not the page, issues the request.
+  // `page.route` does not intercept service-worker-initiated requests, so the
+  // routes below silently stopped firing and these tests started asserting
+  // against the real server (which accepts the upload, hence "Exported").
+  // These tests are about how the app maps an upload result to a label; the
+  // worker is an unrelated intermediary, so block it and keep them exact.
+  serviceWorkers: 'block',
   viewport: { width: 393, height: 852 },
   deviceScaleFactor: 2,
   isMobile: true,
