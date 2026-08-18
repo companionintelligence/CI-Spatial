@@ -36,6 +36,10 @@ const ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun1.l.google.com:19302' },
 ]
 
+/** Signal-reconnect backoff, matching RtcBroadcaster's 1s→15s. */
+const RECONNECT_BASE_MS = 1000
+const RECONNECT_MAX_MS = 15 * 1000
+
 export class LiveFeed {
   private _roomId: string
   private _ws: WebSocket | null = null
@@ -48,6 +52,10 @@ export class LiveFeed {
   private _onData: ScanDataCallback | null = null
   private _connected = false
   private _open = false
+
+  private _reconnectDelay = RECONNECT_BASE_MS
+  private _reconnectAttempt = 0
+  private _reconnectHandle: ReturnType<typeof setTimeout> | null = null
 
   constructor(roomId: string) {
     this._roomId = roomId
@@ -98,6 +106,14 @@ export class LiveFeed {
 
   disconnect(): void {
     this._connected = false
+    // Cancel any scheduled retry: without this a reconnect queued before the
+    // user closed the panel fires afterwards and reopens the socket.
+    if (this._reconnectHandle !== null) {
+      clearTimeout(this._reconnectHandle)
+      this._reconnectHandle = null
+    }
+    this._reconnectDelay = RECONNECT_BASE_MS
+    this._reconnectAttempt = 0
     this._dataChannel?.close()
     this._pc?.close()
     this._ws?.close()
@@ -113,23 +129,58 @@ export class LiveFeed {
   private _openSignal(): void {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
     const url = `${proto}://${location.host}/rtc-signal?role=viewer&room=${encodeURIComponent(this._roomId)}`
-    const ws = new WebSocket(url)
+
+    // Guarded: `new WebSocket()` throws synchronously on a malformed URL or a
+    // blocked scheme, and this runs inside the Live button's click handler —
+    // an unguarded throw surfaced as an uncaught error with the panel stuck on
+    // "Connecting…". RtcBroadcaster has guarded the same call all along.
+    let ws: WebSocket
+    try {
+      ws = new WebSocket(url)
+    } catch (e) {
+      this._connected = false
+      this._status('error', `Signal WS failed: ${e instanceof Error ? e.message : String(e)}`)
+      return
+    }
     this._ws = ws
 
     ws.addEventListener('open', () => {
+      this._reconnectDelay = RECONNECT_BASE_MS
+      this._reconnectAttempt = 0
       this._status('connecting', 'Waiting for phone…')
     })
+
     ws.addEventListener('message', (ev) => {
-      void this._handleSignal(JSON.parse(ev.data as string))
+      // One malformed relay frame used to throw inside this listener and take
+      // the whole session down. The broadcaster already logged and ignored.
+      let msg: Record<string, unknown>
+      try {
+        msg = JSON.parse(ev.data as string) as Record<string, unknown>
+      } catch {
+        console.warn('[livefeed] Ignoring malformed signal frame')
+        return
+      }
+      void this._handleSignal(msg)
     })
+
     ws.addEventListener('error', () => {
       this._status('error', 'Signal error — is the server running?')
     })
+
     ws.addEventListener('close', () => {
-      if (this._connected) {
-        this._status('connecting', 'Signal disconnected — reconnecting…')
-        setTimeout(() => { if (this._connected) this._openSignal() }, 2000)
-      }
+      if (!this._connected) return
+      // Was a flat 2s retry forever, which hammers a server that is simply
+      // down and never tells the user how long it has been failing. Same
+      // 1s→15s backoff the broadcaster uses, and the attempt count goes in the
+      // status so a stuck panel is legible rather than an eternal spinner.
+      this._reconnectAttempt++
+      const seconds = Math.round(this._reconnectDelay / 1000)
+      this._status('connecting', `Signal disconnected — retrying in ${seconds}s (attempt ${this._reconnectAttempt})`)
+      if (this._reconnectHandle !== null) clearTimeout(this._reconnectHandle)
+      this._reconnectHandle = setTimeout(() => {
+        if (this._connected) this._openSignal()
+      }, this._reconnectDelay)
+      this._reconnectDelay = Math.min(this._reconnectDelay * 2, RECONNECT_MAX_MS)
     })
   }
 

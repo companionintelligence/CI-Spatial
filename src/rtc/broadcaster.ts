@@ -243,6 +243,14 @@ export class RtcBroadcaster {
   }
 
   private async _createOffer(): Promise<void> {
+    // Close the previous negotiation first. 'peer-ready' arrives on every
+    // viewer (re)connect and this used to overwrite this._pc, stranding the
+    // old RTCPeerConnection with its live tracks and ICE agent still running.
+    // A viewer reconnect is routine — the panel retries on any dropped signal
+    // socket — so each cycle leaked one. _teardownPeer() is a no-op on the
+    // first offer and keeps the local capture stream alive.
+    this._teardownPeer()
+
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
     this._pc = pc
 
