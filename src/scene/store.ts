@@ -10,7 +10,9 @@
  *   Each record: { sessionId, startedAt, detections: StoredDetection[] }
  */
 import type { WorldDetection } from '../spatial/resolver'
-import { SCAN_DB_NAME } from '../shared/storage-keys'
+// Explicit .ts extension so Node's ESM loader can resolve this when detection_store.test.ts
+// imports the store directly — the same reason src/shared/test-homes.ts:10 carries one.
+import { SCAN_DB_NAME } from '../shared/storage-keys.ts'
 
 export interface StoredDetection extends WorldDetection {
   thumbnailDataUrl?: string
@@ -99,7 +101,12 @@ export class DetectionStore {
       const existing = this._detections.get(key)
       this._detections.set(key, {
         ...det,
-        thumbnailDataUrl: existing?.thumbnailDataUrl ?? thumbnails.get(key),
+        // The freshly captured thumbnail wins. The previous one is kept only when this
+        // capture produced none for this key — otherwise a detection resumed from an
+        // earlier session pins its old image forever, because the key is
+        // `label:bucket(worldPos)` (main.ts) and every re-capture of the same object
+        // in the same place matches it.
+        thumbnailDataUrl: thumbnails.get(key) ?? existing?.thumbnailDataUrl,
       })
     }
     this.notify()
