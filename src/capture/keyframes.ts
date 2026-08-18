@@ -16,6 +16,7 @@
  *   - streaming pauses while the page is hidden (battery)
  */
 import type { ARProvider, Pose } from '../ar/provider'
+import { isQueuedOffline } from '../shared/offline-queue'
 
 export interface KeyframeStreamerOptions {
   /** Min time between keyframes (default 1200 ms) */
@@ -110,6 +111,14 @@ export class KeyframeStreamer {
       signal: AbortSignal.timeout(10_000),
     })
     if (!resp.ok) throw new Error(`POST /sessions → ${resp.status}`)
+    // Offline, the service worker queues this and answers 202 — which is ok,
+    // but carries no sessionId. Accepting it started a "session" whose every
+    // frame was encoded and then dropped by _pump's `if (!this._sessionId)`
+    // guard: battery burned, counter stuck at 0, no error anywhere. There is
+    // nothing to stream to until the server actually answers.
+    if (isQueuedOffline(resp)) {
+      throw new Error('Offline — keyframe streaming needs a live connection to the server')
+    }
     const { sessionId } = await resp.json() as { sessionId: string }
 
     this._sessionId = sessionId
@@ -293,6 +302,13 @@ export class KeyframeStreamer {
           body: form,
           signal: AbortSignal.timeout(20_000),
         })
+        // A queued-offline response is 2xx, so resp.ok alone counted this frame
+        // as sent — which suppressed _offlineUntil and left the phone encoding
+        // a full-res JPEG every 1.2s into a growing IndexedDB queue, precisely
+        // while the network was down. Report not-sent so the caller backs off;
+        // the queued request still replays on reconnect. Returning early also
+        // skips the retry loop: re-POSTing only queues another copy.
+        if (isQueuedOffline(resp)) return false
         if (resp.ok) return true
         if (resp.status >= 400 && resp.status < 500) return false // not retryable
       } catch { /* network error or timeout — retry */ }

@@ -152,6 +152,10 @@ async function networkOrQueue(request) {
       message: 'Saved offline and will retry when the network returns.',
     }), {
       status: 202,
+      // 'X-Companion-Queued-Offline' mirrors QUEUED_OFFLINE_HEADER in
+      // src/shared/offline-queue.ts. It is the ONLY thing that distinguishes a
+      // queued write from a delivered one: this response is 202, so resp.ok is
+      // true for it. sync.test.ts asserts the two literals agree.
       headers: { 'Content-Type': 'application/json', 'X-Companion-Queued-Offline': '1' },
     })
   }
