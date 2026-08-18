@@ -61,9 +61,10 @@ branching:
 | `tests/e2e-suite.spec.ts` | 0006 (Test 30) | Only 0006 touches it in this wave. |
 
 Nothing in this wave blocks on `0004`, and `0004` blocks nothing. It is the highest-value
-ticket and can start the moment 0003 makes its verification runnable — its own regression
-test is a `chromium-mock` spec, which already runs via the `CHROMIUM_EXECUTABLE_PATH`
-hatch, so in practice it can start immediately.
+ticket, and it does **not** wait on 0003: its own regression test is a `chromium-mock`
+spec, and that tier already runs. (This paragraph used to say 0004 "can start the moment
+0003 makes its verification runnable"; with 0003 deferred that reading is wrong, so it is
+stated directly.)
 
 ## Prerequisites (must already be merged)
 

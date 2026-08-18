@@ -16,7 +16,10 @@
 > | Tier | `chromium-mock`, which already ran | `webkit-desktop` and `webkit-iphone15`, which do not |
 > | Fix | one browser flag | a host bootstrap script |
 >
-> The mobile tier is still unexercised on this host, which is the gap this ticket closes.
+> The mobile tier is still unexercised on this host. **Superseded by the host check below:**
+> that gap is real, but on Windows it is not the gap this ticket closes — WebKit is simply
+> not installed, not un-installable. This table remains accurate for the Ubuntu 26.04 host it
+> was written against.
 > #95 is only evidence that the "green run, nothing tested" family is real — see the wave
 > README's deferred question, which now has a concrete answer.
 
