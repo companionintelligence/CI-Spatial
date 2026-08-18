@@ -758,7 +758,17 @@ async function main() {
   overlay.setStatus('Move camera to initialise tracking…')
 
   // ── WebRTC live-feed broadcaster (optional) ───────────────────────────────
-  const broadcaster = new RtcBroadcaster('default')
+  // The live-feed room is a rendezvous key, and both halves have to name it
+  // the same way or they never meet. The editor uses the world it is viewing
+  // (viewer.ts: `query.get('world') || 'default'`) while this side was
+  // hardcoded to 'default', so opening any share link for a non-default world
+  // left the editor on "Waiting for phone…" forever with no error.
+  //
+  // Not the same thing as where scans land: uploads are parked in the default
+  // world on purpose (ADR 0003, "these have no world association"), which is
+  // why the "View in 3D" links still point there.
+  const liveFeedRoom = searchParams.get('world') || 'default'
+  const broadcaster = new RtcBroadcaster(liveFeedRoom)
   rtc = broadcaster   // hand it to the pagehide teardown armed above
   broadcaster.onStatus = ({ state, message }) => {
     const btn = document.getElementById('rtc-stream-btn') as HTMLButtonElement | null
