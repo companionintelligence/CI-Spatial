@@ -20,10 +20,14 @@ clause of the scan → pin → export → editor bar that does not hold.
 - Do not change the `EditPatch` / `TransformPatch` schema in `src/world/types.ts`, the
   `POST /worlds/:slug/patches` route, or the patch persistence format. The wire format
   is correct; the wrong node is being serialized into it.
-- Do not "fix" `createSemanticLabels`' `hasLabelledAncestor` guard
-  (`src/viewer/viewer.ts:1089`, used at :1108) in this ticket. It is a second symptom of
-  the same shared-`userData` root cause and removing it is a separate, visual change —
-  see Open questions.
+- Do not "fix" the `hasLabelledAncestor` guard. It has **moved** since this ticket was
+  written: it now lives in `src/viewer/detections.ts:72` and has two consumers —
+  `createSemanticLabels` (`src/viewer/viewer.ts:1096`) and `collectDetections`
+  (`detections.ts:64`). It is still a second symptom of the same shared-`userData` root
+  cause, but removing it is no longer merely a visual change: `buildDetectionBounds`
+  resolves detections through `collectDetections`, so without the guard every detection
+  is found once per LOD level and gets three sets of bounds and sample points (see #87
+  and its follow-up). Treat it as load-bearing, not as deferred cleanup.
 - Do not migrate or rewrite already-persisted patches. See Risks.
 - Do not introduce a new object-identity scheme. `stableObjectId()` already exists.
 
@@ -36,28 +40,35 @@ clause of the scan → pin → export → editor bar that does not hold.
 | Existing | Where | How used |
 | --- | --- | --- |
 | `SceneEditor.pick()` | `src/viewer/editor.ts:164-187` | the two conditions inside its existing walk are reordered; no new method |
-| `stableObjectId(obj)` | `src/viewer/viewer.ts:2291` | already returns the LOD's `objectId`; unchanged |
-| `serializeTransform(obj)` | `src/viewer/viewer.ts:1733` | already serializes `obj.matrix`; unchanged |
-| `findObjectByTargetId(root, id)` | `src/viewer/viewer.ts:2279` | already resolves the LOD parent-first; unchanged |
-| `applyMatrix(obj, matrix)` | `src/viewer/viewer.ts:2272` | unchanged |
+| `stableObjectId(obj)` | `src/viewer/viewer.ts:2279` | already returns the LOD's `objectId`; unchanged |
+| `serializeTransform(obj)` | `src/viewer/viewer.ts:1721` | already serializes `obj.matrix`; unchanged |
+| `findObjectByTargetId(root, id)` | `src/viewer/viewer.ts:2267` | already resolves the LOD parent-first; unchanged |
+| `applyMatrix(obj, matrix)` | `src/viewer/viewer.ts:2260` | unchanged |
 | `EditPatch` / `TransformPatch` | `src/world/types.ts` | unchanged wire shape |
 
-Pinned facts, verified against source at `6217e0b`:
+Pinned facts, re-verified against source at `f8d0779`. Line numbers were originally
+pinned at `6217e0b` and drifted by roughly a dozen lines through PRs #85–#97;
+`src/viewer/editor.ts`, `src/viewer/assets.ts` and `src/viewer/splat-detect-layer.ts`
+are untouched, so every reference into those still holds:
 
 - `upgradeSemanticMeshes` builds `lod.userData` as
   `{ ...mesh.userData, scanId, objectId: \`${scanId}:${mesh.name || label}:lod\` }`
-  (`viewer.ts:801-805`), then assigns that **same object by reference** to
-  `medium.userData` (`:817`) and `high.userData` (`:821`).
+  (`viewer.ts:797-801`), then assigns that **same object by reference** to
+  `medium.userData` (`:813`) and `high.userData` (`:817`).
 - Because of that reference sharing every LOD level carries `label`, so in `pick()`'s
   walk the `userData['label']` test at `editor.ts:175` always matches **before** the
   `obj.parent instanceof THREE.LOD` test at `:178` can run. The LOD branch is dead code.
 - The three level shapes, all direct children of the `THREE.LOD`:
-  - far: the original `THREE.Mesh`, `lod.addLevel(mesh, 8)` (`viewer.ts:815`) — keeps its
-    **own** `userData.objectId` from the GLB extras (e.g. `bed_001`), because `lod.userData`
-    is a new object built with a spread.
+  - far: the original `THREE.Mesh`, `lod.addLevel(mesh, 8)` (`viewer.ts:810`) — keeps its
+    **own** `userData` because `lod.userData` is a new object built with a spread. Whether
+    that includes an `objectId` now depends on the scan: in a freshly exported GLB the far
+    level carries the extras (e.g. `bed_001`), but in an **optimized** one it is the mesh
+    `quantize()` hoisted out of the labelled node, which carries no extras at all (#87).
+    This weakens the legacy-patch note under "Found but deferred" in the wave README:
+    on an optimized scan there is no `bed_001` for such a patch to resolve to.
   - medium: `createMediumPolyAsset(label)` returns a `THREE.Group`
     (`src/viewer/assets.ts:147`) whose child meshes carry **no** `label`.
-  - high: `loadSemanticAsset(label)` attaches **asynchronously** (`viewer.ts:820-823`), so
+  - high: `loadSemanticAsset(label)` attaches **asynchronously** (`viewer.ts:816-819`), so
     it may be absent at pick time.
 - `serializeTransform` writes `obj.matrix` — a **local** matrix. For the medium proxy that
   already includes a normalisation scale, which is why the reload rescales.
@@ -67,14 +78,15 @@ Pinned facts, verified against source at `6217e0b`:
 Read, in this order:
 
 1. `src/viewer/editor.ts:164-187` — `pick()` and its walk.
-2. `src/viewer/viewer.ts:786-829` — `upgradeSemanticMeshes`, the reference sharing.
-3. `src/viewer/viewer.ts:1585-1600` — `selectEditableObject`, what the gizmo attaches to.
-4. `src/viewer/viewer.ts:1686-1720` — `saveSelectedTransform`, the `serializeTransform` +
+2. `src/viewer/viewer.ts:787-825` — `upgradeSemanticMeshes`, the reference sharing.
+3. `src/viewer/viewer.ts:1573-1588` — `selectEditableObject`, what the gizmo attaches to.
+4. `src/viewer/viewer.ts:1674-1708` — `saveSelectedTransform`, the `serializeTransform` +
    `stableObjectId` pairing.
-5. `src/viewer/viewer.ts:844-865` — `applyStoredPatches`, and `:2272-2290` for
+5. `src/viewer/viewer.ts:840-861` — `applyStoredPatches`, and `:2260-2278` for
    `applyMatrix` / `findObjectByTargetId`.
-6. `src/viewer/viewer.ts:1089-1112` — `hasLabelledAncestor` and the comment above
-   `createSemanticLabels`, which already documents this exact reference sharing.
+6. `src/viewer/detections.ts:72` — `hasLabelledAncestor`, and the comment above
+   `createSemanticLabels` (`src/viewer/viewer.ts:1085-1100`), which already documents
+   this exact reference sharing.
 7. `tests/mock-editor-homes.spec.ts` — the spec file this ticket's test extends.
 
 ## Open questions & answers
@@ -96,7 +108,7 @@ Read, in this order:
   (decided during drafting, 2026-08-17)
 - Q: Is the reorder definitely safe across every hit shape? — A: **Yes**, independently
   re-walked: far raw mesh → parent IS the LOD; proxy child mesh → no label, step to the
-  proxy `Group`, whose parent IS the LOD; detection sample `Points` (`viewer.ts:1081`,
+  proxy `Group`, whose parent IS the LOD; detection sample `Points` (`viewer.ts:1074`,
   children of the raw mesh) → no label, step to the raw mesh, parent IS the LOD; labelled
   non-LOD nodes → parent is not an LOD, so the label test still decides, unchanged. Order
   only matters when both conditions are true on the same node, which is exactly the
@@ -204,7 +216,7 @@ deno task check
   patches is unchanged. Note it in the wave README as found-but-deferred. If it becomes a
   real problem, the fix is a one-time patch rewrite keyed on `scanId`, which needs its own
   ticket.
-- **Risk:** The high-detail level attaches asynchronously (`viewer.ts:820-823`), so a pick
+- **Risk:** The high-detail level attaches asynchronously (`viewer.ts:816-819`), so a pick
   that lands before it loads walks a two-level LOD. — **Mitigation:** The reorder is
   level-count independent; it resolves to the LOD from whichever level was hit. The test
   should click without waiting for the high asset to prove it.
