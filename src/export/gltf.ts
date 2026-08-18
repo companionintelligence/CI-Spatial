@@ -21,6 +21,7 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js'
 import type { DetectionStore } from '../scene/store'
 import type { PointCloud } from '../scene/pointcloud'
 import type { Pose } from '../ar/provider'
+import { isQueuedOffline } from '../shared/offline-queue'
 import type { ScanEntry } from '../project/project-store'
 import type { GeoFix } from '../geo/geo-tracker'
 import type { ScanQualitySummary } from '../world/types'
@@ -350,6 +351,16 @@ async function uploadToServer(
     form.append('file', new Blob([buffer], { type: 'model/gltf-binary' }), filename)
     form.append('metadata', metadata)
     const resp = await fetch('/upload-scan', { method: 'POST', body: form })
+    // Queued offline is a 2xx, so the success branch below used to run and
+    // destructure a `filename` the queued response does not carry — yielding
+    // undefined, which the caller reports as a failed server sync for an
+    // upload that was in fact stored safely and will replay on reconnect.
+    // There is still no server filename to return; what changes is that the
+    // log and the caller now describe what actually happened.
+    if (isQueuedOffline(resp)) {
+      console.log('[export] Offline — scan queued, will upload when the network returns')
+      return undefined
+    }
     if (resp.ok) {
       const { filename: saved } = await resp.json() as { filename: string }
       console.log(`[export] Uploaded to server: ${saved}`)

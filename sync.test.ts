@@ -21,6 +21,7 @@ import {
   SW_CACHE_NAME,
   SW_SYNC_TAG,
 } from './src/shared/storage-keys.ts'
+import { QUEUED_OFFLINE_HEADER, isQueuedOffline } from './src/shared/offline-queue.ts'
 
 async function readRepoFile(relativePath: string): Promise<string> {
   return await Deno.readTextFile(new URL(relativePath, import.meta.url))
@@ -141,4 +142,41 @@ Deno.test('pwa.ts: imports SW_SYNC_TAG (no re-typed literal) and it matches sw.j
     "sw.js's registerFlushSync() sync tag",
   )
   assertEquals(SW_SYNC_TAG, swTag, "src/pwa.ts's sync tag (via SW_SYNC_TAG) must equal public/sw.js's sync tag")
+})
+
+Deno.test('sw.js: the queued-offline header matches QUEUED_OFFLINE_HEADER', async () => {
+  const src = await readRepoFile('./public/sw.js')
+
+  // The synthesized queue response is 202, which is inside 2xx — so this
+  // header is the only signal separating "queued" from "delivered". If the
+  // literal drifts from the constant, every caller silently reads a queued
+  // write as a successful one again, which is the bug this guards.
+  const found = [...src.matchAll(/'(X-Companion-[A-Za-z-]+)':\s*'1'/g)].map((m) => m[1])
+
+  assertEquals(found.length > 0, true, 'sw.js should still set a queued-offline header')
+  for (const header of found) {
+    assertEquals(header, QUEUED_OFFLINE_HEADER)
+  }
+})
+
+// ─── Queued-offline predicate (offline-queue.ts ↔ the response sw.js builds) ──
+
+Deno.test('isQueuedOffline: a queued 202 is recognised despite resp.ok being true', () => {
+  // Byte-for-byte the response public/sw.js synthesizes in networkOrQueue().
+  const queued = new Response(
+    JSON.stringify({ ok: false, queuedOffline: true, queueId: 'x', message: 'Saved offline' }),
+    { status: 202, headers: { 'Content-Type': 'application/json', [QUEUED_OFFLINE_HEADER]: '1' } },
+  )
+
+  // The trap this predicate exists for: the queued response IS ok.
+  assertEquals(queued.ok, true)
+  assertEquals(isQueuedOffline(queued), true)
+})
+
+Deno.test('isQueuedOffline: a real server response is not mistaken for a queued one', () => {
+  const delivered = new Response(JSON.stringify({ filename: 'scan.glb' }), { status: 200 })
+  assertEquals(isQueuedOffline(delivered), false)
+
+  // A failure is not "queued" either — it has no durable copy behind it.
+  assertEquals(isQueuedOffline(new Response('nope', { status: 500 })), false)
 })
