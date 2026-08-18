@@ -31,6 +31,12 @@ const TOKENIZER_DIR = fromFileUrl(new URL(
 ))
 
 const MAX_NEW_TOKENS = 256
+
+// Ollama otherwise uses the model's full context window (262144 for qwen3-vl:4b),
+// which reserves ~44 GB of KV cache, overflows a 24 GB GPU and forces a 50/50
+// CPU split — 100+ s per capture instead of ~20 s. Captures reach us downscaled
+// to a 1280 px long edge (~1.2k vision tokens), so this is ample headroom.
+const OLLAMA_NUM_CTX = Number(Deno.env.get('OLLAMA_NUM_CTX') ?? 8192)
 const NUM_THREADS = (() => { try { return Math.max(1, navigator?.hardwareConcurrency ?? 4) } catch { return 4 } })()
 
 // ─── ONNX prompt token IDs ───────────────────────────────────────────────────
@@ -143,7 +149,7 @@ export class InferenceEngine {
     const requested = Deno.env.get('INFERENCE_MODE')
     this._mode = requested === 'onnx' ? 'onnx' : requested === 'mock' ? 'mock' : 'ollama'
     this.ollamaUrl = Deno.env.get('OLLAMA_HOST') ?? 'http://localhost:11434'
-    this.ollamaModel = Deno.env.get('OLLAMA_MODEL') ?? 'moondream:latest'
+    this.ollamaModel = Deno.env.get('OLLAMA_MODEL') ?? 'qwen3-vl:4b'
     this.modelId = this._mode === 'onnx' ? 'LiquidAI/LFM2.5-VL-1.6B-ONNX'
       : this._mode === 'mock' ? 'mock/color-blob-v1'
       : `Ollama/${this.ollamaModel}`
@@ -185,7 +191,7 @@ export class InferenceEngine {
         
         if (!hasModel) {
           // Fallback check to any pulled vision models
-          const visionModels = ['moondream:latest', 'llava:7b', 'qwen3-vl:4b', 'qwen3.5:4b', 'qwen3.5:2b']
+          const visionModels = ['qwen3-vl:4b', 'qwen3.5:4b', 'qwen3.5:2b', 'llava:7b', 'moondream:latest']
           let foundFallback = false
           for (const fallback of visionModels) {
             if (data.models.some(m => m.name === fallback || m.name.startsWith(fallback + ':'))) {
@@ -389,6 +395,7 @@ export class InferenceEngine {
       stream: false,
       options: {
         temperature: 0.1,
+        num_ctx: OLLAMA_NUM_CTX,
       }
     }
 
