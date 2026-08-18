@@ -47,7 +47,7 @@ flowchart TB
 
     %% Wiring
     ScannerMobile --> ARProvider
-    ScannerMobile --> DoneBtn["Done button / Verdict UI"]
+    ScannerMobile --> MenuBtn["Menu button / Verdict UI"]
     ARProvider --> InferenceRouter
     ARProvider --> Broadcaster
     ARProvider --> PWA
@@ -149,7 +149,7 @@ graph TD
 - **3D object pins** — detected objects are placed at their SLAM-resolved world positions as live 3D labels tracking the scene.
 - **Onboarding Overlay** — 5-step interactive overlay guiding users through permission prompts, movement speeds, the 3 capture pipelines, real-time quality diagnostics, and desktop editing. Bypasses automatically on CI/mocks and replays on help button click.
 - **HUD Quality Verdict** — Real-time rendering of `qualityMonitor.summary()` status directly on the phone HUD as a colorized verdict chip (`✓ Ready`, `⚠ Review`, `❌ Sparse`) next to the status row.
-- **HUD Done button** — Primary affordance next to the capture button to quickly open the Side Panel and scroll to the export and synchronization settings.
+- **HUD Menu button** — Primary affordance to the right of the capture button, on its centre line, to quickly open the Side Panel and scroll to the export and synchronization settings.
 - **Accidental Leave Guards** — Intercepts navigation buttons and window unload requests if active point cloud data or poses are in memory to prevent accidental scan losses.
 - **Quality-gated export** — Gating manual exports behind a confirmation prompt when scan quality is poor (`needs-rescan`). Displays a "View in 3D →" quick redirect link in the HUD status line on successful export.
 - **Grouped Action Rail** — Vertically stacks and groups navigation links separate from live scanning tools with a visual divider line, while keeping direct DOM hierarchy for E2E testing compliance.
