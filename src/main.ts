@@ -111,11 +111,30 @@ async function main() {
       // the last boot status (e.g. "AI: WebGPU") on screen as if nothing happened.
       overlay.setStatus('Starting AR…')
 
+      // Denial RESOLVES with the string 'denied' — it does not reject. The
+      // promise rejects only when requestPermission() was called outside a
+      // user gesture. Catching alone therefore never fired on the one case it
+      // was written for: the user tapped "Don't Allow" and landed in a session
+      // that never tracks, staring at "Move camera to initialise tracking…"
+      // forever with nothing to explain it.
+      //
+      // On platforms without the API (Android, desktop) both are undefined,
+      // there is nothing to grant, and the banner must stay down.
+      const permissionChecks = [p1, p2].filter((p): p is Promise<string> => p !== undefined)
+      const denialNotice = 'Enable motion & orientation access in Settings → Safari → Motion & Orientation Access.'
       try {
-        await Promise.all([p1, p2].filter(Boolean))
+        const outcomes = await Promise.all(permissionChecks)
+        const refused = outcomes.filter((outcome) => outcome !== 'granted')
+        if (refused.length > 0) {
+          console.warn(`[main] Motion/orientation permission ${refused.join('/')} — SLAM will not track`)
+          showPermissionBanner(denialNotice)
+        }
       } catch (err) {
-        console.warn('[main] Motion/orientation permission denied — SLAM may not track', err)
-        showPermissionBanner('Enable motion & orientation access in Settings → Safari → Motion & Orientation Access.')
+        // A rejection is the other failure: requestPermission() reached outside
+        // a genuine gesture, or the API itself errored. The user still ends up
+        // without motion access, so they get the same guidance.
+        console.warn('[main] Motion/orientation permission request failed — SLAM may not track', err)
+        showPermissionBanner(denialNotice)
       }
       resolve()
     }, { once: true })
