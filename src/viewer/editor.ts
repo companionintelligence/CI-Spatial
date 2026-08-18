@@ -170,13 +170,25 @@ export class SceneEditor {
     if (hits.length === 0) { this._clearSelection(); return null }
 
     let obj: THREE.Object3D | null = hits[0].object
-    // Walk up the parent chain to find the node containing label metadata or LOD group
+    // Walk up the parent chain to the node an edit should be written against: the
+    // THREE.LOD for a semantic object, or the nearest labelled node otherwise.
+    //
+    // The LOD test MUST run before the label test, and the order is load-bearing.
+    // In upgradeSemanticMeshes() (viewer.ts) the medium and high proxies are assigned
+    // lod.userData *by reference*, and the far level is the original mesh, which keeps
+    // its own userData — carrying the label the GLB gave it. So a label can be found on
+    // a level whichever one the ray reaches. With the label test first, the walk stopped
+    // at that level, and the gizmo moved it while the saved patch was replayed onto the
+    // LOD — so the object came back displaced, and rescaled by the medium proxy's
+    // normalisation. Testing parent-is-LOD first resolves to the LOD from every shape.
+    // Labelled nodes outside an LOD (e.g. splat-detect boxes) still select as
+    // themselves, because their parent is not an LOD and the label test still decides.
     while (obj && obj !== this._scene) {
-      if (obj.userData && obj.userData['label']) {
-        break
-      }
       if (obj.parent && obj.parent instanceof THREE.LOD) {
         obj = obj.parent
+        break
+      }
+      if (obj.userData && obj.userData['label']) {
         break
       }
       obj = obj.parent

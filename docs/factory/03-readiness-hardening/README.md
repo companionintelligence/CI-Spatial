@@ -110,6 +110,27 @@ Real, verified, and out of scope here — recorded so they are not rediscovered 
   Found only by running the full suite; the spec alone still passed. So the family is
   real, and 0003 should treat "reports success having verified nothing" as a live
   possibility rather than a hypothetical.
+- **A canvas click cannot reach a semantic object in a point-cloud scan.** Found while
+  building 0004's regression test, and the reason that test is a Node unit test rather
+  than the `chromium-mock` spec the ticket planned. `SceneEditor.pick()` raycasts and takes
+  `hits[0]`, but **three.js `Raycaster` does not skip invisible objects**, so in a seeded
+  test home the nearest hits are `point-cloud` `Points` ~0.12 m from the camera — and they
+  are still returned after the Cloud layer is toggled off (`vis: false` in the hit list).
+  The walk then finds no label and no LOD parent above a point-cloud node, so `pick()`
+  returns `null` and the click selects nothing. Measured, not inferred: with the cloud
+  hidden and effective visibility applied by hand, the first eligible hits are a
+  `TransformControlsPlane` (3.51 m) and only then the LOD's own mesh (3.66 m) — so the
+  always-attached gizmo plane is a second interceptor (`viewer.ts` attaches
+  `transformControls` to the scan root on load).
+
+  Two independent defects, both **outside 0004's scope** — it only reorders two conditions
+  in the walk, and that reorder is correct and unit-tested. But note the consequence:
+  **0004's own acceptance criterion "when an object is clicked, then the selected object is
+  the THREE.LOD" cannot be satisfied by a click on this corpus** until these are fixed.
+  A fix is probably a visibility filter plus excluding the gizmo's own helper from the pick
+  raycast; it needs its own ticket, because "which things are pickable" is a product
+  decision (point clouds are deliberately in the `Mesh || Points` filter today).
+
 - **Widening the no-CDN assertion.** 0006's check is scoped to `unpkg.com` by design.
   Asserting that *no* cross-origin script host is contacted would catch the next instance
   of this class, but it is a different (and noisier) test.
