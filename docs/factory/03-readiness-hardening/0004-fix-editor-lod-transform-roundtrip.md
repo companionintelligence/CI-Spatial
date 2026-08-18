@@ -60,12 +60,13 @@ are untouched, so every reference into those still holds:
   `obj.parent instanceof THREE.LOD` test at `:178` can run. The LOD branch is dead code.
 - The three level shapes, all direct children of the `THREE.LOD`:
   - far: the original `THREE.Mesh`, `lod.addLevel(mesh, 8)` (`viewer.ts:810`) — keeps its
-    **own** `userData` because `lod.userData` is a new object built with a spread. Whether
-    that includes an `objectId` now depends on the scan: in a freshly exported GLB the far
-    level carries the extras (e.g. `bed_001`), but in an **optimized** one it is the mesh
-    `quantize()` hoisted out of the labelled node, which carries no extras at all (#87).
-    This weakens the legacy-patch note under "Found but deferred" in the wave README:
-    on an optimized scan there is no `bed_001` for such a patch to resolve to.
+    **own** `userData` because `lod.userData` is a new object built with a spread. In a
+    freshly exported GLB that includes the extras (e.g. `bed_001`). In an **optimized**
+    one the far level is the mesh `quantize()` hoisted out of the labelled node, which
+    carries no extras — but the labelled node itself survives, keeping its name and its
+    `objectId`, and `parent` in `upgradeSemanticMeshes` is that node, so the LOD is
+    attached *beneath* it rather than replacing it (#87). Which node a given `targetId`
+    resolves to therefore differs by scan; see the wave README's legacy-patch note.
   - medium: `createMediumPolyAsset(label)` returns a `THREE.Group`
     (`src/viewer/assets.ts:147`) whose child meshes carry **no** `label`.
   - high: `loadSemanticAsset(label)` attaches **asynchronously** (`viewer.ts:816-819`), so
