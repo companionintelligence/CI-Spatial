@@ -2390,6 +2390,7 @@ async function _runMemoryPushJob(slug: string, jobId: string): Promise<void> {
           glbFileId: pushed.glbFileId,
           glbSkippedReason: pushed.glbSkippedReason ?? null,
           detectionCount: pushed.detectionCount,
+          extentCount: pushed.extentCount,
           ingested: pushed.eventIngested,
           duplicate: pushed.eventDuplicate,
         },
