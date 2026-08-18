@@ -22,6 +22,36 @@ function categoryColor(label: string): string {
 }
 function fmtCoord(v: number): string { return v.toFixed(2) }
 
+/**
+ * What the Export button should say when the export settles.
+ *
+ * The button used to read "Exported" for every one of these. `onExport`
+ * returned `void` and its producer swallowed its own errors, so `await
+ * this.onExport()` never threw and the catch below was unreachable code — a
+ * failed export, a cancelled one, and a successful one were indistinguishable
+ * on screen. Reporting the outcome as a value rather than as the absence of an
+ * exception is what makes the difference visible.
+ */
+export type ExportOutcome =
+  /** Downloaded and the server has it. */
+  | 'exported'
+  /** Downloaded; the upload is queued offline and replays on reconnect. */
+  | 'queued'
+  /** Downloaded, but the server rejected it. The file is on the device. */
+  | 'local-only'
+  /** The user backed out (e.g. declined the low-quality confirm). */
+  | 'cancelled'
+  /** The export itself failed; there is no file. */
+  | 'failed'
+
+const EXPORT_LABELS: Record<ExportOutcome, string> = {
+  exported: 'Exported',
+  queued: 'Saved — will sync',
+  'local-only': 'Saved on device',
+  cancelled: 'Cancelled',
+  failed: 'Export failed',
+}
+
 export class SidePanel {
   private panel: HTMLElement
   private content: HTMLElement
@@ -36,7 +66,7 @@ export class SidePanel {
 
   constructor(
     private readonly store: DetectionStore,
-    private readonly onExport: () => void | Promise<void>,
+    private readonly onExport: () => ExportOutcome | Promise<ExportOutcome>,
     private readonly onSummary?: () => void,
     private readonly onProcess?: (action: string) => void,
     private readonly onInferMode?: (mode: InferMode) => void,
@@ -84,11 +114,15 @@ export class SidePanel {
       exportBtn.disabled = true
       exportBtn.textContent = 'Exporting...'
       try {
-        await this.onExport()
-        exportBtn.textContent = 'Exported'
-        setTimeout(() => { exportBtn.textContent = 'Export GLB' }, 1400)
+        const outcome = await this.onExport()
+        exportBtn.textContent = EXPORT_LABELS[outcome] ?? EXPORT_LABELS.exported
+        // Leave a bad outcome up longer — it is the one worth reading.
+        setTimeout(() => { exportBtn.textContent = 'Export GLB' },
+          outcome === 'exported' || outcome === 'cancelled' ? 1400 : 2400)
       } catch {
-        exportBtn.textContent = 'Export failed'
+        // onExport is expected to report failure as a value; a throw means
+        // something unhandled, which is still the user's failed export.
+        exportBtn.textContent = EXPORT_LABELS.failed
         setTimeout(() => { exportBtn.textContent = 'Export GLB' }, 1800)
       } finally {
         exportBtn.disabled = false
