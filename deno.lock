@@ -23,6 +23,7 @@
     "npm:jimp@^1.6.0": "1.6.1",
     "npm:jimp@^1.6.1": "1.6.1",
     "npm:jose@^5.9.6": "5.10.0",
+    "npm:leaflet@1.9.4": "1.9.4",
     "npm:onnxruntime-node@^1.21.0": "1.21.0",
     "npm:qrcode-terminal@0.12": "0.12.0",
     "npm:three@0.184": "0.184.0",
@@ -1037,6 +1038,9 @@
     "ktx-parse@1.1.0": {
       "integrity": "sha512-mKp3y+FaYgR7mXWAbyyzpa/r1zDWeaunH+INJO4fou3hb45XuNSwar+7llrRyvpMWafxSIi99RNFJ05MHedaJQ=="
     },
+    "leaflet@1.9.4": {
+      "integrity": "sha512-nxS1ynzJOmOlHp+iL3FyWqK89GtNL8U8rvlMOsQdTTssxZwCXh8N2NB3GDQOL+YR3XnWyZAxwQixURb+FA74PA=="
+    },
     "lightningcss-android-arm64@1.32.0": {
       "integrity": "sha512-YK7/ClTt4kAK0vo6w3X+Pnm0D2cf2vPHbhOXdoNti1Ga0al1P4TBZhwjATvjNwLEBCnKvjJc2jQgHXH0NEwlAg==",
       "os": ["android"],
@@ -1715,6 +1719,7 @@
         "npm:draco3dgltf@^1.5.7",
         "npm:iwer@^2.2.1",
         "npm:jimp@^1.6.1",
+        "npm:leaflet@1.9.4",
         "npm:qrcode-terminal@0.12",
         "npm:three@0.184",
         "npm:typescript@^6.0.3",

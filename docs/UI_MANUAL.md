@@ -344,7 +344,7 @@ re-scanning. Implemented in `src/ui/history.ts`; map in `src/main.ts:884-947`.
 | Element | Behaviour | Source |
 |---|---|---|
 | **✕ / backdrop / Escape** | Three ways to close. | `history.ts:26-36` |
-| **Geo map** | Lazy-initialised Leaflet map on first open — dark CARTO tiles, mint dot = current GPS fix, red dots = every server-side scan location (`/scan-locations`), with address popups. Placeholder "Acquiring location…" until then. | `src/main.ts:884-947`, markup `index.html:1225-1232` |
+| **Geo map** | Lazy-initialised Leaflet map on first open — dark CARTO tiles, mint dot = current GPS fix, red dots = every server-side scan location (`/scan-locations`), with address popups. Placeholder "Acquiring location…" until then. | `src/main.ts:1359-1437`, markup `index.html:1225-1232` |
 | **Session card** | "Today 07:54 AM · 4 objects · \<id suffix\>"; header click expands an inline detection list (animated max-height). | `history.ts:78-179` |
 | **↩ load** | Loads that session's detections into the live store and closes the drawer — pins reappear in AR. | `history.ts:117-126` |
 | **✕ delete** (red-tinted) | Fades the card out and deletes the session from IndexedDB. **No confirmation.** | `history.ts:128-141` |
