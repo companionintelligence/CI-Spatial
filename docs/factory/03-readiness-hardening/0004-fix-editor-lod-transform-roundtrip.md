@@ -5,6 +5,17 @@
 > **Design:** this ticket is the spec
 > **Dependencies:** None to implement. Verification wants `0003` (the WebKit/Chromium tiers must actually run) — but this ticket's own regression test is a `chromium-mock` spec, which runs today via the `CHROMIUM_EXECUTABLE_PATH` hatch.
 
+> **Re-pinned 2026-08-18 against `d4f149c`.** Line numbers were originally pinned at
+> `6217e0b` and drifted through PRs #85–#97; every `src/viewer/viewer.ts` reference below
+> has been re-measured and checked against what it claims to point at.
+> `src/viewer/viewer.ts` is byte-identical between `f8d0779` (when they were re-measured)
+> and `d4f149c`, so they hold as written. `src/viewer/editor.ts`, `assets.ts` and
+> `splat-detect-layer.ts` were never touched by that range.
+>
+> **One non-goal changed meaning, not just position:** `hasLabelledAncestor` moved to
+> `src/viewer/detections.ts:72` and gained a second consumer. Removing it is no longer a
+> deferrable visual change — see the non-goals below.
+
 ## Goal
 
 Make an object transform edited in the World Editor come back in the same place after a
