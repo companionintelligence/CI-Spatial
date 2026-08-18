@@ -96,8 +96,10 @@ about to create this codebase's third `ScanManifest` — don't.
   `docs/factory/foundation-updates/0002-fix-allowed-origin-prefix-autodetect.md`.
 - **Both npm and Deno materialise `node_modules`.** `deno.json:2` sets
   `"nodeModulesDir": "auto"`, so `deno install` / any `deno task` builds its own
-  `node_modules/.deno/` layout for the eight `npm:` packages `main.ts` imports (hono,
-  onnxruntime-node, jimp, the `@gltf-transform/*` trio, draco3dgltf, jose). That setting
+  `node_modules/.deno/` layout for the eight `npm:` packages in its import map (hono,
+  onnxruntime-node, jimp, the `@gltf-transform/*` trio, draco3dgltf, jose). Only `hono` is
+  imported by `main.ts` itself; the rest arrive through the modules it pulls in
+  (`inference.ts`, `pipeline.ts`, `portal_auth.ts`, and the splat/lingbot runners). That setting
   is load-bearing — it cannot simply be dropped — and `deno.json:26`'s `allowScripts`
   expects `onnxruntime-node`'s install script to run, so Deno needs a real tree.
   **Install with `npm ci`, not `npm install`.** `npm ci` rebuilds the tree wholesale from
