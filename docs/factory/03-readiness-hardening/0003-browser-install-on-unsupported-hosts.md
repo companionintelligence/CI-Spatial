@@ -20,6 +20,29 @@
 > #95 is only evidence that the "green run, nothing tested" family is real — see the wave
 > README's deferred question, which now has a concrete answer.
 
+> **Host check, 2026-08-18 — this ticket is deferred, not done.** Its entire bespoke path
+> assumes an Ubuntu 26.04 host. The machine the wave is being worked on is **Windows 11**,
+> where Playwright supports WebKit natively, so that path cannot be written honestly or
+> verified here.
+>
+> Measured, not assumed:
+>
+> | Claim | On this Windows host |
+> | --- | --- |
+> | `npx playwright install` aborts | **False here.** `npx playwright install --dry-run webkit` resolves cleanly to `webkit-win64.zip` at `cdn.playwright.dev/.../webkit/2272/`, with two fallback mirrors. No "does not support" error. |
+> | WebKit tiers execute zero tests | **True here, different cause.** `webkit-2272` is simply absent from `%LOCALAPPDATA%\ms-playwright` — which holds `chromium-1217`, `chromium_headless_shell-1217`, `ffmpeg-1011`, `winldd-1007` and several other chromium revisions. Nothing is broken; the browser was never downloaded. |
+> | The bespoke path is needed | **Not on this host.** The script's own supported-host branch (delegate to `npx playwright install`) is the branch that would run here, so the Ubuntu-specific work — `.deb` fetch, `dpkg-deb -x`, the `sys/lib` placement, the MiniBrowser self-check — would ship unexercised. |
+>
+> Consequence: **the "mobile tier has never run" gap is real on this host but is not this
+> ticket's problem.** Downloading `webkit-2272` here would close it in one command, and
+> that is a separate, much smaller piece of work than this ticket describes.
+>
+> To re-scope: this ticket needs a real Ubuntu 26.04 host to be written against, or it
+> should be split — a trivial "install the missing WebKit build" step for supported hosts,
+> and this unsupported-host bootstrap kept for the host that actually needs it. Every
+> verified fact below still stands as recorded on the Ubuntu host; none of it was
+> contradicted, only found inapplicable here.
+
 ## Goal
 
 Make the two WebKit Playwright tiers installable on a host Playwright does not

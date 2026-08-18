@@ -39,6 +39,13 @@ under which anyone could have known.
 of each other in content, but 0001 lands the Node floor that 0003's script and 0005's
 verification both assume.
 
+> **0003 is deferred as of 2026-08-18.** It is written against Ubuntu 26.04; the host this
+> wave is being worked on is Windows 11, where Playwright supports WebKit natively and
+> `npx playwright install` does not abort. Its bespoke path cannot be exercised or verified
+> here, so it would ship unrun. See the host-check banner at the top of the ticket for the
+> measurements and for how to re-scope it. **0001 and 0002 landed; 0004–0006 do not depend
+> on 0003** — 0004's regression test is a `chromium-mock` spec, and that tier already runs.
+
 **0004, 0005 and 0006 are then parallel by content** — they touch disjoint code:
 `src/viewer/editor.ts`, `main.ts`'s listing path, and the geomap/Leaflet path respectively.
 
