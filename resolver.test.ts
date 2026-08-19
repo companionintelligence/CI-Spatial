@@ -108,3 +108,24 @@ test('resolveDetections: a non-finite captureCamera bbox-ray fallback is also re
 
   assert.equal(results.length, 0, 'a non-finite bbox-ray fallback must not be persisted')
 })
+
+test('resolveDetections: a non-finite captureCamera bbox-ray falls through to a finite cameraPose fallback', async () => {
+  // Regression for a review comment on this same fix: 4a (bbox-ray) and 4b (cameraPose)
+  // used to be an if/else-if keyed on which inputs were present, not two independent
+  // attempts — so a non-finite 4a candidate never got a chance to try 4b even when a
+  // perfectly good cameraPose was sitting right there. Both being available at once,
+  // with only the camera producing a degenerate ray, must still resolve via cameraPose.
+  const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 100)
+  camera.position.set(NaN, 0, 0)
+  camera.updateMatrixWorld(true)
+
+  const results = await resolveDetections([detection], 1000, {
+    provider: providerReturning(null),
+    captureCamera: camera,
+    cameraPose: FINITE_POSE,
+  })
+
+  assert.equal(results.length, 1, 'the cameraPose fallback must still run after the bbox-ray candidate is rejected')
+  const { x, y, z } = results[0].worldPos
+  assert.ok(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z), 'worldPos must be finite')
+})

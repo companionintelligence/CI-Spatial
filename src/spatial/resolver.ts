@@ -233,36 +233,42 @@ export async function resolveDetections(
     }
 
     // 4. Fallback: place object along its bbox camera ray, or straight ahead
-    // when no capture camera is available.
-    if (!hitPos) {
-      if (opts.captureCamera) {
-        const candidate = pointOnCaptureRay(cx, cy, opts.captureCamera)
-        if (isFiniteVec3(candidate)) {
-          hitPos = candidate
-          hitRot = ensureValidRotation(opts.cameraPose?.rotation ?? opts.captureCamera.quaternion)
-          console.warn(`[resolver] Hit test miss for "${det.label}" — using bbox ray fallback:`, JSON.stringify(hitPos))
-        } else {
-          console.warn(`[resolver] Hit test miss for "${det.label}" — bbox ray fallback produced a non-finite position`)
-        }
-      } else if (opts.cameraPose) {
-        const p = opts.cameraPose.position
-        const q = opts.cameraPose.rotation
-        const cameraDir = new THREE.Vector3(0, 0, -1).applyQuaternion(new THREE.Quaternion(q.x, q.y, q.z, q.w))
-        const candidate = {
-          x: p.x + cameraDir.x * FALLBACK_DEPTH_M,
-          y: p.y + cameraDir.y * FALLBACK_DEPTH_M,
-          z: p.z + cameraDir.z * FALLBACK_DEPTH_M,
-        }
-        if (isFiniteVec3(candidate)) {
-          hitPos = candidate
-          hitRot = ensureValidRotation(q)
-          console.warn(`[resolver] Hit test miss for "${det.label}" — using fallback position in front of camera:`, JSON.stringify(hitPos))
-        } else {
-          console.warn(`[resolver] Hit test miss for "${det.label}" — camera-relative fallback produced a non-finite position`)
-        }
+    // when no capture camera is available. These are two independent attempts,
+    // not an either/or on which inputs happen to be present — a non-finite
+    // bbox-ray candidate (4a) must still fall through to the camera-pose
+    // candidate (4b) when cameraPose is also available, same as every earlier
+    // tier falls through on an invalid result.
+    if (!hitPos && opts.captureCamera) {
+      const candidate = pointOnCaptureRay(cx, cy, opts.captureCamera)
+      if (isFiniteVec3(candidate)) {
+        hitPos = candidate
+        hitRot = ensureValidRotation(opts.cameraPose?.rotation ?? opts.captureCamera.quaternion)
+        console.warn(`[resolver] Hit test miss for "${det.label}" — using bbox ray fallback:`, JSON.stringify(hitPos))
       } else {
-        console.warn(`[resolver] Hit test miss for "${det.label}" and no camera pose — skipping`)
+        console.warn(`[resolver] Hit test miss for "${det.label}" — bbox ray fallback produced a non-finite position`)
       }
+    }
+
+    if (!hitPos && opts.cameraPose) {
+      const p = opts.cameraPose.position
+      const q = opts.cameraPose.rotation
+      const cameraDir = new THREE.Vector3(0, 0, -1).applyQuaternion(new THREE.Quaternion(q.x, q.y, q.z, q.w))
+      const candidate = {
+        x: p.x + cameraDir.x * FALLBACK_DEPTH_M,
+        y: p.y + cameraDir.y * FALLBACK_DEPTH_M,
+        z: p.z + cameraDir.z * FALLBACK_DEPTH_M,
+      }
+      if (isFiniteVec3(candidate)) {
+        hitPos = candidate
+        hitRot = ensureValidRotation(q)
+        console.warn(`[resolver] Hit test miss for "${det.label}" — using fallback position in front of camera:`, JSON.stringify(hitPos))
+      } else {
+        console.warn(`[resolver] Hit test miss for "${det.label}" — camera-relative fallback produced a non-finite position`)
+      }
+    }
+
+    if (!hitPos && !opts.captureCamera && !opts.cameraPose) {
+      console.warn(`[resolver] Hit test miss for "${det.label}" and no camera pose — skipping`)
     }
 
     // Every tier above only assigns hitPos once its candidate passes isFiniteVec3 — this is
