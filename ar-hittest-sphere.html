@@ -46,6 +46,17 @@
       import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.183.0/build/three.module.js'
       window.THREE = THREE
 
+      // Shared across every placed sphere — a fresh geometry/material per tap
+      // leaks GPU/CPU memory over a long diagnostic session.
+      const SPHERE_GEOMETRY = new THREE.SphereGeometry(0.05, 24, 16)
+      const SPHERE_MATERIAL = new THREE.MeshStandardMaterial({ color: 0x22c3e6, emissive: 0x0a4a55 })
+
+      // Matches the finite-check src/ar/eighthwall.ts applies to hit-test
+      // results before trusting them (position can be missing/NaN/Infinity).
+      function isFiniteVec3(p) {
+        return !!p && Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z)
+      }
+
       // Debug state exposed for external polling (adb/CDP Runtime.evaluate,
       // or a future ?debug=remote-style relay) — avoids relying on pixel
       // comparison of a surface that may not screenshot reliably.
@@ -82,10 +93,7 @@
 
         const placeSphereAt = (position) => {
           const { scene } = XR8.Threejs.xrScene()
-          const sphere = new THREE.Mesh(
-            new THREE.SphereGeometry(0.05, 24, 16),
-            new THREE.MeshStandardMaterial({ color: 0x22c3e6, emissive: 0x0a4a55 }),
-          )
+          const sphere = new THREE.Mesh(SPHERE_GEOMETRY, SPHERE_MATERIAL)
           sphere.position.set(position.x, position.y, position.z)
           scene.add(sphere)
           window.__arTestState.sphereCount++
@@ -109,8 +117,8 @@
               const x = e.touches[0].clientX / window.innerWidth
               const y = e.touches[0].clientY / window.innerHeight
               const results = XR8.XrController.hitTest(x, y, ['FEATURE_POINT'])
-              if (results && results.length > 0) {
-                const hit = results[0]
+              const hit = results && results.length > 0 ? results[0] : null
+              if (hit && isFiniteVec3(hit.position)) {
                 placeSphereAt(hit.position)
                 window.__arTestState.hitCount++
                 window.__arTestState.lastEvent = `HIT ${hit.type} @ (${hit.position.x.toFixed(2)}, ${hit.position.y.toFixed(2)}, ${hit.position.z.toFixed(2)})`
