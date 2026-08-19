@@ -108,6 +108,25 @@ pointer, nothing more. The wave folders own the tickets; the atlas owns the pict
   opens correctly straight from a file path or a published artifact.
 - Anything not carrying a status badge is base description — keep it true. When a
   landed wave makes a sentence false, fix the sentence.
+- **A wave README must not describe an atlas gap in the present tense.** The README and
+  the atlas pass happen at different moments of the same Phase 6, so "the atlas does not
+  mention X" is true while you draft and false by the time you commit — you are the one
+  who fills the gap. Write it as history: *"Until this wave's atlas pass, the atlas did
+  not mention X."* Mark gaps the wave filled as *(gap filled)* rather than restating them
+  as present fact. This is a real failure mode, caught by review on PR #118, where six
+  such sentences across two wave READMEs were falsified by their own PR.
+
+### A note on ordering, and why this rule exists
+
+The tempting fix is to write the atlas diff before the READMEs. Don't — the diff can only
+be written once the ticket breakdown is settled, and the READMEs are what settle it. The
+two genuinely belong at different moments; the fix is tense, not sequence.
+
+The deeper point generalizes past the atlas. **A planning document describes a moving
+target and is committed at one instant of it.** Any sentence of the form "today the repo
+has no X" is a claim with an expiry date, and the wave itself is usually what expires it.
+Prefer dated or past-tense phrasing for anything the wave is about to change, and reserve
+the present tense for what will still be true after the wave lands.
 
 ## Recording the reasoning trail
 
