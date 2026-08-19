@@ -7,16 +7,30 @@
  * Hit-testing uses the WebXR hit-test API.
  */
 import type { ARProvider, HitResult, Pose, RawFrame } from './provider'
+import { DEFAULT_GRID_SIZE, DEFAULT_INTERVAL_MS as SCAN_INTERVAL_MS } from './scanner'
 
 /**
- * Probe grid subscribed against the viewer space, N x N. Matches
- * DEFAULT_GRID_SIZE in src/ar/scanner.ts:31 (6 -> 36 probes), which is the
- * density the scanner and the 8th Wall provider already assume.
+ * Probe grid subscribed against the viewer space, N x N. Imported rather than
+ * restated so the scanner's contract and this provider's grid cannot drift.
  */
-const HIT_GRID_N = 6
+const HIT_GRID_N = DEFAULT_GRID_SIZE
 
-/** One scanner interval of grid samples: 750 ms x 60 fps x 36 probes, rounded up. */
-const MAX_RECENT_HIT_POINTS = 2048
+/** Highest XR frame rate we size buffers for — Quest runs 72/90/120 Hz. */
+const MAX_XR_FPS = 120
+
+/** Rebuilds allowed while recovering a partially subscribed probe grid. */
+const MAX_GRID_ATTEMPTS = 2
+
+/**
+ * One scanner interval of grid samples at the highest refresh rate we expect —
+ * 0.75 s x 120 fps x 36 probes = 3240 — derived rather than hard-coded so it
+ * tracks the scanner's cadence and the grid size. Sizing it from a 60 fps
+ * assumption silently discarded ~37% of samples on a 120 Hz headset, and this
+ * provider exists for Quest, which runs at 72/90/120.
+ */
+const MAX_RECENT_HIT_POINTS = Math.ceil(
+  (SCAN_INTERVAL_MS / 1000) * MAX_XR_FPS * HIT_GRID_N * HIT_GRID_N,
+)
 
 export class WebXRProvider implements ARProvider {
   private session: XRSession | null = null
@@ -40,8 +54,22 @@ export class WebXRProvider implements ARProvider {
     rotation: { x: 0, y: 0, z: 0, w: 1 },
   }
   private animFrameId: number | null = null
-  /** Surface points sampled from the viewer-ray hit test each frame */
-  private _recentHitPoints: Array<{ x: number; y: number; z: number }> = []
+  /**
+   * Surface points sampled from the probe grid each frame, as a flat xyz ring
+   * buffer. A plain array of {x,y,z} allocated up to 36 objects per frame
+   * (~4300/s at 120 Hz), all garbage on the next drain — real GC pressure
+   * inside an XR render loop. Objects are now materialised once per drain
+   * instead, in featurePoints().
+   */
+  private _hitBuf = new Float32Array(MAX_RECENT_HIT_POINTS * 3)
+  private _hitWrite = 0
+  private _hitCount = 0
+  /** Set once a viewer pose has yielded a real projection — see buildHitTestGrid(). */
+  private _haveRealProjection = false
+  /** Rebuild attempts spent recovering a partially subscribed grid. */
+  private _gridAttempts = 0
+  /** First subscription error seen, kept so the failure warning can name a cause. */
+  private _gridError: unknown = null
 
   async start(canvas: HTMLCanvasElement): Promise<void> {
     if (!navigator.xr) throw new Error('WebXR not available')
@@ -85,9 +113,15 @@ export class WebXRProvider implements ARProvider {
     this.refSpace = localFloor
     this.viewerSpace = viewer
 
-    // Hit-test sources are subscribed on the first frame, not here: the grid
-    // is aimed using _fovY/_aspect, which only become real once a viewer pose
-    // has been read. Subscribing here would bake in the 60°/1.0 defaults.
+    // Only the *aiming* is deferred to the first frame — the grid is pointed
+    // with _fovY/_aspect, which are not real until a viewer pose has been read.
+    // Availability is still reported here, so a runtime with no hit-test support
+    // says so during startup rather than a frame later, interleaved with the
+    // frame loop's output.
+    if (typeof this.session.requestHitTestSource !== 'function') {
+      console.warn('[webxr] hit-test unavailable — feature points disabled')
+      this.hitTestGridState = 'failed'
+    }
 
     // Main XR frame loop
     const self = this
@@ -106,14 +140,22 @@ export class WebXRProvider implements ARProvider {
           const proj = viewerPose.views[0].projectionMatrix
           const fovY = 2 * Math.atan(1 / proj[5]) * (180 / Math.PI)
           const aspect = proj[5] / proj[0]
-          if (Number.isFinite(fovY) && fovY > 0) self._fovY = fovY
-          if (Number.isFinite(aspect) && aspect > 0) self._aspect = aspect
+          if (Number.isFinite(fovY) && fovY > 0 && Number.isFinite(aspect) && aspect > 0) {
+            self._fovY = fovY
+            self._aspect = aspect
+            // Only now is it safe to aim the probe grid — see the guard below.
+            self._haveRealProjection = true
+          }
         }
       }
 
-      // Subscribe the probe grid once the first viewer pose has given us a
-      // real FOV and aspect to aim it with.
-      if (self.hitTestGridState === 'idle' && self.viewerSpace && viewerPose) {
+      // Subscribe the probe grid once a viewer pose has given us a real FOV and
+      // aspect to aim it with. Gating on viewerPose alone was not enough: the
+      // projection is only read when views.length > 0 and the derived values are
+      // finite and positive, so a first frame failing either check would have
+      // aimed a 36-probe grid using the 60°/1.0 defaults — the exact outcome
+      // deferring the build was meant to avoid — with no rebuild for the session.
+      if (self.hitTestGridState === 'idle' && self.viewerSpace && self._haveRealProjection) {
         self.hitTestGridState = 'building'
         void self.buildHitTestGrid()
       }
@@ -133,13 +175,8 @@ export class WebXRProvider implements ARProvider {
           const pose = hits[0].getPose(self.refSpace)
           if (!pose) continue
           const { x, y, z } = pose.transform.position
-          self._recentHitPoints.push({ x, y, z })
+          self.pushHitPoint(x, y, z)
         }
-        // Keep one full scanner interval's worth (750 ms x 60 fps x 36 probes);
-        // featurePoints() splices the buffer empty on each tick anyway, so this
-        // cap only bites if the scanner stalls.
-        const excess = self._recentHitPoints.length - MAX_RECENT_HIT_POINTS
-        if (excess > 0) self._recentHitPoints.splice(0, excess)
       }
 
       // Resolve pending captureFrame() calls
@@ -181,6 +218,11 @@ export class WebXRProvider implements ARProvider {
     this.session = null
     this.hitTestSources = []
     this.hitTestGridState = 'idle'
+    this._haveRealProjection = false
+    this._gridAttempts = 0
+    this._gridError = null
+    this._hitWrite = 0
+    this._hitCount = 0
     this.videoStream = null
     this.viewerSpace = null
   }
@@ -233,44 +275,101 @@ export class WebXRProvider implements ARProvider {
     const viewer = this.viewerSpace
     const request = session?.requestHitTestSource?.bind(session)
     if (!session || !viewer || !request) {
-      console.warn('[webxr] hit-test unavailable — feature points disabled')
-      this.hitTestGridState = 'failed'
+      this.failGrid('hit-test unavailable')
       return
     }
+
+    const total = HIT_GRID_N * HIT_GRID_N
     const pending: Array<Promise<XRHitTestSource | null>> = []
     for (let row = 0; row < HIT_GRID_N; row++) {
       for (let col = 0; col < HIT_GRID_N; col++) {
-        const ray = this.viewportRay((col + 0.5) / HIT_GRID_N, (row + 0.5) / HIT_GRID_N)
-        // request() can reject *or* throw synchronously (e.g. the session ends
-        // mid-build). An escaping sync throw would leave hitTestGridState stuck
-        // at 'building', so the grid would never be retried or reported failed.
+        // Both the ray construction and request() can throw synchronously as
+        // well as reject — XRRay is a runtime constructor, and the session can
+        // end mid-build. An escaping sync throw would leave hitTestGridState
+        // pinned at 'building', so the grid would never be retried nor reported
+        // failed. The guard must therefore cover the ray too, not just request().
         try {
+          const ray = this.viewportRay((col + 0.5) / HIT_GRID_N, (row + 0.5) / HIT_GRID_N)
           pending.push(
             Promise.resolve(request({ space: viewer, offsetRay: ray }))
               .then((source) => source ?? null)
-              .catch(() => null),
+              .catch((e) => {
+                this._gridError ??= e
+                return null
+              }),
           )
-        } catch {
+        } catch (e) {
+          this._gridError ??= e
           pending.push(Promise.resolve(null))
         }
       }
     }
-    const sources = (await Promise.all(pending))
-      .filter((s): s is XRHitTestSource => s != null)
-    // The session can end while the subscriptions are in flight.
+
+    const sources = (await Promise.all(pending)).filter(
+      (s): s is XRHitTestSource => s != null,
+    )
+
+    // The session can end, or be replaced, while subscriptions are in flight.
     if (this.session !== session) {
       for (const source of sources) source.cancel()
       return
     }
-    this.hitTestSources = sources
-    this.hitTestGridState = sources.length > 0 ? 'ready' : 'failed'
+
     if (sources.length === 0) {
-      console.warn('[webxr] hit-test unavailable — feature points disabled')
-    } else if (sources.length < HIT_GRID_N * HIT_GRID_N) {
+      this.failGrid('hit-test unavailable')
+      return
+    }
+
+    // A partial grid still beats the single centre ray this replaced, so keep
+    // it rather than disabling feature points — but retry the missing probes
+    // instead of running the whole session silently degraded. Bounded, because
+    // a runtime that caps concurrent hit-test sources would otherwise loop.
+    if (sources.length < total && this._gridAttempts < MAX_GRID_ATTEMPTS) {
+      this._gridAttempts++
+      for (const source of sources) source.cancel()
       console.warn(
-        `[webxr] only ${sources.length}/${HIT_GRID_N * HIT_GRID_N} hit-test probes subscribed`,
+        `[webxr] ${sources.length}/${total} hit-test probes subscribed — retrying ` +
+          `(attempt ${this._gridAttempts} of ${MAX_GRID_ATTEMPTS})`,
+        this._gridError ?? '',
+      )
+      this._gridError = null
+      this.hitTestGridState = 'idle'
+      return
+    }
+
+    this.hitTestSources = sources
+    this.hitTestGridState = 'ready'
+    if (sources.length < total) {
+      // Out of retries: usable but degraded, and the point cloud will fill more
+      // slowly than the scanner's contract assumes. Say so with a cause.
+      console.warn(
+        `[webxr] running with ${sources.length}/${total} hit-test probes — ` +
+          'point coverage will be reduced',
+        this._gridError ?? '',
       )
     }
+  }
+
+  /** Records the cause alongside the failure, so 'disabled' is actionable. */
+  private failGrid(reason: string): void {
+    this.hitTestGridState = 'failed'
+    this.hitTestSources = []
+    console.warn(`[webxr] ${reason} — feature points disabled`, this._gridError ?? '')
+  }
+
+  /** Probes actually subscribed, out of the grid's full size. */
+  get probeCoverage(): { subscribed: number; total: number } {
+    return { subscribed: this.hitTestSources.length, total: HIT_GRID_N * HIT_GRID_N }
+  }
+
+  /** Append one sample to the xyz ring buffer, overwriting the oldest when full. */
+  private pushHitPoint(x: number, y: number, z: number): void {
+    const o = this._hitWrite * 3
+    this._hitBuf[o] = x
+    this._hitBuf[o + 1] = y
+    this._hitBuf[o + 2] = z
+    this._hitWrite = (this._hitWrite + 1) % MAX_RECENT_HIT_POINTS
+    if (this._hitCount < MAX_RECENT_HIT_POINTS) this._hitCount++
   }
 
   featurePoints(_gridSize?: number): Array<{ x: number; y: number; z: number }> {
@@ -281,8 +380,18 @@ export class WebXRProvider implements ARProvider {
     // per session (HIT_GRID_N above, matched to the scanner's default) because
     // XRHitTestSource subscriptions are async and persistent, so the density
     // cannot be renegotiated per call the way 8th Wall's synchronous probe does.
-    if (this._recentHitPoints.length === 0) return []
-    return this._recentHitPoints.splice(0)
+    const count = this._hitCount
+    if (count === 0) return []
+    // Oldest first, so the caller sees them in capture order.
+    const start = (this._hitWrite - count + MAX_RECENT_HIT_POINTS) % MAX_RECENT_HIT_POINTS
+    const out = new Array<{ x: number; y: number; z: number }>(count)
+    for (let i = 0; i < count; i++) {
+      const o = ((start + i) % MAX_RECENT_HIT_POINTS) * 3
+      out[i] = { x: this._hitBuf[o], y: this._hitBuf[o + 1], z: this._hitBuf[o + 2] }
+    }
+    this._hitCount = 0
+    this._hitWrite = 0
+    return out
   }
 
   getPose(): Pose {
