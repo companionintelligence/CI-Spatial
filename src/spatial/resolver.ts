@@ -16,7 +16,14 @@ import type { ARProvider, Pose, HitResult } from '../ar/provider'
 import type { RawDetection } from '../inference/prompt'
 import type { PointCloud } from '../scene/pointcloud'
 
-const DEDUP_RADIUS_M = 0.3
+// Widened from 0.3 m: hit-test/raycast noise and viewing-angle differences
+// commonly place the same real object 0.3-0.4 m apart across two captures,
+// which was defeating dedup outright. Still a fixed radius, not adaptive to
+// object size. Kept below 0.5 m deliberately — the existing "highly cluttered
+// environment" test (tests/e2e-suite.spec.ts, Test 34) treats two same-label
+// objects 0.5 m apart as genuinely distinct, and that's a real constraint on
+// how far this can be pushed without merging separate furniture.
+const DEDUP_RADIUS_M = 0.4
 const FALLBACK_DEPTH_M = 2.0
 
 export interface WorldDetection extends RawDetection {
@@ -329,12 +336,19 @@ export function mergeDetections(
   return merged
 }
 
+/** Nearest same-label entry within DEDUP_RADIUS_M, not just the first one iterated. */
 function findNearbyKey(map: Map<string, WorldDetection>, det: WorldDetection): string | null {
+  let bestKey: string | null = null
+  let bestDist = DEDUP_RADIUS_M
   for (const [key, existing] of map) {
     if (existing.label !== det.label) continue
-    if (dist(existing.worldPos, det.worldPos) < DEDUP_RADIUS_M) return key
+    const d = dist(existing.worldPos, det.worldPos)
+    if (d < bestDist) {
+      bestDist = d
+      bestKey = key
+    }
   }
-  return null
+  return bestKey
 }
 
 function dist(

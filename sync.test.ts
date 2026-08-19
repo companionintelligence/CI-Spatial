@@ -180,3 +180,27 @@ Deno.test('isQueuedOffline: a real server response is not mistaken for a queued 
   // A failure is not "queued" either — it has no durable copy behind it.
   assertEquals(isQueuedOffline(new Response('nope', { status: 500 })), false)
 })
+
+// ─── prompt.ts parity (root ↔ src/inference/) ──────────────────────────────
+// Deno-side code (inference.ts) imports the root copy; browser/on-device code
+// (resolver.ts, webgpu.worker.ts, router.ts's server.ts) imports the
+// src/inference/ copy. Each file's own header comment explains why the split
+// exists and is allowed to differ; everything past that header must stay
+// byte-identical by hand — this is the check that would have caught it not
+// staying that way.
+
+Deno.test('prompt.ts: root and src/inference/ copies match past their header comments', async () => {
+  const stripHeader = (src: string) => src.replace(/^\/\*\*[\s\S]*?\*\/\s*/, '')
+
+  const root = await readRepoFile('./prompt.ts')
+  const inference = await readRepoFile('./src/inference/prompt.ts')
+
+  assertEquals(
+    stripHeader(inference),
+    stripHeader(root),
+    'prompt.ts and src/inference/prompt.ts have drifted — every export ' +
+      '(CORE_LABELS, SPATIAL_DETECTION_PROMPT, RawDetection, parseDetections, ' +
+      'normalizeDetections, and their private helpers) must stay identical ' +
+      'between the two copies; only the header doc-comment may differ.',
+  )
+})
