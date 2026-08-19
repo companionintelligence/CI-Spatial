@@ -118,7 +118,14 @@ function buildMarkdown(data: SummaryData): string {
   lines.push(`| Captured | ${dateStr} at ${timeStr} |`)
   lines.push(`| Duration | ~${durationMin} min |`)
   lines.push(`| SLAM Points | ${pointCloud.count.toLocaleString()} |`)
-  lines.push(`| Captures | ${captureCount} |`)
+  // Captures are reported with their inference outcome. One whose detection
+  // failed carries no labels, so it cannot be a row in the object table below —
+  // counting it here is what keeps it from disappearing from the report entirely.
+  const caps = store.captureCounts()
+  const capsUnresolved = caps.pending + caps.failed
+  lines.push(`| Captures | ${captureCount}${
+    capsUnresolved > 0 ? ` (${caps.failed} failed, ${caps.pending} pending)` : ''
+  } |`)
   lines.push(`| Objects Detected | ${dets.length} |`)
   lines.push(`| Room Width | ${roomW} m |`)
   lines.push(`| Room Depth | ${roomD} m |`)
@@ -145,6 +152,19 @@ function buildMarkdown(data: SummaryData): string {
       const desc = (d.description ?? '').replace(/\|/g, '\\|')
       lines.push(`| ${i + 1} | **${d.label}** | ${conf} | ${captIdx} | ${ts} | \`${pos}\` | ${desc} |`)
     })
+  }
+  if (capsUnresolved > 0) {
+    lines.push(``)
+    const unusableNote = caps.unusable > 0
+      ? ` ${caps.unusable} ${caps.unusable === 1 ? 'frame was' : 'frames were'} too dark or ` +
+        `reflective to be worth keeping, so ${caps.unusable === 1 ? 'its image was' : 'their images were'} discarded.`
+      : ''
+    lines.push(
+      `_${capsUnresolved} of ${captureCount} captures produced no detections — ` +
+      `${caps.failed} failed, ${caps.pending} still pending; they are counted above but ` +
+      `have no row here.${unusableNote} ${caps.retained} of ${captureCount} frames are ` +
+      `still held and can be inferred later._`,
+    )
   }
   lines.push(``)
 

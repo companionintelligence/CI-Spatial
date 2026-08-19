@@ -98,54 +98,126 @@ New persisted state must extend the existing store, per ADR 0001. Do not introdu
   only the timeout path currently degrades gracefully
 - CLAUDE.md, `Do not rename` — before touching anything in `src/scene/store.ts`
 
-## Open questions & answers
+## Open questions — answered
 
-- Q: Store every capture's full JPEG, or only those whose inference failed? — OPEN. Storing
-  all is simpler, uniform, and unlocks retry and diagnosis; storing only failures is far
-  cheaper but leaves the success path unable to explain itself. Quota (see Risks) probably
-  decides this. **Answer before coding.**
-- Q: Does a stored-but-uninferred capture appear in the Object Report? — OPEN. It has no
-  labels, so it is not an object; but a capture that vanishes from every surface is the
-  current bug. Likely a distinct "pending" affordance, which argues for scoping the UI
-  follow-up at the same time.
-- Q: Should the existing offline queue in `public/sw.js` carry pending inferences? — OPEN.
-  It already exists for uploads and CLAUDE.md flags its cache names as load-bearing. Reusing
-  it is the ADR 0001 answer; confirm it can carry this shape before assuming so.
+Settled 2026-08-18 against `2e2e532`, before any code was written.
+
+- **Q: Store every capture's full JPEG, or only those whose inference failed?**
+  **A: every capture**, into a new object store, under a bounded eviction policy. Storing
+  only failures makes the write conditional on an outcome that has not happened yet —
+  either the blob is buffered and written from the catch, which reintroduces the very loss
+  window this ticket closes (merely narrowed to a crash), or it is written and then
+  deleted, which is the same write plus a delete. Uniform storage also keeps the success
+  path able to explain itself, and that is the diagnosis case: the frame worth inspecting
+  is usually one that *succeeded* and returned something wrong. Quota is answered by
+  bounding what is retained, not by refusing to store — see Eviction below.
+
+  **Refined 2026-08-19.** Every capture is still *recorded*, but one whose inference failed
+  **and** whose frame the quality monitor had already flagged — `lowLight` or `reflective`
+  from `analyseFrame` (`src/capture/quality-monitor.ts`) — does not keep its **image**.
+  Re-running detection on a frame too dark to read reproduces the same failure, so the JPEG
+  buys nothing and the record alone carries the count. This is a correlation, not a proven
+  cause: the router does not fail *because of* quality, so a dark frame captured during a
+  server outage is discarded too. That is the intended trade — an unreadable frame is not
+  worth 140 KB of a user's quota, and the capture is still represented either way.
+
+- **Q: Does a stored-but-uninferred capture appear in the Object Report?**
+  **A: yes, as a count, not as an object.** It carries no labels, so it cannot become a row
+  in the object table without inventing one. `exportSessionSummary`
+  (`src/export/summary.ts`, wired at `src/main.ts:209`) already prints a `| Captures | n |`
+  row sourced from `captureCount`; that row gains its pending and failed breakdown, and a
+  line naming what the failures cost. This is the minimum that satisfies "represented, not
+  silently absent" without the retry UI the non-goals exclude.
+
+- **Q: Should the offline queue in `public/sw.js` carry pending inferences?**
+  **A: no — it structurally cannot.** The queue replays *outgoing* writes and discards what
+  comes back: `public/sw.js:188-196` answers a queued request with a synthetic 202 carrying
+  `X-Companion-Queued-Offline` and no body. Detections arrive **in the response** to the
+  inference call, so a replayed inference would succeed on the wire and deliver its result
+  nowhere. Reuse was the ADR 0001 default and was checked first; the shapes genuinely
+  differ, so pending inference is tracked by capture-record `status` in the scan store
+  instead. `public/sw.js` is unchanged by this ticket.
 
 ## Files impacted
 
 Changed:
-- `src/main.ts` — capture handler ordering
-- `src/scene/store.ts` — capture-record persistence
+- `src/scene/store.ts` — the `'captures'` object store, its record type, and eviction
+- `src/main.ts` — capture handler ordering; the failure path marks its record
+- `src/capture/quality-monitor.ts` — `isFrameUnusable()`, one definition of "not worth keeping"
+- `src/export/summary.ts` — the `| Captures |` row reports pending, failed and discarded
 
-Possibly changed (settle the open questions first):
-- `src/capture/capture.ts`
-- `public/sw.js`
+Settled as unchanged (see Open questions):
+- `src/capture/capture.ts` — the blob it returns is already the right shape to store
+- `public/sw.js` — its queue cannot carry a call whose result comes back in the response
 
-## Schema required
+## Schema pinned
 
-To be pinned once the first open question is answered. Constraints that hold either way:
+Extends the existing scan store. Same IndexedDB database — `'ci-xr-scan'`, still sourced
+from `SCAN_DB_NAME` in `src/shared/storage-keys.ts`, not renamed — with a **second object
+store** alongside `'sessions'`, and `DB_VERSION` 1 → 2 for an additive `onupgradeneeded`.
+Existing records continue to open untouched.
 
-- Extends the existing store; no new IndexedDB database, no rename of `'ci-xr-scan'`
-- Must carry enough to re-run inference later: the JPEG blob, the capture `Pose`, the
-  capture timestamp, and the session id
-- Must be reconcilable with the detections that arrive afterwards — a stable capture id
-  that `WorldDetection.captureIndex` (`src/main.ts:369`) can already be mapped onto
+A separate object store rather than a field on the session record, because of how
+`persist()` writes (`src/scene/store.ts:296`): it rewrites the *entire* session record on
+every mutation — `idbPut(db, { sessionId, startedAt, detections: [...entries] })`. Frames
+held inside that record would be rewritten on every capture, so capture #50 would push
+50 × ~140 KB through IndexedDB on a single shutter press. One record per capture makes
+each write O(1).
+
+`objectStore: 'captures'`, `keyPath: 'captureId'`:
+
+| field | type | why |
+| --- | --- | --- |
+| `captureId` | `string` | stable key; `<sessionId>-c<n>` so it sorts and names its origin |
+| `sessionId` | `string` | which session owns it; matches `Session.sessionId` |
+| `captureIndex` | `number` | the existing `WorldDetection.captureIndex` (`src/spatial/resolver.ts:27`) — detections already map onto captures, so no new correlation id is introduced |
+| `timestamp` | `number` | `CaptureResult.timestamp`, straight through |
+| `pose` | `CaptureResult['pose']` | reused as-is from `src/capture/capture.ts`; no parallel pose type |
+| `blob` | `Blob \| null` | the JPEG. `null` once evicted — the record outlives the frame |
+| `byteSize` | `number` | recorded at write time so the budget still sums after `blob` is gone |
+| `status` | `'pending' \| 'inferred' \| 'failed'` | the only genuinely new field. Drives eviction order and the report counts |
+| `detectionKeys` | `string[]` | the `label:bucket(worldPos)` keys this capture produced |
+| `error` | `string?` | why inference failed, on the failed path |
+| `frameDropped` | `'quality' \| 'budget'?` | why `blob` is gone, when it is. Absent while the frame is held, so a missing frame always explains itself |
+
+`detectionKeys` holds keys, not detections: the detection bodies stay in `'sessions'` where
+they already live, and a capture points at them. Nothing `WorldDetection` or
+`CaptureResult` already carries is re-declared.
+
+### Eviction
+
+Modelled on the offline queue's bounds in `public/sw.js:59-60` (`MAX_QUEUE_ITEMS` /
+`MAX_QUEUE_AGE_MS`), with one deliberate difference: that queue avoids a byte budget
+because summing one would mean reading every queued body into memory
+(`public/sw.js:52-58`). Here `byteSize` is already on the record, so a byte budget costs
+nothing — and bytes, not item count, are what quota actually measures.
+
+- Drop the **image** outright, at the moment of failure, when a capture's inference failed
+  and `isFrameUnusable()` says the frame was the problem. This is not part of the budget —
+  it runs whether or not there is pressure, because such a frame has no retry value
+- Release **blobs** (record kept, `blob` → `null`) once retained frames exceed
+  `MAX_CAPTURE_BYTES` (64 MB), or a frame is older than `MAX_CAPTURE_AGE_MS` (7 days)
+- Delete **records** beyond `MAX_CAPTURE_ITEMS` (512), oldest first
+- Order: oldest `'inferred'` first — they have already yielded their detections, so what is
+  lost is diagnosis, not data. Only once none remain are `'failed'` records touched; those
+  are the evidence this ticket exists to preserve
+- **`'pending'` is never evicted, at any budget.** A pending record is a frame whose
+  inference has not resolved, and dropping it is precisely the original bug
 
 ## Definition of Done
 
-- [ ] A capture is durably stored before `router.infer()` is called
-- [ ] An inference failure leaves the capture present and inspectable
-- [ ] Detections attach to the existing capture record rather than creating a second one
-- [ ] The success path stores exactly one record per capture (no duplicates)
+- [x] A capture is durably stored before `router.infer()` is called
+- [x] An inference failure leaves the capture present and inspectable
+- [x] Detections attach to the existing capture record rather than creating a second one
+- [x] The success path stores exactly one record per capture (no duplicates)
 - [ ] Storage quota behaviour is measured and `checkStorageQuota` still fires correctly
-- [ ] `npx tsc --noEmit` and `npm run verify` pass
+- [x] `npx tsc --noEmit` and `npm run verify` pass
 
 ## Tests
 
-- [ ] Unit: a capture whose inference rejects is still retrievable from the store
-- [ ] Unit: a capture whose inference succeeds yields one record carrying its detections
-- [ ] Extend `detection_store.test.ts` rather than adding a parallel spec file
+- [x] Unit: a capture whose inference rejects is still retrievable from the store
+- [x] Unit: a capture whose inference succeeds yields one record carrying its detections
+- [x] Extend `detection_store.test.ts` rather than adding a parallel spec file
 - [ ] Manual: with the server stopped, take three captures; all three survive a reload
 
 ```
@@ -182,11 +254,11 @@ npm run verify
 
 ## Subtasks
 
-1. [ ] Answer the three open questions, especially the quota one
-2. [ ] Pin the capture-record schema as an extension of the existing store
-3. [ ] Persist frame + pose + timestamp before `router.infer()`
-4. [ ] Attach detections to the existing record on success
-5. [ ] Make the failure path leave a complete, inspectable record
-6. [ ] Extend `detection_store.test.ts`
+1. [x] Answer the three open questions, especially the quota one
+2. [x] Pin the capture-record schema as an extension of the existing store
+3. [x] Persist frame + pose + timestamp before `router.infer()`
+4. [x] Attach detections to the existing record on success
+5. [x] Make the failure path leave a complete, inspectable record
+6. [x] Extend `detection_store.test.ts`
 7. [ ] Measure quota impact across a realistic session
 8. [ ] Re-verify on-device with the server deliberately stopped
