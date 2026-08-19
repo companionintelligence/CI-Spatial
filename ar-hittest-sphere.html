@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+    <title>8th Wall diagnostic: hit-test + sphere</title>
+
+    <!--
+      Minimal, standalone 8th Wall diagnostic — isolated from the full Companion
+      Scan app. Purpose: confirm camera passthrough + XrController.hitTest()
+      work on this device/build before trusting the full scanner.
+
+      Deliberately loads the CURRENT engine from the CDN rather than this repo's
+      vendored public/xr.js — that vendored file is missing XrController.hitTest
+      entirely (confirmed by byte search: no "hitTest" string anywhere in it),
+      even though src/ar/eighthwall.ts:276 already calls it. This page exists
+      partly to prove the CDN build works so the vendored-file staleness is
+      isolated as the cause, not something else.
+    -->
+    <script src="https://cdn.jsdelivr.net/npm/@8thwall/engine-binary@1/dist/xr.js" async crossorigin="anonymous" data-preload-chunks="slam"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@8thwall/xrextras@1/dist/xrextras.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@8thwall/landing-page@1/dist/landing-page.js" crossorigin="anonymous"></script>
+
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+      #camerafeed { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
+      #hud {
+        position: absolute; top: 0; left: 0; right: 0; z-index: 10;
+        font: 12px/1.5 ui-monospace, monospace; color: #0f0;
+        background: rgba(0,0,0,.55); padding: 8px 10px; white-space: pre;
+        pointer-events: none;
+      }
+      #hint {
+        position: absolute; bottom: 24px; left: 0; right: 0; z-index: 10;
+        text-align: center; font: 14px/1.4 ui-monospace, monospace; color: #fff;
+        text-shadow: 0 1px 3px #000; pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="camerafeed"></canvas>
+    <div id="hud">booting…</div>
+    <div id="hint">tap anywhere to hit-test + place a sphere</div>
+
+    <script type="module">
+      import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.183.0/build/three.module.js'
+      window.THREE = THREE
+
+      // Shared across every placed sphere — a fresh geometry/material per tap
+      // leaks GPU/CPU memory over a long diagnostic session.
+      const SPHERE_GEOMETRY = new THREE.SphereGeometry(0.05, 24, 16)
+      const SPHERE_MATERIAL = new THREE.MeshStandardMaterial({ color: 0x22c3e6, emissive: 0x0a4a55 })
+
+      // Matches the finite-check src/ar/eighthwall.ts applies to hit-test
+      // results before trusting them (position can be missing/NaN/Infinity).
+      function isFiniteVec3(p) {
+        return !!p && Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z)
+      }
+
+      // Debug state exposed for external polling (adb/CDP Runtime.evaluate,
+      // or a future ?debug=remote-style relay) — avoids relying on pixel
+      // comparison of a surface that may not screenshot reliably.
+      window.__arTestState = {
+        engineLoaded: false,
+        cameraRunning: false,
+        trackingStatus: 'UNKNOWN',
+        hitCount: 0,
+        missCount: 0,
+        sphereCount: 0,
+        lastEvent: null,
+      }
+
+      const hud = document.getElementById('hud')
+      function renderHud() {
+        const s = window.__arTestState
+        hud.textContent =
+          `engine loaded: ${s.engineLoaded}\n` +
+          `camera running: ${s.cameraRunning}\n` +
+          `tracking: ${s.trackingStatus}\n` +
+          `hits: ${s.hitCount}  misses: ${s.missCount}  spheres: ${s.sphereCount}\n` +
+          `last: ${s.lastEvent ?? '—'}`
+      }
+      renderHud()
+
+      const initScenePipelineModule = () => {
+        const initXrScene = ({ scene, camera }) => {
+          const light = new THREE.DirectionalLight(0xffffff, 0.8)
+          light.position.set(5, 10, 7)
+          scene.add(light)
+          scene.add(new THREE.AmbientLight(0xffffff, 0.4))
+          camera.position.set(0, 1.6, 0)
+        }
+
+        const placeSphereAt = (position) => {
+          const { scene } = XR8.Threejs.xrScene()
+          const sphere = new THREE.Mesh(SPHERE_GEOMETRY, SPHERE_MATERIAL)
+          sphere.position.set(position.x, position.y, position.z)
+          scene.add(sphere)
+          window.__arTestState.sphereCount++
+        }
+
+        return {
+          name: 'hittest-sphere-scene',
+          onStart: ({ canvas }) => {
+            const { scene, camera, renderer } = XR8.Threejs.xrScene()
+            renderer.shadowMap.enabled = false
+            initXrScene({ scene, camera })
+
+            XR8.XrController.updateCameraProjectionMatrix({
+              origin: camera.position,
+              facing: camera.quaternion,
+            })
+
+            canvas.addEventListener('touchstart', (e) => {
+              e.preventDefault()
+              if (e.touches.length !== 1) return
+              const x = e.touches[0].clientX / window.innerWidth
+              const y = e.touches[0].clientY / window.innerHeight
+              const results = XR8.XrController.hitTest(x, y, ['FEATURE_POINT'])
+              const hit = results && results.length > 0 ? results[0] : null
+              if (hit && isFiniteVec3(hit.position)) {
+                placeSphereAt(hit.position)
+                window.__arTestState.hitCount++
+                window.__arTestState.lastEvent = `HIT ${hit.type} @ (${hit.position.x.toFixed(2)}, ${hit.position.y.toFixed(2)}, ${hit.position.z.toFixed(2)})`
+              } else {
+                window.__arTestState.missCount++
+                window.__arTestState.lastEvent = `MISS @ (${x.toFixed(2)}, ${y.toFixed(2)})`
+              }
+              renderHud()
+            }, { passive: false })
+          },
+          onUpdate: ({ processCpuResult }) => {
+            const reality = processCpuResult && processCpuResult.reality
+            if (reality && reality.trackingStatus) {
+              if (window.__arTestState.trackingStatus !== reality.trackingStatus) {
+                window.__arTestState.trackingStatus = reality.trackingStatus
+                renderHud()
+              }
+            }
+          },
+        }
+      }
+
+      const onxrloaded = () => {
+        window.__arTestState.engineLoaded = true
+        renderHud()
+
+        XR8.addCameraPipelineModules([
+          XR8.GlTextureRenderer.pipelineModule(),
+          XR8.Threejs.pipelineModule(),
+          XR8.XrController.pipelineModule(),
+          LandingPage.pipelineModule(),
+          XRExtras.FullWindowCanvas.pipelineModule(),
+          XRExtras.Loading.pipelineModule(),
+          XRExtras.RuntimeError.pipelineModule(),
+          initScenePipelineModule(),
+        ])
+
+        const canvas = document.getElementById('camerafeed')
+        XR8.run({ canvas })
+        window.__arTestState.cameraRunning = true
+        renderHud()
+      }
+
+      window.XR8 ? onxrloaded() : window.addEventListener('xrloaded', onxrloaded)
+    </script>
+  </body>
+</html>
