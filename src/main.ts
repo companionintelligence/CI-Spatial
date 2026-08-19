@@ -1278,23 +1278,21 @@ function hideInferDialog(): void {
 
 /**
  * Send a request to the server's /process-scan endpoint.
- * The server-side scan list must contain scans from the current session;
- * if no matching filename is passed we request processing on the newest scan.
+ * Deliberately does not resolve or pass a filename: /scans lists every scan on
+ * the server with no session scoping, so guessing the target from list[0] here
+ * (the previous approach) meant "most recently uploaded by anyone" — one user
+ * could trigger processing on, and see the result for, another session's scan.
+ * sessionId alone lets the server's own findFilenameBySessionId() resolve the
+ * scan that actually belongs to this session.
  */
 async function requestServerProcessing(action: string, store: DetectionStore): Promise<void> {
   const overlay = setupStatusOverlay()
   overlay.setStatus(`Processing: ${action}…`)
   try {
-    // Find the newest scan for this session on the server
-    const listResp = await fetch('/scans')
-    if (!listResp.ok) throw new Error(`/scans returned ${listResp.status}`)
-    const list = await listResp.json() as Array<{ filename: string }>
-    const filename = list[0]?.filename ?? ''
-
     const resp = await fetch('/process-scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filename, action, sessionId: store.sessionId }),
+      body: JSON.stringify({ action, sessionId: store.sessionId }),
     })
     if (!resp.ok) throw new Error(`/process-scan returned ${resp.status}`)
     const result = await resp.json() as { action: string; result: string }

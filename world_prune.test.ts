@@ -91,3 +91,31 @@ Deno.test('pruneScansMissingFromDisk: does not mutate the input array', () => {
 
   assertEquals(scans.length, 2, 'caller’s array must be untouched')
 })
+
+Deno.test('pruneScansMissingFromDisk: a session-only scan survives even when the guard would not trigger', () => {
+  // registerSessionScan() gives a video/photo-ingest scan the synthetic filename
+  // `<sessionId>.glb` before any .glb is uploaded. A world holding just that one
+  // entry looks tiny next to a busy shared scans/ directory, so eligibleOnDisk
+  // (a global count) clears scans.length easily — the guard does not trigger,
+  // yet this entry must still never be dropped: it is never going to appear on
+  // disk under that name, by design, no matter how healthy the listing looks.
+  const scans = [{ filename: 'sess-abc123.glb', sessionId: 'sess-abc123' }]
+  const result = pruneScansMissingFromDisk(scans, onDisk('a.glb', 'b.glb', 'c.glb'), 3)
+
+  assertEquals(result.skipped, null)
+  assertEquals(result.pruned, 0)
+  assertEquals(result.missing, 0)
+  assertEquals(result.scans.map(s => s.filename), ['sess-abc123.glb'])
+})
+
+Deno.test('pruneScansMissingFromDisk: a real scan is still pruned alongside a surviving session-only entry', () => {
+  const scans = [
+    { filename: 'sess-abc123.glb', sessionId: 'sess-abc123' },
+    { filename: '1700000000000_gone.glb', sessionId: null },
+  ]
+  const result = pruneScansMissingFromDisk(scans, onDisk('a.glb', 'b.glb', 'c.glb'), 3)
+
+  assertEquals(result.skipped, null)
+  assertEquals(result.pruned, 1)
+  assertEquals(result.scans.map(s => s.filename), ['sess-abc123.glb'])
+})
