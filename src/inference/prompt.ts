@@ -3,14 +3,30 @@
  *
  * The prompt is designed to elicit a strict JSON array from LFM2.5-VL
  * (or any capable VLM) with no surrounding prose.
+ *
+ * Must stay in sync with root prompt.ts (the Deno server's copy — see that
+ * file's header). sync.test.ts checks the two match past this comment.
  */
+
+/**
+ * Example category nouns offered to the VLM, and the set canonicalizeLabel
+ * folds recognised variants onto below. Shared by the prompt text and the
+ * canonicalizer so the two can't drift apart. Not a closed vocabulary — real
+ * captures include objects outside this list (e.g. "keyboard", "mug"); it's
+ * only what "prefer a general noun" points at.
+ */
+export const CORE_LABELS: readonly string[] = [
+  'sofa', 'chair', 'table', 'desk', 'tv', 'monitor', 'lamp', 'plant', 'bed',
+  'shelf', 'cabinet', 'door', 'window', 'rug', 'sink', 'counter', 'picture',
+  'pillow', 'tree', 'bush',
+]
 
 export const SPATIAL_DETECTION_PROMPT = `Look at this image and list up to 8 distinct visible objects as a JSON array, most prominent object first. Output ONLY the JSON array, no other text.
 Each item must have exactly these four keys: "label", "bbox", "confidence", "description".
 WRONG: {"box_2d": [239, 221, 675, 781], ...} - never output the key "box_2d" or 0-1000 coordinates.
-RIGHT: {"label": "potted plant", "bbox": [0.22, 0.24, 0.78, 0.68], "confidence": 0.92, "description": "small fern, white pot"}
+RIGHT: {"label": "plant", "bbox": [0.22, 0.24, 0.78, 0.68], "confidence": 0.92, "description": "small fern, white pot"}
 "bbox" is [x_min, y_min, x_max, y_max] as decimal fractions 0-1 of image width and height.
-"label" is the single most specific singular noun for the object (sofa, chair, table, desk, tv, monitor, lamp, plant, bed, shelf, cabinet, door, window, rug, sink, counter, picture, pillow, tree, bush, ...). Repeat a label only for separate objects of the same kind. Keep "description" under 7 words.`
+"label" is a general category noun, reused for every object of that kind — put distinguishing detail (colour, material, brand, style) in "description" instead, e.g. "chair" not "office chair", "sofa" not "couch". Prefer one of: ${CORE_LABELS.join(', ')} — or another single general noun if none of those fit. Keep "description" under 7 words.`
 
 export interface RawDetection {
   label: string
@@ -21,6 +37,46 @@ export interface RawDetection {
 }
 
 const MAX_DETECTIONS = 8
+
+// Untuned starting point — no existing threshold in this pipeline to match.
+// (The splat-detect pipeline's score/vote thresholds are a different,
+// explicitly-uncalibrated system; see splat_detect.ts.) Cuts the long tail of
+// low-confidence spurious detections before they become permanent scene pins.
+const MIN_CONFIDENCE = 0.45
+
+/**
+ * Synonyms that don't share a last-word token with their canonical form, so
+ * canonicalizeLabel's suffix rule below can't catch them. Deliberately small
+ * — extend as real VLM output shows new drift, not an attempt at a full
+ * taxonomy.
+ */
+const LABEL_SYNONYMS: Record<string, string> = {
+  couch: 'sofa',
+  loveseat: 'sofa',
+  sectional: 'sofa',
+  armchair: 'chair',
+  recliner: 'chair',
+  television: 'tv',
+}
+
+/**
+ * Fold VLM label variants for the same physical object onto one canonical
+ * string. The VLM is queried fresh per capture with no memory of prior
+ * detections, so the same chair can come back as "office chair" one capture
+ * and "chair" the next — and both same-frame dedup (isDuplicateDetection,
+ * below) and cross-capture merge (findNearbyKey in src/spatial/resolver.ts)
+ * match on exact label equality, so without this every wording variant
+ * became a permanent new scene pin instead of updating the existing one.
+ * Vocabulary stays open: a label with no known canonical form is returned
+ * unchanged rather than dropped or forced into CORE_LABELS.
+ */
+function canonicalizeLabel(label: string): string {
+  const synonym = LABEL_SYNONYMS[label]
+  if (synonym) return synonym
+  const lastWord = label.split(/\s+/).pop()
+  if (lastWord && CORE_LABELS.includes(lastWord)) return lastWord
+  return label
+}
 
 export function parseDetections(text: string): RawDetection[] {
   // 1. Try to parse a well-formed JSON array
@@ -48,9 +104,12 @@ export function normalizeDetections(arr: unknown[]): RawDetection[] {
   const prepared = arr
     .map(coerceDetection)
     .filter((det): det is RawDetection => det !== null)
-  // Drop boxes that are degenerate (zero width/height) after clamping —
-  // they would produce useless or NaN placements downstream.
-  const clamped = normalizeAllBboxes(prepared).filter(hasPositiveArea)
+  // Drop boxes that are degenerate (zero width/height) after clamping, or too
+  // low-confidence to trust as a real, stable object — both would otherwise
+  // produce useless or noisy placements downstream.
+  const clamped = normalizeAllBboxes(prepared)
+    .filter(hasPositiveArea)
+    .filter((det) => det.confidence >= MIN_CONFIDENCE)
   return dedupeDetections(clamped).slice(0, MAX_DETECTIONS)
 }
 
@@ -84,7 +143,7 @@ function normalizeAllBboxes(dets: RawDetection[]): RawDetection[] {
 function coerceDetection(item: unknown): RawDetection | null {
   if (typeof item !== 'object' || item === null) return null
   const d = item as Record<string, unknown>
-  const label = typeof d['label'] === 'string' ? d['label'].trim().toLowerCase() : ''
+  const label = typeof d['label'] === 'string' ? canonicalizeLabel(d['label'].trim().toLowerCase()) : ''
   const bbox = Array.isArray(d['bbox']) ? d['bbox'].map((v) => Number(v)) : []
   if (!label || bbox.length !== 4 || bbox.some((v) => !Number.isFinite(v))) return null
 
