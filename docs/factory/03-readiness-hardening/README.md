@@ -33,6 +33,22 @@ under which anyone could have known.
 | 0005 | [make-scan-listing-linear](0005-make-scan-listing-linear.md) | Remove the O(scans × sessions) blowup that made `GET /scans` take 120 seconds |
 | 0006 | [bundle-leaflet-and-fix-loader-race](0006-bundle-leaflet-and-fix-loader-race.md) | Bundle Leaflet from npm and delete the loader race that hands `undefined` to `L.map()` |
 
+## Filed after the original six (2026-08-19)
+
+Two more tickets live in this folder, found live during an adversarial multi-agent code
+review of this codebase and confirmed while closing out 0004 — not part of "the six
+items" this README and the atlas describe the wave as closing, and not required for
+either 0004 or this wave to be considered done. Same file as 0004
+(`src/viewer/viewer.ts`), same general theme (a stale/mismatched object reference in the
+World Editor surviving a reload), but a different root cause from 0004's `pick()` walk
+— confirmed distinct before filing, per this wave's own convention of not folding
+unrelated defects into an unrelated ticket's scope.
+
+| # | Ticket | One-line goal |
+|---|--------|---------------|
+| 0007 | [fix-stale-selection-on-scan-root-replace](0007-fix-stale-selection-on-scan-root-replace.md) | A background reload replacing a selected scan's root leaves the gizmo attached to the detached old object — `saveSelectedTransform()` can silently persist its stale matrix while reporting "Saved" |
+| 0008 | [fix-failed-reload-phantom-scan-root](0008-fix-failed-reload-phantom-scan-root.md) | A failed full-quality reload after a successful preview overwrites `loadedScans` with a phantom detached `Group`, making the scan unselectable/un-hideable and, on a later successful reload, rendering two generations at once |
+
 ## Execution order & parallelization
 
 **Sequence the three toolchain tickets first (0001 → 0002 → 0003).** They are independent
