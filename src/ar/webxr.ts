@@ -92,7 +92,7 @@ export class WebXRProvider implements ARProvider {
     // Main XR frame loop
     const self = this
     function onXRFrame(time: number, frame: XRFrame) {
-      self.session!.requestAnimationFrame(onXRFrame)
+      self.animFrameId = self.session!.requestAnimationFrame(onXRFrame)
 
       // Update pose
       const viewerPose = frame.getViewerPose(self.refSpace!)
@@ -167,11 +167,14 @@ export class WebXRProvider implements ARProvider {
       }
     }
 
-    this.session.requestAnimationFrame(onXRFrame)
+    this.animFrameId = this.session.requestAnimationFrame(onXRFrame)
   }
 
   stop(): void {
-    if (this.animFrameId != null) cancelAnimationFrame(this.animFrameId)
+    // XRSession frames are cancelled through the session, not window rAF —
+    // and before end(), which disposes it.
+    if (this.animFrameId != null) this.session?.cancelAnimationFrame(this.animFrameId)
+    this.animFrameId = null
     for (const source of this.hitTestSources) source.cancel()
     this.session?.end()
     this.videoStream?.getTracks().forEach((t) => t.stop())
@@ -238,11 +241,18 @@ export class WebXRProvider implements ARProvider {
     for (let row = 0; row < HIT_GRID_N; row++) {
       for (let col = 0; col < HIT_GRID_N; col++) {
         const ray = this.viewportRay((col + 0.5) / HIT_GRID_N, (row + 0.5) / HIT_GRID_N)
-        pending.push(
-          Promise.resolve(request({ space: viewer, offsetRay: ray }))
-            .then((source) => source ?? null)
-            .catch(() => null),
-        )
+        // request() can reject *or* throw synchronously (e.g. the session ends
+        // mid-build). An escaping sync throw would leave hitTestGridState stuck
+        // at 'building', so the grid would never be retried or reported failed.
+        try {
+          pending.push(
+            Promise.resolve(request({ space: viewer, offsetRay: ray }))
+              .then((source) => source ?? null)
+              .catch(() => null),
+          )
+        } catch {
+          pending.push(Promise.resolve(null))
+        }
       }
     }
     const sources = (await Promise.all(pending))

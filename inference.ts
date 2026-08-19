@@ -36,7 +36,19 @@ const MAX_NEW_TOKENS = 256
 // which reserves ~44 GB of KV cache, overflows a 24 GB GPU and forces a 50/50
 // CPU split — 100+ s per capture instead of ~20 s. Captures reach us downscaled
 // to a 1280 px long edge (~1.2k vision tokens), so this is ample headroom.
-const OLLAMA_NUM_CTX = Number(Deno.env.get('OLLAMA_NUM_CTX') ?? 8192)
+const DEFAULT_NUM_CTX = 8192
+const OLLAMA_NUM_CTX = (() => {
+  const raw = Deno.env.get('OLLAMA_NUM_CTX')
+  if (raw == null || raw.trim() === '') return DEFAULT_NUM_CTX
+  const n = Number(raw)
+  // Number('') is 0 and Number('abc') is NaN; JSON.stringify turns NaN into
+  // null, so an unvalidated value reaches Ollama as num_ctx: null or 0.
+  if (!Number.isInteger(n) || n <= 0) {
+    console.warn(`[engine] Ignoring invalid OLLAMA_NUM_CTX "${raw}" — using ${DEFAULT_NUM_CTX}`)
+    return DEFAULT_NUM_CTX
+  }
+  return n
+})()
 const NUM_THREADS = (() => { try { return Math.max(1, navigator?.hardwareConcurrency ?? 4) } catch { return 4 } })()
 
 // ─── ONNX prompt token IDs ───────────────────────────────────────────────────
