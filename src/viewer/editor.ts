@@ -199,6 +199,22 @@ export class SceneEditor {
     return obj
   }
 
+  /**
+   * Select an object directly — e.g. re-attaching the gizmo to an object that
+   * survived a scene reload — without going through a raycast pick(). Callers
+   * that already know which object should be selected must go through this
+   * (not reach into `_selected`) so the highlight tint and `selectedObject`
+   * stay in sync the same way a real pick() keeps them in sync.
+   */
+  selectObject(obj: THREE.Object3D): void {
+    this._selectObject(obj)
+  }
+
+  /** Clear the current selection — the public counterpart to selectObject(). */
+  clearSelection(): void {
+    this._clearSelection()
+  }
+
   /** Assign a semantic tag to an object */
   tagObject(obj: THREE.Object3D, tag: SemanticTag, opts: Partial<Omit<TagInfo, 'tag'>> = {}): void {
     const existing = this._tags.get(obj.uuid)

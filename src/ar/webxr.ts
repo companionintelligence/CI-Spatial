@@ -402,8 +402,13 @@ export class WebXRProvider implements ARProvider {
   }
 
   isTracking(): boolean {
-    // WebXR is considered tracking as soon as the session is active
-    return this.session !== null
+    // session !== null only means requestSession() resolved — the device has not
+    // necessarily locked onto anything yet. _haveRealProjection flips true in the
+    // frame loop once frame.getViewerPose() has returned a real pose with a usable
+    // projection (see onXRFrame above), and stop() resets it — so it already tracks
+    // "actually locked on" for its own purpose (aiming the hit-test probe grid).
+    // Reuse it here instead of a second, looser notion of "tracking".
+    return this.session !== null && this._haveRealProjection
   }
 
   getCameraFovY(): number {

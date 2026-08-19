@@ -734,7 +734,25 @@ function integrateScanRoot(scan: ScanManifest, root: THREE.Group): void {
 
   // Tear down the previous generation of this scan (preview pass)
   const previous = loadedScans.get(scan.scanId)
+  let reselectId: string | null = null
   if (previous && previous.loaded) {
+    // If the live selection/gizmo is anchored somewhere inside the root we're about
+    // to remove, capture its stable id so it can be re-attached to the corresponding
+    // object in the new root below. Left unhandled, TransformControls keeps pointing
+    // at this now-detached object: dragging it produces no visible change (it is no
+    // longer in worldGroup), and "Save Transform" would silently persist that ghost's
+    // matrix while still reporting success.
+    if (selectedTransformTarget) {
+      let current: THREE.Object3D | null = selectedTransformTarget
+      while (current) {
+        if (current === previous.root) {
+          reselectId = stableObjectId(selectedTransformTarget)
+          break
+        }
+        current = current.parent
+      }
+    }
+
     worldGroup.remove(previous.root)
     removeLabelsForScan(scan.scanId)
     detectionBoundsObjects = detectionBoundsObjects.filter((obj) => {
@@ -778,6 +796,17 @@ function integrateScanRoot(scan: ScanManifest, root: THREE.Group): void {
   editor.setScene(scene!)
   editor.setMode(editor.mode)
   applyLayerVisibility()
+
+  if (reselectId) {
+    // stableObjectId()/findObjectByTargetId() round-trip: objectId survives the
+    // reload (assignStableObjectIds() above re-derives the same ids from the same
+    // node paths/names), so this finds the new root's counterpart of whatever was
+    // selected in the old one — the root itself for a whole-scan selection, since
+    // its objectId is scan.scanId same as before.
+    const match = findObjectByTargetId(root, reselectId)
+    if (match) selectEditableObject(match, false)
+    else clearSelection()
+  }
 }
 
 function removeLabelsForScan(scanId: string): void {
@@ -1122,6 +1151,10 @@ function selectScan(scanId: string, focus: boolean, openEdit = true): void {
   scanItems.get(scanId)?.classList.add('active')
   selectedScanId = scanId
   selectedTransformTarget = loaded.root
+  // Keep editor.selectedObject in sync the same way selectEditableObject() does —
+  // handlers like "Hide Object" read it directly, and without this a whole-scan
+  // selection made from the scan list (as opposed to a 3D-view pick) left it null.
+  editor.selectObject(loaded.root)
   transformControls?.attach(loaded.root)
   showInspector(loaded.root)
   syncEditPanel(loaded.root, openEdit)
@@ -1578,13 +1611,20 @@ function renderSplatList(): void {
   }
 }
 
-function selectEditableObject(obj: THREE.Object3D): void {
+function selectEditableObject(obj: THREE.Object3D, openEdit = true): void {
   const scan = scanForObject(obj)
   selectedScanId = scan?.manifest.scanId ?? null
   selectedTransformTarget = obj
+  // editor.pick() already syncs editor.selectedObject for the click-to-pick caller, but
+  // the background-reload reattach below calls this directly without a raycast — and
+  // setScene() (called unconditionally on every reload, before that reattach runs) resets
+  // editor.selectedObject to null regardless. Syncing it here, for every caller, is what
+  // keeps handlers that read editor.selectedObject directly (e.g. "Hide Object") working
+  // right after a reattach instead of silently no-op-ing on a selection the UI still shows.
+  editor.selectObject(obj)
   transformControls?.attach(obj)
   showInspector(obj)
-  syncEditPanel(obj)
+  syncEditPanel(obj, openEdit)
   if (selectedScanId) {
     document.querySelectorAll('.scan-item').forEach(el => el.classList.remove('active'))
     scanItems.get(selectedScanId)?.classList.add('active')
@@ -1594,6 +1634,7 @@ function selectEditableObject(obj: THREE.Object3D): void {
 function clearSelection(): void {
   selectedTransformTarget = null
   selectedScanId = null
+  editor.clearSelection()
   transformControls?.detach()
   hideInspectorOnly()
   const noSelection = document.getElementById('edit-no-selection')!
