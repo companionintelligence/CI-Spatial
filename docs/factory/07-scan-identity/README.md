@@ -87,9 +87,9 @@ tests what 0003 writes, so it follows.
 - **Session identity** — today two namespaces never reconcile, so keyframe lookups return
   empty and keyframe jobs fail inside the runner instead of at preflight → one identity,
   honest preflight failure (0002).
-- **GLB provenance** — *no "before" exists in the atlas; this wave adds it first.* Today
-  `sessionId` is scene-level only and `captureIndex` is dropped at export → per-node
-  provenance (0003).
+- **GLB provenance** — *(gap filled: no "before" existed in the atlas; this wave's atlas
+  pass added the description before diffing it.)* Today `sessionId` is scene-level only
+  and `captureIndex` is dropped at export → per-node provenance (0003).
 - **Optimize pipeline** — today only `label` extras are covered by a regression test →
   provenance extras covered too, including the cross-session `dedup()` case (0004).
 

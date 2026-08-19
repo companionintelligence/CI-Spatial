@@ -20,8 +20,8 @@ top of the ER model.
 `projectStore` is constructed at `src/main.ts:163` and never referenced again. Nothing
 calls `createProject`, `addScan`, or `listScans`. `scanEntry` is never built, so
 `projectId` in every exported GLB is permanently `null` and every detection is filed under
-`Floor_Ground` / `Room_Unknown`. `docs/factory/atlas.html` does not mention `projectId`
-once.
+`Floor_Ground` / `Room_Unknown`. Until this wave's atlas pass,
+`docs/factory/atlas.html` did not mention `projectId` once.
 
 **A world that looks like a place and isn't.** `synthesizeWorld(slug)` ignores its own
 slug: it takes a global `readDir` of every scan on disk and keeps the first 24.
@@ -124,20 +124,22 @@ strictly serial because 0002–0005 all touch `main.ts`'s world-synthesis path.
 
 ## Atlas diff
 
-Three of these have no "before" in the atlas at all, and this wave adds the description
-before diffing it — a diff against nothing is not a diff.
+Three of these had no "before" in the atlas at all. This wave's atlas pass added the
+description first, then diffed it — a diff against nothing is not a diff. Those three
+are marked *(gap filled)* below; the atlas now carries both halves.
 
-- **`Project` / `Floor` / `Room`** — *atlas gap; `projectId` appears zero times.* Today
-  declared in `src/project/project-store.ts`, constructed once at `src/main.ts:163` and
-  never used again → Project is the place that owns scan membership (0001, 0002).
+- **`Project` / `Floor` / `Room`** — *(gap filled: `projectId` previously appeared zero
+  times in the atlas.)* Today declared in `src/project/project-store.ts`, constructed
+  once at `src/main.ts:163` and never used again → Project is the place that owns scan
+  membership (0001, 0002).
 - **`WorldProject`** — today `synthesizeWorld` ignores its own slug and every world absorbs
   every scan globally → a derived view over one Project's scans, with a distance guard (0005).
 - **`PROJECTS_FILE`** — today backs a CRUD API nothing calls → the live place registry (0002).
 - **`WorldDetection` merge** — today `mergeDetections` keeps the first observation and
   discards the rest → every observation retained with its own session and timestamp (0006).
-- **Temporal** — *atlas gap; `timeline`, `temporal` and `scrub` appear zero times.* Today
-  `UX_FLOW.md:260` concedes "Time is stored but not scrubbable" → the editor scrubs the
-  composite by session (0008).
+- **Temporal** — *(gap filled: `timeline`, `temporal` and `scrub` previously appeared
+  zero times in the atlas.)* Today `UX_FLOW.md:260` concedes "Time is stored but not
+  scrubbable" → the editor scrubs the composite by session (0008).
 - **`EditPatch` tags** — today scoped to one `scanId` via a scan-namespaced `targetId`, so a
   tag cannot follow an object across visits → tags resolve through their Thing (0009).
 - **`Thing` / correspondence** — new capability, no prior entry (0007).
@@ -153,6 +155,6 @@ system for it; `@gltf-transform/functions` already ships `mergeDocuments`, insta
 unimported, and `lingbot_map_glb.ts` already proves the Deno server can author a GLB from
 scratch. Wave 07 ticket 0004 is what makes that merge reversible.
 
-**Atlas backlog.** The Development-waves section of `docs/factory/atlas.html` is three waves
-behind — 04, 05 and 06 have no cards. Noted here rather than made a ticket; it is fixed as
-part of this wave's atlas pass.
+**Atlas backlog.** The Development-waves section of `docs/factory/atlas.html` was three
+waves behind — 04, 05 and 06 had no cards. Noted here rather than made a ticket; it was
+fixed as part of this wave's atlas pass, which backfilled all three alongside 07 and 08.
