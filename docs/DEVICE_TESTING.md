@@ -53,7 +53,10 @@ errors (page must be loaded with `?debug=remote`).
 
 ## Checklist B — Android Chrome (WebXR)
 
-Suggested device: `hanzlas-z-fold7`.
+Suggested devices: `hanzlas-z-fold7`, `tab-s8-ultra`. The latter can also be
+driven remotely over MCP for the UI/permission steps — see
+[Remote-controlled testing](#remote-controlled-testing-android-remote-control-mcp)
+below.
 
 | # | Step | Expected result |
 |---|------|-----------------|
@@ -67,16 +70,76 @@ Suggested device: `hanzlas-z-fold7`.
 
 Copy per test session:
 
-| Step | iphone182 | liam-ipad-pro | z-fold7 | Notes |
-|------|-----------|---------------|---------|-------|
-| Smoke page all green | | | | |
-| A2/B2 permissions from tap | | | | |
-| Tracking + point growth | | | | |
-| Capture → detection latency | | | | |
-| Keyframe streaming | | | | |
-| Export → viewer visible | | | | |
-| PWA install | | | | |
-| Offline queue + flush | | | | |
+| Step | iphone182 | liam-ipad-pro | z-fold7 | tab-s8-ultra | Notes |
+|------|-----------|---------------|---------|--------------|-------|
+| Smoke page all green | | | | | |
+| A2/B2 permissions from tap | | | | | |
+| Tracking + point growth | | | | | |
+| Capture → detection latency | | | | | |
+| Keyframe streaming | | | | | |
+| Export → viewer visible | | | | | |
+| PWA install | | | | | |
+| Offline queue + flush | | | | | |
+
+## Remote-controlled testing (android-remote-control-mcp)
+
+For Android devices, [android-remote-control-mcp](https://github.com/danielealbano/android-remote-control-mcp)
+lets Claude Code drive Checklist B's UI steps directly — tapping **Start AR**,
+granting the camera permission, hitting capture — without a human holding the
+device for every run. It can't replace the physical "sweep the camera around
+the room" steps, so use it for the repeatable UI/permission-flow parts and for
+unattended `/smoke.html` checks, not as a full substitute for a walked run.
+
+### One-time device setup
+
+1. Install the `gms` build (or `foss`, on devices without Google Play
+   services): `adb install -r android-remote-control-mcp-<version>-gms-release.apk`
+2. **Settings → Apps → Android Remote Control MCP → ⋮ → Allow restricted
+   settings**, confirm with PIN/biometric (Android 13+ blocks sideloaded apps
+   from requesting Accessibility by default), then enable the **Accessibility
+   Service** toggle. Nothing works without this — it's how the app reads the
+   screen and injects taps.
+3. In **Settings → Access**, confirm the **HTTPS** toggle is off (plain HTTP
+   is the documented default, but the `edge` channel has been observed with
+   it on). If it's on, Windows Node clients — including Claude Code's own
+   runtime — complete the TLS handshake against the app's auto-generated
+   self-signed cert and then get cleanly rejected (`self-signed certificate`)
+   or reset, and the app documents no way for a client to trust or pin that
+   cert. Plain HTTP avoids the whole problem.
+4. Open the app's **Server** tab → **Start**. Note the bearer token under
+   **Settings → Access**.
+
+### Connecting Claude Code (local, USB/adb-connected)
+
+```bash
+adb forward tcp:8080 tcp:8080
+```
+
+Export the token before launching Claude Code — same "shell export, not an
+auto-loaded `.env` file" convention as every other secret in this repo (see
+`.env.example`'s `ANDROID_MCP_TOKEN`):
+
+```bash
+export ANDROID_MCP_TOKEN=<token from the app's Settings → Access>
+```
+
+The repo's `.mcp.json` already points a server named `android-tab-s8-ultra` at
+`http://127.0.0.1:8080/mcp` with that token — use the literal `127.0.0.1`, not
+`localhost`. On a machine that also runs Docker Desktop and/or WSL, something
+else is frequently already bound to `:8080` on `0.0.0.0`/`[::]`/`[::1]`, and an
+IPv6-first resolver will happily route `localhost` to that unrelated service
+instead of the adb forward, which only binds `127.0.0.1` (IPv4). If the
+connection seems to hang or reset, run `netstat -ano | findstr :8080` and
+check which PID actually owns `127.0.0.1:8080` before assuming the phone is
+the problem.
+
+### Security notes (from upstream)
+
+- Default bind is `127.0.0.1` — leave it there; `0.0.0.0` exposes the server
+  to the whole network.
+- The server is fully open to anyone who can reach it if both bearer-token and
+  OAuth auth are disabled — don't disable both.
+- Stop the server (and any tunnel) when you're done testing.
 
 ## Triage
 
