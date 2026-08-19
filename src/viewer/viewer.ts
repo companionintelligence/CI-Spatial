@@ -676,15 +676,23 @@ async function loadScanIntoWorld(scan: ScanManifest): Promise<void> {
       : 'Ready')
   } catch (error) {
     const message = errorMessage(error)
-    loadedScans.set(scan.scanId, {
-      manifest: scan,
-      root: new THREE.Group(),
-      layerNodes: new Map(),
-      points: [],
-      visible: false,
-      loaded: false,
-      error: message,
-    })
+    const previous = loadedScans.get(scan.scanId)
+    if (previous && previous.loaded) {
+      // A preview (or earlier full load) already made it into worldGroup — the
+      // full-quality pass that just failed must not orphan it behind a phantom
+      // detached Group. Keep the live root; only the manifest/error need updating.
+      loadedScans.set(scan.scanId, { ...previous, manifest: scan, error: message })
+    } else {
+      loadedScans.set(scan.scanId, {
+        manifest: scan,
+        root: new THREE.Group(),
+        layerNodes: new Map(),
+        points: [],
+        visible: false,
+        loaded: false,
+        error: message,
+      })
+    }
     setScanStatus(scan.scanId, `Error: ${message}`)
     throw error
   }
