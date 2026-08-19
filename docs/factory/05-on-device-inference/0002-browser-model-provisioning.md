@@ -8,9 +8,34 @@
 
 ## Goal
 
-Get ~1.5 GB of LFM2.5-VL weights onto a phone once, keep them there, and be honest about it
+Get ~2.2 GB of LFM2.5-VL weights onto a phone once, keep them there, and be honest about it
 while it happens. This is the ticket most likely to decide whether on-device inference is
 practical at all — which is why it lands before the runtime work.
+
+## Measured 2026-08-18 — provisioning is practical
+
+The go/no-go measurement was taken on the Lume Pad 2 before any design work:
+
+| | |
+|---|---|
+| Origin quota | **10.04 GB** (a desktop smoke run reported 41 GB — do not use that figure) |
+| Currently used | 0.04 GB (43.7 MB caches, 3.4 MB IndexedDB) |
+| Model on disk | **2.2 GB** — 22% of quota |
+| Throughput over the tailnet | **21.6 MB/s** (32 MB range request) |
+| Projected full transfer | **~104 s** |
+| `navigator.storage.persist()` | returned **true** — persistence is grantable |
+
+Two corrections to the record, both of which change this ticket:
+
+1. **The model is 2.2 GB, not ~2.2 GB.** Both README.md:190 and `download_models.py`'s own
+   comment understate it by 47%. `decoder_q4.onnx_data` alone is 1.13 GiB.
+2. **Eviction is not the blocker it looked like.** `persist()` is granted on this device, so
+   the weights can be made non-evictable. That converts the hardest open question into a
+   one-line call — but it must actually be *made*, and its failure handled, since grant is
+   heuristic on Android and not guaranteed elsewhere.
+
+At ~104 s over a warm tailnet this is a viable feature. Plan for far worse on a cold or
+remote link, and make the transfer resumable rather than assuming two minutes.
 
 ## The situation
 
@@ -25,18 +50,19 @@ env.localModelPath = '/models/'
 env.allowRemoteModels = false     // no HuggingFace Hub requests at runtime
 ```
 
-So the *serving* half is arguably done. What does not exist is everything that makes 1.5 GB
+So the *serving* half is arguably done. What does not exist is everything that makes 2.2 GB
 survivable on a phone:
 
-- **It is fetched over the tailnet**, from a dev machine, on a device where the browser can
-  evict caches under pressure.
-- **Nothing caches it deliberately.** Left to HTTP caching, a re-download is one cache
-  eviction away, and the user pays 1.5 GB again with no warning.
-- **Quota is unmeasured on this device class.** A desktop smoke run reported 41.23 GB
-  available; the Lume Pad 2's figure is unknown, and `checkStorageQuota` exists in
-  `src/main.ts` precisely because quota is already a live concern for scan data. Model
-  weights and the user's scans would now compete.
-- **First-run time is unknown.** No throughput measurement over the tailnet exists.
+- **Nothing caches it deliberately.** Left to HTTP caching, a re-download is one eviction
+  away and the user silently pays 2.2 GB again. `persist()` is grantable (measured above) but
+  is never actually called.
+- **Nothing verifies it.** A truncated transfer would be handed to `onnxruntime-web` as a
+  broken session.
+- **Nothing is resumable.** ~104 s is the warm-tailnet best case; a cold or remote link makes
+  an all-or-nothing transfer a poor bet.
+- **Quota is not shared fairly.** 2.2 GB is 22% of the device's 10.04 GB, and
+  `checkStorageQuota` (`src/main.ts:386`) does not know model weights exist, so weights and
+  irreplaceable scan data compete unmanaged.
 
 ## Non-goals
 
@@ -48,7 +74,7 @@ survivable on a phone:
 - Do not enable `allowRemoteModels`. Fetching from the Hub at runtime would send a request
   off-device the moment the user selects "no data leaves your phone", which is the exact
   contradiction wave 04 ticket 0004 exists to prevent.
-- Do not make the model a build-time asset. 1.5 GB does not belong in `vite build` output or
+- Do not make the model a build-time asset. 2.2 GB does not belong in `vite build` output or
   the Docker image.
 
 ## Open questions & answers
@@ -59,21 +85,22 @@ sequenced early.
 - Q: What caches the weights — the Cache API directly, the existing service worker, IndexedDB,
   or Transformers.js's own browser cache? — **OPEN.** The service worker already owns offline
   behaviour and would be the ADR 0001 answer, but its caches are load-bearing and it was
-  written for small assets and an upload queue, not 1.5 GB blobs. Evaluate before choosing.
-- Q: What is the actual quota on a Lume Pad 2, and what does the browser do when scans and a
-  1.5 GB model compete? — **OPEN. Measure first.** If the model can be evicted mid-session,
-  the failure mode is a capture that silently falls back or hangs.
-- Q: How long does 1.5 GB take over the tailnet to this device? — **OPEN. Measure.** If it is
-  tens of minutes, the feature needs a very different framing (opt-in download on Wi-Fi,
-  resumable) or is impractical.
+  written for small assets and an upload queue, not 2.2 GB blobs. Evaluate before choosing.
+- Q: What is the actual quota, and can the model be evicted? — A: **10.04 GB quota; 2.2 GB
+  model; `persist()` granted.** Eviction is avoidable. Remaining sub-question: what happens
+  when persistence is *refused* (a weaker device, or a browser that declines the heuristic).
+  (Measured 2026-08-18.)
+- Q: How long does the transfer take? — A: **21.6 MB/s, ~104 s for 2.2 GB** on a warm
+  tailnet. Practical. Still design for resumability — this is the best case, not the typical
+  one. (Measured 2026-08-18.)
 - Q: Is the download resumable? — OPEN, and follows from the previous answer. A
-  non-resumable 1.5 GB transfer to a phone is a poor bet.
+  non-resumable 2.2 GB transfer to a phone is a poor bet.
 - Q: Per-file or single-archive? The three ONNX files plus tokenizer/config are separate
   today, which makes per-file progress and resume natural, and matches the driver's
   `createSession(name)` port from 0001. Leaning per-file. **Confirm against the chosen cache.**
 - Q: What happens when the model is absent and the user selects on-device? — OPEN. It must
   not be the current behaviour (throw, destroy the capture). Probably an explicit
-  "download the on-device model (1.5 GB)" action rather than an implicit fetch on first
+  "download the on-device model (2.2 GB)" action rather than an implicit fetch on first
   capture.
 
 ## Pinned conventions
@@ -148,7 +175,7 @@ Deferred to the caching decision. Constraints that hold regardless:
 
 ## Risks / potential issues
 
-- **Risk: this may be impractical, and that is a real outcome.** 1.5 GB to a phone over a
+- **Risk: this may be impractical, and that is a real outcome.** 2.2 GB to a phone over a
   tailnet, held against an unknown quota, may not be a sensible product. — **Mitigation:**
   Measure before building. If the numbers are bad, say so and stop — wave 04 ticket 0004's
   gate is already in place, and a documented "not viable on this device class" is a
@@ -164,8 +191,7 @@ Deferred to the caching decision. Constraints that hold regardless:
 
 ## Subtasks
 
-1. [ ] Measure quota, throughput and eviction on a Lume Pad 2 — **do this first and decide
-       whether to continue**
+1. [x] Measure quota, throughput and eviction — done 2026-08-18; **continue**
 2. [ ] Choose the caching mechanism against those numbers
 3. [ ] Implement provisioning with verification
 4. [ ] Wire progress through the existing worker protocol and overlay

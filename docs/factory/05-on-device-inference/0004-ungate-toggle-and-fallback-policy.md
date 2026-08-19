@@ -94,7 +94,7 @@ extend. Verified at `b314055`:
   than absent, provided the reason is specific ("this browser has no WebGPU" /
   "model not downloaded").
 - Q: Does the toggle expose the provisioning state from 0002? — OPEN. Probably yes:
-  "On-device (1.5 GB download required)" is more honest than a control that silently
+  "On-device (2.2 GB download required)" is more honest than a control that silently
   triggers a large transfer.
 
 ## Files impacted
@@ -150,7 +150,7 @@ new database, no rename.
   problem. — **Mitigation:** It is the Definition of Done's emphasised item, and it covers
   the pre-existing timeout branch, not only the new one.
 - **Risk:** On-device is slow enough that users enable it, get frustrated, and disable it —
-  having paid 1.5 GB. — **Mitigation:** Surface 0003's measured latency at the point of
+  having paid 2.2 GB. — **Mitigation:** Surface 0003's measured latency at the point of
   choice, alongside the download size.
 - **Risk:** Provenance is added as a parallel record rather than extending existing types. —
   **Mitigation:** Called out in Pinned conventions; ADR 0001 governs.

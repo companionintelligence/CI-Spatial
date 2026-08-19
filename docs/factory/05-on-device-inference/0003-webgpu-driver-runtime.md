@@ -89,15 +89,25 @@ New dependency: `onnxruntime-web`, matching the `onnxruntime-node` major already
 
 ## Open questions & answers
 
-- Q: Does the Lume Pad 2 (Chrome 151, Android 12) actually expose WebGPU? — **OPEN. Check
-  first** — `navigator.gpu` on the device settles it in one line and the rest of the ticket
-  is moot without it.
-- Q: Can a tablet hold ~1.5 GB of weights plus WebGPU buffers? — **OPEN.** The device has
-  shown memory pressure already this session (Chrome evicting its own camera client). If it
-  cannot, the fp16/q4 choice may need revisiting, or the answer may be that this device class
-  is out of scope.
-- Q: Is fp16 supported by the device's WebGPU implementation (`shader-f16`)? — OPEN. If not,
-  the vision encoder needs a different quantisation and 0002's cached files change with it.
+- Q: Does the device expose WebGPU? — A: **Yes.** Adapter is Qualcomm Adreno 6xx.
+  (Verified 2026-08-18.)
+- Q: Can the device hold the weights plus WebGPU buffers? — **OPEN, and now specific.**
+  The adapter reports `maxBufferSize` **1 GiB** and `maxStorageBufferBindingSize` **512 MiB**.
+  Against those, the downloaded files are:
+
+  | file | size | vs limits |
+  |---|---|---|
+  | `decoder_q4.onnx_data` | 1.13 GiB | **exceeds `maxBufferSize`** |
+  | `embed_images_fp16.onnx_data` | 813 MiB | exceeds `maxStorageBufferBindingSize` |
+  | `embed_tokens_fp16.onnx_data` | 256 MiB | fits |
+
+  This is **not** automatically fatal: an `.onnx_data` blob holds many tensors and
+  onnxruntime allocates per-tensor, so what matters is the largest *individual* tensor, not
+  the file. **Measure that before writing any runtime code** — if a single tensor exceeds
+  512 MiB, this device class needs different quantisation or is out of scope.
+  (Limits measured 2026-08-18.)
+- Q: Is `shader-f16` supported? — A: **Yes**, present in the adapter feature list. The fp16
+  vision encoder quantisation is viable as-is. (Verified 2026-08-18.)
 - Q: How does per-capture latency compare with the server? — OPEN. The server path is
   17-20 s with `qwen3-vl:4b` on a desktop GPU. If on-device is minutes, it is a privacy
   option rather than a default, which affects how 0004 presents it.
@@ -164,7 +174,8 @@ None.
 
 ## Subtasks
 
-1. [ ] Check `navigator.gpu` and `shader-f16` on the device — **gate the rest on this**
+1. [x] Check `navigator.gpu` and `shader-f16` — done 2026-08-18, both present
+2. [ ] Measure the **largest individual tensor** against the 512 MiB binding limit
 2. [ ] Add `onnxruntime-web`, matched to the `onnxruntime-node` major
 3. [ ] Ensure WASM/JSEP assets are served locally
 4. [ ] Implement the four port members for the browser

@@ -36,7 +36,7 @@ The existing driver's runtime-specific surface is small and well-isolated:
 | session creation | `ort.InferenceSession.create(path)` via `onnxruntime-node` (`inference.ts:236-238`) | same call via `onnxruntime-web`, WebGPU EP |
 | tokenizer load | `Deno.readTextFile(TOKENIZER_DIR + 'tokenizer.json')` (`:244`) | `fetch` from `/models/` |
 | image decode | Jimp (`patchifyImage`, `:559`) | `OffscreenCanvas` / `createImageBitmap` |
-| weights | local filesystem | ~1.5 GB over the tailnet, cached |
+| weights | local filesystem | ~2.2 GB over the tailnet, cached |
 
 Everything else — the prefill/decode loop, KV-cache threading, patchify maths, prompt and
 parsing — is already runtime-agnostic and simply needs lifting out from behind `Deno.*` and
@@ -47,7 +47,7 @@ parsing — is already runtime-agnostic and simply needs lifting out from behind
 | # | Ticket | One-line goal |
 |---|--------|---------------|
 | 0001 | [extract-lfm-driver-runtime-port](0001-extract-lfm-driver-runtime-port.md) | Lift the LFM2.5-VL loop out of `inference.ts` behind a runtime port interface, with the server as the first consumer and **no behaviour change** |
-| 0002 | [browser-model-provisioning](0002-browser-model-provisioning.md) | Get ~1.5 GB of weights onto a phone once, cached, with honest progress and quota handling |
+| 0002 | [browser-model-provisioning](0002-browser-model-provisioning.md) | Get ~2.2 GB of weights onto a phone once, cached, with honest progress and quota handling |
 | 0003 | [webgpu-driver-runtime](0003-webgpu-driver-runtime.md) | Implement the browser side of the port interface on `onnxruntime-web` and replace the dead `pipeline()` call |
 | 0004 | [ungate-toggle-and-fallback-policy](0004-ungate-toggle-and-fallback-policy.md) | Restore the control wave 04 gated, and decide what happens when on-device inference fails — without ever silently contradicting the privacy claim |
 
@@ -64,19 +64,40 @@ device), and doing any of them before the driver is isolated means debugging the
 the runtime simultaneously.
 
 0002 before 0003 because there is no point running a driver with nothing to load, and
-because the provisioning question — 1.5 GB onto a phone — is the one most likely to change
+because the provisioning question — 2.2 GB onto a phone — is the one most likely to change
 the shape of the wave. If it proves impractical, 0003 and 0004 are not worth starting.
 
-## The load-bearing unknown
+## Viability spikes — all three answered, 2026-08-18
 
-**Nobody has ever run the ONNX driver.** `public/models/` is populated only by an optional
-`python3 download_models.py` (README.md:190-199), and it is absent on the working checkout.
-`INFERENCE_MODE=onnx` is therefore unverified on this machine, and possibly anywhere.
+The wave's three go/no-go unknowns were spiked before any implementation. All three passed,
+and each answer is folded into its ticket.
 
-This matters for 0001's premise. "Extract a working driver" is a very different job from
-"extract a driver and discover whether it works". **Ticket 0001 opens by running the
-downloader and establishing a baseline** — if the driver is broken, that is a finding that
-reshapes this wave before any browser work begins.
+| Spike | Result |
+|---|---|
+| **Does the ONNX driver work?** | **Yes.** Five correct objects on a real desk photo in 19.9 s, confidences 0.93-0.99 |
+| **WebGPU on the target device?** | **Yes.** Qualcomm Adreno 6xx, `shader-f16` present |
+| **Is 2.2 GB to a phone practical?** | **Yes.** 10.04 GB quota, 21.6 MB/s (~104 s), `persist()` granted |
+
+Three corrections to the record came out of the spikes:
+
+1. **The model is 2.2 GB, not ~1.5 GB.** README.md:190 and `download_models.py` both
+   understate it by 47%.
+2. **`download_models.py` fails on Windows** — its `↓` progress glyph crashes on cp1252.
+   `PYTHONUTF8=1` works around it. This wants a one-line readiness fix, not a wave-05 ticket.
+3. **The CV corpus cannot serve as 0001's oracle.** The *working* driver scores 0.0% on it,
+   because `test-data/cv/` is coloured rectangles built for the mock detector. A 0.0%
+   baseline cannot detect a regression. See 0001, and the successor wave below.
+
+One unknown remains open and specific: the adapter's `maxStorageBufferBindingSize` is
+512 MiB while `decoder_q4.onnx_data` is 1.13 GiB. Per-tensor allocation probably makes this
+fine, but 0003 must measure the largest individual tensor before writing runtime code.
+
+## Successor
+
+The 0.0% corpus result is not this wave's problem to fix, but it is a real hole: the harness
+`README.md:148` recommends for choosing an inference model gives a working model a score of
+zero, and cannot distinguish it from one that fabricates. Wave 06 addresses that, and 0001's
+oracle depends on it. Until it lands, 0001 uses a hand-recorded set of real photographs.
 
 ## Atlas diff
 

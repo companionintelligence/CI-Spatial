@@ -14,22 +14,37 @@ consumer and **no observable behaviour change**.
 This is a pure refactor. It ships no new capability. Its entire value is that ticket 0003
 can then add a second runtime without copying a subtle autoregressive loop.
 
-## Step zero: establish that the driver works at all
+## Step zero: RESOLVED — the driver works
 
-**Nobody has run this code path.** `public/models/` is populated only by an optional
-`python3 download_models.py` (README.md:190-199) and is absent on the working checkout, so
-`INFERENCE_MODE=onnx` is unverified.
+This was the wave's load-bearing unknown. Answered 2026-08-18:
 
-Before any refactoring:
+- `python3 download_models.py` succeeds (**with `PYTHONUTF8=1` on Windows** — the script's
+  `↓` progress character crashes on cp1252; see the readiness note in the wave README)
+- The download is **2.2 GB, not the ~1.5 GB** claimed at README.md:190 and in the script's
+  own comment
+- `INFERENCE_MODE=onnx` loads all three sessions in ~7 s and reports `modelReady: true`
+- On a real desk photograph it returned five correct objects in 19.9 s, with genuine
+  confidences (0.93-0.99), including `"white ceramic mug on saucer"` — it caught the saucer
 
-1. Run `python3 download_models.py` (~1.5 GB)
-2. Start with `INFERENCE_MODE=onnx`
-3. Infer the CV corpus in `test-data/cv/` and record the exact detections
+So this ticket extracts **working** code. That was not a foregone conclusion and it is why
+the check came first.
 
-That recording is the oracle for this ticket — the refactor is correct if and only if it
-reproduces it. **If the driver turns out to be broken, stop and re-plan the wave.** Fixing
-it is a different ticket with a different risk profile, and doing it inside a refactor makes
-both unreviewable.
+## The oracle: do NOT use the CV corpus
+
+The obvious oracle — "run `npm run eval:cv` before and after and compare" — is worthless
+here, and the measurement proving it is worth recording.
+
+The working ONNX driver scores **0.0% precision, 0.0% recall, 0.0% label accuracy, 0.000
+mean IoU** across all 16 corpus images. Not a regression: `test-data/cv/` is generated as
+solid palette-coloured rectangles for the *mock* colour-matching detector
+(`scripts/generate-cv-images.mjs:7`), so a real VLM cannot solve it by construction. Given
+`cv-00-studio-a.jpg`, whose ground truth is `lamp` + `shelf`, the model reasonably answers
+`chair` and `"grey wall background"`.
+
+**A 0.0% baseline cannot detect a broken refactor** — any mistake that also scores 0.0%
+passes. The oracle for this ticket must be a set of **real photographs** with recorded
+detections, compared exactly. Wave 06 builds that corpus properly; until it exists, capture
+a handful of real images, record the pre-refactor output verbatim, and diff against it.
 
 ## What moves and what stays
 
@@ -91,8 +106,7 @@ show up as subtly wrong detections rather than a type error.
 
 ## Open questions & answers
 
-- Q: Does the ONNX path currently work? — **OPEN and load-bearing.** Step zero answers it.
-  Everything downstream assumes yes.
+- Q: Does the ONNX path currently work? — A: **Yes.** Verified 2026-08-18; see Step zero.
 - Q: Where should the extracted module live? — OPEN. `src/inference/` is where the browser
   half lives and where `prompt.ts` already sits, so both runtimes can import it; but
   `main.ts`/`inference.ts` are Deno-resolved via `deno.json` while `src/` is Vite-resolved.
@@ -121,24 +135,31 @@ None. No persisted state, no wire format, no config change.
 
 ## Definition of Done
 
-- [ ] Step zero completed: the ONNX path is confirmed working and its output recorded
+- [x] Step zero completed: the ONNX path is confirmed working (2026-08-18)
 - [ ] The loop, KV cache and patchify maths live in one runtime-agnostic module
 - [ ] `inference.ts` consumes it through the port and behaves identically
 - [ ] The module imports nothing from `Deno`, `onnxruntime-node`, or Jimp
 - [ ] `deno task check` and `npx tsc --noEmit` both pass
-- [ ] Output on the CV corpus is identical to the step-zero recording
+- [ ] Output on a **real-photograph** oracle set is identical to the pre-refactor recording (NOT the CV corpus — it scores 0.0% and cannot detect a regression)
 
 ## Tests
 
-- [ ] Record CV-corpus detections before the change; assert equality after
+- [ ] Record detections on real photographs before the change; assert equality after
 - [ ] `npm run test:mock:unit` unaffected
 - [ ] `npm run verify`
 
 ```
-python3 download_models.py
-INFERENCE_MODE=onnx npm run eval:cv     # baseline, before
+# PYTHONUTF8=1 is required on Windows — the script's progress glyph crashes cp1252
+PYTHONUTF8=1 python3 download_models.py
+
+# Oracle = real photographs, NOT test-data/cv (that corpus scores 0.0% either way).
+# Record verbatim before, diff after.
+INFERENCE_MODE=onnx PORT=8100 deno run -A main.ts &
+curl -s -F "image=@<real-photo>.jpg" http://localhost:8100/infer > before.json
 # ... extract ...
-INFERENCE_MODE=onnx npm run eval:cv     # must match
+curl -s -F "image=@<real-photo>.jpg" http://localhost:8100/infer > after.json
+diff before.json after.json
+
 npm run verify
 ```
 
@@ -153,8 +174,7 @@ npm run verify
 
 ## Risks / potential issues
 
-- **Risk:** The ONNX path may not work, invalidating the premise. — **Mitigation:** Step
-  zero. Stop and re-plan rather than refactoring on top of a broken baseline.
+- **Risk:** ~~The ONNX path may not work~~ — **RETIRED.** Verified working 2026-08-18.
 - **Risk:** Deno and Vite resolve modules differently; a shared module under `src/` may not
   import cleanly under Deno. — **Mitigation:** The second open question. Resolve it *first* —
   it can force a different file layout for the whole wave. Note CLAUDE.md's precedent that
@@ -163,14 +183,15 @@ npm run verify
   and does not obviously extend to an autoregressive decode loop, but it is the reason to
   check rather than assume.
 - **Risk:** A silent behavioural change in KV-cache handling. — **Mitigation:** The oracle
-  compares full detection output, and the loop moves verbatim.
+  compares full detection output on real photographs, and the loop moves verbatim. Note the
+  CV corpus would NOT catch this — it scores 0.0% either way.
 - **Risk:** The refactor lands and ticket 0003 never does, leaving indirection with one
   consumer. — **Mitigation:** Accepted. The indirection is four functions and the
   extraction is independently defensible for testability.
 
 ## Subtasks
 
-1. [ ] **Step zero** — download the model, run `INFERENCE_MODE=onnx`, record the baseline
+1. [x] **Step zero** — done 2026-08-18: driver verified working on real photographs
 2. [ ] Resolve where the module lives so both runtimes can import it
 3. [ ] Define the four-member port
 4. [ ] Move the loop, KV cache and patchify maths verbatim
