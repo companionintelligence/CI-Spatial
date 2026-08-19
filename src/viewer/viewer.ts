@@ -1740,6 +1740,60 @@ async function saveSelectedTransform(): Promise<void> {
   flashButton('edit-save-transform', 'Saved')
 }
 
+function firstLod(root: THREE.Object3D): THREE.Object3D | null {
+  if (root instanceof THREE.LOD) return root
+  for (const child of root.children) {
+    const found = firstLod(child)
+    if (found) return found
+  }
+  return null
+}
+
+// Test hook: selects a scan's first semantic LOD and drives the save-transform round
+// trip through the real selectEditableObject()/saveSelectedTransform() path, without a
+// raycast. A real canvas click cannot reach a semantic object in the seeded test-home
+// corpus today — point-cloud hits and the always-attached gizmo's own helper both
+// intercept the ray first, a separate defect recorded in
+// docs/factory/03-readiness-hardening/README.md ("found but deferred"). This hook lets
+// 0004's round-trip regression test (tests/mock-editor-homes.spec.ts) exercise the LOD
+// pick/save/reload fix without depending on that unrelated fix landing first.
+;(window as unknown as {
+  __editorTest: {
+    selectFirstLod: (scanId: string) => { name: string; objectId: string; gizmoAttached: boolean } | null
+    worldTransform: () => { position: [number, number, number]; scale: [number, number, number] } | null
+    nudgeAndSave: (dx: number, dy: number, dz: number) => Promise<void>
+  }
+}).__editorTest = {
+  selectFirstLod(scanId: string) {
+    const loaded = loadedScans.get(scanId)
+    if (!loaded) return null
+    const found = firstLod(loaded.root)
+    if (!found) return null
+    selectEditableObject(found)
+    return {
+      name: found.name,
+      objectId: stableObjectId(found),
+      gizmoAttached: transformControls?.object === found,
+    }
+  },
+  worldTransform() {
+    if (!selectedTransformTarget) return null
+    const pos = new THREE.Vector3()
+    const scl = new THREE.Vector3()
+    selectedTransformTarget.getWorldPosition(pos)
+    selectedTransformTarget.getWorldScale(scl)
+    return { position: [pos.x, pos.y, pos.z], scale: [scl.x, scl.y, scl.z] }
+  },
+  async nudgeAndSave(dx: number, dy: number, dz: number) {
+    if (!selectedTransformTarget) return
+    selectedTransformTarget.position.x += dx
+    selectedTransformTarget.position.y += dy
+    selectedTransformTarget.position.z += dz
+    selectedTransformTarget.updateMatrixWorld(true)
+    await saveSelectedTransform()
+  },
+}
+
 async function saveObjectSemanticPatch(obj: THREE.Object3D): Promise<void> {
   if (!world) return
   const data = editor.getInspectorData(obj)

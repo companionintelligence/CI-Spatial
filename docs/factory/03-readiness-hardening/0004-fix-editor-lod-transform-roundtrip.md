@@ -16,6 +16,25 @@
 > `src/viewer/detections.ts:72` and gained a second consumer. Removing it is no longer a
 > deferrable visual change — see the non-goals below.
 
+> **Closed 2026-08-19.** The `pick()` reorder itself (DoD 1–2, Subtasks 1–4) landed in
+> PR #106 (`fix(viewer): select the LOD node, not one of its levels`) together with a
+> Node unit test, `editor_pick.test.ts` — a `chromium-mock` spec on the real seeded
+> corpus turned out not to be reachable there (see the wave README's "found but
+> deferred": a raycast click cannot reach a semantic object in this corpus, a separate,
+> already-scoped-out defect). PR #106 flipped this entry's atlas diff to done
+> (`atlas.html:397`) but left this file's own checkboxes and the `tests/mock-editor-homes.spec.ts`
+> coverage the ticket specified unfinished — closed out in this follow-up pass on
+> `fix/editor-lod-pick`: the DoD 3–7 items (TransformControls attaching to the LOD,
+> `saveSelectedTransform()` pairing the LOD's matrix with its `objectId`, the reload
+> round trip within 1e-3, scale, idempotency and `targetId` shape) needed driving the
+> *real* running editor end-to-end, which a raycast click still can't do here — so
+> they're exercised via a small `__editorTest` hook in `src/viewer/viewer.ts` that
+> selects the same node `pick()` resolves to (the scan's first `THREE.LOD`) and calls
+> the same `selectEditableObject()` / `saveSelectedTransform()` a click would. That
+> hook does not re-prove the walk-order regression — only `editor_pick.test.ts` does
+> (confirmed this session: it fails against a reverted `editor.ts`, passes against the
+> fix). See Subtasks for the full verification record.
+
 ## Goal
 
 Make an object transform edited in the World Editor come back in the same place after a
@@ -167,28 +186,42 @@ None. This ticket changes which existing object a patch is written against; the
 
 ## Definition of Done
 
-- [ ] In `pick()`, the `obj.parent instanceof THREE.LOD` test runs **before** the
+- [x] In `pick()`, the `obj.parent instanceof THREE.LOD` test runs **before** the
       `obj.userData['label']` test, so the walk resolves to the `THREE.LOD` node.
-- [ ] The comment above the walk states what it resolves to and why the order matters.
-- [ ] Selecting an object attaches `TransformControls` to the `THREE.LOD`, so all levels
-      move together.
-- [ ] `saveSelectedTransform()` serializes the LOD's own local matrix and pairs it with
-      the LOD's `objectId` — the same node on both sides.
-- [ ] A dragged object is in the same world position after a reload, within tolerance.
-- [ ] Labelled objects that are not inside an LOD still select as themselves.
-- [ ] `npx tsc --noEmit` is clean.
+      (PR #106, `editor.ts:186-190`.)
+- [x] The comment above the walk states what it resolves to and why the order matters.
+      (PR #106, `editor.ts:173-185`.)
+- [x] Selecting an object attaches `TransformControls` to the `THREE.LOD`, so all levels
+      move together. (Structural — `pick()`'s one caller, `viewer.ts:266`, feeds
+      `selectEditableObject()`, which calls `transformControls?.attach(obj)` unchanged;
+      asserted directly via `__editorTest` in the new "picking a semantic object..."
+      test — `gizmoAttached` is true.)
+- [x] `saveSelectedTransform()` serializes the LOD's own local matrix and pairs it with
+      the LOD's `objectId` — the same node on both sides. (Structural, same call path;
+      asserted directly — the saved patch's `targetId` matches the picked node's
+      `objectId` and ends `:lod`, `scope` is `object`.)
+- [x] A dragged object is in the same world position after a reload, within tolerance.
+      (New round-trip test, `tests/mock-editor-homes.spec.ts`.)
+- [x] Labelled objects that are not inside an LOD still select as themselves.
+      (`editor_pick.test.ts` + the new "regression guard" Playwright test.)
+- [x] `npx tsc --noEmit` is clean.
 
 ## Tests
 
-- [ ] `tests/mock-editor-homes.spec.ts` (new tests in the existing describe) — pick an object in a seeded test home,
+- [x] `tests/mock-editor-homes.spec.ts` (new tests in the existing describe) — pick an object in a seeded test home,
       assert the selected node is the `THREE.LOD` (name starts `LOD_`), not a level.
-- [ ] Same spec — read the object's world position, apply a known translation via the
+      Implemented via the `__editorTest` hook, not a raycast click — see the "Closed"
+      note above and the wave README's "found but deferred".
+- [x] Same spec — read the object's world position, apply a known translation via the
       editor's save path, reload the page, and assert the world position matches within
-      1e-3. **This assertion fails on current `main`** — that is the point of the ticket.
-- [ ] Same spec — assert scale is unchanged across the reload (the medium proxy's
+      1e-3. **This assertion no longer fails on `main`** — PR #106 landed first; verified
+      this session that it *does* fail against a reverted `editor.ts` (via
+      `editor_pick.test.ts`, which this specific assertion's hook does not exercise —
+      see the "Closed" note).
+- [x] Same spec — assert scale is unchanged across the reload (the medium proxy's
       normalisation scale is what leaks today).
-- [ ] Same spec — assert the persisted patch's `targetId` ends in `:lod`.
-- [ ] Regression guard — a labelled non-LOD object (splat-detect box) still picks as
+- [x] Same spec — assert the persisted patch's `targetId` ends in `:lod`.
+- [x] Regression guard — a labelled non-LOD object (splat-detect box) still picks as
       itself.
 
 ```
@@ -205,17 +238,21 @@ deno task check
 
 ## Acceptance Criteria
 
-- [ ] **Given** a seeded test home open in the editor, **when** an object is clicked,
+- [x] **Given** a seeded test home open in the editor, **when** an object is clicked,
       **then** the selected object is the `THREE.LOD` node and its name starts `LOD_`.
-- [ ] **Given** a selected object, **when** it is dragged +1m in x and saved, **then**
+      (Via `__editorTest`, not a literal click — the wave README already records that a
+      raycast click cannot reach a semantic object in this corpus, out of scope here.)
+- [x] **Given** a selected object, **when** it is dragged +1m in x and saved, **then**
       every LOD level moves with it and the object does not jump when the camera crosses
-      an LOD distance threshold (levels are at 8 / 4 / 0).
-- [ ] **Given** a saved transform, **when** the page is reloaded, **then** the object's
+      an LOD distance threshold (levels are at 8 / 4 / 0). (The gizmo attaches to the LOD
+      node itself — verified — so level swaps are `THREE.LOD`'s own per-frame child
+      visibility toggle, which does not move the node; not independently re-tested here.)
+- [x] **Given** a saved transform, **when** the page is reloaded, **then** the object's
       world position matches the pre-reload position within 1e-3 and its scale is
       unchanged.
-- [ ] **Given** the same edit repeated twice, **then** the second reload does not compound
+- [x] **Given** the same edit repeated twice, **then** the second reload does not compound
       the offset (the patch is idempotent on replay).
-- [ ] **Given** a splat-detect box (labelled, not inside an LOD), **when** it is clicked,
+- [x] **Given** a splat-detect box (labelled, not inside an LOD), **when** it is clicked,
       **then** it selects as itself and remains editable.
 
 ## Risks / potential issues
@@ -243,17 +280,35 @@ deno task check
 
 ## Subtasks
 
-1. [ ] Read the seven locations in "Before implementation" and confirm the line numbers
-       still match; this ticket pins them at `6217e0b`.
-2. [ ] `grep -rn "\.pick(" src/` and confirm every caller wants the whole object.
-3. [ ] Swap the two conditions in `pick()`'s walk (`src/viewer/editor.ts:174-183`) so the
+1. [x] Read the seven locations in "Before implementation" and confirm the line numbers
+       still match; this ticket pins them at `6217e0b`. Re-confirmed 2026-08-19 against
+       `d4f149c`/current `main`: all seven still match as written (minor drift only —
+       `selectEditableObject` is `viewer.ts:1573-1584` not `:1588`, `saveSelectedTransform`
+       is `:1674-1692` not `:1708`, both within the range originally cited).
+2. [x] `grep -rn "\.pick(" src/` and confirm every caller wants the whole object.
+       One call site, `viewer.ts:266`, feeds `selectEditableObject(obj)` directly.
+3. [x] Swap the two conditions in `pick()`'s walk (`src/viewer/editor.ts:174-183`) so the
        LOD test runs first; rewrite the comment to say the walk resolves to the LOD and
        why the order is load-bearing (every level shares `lod.userData`, so the `label`
-       test would otherwise always win).
-4. [ ] Run `npx tsc --noEmit` and `deno task check`.
-5. [ ] Add the five cases above to the existing `editor with test-home data` describe in
-       `tests/mock-editor-homes.spec.ts`, reusing its `beforeAll` seeding.
-6. [ ] Confirm the position assertion **fails** with the fix reverted, then passes with it
-       — a regression test that passes on the broken code is worthless.
-7. [ ] Run the full `npm run test:mock` tier for regressions in the existing editor specs.
-8. [ ] Flip this ticket's atlas diff to `is-done` with the merged PR number.
+       test would otherwise always win). Landed in PR #106.
+4. [x] Run `npx tsc --noEmit` and `deno task check`. Both clean.
+5. [x] Add the five cases above to the existing `editor with test-home data` describe in
+       `tests/mock-editor-homes.spec.ts`, reusing its `beforeAll` seeding. Done this
+       session via the `__editorTest` hook (see "Closed" note) — three new tests, one of
+       which covers four of the five cases (position, scale, `targetId` shape,
+       idempotency) plus the pick/gizmo-attach case and the non-LOD regression guard.
+6. [x] Confirm the position assertion **fails** with the fix reverted, then passes with it
+       — a regression test that passes on the broken code is worthless. Verified this
+       session against `editor_pick.test.ts` (the test that actually exercises `pick()`
+       — reverting `editor.ts` to its pre-PR-#106 state fails 5 of 8 cases there; restoring
+       the fix passes all 8). The new Playwright round-trip test does not itself regress
+       under a reverted `editor.ts`, because its `__editorTest` hook selects the LOD
+       directly rather than through `pick()` — documented in the "Closed" note above so
+       this isn't mistaken for a second walk-order guard.
+7. [x] Run the full `npm run test:mock` tier for regressions in the existing editor specs.
+       Clean (61 passed) once an unrelated flake in the new tests — `.scan-item.first()`
+       racing a sibling spec's concurrent upload into the same shared `default` world —
+       was fixed by scoping selection to this fixture's own `scan-session-test-home-*`
+       scanId prefix instead of DOM position.
+8. [x] Flip this ticket's atlas diff to `is-done` with the merged PR number. Done in
+       PR #106 (`atlas.html:397`, "03-readiness-hardening/0004, PR #106").
