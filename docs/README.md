@@ -33,7 +33,7 @@ see the group headers for where to look.
 | Doc | What it covers |
 |---|---|
 | [DEPLOY.md](DEPLOY.md) | Self-hosting and deployment — Deno server, Vite proxy, Ollama, and Tailscale/HTTPS setup. |
-| [DEVICE_TESTING.md](DEVICE_TESTING.md) | On-device QA — running against a real iPhone/Android over the Tailnet. |
+| [DEVICE_TESTING.md](DEVICE_TESTING.md) | On-device QA — running against a real iPhone/Android over the Tailnet, plus remote-controlled Android testing via an MCP connector. |
 | [HOUSE_VALIDATION.md](HOUSE_VALIDATION.md) | Field-acceptance / whole-house validation procedure. |
 
 ## Reconstruction pipeline
