@@ -52,7 +52,8 @@ wave 05 (`05-on-device-inference`); this ticket only stops the claim being made 
 meantime, and leaves every line of the intended architecture in place for wave 05 to build on.
 
 0001 and 0002 were implemented on 2026-08-18 during the session that found all five; their
-tickets are written to match what shipped. 0003, 0004 and 0005 are open.
+tickets are written to match what shipped. 0003 landed the same day, against the ticket as
+drafted. 0004 and 0005 are open.
 
 ## Tickets
 
@@ -69,7 +70,7 @@ order. 0003 and 0005 must agree on what happens to a capture rejected as stale.
 
 ## Atlas diff
 
-Two entries in `docs/factory/atlas.html` are wrong once this wave lands, and one of them
+Three entries in `docs/factory/atlas.html` are wrong once this wave lands, and one of them
 is wrong *today*:
 
 - **`atlas.html:350` — "Ollama VLM detection (default)".** `default moondream:latest`
@@ -80,6 +81,10 @@ is wrong *today*:
 - **`atlas.html:353` — the WebGPU path.** "runs the same ONNX model directly in the browser
   via Transformers.js/WebGPU" is false now, not after this wave. 0004 marks it in-progress
   and names wave 05; wave 05 rewrites it to describe what actually ships.
+- **`atlas.html` — "Manual frame capture".** The card describes what the capture module
+  produces but never said when it is durably stored, which is the whole of 0003. It gains a
+  diff: persisted *after* inference (so a failed detection discarded the frame) → written to
+  a `'captures'` object store *before* inference runs.
 
 No new atlas entries. Nothing here adds a subsystem — all five tickets correct existing ones,
 and none deletes anything.

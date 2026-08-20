@@ -46,6 +46,22 @@ export interface FrameQuality {
   meanLuminance: number
 }
 
+/**
+ * Is this frame bad enough that holding on to it would buy nothing?
+ *
+ * The capture path keeps a frame whose inference failed so it can be re-run
+ * later — but only when the frame is the good half of the capture. A frame the
+ * monitor already warned the user about, too dark to read or a reflective
+ * surface that defeats the detector, will not read any better on a second pass.
+ *
+ * Fail-safe by construction: analyseFrame() returns benign values when it cannot
+ * decode the blob at all, so a frame that could not be analysed counts as usable
+ * and is kept. Doubt favours keeping the photograph.
+ */
+export function isFrameUnusable(q: FrameQuality): boolean {
+  return q.lowLight || q.reflective
+}
+
 export interface QualityCounts {
   lowLightFrames: number
   driftEvents: number

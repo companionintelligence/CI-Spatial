@@ -18,7 +18,8 @@ import { PointCloud } from './scene/pointcloud'
 import { CaptureModule } from './capture/capture'
 import { AutoCapture } from './capture/auto-capture'
 import { KeyframeStreamer } from './capture/keyframes'
-import { ScanQualityMonitor } from './capture/quality-monitor'
+import { ScanQualityMonitor, isFrameUnusable } from './capture/quality-monitor'
+import type { FrameQuality } from './capture/quality-monitor'
 import { InferenceRouter } from './inference/router'
 import { InferServerError } from './inference/server'
 import { resolveDetections, mergeDetections } from './spatial/resolver'
@@ -167,7 +168,7 @@ async function main() {
   const pointCloud = new PointCloud(0.05)   // 5 cm voxel deduplication grid
   const poseHistory: Pose[] = []
   const scanner = new RoomScanner()
-  let captureCount = 0    // total successful captures this session
+  let captureCount = 0    // total captures this session, inferred or not
   let autoSaveTimer: ReturnType<typeof setTimeout> | null = null
   let autoSaveInFlight = false
   let autoSaveQueued = false
@@ -312,9 +313,31 @@ async function main() {
       }
     }
     overlay.setStatus('Capturing next frame...')
+    // Named before the try so the catch can reach them: the frame is stored by
+    // then, and the failure path's job is to mark that record and decide whether
+    // its image is worth holding — not to mourn it.
+    let pendingCaptureId: string | null = null
+    let frameQuality: Promise<FrameQuality> | null = null
     try {
       const { blob, pose, timestamp } = await capture.capture(CAPTURE_FRAME_TIMEOUT_MS)
       console.log(`[main] Captured blob: ${blob.size} bytes, type=${blob.type}, pose=`, pose)
+
+      // Store the frame BEFORE anything is asked of it. The photograph is the
+      // unrepeatable half of a capture — the user had to be standing there — and
+      // inference is the cheap, retryable half. Ordered the other way round, a
+      // failed detection took the frame, the pose and the timestamp down with it.
+      // See docs/factory/04-capture-path-truthfulness/0003.
+      //
+      // captureCount advances here rather than after a successful inference, so a
+      // capture whose detection fails still owns its index and the next capture
+      // cannot collide with it.
+      const captureIndex = ++captureCount
+      pendingCaptureId = store.captureIdFor(captureIndex)
+      // Not awaited: the write stays off the shutter's critical path, which
+      // already has no flash, haptic or sound to cover latency
+      // (docs/UI_MANUAL.md:169-176). It is reconciled before the detections land.
+      const capturePersisted = store.putCapture({ captureIndex, timestamp, pose, blob })
+
       overlay.setStatus('Analysing…')
 
       // Show indeterminate analysis progress bar
@@ -323,8 +346,11 @@ async function main() {
       if (progFill) progFill.classList.add('analyzing')
       if (progWrap) progWrap.classList.add('visible')
 
-      // Async frame quality analysis (non-blocking — updates overlay on next tick)
-      void qualityMonitor.analyseFrame(blob).then(({ lowLight, reflective }) => {
+      // Async frame quality analysis (non-blocking — updates overlay on next
+      // tick). The promise is kept, not discarded, because the failure path below
+      // needs its verdict to decide whether this frame is worth retaining.
+      frameQuality = qualityMonitor.analyseFrame(blob)
+      void frameQuality.then(({ lowLight, reflective }) => {
         updateQualityOverlay(qualityMonitor.tick(provider, pointCloud))
         if (lowLight)   overlay.setStatus('⚠ Low light — add more lighting')
         if (reflective) overlay.setStatus('⚠ Reflective surface detected')
@@ -360,17 +386,18 @@ async function main() {
       })
       console.log(`[main] World detections (${worldDets.length}):`, JSON.stringify(worldDets))
 
-      // Tag each resolved detection with the current capture index
-      const currentCaptureIdx = captureCount + 1  // will increment after
-      for (const wd of worldDets) wd.captureIndex = currentCaptureIdx
+      // Tag each resolved detection with the index its frame was stored under
+      for (const wd of worldDets) wd.captureIndex = captureIndex
 
       // Build thumbnail map keyed by label (best-effort). Each object gets the
       // frame cropped to ITS OWN box — handing every row the same whole-frame
       // thumbnail (which is what this did) made the review panel look like a
       // list of duplicate images rather than a list of objects.
       const thumbMap = new Map<string, string>()
+      const captureKeys = new Set<string>()
       for (const wd of worldDets) {
         const key = `${wd.label}:${bucket(wd.worldPos)}`
+        captureKeys.add(key)
         if (thumbMap.has(key)) continue
         thumbMap.set(key, await capture.captureDetectionThumbnail(blob, wd.bbox))
       }
@@ -380,7 +407,11 @@ async function main() {
 
       showInferDialog(worldDets)
 
-      captureCount++
+      // Attach the detections to the record that already holds the frame, so the
+      // success path ends with exactly one record per capture rather than two.
+      await capturePersisted
+      await store.attachDetections(pendingCaptureId, [...captureKeys])
+
       await store.saveSnapshot()
       void checkStorageQuota(store, overlay)
       queueAutoSave()
@@ -389,6 +420,27 @@ async function main() {
       )
     } catch (e) {
       clearAnalysisProgress()
+      // The frame is already stored. Record why its inference failed and keep
+      // it — that is what makes a failure cost a label instead of the
+      // photograph. Null only when capture.capture() itself threw, in which
+      // case there is no frame to keep. Status is set synchronously, so the
+      // record is correct before the HUD copy below runs.
+      if (pendingCaptureId) {
+        const id = pendingCaptureId
+        void store.markCaptureFailed(id, e instanceof Error ? e.message : String(e))
+        // Retaining the frame is only worth it when the frame is the good half of
+        // the capture. A server or engine error leaves a perfectly readable
+        // photograph that re-inference can still use; a frame the quality monitor
+        // flagged will read no better on a second pass, so its image goes and only
+        // the record stays. This is correlation, not proven cause — a dark frame
+        // captured during a server outage is discarded too. That is the intended
+        // trade: an unreadable frame is not worth 140 KB of a user's quota.
+        if (frameQuality) {
+          void frameQuality
+            .then((q) => (isFrameUnusable(q) ? store.discardFrame(id, 'quality') : undefined))
+            .catch(() => { /* frame could not be analysed — doubt keeps the photograph */ })
+        }
+      }
       if (e instanceof InferServerError) {
         // Server-path inference failures carry a typed code — map each to
         // actionable HUD guidance instead of a generic "failed" message.
