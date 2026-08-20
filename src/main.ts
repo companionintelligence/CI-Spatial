@@ -18,7 +18,8 @@ import { PointCloud } from './scene/pointcloud'
 import { CaptureModule } from './capture/capture'
 import { AutoCapture } from './capture/auto-capture'
 import { KeyframeStreamer } from './capture/keyframes'
-import { ScanQualityMonitor } from './capture/quality-monitor'
+import { ScanQualityMonitor, isFrameUnusable } from './capture/quality-monitor'
+import type { FrameQuality } from './capture/quality-monitor'
 import { InferenceRouter } from './inference/router'
 import { InferServerError } from './inference/server'
 import { resolveDetections, mergeDetections } from './spatial/resolver'
@@ -28,6 +29,7 @@ import { AROverlay } from './ui/overlay'
 import { SidePanel, type ExportOutcome } from './ui/panel'
 import { SessionHistory } from './ui/history'
 import { exportToGLB } from './export/gltf'
+import { isServerSessionId } from './shared/session-id.ts'
 import { exportSessionSummary } from './export/summary'
 import { GeoTracker, type GeoFix } from './geo/geo-tracker'
 import { RtcBroadcaster } from './rtc/broadcaster'
@@ -167,7 +169,7 @@ async function main() {
   const pointCloud = new PointCloud(0.05)   // 5 cm voxel deduplication grid
   const poseHistory: Pose[] = []
   const scanner = new RoomScanner()
-  let captureCount = 0    // total successful captures this session
+  let captureCount = 0    // total captures this session, inferred or not
   let autoSaveTimer: ReturnType<typeof setTimeout> | null = null
   let autoSaveInFlight = false
   let autoSaveQueued = false
@@ -189,10 +191,32 @@ async function main() {
   // user action, long after assignment.
   let keyframes: KeyframeStreamer | null = null
 
+  // The most recent GLB this tab has EVER uploaded, across session
+  // boundaries — never reset. Lets requestServerProcessing identify "my
+  // scan" without depending on sessionId resolution.
+  let lastUploadedFilename: string | undefined
+
+  // The GLB uploaded since the CURRENTLY OPEN keyframe session started —
+  // undefined whenever this session hasn't produced one yet. This is what the
+  // session-exit paths that don't have a fresh filename in hand (the stream
+  // toggle, pagehide) send as the backlink `session.json.glbFilename`, which
+  // scan_index.ts's `byGlb` map resolves a scan through when its sessionId is
+  // null. Cleared every time a new session opens (kfStreamer.onSessionId
+  // below) — reusing `lastUploadedFilename` here instead would attach a
+  // PREVIOUS session's filename to a session that produced no scan of its
+  // own, since that variable is deliberately never reset. The export/autosave
+  // handlers don't read this for their OWN rotate() calls — they already have
+  // the fresh filename in hand locally — only for the two paths that don't.
+  let currentSessionGlbFilename: string | undefined
+
   const panel = new SidePanel(
     store,
     async () => {
       const { outcome, uploadedFilename } = await exportManualScan()
+      if (uploadedFilename) {
+        lastUploadedFilename = uploadedFilename
+        currentSessionGlbFilename = uploadedFilename
+      }
       // Nothing was written on a cancel or a failure, so there is no scan for
       // a fresh keyframe session to be linked against.
       if (outcome !== 'cancelled' && outcome !== 'failed' && keyframes?.active) {
@@ -207,7 +231,7 @@ async function main() {
       return outcome
     },
     () => exportSessionSummary({ store, pointCloud, poseHistory, captureCount, geoFix: geoTracker.snapshot() ?? undefined }),
-    (action) => requestServerProcessing(action, store),
+    (action) => requestServerProcessing(action, store, lastUploadedFilename),
     (mode) => {
       router.setMode(mode)
       overlay.setStatus(`AI: ${mode === 'server' ? 'Server' : 'WebGPU'}`)
@@ -312,9 +336,31 @@ async function main() {
       }
     }
     overlay.setStatus('Capturing next frame...')
+    // Named before the try so the catch can reach them: the frame is stored by
+    // then, and the failure path's job is to mark that record and decide whether
+    // its image is worth holding — not to mourn it.
+    let pendingCaptureId: string | null = null
+    let frameQuality: Promise<FrameQuality> | null = null
     try {
       const { blob, pose, timestamp } = await capture.capture(CAPTURE_FRAME_TIMEOUT_MS)
       console.log(`[main] Captured blob: ${blob.size} bytes, type=${blob.type}, pose=`, pose)
+
+      // Store the frame BEFORE anything is asked of it. The photograph is the
+      // unrepeatable half of a capture — the user had to be standing there — and
+      // inference is the cheap, retryable half. Ordered the other way round, a
+      // failed detection took the frame, the pose and the timestamp down with it.
+      // See docs/factory/04-capture-path-truthfulness/0003.
+      //
+      // captureCount advances here rather than after a successful inference, so a
+      // capture whose detection fails still owns its index and the next capture
+      // cannot collide with it.
+      const captureIndex = ++captureCount
+      pendingCaptureId = store.captureIdFor(captureIndex)
+      // Not awaited: the write stays off the shutter's critical path, which
+      // already has no flash, haptic or sound to cover latency
+      // (docs/UI_MANUAL.md:169-176). It is reconciled before the detections land.
+      const capturePersisted = store.putCapture({ captureIndex, timestamp, pose, blob })
+
       overlay.setStatus('Analysing…')
 
       // Show indeterminate analysis progress bar
@@ -323,8 +369,11 @@ async function main() {
       if (progFill) progFill.classList.add('analyzing')
       if (progWrap) progWrap.classList.add('visible')
 
-      // Async frame quality analysis (non-blocking — updates overlay on next tick)
-      void qualityMonitor.analyseFrame(blob).then(({ lowLight, reflective }) => {
+      // Async frame quality analysis (non-blocking — updates overlay on next
+      // tick). The promise is kept, not discarded, because the failure path below
+      // needs its verdict to decide whether this frame is worth retaining.
+      frameQuality = qualityMonitor.analyseFrame(blob)
+      void frameQuality.then(({ lowLight, reflective }) => {
         updateQualityOverlay(qualityMonitor.tick(provider, pointCloud))
         if (lowLight)   overlay.setStatus('⚠ Low light — add more lighting')
         if (reflective) overlay.setStatus('⚠ Reflective surface detected')
@@ -360,17 +409,18 @@ async function main() {
       })
       console.log(`[main] World detections (${worldDets.length}):`, JSON.stringify(worldDets))
 
-      // Tag each resolved detection with the current capture index
-      const currentCaptureIdx = captureCount + 1  // will increment after
-      for (const wd of worldDets) wd.captureIndex = currentCaptureIdx
+      // Tag each resolved detection with the index its frame was stored under
+      for (const wd of worldDets) wd.captureIndex = captureIndex
 
       // Build thumbnail map keyed by label (best-effort). Each object gets the
       // frame cropped to ITS OWN box — handing every row the same whole-frame
       // thumbnail (which is what this did) made the review panel look like a
       // list of duplicate images rather than a list of objects.
       const thumbMap = new Map<string, string>()
+      const captureKeys = new Set<string>()
       for (const wd of worldDets) {
         const key = `${wd.label}:${bucket(wd.worldPos)}`
+        captureKeys.add(key)
         if (thumbMap.has(key)) continue
         thumbMap.set(key, await capture.captureDetectionThumbnail(blob, wd.bbox))
       }
@@ -380,7 +430,11 @@ async function main() {
 
       showInferDialog(worldDets)
 
-      captureCount++
+      // Attach the detections to the record that already holds the frame, so the
+      // success path ends with exactly one record per capture rather than two.
+      await capturePersisted
+      await store.attachDetections(pendingCaptureId, [...captureKeys])
+
       await store.saveSnapshot()
       void checkStorageQuota(store, overlay)
       queueAutoSave()
@@ -389,6 +443,27 @@ async function main() {
       )
     } catch (e) {
       clearAnalysisProgress()
+      // The frame is already stored. Record why its inference failed and keep
+      // it — that is what makes a failure cost a label instead of the
+      // photograph. Null only when capture.capture() itself threw, in which
+      // case there is no frame to keep. Status is set synchronously, so the
+      // record is correct before the HUD copy below runs.
+      if (pendingCaptureId) {
+        const id = pendingCaptureId
+        void store.markCaptureFailed(id, e instanceof Error ? e.message : String(e))
+        // Retaining the frame is only worth it when the frame is the good half of
+        // the capture. A server or engine error leaves a perfectly readable
+        // photograph that re-inference can still use; a frame the quality monitor
+        // flagged will read no better on a second pass, so its image goes and only
+        // the record stays. This is correlation, not proven cause — a dark frame
+        // captured during a server outage is discarded too. That is the intended
+        // trade: an unreadable frame is not worth 140 KB of a user's quota.
+        if (frameQuality) {
+          void frameQuality
+            .then((q) => (isFrameUnusable(q) ? store.discardFrame(id, 'quality') : undefined))
+            .catch(() => { /* frame could not be analysed — doubt keeps the photograph */ })
+        }
+      }
       if (e instanceof InferServerError) {
         // Server-path inference failures carry a typed code — map each to
         // actionable HUD guidance instead of a generic "failed" message.
@@ -532,6 +607,25 @@ async function main() {
       )
       const time = new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
       setAutosaveStatus(result.uploadedFilename ? `Autosaved ${shortName(result.uploadedFilename)} · ${time}` : `Autosaved locally · ${time}`)
+
+      // Rotate the keyframe session, exactly as manual export does. Autosave
+      // used to neither rotate nor finalize, so one server session accumulated
+      // keyframes across every autosaved GLB in the walkthrough and its
+      // glbFilename stayed null — leaving `byGlb` nothing to match on and the
+      // one-scan-to-one-session assumption false.
+      if (result.uploadedFilename) {
+        lastUploadedFilename = result.uploadedFilename
+        currentSessionGlbFilename = result.uploadedFilename
+        if (keyframes?.active) {
+          await keyframes.rotate({
+            glbFilename: result.uploadedFilename,
+            pointCount: pointCloud.count,
+            detectionCount: store.detections.size,
+            poseCount: poseHistory.length,
+            qualitySummary: currentQualitySummary(),
+          })
+        }
+      }
     } catch (error) {
       setAutosaveStatus('Autosave failed')
       console.error('[autosave]', error)
@@ -583,9 +677,29 @@ async function main() {
     if (countEl) countEl.textContent = s.active ? `${s.sent}` : ''
   }
 
+  // The server session is the only id that names a real keyframe directory, so
+  // the store adopts it the moment one is opened; everything exported from here
+  // on records that id rather than a local one.
+  //
+  // `null` (the session closed) is deliberately a no-op: the captures already
+  // in the store came from that session, and its directory still holds their
+  // keyframes, so reverting to a local id would strand the association. See
+  // KeyframeStreamer.onSessionId.
+  kfStreamer.onSessionId = (sessionId) => {
+    if (sessionId) {
+      void store.adoptServerSession(sessionId)
+      // A fresh session has produced no GLB of its own yet. Clearing this
+      // here — rather than leaving the previous session's value in place —
+      // is what stops a later stream-toggle-off or pagehide on THIS session
+      // from misattributing a scan it had nothing to do with.
+      currentSessionGlbFilename = undefined
+    }
+  }
+
   document.getElementById('stream-btn')?.addEventListener('click', () => {
     if (kfStreamer.active) {
       void kfStreamer.stop({
+        glbFilename: currentSessionGlbFilename,
         pointCount: pointCloud.count,
         detectionCount: store.detections.size,
         poseCount: poseHistory.length,
@@ -692,6 +806,7 @@ async function main() {
     try {
       if (kfStreamer.active) {
         void kfStreamer.stop({
+          glbFilename: currentSessionGlbFilename,
           pointCount: pointCloud.count,
           detectionCount: store.detections.size,
           poseCount: poseHistory.length,
@@ -1278,23 +1393,35 @@ function hideInferDialog(): void {
 
 /**
  * Send a request to the server's /process-scan endpoint.
- * The server-side scan list must contain scans from the current session;
- * if no matching filename is passed we request processing on the newest scan.
+ *
+ * Passes `filename` explicitly when this tab has one — the GLB it most
+ * recently uploaded — rather than relying on `sessionId` alone to resolve it.
+ * `store.sessionId` may be a `local-…` placeholder (no keyframe session was
+ * ever opened, the common case for a plain export), and since
+ * src/export/gltf.ts now writes `null` server-side for exactly that case, a
+ * raw local id sent here could never match anything: `findFilenameBySessionId`
+ * does a plain string comparison against the stored value, so a `local-…`
+ * string sent by the client can never equal a stored `null`, and the request
+ * would silently fall through to the server's "most recently uploaded by
+ * anyone" fallback — reopening the cross-session misattribution this
+ * function's `filename`-avoidance was originally written to prevent.
+ * `filename` is an unambiguous identifier the server already accepts and
+ * prefers over the `sessionId` lookup, so use it when we have it; `sessionId`
+ * is still sent, filtered to the shape the server would actually recognize,
+ * as a fallback for the case this tab has no filename yet.
  */
-async function requestServerProcessing(action: string, store: DetectionStore): Promise<void> {
+async function requestServerProcessing(action: string, store: DetectionStore, filename: string | undefined): Promise<void> {
   const overlay = setupStatusOverlay()
   overlay.setStatus(`Processing: ${action}…`)
   try {
-    // Find the newest scan for this session on the server
-    const listResp = await fetch('/scans')
-    if (!listResp.ok) throw new Error(`/scans returned ${listResp.status}`)
-    const list = await listResp.json() as Array<{ filename: string }>
-    const filename = list[0]?.filename ?? ''
-
     const resp = await fetch('/process-scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filename, action, sessionId: store.sessionId }),
+      body: JSON.stringify({
+        action,
+        filename,
+        sessionId: isServerSessionId(store.sessionId) ? store.sessionId : undefined,
+      }),
     })
     if (!resp.ok) throw new Error(`/process-scan returned ${resp.status}`)
     const result = await resp.json() as { action: string; result: string }

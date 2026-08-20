@@ -16,7 +16,14 @@ import type { ARProvider, Pose, HitResult } from '../ar/provider'
 import type { RawDetection } from '../inference/prompt'
 import type { PointCloud } from '../scene/pointcloud'
 
-const DEDUP_RADIUS_M = 0.3
+// Widened from 0.3 m: hit-test/raycast noise and viewing-angle differences
+// commonly place the same real object 0.3-0.4 m apart across two captures,
+// which was defeating dedup outright. Still a fixed radius, not adaptive to
+// object size. Kept below 0.5 m deliberately — the existing "highly cluttered
+// environment" test (tests/e2e-suite.spec.ts, Test 34) treats two same-label
+// objects 0.5 m apart as genuinely distinct, and that's a real constraint on
+// how far this can be pushed without merging separate furniture.
+const DEDUP_RADIUS_M = 0.4
 const FALLBACK_DEPTH_M = 2.0
 
 export interface WorldDetection extends RawDetection {
@@ -74,6 +81,11 @@ function ensureValidRotation(q: any): { x: number; y: number; z: number; w: numb
 
   const len = Math.sqrt(lenSq)
   return { x: x / len, y: y / len, z: z / len, w: w / len }
+}
+
+/** A hit-test/fallback position is only usable once every axis is a real, finite number. */
+function isFiniteVec3(p: { x: number; y: number; z: number } | null | undefined): p is { x: number; y: number; z: number } {
+  return !!p && Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z)
 }
 
 function raycastPointCloud(
@@ -169,9 +181,13 @@ export async function resolveDetections(
         }
       }
       if (dist >= 0.3) {
-        hitPos = syncHit.position
-        hitRot = ensureValidRotation(syncHit.rotation)
-        console.log(`[resolver] Centroid hitTest accepted at distance ${dist.toFixed(2)}m:`, JSON.stringify(hitPos))
+        if (isFiniteVec3(syncHit.position)) {
+          hitPos = syncHit.position
+          hitRot = ensureValidRotation(syncHit.rotation)
+          console.log(`[resolver] Centroid hitTest accepted at distance ${dist.toFixed(2)}m:`, JSON.stringify(hitPos))
+        } else {
+          console.warn('[resolver] Centroid hitTest rejected: non-finite position', JSON.stringify(syncHit.position))
+        }
       } else {
         console.warn(`[resolver] Centroid hitTest rejected: too close to camera (${dist.toFixed(3)}m)`)
       }
@@ -192,9 +208,13 @@ export async function resolveDetections(
           }
         }
         if (dist >= 0.3) {
-          hitPos = asyncHit.position
-          hitRot = ensureValidRotation(asyncHit.rotation)
-          console.log(`[resolver] Async hitTest accepted at distance ${dist.toFixed(2)}m:`, JSON.stringify(hitPos))
+          if (isFiniteVec3(asyncHit.position)) {
+            hitPos = asyncHit.position
+            hitRot = ensureValidRotation(asyncHit.rotation)
+            console.log(`[resolver] Async hitTest accepted at distance ${dist.toFixed(2)}m:`, JSON.stringify(hitPos))
+          } else {
+            console.warn('[resolver] Async hitTest rejected: non-finite position', JSON.stringify(asyncHit.position))
+          }
         } else {
           console.warn(`[resolver] Async hitTest rejected: too close to camera (${dist.toFixed(3)}m)`)
         }
@@ -209,36 +229,63 @@ export async function resolveDetections(
       ray.setFromCamera(ndc, cam)
 
       const cloudHit = raycastPointCloud(ray, opts.pointCloud)
-      if (cloudHit) {
+      if (cloudHit && isFiniteVec3(cloudHit.position)) {
         hitPos = cloudHit.position
         // Fallback to camera orientation
         hitRot = ensureValidRotation(opts.cameraPose?.rotation)
         console.log('[resolver] Point cloud raycast hit:', JSON.stringify(hitPos))
+      } else if (cloudHit) {
+        console.warn('[resolver] Point cloud raycast rejected: non-finite position', JSON.stringify(cloudHit.position))
       }
     }
 
     // 4. Fallback: place object along its bbox camera ray, or straight ahead
-    // when no capture camera is available.
-    if (!hitPos) {
-      if (opts.captureCamera) {
-        hitPos = pointOnCaptureRay(cx, cy, opts.captureCamera)
+    // when no capture camera is available. These are two independent attempts,
+    // not an either/or on which inputs happen to be present — a non-finite
+    // bbox-ray candidate (4a) must still fall through to the camera-pose
+    // candidate (4b) when cameraPose is also available, same as every earlier
+    // tier falls through on an invalid result.
+    if (!hitPos && opts.captureCamera) {
+      const candidate = pointOnCaptureRay(cx, cy, opts.captureCamera)
+      if (isFiniteVec3(candidate)) {
+        hitPos = candidate
         hitRot = ensureValidRotation(opts.cameraPose?.rotation ?? opts.captureCamera.quaternion)
         console.warn(`[resolver] Hit test miss for "${det.label}" — using bbox ray fallback:`, JSON.stringify(hitPos))
-      } else if (opts.cameraPose) {
-        const p = opts.cameraPose.position
-        const q = opts.cameraPose.rotation
-        const cameraDir = new THREE.Vector3(0, 0, -1).applyQuaternion(new THREE.Quaternion(q.x, q.y, q.z, q.w))
-        hitPos = {
-          x: p.x + cameraDir.x * FALLBACK_DEPTH_M,
-          y: p.y + cameraDir.y * FALLBACK_DEPTH_M,
-          z: p.z + cameraDir.z * FALLBACK_DEPTH_M,
-        }
+      } else {
+        console.warn(`[resolver] Hit test miss for "${det.label}" — bbox ray fallback produced a non-finite position`)
+      }
+    }
+
+    if (!hitPos && opts.cameraPose) {
+      const p = opts.cameraPose.position
+      const q = opts.cameraPose.rotation
+      const cameraDir = new THREE.Vector3(0, 0, -1).applyQuaternion(new THREE.Quaternion(q.x, q.y, q.z, q.w))
+      const candidate = {
+        x: p.x + cameraDir.x * FALLBACK_DEPTH_M,
+        y: p.y + cameraDir.y * FALLBACK_DEPTH_M,
+        z: p.z + cameraDir.z * FALLBACK_DEPTH_M,
+      }
+      if (isFiniteVec3(candidate)) {
+        hitPos = candidate
         hitRot = ensureValidRotation(q)
         console.warn(`[resolver] Hit test miss for "${det.label}" — using fallback position in front of camera:`, JSON.stringify(hitPos))
       } else {
-        console.warn(`[resolver] Hit test miss for "${det.label}" and no camera pose — skipping`)
-        continue
+        console.warn(`[resolver] Hit test miss for "${det.label}" — camera-relative fallback produced a non-finite position`)
       }
+    }
+
+    if (!hitPos && !opts.captureCamera && !opts.cameraPose) {
+      console.warn(`[resolver] Hit test miss for "${det.label}" and no camera pose — skipping`)
+    }
+
+    // Every tier above only assigns hitPos once its candidate passes isFiniteVec3 — this is
+    // the single place that catches "no tier produced anything usable" and skips the
+    // detection, rather than persisting a NaN/Infinity worldPos that would corrupt dedup
+    // bucketing (bucket()/dist() both go silently wrong on non-finite input) and any
+    // downstream bounding-box math.
+    if (!hitPos) {
+      console.warn(`[resolver] No usable position for "${det.label}" — skipping`)
+      continue
     }
 
     console.log(`[resolver] Resolved "${det.label}" to worldPos:`, JSON.stringify(hitPos), 'worldRot:', JSON.stringify(hitRot))
@@ -289,12 +336,19 @@ export function mergeDetections(
   return merged
 }
 
+/** Nearest same-label entry within DEDUP_RADIUS_M, not just the first one iterated. */
 function findNearbyKey(map: Map<string, WorldDetection>, det: WorldDetection): string | null {
+  let bestKey: string | null = null
+  let bestDist = DEDUP_RADIUS_M
   for (const [key, existing] of map) {
     if (existing.label !== det.label) continue
-    if (dist(existing.worldPos, det.worldPos) < DEDUP_RADIUS_M) return key
+    const d = dist(existing.worldPos, det.worldPos)
+    if (d < bestDist) {
+      bestDist = d
+      bestKey = key
+    }
   }
-  return null
+  return bestKey
 }
 
 function dist(

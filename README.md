@@ -237,7 +237,7 @@ Key routes (replace the hostname with your machine's):
 - Viewer/editor: `https://<your-tailscale-hostname>:5173/viewer.html?world=default`
 - WebXR scanner: `https://<your-tailscale-hostname>:5173/webxr.html`
 
-For persistent serving from a Linux box (systemd units, GPU inference, cert renewal) see [docs/DEPLOY.md](docs/DEPLOY.md); for the on-device test protocol see [docs/DEVICE_TESTING.md](docs/DEVICE_TESTING.md).
+For persistent serving from a Linux box (systemd units, GPU inference, cert renewal) see [docs/DEPLOY.md](docs/DEPLOY.md); for the on-device test protocol — including driving an Android device's UI directly through [android-remote-control-mcp](https://github.com/danielealbano/android-remote-control-mcp) as a Claude Code connector — see [docs/DEVICE_TESTING.md](docs/DEVICE_TESTING.md#remote-controlled-testing-android-remote-control-mcp).
 
 ### First-time use / everyday flow
 

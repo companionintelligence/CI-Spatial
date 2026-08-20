@@ -23,6 +23,7 @@
 
 import { buildBrushDataset } from './splat_train_dataset.ts'
 import { isRunnable } from './exec_probe.ts'
+import { isServerSessionId } from './src/shared/session-id.ts'
 // The manifest type lives in src/world/manifests.ts, not here — see that
 // file's header (it's the canonical, Deno-API-free home so the browser
 // viewer can type-import it without dragging this file's `Deno.*` calls into
@@ -75,11 +76,15 @@ export interface SplatTrainResult {
 }
 
 const DEFAULT_BRUSH_BIN = `${Deno.env.get('HOME') ?? '~'}/brush/src/target/release/brush-cli`
-const SESSION_ID_RE = /^(sess|session)-[a-z0-9-]+$/
 
+/**
+ * Delegates to the shared `SESSION_ID_RE` (`src/shared/session-id.ts`) rather
+ * than a local copy — see lingbot_map.ts's `isValidSessionDir` doc comment
+ * for why this file used to carry its own, stale one.
+ */
 export function isValidSessionDir(sessionDir: string): boolean {
   const base = sessionDir.split('/').filter(Boolean).pop() ?? ''
-  return SESSION_ID_RE.test(base)
+  return isServerSessionId(base)
 }
 
 export function resolveParams(opts: SplatTrainRunOptions) {

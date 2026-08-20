@@ -33,12 +33,12 @@
 // `import type { SplatDetectManifest } from './splat_detect.ts'` still works.
 import type { SplatDetectManifest } from './src/world/types.ts'
 import { isRunnable } from './exec_probe.ts'
+import { isServerSessionId } from './src/shared/session-id.ts'
 export type { SplatDetectManifest }
 
 const DEFAULT_DETECT_PYTHON = `${Deno.env.get('HOME') ?? '~'}/.venvs/splat-analyzer/bin/python`
 const DEFAULT_DETECT_DIR = `${Deno.env.get('HOME') ?? '~'}/splat_analyzer`
 const DEFAULT_DETECT_PROMPT = 'sofa, chair, table, tv, lamp, plant, bed, desk, shelf, door, window'
-const SESSION_ID_RE = /^(sess|session)-[a-z0-9-]+$/
 
 export interface SplatDetectRunOptions {
   /** Absolute path to the scan's trained splat, when present (<base>.splat.ply). */
@@ -320,9 +320,17 @@ export function countInteractions(text: string): number | null {
   return null
 }
 
+/**
+ * Delegates to the shared `SESSION_ID_RE` (`src/shared/session-id.ts`) rather
+ * than a local copy — see lingbot_map.ts's `isValidSessionDir` doc comment
+ * for why this file used to carry its own, stale one. Unlike that file's,
+ * this one has no caller within `runSplatDetect()` today — kept exported and
+ * correct rather than deleted, since removing it would be an unrelated
+ * behavior change beyond this fix's scope.
+ */
 export function isValidSessionDir(sessionDir: string): boolean {
   const base = sessionDir.split('/').filter(Boolean).pop() ?? ''
-  return SESSION_ID_RE.test(base)
+  return isServerSessionId(base)
 }
 
 // isRunnable now lives in ./exec_probe.ts — it was duplicated here and in

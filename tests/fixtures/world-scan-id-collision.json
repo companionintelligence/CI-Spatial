@@ -1,0 +1,164 @@
+{
+  "_comment": [
+    "The four-way scanId collision observed live in worlds/default.json on a Galaxy Tab S8 Ultra,",
+    "2026-08-19 — four distinct GLBs from one walkthrough, all carrying scan-session-1787174216556",
+    "because scanId was derived from meta.sessionId (one per browser tab) rather than from the",
+    "upload. Committed as its own file, rather than read from the live worlds/default.json, because",
+    "that file is a working artifact that gets pruned and regenerated.",
+    "Fixture for migrate_scan_ids.test.ts; see docs/factory/07-scan-identity/0001-unique-scan-id-per-upload.md.",
+    "editPatches and jobs below name the collided id on purpose: they are the migration's real work,",
+    "since refreshWorldScans() re-derives the scan rows on read but never re-points these."
+  ],
+  "worldId": "world-default",
+  "name": "Default World Scan",
+  "shareSlug": "default",
+  "originGeoPose": { "lat": null, "lng": null, "altitudeM": null, "bearing": null, "accuracyM": null },
+  "localFrame": {
+    "type": "ENU_Y_UP",
+    "origin": { "lat": null, "lng": null, "altitudeM": null, "bearing": null, "accuracyM": null },
+    "units": "meters",
+    "axes": { "x": "east", "y": "up", "z": "north" }
+  },
+  "scans": [
+    {
+      "scanId": "scan-session-1787174216556",
+      "sessionId": "session-1787174216556",
+      "filename": "1787174311700_autosave-room-scan-2026-08-19T21-18-33.glb",
+      "name": "autosave-room-scan-2026-08-19T21-18-33",
+      "glbUrl": "/scans/1787174311700_autosave-room-scan-2026-08-19T21-18-33.glb",
+      "metadataUrl": "/scans/1787174311700_autosave-room-scan-2026-08-19T21-18-33.json",
+      "geoPose": { "lat": null, "lng": null, "altitudeM": null, "bearing": null, "accuracyM": null },
+      "localToWorld": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+      "accuracyM": null,
+      "capturedAt": "2026-08-19T21:18:33.000Z",
+      "pointCount": 4212,
+      "detectionCount": 8,
+      "layerIndex": [],
+      "frameSetUrl": "/worlds/default/frames/scan-session-1787174216556",
+      "status": "aligned"
+    },
+    {
+      "scanId": "scan-session-1787174216556",
+      "sessionId": "session-1787174216556",
+      "filename": "1787174371857_autosave-room-scan-2026-08-19T21-19-32.glb",
+      "name": "autosave-room-scan-2026-08-19T21-19-32",
+      "glbUrl": "/scans/1787174371857_autosave-room-scan-2026-08-19T21-19-32.glb",
+      "metadataUrl": "/scans/1787174371857_autosave-room-scan-2026-08-19T21-19-32.json",
+      "geoPose": { "lat": null, "lng": null, "altitudeM": null, "bearing": null, "accuracyM": null },
+      "localToWorld": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 3, 0, 0, 1],
+      "accuracyM": null,
+      "capturedAt": "2026-08-19T21:19:32.000Z",
+      "pointCount": 5310,
+      "detectionCount": 10,
+      "layerIndex": [],
+      "frameSetUrl": "/worlds/default/frames/scan-session-1787174216556",
+      "status": "aligned"
+    },
+    {
+      "scanId": "scan-session-1787174216556",
+      "sessionId": "session-1787174216556",
+      "filename": "1787174954604_autosave-room-scan-2026-08-19T21-29-15.glb",
+      "name": "autosave-room-scan-2026-08-19T21-29-15",
+      "glbUrl": "/scans/1787174954604_autosave-room-scan-2026-08-19T21-29-15.glb",
+      "metadataUrl": "/scans/1787174954604_autosave-room-scan-2026-08-19T21-29-15.json",
+      "geoPose": { "lat": null, "lng": null, "altitudeM": null, "bearing": null, "accuracyM": null },
+      "localToWorld": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 6, 0, 0, 1],
+      "accuracyM": null,
+      "capturedAt": "2026-08-19T21:29:15.000Z",
+      "pointCount": 8134,
+      "detectionCount": 16,
+      "layerIndex": [],
+      "frameSetUrl": "/worlds/default/frames/scan-session-1787174216556",
+      "status": "aligned"
+    },
+    {
+      "scanId": "scan-session-1787174216556",
+      "sessionId": "session-1787174216556",
+      "filename": "1787175480232_autosave-room-scan-2026-08-19T21-38-01.glb",
+      "name": "autosave-room-scan-2026-08-19T21-38-01",
+      "glbUrl": "/scans/1787175480232_autosave-room-scan-2026-08-19T21-38-01.glb",
+      "metadataUrl": "/scans/1787175480232_autosave-room-scan-2026-08-19T21-38-01.json",
+      "geoPose": { "lat": null, "lng": null, "altitudeM": null, "bearing": null, "accuracyM": null },
+      "localToWorld": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 9, 0, 0, 1],
+      "accuracyM": null,
+      "capturedAt": "2026-08-19T21:38:01.000Z",
+      "pointCount": 8402,
+      "detectionCount": 16,
+      "layerIndex": [],
+      "frameSetUrl": "/worlds/default/frames/scan-session-1787174216556",
+      "status": "aligned"
+    },
+    {
+      "scanId": "scan-sess-video-ingest-9001",
+      "sessionId": "sess-video-ingest-9001",
+      "filename": "sess-video-ingest-9001.glb",
+      "name": "Kitchen walkthrough (video)",
+      "glbUrl": "/scans/sess-video-ingest-9001.glb",
+      "geoPose": { "lat": null, "lng": null, "altitudeM": null, "bearing": null, "accuracyM": null },
+      "localToWorld": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 12, 0, 0, 1],
+      "accuracyM": null,
+      "capturedAt": "2026-08-19T20:02:00.000Z",
+      "pointCount": 2200,
+      "detectionCount": 3,
+      "layerIndex": [],
+      "frameSetUrl": "/worlds/default/frames/scan-sess-video-ingest-9001",
+      "status": "aligned"
+    }
+  ],
+  "members": [],
+  "jobs": [
+    {
+      "jobId": "job-1787174400000-aaaa1111",
+      "worldId": "world-default",
+      "type": "memory-push",
+      "status": "completed",
+      "capabilities": ["cpu"],
+      "scanId": "scan-session-1787174216556",
+      "payload": {},
+      "progress": 1,
+      "createdAt": "2026-08-19T21:20:00.000Z",
+      "updatedAt": "2026-08-19T21:20:30.000Z"
+    },
+    {
+      "jobId": "job-1787174500000-bbbb2222",
+      "worldId": "world-default",
+      "type": "optimize-scan",
+      "status": "completed",
+      "capabilities": ["cpu"],
+      "payload": { "filename": "1787174954604_autosave-room-scan-2026-08-19T21-29-15.glb" },
+      "progress": 1,
+      "createdAt": "2026-08-19T21:29:20.000Z",
+      "updatedAt": "2026-08-19T21:29:50.000Z"
+    }
+  ],
+  "editPatches": [
+    {
+      "patchId": "patch-1787174600000-cccc3333",
+      "worldId": "world-default",
+      "scanId": "scan-session-1787174216556",
+      "targetId": "chair-01",
+      "scope": "object",
+      "label": "Reading chair",
+      "createdAt": "2026-08-19T21:30:00.000Z"
+    },
+    {
+      "patchId": "patch-1787174700000-dddd4444",
+      "worldId": "world-default",
+      "scanId": "scan-sess-video-ingest-9001",
+      "targetId": "counter-02",
+      "scope": "object",
+      "label": "Kitchen counter",
+      "createdAt": "2026-08-19T21:31:00.000Z"
+    },
+    {
+      "patchId": "patch-1787174800000-eeee5555",
+      "worldId": "world-default",
+      "targetId": "1787174371857_autosave-room-scan-2026-08-19T21-19-32.glb",
+      "scope": "scan",
+      "notes": "filename-scoped: was never broken, must not be double-remapped",
+      "createdAt": "2026-08-19T21:32:00.000Z"
+    }
+  ],
+  "createdAt": "2026-08-19T21:00:00.000Z",
+  "updatedAt": "2026-08-19T21:38:05.000Z"
+}

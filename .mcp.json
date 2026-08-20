@@ -1,0 +1,32 @@
+{
+  "mcpServers": {
+    "android-tab-s8-ultra": {
+      "type": "http",
+      "url": "http://liams-tab-s8-ultra.capybara-ulmer.ts.net:8080/mcp",
+      "headers": {
+        "Authorization": "Bearer ${ANDROID_MCP_TOKEN_TAB_S8_ULTRA}"
+      }
+    },
+    "android-tab-s9-ultra": {
+      "type": "http",
+      "url": "http://galaxy-tab-s9-ultra.capybara-ulmer.ts.net:8080/mcp",
+      "headers": {
+        "Authorization": "Bearer ${ANDROID_MCP_TOKEN_TAB_S9_ULTRA}"
+      }
+    },
+    "android-beam-pro-1": {
+      "type": "http",
+      "url": "http://beam-pro-1.capybara-ulmer.ts.net:8080/mcp",
+      "headers": {
+        "Authorization": "Bearer ${ANDROID_MCP_TOKEN_BEAM_PRO_1}"
+      }
+    },
+    "android-beam-pro": {
+      "type": "http",
+      "url": "http://beam-pro.capybara-ulmer.ts.net:8080/mcp",
+      "headers": {
+        "Authorization": "Bearer ${ANDROID_MCP_TOKEN_BEAM_PRO}"
+      }
+    }
+  }
+}

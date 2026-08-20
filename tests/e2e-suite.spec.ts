@@ -1179,4 +1179,126 @@ test.describe('Tier 4: Real-World Application Scenarios', () => {
 
     expect(testResult).toBeTruthy()
   })
+
+  // ── Detection dedup: label canonicalization & nearest-match merge fixes ──
+  // Regression coverage for "every capture adds new pins instead of
+  // converging" — both same-frame dedup (normalizeDetections) and
+  // cross-capture merge (mergeDetections) used to require exact label string
+  // equality before ever checking position, so a VLM wording change alone
+  // (e.g. "office chair" vs "chair") defeated dedup outright.
+
+  test('Test 39: Label-variant duplicates collapse within one capture', () => {
+    const raw = [
+      { label: 'office chair', bbox: [0.23, 0.25, 0.5, 0.49], confidence: 0.55, description: 'black office chair' },
+      { label: 'chair', bbox: [0.231, 0.251, 0.501, 0.491], confidence: 0.71, description: 'same chair, higher confidence' },
+    ]
+    const results = normalizeDetections(raw)
+    expect(results).toHaveLength(1)
+    expect(results[0].label).toBe('chair')
+    expect(results[0].confidence).toBe(0.71)
+  })
+
+  test('Test 40: Label-variant duplicates merge across captures', () => {
+    // Capture 1: VLM says "office chair" — normalizeDetections canonicalizes it to "chair".
+    const cap1 = normalizeDetections([
+      { label: 'office chair', bbox: [0.1, 0.1, 0.2, 0.2], confidence: 0.7, description: 'First chair' },
+    ])
+    const existing = new Map()
+    existing.set(`${cap1[0].label}:0.0,0.0,-1.0`, {
+      ...cap1[0],
+      worldPos: { x: 0.0, y: 0.0, z: -1.0 },
+      worldRot: { x: 0, y: 0, z: 0, w: 1 },
+      captureTimestamp: 1000,
+    })
+
+    // Capture 2: same physical chair, VLM says "chair" this time.
+    const cap2 = normalizeDetections([
+      { label: 'chair', bbox: [0.12, 0.12, 0.22, 0.22], confidence: 0.9, description: 'Same chair, different wording' },
+    ])
+    const incoming = [{
+      ...cap2[0],
+      worldPos: { x: 0.05, y: 0.01, z: -0.98 },
+      worldRot: { x: 0, y: 0, z: 0, w: 1 },
+      captureTimestamp: 1100,
+    }]
+
+    const merged = mergeDetections(existing, incoming)
+    expect(merged.size).toBe(1)
+    expect(Array.from(merged.values())[0].label).toBe('chair')
+  })
+
+  test('Test 41: Different canonical labels at the same position stay separate', () => {
+    const existing = new Map()
+    existing.set('chair:0.0,0.0,-1.0', {
+      label: 'chair',
+      confidence: 0.8,
+      description: 'A chair',
+      bbox: [0.1, 0.1, 0.2, 0.2],
+      worldPos: { x: 0.0, y: 0.0, z: -1.0 },
+      worldRot: { x: 0, y: 0, z: 0, w: 1 },
+      captureTimestamp: 1000,
+    })
+
+    const incoming = [{
+      label: 'lamp',
+      confidence: 0.8,
+      description: 'A lamp near the chair',
+      bbox: [0.1, 0.1, 0.2, 0.2],
+      worldPos: { x: 0.01, y: 0.0, z: -1.0 },
+      worldRot: { x: 0, y: 0, z: 0, w: 1 },
+      captureTimestamp: 1100,
+    }]
+
+    const merged = mergeDetections(existing, incoming)
+    expect(merged.size).toBe(2)
+  })
+
+  test('Test 42: findNearbyKey merges into the nearer of two same-label candidates', () => {
+    const existing = new Map()
+    existing.set('chair:0.0,0.0,0.0', {
+      label: 'chair',
+      confidence: 0.6,
+      description: 'Chair A',
+      bbox: [0.1, 0.1, 0.2, 0.2],
+      worldPos: { x: 0.0, y: 0.0, z: 0.0 },
+      worldRot: { x: 0, y: 0, z: 0, w: 1 },
+      captureTimestamp: 1000,
+    })
+    existing.set('chair:0.3,0.0,0.0', {
+      label: 'chair',
+      confidence: 0.6,
+      description: 'Chair B',
+      bbox: [0.4, 0.1, 0.5, 0.2],
+      worldPos: { x: 0.3, y: 0.0, z: 0.0 },
+      worldRot: { x: 0, y: 0, z: 0, w: 1 },
+      captureTimestamp: 1000,
+    })
+
+    // 0.28 m from A, 0.02 m from B — both inside DEDUP_RADIUS_M, B is nearer.
+    const incoming = [{
+      label: 'chair',
+      confidence: 0.95,
+      description: 'Re-seen chair, closer to B',
+      bbox: [0.4, 0.1, 0.5, 0.2],
+      worldPos: { x: 0.28, y: 0.0, z: 0.0 },
+      worldRot: { x: 0, y: 0, z: 0, w: 1 },
+      captureTimestamp: 1100,
+    }]
+
+    const merged = mergeDetections(existing, incoming)
+    expect(merged.size).toBe(2)
+    expect(merged.get('chair:0.0,0.0,0.0')?.description).toBe('Chair A')
+    expect(merged.get('chair:0.3,0.0,0.0')?.description).toBe('Re-seen chair, closer to B')
+    expect(merged.get('chair:0.3,0.0,0.0')?.confidence).toBe(0.95)
+  })
+
+  test('Test 43: Low-confidence detections are dropped before reaching the store', () => {
+    const raw = [
+      { label: 'chair', bbox: [0.1, 0.1, 0.2, 0.2], confidence: 0.9, description: 'confident chair' },
+      { label: 'shadow', bbox: [0.5, 0.5, 0.6, 0.6], confidence: 0.15, description: 'spurious low-confidence blob' },
+    ]
+    const results = normalizeDetections(raw)
+    expect(results).toHaveLength(1)
+    expect(results[0].label).toBe('chair')
+  })
 })

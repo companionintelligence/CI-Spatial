@@ -59,13 +59,22 @@ export interface PruneResult<T> {
  *                       with the same predicate that decides world membership,
  *                       or the two sides aren't measuring the same thing.
  */
-export function pruneScansMissingFromDisk<T extends { filename?: string }>(
+export function pruneScansMissingFromDisk<T extends { filename?: string; sessionId?: string | null }>(
   scans: readonly T[],
   onDisk: ReadonlySet<string>,
   eligibleOnDisk: number,
 ): PruneResult<T> {
-  // An entry with no filename is not file-backed and is never a prune candidate.
-  const missing = scans.filter(scan => scan.filename && !onDisk.has(scan.filename)).length
+  // registerSessionScan() (main.ts) gives a session-only scan (video/photo-ingest,
+  // no uploaded .glb yet) the synthetic filename `<sessionId>.glb`, which never
+  // lands on disk by design — the real upload path (/upload-scan) always prefixes
+  // with a numeric Date.now() timestamp, so this exact name can never collide with
+  // a real file. Such an entry is no more file-backed than one with no filename at
+  // all, and must never be treated as a prune candidate on that basis.
+  const isSessionOnly = (scan: T): boolean =>
+    !!scan.sessionId && scan.filename === `${scan.sessionId}.glb`
+  const isPruneCandidate = (scan: T): boolean => !!scan.filename && !isSessionOnly(scan)
+
+  const missing = scans.filter(scan => isPruneCandidate(scan) && !onDisk.has(scan.filename!)).length
 
   if (onDisk.size === 0) {
     return { scans: [...scans], pruned: 0, missing, skipped: 'empty-listing' }
@@ -74,6 +83,6 @@ export function pruneScansMissingFromDisk<T extends { filename?: string }>(
     return { scans: [...scans], pruned: 0, missing, skipped: 'listing-thinner-than-manifest' }
   }
 
-  const kept = scans.filter(scan => !scan.filename || onDisk.has(scan.filename))
+  const kept = scans.filter(scan => !isPruneCandidate(scan) || onDisk.has(scan.filename!))
   return { scans: kept, pruned: scans.length - kept.length, missing, skipped: null }
 }

@@ -8,10 +8,12 @@
   "scripts": {
     "dev": "vite --host",
     "build": "tsc --noEmit && vite build",
-    "verify": "deno task check && deno task test && tsc --noEmit && npm run test:pipeline:graph && npm run test:editor:pick && npm run test:store",
+    "verify": "deno task check && deno task test && tsc --noEmit && npm run test:pipeline:graph && npm run test:editor:pick && npm run test:store && npm run test:resolver && npm run test:provenance",
     "test:pipeline:graph": "node --experimental-strip-types --no-warnings --test pipeline_detection_graph.test.ts",
     "test:editor:pick": "node --experimental-strip-types --no-warnings --test editor_pick.test.ts",
     "test:store": "node --experimental-strip-types --no-warnings --test detection_store.test.ts",
+    "test:provenance": "node --experimental-strip-types --no-warnings --test glb_provenance.test.ts",
+    "test:resolver": "node --experimental-strip-types --no-warnings --test resolver.test.ts",
     "preview": "vite preview --host",
     "server": "deno run --watch --allow-net --allow-read --allow-write --allow-env --allow-ffi --allow-run main.ts",
     "start": "concurrently --raw --names \"infer,vite\" -c \"cyan,green\" \"npm run server\" \"npm run dev\"",
