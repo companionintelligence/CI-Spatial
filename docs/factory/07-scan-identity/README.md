@@ -18,10 +18,14 @@ Nothing errors. That is the whole problem.
 scan-session-1787174216556 → 1787174311700_autosave-room-scan-…21-18-33.glb   (8 detections)
 scan-session-1787174216556 → 1787174371857_autosave-room-scan-…21-19-32.glb  (10 detections)
 scan-session-1787174216556 → 1787174954604_autosave-room-scan-…21-29-15.glb  (16 detections)
-scan-session-1787175480232 → 1787175480232_autosave-room-scan-…21-38-01.glb  (16 detections)
+scan-session-1787174216556 → 1787175480232_autosave-room-scan-…21-38-01.glb  (16 detections)
 ```
 
-Four files, one id. The viewer keys `loadedScans` by `scanId` and calls
+Four files, one id. *(The fourth line originally read `scan-session-1787175480232`, which was a
+transcription error — all four carry `meta.sessionId: session-1787174216556`, so all four derive
+the same id. Corrected against the live file while landing 0001; ticket 0001's own table had it
+right. By the time the wave landed the same walkthrough had grown to **six** files under **two**
+ids.)* The viewer keys `loadedScans` by `scanId` and calls
 `worldGroup.remove(previous.root)` when a second scan claims an id already in the map,
 so three of those four are discarded during load. The HUD reads **"1 scan loaded"**.
 
