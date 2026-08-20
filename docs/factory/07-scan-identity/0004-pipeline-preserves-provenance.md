@@ -27,15 +27,16 @@ pipeline transform quietly reshaped a detection node and every downstream featur
 > node holding the box mesh. The two come apart after optimization. `exportToGLB` gives every
 > detection a wireframe child, and glTF-Transform's `quantize()` cannot put a dequantization
 > transform on a node that has both a mesh and children — so it hoists the mesh into a new
-> unnamed sibling, leaving the labelled node holding only children. Measured on a real
+> unnamed child, leaving the labelled node holding only children. Measured on a real
 > capture: 8 of 8 detection nodes carry a mesh in the source GLB, 0 of 8 in the `.opt.glb`.
 > Since the viewer *prefers* the optimized file, gating on `instanceof Mesh` matched nothing
 > in exactly the scans users see, and every detection feature went dark with no error.
 
-**One mechanical correction to that comment, verified for this ticket, and it changes the
-recommended fix.** The hoisted node is created as a **child** of the labelled node, not a
-sibling. `transformMeshParents()` in
-`node_modules/@gltf-transform/functions/dist/index.js:3958-3984` does:
+**That comment said "sibling" when this ticket was drafted; it was corrected to "child" in
+the tree before the ticket landed** (same correction in `pipeline_detection_graph.test.ts`,
+whose own fixture already built a child). The quote above is the corrected text. The
+mechanism matters because it changes the recommended fix: the hoisted node is created as a
+**child** of the labelled node, not a sibling. `transformMeshParents()` in `@gltf-transform/functions@4.4.0` does:
 
 ```js
 const isParentNode = parent.listChildren().length > 0;
@@ -74,7 +75,7 @@ by assuming the mesh-bearing node carries it.**
 
 `pipeline.ts:109` (`doc.transform(dedup(), prune())`), called with no options.
 
-Verified defaults in `node_modules/@gltf-transform/functions/dist/index.js:1690-1698`:
+Verified in `DEDUP_DEFAULTS`, `@gltf-transform/functions@4.4.0`:
 
 ```js
 const DEDUP_DEFAULTS = {
@@ -102,7 +103,7 @@ below is the first time.
 
 `pipeline.ts:109` and `pipeline.ts:121`, both called with no options.
 
-Verified at `node_modules/@gltf-transform/functions/dist/index.js:2593-2612` and `:2743-2753`:
+Verified in `PRUNE_DEFAULTS` and `nodeTreeShake()`, `@gltf-transform/functions@4.4.0`:
 
 ```js
 const PRUNE_DEFAULTS = { propertyTypes: [ NODE, ... ], keepLeaves: false, ..., keepExtras: false };
@@ -183,8 +184,8 @@ detail that has already changed once.
 ## Non-goals
 
 - **Do not** build the merged per-place GLB here. It is a later wave, and the pieces are worth
-  naming so nobody re-invents them: `@gltf-transform/functions@4.4.0` (verified installed,
-  `node_modules/@gltf-transform/functions/package.json`) already exports `mergeDocuments`,
+  naming so nobody re-invents them: `@gltf-transform/functions@4.4.0` (the version this repo pins in
+  `package.json` and `deno.json`) already exports `mergeDocuments`,
   `copyToDocument` and `joinPrimitives`, and a repo-wide grep finds **zero** imports of any of
   the three; the Deno server can already author a GLB from scratch — `lingbot_map_glb.ts:44-90`
   builds a `new Document()` from a PLY, creating accessors, a primitive, a mesh, a node and a
@@ -234,7 +235,7 @@ is the real gate — `deno check` does not exercise the frontend program.
 
 **Extras are carried on nodes only.** Never `Mesh`, `Primitive`, `Accessor`, `Material` or
 `Texture` — all five are in `DEDUP_DEFAULTS.propertyTypes`
-(`node_modules/@gltf-transform/functions/dist/index.js:1690-1698`). Write this in
+(`@gltf-transform/functions@4.4.0`). Write this in
 `pipeline.ts`'s header so the next contributor does not "helpfully" move a key onto a mesh.
 
 **No schema library.** Hand-written interfaces.
@@ -259,10 +260,10 @@ is the real gate — `deno check` does not exercise the frontend program.
 - `lingbot_map_glb.ts:44-90` — the Deno server authoring a GLB from scratch (context for the
   deferred merge job; do not build it).
 - `src/shared/provenance.ts` — added by 0003; the key names this guard preserves.
-- `node_modules/@gltf-transform/functions/dist/index.js:1690-1698` (`DEDUP_DEFAULTS`),
-  `:2593-2612` (`PRUNE_DEFAULTS`), `:2743-2753` (`nodeTreeShake`), `:3958-3984`
-  (`transformMeshParents`). Re-verify these before relying on them — they are library
-  internals at `4.4.0` and a minor bump can move them.
+- `@gltf-transform/functions@4.4.0` — `DEDUP_DEFAULTS`, `PRUNE_DEFAULTS`, `nodeTreeShake()`
+  and `transformMeshParents()`. These are library *internals*, not public API: re-verify
+  each against the installed copy before relying on it, since a version bump can change
+  them without a breaking-change notice.
 
 ## Open questions & answers
 
@@ -270,17 +271,17 @@ is the real gate — `deno check` does not exercise the frontend program.
   provenance only on nodes quantize will not touch, or (c) a documented invariant plus a test
   that fails loudly? — A: **(c), plus `prune({ keepExtras: true })`, which is the only code
   change any of the three threats actually requires.** (a) is rejected because the hoisted node
-  is a *descendant* (`index.js:3978`, `parent.addChild(targetNode)`), so provenance is already
+  is a *descendant* (`transformMeshParents()`: `parent.addChild(targetNode)`), so provenance is already
   reachable by ancestor walk; copying it down would duplicate one object's identity, the exact
   hazard `hasLabelledAncestor()` (`src/viewer/detections.ts:72-78`) exists to prevent. (b) is
   rejected because it makes the exporter's node layout hostage to a glTF-Transform
   implementation detail that has already changed once. (Decided 2026-08-19.)
 - Q: Does `prune()` really drop an extras-only node, or is that theoretical? — A: **Really.**
-  `PRUNE_DEFAULTS.keepExtras` is `false` (`index.js:2611`) and `nodeTreeShake` disposes when
+  `PRUNE_DEFAULTS.keepExtras` is `false` and `nodeTreeShake()` disposes when
   `isEmpty && !isUsed && !needsExtras` (`:2752`). `keepExtras: true` is the library's own
   opt-out. (Verified by reading the installed 4.4.0 source, 2026-08-19.)
 - Q: Does `dedup()` merge nodes? — A: **No** — `DEDUP_DEFAULTS.propertyTypes` is
-  `[ACCESSOR, MESH, TEXTURE, MATERIAL, SKIN]` (`index.js:1690-1698`). Nodes are safe; meshes are
+  `[ACCESSOR, MESH, TEXTURE, MATERIAL, SKIN]` (`DEDUP_DEFAULTS.propertyTypes`). Nodes are safe; meshes are
   not, and `keepUniqueNames: false` means names do not protect them. Hence "extras on nodes
   only" as a pinned invariant. (Verified 2026-08-19.)
 - Q: Should the server-side `scanId` stamp live here or in its own ticket? — A: **Here.** This
@@ -306,7 +307,7 @@ is the real gate — `deno check` does not exercise the frontend program.
   a `cloneDocument(doc)` (`:149`) that is discarded unless it is smaller (`:152-155`).
   glTF-Transform logs `[KHR_draco_mesh_compression] Skipping Draco compression of N
   non-TRIANGLES primitives.`
-  (`node_modules/@gltf-transform/extensions/dist/index.js:3113`) for every point primitive, so
+  (`KHRDracoMeshCompression`, `@gltf-transform/extensions@4.4.0`) for every point primitive, so
   point-cloud provenance takes a structurally different path from mesh provenance and must be
   asserted separately. (Verified 2026-08-19.)
 
@@ -457,7 +458,7 @@ npm run build
   have traded quantization away, which is part of why it was rejected.)
 - **Risk:** Draco is skipped for non-TRIANGLES primitives — observed in real logs as
   `Skipping Draco compression of 8 non-TRIANGLES primitives.`
-  (`node_modules/@gltf-transform/extensions/dist/index.js:3113`) — so point-cloud provenance
+  (`KHRDracoMeshCompression`, `@gltf-transform/extensions@4.4.0`) — so point-cloud provenance
   travels a different path from mesh provenance and a single test would not cover both.
   — **Mitigation:** Separate assertions for the point-cloud node and the detection nodes, and
   a fixture that always contains both (`buildExporterShapedScan` already does, `:51-56`).
@@ -465,11 +466,14 @@ npm run build
   sees one session per document, so a test could accidentally pass by never triggering a merge.
   — **Mitigation:** The test asserts the mesh/accessor count actually dropped, so it fails if
   `dedup()` did not merge; the provenance assertion is only meaningful alongside it.
-- **Risk:** The library-internal line numbers cited throughout (`index.js:1690`, `:2593`,
-  `:2743`, `:3958`, and the extensions package's `:3113`) are `@gltf-transform/*@4.4.0`
-  internals and will move on any version bump. — **Mitigation:** The behaviours are asserted by
-  tests, not by the line numbers; the numbers are evidence for the reviewer, not a dependency.
-  Re-verify before relying on them, and note the version next to each in the commit message.
+- **Risk:** The symbols cited throughout (`DEDUP_DEFAULTS`, `PRUNE_DEFAULTS`,
+  `nodeTreeShake()`, `transformMeshParents()`, `KHRDracoMeshCompression`) are
+  `@gltf-transform/*@4.4.0` **internals**, not public API, so their behaviour can change on a
+  version bump with no breaking-change notice. — **Mitigation:** The behaviours are asserted by
+  tests, not by the citations; the citations are evidence for the reviewer, not a dependency.
+  They are pinned by package version and symbol name rather than by `dist/` line number,
+  which drifts between patch releases and is not readable from the repo on GitHub. Re-verify
+  against the installed copy before relying on any of them.
 - **Risk:** `pipeline.ts` importing `src/shared/provenance.ts` breaks one of the three runtimes
   that load it (Deno via `main.ts`, Node via `--experimental-strip-types`, and `tsc --noEmit`
   over the frontend program). — **Mitigation:** ADR 0002. Keep the shared file dependency-free,
