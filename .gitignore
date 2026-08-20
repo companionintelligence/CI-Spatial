@@ -82,3 +82,8 @@ tests/fixtures/lingbot-map/*.mov
 # Claude Code MCP local overrides — machine-local secrets (bearer tokens,
 # personal paths). Highest precedence over the checked-in .mcp.json.
 .mcp.local.json
+
+# Claude Code preview/launch config — the dev-server URL embeds this machine's
+# Tailscale hostname, which vite.config.ts resolveHostname() derives per box.
+# Copy .claude/launch.json.example and fill in your own hostname.
+.claude/launch.json
