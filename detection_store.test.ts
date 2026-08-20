@@ -29,6 +29,7 @@ import assert from 'node:assert/strict'
 import { DetectionStore, MAX_CAPTURE_ITEMS } from './src/scene/store.ts'
 import type { WorldDetection } from './src/spatial/resolver.ts'
 import type { CaptureResult } from './src/capture/capture.ts'
+import { isServerSessionId } from './src/shared/session-id.ts'
 
 /** Minimal WorldDetection — only the fields upsert() spreads are load-bearing here. */
 function detection(label: string, x = 0): WorldDetection {
@@ -232,4 +233,77 @@ test('discardFrame: a frame kept after a server failure is still re-inferrable',
   assert.ok(stored?.blob, 'the frame outlives an error that had nothing to do with it')
   assert.equal(stored?.frameDropped, undefined)
   assert.equal(store.captureCounts().retained, 1)
+})
+
+// ── Session identity (07-scan-identity/0002) ───────────────────────────────
+// These construct the store WITHOUT open(), so `db` is null and the IndexedDB
+// half of adoptServerSession() early-returns — the identity move itself is
+// pure in-memory state and is what these pin.
+
+test('a fresh store starts with a local id that no server-session check accepts', () => {
+  const store = new DetectionStore()
+
+  assert.ok(
+    store.sessionId.startsWith('local-'),
+    `expected a local id, got ${store.sessionId}`,
+  )
+  assert.equal(
+    isServerSessionId(store.sessionId),
+    false,
+    'a local id must never be mistaken for a server session',
+  )
+  // The retired shape, which looked like a server id and was accepted as one.
+  assert.equal(/^session-\d+$/.test(store.sessionId), false)
+})
+
+test('adoptServerSession: the live id moves to the server id', async () => {
+  const store = new DetectionStore()
+  const local = store.sessionId
+
+  await store.adoptServerSession('sess-11111111-2222-3333-4444-555555555555')
+
+  assert.equal(store.sessionId, 'sess-11111111-2222-3333-4444-555555555555')
+  assert.notEqual(store.sessionId, local)
+  assert.ok(isServerSessionId(store.sessionId))
+})
+
+test('adoptServerSession: refuses anything that is not a server-minted id', async () => {
+  const store = new DetectionStore()
+  const local = store.sessionId
+
+  await store.adoptServerSession('session-1787174216556') // the retired client shape
+  assert.equal(store.sessionId, local, 'a client-shaped id must not be adopted')
+
+  await store.adoptServerSession('local-abc')
+  assert.equal(store.sessionId, local, 'a local id must not be adopted')
+})
+
+test('adoptServerSession: captures taken before streaming started follow the id', async () => {
+  // The case the fork bug lives in: the user captures, *then* presses stream.
+  // Those captures belong to the same walkthrough and must not be stranded
+  // under the local id.
+  const store = new DetectionStore()
+  const local = store.sessionId
+  const rec = await store.putCapture({
+    captureIndex: 0, timestamp: Date.now(), pose: pose(), blob: frame(1024),
+  })
+  assert.equal(store.getCapture(rec.captureId)?.sessionId, local)
+
+  await store.adoptServerSession('sess-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+
+  assert.equal(
+    store.getCapture(rec.captureId)?.sessionId,
+    'sess-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+    'the capture followed the session rather than being orphaned under the local id',
+  )
+})
+
+test('adoptServerSession: re-adopting the same id is a no-op', async () => {
+  const store = new DetectionStore()
+  const id = 'sess-99999999-8888-7777-6666-555555555555'
+
+  await store.adoptServerSession(id)
+  await store.adoptServerSession(id)
+
+  assert.equal(store.sessionId, id)
 })

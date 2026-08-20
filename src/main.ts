@@ -190,10 +190,17 @@ async function main() {
   // user action, long after assignment.
   let keyframes: KeyframeStreamer | null = null
 
+  // The most recent GLB this tab uploaded, so the session-exit paths that are
+  // not an export (the stream toggle, pagehide) can still set the backlink
+  // `session.json.glbFilename` — which is what scan_index.ts's `byGlb` map
+  // resolves a scan through when its sessionId is null.
+  let lastUploadedFilename: string | undefined
+
   const panel = new SidePanel(
     store,
     async () => {
       const { outcome, uploadedFilename } = await exportManualScan()
+      if (uploadedFilename) lastUploadedFilename = uploadedFilename
       // Nothing was written on a cancel or a failure, so there is no scan for
       // a fresh keyframe session to be linked against.
       if (outcome !== 'cancelled' && outcome !== 'failed' && keyframes?.active) {
@@ -584,6 +591,24 @@ async function main() {
       )
       const time = new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
       setAutosaveStatus(result.uploadedFilename ? `Autosaved ${shortName(result.uploadedFilename)} · ${time}` : `Autosaved locally · ${time}`)
+
+      // Rotate the keyframe session, exactly as manual export does. Autosave
+      // used to neither rotate nor finalize, so one server session accumulated
+      // keyframes across every autosaved GLB in the walkthrough and its
+      // glbFilename stayed null — leaving `byGlb` nothing to match on and the
+      // one-scan-to-one-session assumption false.
+      if (result.uploadedFilename) {
+        lastUploadedFilename = result.uploadedFilename
+        if (keyframes?.active) {
+          await keyframes.rotate({
+            glbFilename: result.uploadedFilename,
+            pointCount: pointCloud.count,
+            detectionCount: store.detections.size,
+            poseCount: poseHistory.length,
+            qualitySummary: currentQualitySummary(),
+          })
+        }
+      }
     } catch (error) {
       setAutosaveStatus('Autosave failed')
       console.error('[autosave]', error)
@@ -635,9 +660,17 @@ async function main() {
     if (countEl) countEl.textContent = s.active ? `${s.sent}` : ''
   }
 
+  // The server session is the only id that names a real keyframe directory, so
+  // the store adopts it the moment one is opened; everything exported from here
+  // on records that id rather than a local one.
+  kfStreamer.onSessionId = (sessionId) => {
+    if (sessionId) void store.adoptServerSession(sessionId)
+  }
+
   document.getElementById('stream-btn')?.addEventListener('click', () => {
     if (kfStreamer.active) {
       void kfStreamer.stop({
+        glbFilename: lastUploadedFilename,
         pointCount: pointCloud.count,
         detectionCount: store.detections.size,
         poseCount: poseHistory.length,
@@ -744,6 +777,7 @@ async function main() {
     try {
       if (kfStreamer.active) {
         void kfStreamer.stop({
+          glbFilename: lastUploadedFilename,
           pointCount: pointCloud.count,
           detectionCount: store.detections.size,
           poseCount: poseHistory.length,

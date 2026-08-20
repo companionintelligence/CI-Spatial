@@ -68,15 +68,15 @@ survives the optimize pass.
 | # | Ticket | One-line goal | Status |
 |---|--------|---------------|--------|
 | 0001 | [unique-scan-id-per-upload](0001-unique-scan-id-per-upload.md) | **Stop discarding three scans out of four** — derive `scanId` from the uploaded GLB, and migrate the worlds that already collided | ✅ landed |
-| 0002 | [one-session-identity](0002-one-session-identity.md) | Reconcile the two rival session-id namespaces, and set the `glbFilename` backlink on every path that ends a session — not just manual export |
-| 0003 | [node-level-glb-provenance](0003-node-level-glb-provenance.md) | Put session/scan/capture identity on every node, and fix the `sourceScanIds`/`sourceScan` mismatch that has blanked the inspector since it was written |
-| 0004 | [pipeline-preserves-provenance](0004-pipeline-preserves-provenance.md) | Prove provenance survives `dedup`/`prune`/`quantize`/`draco` — the test that currently exists only for `label` |
+| 0002 | [one-session-identity](0002-one-session-identity.md) | Reconcile the two rival session-id namespaces, and set the `glbFilename` backlink on every path that ends a session — not just manual export | ✅ landed |
+| 0003 | [node-level-glb-provenance](0003-node-level-glb-provenance.md) | Put session/scan/capture identity on every node, and fix the `sourceScanIds`/`sourceScan` mismatch that has blanked the inspector since it was written | 🔜 open |
+| 0004 | [pipeline-preserves-provenance](0004-pipeline-preserves-provenance.md) | Prove provenance survives `dedup`/`prune`/`quantize`/`draco` — the test that currently exists only for `label` | 🔜 open |
 
 0001 and 0002 both edit `main.ts`; land them in order rather than in parallel. 0003 is
 client-side (`src/export/gltf.ts`) and 0004 is server-side (`pipeline.ts`), but 0004
 tests what 0003 writes, so it follows.
 
-## Running the 0001 migration
+## Running the migration (0001 + 0002)
 
 New uploads are correct the moment 0001 lands — `scanIdFor()` derives from the filename.
 Worlds already on disk need one explicit pass, **with the server stopped**:
@@ -102,6 +102,24 @@ Two things it cannot do silently:
   whichever scan won the collision. Judged acceptable: that event is already wrong. If it
   needs removing, that is a manual CI-Server cleanup. `sourceSystem` `'companion-scan'`
   does not change (CLAUDE.md do-not-rename) — only the id value moves.
+
+Ticket 0002 folded its backfill into the same script, per its own Open Q&A. The run also
+reads `SESSIONS_DIR` (default `./scans/sessions`) and clears any `ScanManifest.sessionId`
+naming a directory that does not exist — those are the client-minted `session-<ts>` ids
+that never had one. `null` is what makes a keyframe-dependent job fail at preflight with
+its intended message rather than passing on a truthy string.
+
+Two consequences of 0002 worth knowing operationally:
+
+- **More session directories.** Autosave now rotates the keyframe session, so one scan
+  maps to one session instead of one walkthrough accumulating everything. That is what
+  makes `glbFilename` single-valued, which `scan_index.ts`'s `byGlb` map assumes.
+  Retention of old session directories is out of scope.
+- **Existing browser data is untouched.** `session-<ts>` records already in a user's
+  IndexedDB stay valid keys and still list, load, resume and delete — the database name
+  `'ci-xr-scan'` is on CLAUDE.md's do-not-rename list precisely because its contents are
+  the user's. What changes is that no *new* record takes that shape and no such id is ever
+  sent to the server as a session reference.
 
 ## Atlas diff
 

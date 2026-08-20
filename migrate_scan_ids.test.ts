@@ -264,6 +264,64 @@ Deno.test('migrateWorldScanIds: a second pass over an already-migrated world cha
   assertEquals(JSON.stringify(world), JSON.stringify(afterFirst))
 })
 
+// ── Session backfill (ticket 0002, folded into this migration) ─────────────
+
+Deno.test('migrateWorldScanIds: a sessionId with no directory is cleared to null', () => {
+  const world = makeWorld({
+    scans: [
+      makeScan({ filename: 'a.glb', sessionId: 'session-1787174216556', frameSetUrl: '/worlds/default/frames/x' }),
+      makeScan({ filename: 'b.glb', sessionId: 'sess-real-one' }),
+    ],
+  })
+
+  const result = migrateWorldScanIds(world, () => {}, { sessionExists: (id) => id === 'sess-real-one' })
+
+  assertEquals(world.scans[0].sessionId, null)
+  assertEquals(world.scans[0].frameSetUrl, undefined, 'a scan with no session has no frame set')
+  assertEquals(world.scans[1].sessionId, 'sess-real-one', 'a real session is left alone')
+  assertEquals(result.sessionsCleared.length, 1)
+  assertEquals(result.sessionsCleared[0].sessionId, 'session-1787174216556')
+})
+
+Deno.test('migrateWorldScanIds: the backfill is a no-op on a second run', () => {
+  const world = makeWorld({
+    scans: [makeScan({ filename: 'a.glb', sessionId: 'session-1787174216556' })],
+  })
+  const opts = { sessionExists: () => false }
+
+  migrateWorldScanIds(world, () => {}, opts)
+  const second = migrateWorldScanIds(world, () => {}, opts)
+
+  assertEquals(second.changed, false)
+  assertEquals(second.sessionsCleared.length, 0)
+})
+
+Deno.test('migrateWorldScanIds: clearing a session still re-points that scan’s patches correctly', () => {
+  // Order matters: the legacy scanId is derived from sessionId, so the grouping
+  // has to happen before the backfill nulls it. If it did not, the patch below
+  // would be left dangling.
+  const world = makeWorld({
+    scans: [makeScan({ filename: '1787000000001_solo.glb', sessionId: 'session-42', scanId: 'scan-session-42' })],
+    editPatches: [makePatch({ patchId: 'patch-solo', scanId: 'scan-session-42' })],
+  })
+
+  migrateWorldScanIds(world, () => {}, { sessionExists: () => false })
+
+  assertEquals(world.scans[0].sessionId, null)
+  assertEquals(world.editPatches[0].scanId, 'scan-1787000000001_solo')
+})
+
+Deno.test('migrateWorldScanIds: with no sessionExists supplied, session ids are left untouched', () => {
+  const world = makeWorld({
+    scans: [makeScan({ filename: 'a.glb', sessionId: 'session-1787174216556' })],
+  })
+
+  const result = migrateWorldScanIds(world)
+
+  assertEquals(world.scans[0].sessionId, 'session-1787174216556')
+  assertEquals(result.sessionsCleared.length, 0)
+})
+
 // ── File-level driver ──────────────────────────────────────────────────────
 
 async function withWorldsDir(
@@ -316,6 +374,39 @@ Deno.test('migrateScanIds: a JSON file that is not a world file throws rather th
       Error,
       "no 'scans' array",
     )
+  })
+})
+
+Deno.test('migrateScanIds: sessionsDir drives the backfill end to end', async () => {
+  const fixture = await Deno.readTextFile(FIXTURE_URL)
+  await withWorldsDir({ 'default.json': fixture }, async (dir) => {
+    // A sessions root that exists but holds none of the fixture's ids: every
+    // one of them is a phantom, which is the real-world state this backfills.
+    const sessionsDir = `${dir}/sessions`
+    await Deno.mkdir(sessionsDir)
+
+    await migrateScanIds({ worldsDir: dir, sessionsDir, log: () => {} })
+
+    const world = JSON.parse(await Deno.readTextFile(`${dir}/default.json`)) as WorldProject
+    for (const scan of world.scans) {
+      assertEquals(scan.sessionId, null, `${scan.filename} should have lost its phantom session`)
+      assertEquals(scan.frameSetUrl, undefined)
+    }
+  })
+})
+
+Deno.test('migrateScanIds: a scan whose session directory really exists keeps it', async () => {
+  const fixture = await Deno.readTextFile(FIXTURE_URL)
+  await withWorldsDir({ 'default.json': fixture }, async (dir) => {
+    const sessionsDir = `${dir}/sessions`
+    await Deno.mkdir(`${sessionsDir}/sess-video-ingest-9001`, { recursive: true })
+
+    await migrateScanIds({ worldsDir: dir, sessionsDir, log: () => {} })
+
+    const world = JSON.parse(await Deno.readTextFile(`${dir}/default.json`)) as WorldProject
+    const ingest = world.scans.find(s => s.filename === 'sess-video-ingest-9001.glb')!
+    assertEquals(ingest.sessionId, 'sess-video-ingest-9001')
+    assert(ingest.frameSetUrl?.includes('scan-sess-video-ingest-9001'))
   })
 })
 

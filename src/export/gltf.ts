@@ -22,6 +22,7 @@ import type { DetectionStore } from '../scene/store'
 import type { PointCloud } from '../scene/pointcloud'
 import type { Pose } from '../ar/provider'
 import { isQueuedOffline } from '../shared/offline-queue'
+import { isServerSessionId } from '../shared/session-id.ts'
 import type { ScanEntry } from '../project/project-store'
 import type { GeoFix } from '../geo/geo-tracker'
 import type { ScanQualitySummary } from '../world/types'
@@ -127,11 +128,17 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
   const roomName   = scanEntry?.roomId   ? `Room_${scanEntry.roomId.slice(-4)}`    : 'Room_Unknown'
   const scanName   = scanEntry?.name     ?? `scan-${store.sessionId.slice(-6)}`
 
+  // The server session id, or null. `store.sessionId` may be a `local-…` id
+  // when keyframe streaming never started, and a local id names no directory —
+  // writing it here is what made every scan claim keyframes it did not have.
+  // null is the honest value, and ScanManifest.sessionId already allows it.
+  const serverSessionId = isServerSessionId(store.sessionId) ? store.sessionId : null
+
   scene.userData = {
     generator:       'ci-spatial',
     version:         '2.0',
     capturedAt:      new Date().toISOString(),
-    sessionId:       store.sessionId,
+    sessionId:       serverSessionId,
     scanName,
     floorName,
     roomName,
@@ -283,7 +290,10 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
         worldRot:           det.worldRot,
         bbox:               det.bbox,
         dimensions:         { w: bw, h: bh, d: bd },
-        sourceScanIds:      [store.sessionId],
+        // NOTE: this holds a *session* id under a *scan* id's name, and has no
+        // readers anywhere today. Left as-is beyond dropping local ids; giving
+        // it real scan ids is wave 08's cross-session correspondence work.
+        sourceScanIds:      serverSessionId ? [serverSessionId] : [],
         reviewedByUser:     false,
         ignored:            false,
         structuralCategory: inferClass(det.label) === 'architecture' ? 'structural' : 'non-structural',
@@ -349,7 +359,10 @@ async function uploadToServer(
       labels: [...store.detections.values()].map(d => d.label),
       exportedAt: new Date().toISOString(),
       capturedAt: new Date().toISOString(),
-      sessionId:  store.sessionId,
+      // Server session id or null — main.ts reads this straight into
+      // ScanManifest.sessionId, so a local id here would name a directory
+      // that does not exist. See scene.userData above.
+      sessionId:  isServerSessionId(store.sessionId) ? store.sessionId : null,
       scanName: filename.replace(/\.glb$/, ''),
       autoSaved,
       pointCount: pointCloud.count,

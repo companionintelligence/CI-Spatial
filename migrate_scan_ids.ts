@@ -66,11 +66,29 @@ export interface WorldMigrationResult {
   patchesRepointed: number
   jobsRepointed: number
   ambiguous: AmbiguousRemap[]
+  /** Scans whose sessionId named no directory and was reset to null (0002). */
+  sessionsCleared: Array<{ filename: string; sessionId: string }>
+}
+
+export interface MigrateWorldScanIdsOptions {
+  /**
+   * Whether a capture-session directory exists on disk, by id. Supplied by the
+   * caller — resolved once, outside the world lock (ADR 0004) — so this core
+   * stays pure and unit-testable. Omit it to skip the session backfill
+   * entirely, which is what a caller with no `sessionsDir` wants.
+   */
+  sessionExists?: (sessionId: string) => boolean
 }
 
 export interface MigrateScanIdsOptions {
   /** Same meaning/default as main.ts's WORLDS_DIR env var. */
   worldsDir: string
+  /**
+   * Same meaning/default as main.ts's SESSIONS_DIR env var. When given, scans
+   * whose `sessionId` names no directory under it are backfilled to `null`
+   * (ticket 0002). Omit to migrate scan ids only.
+   */
+  sessionsDir?: string
   log?: (line: string) => void
 }
 
@@ -139,6 +157,7 @@ function newestOf(scans: ScanManifest[]): ScanManifest {
 export function migrateWorldScanIds(
   world: WorldProject,
   log: (line: string) => void = () => {},
+  opts: MigrateWorldScanIdsOptions = {},
 ): WorldMigrationResult {
   const slug = world.shareSlug
   const result: WorldMigrationResult = {
@@ -148,6 +167,7 @@ export function migrateWorldScanIds(
     patchesRepointed: 0,
     jobsRepointed: 0,
     ambiguous: [],
+    sessionsCleared: [],
   }
 
   const nextIdOf = new Map<ScanManifest, string>()
@@ -190,6 +210,22 @@ export function migrateWorldScanIds(
     if (scan.scanId !== next) {
       result.scansReided.push({ filename: scan.filename, from: scan.scanId, to: next })
       scan.scanId = next
+      result.changed = true
+    }
+
+    // Ticket 0002's backfill: a session id with no directory on disk is not a
+    // session. These are the client-minted `session-<ts>` ids that named a
+    // path only the server ever created — null is the honest value, and it is
+    // what makes the keyframe-job preflight fail with its intended message
+    // instead of passing on a truthy string. Runs after the legacy-id grouping
+    // above, which needs the original sessionId to reconstruct the old scanId.
+    if (scan.sessionId && opts.sessionExists && !opts.sessionExists(scan.sessionId)) {
+      result.sessionsCleared.push({ filename: scan.filename, sessionId: scan.sessionId })
+      log(
+        `[migrate-scan-ids] ${slug}: ${scan.filename} named session '${scan.sessionId}', which has ` +
+          `no directory on disk — clearing to null`,
+      )
+      scan.sessionId = null
       result.changed = true
     }
     // frameSetUrl embeds the scanId, so a stale one 404s against
@@ -291,6 +327,24 @@ export async function migrateScanIds(opts: MigrateScanIdsOptions): Promise<Migra
     return summary
   }
 
+  // One listing for the whole run, taken before any lock: the session backfill
+  // needs to know which directories exist, and ADR 0004 keeps I/O out of the
+  // critical section. A directory created while the migration runs would be
+  // missed — which is exactly why the script demands the server be stopped.
+  let sessionExists: ((sessionId: string) => boolean) | undefined
+  if (opts.sessionsDir) {
+    const present = new Set<string>()
+    try {
+      for await (const entry of Deno.readDir(opts.sessionsDir)) {
+        if (entry.isDirectory) present.add(entry.name)
+      }
+    } catch (err) {
+      if (!(err instanceof Deno.errors.NotFound)) throw err
+      log(`[migrate-scan-ids] no sessions directory at ${opts.sessionsDir} — every session id reads as absent.`)
+    }
+    sessionExists = (sessionId: string) => present.has(sessionId)
+  }
+
   for (const name of names) {
     const path = `${worldsDir}/${name}`
     const slug = safeSlug(name.replace(/\.json$/, ''))
@@ -320,7 +374,7 @@ export async function migrateScanIds(opts: MigrateScanIdsOptions): Promise<Migra
       world.editPatches ??= []
       world.jobs ??= []
 
-      const outcome = migrateWorldScanIds(world, log)
+      const outcome = migrateWorldScanIds(world, log, { sessionExists })
       if (outcome.changed) {
         world.updatedAt = new Date().toISOString()
         const tmp = `${path}.${crypto.randomUUID()}.tmp`
@@ -336,6 +390,7 @@ export async function migrateScanIds(opts: MigrateScanIdsOptions): Promise<Migra
       log(
         `[migrate-scan-ids] ${result.slug}: re-ided ${result.scansReided.length} scan(s), ` +
           `re-pointed ${result.patchesRepointed} patch(es) and ${result.jobsRepointed} job(s)` +
+          `${result.sessionsCleared.length > 0 ? `, cleared ${result.sessionsCleared.length} phantom session id(s)` : ''}` +
           `${result.ambiguous.length > 0 ? `, ${result.ambiguous.length} ambiguous` : ''} — wrote ${path}`,
       )
     } else {
@@ -348,19 +403,23 @@ export async function migrateScanIds(opts: MigrateScanIdsOptions): Promise<Migra
 
 if (import.meta.main) {
   const worldsDir = Deno.env.get('WORLDS_DIR') ?? './worlds'
+  const scansDir = Deno.env.get('SCANS_DIR') ?? './scans'
+  const sessionsDir = Deno.env.get('SESSIONS_DIR') ?? `${scansDir}/sessions`
   console.warn(
     `[migrate-scan-ids] Run this with the server STOPPED. The per-slug world lock is in-process ` +
       `only (ADR 0004), so it cannot exclude a running server writing ${worldsDir}.`,
   )
   try {
-    const summary = await migrateScanIds({ worldsDir })
+    const summary = await migrateScanIds({ worldsDir, sessionsDir })
     const ambiguous = summary.worlds.reduce((n, w) => n + w.ambiguous.length, 0)
     const reided = summary.worlds.reduce((n, w) => n + w.scansReided.length, 0)
     const patches = summary.worlds.reduce((n, w) => n + w.patchesRepointed, 0)
     const jobs = summary.worlds.reduce((n, w) => n + w.jobsRepointed, 0)
+    const cleared = summary.worlds.reduce((n, w) => n + w.sessionsCleared.length, 0)
     console.log(
       `[migrate-scan-ids] done: ${summary.filesWritten} world file(s) written, ${reided} scan(s) ` +
-        `re-ided, ${patches} patch(es) and ${jobs} job(s) re-pointed, ${ambiguous} ambiguous.`,
+        `re-ided, ${patches} patch(es) and ${jobs} job(s) re-pointed, ${cleared} phantom session ` +
+        `id(s) cleared, ${ambiguous} ambiguous.`,
     )
     if (ambiguous > 0) {
       console.log(

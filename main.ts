@@ -47,6 +47,7 @@ import {
 } from './world_job_pump.ts'
 import { withWorldLock } from './world_lock.ts'
 import { safeSlug, scanIdFor } from './scan_id.ts'
+import { newServerSessionId, resolveSessionDir, sessionDirPath } from './session_id.ts'
 import { loadSessionIndex, sessionForScan, type SessionIndex } from './scan_index.ts'
 import { pruneScansMissingFromDisk } from './world_prune.ts'
 import { runLingBotMapReconstruction } from './lingbot_map.ts'
@@ -738,15 +739,26 @@ app.delete('/scans', async (c) => {
 // On finalize the session is linked to the exported .glb.  This is the raw
 // input a dense-reconstruction stage (photogrammetry / splats) consumes.
 
-const SESSION_ID_RE = /^(sess|session)-[a-z0-9-]+$/
 const KEYFRAME_FILE_RE = /^kf-\d{5}\.jpg$/
 
-function sessionDir(id: string): string | null {
-  return SESSION_ID_RE.test(id) ? `${SESSIONS_DIR}/${id}` : null
+/**
+ * Shape-only resolution, bound to this server's SESSIONS_DIR. Says nothing
+ * about existence — use `resolveSessionDirFor` where that matters.
+ */
+function sessionDir(id: string | null | undefined): string | null {
+  return sessionDirPath(SESSIONS_DIR, id)
+}
+
+/** Shape *and* existence. See session_id.ts for why both resolvers exist. */
+function resolveSessionDirFor(id: string | null | undefined): Promise<string | null> {
+  return resolveSessionDir(SESSIONS_DIR, id)
 }
 
 app.post('/sessions', async (c) => {
-  const sessionId = `sess-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  // The single minting site for a capture-session id, and the only place that
+  // creates the directory one names. Both halves living here is what makes the
+  // id trustworthy downstream.
+  const sessionId = newServerSessionId()
   await Deno.mkdir(`${SESSIONS_DIR}/${sessionId}`, { recursive: true })
   const record = { sessionId, startedAt: new Date().toISOString(), keyframeCount: 0 }
   await Deno.writeTextFile(`${SESSIONS_DIR}/${sessionId}/session.json`, JSON.stringify(record, null, 2))
@@ -2010,10 +2022,11 @@ async function _dispatchWorldJob(slug: string, jobId: string): Promise<void> {
     // "Single-flight execution".
     await sleep(650)
     try {
+      const placeholderPreflight = await keyframePreflight(slug, jobId)
       const { world: current, value: currentJob } = await updateWorld(slug, (current) => {
         const currentJob = current.jobs.find(j => j.jobId === jobId)
         if (!currentJob || currentJob.status === 'failed') return null
-        const failure = jobFailureReason(currentJob, current)
+        const failure = jobFailureReason(currentJob, current, placeholderPreflight)
         if (failure) {
           currentJob.status = 'failed'
           currentJob.error = failure
@@ -2590,10 +2603,11 @@ function markJobFailed(job: WorldJob, reason: string): WorldJob {
 function claimScanJob(
   world: WorldProject,
   jobId: string,
+  preflight: JobPreflight = {},
 ): { ok: true; job: WorldJob; scan: ScanManifest } | { ok: false; job: WorldJob } | null {
   const job = world.jobs.find(j => j.jobId === jobId)
   if (!job) return null
-  const failure = jobFailureReason(job, world)
+  const failure = jobFailureReason(job, world, preflight)
   if (failure) return { ok: false, job: markJobFailed(job, failure) }
   // jobFailureReason already rejected every scan-backed type without a scan.
   return { ok: true, job, scan: scanForJob(job, world)! }
@@ -2609,7 +2623,8 @@ async function claimJobScan(
   slug: string,
   jobId: string,
 ): Promise<{ scan: ScanManifest; payload: WorldJob['payload'] } | null> {
-  const { world, value: claimed } = await updateWorld(slug, (world) => claimScanJob(world, jobId))
+  const preflight = await keyframePreflight(slug, jobId)
+  const { world, value: claimed } = await updateWorld(slug, (world) => claimScanJob(world, jobId, preflight))
   if (!claimed) return null
   if (!claimed.ok) {
     broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job: claimed.job })
@@ -2627,9 +2642,12 @@ async function claimSessionJob(
   slug: string,
   jobId: string,
 ): Promise<{ scan: ScanManifest; sessionId: string; sessionPath: string } | null> {
+  const preflight = await keyframePreflight(slug, jobId)
   const { world, value: start } = await updateWorld(slug, (world) => {
-    const claimed = claimScanJob(world, jobId)
+    const claimed = claimScanJob(world, jobId, preflight)
     if (!claimed?.ok) return claimed
+    // Reached only when preflight already proved the directory exists, so this
+    // is the shape resolver: it builds the path rather than re-proving it.
     const sessionPath = claimed.scan.sessionId ? sessionDir(claimed.scan.sessionId) : null
     if (!sessionPath) {
       return {
@@ -2698,7 +2716,47 @@ function scanForJob(job: WorldJob, world: WorldProject): ScanManifest | null {
   return world.scans.find(scan => scan.scanId === job.scanId || scan.filename === job.scanId) ?? null
 }
 
-function jobFailureReason(job: WorldJob, world: WorldProject): string | null {
+/** The job types that cannot run without RGB keyframe observations. */
+const KEYFRAME_JOB_TYPES = ['depth-reconstruct', 'lingbot-map-reconstruct', 'splat-train']
+
+/**
+ * Filesystem facts `jobFailureReason` needs but must not look up itself.
+ *
+ * It runs inside `updateWorld` mutators, and ADR 0004 keeps I/O out of that
+ * critical section — so existence is resolved by `keyframePreflight()` before
+ * the lock is taken and passed in. Absent means "not resolved", which falls
+ * back to the shape-only check rather than inventing a verdict.
+ */
+interface JobPreflight {
+  /** Whether the scan's keyframe session directory is present on disk. */
+  keyframeDirExists?: boolean
+}
+
+/**
+ * Resolve the filesystem half of a job's preflight, outside the world lock.
+ *
+ * Reads one locked snapshot, then stats — so the answer is a snapshot older
+ * than the write that consumes it. That staleness is benign: it can only make
+ * preflight miss a directory that vanished in the last instant, and the runner
+ * still fails on it. What it buys is the failure landing at preflight, with
+ * the actionable message, for the case that actually happens — an id that was
+ * never a server session at all.
+ */
+async function keyframePreflight(slug: string, jobId: string): Promise<JobPreflight> {
+  try {
+    const world = await loadWorld(slug)
+    const job = world.jobs.find(j => j.jobId === jobId)
+    if (!job || !KEYFRAME_JOB_TYPES.includes(job.type)) return {}
+    const scan = scanForJob(job, world)
+    if (!scan?.sessionId) return {}
+    return { keyframeDirExists: await resolveSessionDirFor(scan.sessionId) !== null }
+  } catch {
+    // A preflight hint is never worth failing a dispatch over.
+    return {}
+  }
+}
+
+function jobFailureReason(job: WorldJob, world: WorldProject, preflight: JobPreflight = {}): string | null {
   const scan = scanForJob(job, world)
   if (['align-scan', 'extract-layers', 'semantic-pass', 'depth-reconstruct', 'lingbot-map-reconstruct', 'splat-train', 'splat-detect', 'splat-finish', 'memory-push'].includes(job.type) && !scan) {
     return `${job.type} requires a selected scan.`
@@ -2706,7 +2764,12 @@ function jobFailureReason(job: WorldJob, world: WorldProject): string | null {
   if (job.type === 'memory-push' && !memoryPushCfg.enabled) {
     return 'Companion Memory is not connected. Connect it from the Hub, or set CI_SERVER_URL and CI_SERVER_TOKEN.'
   }
-  if ((job.type === 'depth-reconstruct' || job.type === 'lingbot-map-reconstruct' || job.type === 'splat-train') && scan && !scan.sessionId) {
+  // A sessionId that names no directory is not a session. Until this checked
+  // existence, the guard was defeated by its own truthiness: the id was a
+  // non-empty string, so preflight passed and the job failed later inside the
+  // runner, where the message is about a missing path instead of about the
+  // thing the user can actually do something about.
+  if (KEYFRAME_JOB_TYPES.includes(job.type) && scan && (!scan.sessionId || preflight.keyframeDirExists === false)) {
     return `${job.type} requires RGB keyframe observations. Start keyframe streaming before export.`
   }
   if (job.type === 'align-scan' && world.scans.length < 2) {
@@ -2864,13 +2927,25 @@ function jobArtifactsFor(job: WorldJob, world: WorldProject): WorldJob['artifact
 
 async function frameObservationsForScan(scan: ScanManifest, limit = 500): Promise<FrameObservation[]> {
   if (!scan.sessionId) return []
-  const dir = sessionDir(scan.sessionId)
-  if (!dir) return []
+
+  // "No such session" and "a session that streamed nothing" both used to
+  // return [] silently, which is how four scans pointing at a directory that
+  // was never created looked exactly like four scans with no keyframes. They
+  // are different failures and only one of them is a bug, so say which.
+  const dir = await resolveSessionDirFor(scan.sessionId)
+  if (!dir) {
+    console.warn(
+      `[frames] scan ${scan.scanId} names session '${scan.sessionId}', which has no directory under ` +
+      `${SESSIONS_DIR}. Its keyframes are unreachable — the id is stale or was never a server session.`,
+    )
+    return []
+  }
 
   let raw = ''
   try {
     raw = await Deno.readTextFile(`${dir}/keyframes.jsonl`)
   } catch {
+    // The session exists and simply streamed nothing. Not an error.
     return []
   }
 

@@ -90,6 +90,15 @@ export class KeyframeStreamer {
 
   onStatus: ((s: StreamerStatus) => void) | null = null
 
+  /**
+   * Fires when the server session id changes — the id on `start()`, `null` on
+   * `stop()`. The streamer used to hold this privately, which is how the
+   * client and the server ended up naming a capture session differently: the
+   * only id that names a real directory was never published to anything that
+   * writes it into a scan. `src/main.ts` wires this to `DetectionStore`.
+   */
+  onSessionId: ((sessionId: string | null) => void) | null = null
+
   constructor(
     private readonly provider: ARProvider,
     opts: KeyframeStreamerOptions = {},
@@ -131,6 +140,7 @@ export class KeyframeStreamer {
     this._active = true
     this._pollHandle = setInterval(() => void this._tick(), this._opts.pollIntervalMs)
     this._emit()
+    this.onSessionId?.(sessionId)
     console.log(`[keyframes] streaming to ${sessionId}`)
   }
 
