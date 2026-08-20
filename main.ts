@@ -2500,7 +2500,13 @@ async function _runOptimizeScanJob(slug: string, jobId: string): Promise<void> {
     const glb = await Deno.readFile(sourcePath)
     console.log(`[world-jobs] optimizing ${filename} (${(glb.byteLength / 1024).toFixed(0)} KB)`)
 
-    const result = await optimizeScan(glb)
+    // Stamp the one provenance field the client cannot know. Derived from the
+    // filename rather than looked up in world.scans: since 07-scan-identity/0001
+    // `scanManifestFromStored` sets `scanId = scanIdFor(filename)`, so the two
+    // are identical by construction — and deriving also works in the window
+    // between an upload and `refreshWorldScans` adding the entry, where a
+    // lookup would find nothing and silently stamp nothing.
+    const result = await optimizeScan(glb, { provenance: { scanId: scanIdFor(filename) } })
     const base = filename.replace(/\.glb$/, '')
 
     const optimizedName = `${base}.opt.glb`

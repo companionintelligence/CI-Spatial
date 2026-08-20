@@ -70,7 +70,11 @@ survives the optimize pass.
 | 0001 | [unique-scan-id-per-upload](0001-unique-scan-id-per-upload.md) | **Stop discarding three scans out of four** — derive `scanId` from the uploaded GLB, and migrate the worlds that already collided | ✅ landed |
 | 0002 | [one-session-identity](0002-one-session-identity.md) | Reconcile the two rival session-id namespaces, and set the `glbFilename` backlink on every path that ends a session — not just manual export | ✅ landed |
 | 0003 | [node-level-glb-provenance](0003-node-level-glb-provenance.md) | Put session/scan/capture identity on every node, and fix the `sourceScanIds`/`sourceScan` mismatch that has blanked the inspector since it was written | ✅ landed |
-| 0004 | [pipeline-preserves-provenance](0004-pipeline-preserves-provenance.md) | Prove provenance survives `dedup`/`prune`/`quantize`/`draco` — the test that currently exists only for `label` | 🔜 open |
+| 0004 | [pipeline-preserves-provenance](0004-pipeline-preserves-provenance.md) | Prove provenance survives `dedup`/`prune`/`quantize`/`draco` — the test that currently exists only for `label` | ✅ landed |
+
+**The wave is complete.** Wave 08 (`08-places-and-things`) is unblocked: two scans of the
+same room are now distinguishable, which is what it needs to build Project-as-place,
+cross-session object correspondence and the timeline scrubber.
 
 0001 and 0002 both edit `main.ts`; land them in order rather than in parallel. 0003 is
 client-side (`src/export/gltf.ts`) and 0004 is server-side (`pipeline.ts`), but 0004

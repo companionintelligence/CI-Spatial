@@ -74,10 +74,17 @@ export interface DetectionProvenance extends ScanProvenance {
 }
 
 /**
- * The extras keys that must survive the optimize pipeline (ticket 0004's
- * guard). A runtime value, not just a type — `prune()` runs with
- * `keepExtras: false` and `quantize()` reshapes detection nodes, so something
- * has to name these explicitly.
+ * The extras keys that must survive the optimize pipeline. A runtime value,
+ * not just a type, which is why this file is in `src/shared/`.
+ *
+ * These live on **nodes only** — never on a Mesh, Primitive, Accessor,
+ * Material or Texture. Those five are exactly `DEDUP_DEFAULTS.propertyTypes`
+ * in `@gltf-transform/functions`, with `keepUniqueNames: false`, so anything
+ * hung off a mesh is a merge candidate: two walkthroughs of one place contain
+ * byte-identical detection boxes, and merging them would attribute one
+ * session's geometry to the other. `NODE` is absent from that list, which is
+ * the whole reason node extras are safe. `pipeline.ts`'s header states the
+ * same invariant from the other side; do not move a key onto a mesh.
  */
 export const NODE_PROVENANCE_KEYS = [
   'sessionId',

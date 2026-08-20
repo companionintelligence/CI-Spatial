@@ -17,6 +17,34 @@
  *
  * This module is runtime-agnostic (no Deno/Node globals) so the same code runs
  * in the Deno server and under Node for tests (`npm run smoke:pipeline`).
+ *
+ * ── Provenance invariant: extras live on NODES only ────────────────────────
+ *
+ * Per-node provenance (`src/shared/provenance.ts` — sessionId, scanId,
+ * capturedAt, captureIndex, sourceScanIds) must never be written to a Mesh,
+ * Primitive, Accessor, Material or Texture. Those five are exactly
+ * `DEDUP_DEFAULTS.propertyTypes` in @gltf-transform/functions@4.4.0, and
+ * `keepUniqueNames` defaults to false — so differing names do not prevent a
+ * merge. Two walkthroughs of one place plausibly contain byte-identical
+ * geometry (every detection box is a BoxGeometry built from the same bbox
+ * maths, every floor plane a PlaneGeometry), so anything hung off a mesh
+ * would be silently merged across sessions, attributing one session's
+ * geometry to the other. `NODE` is absent from that list, which is what makes
+ * node extras safe.
+ *
+ * Two consequences worth knowing before editing the transforms below:
+ *
+ *  - `prune()` is called with `keepExtras: true`. The default is false, and
+ *    `nodeTreeShake()` disposes a node when `isEmpty && !isUsed &&
+ *    !needsExtras` — so an extras-bearing node with no mesh and no children
+ *    is deleted outright. `Room_*`/`Floor_*` are exactly that shape for an
+ *    autosave taken early in a session.
+ *  - `quantize()` cannot put a dequantization transform on a node that has
+ *    both a mesh and children, so it hoists the mesh into a new unnamed child
+ *    with no extras. The labelled node keeps its own extras and stays the
+ *    ancestor, so provenance is still reachable — by walking UP from
+ *    geometry, never by assuming the mesh-bearing node carries it. That is
+ *    the rule `src/viewer/detections.ts` already implements for detections.
  */
 import { Document, NodeIO, Primitive, type Accessor } from '@gltf-transform/core'
 import { ALL_EXTENSIONS, KHRDracoMeshCompression, KHRMeshQuantization } from '@gltf-transform/extensions'
@@ -63,6 +91,16 @@ export interface PipelineOptions {
   lodVoxelsM?: number[]
   /** Skip LOD generation when the cloud has fewer points than this. Default 5000. */
   lodMinPoints?: number
+  /**
+   * Server-side provenance stamped onto every node before the transforms run.
+   *
+   * `scanId` is the one provenance field the client cannot know — it is
+   * derived from the stored filename, which the server chooses, so the
+   * exporter writes `sessionId` + `capturedAt` and this fills the gap. Omit it
+   * for callers with no scan context (the smoke script, fixtures); nothing is
+   * stamped then, rather than `undefined` being written.
+   */
+  provenance?: { scanId: string }
 }
 
 const DEFAULT_LOD_VOXELS_M = [0.3, 0.12]
@@ -104,9 +142,14 @@ export async function optimizeScan(
   const doc = await stage(stages, 'parse', () => io.readBinary(glb))
   const stats: PipelineStats = { ...collectStats(doc), sourceBytes: glb.byteLength }
 
+  // Stamped before any transform, not after the write, so it is subject to the
+  // same preservation guarantees as everything the exporter wrote — and so the
+  // tests exercise the real path rather than a post-write patch.
+  if (opts.provenance) stampScanId(doc, opts.provenance.scanId)
+
   // ── Clean-up passes (shared by all artifacts) ──────────────────────────────
   await stage(stages, 'dedup+prune', async () => {
-    await doc.transform(dedup(), prune())
+    await doc.transform(dedup(), prune({ keepExtras: true }))
   })
 
   // ── Point-cloud LODs — built BEFORE quantization while positions are still
@@ -118,7 +161,7 @@ export async function optimizeScan(
         const t0 = Date.now()
         const lodDoc = cloneDocument(doc)
         const remaining = downsamplePointPrimitives(lodDoc, voxelM)
-        await lodDoc.transform(prune(), quantize({ quantizePosition: 14, quantizeColor: 8 }))
+        await lodDoc.transform(prune({ keepExtras: true }), quantize({ quantizePosition: 14, quantizeColor: 8 }))
         const bytes = await io.writeBinary(lodDoc)
         lods.push({ bytes, points: remaining, voxelM, draco: false, quantized: true })
         stages.push({ name: `lod@${voxelM}m`, ok: true, ms: Date.now() - t0, note: `${remaining} pts` })
@@ -219,6 +262,24 @@ async function stage<T>(
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
+}
+
+/**
+ * Write `scanId` into every node's extras, merging rather than replacing.
+ *
+ * Nodes only — never a Mesh, Primitive, Accessor, Material or Texture; see the
+ * dedup invariant in this file's header. Existing extras are preserved: the
+ * exporter's `sessionId`/`capturedAt`/`captureIndex`/`sourceScanIds` are on
+ * these same nodes and must survive.
+ *
+ * Every node is stamped, not only the labelled ones, because `quantize()` will
+ * hoist meshes into new unnamed children and a consumer resolving provenance
+ * by ancestor walk should find the same answer from anywhere in the tree.
+ */
+function stampScanId(doc: Document, scanId: string): void {
+  for (const node of doc.getRoot().listNodes()) {
+    node.setExtras({ ...node.getExtras(), scanId })
+  }
 }
 
 function collectStats(doc: Document): Omit<PipelineStats, 'sourceBytes'> {
