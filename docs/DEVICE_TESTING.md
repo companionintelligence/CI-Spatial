@@ -133,6 +133,27 @@ connection seems to hang or reset, run `netstat -ano | findstr :8080` and
 check which PID actually owns `127.0.0.1:8080` before assuming the phone is
 the problem.
 
+### Connecting Claude Code (remote, over a tunnel)
+
+When USB/adb isn't available — Claude Code running on a machine that can't
+reach the device over USB, or the device is on a different network — front
+the app's **Server** with an HTTP tunnel (e.g. a `trycloudflare.com` quick
+tunnel) instead of `adb forward`. `.mcp.json`'s `android-tab-s8-ultra-tunnel`
+entry points at `${ANDROID_MCP_TUNNEL_URL}` with the same
+`${ANDROID_MCP_TOKEN}` bearer auth as the local entry:
+
+```bash
+export ANDROID_MCP_TOKEN=<token from the app's Settings → Access>
+export ANDROID_MCP_TUNNEL_URL=<https://…/mcp URL fronting the device's :8080>
+```
+
+Quick tunnels are ephemeral and die with the process that opened them — if
+the connection starts failing mid-session, check whether the tunnel is still
+up before assuming the device or token changed. If multiple Android devices
+are adb-attached, confirm which physical device the tunnel actually fronts
+(e.g. via a screenshot/device-info call once connected) — a token that 401s
+on one device's app instance may still be valid for another's.
+
 ### Security notes (from upstream)
 
 - Default bind is `127.0.0.1` — leave it there; `0.0.0.0` exposes the server

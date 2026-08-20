@@ -6,6 +6,13 @@
       "headers": {
         "Authorization": "Bearer ${ANDROID_MCP_TOKEN}"
       }
+    },
+    "android-tab-s8-ultra-tunnel": {
+      "type": "http",
+      "url": "${ANDROID_MCP_TUNNEL_URL}",
+      "headers": {
+        "Authorization": "Bearer ${ANDROID_MCP_TOKEN}"
+      }
     }
   }
 }
