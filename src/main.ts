@@ -29,6 +29,7 @@ import { AROverlay } from './ui/overlay'
 import { SidePanel, type ExportOutcome } from './ui/panel'
 import { SessionHistory } from './ui/history'
 import { exportToGLB } from './export/gltf'
+import { isServerSessionId } from './shared/session-id.ts'
 import { exportSessionSummary } from './export/summary'
 import { GeoTracker, type GeoFix } from './geo/geo-tracker'
 import { RtcBroadcaster } from './rtc/broadcaster'
@@ -190,17 +191,32 @@ async function main() {
   // user action, long after assignment.
   let keyframes: KeyframeStreamer | null = null
 
-  // The most recent GLB this tab uploaded, so the session-exit paths that are
-  // not an export (the stream toggle, pagehide) can still set the backlink
-  // `session.json.glbFilename` — which is what scan_index.ts's `byGlb` map
-  // resolves a scan through when its sessionId is null.
+  // The most recent GLB this tab has EVER uploaded, across session
+  // boundaries — never reset. Lets requestServerProcessing identify "my
+  // scan" without depending on sessionId resolution.
   let lastUploadedFilename: string | undefined
+
+  // The GLB uploaded since the CURRENTLY OPEN keyframe session started —
+  // undefined whenever this session hasn't produced one yet. This is what the
+  // session-exit paths that don't have a fresh filename in hand (the stream
+  // toggle, pagehide) send as the backlink `session.json.glbFilename`, which
+  // scan_index.ts's `byGlb` map resolves a scan through when its sessionId is
+  // null. Cleared every time a new session opens (kfStreamer.onSessionId
+  // below) — reusing `lastUploadedFilename` here instead would attach a
+  // PREVIOUS session's filename to a session that produced no scan of its
+  // own, since that variable is deliberately never reset. The export/autosave
+  // handlers don't read this for their OWN rotate() calls — they already have
+  // the fresh filename in hand locally — only for the two paths that don't.
+  let currentSessionGlbFilename: string | undefined
 
   const panel = new SidePanel(
     store,
     async () => {
       const { outcome, uploadedFilename } = await exportManualScan()
-      if (uploadedFilename) lastUploadedFilename = uploadedFilename
+      if (uploadedFilename) {
+        lastUploadedFilename = uploadedFilename
+        currentSessionGlbFilename = uploadedFilename
+      }
       // Nothing was written on a cancel or a failure, so there is no scan for
       // a fresh keyframe session to be linked against.
       if (outcome !== 'cancelled' && outcome !== 'failed' && keyframes?.active) {
@@ -215,7 +231,7 @@ async function main() {
       return outcome
     },
     () => exportSessionSummary({ store, pointCloud, poseHistory, captureCount, geoFix: geoTracker.snapshot() ?? undefined }),
-    (action) => requestServerProcessing(action, store),
+    (action) => requestServerProcessing(action, store, lastUploadedFilename),
     (mode) => {
       router.setMode(mode)
       overlay.setStatus(`AI: ${mode === 'server' ? 'Server' : 'WebGPU'}`)
@@ -599,6 +615,7 @@ async function main() {
       // one-scan-to-one-session assumption false.
       if (result.uploadedFilename) {
         lastUploadedFilename = result.uploadedFilename
+        currentSessionGlbFilename = result.uploadedFilename
         if (keyframes?.active) {
           await keyframes.rotate({
             glbFilename: result.uploadedFilename,
@@ -669,13 +686,20 @@ async function main() {
   // keyframes, so reverting to a local id would strand the association. See
   // KeyframeStreamer.onSessionId.
   kfStreamer.onSessionId = (sessionId) => {
-    if (sessionId) void store.adoptServerSession(sessionId)
+    if (sessionId) {
+      void store.adoptServerSession(sessionId)
+      // A fresh session has produced no GLB of its own yet. Clearing this
+      // here — rather than leaving the previous session's value in place —
+      // is what stops a later stream-toggle-off or pagehide on THIS session
+      // from misattributing a scan it had nothing to do with.
+      currentSessionGlbFilename = undefined
+    }
   }
 
   document.getElementById('stream-btn')?.addEventListener('click', () => {
     if (kfStreamer.active) {
       void kfStreamer.stop({
-        glbFilename: lastUploadedFilename,
+        glbFilename: currentSessionGlbFilename,
         pointCount: pointCloud.count,
         detectionCount: store.detections.size,
         poseCount: poseHistory.length,
@@ -782,7 +806,7 @@ async function main() {
     try {
       if (kfStreamer.active) {
         void kfStreamer.stop({
-          glbFilename: lastUploadedFilename,
+          glbFilename: currentSessionGlbFilename,
           pointCount: pointCloud.count,
           detectionCount: store.detections.size,
           poseCount: poseHistory.length,
@@ -1369,21 +1393,35 @@ function hideInferDialog(): void {
 
 /**
  * Send a request to the server's /process-scan endpoint.
- * Deliberately does not resolve or pass a filename: /scans lists every scan on
- * the server with no session scoping, so guessing the target from list[0] here
- * (the previous approach) meant "most recently uploaded by anyone" — one user
- * could trigger processing on, and see the result for, another session's scan.
- * sessionId alone lets the server's own findFilenameBySessionId() resolve the
- * scan that actually belongs to this session.
+ *
+ * Passes `filename` explicitly when this tab has one — the GLB it most
+ * recently uploaded — rather than relying on `sessionId` alone to resolve it.
+ * `store.sessionId` may be a `local-…` placeholder (no keyframe session was
+ * ever opened, the common case for a plain export), and since
+ * src/export/gltf.ts now writes `null` server-side for exactly that case, a
+ * raw local id sent here could never match anything: `findFilenameBySessionId`
+ * does a plain string comparison against the stored value, so a `local-…`
+ * string sent by the client can never equal a stored `null`, and the request
+ * would silently fall through to the server's "most recently uploaded by
+ * anyone" fallback — reopening the cross-session misattribution this
+ * function's `filename`-avoidance was originally written to prevent.
+ * `filename` is an unambiguous identifier the server already accepts and
+ * prefers over the `sessionId` lookup, so use it when we have it; `sessionId`
+ * is still sent, filtered to the shape the server would actually recognize,
+ * as a fallback for the case this tab has no filename yet.
  */
-async function requestServerProcessing(action: string, store: DetectionStore): Promise<void> {
+async function requestServerProcessing(action: string, store: DetectionStore, filename: string | undefined): Promise<void> {
   const overlay = setupStatusOverlay()
   overlay.setStatus(`Processing: ${action}…`)
   try {
     const resp = await fetch('/process-scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action, sessionId: store.sessionId }),
+      body: JSON.stringify({
+        action,
+        filename,
+        sessionId: isServerSessionId(store.sessionId) ? store.sessionId : undefined,
+      }),
     })
     if (!resp.ok) throw new Error(`/process-scan returned ${resp.status}`)
     const result = await resp.json() as { action: string; result: string }
