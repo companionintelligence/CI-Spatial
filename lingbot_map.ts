@@ -10,6 +10,7 @@
  * child, and surfaces a structured result for the world-job coordinator to
  * persist. All model-specific logic lives in the Python worker.
  */
+import { isServerSessionId } from './src/shared/session-id.ts'
 
 // Lazy-imported inside runLingBotMapReconstruction so the Deno-only unit
 // test (lingbot_map.test.ts) doesn't pull in @gltf-transform/functions,
@@ -71,15 +72,22 @@ export interface LingBotMapResult {
   exitCode: number
 }
 
-const SESSION_ID_RE = /^(sess|session)-[a-z0-9-]+$/
-
 /**
  * Validate that a path looks like a Companion-Scan session directory.
  * Pulled out so the unit test can hit it without spawning anything.
+ *
+ * Delegates to the shared `SESSION_ID_RE` (`src/shared/session-id.ts`) rather
+ * than a local copy — this file used to carry its own, wider
+ * `/^(sess|session)-[a-z0-9-]+$/`, which kept accepting the retired
+ * client-minted `session-*` shape after 07-scan-identity/0002 cut over to
+ * `sess-*` only everywhere else. It was never reachable in practice (every
+ * caller resolves `sessionDir` through main.ts's tightened gate first), but a
+ * second copy of a validator this repo already retired one rival of is
+ * exactly what ADR 0001 exists to prevent.
  */
 export function isValidSessionDir(sessionDir: string): boolean {
   const base = sessionDir.split('/').filter(Boolean).pop() ?? ''
-  return SESSION_ID_RE.test(base)
+  return isServerSessionId(base)
 }
 
 export function buildWorkerArgs(opts: LingBotMapRunOptions): string[] {
