@@ -12,17 +12,30 @@
  *         Group "detections"
  *           Node  "<safe-label>_NNN"        ← semantic object box
  *                 extras: { objectType, class, roomName, floorName,
- *                           confidence, dimensions, sourceScanIds, … }
+ *                           confidence, dimensions, sourceScanIds,
+ *                           captureIndex, … }
  *
  * All metadata lives in node.userData which GLTFExporter writes to `extras`.
+ *
+ * EVERY node above — not only the detections — carries a ScanProvenance stamp
+ * (`sessionId`, `capturedAt`; see src/shared/provenance.ts), because
+ * `roomName`/`floorName` are place labels rather than identity: two
+ * walkthroughs of the same room both write `Room_Unknown`, so without the
+ * stamp the geometry of a merged file would be anonymous. `scanId` is the one
+ * provenance field the client does not write — the server derives it from the
+ * stored filename and stamps it during the optimize pass. The one node that
+ * stays bare is the wireframe child of a detection mesh: it is a rendering
+ * artifact, not a logical object, and stamping it would double-count in any
+ * traversal that does not guard the way hasLabelledAncestor() does.
  */
 import * as THREE from 'three'
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js'
 import type { DetectionStore } from '../scene/store'
 import type { PointCloud } from '../scene/pointcloud'
 import type { Pose } from '../ar/provider'
-import { isQueuedOffline } from '../shared/offline-queue'
+import { isQueuedOffline } from '../shared/offline-queue.ts'
 import { isServerSessionId } from '../shared/session-id.ts'
+import type { ScanProvenance } from '../shared/provenance'
 import type { ScanEntry } from '../project/project-store'
 import type { GeoFix } from '../geo/geo-tracker'
 import type { ScanQualitySummary } from '../world/types'
@@ -134,10 +147,23 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
   // null is the honest value, and ScanManifest.sessionId already allows it.
   const serverSessionId = isServerSessionId(store.sessionId) ? store.sessionId : null
 
+  // One timestamp for the whole export. The scene extras, every node stamp and
+  // the upload metadata must agree; four separate `new Date()` calls could
+  // disagree by milliseconds, which is enough to make two records of the same
+  // export look like two exports.
+  const capturedAt = new Date().toISOString()
+
+  /**
+   * Stamped onto every node the exporter writes. `scanId` is deliberately
+   * absent — the client cannot know it; the server adds it during the optimize
+   * pass (ticket 0004).
+   */
+  const nodeProvenance: ScanProvenance = { sessionId: serverSessionId, capturedAt }
+
   scene.userData = {
     generator:       'ci-spatial',
     version:         '2.0',
-    capturedAt:      new Date().toISOString(),
+    capturedAt,
     sessionId:       serverSessionId,
     scanName,
     floorName,
@@ -164,11 +190,11 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
   // ── Hierarchy: Scene > Floor group > Room group >Content ────────────────────
   const floorGroup = new THREE.Group()
   floorGroup.name = floorName
-  floorGroup.userData = { type: 'floor', floorName }
+  floorGroup.userData = { type: 'floor', floorName, ...nodeProvenance }
 
   const roomGroup = new THREE.Group()
   roomGroup.name = roomName
-  roomGroup.userData = { type: 'room', roomName, floorName, scanName }
+  roomGroup.userData = { type: 'room', roomName, floorName, scanName, ...nodeProvenance }
 
   floorGroup.add(roomGroup)
   scene.add(floorGroup)
@@ -194,7 +220,7 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
     const mat = new THREE.PointsMaterial({ vertexColors: true, size: 0.035, sizeAttenuation: true })
     const cloud = new THREE.Points(geo, mat)
     cloud.name = 'point-cloud'
-    cloud.userData = { type: 'slam_feature_points', count: pointCloud.count, roomName, floorName }
+    cloud.userData = { type: 'slam_feature_points', count: pointCloud.count, roomName, floorName, ...nodeProvenance }
     roomGroup.add(cloud)
   }
 
@@ -212,7 +238,7 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
     const pathMat = new THREE.LineBasicMaterial({ color: 0xffeb3b })
     const path = new THREE.Line(pathGeo, pathMat)
     path.name = 'camera-path'
-    path.userData = { type: 'camera_trajectory', poseCount: poseHistory.length, roomName, floorName }
+    path.userData = { type: 'camera_trajectory', poseCount: poseHistory.length, roomName, floorName, ...nodeProvenance }
     roomGroup.add(path)
   }
 
@@ -239,6 +265,7 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
       objectType: 'estimated_floor', tag: 'floor',
       roomName, floorName,
       y: floorY, widthM: roomW, depthM: roomD,
+      ...nodeProvenance,
     }
     roomGroup.add(floor)
   }
@@ -247,7 +274,7 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
   if (store.detections.size > 0) {
     const detectionsGroup = new THREE.Group()
     detectionsGroup.name = 'detections'
-    detectionsGroup.userData = { type: 'detections', roomName, floorName }
+    detectionsGroup.userData = { type: 'detections', roomName, floorName, ...nodeProvenance }
 
     let objIndex = 0
     for (const [, det] of store.detections) {
@@ -290,6 +317,14 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
         worldRot:           det.worldRot,
         bbox:               det.bbox,
         dimensions:         { w: bw, h: bh, d: bd },
+        ...nodeProvenance,
+        // Which capture produced this detection. It exists on WorldDetection,
+        // is persisted to IndexedDB, and is the summary's "Scan #" column — the
+        // GLB was the one artifact that dropped it, so a detection lost its
+        // capture attribution in exactly the file that outlives the session.
+        // Omitted rather than null when absent: "not attributed" and
+        // "attributed to nothing" are different claims.
+        ...(det.captureIndex !== undefined ? { captureIndex: det.captureIndex } : {}),
         // NOTE: this holds a *session* id under a *scan* id's name, and has no
         // readers anywhere today. Left as-is beyond dropping local ids; giving
         // it real scan ids is wave 08's cross-session correspondence work.
@@ -334,7 +369,7 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
   let uploadedFilename: string | undefined
   let uploadOutcome: UploadOutcome = 'skipped'
   if (upload) {
-    const result = await uploadToServer(buffer, filename, data, autoSaved)
+    const result = await uploadToServer(buffer, filename, data, autoSaved, capturedAt)
     uploadedFilename = result.filename
     uploadOutcome = result.outcome
   }
@@ -351,6 +386,8 @@ async function uploadToServer(
   filename: string,
   data: ExportData,
   autoSaved: boolean,
+  /** The export's single timestamp — same value the scene extras carry. */
+  capturedAt: string,
 ): Promise<{ filename?: string; outcome: UploadOutcome }> {
   const { store, pointCloud, poseHistory, geoFix, qualitySummary } = data
   try {
@@ -358,7 +395,7 @@ async function uploadToServer(
       detectionCount: store.detections.size,
       labels: [...store.detections.values()].map(d => d.label),
       exportedAt: new Date().toISOString(),
-      capturedAt: new Date().toISOString(),
+      capturedAt,
       // Server session id or null — main.ts reads this straight into
       // ScanManifest.sessionId, so a local id here would name a directory
       // that does not exist. See scene.userData above.

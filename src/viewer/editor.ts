@@ -79,7 +79,20 @@ export interface InspectorData {
   description?: string
   worldPos?: { x: number; y: number; z: number }
   dimensions?: { w: number; h: number; d: number }
-  sourceScan?: string
+  /**
+   * Plural, matching what the exporter has always written. This read used to
+   * be `ud['sourceScan']` (singular) while gltf.ts wrote `sourceScanIds`, so
+   * the field was unconditionally undefined — and nothing rendered it either,
+   * which is how the mismatch survived. See
+   * docs/factory/07-scan-identity/0003-node-level-glb-provenance.md.
+   */
+  sourceScanIds?: string[]
+  /** Per-node provenance (src/shared/provenance.ts). */
+  sessionId?: string
+  /** Stamped server-side during the optimize pass, so absent on a raw upload. */
+  scanId?: string
+  capturedAt?: string
+  captureIndex?: number
   notes?: string
   roomName?: string
   floorName?: string
@@ -264,7 +277,11 @@ export class SceneEditor {
       description: ud['description'] as string | undefined,
       worldPos: { x: +wp.x.toFixed(3), y: +wp.y.toFixed(3), z: +wp.z.toFixed(3) },
       dimensions: { w: +dims.x.toFixed(2), h: +dims.y.toFixed(2), d: +dims.z.toFixed(2) },
-      sourceScan: ud['sourceScan'] as string | undefined,
+      sourceScanIds: Array.isArray(ud['sourceScanIds']) ? ud['sourceScanIds'] as string[] : undefined,
+      sessionId: ud['sessionId'] as string | undefined,
+      scanId: ud['scanId'] as string | undefined,
+      capturedAt: ud['capturedAt'] as string | undefined,
+      captureIndex: ud['captureIndex'] as number | undefined,
       notes: tagInfo?.notes ?? ud['notes'] as string | undefined,
       roomName: tagInfo?.roomName ?? ud['roomName'] as string | undefined,
       floorName: tagInfo?.floorName ?? ud['floorName'] as string | undefined,
@@ -288,11 +305,6 @@ export class SceneEditor {
     })
   }
 
-  /** Return all tags as a serialisable map */
-  exportTagMap(): Record<string, TagInfo> {
-    this.flushTags()
-    return Object.fromEntries(this._tags.entries())
-  }
 
   // ── Private helpers ───────────────────────────────────────────────────────────
 
