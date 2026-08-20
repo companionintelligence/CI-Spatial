@@ -265,20 +265,35 @@ function errMsg(e: unknown): string {
 }
 
 /**
- * Write `scanId` into every node's extras, merging rather than replacing.
+ * Write `scanId` into the extras of every node that already carries
+ * provenance, merging rather than replacing.
  *
  * Nodes only — never a Mesh, Primitive, Accessor, Material or Texture; see the
  * dedup invariant in this file's header. Existing extras are preserved: the
  * exporter's `sessionId`/`capturedAt`/`captureIndex`/`sourceScanIds` are on
  * these same nodes and must survive.
  *
- * Every node is stamped, not only the labelled ones, because `quantize()` will
- * hoist meshes into new unnamed children and a consumer resolving provenance
- * by ancestor walk should find the same answer from anywhere in the tree.
+ * Every provenance-bearing node is stamped, not only the labelled ones,
+ * because `quantize()` will hoist meshes into new unnamed children and a
+ * consumer resolving provenance by ancestor walk should find the same answer
+ * from anywhere in the tree.
+ *
+ * Gated on the node already having non-empty extras — i.e. exactly the nodes
+ * the exporter's `nodeProvenance` spread already touched. Two node kinds
+ * would otherwise be swept up by an unconditional stamp: the wireframe child
+ * of a detection mesh, which `src/export/gltf.ts` deliberately leaves bare so
+ * a traversal doesn't double-count it as a second logical object; and a
+ * genuinely empty structural node with no mesh and no children, which
+ * `prune({ keepExtras: true })` is supposed to be free to dispose. Giving
+ * either of those a `scanId` — the only key `stampScanId` ever writes — would
+ * hand them non-empty extras and made them permanently un-prunable, silently,
+ * for the rest of the document's life.
  */
 function stampScanId(doc: Document, scanId: string): void {
   for (const node of doc.getRoot().listNodes()) {
-    node.setExtras({ ...node.getExtras(), scanId })
+    const extras = node.getExtras()
+    if (Object.keys(extras).length === 0) continue
+    node.setExtras({ ...extras, scanId })
   }
 }
 

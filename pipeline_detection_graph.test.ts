@@ -452,5 +452,78 @@ test('optimizeScan: a hoisted child carries no second copy of the identity', asy
       undefined,
       'a hoisted child must not carry a second copy of the identity',
     )
+    assert.equal(
+      childExtras['scanId'],
+      undefined,
+      'a hoisted child must not carry the server-stamped scanId either',
+    )
   }
+})
+
+test('optimizeScan: the wireframe child never gets stamped with scanId', async () => {
+  // stampScanId() used to iterate every node unconditionally, which included
+  // the wireframe overlay — bare on purpose (src/export/gltf.ts) so a
+  // traversal doesn't double-count it as a second logical object. Fails
+  // without the fix: the wireframe child ends up with extras={scanId:...}
+  // even though it had no extras at all going in.
+  const source = await buildExporterShapedScan(['chair'], { sessionId: SESSION_A })
+  const sourceNodes = glbJson(source).nodes ?? []
+  const sourceLabelled = sourceNodes.find((n) => (n['extras'] as Record<string, unknown> | undefined)?.['label'] === 'chair')
+  assert.ok(sourceLabelled, 'fixture did not build a labelled chair node')
+  const sourceWireframe = (sourceLabelled['children'] as number[])
+    .map((i) => sourceNodes[i])
+    .find((n) => (n['extras'] as Record<string, unknown> | undefined)?.['label'] === undefined)
+  assert.ok(sourceWireframe, 'fixture did not build a bare wireframe child')
+  assert.deepEqual(sourceWireframe['extras'] ?? {}, {}, 'fixture wireframe must start genuinely bare')
+
+  const result = await optimizeScan(source, { provenance: { scanId: 'scan-wireframe-check' } })
+  const nodes = glbJson(result.optimized.bytes).nodes ?? []
+  const labelled = nodes.find((n) => (n['extras'] as Record<string, unknown> | undefined)?.['label'] === 'chair')
+  assert.ok(labelled, 'the labelled node did not survive optimization')
+  const wireframe = (labelled['children'] as number[])
+    .map((i) => nodes[i])
+    .find((n) => (n['extras'] as Record<string, unknown> | undefined)?.['label'] === undefined)
+  assert.ok(wireframe, 'the wireframe child did not survive optimization')
+
+  assert.deepEqual(
+    wireframe['extras'] ?? {},
+    {},
+    'the wireframe child must stay bare — stampScanId must not give it a scanId',
+  )
+})
+
+test('optimizeScan: a genuinely empty structural node is still pruned when scanId is stamped', async () => {
+  // The other half of the same bug: stampScanId() giving every node non-empty
+  // extras made prune()'s keepExtras-gated disposal unreachable for the whole
+  // document, not just for the wireframe. A node with no mesh, no children and
+  // no extras of its own must still be prunable even on the real
+  // provenance-stamping path every production optimize-scan job uses. Fails
+  // without the fix: the bare node survives instead of being disposed.
+  const doc = new Document()
+  const buffer = doc.createBuffer()
+  const scene = doc.createScene('Scene')
+
+  const pos = doc.createAccessor('pos').setType('VEC3').setArray(CUBE_POSITIONS).setBuffer(buffer)
+  const idx = doc.createAccessor('idx').setType('SCALAR').setArray(CUBE_INDICES).setBuffer(buffer)
+  const prim = doc.createPrimitive().setMode(4 /* TRIANGLES */).setAttribute('POSITION', pos).setIndices(idx)
+  scene.addChild(doc.createNode('anchor').setMesh(doc.createMesh('anchor-mesh').addPrimitive(prim)))
+
+  // No mesh, no children, no extras — exactly what prune() is supposed to be
+  // free to dispose regardless of what stampScanId() does elsewhere.
+  scene.addChild(doc.createNode('Truly_Empty_Node'))
+
+  const io = new NodeIO().registerExtensions([KHRDracoMeshCompression, KHRMeshQuantization])
+  const source = await io.writeBinary(doc)
+  assert.ok(
+    (glbJson(source).nodes ?? []).some((n) => n['name'] === 'Truly_Empty_Node'),
+    'fixture did not build the empty node',
+  )
+
+  const result = await optimizeScan(source, { provenance: { scanId: 'scan-prune-check' } })
+  const names = (glbJson(result.optimized.bytes).nodes ?? []).map((n) => n['name'])
+
+  assert.ok(
+    !names.includes('Truly_Empty_Node'),
+    'stampScanId must not make an unrelated empty node permanently un-prunable',
+  )
 })
