@@ -1742,10 +1742,11 @@ async function saveSelectedTransform(): Promise<void> {
 
 // Traverses like findObjectByTargetId() (:2336) — a plain THREE.Object3D.traverse()
 // with a first-match early exit, not hand-rolled recursion.
-function firstLod(root: THREE.Object3D): THREE.Object3D | null {
-  let match: THREE.Object3D | null = null
+function firstLod(root: THREE.Object3D): THREE.LOD | null {
+  let match: THREE.LOD | null = null
   root.traverse((obj) => {
-    if (!match && obj instanceof THREE.LOD) match = obj
+    if (match) return
+    if (obj instanceof THREE.LOD) match = obj
   })
   return match
 }
@@ -1759,9 +1760,13 @@ function firstLod(root: THREE.Object3D): THREE.Object3D | null {
 // recorded in docs/factory/03-readiness-hardening/README.md ("found but deferred").
 // This hook lets 0004's round-trip regression test (tests/mock-editor-homes.spec.ts)
 // exercise the LOD save/reload fix without depending on that unrelated fix landing
-// first. Gated behind ?mock=editor, same convention as src/test/webxr-emulation.ts's
-// ?mock=webxr, so it never lands in a production session.
-if (query.get('mock') === 'editor') {
+// first. Double-gated: import.meta.env.DEV is a Vite build-time constant, so `npm run
+// build`'s production bundle (what Docker/STATIC_DIR actually serves, per CLAUDE.md)
+// dead-code-eliminates this whole block — appending ?mock=editor to a deployed session
+// cannot reach it. The ?mock=... query check on top is the same convention
+// src/test/webxr-emulation.ts uses for ?mock=webxr, so it still doesn't fire in an
+// ordinary `vite dev` session either.
+if (import.meta.env.DEV && query.get('mock') === 'editor') {
   (window as unknown as {
     __editorTest: {
       selectFirstLod: (scanId: string) => { name: string; objectId: string; filename: string; gizmoAttached: boolean } | null
