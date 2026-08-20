@@ -99,7 +99,7 @@ unattended `/smoke.html` checks, not as a full substitute for a walked run.
    from requesting Accessibility by default), then enable the **Accessibility
    Service** toggle. Nothing works without this — it's how the app reads the
    screen and injects taps.
-3. In **Settings → Access**, confirm the **HTTPS** toggle is off (plain HTTP
+3. In **Settings → Security**, confirm the **HTTPS** toggle is off (plain HTTP
    is the documented default, but the `edge` channel has been observed with
    it on). If it's on, Windows Node clients — including Claude Code's own
    runtime — complete the TLS handshake against the app's auto-generated
@@ -109,21 +109,29 @@ unattended `/smoke.html` checks, not as a full substitute for a walked run.
 4. Open the app's **Server** tab → **Start**. Note the bearer token under
    **Settings → Access**.
 
-### Connecting Claude Code (local, USB/adb-connected)
+### The test fleet
 
-```bash
-adb forward tcp:8080 tcp:8080
-```
+Every device runs its own server with its own bearer token, reachable on the
+tailnet at port 8080. There is no shared token — one per device, supplied
+via `.mcp.local.json` or the matching env var below.
 
-The repo's checked-in `.mcp.json` already points a server named
-`android-tab-s8-ultra` at `http://127.0.0.1:8080/mcp`, with the token left as
-`${ANDROID_MCP_TOKEN}` — use the literal `127.0.0.1`, not `localhost`. Supply
-the real token one of two ways.
+| Tailnet host | Tailscale IP | Device | `.mcp.json` server | Token env var |
+|---|---|---|---|---|
+| `liams-tab-s8-ultra` | 100.86.76.113 | Galaxy Tab S8 Ultra (SM-X900) | `android-tab-s8-ultra` | `ANDROID_MCP_TOKEN_TAB_S8_ULTRA` |
+| `galaxy-tab-s9-ultra` | 100.102.92.116 | Galaxy Tab S9 Ultra (SM-X910) | `android-tab-s9-ultra` | `ANDROID_MCP_TOKEN_TAB_S9_ULTRA` |
+| `beam-pro-1` | 100.127.78.6 | XREAL X4000 | `android-beam-pro-1` | `ANDROID_MCP_TOKEN_BEAM_PRO_1` |
+| `beam-pro` | 100.97.126.117 | XREAL X4200 | `android-beam-pro` | `ANDROID_MCP_TOKEN_BEAM_PRO` |
+
+### Connecting Claude Code (tailnet — preferred)
+
+`.mcp.json` points each server at `http://<host>.capybara-ulmer.ts.net:8080/mcp`,
+with every token left as a `${...}` placeholder. Supply the real tokens one of
+two ways.
 
 **Preferred — `.mcp.local.json` (persists across restarts).** Claude Code reads
 a machine-local override file at the repo root that takes precedence over
 `.mcp.json`. It is gitignored (`.gitignore`, "Claude Code MCP local
-overrides"), so the token never enters history, and unlike a shell export it
+overrides"), so the tokens never enter history, and unlike a shell export it
 survives closing and reopening the session:
 
 ```bash
@@ -132,8 +140,23 @@ cat > .mcp.local.json <<'JSON'
   "mcpServers": {
     "android-tab-s8-ultra": {
       "type": "http",
-      "url": "http://127.0.0.1:8080/mcp",
-      "headers": { "Authorization": "Bearer <token from Settings → Access>" }
+      "url": "http://liams-tab-s8-ultra.capybara-ulmer.ts.net:8080/mcp",
+      "headers": { "Authorization": "Bearer <tab-s8 token>" }
+    },
+    "android-tab-s9-ultra": {
+      "type": "http",
+      "url": "http://galaxy-tab-s9-ultra.capybara-ulmer.ts.net:8080/mcp",
+      "headers": { "Authorization": "Bearer <tab-s9 token>" }
+    },
+    "android-beam-pro-1": {
+      "type": "http",
+      "url": "http://beam-pro-1.capybara-ulmer.ts.net:8080/mcp",
+      "headers": { "Authorization": "Bearer <beam-pro-1 token>" }
+    },
+    "android-beam-pro": {
+      "type": "http",
+      "url": "http://beam-pro.capybara-ulmer.ts.net:8080/mcp",
+      "headers": { "Authorization": "Bearer <beam-pro token>" }
     }
   }
 }
@@ -141,30 +164,119 @@ JSON
 ```
 
 **Alternative — shell export.** Same "shell export, not an auto-loaded `.env`
-file" convention as every other secret in this repo (see `.env.example`'s
-`ANDROID_MCP_TOKEN`). Must be re-done for every new session:
+file" convention as every other secret in this repo (see `.env.example`). One
+variable per device, and it must be re-done for every new session:
 
 ```bash
-export ANDROID_MCP_TOKEN=<token from the app's Settings → Access>
+export ANDROID_MCP_TOKEN_TAB_S9_ULTRA=<token from that device's Settings → Access>
 ```
 
-Either way the token is read when the session starts, so a value supplied
+Either way the tokens are read when the session starts, so a value supplied
 mid-session does not take effect until Claude Code is restarted. **Never
-hardcode it into `.mcp.json` itself** — that file is tracked, and a token
-granting tap and screen-read control of a device is permanent once committed. On a machine that also runs Docker Desktop and/or WSL, something
-else is frequently already bound to `:8080` on `0.0.0.0`/`[::]`/`[::1]`, and an
-IPv6-first resolver will happily route `localhost` to that unrelated service
-instead of the adb forward, which only binds `127.0.0.1` (IPv4). If the
-connection seems to hang or reset, run `netstat -ano | findstr :8080` and
-check which PID actually owns `127.0.0.1:8080` before assuming the phone is
-the problem.
+hardcode them into `.mcp.json` itself** — that file is tracked, and a token
+granting tap and screen-read control of a device is permanent once committed.
+
+**The server must be bound to `0.0.0.0`, not `127.0.0.1`, or the tailnet address
+refuses connections.** Set this in **Settings → General**. This is a deliberate
+exposure tradeoff: on the tailnet, any peer can drive the device with just the
+bearer token. See "Security notes" below.
+
+### Connecting over adb (fallback, USB only)
+
+Useful when a device isn't on the tailnet, or when you don't want to widen its
+bind address. One host port per device — they cannot share 8080:
+
+```bash
+adb -s <serial> forward tcp:8081 tcp:8080
+```
+
+Use the literal `127.0.0.1`, not `localhost`. On a machine that also runs Docker
+Desktop and/or WSL, something else is frequently already bound to `:8080` on
+`0.0.0.0`/`[::]`/`[::1]`, and an IPv6-first resolver will happily route
+`localhost` to that unrelated service instead of the adb forward, which only
+binds `127.0.0.1` (IPv4). Verified on this machine: Docker Desktop held
+`0.0.0.0:8080` and `[::]:8080`, wslrelay held `[::1]:8080`. Run
+`netstat -ano | findstr :8080` and check which PID actually owns
+`127.0.0.1:8080` before assuming the phone is the problem.
+
+### Diagnosing "connection refused"
+
+Work down this list — the layers fail differently and the symptoms overlap:
+
+1. **Is the host reachable at all?** `tailscale ping <host>`. A pong with the
+   port still refusing means the network is fine and the app is the problem.
+2. **Is the server actually listening?** Check the socket *state*, not just the
+   address:
+
+   ```bash
+   adb -s <serial> shell "cat /proc/net/tcp6 | awk '\$2 ~ /:1F90/ {print \$2, \$4}'"
+   ```
+
+   `1F90` is port 8080 hex; state `0A` is LISTEN. **Anything else is not a
+   listener** — `06` is TIME_WAIT, and stale TIME_WAIT rows from earlier
+   connections look identical in the address column. Grepping the address alone
+   will tell you the server is bound to loopback when in fact it is not running
+   at all. Address `00000000...0000` is the `0.0.0.0` wildcard;
+   `0000...FFFF00000100007F` is `::ffff:127.0.0.1`.
+3. **Is it bound to loopback?** Then only on-device clients reach it. Change the
+   bind in **Settings → General**.
+
+### Tunnels (Cloudflare / ngrok) — read before trusting one
+
+The app has a **Settings → Tunnel** page with an **Enable Remote Access**
+toggle; `cloudflared` is bundled inside the app itself (`libcloudflared.so`,
+spawned as a child of the app process), not installed separately. Three
+non-obvious behaviors, all observed:
+
+- **A dead tunnel URL does not mean the tunnel is off.** In Cloudflare "Free /
+  Random temporary URL" mode, every reconnect mints a *brand-new* hostname. An
+  old URL returning 530/1033 while a fresh one silently serves traffic is the
+  normal state, not an anomaly. Check the app's **Public URL** row or the
+  `libcloudflared.so` process — never a URL you saved earlier.
+- **The Enable Remote Access toggle is inert while the server is running.** It
+  reports `clickable` but not `enabled`, so both accessibility clicks and
+  coordinate taps are silently no-ops. Stop the MCP server first, flip the
+  toggle, then start the server again. Confirm with the node attribute, not the
+  pixels — the switch renders almost identically on and off in dark mode:
+
+  ```bash
+  adb -s <serial> shell "uiautomator dump /sdcard/ui.xml >/dev/null; cat /sdcard/ui.xml" | tr '<' '
+' | grep 'checkable="true"'
+  ```
+
+- **Stopping the MCP server kills the tunnel** (cloudflared is its child), but
+  starting the server respawns it unless the toggle was turned off in between.
+  `adb shell kill <cloudflared-pid>` fails with "Operation not permitted" — it
+  runs as the app's UID, not shell's.
+
+A `trycloudflare` quick tunnel is reachable by **anyone on the internet** with
+the URL; the bearer token is the only control. Prefer the tailnet.
+
+### Driving a device / taking screenshots
+
+- `android_open_uri` opens a URL via `ACTION_VIEW`. It routes to the installed
+  app when one claims the domain (reddit.com opens the Reddit app, not Chrome).
+- `android_get_screen_state` with `include_screenshot=true` returns a JPEG with
+  the accessibility node tree **drawn over it** in red. It is a debug aid, not a
+  clean screenshot. For a real one use `adb exec-out screencap -p > out.png`,
+  which needs USB.
+- **An all-black screencap almost always means the screen is off, not a capture
+  failure.** Check `dumpsys display | grep committedState` and wake with
+  `input keyevent KEYCODE_WAKEUP`. Some devices (the XREAL X4000) re-sleep
+  within seconds, so chain wake, swipe, and capture in one `adb shell`
+  invocation rather than as separate commands.
+- A device with a set lock screen (`locksettings get-disabled` → `false`,
+  `dumpsys trust` → `deviceLocked=1`) cannot be driven past the keyguard
+  without its PIN. Leave those devices unlocked before an unattended run.
 
 ### Security notes (from upstream)
 
-- Default bind is `127.0.0.1` — leave it there; `0.0.0.0` exposes the server
-  to the whole network.
+- Upstream default bind is `127.0.0.1`. Widening it to `0.0.0.0` for tailnet
+  access means any tailnet peer can read the screen and inject taps, with only
+  the bearer token in the way. Do it deliberately, not by habit.
 - The server is fully open to anyone who can reach it if both bearer-token and
   OAuth auth are disabled — don't disable both.
+- Rotate a token that has been pasted into chat, a ticket, or a log.
 - Stop the server (and any tunnel) when you're done testing.
 
 ## Triage
