@@ -46,6 +46,7 @@ import {
   WorldJobPump,
 } from './world_job_pump.ts'
 import { withWorldLock } from './world_lock.ts'
+import { safeSlug, scanIdFor } from './scan_id.ts'
 import { loadSessionIndex, sessionForScan, type SessionIndex } from './scan_index.ts'
 import { pruneScansMissingFromDisk } from './world_prune.ts'
 import { runLingBotMapReconstruction } from './lingbot_map.ts'
@@ -1175,15 +1176,6 @@ interface StoredScanInfo {
   meta: Record<string, unknown>
 }
 
-function safeSlug(raw: string | undefined, fallback = 'default'): string {
-  const slug = (raw ?? fallback)
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-  return slug || fallback
-}
-
 function worldPath(slug: string): string {
   return `${WORLDS_DIR}/${safeSlug(slug)}.json`
 }
@@ -1356,12 +1348,6 @@ function inferWorldOrigin(scans: StoredScanInfo[]): GeoPose {
   return { lat: null, lng: null, altitudeM: null, bearing: null, accuracyM: null }
 }
 
-function scanIdFor(filename: string, meta: Record<string, unknown>): string {
-  const sessionId = asString(meta['sessionId'])
-  if (sessionId) return `scan-${safeSlug(sessionId)}`
-  return `scan-${safeSlug(filename.replace(/\.glb$/, ''))}`
-}
-
 function scanNameFor(filename: string, meta: Record<string, unknown>): string {
   return asString(meta['scanName']) ?? filename.replace(/^\d+_/, '').replace(/\.glb$/, '')
 }
@@ -1373,7 +1359,7 @@ function scanManifestFromStored(
   slug: string,
 ): ScanManifest {
   const geoPose = geoPoseFromMeta(scan.meta)
-  const scanId = scanIdFor(scan.filename, scan.meta)
+  const scanId = scanIdFor(scan.filename)
   const qualitySummary = qualitySummaryFromMeta(scan.meta)
   const translation = hasGeoPose(origin) && hasGeoPose(geoPose)
     ? geoToEnu(origin, geoPose)
@@ -1524,12 +1510,23 @@ async function mutateWorldFiles(mutator: (world: WorldProject) => boolean | Prom
 }
 
 async function removeScanFromWorlds(filename: string): Promise<number> {
+  // Derived, not looked up: the scan row is about to be filtered out, and this
+  // must also work for a world whose entry was already pruned. `patch.scanId`
+  // used to be compared against `filename` here — a scanId is never a
+  // filename, so that arm never matched and scan-scoped patches outlived the
+  // scan they described.
+  const removedScanId = scanIdFor(filename)
   return mutateWorldFiles((world) => {
     const beforeScans = world.scans.length
     world.scans = world.scans.filter(scan => scan.filename !== filename)
-    world.editPatches = world.editPatches.filter(patch => patch.targetId !== filename && patch.scanId !== filename)
+    world.editPatches = world.editPatches.filter(
+      patch => patch.targetId !== filename && patch.scanId !== removedScanId,
+    )
     world.jobs = world.jobs.filter(job => {
       if (!job.scanId) return true
+      // Explicit, rather than relying on the survivor scan below: while ids
+      // collided, a sibling sharing the removed scan's id kept its jobs alive.
+      if (job.scanId === removedScanId) return false
       return world.scans.some(scan => scan.scanId === job.scanId)
     })
     return world.scans.length !== beforeScans
@@ -1642,6 +1639,7 @@ async function refreshWorldScans(world: WorldProject): Promise<void> {
     if (!storedScan) return scan
     const next = scanManifestFromStored(storedScan, world.originGeoPose, index, world.shareSlug)
     changed = changed
+      || scan.scanId !== next.scanId
       || scan.status !== next.status
       || scan.frameSetUrl !== next.frameSetUrl
       || JSON.stringify(scan.qualitySummary ?? null) !== JSON.stringify(next.qualitySummary ?? null)
