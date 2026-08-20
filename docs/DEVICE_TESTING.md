@@ -115,17 +115,43 @@ unattended `/smoke.html` checks, not as a full substitute for a walked run.
 adb forward tcp:8080 tcp:8080
 ```
 
-Export the token before launching Claude Code — same "shell export, not an
-auto-loaded `.env` file" convention as every other secret in this repo (see
-`.env.example`'s `ANDROID_MCP_TOKEN`):
+The repo's checked-in `.mcp.json` already points a server named
+`android-tab-s8-ultra` at `http://127.0.0.1:8080/mcp`, with the token left as
+`${ANDROID_MCP_TOKEN}` — use the literal `127.0.0.1`, not `localhost`. Supply
+the real token one of two ways.
+
+**Preferred — `.mcp.local.json` (persists across restarts).** Claude Code reads
+a machine-local override file at the repo root that takes precedence over
+`.mcp.json`. It is gitignored (`.gitignore`, "Claude Code MCP local
+overrides"), so the token never enters history, and unlike a shell export it
+survives closing and reopening the session:
+
+```bash
+cat > .mcp.local.json <<'JSON'
+{
+  "mcpServers": {
+    "android-tab-s8-ultra": {
+      "type": "http",
+      "url": "http://127.0.0.1:8080/mcp",
+      "headers": { "Authorization": "Bearer <token from Settings → Access>" }
+    }
+  }
+}
+JSON
+```
+
+**Alternative — shell export.** Same "shell export, not an auto-loaded `.env`
+file" convention as every other secret in this repo (see `.env.example`'s
+`ANDROID_MCP_TOKEN`). Must be re-done for every new session:
 
 ```bash
 export ANDROID_MCP_TOKEN=<token from the app's Settings → Access>
 ```
 
-The repo's `.mcp.json` already points a server named `android-tab-s8-ultra` at
-`http://127.0.0.1:8080/mcp` with that token — use the literal `127.0.0.1`, not
-`localhost`. On a machine that also runs Docker Desktop and/or WSL, something
+Either way the token is read when the session starts, so a value supplied
+mid-session does not take effect until Claude Code is restarted. **Never
+hardcode it into `.mcp.json` itself** — that file is tracked, and a token
+granting tap and screen-read control of a device is permanent once committed. On a machine that also runs Docker Desktop and/or WSL, something
 else is frequently already bound to `:8080` on `0.0.0.0`/`[::]`/`[::1]`, and an
 IPv6-first resolver will happily route `localhost` to that unrelated service
 instead of the adb forward, which only binds `127.0.0.1` (IPv4). If the
