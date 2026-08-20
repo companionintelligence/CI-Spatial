@@ -369,7 +369,7 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
   let uploadedFilename: string | undefined
   let uploadOutcome: UploadOutcome = 'skipped'
   if (upload) {
-    const result = await uploadToServer(buffer, filename, data, autoSaved, capturedAt)
+    const result = await uploadToServer(buffer, filename, data, autoSaved, capturedAt, serverSessionId)
     uploadedFilename = result.filename
     uploadOutcome = result.outcome
   }
@@ -388,6 +388,14 @@ async function uploadToServer(
   autoSaved: boolean,
   /** The export's single timestamp — same value the scene extras carry. */
   capturedAt: string,
+  /**
+   * The export's single session id — same value baked into the scene/node
+   * extras. Passed rather than re-read from `store.sessionId`: GLTFExporter's
+   * binary path yields to the event loop (FileReader), and a keyframe session
+   * opening or rotating in that window could change the live value, making
+   * the uploaded sidecar disagree with what the GLB itself already says.
+   */
+  serverSessionId: string | null,
 ): Promise<{ filename?: string; outcome: UploadOutcome }> {
   const { store, pointCloud, poseHistory, geoFix, qualitySummary } = data
   try {
@@ -399,7 +407,7 @@ async function uploadToServer(
       // Server session id or null — main.ts reads this straight into
       // ScanManifest.sessionId, so a local id here would name a directory
       // that does not exist. See scene.userData above.
-      sessionId:  isServerSessionId(store.sessionId) ? store.sessionId : null,
+      sessionId:  serverSessionId,
       scanName: filename.replace(/\.glb$/, ''),
       autoSaved,
       pointCount: pointCloud.count,

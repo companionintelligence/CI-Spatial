@@ -59,6 +59,29 @@ function storeStub(detections: Array<[string, WorldDetection]>, sessionId = SESS
   return { sessionId, detections: new Map(detections) } as unknown as DetectionStore
 }
 
+/**
+ * A store whose `sessionId` getter returns `before` until {@link fireDrift} is
+ * called, and `after` from then on — modelling `adoptServerSession()` flipping
+ * the live session mid-export. Paired with the `FileReader` hook below so the
+ * flip happens at the same real yield point `exportToGLB` actually has: inside
+ * `GLTFExporter`'s binary path, between the synchronous scene-building reads
+ * and `uploadToServer`'s.
+ */
+function driftingSessionStoreStub(
+  detections: Array<[string, WorldDetection]>,
+  before: string,
+  after: string,
+): { store: DetectionStore; fireDrift: () => void } {
+  let drifted = false
+  const store = {
+    get sessionId() {
+      return drifted ? after : before
+    },
+    detections: new Map(detections),
+  } as unknown as DetectionStore
+  return { store, fireDrift: () => { drifted = true } }
+}
+
 /** A point cloud with `count` points on a diagonal, plus the two derived reads. */
 function pointCloudStub(count: number): PointCloud {
   const positions = new Float32Array(count * 3)
@@ -116,6 +139,7 @@ class NodeFileReader {
   onerror: ((err: unknown) => void) | null = null
 
   readAsArrayBuffer(blob: Blob): void {
+    onFileReaderYield?.()
     blob.arrayBuffer().then(
       (buf) => {
         this.result = buf
@@ -128,16 +152,26 @@ class NodeFileReader {
 ;(globalThis as unknown as { FileReader: unknown }).FileReader = NodeFileReader
 
 /**
+ * Set by a single test to observe the real async yield point `exportToGLB`
+ * has before `uploadToServer` runs — the same one a real `adoptServerSession()`
+ * would race against. Left `null` for every other test.
+ */
+let onFileReaderYield: (() => void) | null = null
+
+/**
  * `exportToGLB` returns a byte count, not the bytes. Rather than reach into its
  * internals, take them off the upload path — which is also the path that
  * carries them to the server in production. The stub answers as the real
  * endpoint does so the exporter's own outcome handling is exercised too.
  */
 let lastUploadedGlb: Uint8Array | null = null
+let lastUploadedMetadata: Record<string, unknown> | null = null
 ;(globalThis as unknown as { fetch: unknown }).fetch = async (_url: string, init?: RequestInit) => {
   const body = init?.body as FormData | undefined
   const file = body?.get('file')
   if (file instanceof Blob) lastUploadedGlb = new Uint8Array(await file.arrayBuffer())
+  const metadata = body?.get('metadata')
+  lastUploadedMetadata = typeof metadata === 'string' ? JSON.parse(metadata) : null
   return new Response(JSON.stringify({ filename: 'stored.glb' }), {
     status: 200,
     headers: { 'Content-Type': 'application/json' },
@@ -341,4 +375,54 @@ test('getInspectorData: a node with no provenance yields undefined, not []', () 
 
   assert.equal(data.sourceScanIds, undefined, 'the inspector row must not render for a bare node')
   assert.equal(data.captureIndex, undefined)
+})
+
+// ── serverSessionId: one read, not two (session identity, ticket 0002/0003) ─
+//
+// exportToGLB used to compute `serverSessionId` once for the GLB's own extras,
+// then independently re-read the live `store.sessionId` a second time inside
+// uploadToServer() for the sidecar. If the session changed in between —
+// adoptServerSession() firing while GLTFExporter's binary path yields to the
+// event loop via FileReader — the GLB and the sidecar could disagree about
+// which session produced the scan.
+
+test('uploadToServer: the uploaded sidecar sessionId matches what the GLB itself says, not a second live read', async () => {
+  // The session flips at the real async yield point exportToGLB has —
+  // GLTFExporter's binary path — modelling a keyframe session opening or
+  // rotating while an export is in flight. A correct implementation computes
+  // serverSessionId once, before that yield, and threads it into
+  // uploadToServer rather than re-reading the (now-changed) live getter.
+  const { store, fireDrift } = driftingSessionStoreStub(
+    [['chair:0', detection('chair', 0, 1)]],
+    SESSION_ID,
+    'sess-should-never-be-read-after-the-fact-0000-0000-000000000000',
+  )
+  lastUploadedGlb = null
+  lastUploadedMetadata = null
+  onFileReaderYield = fireDrift
+
+  let result: Awaited<ReturnType<typeof exportToGLB>>
+  try {
+    result = await exportToGLB(
+      { store, pointCloud: pointCloudStub(24), poseHistory: [pose(0), pose(-1)] },
+      { download: false, upload: true },
+    )
+  } finally {
+    onFileReaderYield = null
+  }
+
+  assert.ok(result.size > 0)
+  assert.ok(lastUploadedGlb, 'no GLB reached the upload path')
+  assert.ok(lastUploadedMetadata, 'no metadata reached the upload path')
+
+  const json = glbJson(lastUploadedGlb)
+  const room = (json.nodes ?? []).find((n) => n['name'] === 'Room_Unknown')
+  const bakedSessionId = extrasOf(room!)['sessionId']
+
+  assert.equal(bakedSessionId, SESSION_ID, 'the GLB itself must reflect the pre-yield read')
+  assert.equal(
+    lastUploadedMetadata['sessionId'],
+    bakedSessionId,
+    'the uploaded sidecar must agree with what is already baked into the GLB, not a later, independent read',
+  )
 })
