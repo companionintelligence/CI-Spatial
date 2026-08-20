@@ -663,6 +663,11 @@ async function main() {
   // The server session is the only id that names a real keyframe directory, so
   // the store adopts it the moment one is opened; everything exported from here
   // on records that id rather than a local one.
+  //
+  // `null` (the session closed) is deliberately a no-op: the captures already
+  // in the store came from that session, and its directory still holds their
+  // keyframes, so reverting to a local id would strand the association. See
+  // KeyframeStreamer.onSessionId.
   kfStreamer.onSessionId = (sessionId) => {
     if (sessionId) void store.adoptServerSession(sessionId)
   }

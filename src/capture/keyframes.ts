@@ -91,11 +91,20 @@ export class KeyframeStreamer {
   onStatus: ((s: StreamerStatus) => void) | null = null
 
   /**
-   * Fires when the server session id changes — the id on `start()`, `null` on
-   * `stop()`. The streamer used to hold this privately, which is how the
-   * client and the server ended up naming a capture session differently: the
-   * only id that names a real directory was never published to anything that
-   * writes it into a scan. `src/main.ts` wires this to `DetectionStore`.
+   * Fires when the server session id changes — the id on `start()`, `null`
+   * when `stop()` closes one. The streamer used to hold this privately, which
+   * is how the client and the server ended up naming a capture session
+   * differently: the only id that names a real directory was never published
+   * to anything that writes it into a scan. `src/main.ts` wires this to
+   * `DetectionStore`.
+   *
+   * The `null` is a genuine "the session is closed" signal, not an instruction
+   * to forget it. `DetectionStore` deliberately keeps the id it adopted: the
+   * captures already in the store really did come from that session, whose
+   * directory exists on the server with its keyframes, and re-keying the
+   * record back to a local id would strand that association for nothing.
+   * `rotate()` is `stop()` + `start()`, so a rotation emits `null` and then
+   * the new id.
    */
   onSessionId: ((sessionId: string | null) => void) | null = null
 
@@ -169,6 +178,9 @@ export class KeyframeStreamer {
     this._sessionId = null
     this._emit()
     if (!sessionId) return
+    // Announced as soon as the id is cleared, before the finalize round-trip,
+    // so a listener's view of "is a session open" never lags the streamer's.
+    this.onSessionId?.(null)
 
     try {
       await fetch(`/sessions/${sessionId}/finalize`, {

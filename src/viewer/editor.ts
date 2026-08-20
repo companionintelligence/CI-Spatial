@@ -87,8 +87,16 @@ export interface InspectorData {
    * docs/factory/07-scan-identity/0003-node-level-glb-provenance.md.
    */
   sourceScanIds?: string[]
-  /** Per-node provenance (src/shared/provenance.ts). */
-  sessionId?: string
+  /**
+   * Per-node provenance (src/shared/provenance.ts).
+   *
+   * Nullable, not merely optional: `ScanProvenance.sessionId` is
+   * `string | null`, and the exporter writes an explicit `null` for a capture
+   * taken with no server keyframe session. Absent and "there was no session"
+   * are different facts, and typing this as a bare `string` would launder the
+   * second into the first.
+   */
+  sessionId?: string | null
   /** Stamped server-side during the optimize pass, so absent on a raw upload. */
   scanId?: string
   capturedAt?: string
@@ -278,7 +286,7 @@ export class SceneEditor {
       worldPos: { x: +wp.x.toFixed(3), y: +wp.y.toFixed(3), z: +wp.z.toFixed(3) },
       dimensions: { w: +dims.x.toFixed(2), h: +dims.y.toFixed(2), d: +dims.z.toFixed(2) },
       sourceScanIds: Array.isArray(ud['sourceScanIds']) ? ud['sourceScanIds'] as string[] : undefined,
-      sessionId: ud['sessionId'] as string | undefined,
+      sessionId: ud['sessionId'] as string | null | undefined,
       scanId: ud['scanId'] as string | undefined,
       capturedAt: ud['capturedAt'] as string | undefined,
       captureIndex: ud['captureIndex'] as number | undefined,
