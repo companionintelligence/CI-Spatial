@@ -1784,11 +1784,8 @@ if (import.meta.env.DEV && query.get('mock') === 'editor') {
       // fixture derives the same scanId from its sessionId), and only the last to
       // finish loading survives in the Map — so the same scanId can resolve to a
       // different root across a reload. Returning it lets a caller assert it didn't.
-      // Sync SceneEditor's own selection too, not just selectedTransformTarget — a
-      // real click reaches this state via editor.pick(), which calls this same
-      // method; skipping it left editor.selectedObject stale (e.g. edit-hide-object
-      // reads it directly, with no selectedTransformTarget fallback).
-      editor.selectObject(found)
+      // selectEditableObject() already syncs editor.selectedObject internally (see
+      // its own comment) — no separate editor.selectObject() call needed here.
       selectEditableObject(found)
       return {
         name: found.name,

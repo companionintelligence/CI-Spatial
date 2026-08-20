@@ -17,6 +17,33 @@
 > describes itself as closing — see that README's wave-progress note if the count there
 > looks stale against this file's existence.
 
+> **Closed 2026-08-19, superseded by PR #114** (`Fix silent data-loss and High-severity
+> findings from code review`), merged the same day as this ticket was drafted — a
+> parallel session working from an independent review of the same code landed a fix for
+> this exact bug before this ticket was ever picked up. Found on rebase, not
+> implemented here: merging `main` into this branch surfaced the overlap via a real
+> `git` conflict in `src/viewer/editor.ts` (both sides added an identically-named
+> `SceneEditor.selectObject()`), which is what prompted checking whether the rest of
+> this ticket was also already done.
+>
+> **The shipped fix is a strictly better answer than the one this ticket decided on.**
+> The Open Questions section below chose "clear the selection" over "re-resolve it,"
+> explicitly deferring re-resolution as a harder follow-up (see the first Non-goal).
+> PR #114 did the harder thing anyway: `integrateScanRoot()` (`viewer.ts:732-810`)
+> captures `stableObjectId(selectedTransformTarget)` before tearing down the old root
+> when the live selection is anchored inside it, then looks up the same id in the new
+> root afterward via `findObjectByTargetId()` and re-selects it — falling back to
+> `clearSelection()` only when no match is found. It also independently found and fixed
+> this ticket's own "OPEN" question (`SceneEditor`'s `_selected` going stale): it added
+> `SceneEditor.selectObject()`/`clearSelection()` as public counterparts to the existing
+> private methods, and wired `selectEditableObject()` and `selectScan()` through them —
+> the exact mechanism this ticket's own drafting session independently arrived at for a
+> different purpose (a Playwright test hook) in the sibling commit on this branch,
+> which is what produced the merge conflict.
+>
+> DoD/Tests/Acceptance-Criteria boxes below are checked against the **shipped** fix, not
+> against this ticket's own (superseded) decisions — see each item's note.
+
 ## Goal
 
 When a background reload replaces the root of a scan the user currently has selected,
@@ -114,29 +141,39 @@ None.
 
 ## Definition of Done
 
-- [ ] `integrateScanRoot()` checks, before removing `previous.root`, whether
+- [x] `integrateScanRoot()` checks, before removing `previous.root`, whether
       `selectedTransformTarget` is `previous.root` or has `previous.root` as an
-      ancestor.
-- [ ] If so, it calls `clearSelection()` before proceeding with the swap, so
-      `transformControls` detaches and `selectedTransformTarget` becomes `null` rather
-      than pointing at a removed object.
-- [ ] If not (the common case — no selection, or the selection belongs to a different
-      scan), behavior is unchanged — no extra `clearSelection()` call, no flicker for
-      the common path.
-- [ ] `saveSelectedTransform()` called after the swap either no-ops (selection was
-      cleared) rather than `POST`ing a patch computed from a detached object's matrix.
-- [ ] `npx tsc --noEmit` is clean.
+      ancestor. (`viewer.ts:745-754` — an ancestor walk from `selectedTransformTarget`
+      up to `previous.root`, handling the scan-root-itself case per the identity check
+      `current === previous.root`.)
+- [x] If so — **superseded**: it re-resolves the selection in the new root by stable id
+      (`viewer.ts:800-809`) rather than clearing it, per the "shipped fix" note above.
+      `transformControls` still ends up correctly attached (to the re-resolved object,
+      not a removed one), which is what this item actually guards against.
+- [x] If not (the common case), behavior is unchanged — `reselectId` stays `null` and
+      the `if (reselectId)` block (`:800`) is skipped entirely.
+- [x] `saveSelectedTransform()` called after the swap now saves against the
+      *re-resolved* live object instead of either a detached ghost or nothing —
+      strictly stronger than this item's original bar of "no-ops."
+- [x] `npx tsc --noEmit` is clean.
 
 ## Tests
 
 - [ ] A spec that: selects an object inside a scan, triggers a reload of that same scan
-      while the selection is live (e.g. via the `__editorTest` hook's pattern from 0004,
-      or by forcing a second `integrateScanRoot()` call), and asserts the selection is
-      cleared — `edit-no-selection` panel visible, not `edit-selected-info`.
-- [ ] Same spec — attempting `saveSelectedTransform()` after the reload does not `POST`
-      to `/worlds/:slug/patches` (no patch recorded for the stale object).
+      while the selection is live, and asserts the selection survives pointing at a
+      *live* object (not that it's cleared — this item's own text is now the wrong
+      assertion for the shipped behavior). **Not added** — PR #114's own verification
+      was live/manual against a running app with real scan data (per its commit
+      message), not a new automated spec; no regression coverage exists yet for this
+      path. Worth its own small follow-up if this bites again.
+- [ ] Same spec — attempting `saveSelectedTransform()` after the reload posts a patch
+      against the *re-resolved* object's id, not the stale one. **Not added**, same
+      reason.
 - [ ] Regression guard — selecting an object in scan A, then a reload of *unrelated*
-      scan B, does not clear scan A's selection.
+      scan B, does not touch scan A's selection. **Not added**, same reason — but true
+      by construction: `reselectId` is only computed from `selectedTransformTarget`'s
+      own ancestor chain against *this* reload's `previous.root`, which can't match an
+      unrelated scan's root.
 
 ```
 # servers must be up: INFERENCE_MODE=mock deno run ... main.ts   +   npm run dev
@@ -148,13 +185,16 @@ deno task check
 
 ## Acceptance Criteria
 
-- [ ] **Given** an object selected inside a scan, **when** that scan's root is replaced
-      by a reload (preview→full-quality swap or a job-completion reload), **then** the
-      selection is cleared — no gizmo left attached to a detached object.
-- [ ] **Given** a cleared selection from the above, **when** the user clicks
-      "Save Transform" (or it's called programmatically), **then** no patch is posted.
-- [ ] **Given** a selection in scan A, **when** scan B's root is replaced, **then**
-      scan A's selection is untouched.
+- [x] **Given** an object selected inside a scan, **when** that scan's root is replaced
+      by a reload, **then** — superseded — the selection re-resolves to the live
+      counterpart instead of clearing; no gizmo left attached to a detached object
+      either way. Live-verified per PR #114's commit message: "dragging the gizmo after
+      the reload visibly moved the live geometry, not a detached ghost."
+- [x] **Given** the reload above, **when** the user clicks "Save Transform," **then** a
+      patch is posted against the re-resolved live object (stronger than this item's
+      original "no patch posted" bar, which assumed clearing).
+- [x] **Given** a selection in scan A, **when** scan B's root is replaced, **then**
+      scan A's selection is untouched — true by construction, see the Tests note above.
 
 ## Risks / potential issues
 
@@ -176,15 +216,22 @@ deno task check
 
 ## Subtasks
 
-1. [ ] Read the five locations in "Before implementation."
-2. [ ] `grep -rn "selectedTransformTarget" src/viewer/viewer.ts` and confirm every
-       reader either null-checks or is only reachable when a selection is valid.
-3. [ ] Add the ancestor/self check and `clearSelection()` call in `integrateScanRoot()`.
-4. [ ] Run `npx tsc --noEmit` and `deno task check`.
-5. [ ] Add the tests above; confirm they fail against the current code (a stale-save
-       goes through) and pass with the fix.
-6. [ ] Run the full `npm run test:mock` tier for regressions.
-7. [ ] Resolve the open question about `SceneEditor`'s own `_selected`, one way or the
-       other, and record the decision in this file.
-8. [ ] Flip this ticket's atlas diff (`atlas.html`, "Multi-scan World Editor" fcard) to
-       `is-done` with the merged PR number.
+1. [x] Read the five locations in "Before implementation" — done while verifying PR
+       #114 already covered this ticket (see the "Closed" note).
+2. [x] `grep -rn "selectedTransformTarget" src/viewer/viewer.ts` and confirm every
+       reader either null-checks or is only reachable when a selection is valid — moot
+       under the shipped fix, since the re-resolve path means it's rarely null'd out at
+       all; no reader was found assuming a stale-but-non-null value.
+3. [x] Superseded — PR #114 added the ancestor/self check plus a re-resolve-by-id call
+       in `integrateScanRoot()`, not a `clearSelection()` call (see "Closed" note).
+4. [x] `npx tsc --noEmit` and `deno task check` — both clean on the merged tree.
+5. [ ] **Not done** — no automated spec exists for this path; PR #114's verification
+       was live/manual. See the Tests section.
+6. [x] The full `npm run test:mock` tier ran clean (62/62) on this branch after merging
+       `main` (which carries PR #114) — incidental coverage, not a targeted regression
+       test for this specific bug.
+7. [x] Resolved — PR #114 independently found and fixed the same `SceneEditor`
+       staleness this question flagged as OPEN, via `selectObject()`/`clearSelection()`
+       wired through both `selectEditableObject()` and `selectScan()`.
+8. [x] Atlas diff flipped to `is-done` citing PR #114 (`atlas.html`, "Multi-scan World
+       Editor" fcard).

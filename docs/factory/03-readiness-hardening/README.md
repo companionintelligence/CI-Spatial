@@ -44,10 +44,18 @@ World Editor surviving a reload), but a different root cause from 0004's `pick()
 — confirmed distinct before filing, per this wave's own convention of not folding
 unrelated defects into an unrelated ticket's scope.
 
-| # | Ticket | One-line goal |
-|---|--------|---------------|
-| 0007 | [fix-stale-selection-on-scan-root-replace](0007-fix-stale-selection-on-scan-root-replace.md) | A background reload replacing a selected scan's root leaves the gizmo attached to the detached old object — `saveSelectedTransform()` can silently persist its stale matrix while reporting "Saved" |
-| 0008 | [fix-failed-reload-phantom-scan-root](0008-fix-failed-reload-phantom-scan-root.md) | A failed full-quality reload after a successful preview overwrites `loadedScans` with a phantom detached `Group`, making the scan unselectable/un-hideable and, on a later successful reload, rendering two generations at once |
+**Both closed the same day, before either was ever picked up for implementation.** A
+parallel session ran an independent code review of the same codebase and landed
+[PR #114](https://github.com/companionintelligence/CI-Spatial/pull/114) fixing both
+exact bugs, merged to `main` while this branch was still open. The overlap surfaced as
+a real `git` merge conflict (both sides independently added
+`SceneEditor.selectObject()`) when rebasing this branch onto `main` — see each ticket's
+own "Closed" banner for what shipped vs. what was drafted.
+
+| # | Ticket | One-line goal | Status |
+|---|--------|---------------|--------|
+| 0007 | [fix-stale-selection-on-scan-root-replace](0007-fix-stale-selection-on-scan-root-replace.md) | A background reload replacing a selected scan's root leaves the gizmo attached to the detached old object — `saveSelectedTransform()` can silently persist its stale matrix while reporting "Saved" | ✅ done, PR #114 |
+| 0008 | [fix-failed-reload-phantom-scan-root](0008-fix-failed-reload-phantom-scan-root.md) | A failed full-quality reload after a successful preview overwrites `loadedScans` with a phantom detached `Group`, making the scan unselectable/un-hideable and, on a later successful reload, rendering two generations at once | ✅ done, PR #114 |
 
 ## Execution order & parallelization
 

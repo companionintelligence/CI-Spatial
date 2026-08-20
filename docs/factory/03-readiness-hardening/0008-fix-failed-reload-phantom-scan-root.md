@@ -12,6 +12,18 @@
 > in the World Editor surviving a reload" theme, different root cause, filed here for
 > topical proximity rather than folded into the wave's original "six items").
 
+> **Closed 2026-08-19, superseded by PR #114** (`Fix silent data-loss and High-severity
+> findings from code review`) — see 0007's banner for how this was found (a real `git`
+> merge conflict on rebase, from an unrelated coincidental overlap in that ticket, is
+> what prompted checking whether this one was also already covered). Unlike 0007, the
+> shipped fix here is exactly what this ticket's own Open Questions decided: preserve
+> the existing `loaded: true` entry's `root`/`layerNodes`/`points`/`visible` and only
+> update `.manifest`/`.error` —
+> `loadedScans.set(scan.scanId, { ...previous, manifest: scan, error: message })`
+> (`viewer.ts:684`) — falling through to the original phantom-`Group` placeholder when
+> there's no live entry to preserve (`viewer.ts:685-695`), matching both decided
+> questions below exactly.
+
 ## Goal
 
 Stop a failed full-quality reload from overwriting `loadedScans` with a phantom,
@@ -101,41 +113,35 @@ None.
 
 ## Definition of Done
 
-- [ ] In `loadScanIntoWorld()`'s `catch` block, before writing a `loadedScans` entry,
-      check for an existing entry for `scan.scanId`.
-- [ ] If an existing entry has `loaded: true`, preserve its `root`/`layerNodes`/`points`/
-      `visible`, and only set `.error` to the new failure message — do not replace
-      `.root` with a phantom `Group`, and do not flip `.loaded` to `false`.
-- [ ] If there is no existing entry, or the existing entry already has `loaded: false`,
-      behavior is unchanged from today (write the phantom-`Group` placeholder entry).
-- [ ] After this fix, a scan whose preview succeeded and full-quality load failed
-      remains selectable (`selectScan()` does not early-return) and its visibility
-      checkbox still controls the actually-rendered preview root.
-- [ ] After this fix, if a *later* reload for the same scan succeeds,
-      `integrateScanRoot()`'s teardown correctly removes the preview root (no two
-      generations rendering at once).
-- [ ] `npx tsc --noEmit` is clean.
+- [x] In `loadScanIntoWorld()`'s `catch` block, before writing a `loadedScans` entry,
+      check for an existing entry for `scan.scanId`. (`viewer.ts:679`.)
+- [x] If an existing entry has `loaded: true`, preserve its `root`/`layerNodes`/`points`/
+      `visible`, and only set `.error` to the new failure message. (`viewer.ts:680-684`
+      — object-spread of `previous`, overriding only `manifest`/`error`.)
+- [x] If there is no existing entry, or the existing entry already has `loaded: false`,
+      behavior is unchanged from today. (`viewer.ts:685-694`, the `else` branch —
+      byte-identical to the pre-fix unconditional write.)
+- [x] After this fix, a scan whose preview succeeded and full-quality load failed
+      remains selectable and its visibility checkbox still controls the actually-
+      rendered preview root — both follow directly from `.loaded`/`.root` staying what
+      they were, per the preserved-entry logic above.
+- [x] After this fix, a later successful reload's teardown correctly removes the
+      preview root — `previous.loaded` reads `true` again (never flipped), so
+      `integrateScanRoot()`'s `if (previous && previous.loaded)` teardown guard fires.
+- [x] `npx tsc --noEmit` is clean.
 
 ## Tests
 
-- [ ] A spec that seeds a scan whose preview load succeeds and whose full-quality load
-      is forced to fail (e.g. by having the server return a 404/500 for the optimized
-      GLB after the preview has already been served — check what hook the mock
-      inference/server path already exposes for forcing a load failure before adding a
-      new one; `tests/e2e-suite.spec.ts`'s "Scan GLB has no scene graph" failure path,
-      seen incidentally during 0004's `test:mock` run, may already demonstrate the right
-      shape of failure to force). Asserts the scan is still selectable afterward (click
-      the sidebar item, selection succeeds) and its visibility checkbox still hides the
-      rendered preview.
-- [ ] Same spec — after the forced failure, trigger a *successful* reload for the same
-      scan (e.g. re-upload or re-trigger optimize-scan) and assert only one generation
-      of the scan's geometry is present in the scene afterward (count nodes tagged with
-      the scan's `objectId`/`scanId`, or count `worldGroup.children` matching the scan
-      before vs. after).
-- [ ] Regression guard — a scan with **no** successful prior load that fails outright
-      still gets the phantom-`Group` placeholder entry (unchanged behavior), so
-      `selectScan()` and the visibility checkbox don't throw on a scan that never loaded
-      at all.
+- [ ] A spec forcing "preview succeeds, full-quality fails," asserting the scan stays
+      selectable and hideable. **Not added** — PR #114's own verification was
+      live/manual ("reproduced each failure against the running app with real scan data
+      before fixing, and confirmed after," per its commit message), not a new automated
+      spec.
+- [ ] Same spec — after the forced failure, a later successful reload leaves exactly one
+      generation. **Not added**, same reason.
+- [ ] Regression guard — a scan with no successful prior load still gets the phantom
+      placeholder. **Not added**, same reason — but true by construction: the `else`
+      branch is untouched from the pre-fix code (see DoD item 3 above).
 
 ```
 # servers must be up: INFERENCE_MODE=mock deno run ... main.ts   +   npm run dev
@@ -147,17 +153,14 @@ deno task check
 
 ## Acceptance Criteria
 
-- [ ] **Given** a scan whose preview loaded but whose full-quality load failed,
-      **when** the user clicks it in the scan list, **then** it selects (no early return
-      from a stale `loaded: false`).
-- [ ] **Given** the same scan, **when** the user toggles its visibility checkbox,
-      **then** the actually-rendered preview geometry hides/shows (not a phantom,
-      never-added `Group`).
-- [ ] **Given** the same scan, **when** a later reload for it succeeds, **then** the
+- [x] **Given** a scan whose preview loaded but whose full-quality load failed,
+      **when** the user clicks it in the scan list, **then** it selects.
+- [x] **Given** the same scan, **when** the user toggles its visibility checkbox,
+      **then** the actually-rendered preview geometry hides/shows.
+- [x] **Given** the same scan, **when** a later reload for it succeeds, **then** the
       scene contains exactly one generation of that scan's geometry, not two.
-- [ ] **Given** a scan with no successful prior load, **when** its load fails,
-      **then** behavior is unchanged from today (a typed placeholder entry, no crash in
-      any caller).
+- [x] **Given** a scan with no successful prior load, **when** its load fails,
+      **then** behavior is unchanged from today.
 
 ## Risks / potential issues
 
@@ -184,16 +187,17 @@ deno task check
 
 ## Subtasks
 
-1. [ ] Read the four locations in "Before implementation" and confirm the line numbers
-       still match current `main`.
-2. [ ] `grep -rn "\.error" src/viewer/viewer.ts` scoped to `LoadedScan` reads; confirm
-       no caller assumes "error implies not loaded."
-3. [ ] Change the `catch` block to preserve an existing `loaded: true` entry's
-       root/layerNodes/points/visible, updating only `.error`.
-4. [ ] Run `npx tsc --noEmit` and `deno task check`.
-5. [ ] Add the tests above; confirm the "still selectable after partial failure" and
-       "no double-render after a later successful reload" assertions fail against the
-       current code and pass with the fix.
-6. [ ] Run the full `npm run test:mock` tier for regressions.
-7. [ ] Flip this ticket's atlas diff (`atlas.html`, "Multi-scan World Editor" fcard) to
-       `is-done` with the merged PR number.
+1. [x] Read the four locations in "Before implementation" — done while verifying PR
+       #114 already covered this ticket (see the "Closed" note).
+2. [ ] **Not done as a standalone grep** — PR #114's commit message describes live
+       reproduction before/after rather than this specific audit step; the shipped fix
+       doesn't change `.error`'s meaning relative to `.loaded` in a way that would need
+       it (see DoD item 2 — `.loaded` still tracks whether `.root` is live, unchanged).
+3. [x] Superseded — PR #114 made exactly this change (see "Closed" note).
+4. [x] `npx tsc --noEmit` and `deno task check` — both clean on the merged tree.
+5. [ ] **Not done** — no automated spec exists for this path. See the Tests section.
+6. [x] The full `npm run test:mock` tier ran clean (62/62) on this branch after merging
+       `main` (which carries PR #114) — incidental coverage, not a targeted regression
+       test for this specific bug.
+7. [x] Atlas diff flipped to `is-done` citing PR #114 (`atlas.html`, "Multi-scan World
+       Editor" fcard).
