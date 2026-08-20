@@ -50,7 +50,7 @@ config variable. This is a client-only state-sync fix reusing, unchanged:
 
 | Existing | Where | How used |
 | --- | --- | --- |
-| `clearSelection()` | `src/viewer/viewer.ts:1586-1595` | called when the selection's owning root is replaced, same as it's already called on an empty pick (`viewer.ts:270`) and on hide-object (`:2631`) |
+| `clearSelection()` | `src/viewer/viewer.ts:1586-1595` | called when the selection's owning root is replaced, same as it's already called on an empty pick (`viewer.ts:270`) and on hide-object (`:2646`) |
 | `selectedTransformTarget` | `src/viewer/viewer.ts:144` | read, not restructured |
 | `LoadedScan` | `src/viewer/viewer.ts:58-66` | unchanged shape |
 | `loadedScans` | `src/viewer/viewer.ts:117` | unchanged Map |

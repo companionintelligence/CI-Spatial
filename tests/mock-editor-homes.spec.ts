@@ -9,7 +9,7 @@
  * Requirements: Vite dev server (VITE_URL) + Deno server behind the proxy.
  * Run: npx playwright test --project=chromium-mock mock-editor-homes
  */
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -95,40 +95,81 @@ test.describe('editor with test-home data', () => {
   // fails without the fix. These tests guard the *consequence* DoD cares about
   // separately — that a save made against the resolved node reloads to the same world
   // position — against the real seeded corpus, via the __editorTest hook
-  // (src/viewer/viewer.ts) instead of a raycast click: a real click cannot reach a
-  // semantic object in this corpus today (a separate, already-scoped-out defect — see
-  // the wave README's "found but deferred"). The hook selects the same way pick()
-  // would resolve to (first THREE.LOD in the scan) and drives the exact same
-  // selectEditableObject() / saveSelectedTransform() path a click would, so it does
-  // not by itself catch a walk-order regression — only editor_pick.test.ts does.
+  // (src/viewer/viewer.ts, gated behind ?mock=editor) instead of a raycast click: a
+  // real click cannot reach a semantic object in this corpus today (a separate,
+  // already-scoped-out defect — see the wave README's "found but deferred"). The hook
+  // selects *a* LOD in the scan (the first one found by tree order — not necessarily
+  // the same node a raycast would hit, since a home has several) and drives the exact
+  // same selectEditableObject() / saveSelectedTransform() path a click would, so it
+  // does not by itself catch a walk-order regression — only editor_pick.test.ts does.
 
   type WorldTransform = { position: [number, number, number]; scale: [number, number, number] }
-  type Picked = { name: string; objectId: string; gizmoAttached: boolean }
-  declare global {
-    interface Window {
-      __editorTest: {
-        selectFirstLod: (scanId: string) => Picked | null
-        worldTransform: () => WorldTransform | null
-        nudgeAndSave: (dx: number, dy: number, dz: number) => Promise<void>
-      }
-    }
+  type Picked = { name: string; objectId: string; filename: string; gizmoAttached: boolean }
+  type EditorTestHook = {
+    selectFirstLod: (scanId: string) => Picked | null
+    worldTransform: () => WorldTransform | null
+    nudgeAndSave: (dx: number, dy: number, dz: number) => Promise<boolean>
+  }
+
+  function selectFirstLod(page: Page, scanId: string): Promise<Picked | null> {
+    return page.evaluate(
+      (id) => (window as unknown as { __editorTest: EditorTestHook }).__editorTest.selectFirstLod(id),
+      scanId,
+    )
+  }
+  function readWorldTransform(page: Page): Promise<WorldTransform | null> {
+    return page.evaluate(
+      () => (window as unknown as { __editorTest: EditorTestHook }).__editorTest.worldTransform(),
+    )
+  }
+  function nudgeAndSave(page: Page, dx: number, dy: number, dz: number): Promise<boolean> {
+    return page.evaluate(
+      ([dx, dy, dz]) => (window as unknown as { __editorTest: EditorTestHook }).__editorTest.nudgeAndSave(dx, dy, dz),
+      [dx, dy, dz] as [number, number, number],
+    )
   }
 
   // "default" is a world shared with every other chromium-mock spec, so identify a
-  // scan by this fixture's own deterministic scanId prefix (assigned by
-  // scripts/seed-test-homes.mjs) rather than by DOM position — .scan-item's order can
-  // shift while a sibling spec's own beforeAll concurrently uploads into the same world.
+  // scan by this fixture's own deterministic scanId prefix — generate-test-homes.mjs
+  // bakes `sessionId: session-test-home-${NN}` into each home's fixture metadata, and
+  // the server derives the scanId from that on upload — rather than by DOM position:
+  // .scan-item's order can shift while a sibling spec's own beforeAll concurrently
+  // uploads into the same world.
   const TEST_HOME_SCAN = '.scan-item[data-scan-id^="scan-session-test-home-"]'
 
-  test('picking a semantic object resolves to the LOD, and TransformControls attaches to it', async ({ page }) => {
-    await page.goto('/viewer.html?world=default')
-    await expect(page.locator('.scan-status', { hasText: /Ready/ }).first())
-      .toBeVisible({ timeout: 60_000 })
+  /**
+   * Wait for a test-home scan that has actually finished loading client-side, and
+   * return its scan item — the two halves both matter.
+   *
+   * Scoping to `TEST_HOME_SCAN` alone isn't enough: this world is shared, and it
+   * accumulates scans across runs, so the first test-home item in DOM order may be a
+   * previous run's entry whose GLB is gone. Requiring `Ready` alone isn't enough
+   * either: that matches any scan in the world, including another spec's.
+   *
+   * The capital-R `/Ready/` is load-bearing and case-sensitive. The chip has two text
+   * sources — `buildScanItem()` renders the *server* manifest status (lowercase
+   * `ready`, or a `needs rescan · N% coverage` quality label) at page load, and
+   * `setScanStatus()` overwrites it with the *client* load state (`Loading GLB...` →
+   * `Ready` / `Ready - optimized …`, or `Error: …`). Only the latter means the scan is
+   * in the scene and pickable, so only the capitalised form should satisfy this wait.
+   */
+  async function waitForTestHomeReady(page: Page) {
+    const item = page
+      .locator(TEST_HOME_SCAN)
+      .filter({ has: page.locator('.scan-status', { hasText: /Ready/ }) })
+      .first()
+    await expect(item).toBeVisible({ timeout: 60_000 })
+    return item
+  }
 
-    const scanId = await page.locator(TEST_HOME_SCAN).first().getAttribute('data-scan-id')
+  test('picking a semantic object resolves to the LOD, and TransformControls attaches to it', async ({ page }) => {
+    await page.goto('/viewer.html?world=default&mock=editor')
+    const item = await waitForTestHomeReady(page)
+
+    const scanId = await item.getAttribute('data-scan-id')
     expect(scanId).toBeTruthy()
 
-    const picked = await page.evaluate((id) => window.__editorTest.selectFirstLod(id), scanId!)
+    const picked = await selectFirstLod(page, scanId!)
     expect(picked).toBeTruthy()
     expect(picked!.name).toMatch(/^LOD_/)
     expect(picked!.objectId).toMatch(/:lod$/)
@@ -136,57 +177,57 @@ test.describe('editor with test-home data', () => {
   })
 
   test('a translated object is in the same world position after a reload, scale unchanged, patch idempotent', async ({ page, request }) => {
-    await page.goto('/viewer.html?world=default')
-    await expect(page.locator('.scan-status', { hasText: /Ready/ }).first())
-      .toBeVisible({ timeout: 60_000 })
+    await page.goto('/viewer.html?world=default&mock=editor')
+    const item = await waitForTestHomeReady(page)
 
-    const scanItem = page.locator(TEST_HOME_SCAN).first()
-    const scanId = await scanItem.getAttribute('data-scan-id')
+    const scanId = await item.getAttribute('data-scan-id')
     expect(scanId).toBeTruthy()
-    // Read the filename off the same element handle as scanId, not a second
-    // independent .first() lookup — .scan-item order can otherwise shift between the
-    // two reads under load from sibling specs uploading into this same shared world.
-    const filename = await scanItem.locator('.scan-name').getAttribute('title')
+    const filename = await item.locator('.scan-name').getAttribute('title')
     expect(filename).toBeTruthy()
 
     // Wait for the background optimize-scan job to settle before touching the scene.
     // loadScanIntoWorld() swaps in the optimized GLB as soon as its job finishes,
-    // whether or not the page is mid-edit (that swap is 0004's related, deferred
-    // finding — see docs/factory/03-readiness-hardening/, "stale references survive
-    // a reload"). Racing it here would compare positions across two different graph
-    // shapes (the fresh export vs. the optimized one, which the wave README's "found
-    // but deferred" section documents as diverging — #87), which is a false failure
+    // whether or not the page is mid-edit (that swap is 0007's territory, filed
+    // separately — see docs/factory/03-readiness-hardening/0007-fix-stale-selection-on-scan-root-replace.md).
+    // Racing it here would compare positions across two different graph shapes (the
+    // fresh export vs. the optimized one, which the wave README's "found but
+    // deferred" section documents as diverging — #87), which is a false failure
     // unrelated to what this test checks.
     await expect.poll(
       async () => (await request.get(`/scans/${encodeURIComponent(filename!)}/manifest`)).status(),
       { timeout: 60_000 },
     ).toBe(200)
     await page.reload()
-    await expect(page.locator('.scan-status', { hasText: /Ready/ }).first())
-      .toBeVisible({ timeout: 60_000 })
+    await waitForTestHomeReady(page)
 
-    const picked = await page.evaluate((id) => window.__editorTest.selectFirstLod(id), scanId!)
+    const picked = await selectFirstLod(page, scanId!)
     expect(picked).toBeTruthy()
 
-    const before = await page.evaluate(() => window.__editorTest.worldTransform())
+    const before = await readWorldTransform(page)
     expect(before).toBeTruthy()
 
-    await page.evaluate(() => window.__editorTest.nudgeAndSave(1, 0, 0))
+    // Nudge on all three axes (not just x) so a z-specific coordinate-frame or
+    // decompose defect can't hide behind an untested dz=0.
+    const NUDGE: [number, number, number] = [1, 0, 0.5]
+    const saved = await nudgeAndSave(page, ...NUDGE)
+    expect(saved).toBe(true)
 
     // The reference for the round trip is the world transform right after the drag,
-    // not before.position + 1: the LOD's parent (the scan root) carries its own
-    // localToWorld placement, so a +1 local-x nudge is not necessarily +1 world-x.
-    // Sanity-check the nudge moved it by roughly 1m in *some* direction (rotation
-    // preserves vector length; only a non-uniform scale would distort it, and a rigid
-    // scan placement doesn't have one) before trusting it as the round-trip target.
-    const afterNudge = await page.evaluate(() => window.__editorTest.worldTransform())
+    // not before.position + NUDGE: the LOD's parent (the scan root) carries its own
+    // localToWorld placement, so a local nudge is not necessarily the same delta in
+    // world space. Sanity-check the nudge moved it by roughly the expected magnitude
+    // in *some* direction (rotation preserves vector length; only a non-uniform scale
+    // would distort it, and a rigid scan placement doesn't have one) before trusting
+    // it as the round-trip target.
+    const afterNudge = await readWorldTransform(page)
     expect(afterNudge).toBeTruthy()
+    const expectedMagnitude = Math.hypot(...NUDGE)
     const nudgeMagnitude = Math.hypot(
       afterNudge!.position[0] - before!.position[0],
       afterNudge!.position[1] - before!.position[1],
       afterNudge!.position[2] - before!.position[2],
     )
-    expect(nudgeMagnitude).toBeGreaterThan(0.5)
+    expect(Math.abs(nudgeMagnitude - expectedMagnitude)).toBeLessThan(0.1)
 
     // The persisted patch's targetId ends in :lod. Filtered by objectId rather than
     // taken as the array's last entry — test.describe.configure({ mode: 'serial' })
@@ -200,21 +241,26 @@ test.describe('editor with test-home data', () => {
     expect(savedPatch!.scope).toBe('object')
 
     await page.reload()
-    await expect(page.locator('.scan-status', { hasText: /Ready/ }).first())
-      .toBeVisible({ timeout: 60_000 })
+    await waitForTestHomeReady(page)
 
-    const pickedAfter = await page.evaluate((id) => window.__editorTest.selectFirstLod(id), scanId!)
+    const pickedAfter = await selectFirstLod(page, scanId!)
     expect(pickedAfter?.objectId).toBe(picked!.objectId)
+    // Same scan *generation*, not just the same scanId — see the hook's comment in
+    // viewer.ts. If a re-seeded world holds several scans under one scanId, a reload
+    // can bind to a different root, and comparing positions across the two is
+    // meaningless. Assert it here so that shows up as itself rather than as a
+    // baffling position mismatch below.
+    expect(pickedAfter?.filename).toBe(picked!.filename)
 
-    const after = await page.evaluate(() => window.__editorTest.worldTransform())
+    const after = await readWorldTransform(page)
     expect(after).toBeTruthy()
     // DoD: a dragged object is in the same world position after a reload, within
     // 1e-3, and its scale is unchanged. Pre-0004, dragging a *level* (what pick()
     // used to resolve to) while the patch was written against the LOD would fail
     // this the same way — displaced and rescaled by the medium proxy's
     // normalisation — but that specific path is exercised by editor_pick.test.ts
-    // and tested end-to-end here (this hook always resolves the LOD, matching what
-    // pick() resolves to post-fix), not re-proven by reverting pick() itself.
+    // and tested end-to-end here (this hook always resolves a LOD), not re-proven by
+    // reverting pick() itself.
     expect(Math.abs(after!.position[0] - afterNudge!.position[0])).toBeLessThan(1e-3)
     expect(Math.abs(after!.position[1] - afterNudge!.position[1])).toBeLessThan(1e-3)
     expect(Math.abs(after!.position[2] - afterNudge!.position[2])).toBeLessThan(1e-3)
@@ -226,12 +272,20 @@ test.describe('editor with test-home data', () => {
     // decomposes an absolute matrix onto a freshly-rebuilt LOD each load, so replay
     // is idempotent by construction; this is the regression guard for that.
     await page.reload()
-    await expect(page.locator('.scan-status', { hasText: /Ready/ }).first())
-      .toBeVisible({ timeout: 60_000 })
-    await page.evaluate((id) => window.__editorTest.selectFirstLod(id), scanId!)
-    const afterTwice = await page.evaluate(() => window.__editorTest.worldTransform())
+    await waitForTestHomeReady(page)
+    const pickedTwice = await selectFirstLod(page, scanId!)
+    expect(pickedTwice?.filename).toBe(picked!.filename)
+    const afterTwice = await readWorldTransform(page)
     expect(afterTwice).toBeTruthy()
     expect(Math.abs(afterTwice!.position[0] - after!.position[0])).toBeLessThan(1e-3)
+
+    // Restore the object's original position. There's no DELETE for a single patch
+    // (only a whole scan, via DELETE /scans/:filename, which would risk deleting a
+    // scan a concurrently-running sibling spec is mid-use of) — but posting a
+    // corrective patch undoes the *visible* drift for the next local run or any other
+    // spec inspecting this scan, at the cost of one extra, immediately-superseded
+    // entry in world.editPatches.
+    await nudgeAndSave(page, -NUDGE[0], -NUDGE[1], -NUDGE[2])
   })
 
   test('a labelled object outside an LOD still picks as itself (regression guard)', async ({ page }) => {

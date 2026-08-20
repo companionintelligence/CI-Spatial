@@ -1740,58 +1740,79 @@ async function saveSelectedTransform(): Promise<void> {
   flashButton('edit-save-transform', 'Saved')
 }
 
+// Traverses like findObjectByTargetId() (:2336) — a plain THREE.Object3D.traverse()
+// with a first-match early exit, not hand-rolled recursion.
 function firstLod(root: THREE.Object3D): THREE.Object3D | null {
-  if (root instanceof THREE.LOD) return root
-  for (const child of root.children) {
-    const found = firstLod(child)
-    if (found) return found
-  }
-  return null
+  let match: THREE.Object3D | null = null
+  root.traverse((obj) => {
+    if (!match && obj instanceof THREE.LOD) match = obj
+  })
+  return match
 }
 
-// Test hook: selects a scan's first semantic LOD and drives the save-transform round
-// trip through the real selectEditableObject()/saveSelectedTransform() path, without a
-// raycast. A real canvas click cannot reach a semantic object in the seeded test-home
-// corpus today — point-cloud hits and the always-attached gizmo's own helper both
-// intercept the ray first, a separate defect recorded in
-// docs/factory/03-readiness-hardening/README.md ("found but deferred"). This hook lets
-// 0004's round-trip regression test (tests/mock-editor-homes.spec.ts) exercise the LOD
-// pick/save/reload fix without depending on that unrelated fix landing first.
-;(window as unknown as {
-  __editorTest: {
-    selectFirstLod: (scanId: string) => { name: string; objectId: string; gizmoAttached: boolean } | null
-    worldTransform: () => { position: [number, number, number]; scale: [number, number, number] } | null
-    nudgeAndSave: (dx: number, dy: number, dz: number) => Promise<void>
-  }
-}).__editorTest = {
-  selectFirstLod(scanId: string) {
-    const loaded = loadedScans.get(scanId)
-    if (!loaded) return null
-    const found = firstLod(loaded.root)
-    if (!found) return null
-    selectEditableObject(found)
-    return {
-      name: found.name,
-      objectId: stableObjectId(found),
-      gizmoAttached: transformControls?.object === found,
+// Test hook: selects a scan's first semantic LOD (by tree order — NOT necessarily the
+// same node a raycast would resolve to; see editor_pick.test.ts for that) and drives
+// the save-transform round trip through the real selectEditableObject()/
+// saveSelectedTransform() path, without a raycast. A real canvas click cannot reach a
+// semantic object in the seeded test-home corpus today — point-cloud hits and the
+// always-attached gizmo's own helper both intercept the ray first, a separate defect
+// recorded in docs/factory/03-readiness-hardening/README.md ("found but deferred").
+// This hook lets 0004's round-trip regression test (tests/mock-editor-homes.spec.ts)
+// exercise the LOD save/reload fix without depending on that unrelated fix landing
+// first. Gated behind ?mock=editor, same convention as src/test/webxr-emulation.ts's
+// ?mock=webxr, so it never lands in a production session.
+if (query.get('mock') === 'editor') {
+  (window as unknown as {
+    __editorTest: {
+      selectFirstLod: (scanId: string) => { name: string; objectId: string; filename: string; gizmoAttached: boolean } | null
+      worldTransform: () => { position: [number, number, number]; scale: [number, number, number] } | null
+      nudgeAndSave: (dx: number, dy: number, dz: number) => Promise<boolean>
     }
-  },
-  worldTransform() {
-    if (!selectedTransformTarget) return null
-    const pos = new THREE.Vector3()
-    const scl = new THREE.Vector3()
-    selectedTransformTarget.getWorldPosition(pos)
-    selectedTransformTarget.getWorldScale(scl)
-    return { position: [pos.x, pos.y, pos.z], scale: [scl.x, scl.y, scl.z] }
-  },
-  async nudgeAndSave(dx: number, dy: number, dz: number) {
-    if (!selectedTransformTarget) return
-    selectedTransformTarget.position.x += dx
-    selectedTransformTarget.position.y += dy
-    selectedTransformTarget.position.z += dz
-    selectedTransformTarget.updateMatrixWorld(true)
-    await saveSelectedTransform()
-  },
+  }).__editorTest = {
+    selectFirstLod(scanId: string) {
+      const loaded = loadedScans.get(scanId)
+      if (!loaded) return null
+      const found = firstLod(loaded.root)
+      if (!found) return null
+      // `filename` disambiguates which *generation* this is. loadedScans is keyed by
+      // scanId, but a world can hold several scans sharing one scanId (re-uploading a
+      // fixture derives the same scanId from its sessionId), and only the last to
+      // finish loading survives in the Map — so the same scanId can resolve to a
+      // different root across a reload. Returning it lets a caller assert it didn't.
+      // Sync SceneEditor's own selection too, not just selectedTransformTarget — a
+      // real click reaches this state via editor.pick(), which calls this same
+      // method; skipping it left editor.selectedObject stale (e.g. edit-hide-object
+      // reads it directly, with no selectedTransformTarget fallback).
+      editor.selectObject(found)
+      selectEditableObject(found)
+      return {
+        name: found.name,
+        objectId: stableObjectId(found),
+        filename: loaded.manifest.filename,
+        gizmoAttached: transformControls?.object === found,
+      }
+    },
+    worldTransform() {
+      if (!selectedTransformTarget) return null
+      const pos = new THREE.Vector3()
+      const scl = new THREE.Vector3()
+      selectedTransformTarget.getWorldPosition(pos)
+      selectedTransformTarget.getWorldScale(scl)
+      return { position: [pos.x, pos.y, pos.z], scale: [scl.x, scl.y, scl.z] }
+    },
+    async nudgeAndSave(dx: number, dy: number, dz: number) {
+      if (!selectedTransformTarget || !world) return false
+      selectedTransformTarget.position.x += dx
+      selectedTransformTarget.position.y += dy
+      selectedTransformTarget.position.z += dz
+      selectedTransformTarget.updateMatrixWorld(true)
+      // A real drag fires TransformControls' objectChange listener (updates the Edit
+      // panel readout and HUD) — this mutates position directly, so fire it too.
+      transformControls?.dispatchEvent({ type: 'objectChange' })
+      await saveSelectedTransform()
+      return true
+    },
+  }
 }
 
 async function saveObjectSemanticPatch(obj: THREE.Object3D): Promise<void> {

@@ -45,7 +45,7 @@ config variable. Reuses, unchanged:
 | --- | --- | --- |
 | `LoadedScan` | `src/viewer/viewer.ts:58-66` | unchanged shape — the fix changes *which* value populates `.error`/`.loaded`, not the interface |
 | `loadedScans` | `src/viewer/viewer.ts:117` | unchanged Map |
-| `setScanStatus()` | `src/viewer/viewer.ts:2298` (approx. — re-verify) | unchanged; still called with the error message |
+| `setScanStatus()` | `src/viewer/viewer.ts:2367` | unchanged; still called with the error message |
 
 ## Before implementation
 
