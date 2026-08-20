@@ -168,8 +168,14 @@ file" convention as every other secret in this repo (see `.env.example`). One
 variable per device, and it must be re-done for every new session:
 
 ```bash
+export ANDROID_MCP_TOKEN_TAB_S8_ULTRA=<token from that device's Settings → Access>
 export ANDROID_MCP_TOKEN_TAB_S9_ULTRA=<token from that device's Settings → Access>
+export ANDROID_MCP_TOKEN_BEAM_PRO_1=<token from that device's Settings → Access>
+export ANDROID_MCP_TOKEN_BEAM_PRO=<token from that device's Settings → Access>
 ```
+
+Export only the devices you actually need — a server whose variable is unset
+simply fails to authenticate, it does not break the others.
 
 Either way the tokens are read when the session starts, so a value supplied
 mid-session does not take effect until Claude Code is restarted. **Never
@@ -184,20 +190,44 @@ bearer token. See "Security notes" below.
 ### Connecting over adb (fallback, USB only)
 
 Useful when a device isn't on the tailnet, or when you don't want to widen its
-bind address. One host port per device — they cannot share 8080:
+bind address. Forward a free host port to the device's 8080 — one host port per
+device, since several devices cannot share one:
 
 ```bash
 adb -s <serial> forward tcp:8081 tcp:8080
 ```
 
-Use the literal `127.0.0.1`, not `localhost`. On a machine that also runs Docker
-Desktop and/or WSL, something else is frequently already bound to `:8080` on
-`0.0.0.0`/`[::]`/`[::1]`, and an IPv6-first resolver will happily route
-`localhost` to that unrelated service instead of the adb forward, which only
-binds `127.0.0.1` (IPv4). Verified on this machine: Docker Desktop held
-`0.0.0.0:8080` and `[::]:8080`, wslrelay held `[::1]:8080`. Run
-`netstat -ano | findstr :8080` and check which PID actually owns
-`127.0.0.1:8080` before assuming the phone is the problem.
+The tracked `.mcp.json` points that server at its tailnet hostname, so the
+forward alone is not enough — override the URL for this machine in
+`.mcp.local.json`, which takes precedence:
+
+```bash
+cat > .mcp.local.json <<'JSON'
+{
+  "mcpServers": {
+    "android-tab-s9-ultra": {
+      "type": "http",
+      "url": "http://127.0.0.1:8081/mcp",
+      "headers": { "Authorization": "Bearer <tab-s9 token>" }
+    }
+  }
+}
+JSON
+```
+
+Restart Claude Code afterward — MCP config is read at session start. Delete the
+override to go back to the tailnet path.
+
+Use the literal `127.0.0.1`, not `localhost`, and choose the host port
+deliberately rather than defaulting to 8080. On a machine that also runs Docker
+Desktop and/or WSL, `:8080` is frequently already taken on
+`0.0.0.0`/`[::]`/`[::1]` — verified here, Docker Desktop held `0.0.0.0:8080`
+and `[::]:8080` while wslrelay held `[::1]:8080`, which is why the example
+forwards to 8081 instead. An IPv6-first resolver will happily route `localhost`
+to that unrelated service instead of the adb forward, which only binds
+`127.0.0.1` (IPv4). If a forward seems to hang or reset, run
+`netstat -ano | findstr :<host-port>` and check which PID actually owns
+`127.0.0.1:<host-port>` before assuming the phone is the problem.
 
 ### Diagnosing "connection refused"
 
