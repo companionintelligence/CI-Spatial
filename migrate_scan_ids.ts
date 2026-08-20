@@ -45,7 +45,7 @@
  */
 import type { ScanManifest, WorldProject } from './src/world/types.ts'
 import { withWorldLock } from './world_lock.ts'
-import { safeSlug, scanIdFor } from './scan_id.ts'
+import { legacyScanId, safeSlug, scanIdFor } from './scan_id.ts'
 
 /** One patch/job reference that named an id shared by more than one scan. */
 export interface AmbiguousRemap {
@@ -95,18 +95,6 @@ export interface MigrateScanIdsOptions {
 export interface MigrationSummary {
   worlds: WorldMigrationResult[]
   filesWritten: number
-}
-
-/**
- * The id this scan carried under the old derivation.
- *
- * Read from `ScanManifest.sessionId` — which ticket 0001 leaves untouched —
- * rather than from the stored `scanId`, so this is correct even after a server
- * boot has already re-derived the rows. A scan with no sessionId always took
- * the filename branch, so its id never moves.
- */
-function legacyScanId(scan: ScanManifest): string {
-  return scan.sessionId ? `scan-${safeSlug(scan.sessionId)}` : scanIdFor(scan.filename)
 }
 
 /**

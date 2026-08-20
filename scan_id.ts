@@ -11,6 +11,7 @@
  * Deno-API-free on purpose (ADR 0002), though nothing in `src/` should import
  * it: the server owns scan identity.
  */
+import type { ScanManifest } from './src/world/types.ts'
 
 /**
  * Lowercase `raw` into the `[a-z0-9_-]` alphabet, collapsing runs of the
@@ -61,4 +62,22 @@ export function safeSlug(raw: string | undefined, fallback = 'default'): string 
  */
 export function scanIdFor(filename: string): string {
   return `scan-${safeSlug(filename.replace(/\.glb$/, ''))}`
+}
+
+/**
+ * The id a scan carried under the OLD (pre-0001) derivation: one id per
+ * **capture session** rather than per upload — see `scanIdFor`'s doc comment
+ * for what that meant in practice.
+ *
+ * Read from `ScanManifest.sessionId`, which ticket 0001 leaves untouched,
+ * rather than from the stored `scanId` field: `refreshWorldScans` (`main.ts`)
+ * self-heals a scan's own `scanId` to the new derivation on read, so by the
+ * time anything asks "what was this scan's old id", the stored field may
+ * already have moved. Reconstructing it from `sessionId` instead makes this
+ * correct regardless of whether that self-heal has already run. A scan with
+ * no `sessionId` always took the filename branch under the old derivation
+ * too, so its id never moved and this returns the same value as `scanIdFor`.
+ */
+export function legacyScanId(scan: Pick<ScanManifest, 'sessionId' | 'filename'>): string {
+  return scan.sessionId ? `scan-${safeSlug(scan.sessionId)}` : scanIdFor(scan.filename)
 }

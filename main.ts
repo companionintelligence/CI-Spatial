@@ -46,7 +46,7 @@ import {
   WorldJobPump,
 } from './world_job_pump.ts'
 import { withWorldLock } from './world_lock.ts'
-import { safeSlug, scanIdFor } from './scan_id.ts'
+import { legacyScanId, safeSlug, scanIdFor } from './scan_id.ts'
 import { newServerSessionId, resolveSessionDir, sessionDirPath } from './session_id.ts'
 import { loadSessionIndex, sessionForScan, type SessionIndex } from './scan_index.ts'
 import { pruneScansMissingFromDisk } from './world_prune.ts'
@@ -1522,23 +1522,36 @@ async function mutateWorldFiles(mutator: (world: WorldProject) => boolean | Prom
 }
 
 async function removeScanFromWorlds(filename: string): Promise<number> {
-  // Derived, not looked up: the scan row is about to be filtered out, and this
-  // must also work for a world whose entry was already pruned. `patch.scanId`
-  // used to be compared against `filename` here — a scanId is never a
-  // filename, so that arm never matched and scan-scoped patches outlived the
-  // scan they described.
+  // Derived, not looked up from a single shared value: the scan row is about
+  // to be filtered out, and this must also work for a world whose entry was
+  // already pruned. `patch.scanId` used to be compared against `filename`
+  // here — a scanId is never a filename, so that arm never matched and
+  // scan-scoped patches outlived the scan they described.
   const removedScanId = scanIdFor(filename)
   return mutateWorldFiles((world) => {
+    // mutateWorldFiles reads the world raw — no refreshWorldScans pass — so a
+    // job/patch here can still name the LEGACY id if this scan's row was
+    // renamed by a GET that ran before this delete (refreshWorldScans's own
+    // self-heal) but this particular reference was part of a collision that
+    // self-heal correctly left alone (see the count guard there). Matching
+    // only `removedScanId` would leave such a reference behind — recompute
+    // the legacy id from the row still in `world.scans`, before it's filtered
+    // out below, and match either.
+    const removedRow = world.scans.find(scan => scan.filename === filename)
+    const removedLegacyScanId = removedRow ? legacyScanId(removedRow) : null
+    const isRemovedScanId = (scanId: string | undefined): boolean =>
+      scanId === removedScanId || (removedLegacyScanId !== null && scanId === removedLegacyScanId)
+
     const beforeScans = world.scans.length
     world.scans = world.scans.filter(scan => scan.filename !== filename)
     world.editPatches = world.editPatches.filter(
-      patch => patch.targetId !== filename && patch.scanId !== removedScanId,
+      patch => patch.targetId !== filename && !isRemovedScanId(patch.scanId),
     )
     world.jobs = world.jobs.filter(job => {
       if (!job.scanId) return true
       // Explicit, rather than relying on the survivor scan below: while ids
       // collided, a sibling sharing the removed scan's id kept its jobs alive.
-      if (job.scanId === removedScanId) return false
+      if (isRemovedScanId(job.scanId)) return false
       return world.scans.some(scan => scan.scanId === job.scanId)
     })
     return world.scans.length !== beforeScans
@@ -1646,10 +1659,36 @@ async function refreshWorldScans(world: WorldProject): Promise<void> {
     )
   }
 
+  // Ids currently on disk, counted before any renames below touch them — the
+  // only way to tell an unambiguous rename from one still tangled in a
+  // not-yet-migrated collision. A count of 1 means no sibling scan shares
+  // this id, so any job/patch naming it can only have meant this scan; a
+  // count > 1 is exactly the collision `deno task migrate-scan-ids` exists to
+  // resolve; a guess made here, live, on every GET, could differ request to
+  // request and is not this function's call to make.
+  const scansByCurrentId = new Map<string, number>()
+  for (const scan of world.scans) {
+    scansByCurrentId.set(scan.scanId, (scansByCurrentId.get(scan.scanId) ?? 0) + 1)
+  }
+
   world.scans = world.scans.map((scan, index) => {
     const storedScan = storedByFilename.get(scan.filename)
     if (!storedScan) return scan
     const next = scanManifestFromStored(storedScan, world.originGeoPose, index, world.shareSlug)
+    if (next.scanId !== scan.scanId && scansByCurrentId.get(scan.scanId) === 1) {
+      // Repoint references live, the same self-heal this function already
+      // does for the scan row itself (below) — otherwise the id moves out
+      // from under a still-pending job's exact-match lookup the moment this
+      // GET persists it, well before an operator gets a chance to run the
+      // offline migration. Safe here specifically because the id is unique:
+      // see the collision-count guard above.
+      for (const patch of world.editPatches) {
+        if (patch.scanId === scan.scanId) patch.scanId = next.scanId
+      }
+      for (const job of world.jobs) {
+        if (job.scanId === scan.scanId) job.scanId = next.scanId
+      }
+    }
     changed = changed
       || scan.scanId !== next.scanId
       || scan.status !== next.status
@@ -1664,15 +1703,59 @@ async function refreshWorldScans(world: WorldProject): Promise<void> {
     .filter(shouldIncludeInWorld)
     .filter(scan => !existing.has(scan.filename))
     .slice(0, 12)
-  if (additions.length === 0) {
-    if (changed) await writeWorldUnlocked(world)
-    return
+
+  if (additions.length > 0) {
+    const origin = world.originGeoPose
+    const nextIndex = world.scans.length
+    world.scans.push(...additions.map((scan, i) => scanManifestFromStored(scan, origin, nextIndex + i, world.shareSlug)))
   }
 
-  const origin = world.originGeoPose
-  const nextIndex = world.scans.length
-  world.scans.push(...additions.map((scan, i) => scanManifestFromStored(scan, origin, nextIndex + i, world.shareSlug)))
-  await writeWorldUnlocked(world)
+  warnOnScanIdCollision(world)
+
+  if (changed || additions.length > 0) await writeWorldUnlocked(world)
+}
+
+/** Per-slug memo of the last logged colliding-id set, so the warn does not repeat every GET. */
+const lastScanIdCollisionLogged = new Map<string, string>()
+
+/**
+ * `scanIdFor()` is lossy — `safeSlug()` collapses every character outside
+ * `[a-z0-9_-]`, so two distinct filenames can in principle derive the same
+ * id (`a.b.glb` and `a-b.glb` both become `scan-a-b`). `migrate_scan_ids.ts`
+ * refuses to run over a world with this collision; it throws, which is the
+ * right call for a one-shot, human-attended script. It is NOT the right call
+ * here: `refreshWorldScans` runs inside `readWorldUnlocked`'s try/catch,
+ * which treats ANY thrown error as "no world file" and silently replaces the
+ * response with a freshly synthesized empty world — throwing here would make
+ * the failure mode worse, not better.
+ *
+ * So this only warns, throttled per-slug so it doesn't repeat on every GET.
+ * It does not attempt to resolve the collision (there is no safe automatic
+ * choice — see the migration's own reasoning), only to make it visible
+ * rather than let the viewer silently discard one of the colliding scans the
+ * way it did before ticket 0001. An operator sees the log and renames the
+ * offending file, the same fix the migration's own error message asks for.
+ */
+function warnOnScanIdCollision(world: WorldProject): void {
+  const byId = new Map<string, string[]>()
+  for (const scan of world.scans) {
+    const bucket = byId.get(scan.scanId)
+    if (bucket) bucket.push(scan.filename)
+    else byId.set(scan.scanId, [scan.filename])
+  }
+  const collisions = [...byId.entries()].filter(([, filenames]) => filenames.length > 1)
+  if (collisions.length === 0) {
+    lastScanIdCollisionLogged.delete(world.worldId)
+    return
+  }
+  const detail = collisions.map(([id, filenames]) => `${id} <- ${filenames.join(', ')}`).join('; ')
+  if (lastScanIdCollisionLogged.get(world.worldId) === detail) return
+  lastScanIdCollisionLogged.set(world.worldId, detail)
+  console.warn(
+    `[worlds] '${world.shareSlug}': ${collisions.length} scanId(s) are shared by more than one scan — ` +
+    `safeSlug() is lossy, so distinct filenames can derive the same id. The viewer will only show one ` +
+    `of each colliding set. Rename the offending file(s) to resolve: ${detail}`,
+  )
 }
 
 /** Best client-facing base URL: request origin → forwarded host → Vite default */
