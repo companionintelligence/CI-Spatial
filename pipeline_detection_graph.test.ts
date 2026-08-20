@@ -5,7 +5,7 @@
  * unnoticed: `exportToGLB` gives every detection a wireframe child, and
  * glTF-Transform's `quantize()` cannot put a dequantization transform on a node
  * holding both a mesh and children — so it hoists the mesh into a new unnamed
- * sibling. Measured on a real capture, 8 of 8 detection nodes carried a mesh
+ * child. Measured on a real capture, 8 of 8 detection nodes carried a mesh
  * before optimization and 0 of 8 after. The viewer prefers the optimized file
  * and gated its detection features on `instanceof THREE.Mesh`, so boxes,
  * sample points and semantic proxy models silently vanished from every
@@ -155,7 +155,7 @@ function freshDetection(label: string): THREE.Object3D {
   return mesh
 }
 
-/** The same detection after quantize hoists the mesh into an unnamed sibling. */
+/** The same detection after quantize hoists the mesh into an unnamed child. */
 function hoistedDetection(label: string): THREE.Object3D {
   const node = new THREE.Object3D()
   node.name = `${label}_001`

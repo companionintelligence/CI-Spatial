@@ -27,14 +27,16 @@ pipeline transform quietly reshaped a detection node and every downstream featur
 > node holding the box mesh. The two come apart after optimization. `exportToGLB` gives every
 > detection a wireframe child, and glTF-Transform's `quantize()` cannot put a dequantization
 > transform on a node that has both a mesh and children — so it hoists the mesh into a new
-> unnamed sibling, leaving the labelled node holding only children. Measured on a real
+> unnamed child, leaving the labelled node holding only children. Measured on a real
 > capture: 8 of 8 detection nodes carry a mesh in the source GLB, 0 of 8 in the `.opt.glb`.
 > Since the viewer *prefers* the optimized file, gating on `instanceof Mesh` matched nothing
 > in exactly the scans users see, and every detection feature went dark with no error.
 
-**One mechanical correction to that comment, verified for this ticket, and it changes the
-recommended fix.** The hoisted node is created as a **child** of the labelled node, not a
-sibling. `transformMeshParents()` in
+**That comment said "sibling" when this ticket was drafted; it was corrected to "child" in
+the tree before the ticket landed** (same correction in `pipeline_detection_graph.test.ts`,
+whose own fixture already built a child). The quote above is the corrected text. The
+mechanism matters because it changes the recommended fix: the hoisted node is created as a
+**child** of the labelled node, not a sibling. `transformMeshParents()` in
 `node_modules/@gltf-transform/functions/dist/index.js:3958-3984` does:
 
 ```js
