@@ -8,12 +8,17 @@ place — see the [root README's quick-setup section](../README.md#quick-setup) 
 
 **Status (2026-08-21):** protocol codec and pairing are verified against a real captured frame.
 Gimbal speed-control's axis order/signs were live-verified against a real OM6 via the web UI
-joystick and corrected in `subsystems/osmo-ble/protocol/commands.mjs`; absolute-angle moves got
-the same fix by inference (same struct family) but haven't been independently live-tested yet.
-The "mode" toggle (cmdId 0x44) is confirmed to be a portrait/landscape switch, not a real
-lock/follow/fpv selector. The web control UI is a compact one-handed PWA matching CI-Common's
-design tokens (`packages/tokens/src/tokens.css`, dark theme), with a live orientation readout, a
-persistent command-coverage grid, and a structured frame inspector.
+joystick and corrected in `subsystems/osmo-ble/protocol/commands.mjs`. **The absolute-angle opcode
+(cmdId 0x14) is confirmed non-functional** — a direct A/B test against real hardware (speed
+command: delta 0.126, moved; absolute-angle command: delta 0.0002, not moved, same gimbal, same
+session) showed it does nothing, consistent with earlier disassembly finding that DJI's real
+angle-set commands are larger structs our guess never matched. `gimbal_move_to`, `gimbal_sweep`,
+and `gimbal_recenter` were all rewritten to use closed-loop positioning instead — see
+"Closed-loop positioning" below. The "mode" toggle (cmdId 0x44) is confirmed to be a
+portrait/landscape switch, not a real lock/follow/fpv selector. The web control UI is a compact
+one-handed PWA matching CI-Common's design tokens (`packages/tokens/src/tokens.css`, dark theme),
+with a live orientation readout, a persistent command-coverage grid, and a structured frame
+inspector.
 
 **Architecture — one BLE connection, owned by `server/backend.mjs`:** the `osmo-gimbal` MCP
 server does **not** hold its own Bluetooth connection. It's a Claude Code-spawned subprocess,
@@ -56,17 +61,39 @@ photo count instead of "however many the heuristics trigger," see the grid-captu
 4. From a Claude Code session in this project: `scan_devices` → `connect` → `pair` (PIN is shown
    on the gimbal's own screen) → then `gimbal_sweep` or `gimbal_move_to` to drive it.
 
-## `gimbal_sweep` / `gimbal_move_to`
+## Closed-loop positioning (`gimbal_move_to`, `gimbal_sweep`, `gimbal_recenter`)
 
-`gimbal_sweep`: steps yaw from `startYawDeg` to `endYawDeg` in `stepDeg` increments, dwelling
-`dwellMs` at each step — for driving a phone mounted in the gimbal through a passive scan sweep
-(set `dwellMs` above the scanner client's auto-capture interval, 2.5s+, so each step registers as
-a fresh capture). `gimbal_move_to`: the single-step primitive behind it, exposed on its own so a
-caller can interleave a photo-capture tool call between steps (see below).
+Since the absolute-angle opcode does nothing, "move to an absolute angle" is instead built on top
+of the confirmed-working speed command: `moveToClosedLoop` (`server/backend.mjs`) sends speed
+corrections in a loop, reading the live quaternion after each tick via `quatToEulerDeg`
+(`protocol/telemetry.mjs`, shared with the web UI's orientation readout), until the error is
+within `toleranceDeg` or `maxMs` elapses. Two things this does NOT solve, handled defensively
+instead:
+- Euler angles from a tilted device mix axes together — this is a relative-change indicator, not
+  a calibrated attitude readout, so "converged" means "close enough," not exact degrees.
+- The correspondence between `quatToEulerDeg`'s sign and which physical direction a positive
+  commanded speed drives each axis was never independently calibrated. Each axis adaptively flips
+  its own sign the first time a correction makes that axis's error worse instead of better, so a
+  wrong initial guess self-corrects rather than diverging.
 
-Other relevant tools: `get_orientation` (poll current facing), `gimbal_recenter`, `gimbal_nudge`
-(interactive single move + auto-stop), `get_recent_frames` (raw telemetry), `plan_scan_grid` (see
-below).
+`gimbal_move_to(yawDeg, pitchDeg)` exposes this as a single step, returning
+`{converged, timedOut, ticks, finalYaw, finalPitch, history}` — **check `converged`**, don't
+assume a call that returned without erroring actually reached the target. `gimbal_sweep` strings
+several of these together across a yaw range; `gimbal_recenter` targets `(0, 0)` (caveat: "0,0" is
+wherever this device's quaternion frame reads as zero, not independently confirmed to be true
+mechanical center).
+
+**Movement-only rehearsal, live-tested 2026-08-21** (no photo capture — `android-beam-pro-1` was
+unreachable at the time): before the closed-loop version existed, the 9-position grid from
+`plan_scan_grid` was driven as 8 consecutive relative `gimbal_nudge` calls (delta between
+successive targets → speed × duration, e.g. a 20° yaw delta at 30°/s ≈ 667ms), confirming the
+grid-traversal *pattern* works end to end (cumulative quaternion delta ≈0.30 start-to-finish) even
+before closed-loop absolute positioning existed. Prefer `gimbal_move_to` per-step going forward —
+it gets verified convergence instead of open-loop timing.
+
+Other relevant tools: `get_orientation` (poll current facing), `gimbal_nudge` (interactive single
+speed move + auto-stop, no positioning), `get_recent_frames` (raw telemetry), `plan_scan_grid`
+(see below).
 
 ## Automated N-shot grid capture → Companion Scan's real ingest pipeline
 
@@ -77,8 +104,8 @@ pipeline, not invented:
 1. `plan_scan_grid` (in `osmo-gimbal`, pure computation, no device needed) — returns a
    serpentine-ordered `yawCount x pitchCount` grid of absolute `(yawDeg, pitchDeg)` targets.
    Defaults to 3x3 = 9 targets, minimizing travel between consecutive steps.
-2. For each target: `gimbal_move_to(yawDeg, pitchDeg)` — moves, dwells, and returns a
-   before/after orientation delta so you know the step actually registered.
+2. For each target: `gimbal_move_to(yawDeg, pitchDeg)` — closed-loop move, check `converged` in
+   the result (see "Closed-loop positioning" above) before treating the step as actually there.
 3. Immediately after each move: a photo-capture tool call on whichever Android device is
    physically mounted in the gimbal cradle — `android_take_camera_photo` or
    `android_save_camera_photo` on that device's MCP server (e.g. `android-beam-pro-1`), using its
@@ -141,13 +168,20 @@ Troubleshooting order:
 ## Verification checklist (this integration's testing plan)
 
 - **Backend + MCP proxy**: with `npm run backend` running and connected, call
-  `mcp__osmo-gimbal__gimbal_move_to` directly and confirm it returns a real `moved: true`/`false`
-  verdict instead of erroring — proof the MCP-to-backend proxy actually works end to end.
+  `mcp__osmo-gimbal__gimbal_move_to` directly and confirm it returns without erroring — **done,
+  2026-08-21**.
+- **Closed-loop convergence**: call `gimbal_move_to` with a nonzero target and confirm
+  `converged: true` with a plausible `finalYaw`/`finalPitch`, not just "didn't error" — pending a
+  live gimbal connection (dropped when editing `backend.mjs` restarted the `--watch` process, and
+  the gimbal itself stopped advertising over BLE shortly after — check it's powered on/awake and
+  in range, then `scan_devices` → `connect` again).
 - **Dev-loop**: touch `subsystems/osmo-ble/protocol/commands.mjs` and confirm the watched backend
-  restarts itself (its stdout prints the restart).
-- **Full pipeline**: run the 9-step grid-capture loop for real, confirm `/ingest-photos` returns
-  202 with a `jobId`, poll it to `completed`, and confirm the resulting point cloud actually
-  looks room-shaped (not degenerate/empty) before calling a run successful.
+  restarts itself (its stdout prints the restart) — confirmed working, but note the restart drops
+  the live BLE connection every time, requiring a reconnect after each code change.
+- **Full pipeline**: run the 9-step grid-capture loop for real (closed-loop moves + real photo
+  capture on the mounted Android device, not the relative-nudge rehearsal), confirm
+  `/ingest-photos` returns 202 with a `jobId`, poll it to `completed`, and confirm the resulting
+  point cloud actually looks room-shaped before calling a run successful.
 
 ## Open questions for a deeper integration
 
@@ -158,5 +192,9 @@ Troubleshooting order:
   thresholds (check `src/capture/auto-capture.ts` and `src/capture/keyframes.ts`) for the
   *passive* sweep path specifically — the grid-capture path above sidesteps this by using
   explicit photo capture instead.
-- Whether gimbal motion is confirmed to work over BLE-only on OM6 at all in every mode — medium
-  confidence overall; speed-control is live-verified, absolute-angle is not yet.
+- Whether closed-loop `gimbal_move_to`'s adaptive sign-flip actually converges cleanly on live
+  hardware across the full grid range, or whether it needs a smarter controller (e.g. slowing
+  down near the tolerance boundary instead of a flat bang-bang speed) — untested pending gimbal
+  reconnection.
+- Whether the gimbal dropping off BLE advertising mid-session (observed 2026-08-21, cause
+  unconfirmed — battery/sleep timeout/handling) needs a documented wake procedure once understood.
