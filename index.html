@@ -1431,16 +1431,30 @@
       }
 
       #place-list,
-      #place-suggestion {
+      #place-suggestion,
+      #place-list-other {
         display: grid;
         gap: 8px;
       }
+
+      #place-list-other { max-height: 180px; overflow: auto; }
+
+      #place-list-other-heading {
+        margin: 12px 0 8px;
+        color: var(--ci-muted);
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      #place-list-other-heading[hidden] { display: none; }
 
       #place-suggestion { margin-bottom: 8px; }
       .place-suggestion-option { border-color: rgba(114, 221, 212, 0.5) !important; }
 
       #place-list button,
-      #place-suggestion button {
+      #place-suggestion button,
+      #place-list-other button {
         min-height: 42px;
         border: 1px solid var(--ci-line);
         border-radius: 8px;
@@ -1448,7 +1462,9 @@
         background: var(--ci-surface);
       }
 
-      #place-options .place-option {
+      #place-list .place-option,
+      #place-suggestion .place-option,
+      #place-list-other .place-option {
         display: grid;
         gap: 3px;
         padding: 10px 12px;

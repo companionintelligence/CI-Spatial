@@ -83,6 +83,7 @@ import type {
   ScanQualitySummary,
   Thing,
   ThingObservation,
+  Vec3,
   WorldJob,
   WorldJobStatus,
   WorldJobType,
@@ -1507,19 +1508,30 @@ function registerSessionScan(
   const existing = world.scans.find(s => s.filename === filename || s.sessionId === sessionId)
   if (existing) return existing
 
+  const meta: Record<string, unknown> = {
+    sessionId,
+    source,
+    keyframeCount: frameCount,
+    projectId,
+    areaId,
+    ...(scanName ? { scanName } : {}),
+  }
   const stored: StoredScanInfo = {
     filename,
     size: 0,
     uploadedAt: new Date().toISOString(),
-    meta: {
-      sessionId,
-      source,
-      keyframeCount: frameCount,
-      projectId,
-      areaId,
-      ...(scanName ? { scanName } : {}),
-    },
+    meta,
   }
+  // `${sessionId}.glb` is a synthetic filename that never lands on disk (see
+  // scan_id.ts) — refreshWorldScans() only reconciles against `stored.meta`
+  // for scans it finds on disk, so nothing else ever persists this Place
+  // assignment anywhere durable. Write it directly so any later reader of
+  // scanMetaPath(filename) for this session (e.g. thing-correspondence) sees
+  // the Place the user actually picked instead of defaulting to none. Best
+  // effort: this metadata is supplementary, not required for the response.
+  void Deno.writeTextFile(scanMetaPath(filename), JSON.stringify(meta, null, 2)).catch((err) => {
+    console.error(`[worlds] failed to persist ingest metadata for ${filename}:`, err)
+  })
   const manifest = scanManifestFromStored(stored, world.originGeoPose, world.scans.length, world.shareSlug)
   world.scans.push(manifest)
   return manifest
@@ -1798,11 +1810,19 @@ async function refreshWorldScans(world: WorldProject): Promise<void> {
     scansByCurrentId.set(scan.scanId, (scansByCurrentId.get(scan.scanId) ?? 0) + 1)
   }
 
+  // Filled by the map below with every scan evicted this pass for no longer
+  // belonging to this world's Place, so their patches/jobs/comments can be
+  // pruned alongside them — otherwise those references outlive the scan row
+  // they describe, exactly like removeScanFromWorlds() prunes for an explicit
+  // delete, just triggered by a Place reassignment instead.
+  const removedForProjectMismatch: Array<{ scanId: string; filename: string }> = []
+
   world.scans = world.scans.map((scan, index) => {
     const storedScan = storedByFilename.get(scan.filename)
     if (!storedScan) return scan
     if (!belongsToCurrentWorld(world, storedScan, existingScanFilenames)) {
       changed = true
+      removedForProjectMismatch.push({ scanId: scan.scanId, filename: scan.filename })
       return null
     }
     const next = scanManifestFromStored(storedScan, world.originGeoPose, index, world.shareSlug)
@@ -1831,6 +1851,16 @@ async function refreshWorldScans(world: WorldProject): Promise<void> {
       || JSON.stringify(scan.layerIndex) !== JSON.stringify(next.layerIndex)
     return { ...scan, ...next, localToWorld: scan.localToWorld, name: scan.name || next.name }
   }).filter((scan): scan is ScanManifest => scan !== null)
+
+  if (removedForProjectMismatch.length > 0) {
+    const removedScanIds = new Set(removedForProjectMismatch.map(entry => entry.scanId))
+    const removedFilenames = new Set(removedForProjectMismatch.map(entry => entry.filename))
+    world.editPatches = world.editPatches.filter(patch =>
+      !(patch.scanId && removedScanIds.has(patch.scanId)) && !removedFilenames.has(patch.targetId))
+    world.comments = (world.comments ?? []).filter(comment =>
+      !(comment.scanId && removedScanIds.has(comment.scanId)))
+    world.jobs = world.jobs.filter(job => !(job.scanId && removedScanIds.has(job.scanId)))
+  }
 
   const existing = new Set(world.scans.map(scan => scan.filename))
   const additions = stored
@@ -2367,6 +2397,51 @@ async function _runThingCorrespondenceJob(slug: string, jobId: string): Promise<
   }
 }
 
+interface StoredDetectionMeta {
+  label: string
+  confidence: number | null
+  worldPos: Vec3
+}
+
+/** Parses the `detections` array gltf.ts writes alongside the plain `labels` list. */
+function detectionsFromMeta(value: unknown): StoredDetectionMeta[] {
+  if (!Array.isArray(value)) return []
+  const result: StoredDetectionMeta[] = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue
+    const record = item as Record<string, unknown>
+    const label = typeof record['label'] === 'string' ? record['label'] : null
+    const pos = record['worldPos']
+    if (!label || !pos || typeof pos !== 'object') continue
+    const posRecord = pos as Record<string, unknown>
+    const x = posRecord['x']
+    const y = posRecord['y']
+    const z = posRecord['z']
+    if (typeof x !== 'number' || typeof y !== 'number' || typeof z !== 'number') continue
+    result.push({
+      label,
+      confidence: typeof record['confidence'] === 'number' ? record['confidence'] : null,
+      worldPos: { x, y, z },
+    })
+  }
+  return result
+}
+
+/**
+ * Deterministic small hash so a scan without real detection positions (an
+ * export from before gltf.ts started recording them) still gets a fallback
+ * grid that never overlaps another scan's fallback grid — see
+ * detectionLikesForWorld below.
+ */
+function fnv1aMod(value: string, mod: number): number {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i)
+    hash = (hash * 0x01000193) >>> 0
+  }
+  return hash % mod
+}
+
 async function detectionLikesForWorld(world: WorldProject): Promise<DetectionLike[]> {
   const detections: DetectionLike[] = []
   for (const scan of world.scans) {
@@ -2374,7 +2449,34 @@ async function detectionLikesForWorld(world: WorldProject): Promise<DetectionLik
     try {
       meta = JSON.parse(await Deno.readTextFile(scanMetaPath(scan.filename))) as Record<string, unknown>
     } catch { /* no metadata sidecar */ }
+
+    const withPositions = detectionsFromMeta(meta['detections'])
+    if (withPositions.length > 0) {
+      withPositions.forEach((detection, index) => {
+        const safeName = detection.label.replace(/[^a-zA-Z0-9]/g, '_').replace(/^_+/, '') || 'Object'
+        const name = `${safeName}_${String(index + 1).padStart(3, '0')}`
+        detections.push({
+          scanId: scan.scanId,
+          sessionId: scan.sessionId,
+          targetId: `${scan.scanId}:${name}:lod`,
+          label: detection.label,
+          confidence: detection.confidence,
+          worldPos: detection.worldPos,
+          observedAt: scan.capturedAt,
+        })
+      })
+      continue
+    }
+
+    // Older scans exported before gltf.ts recorded real positions: labels
+    // survive, positions do not. A fabricated position keyed only on
+    // within-scan index would put the Nth label of every scan at the same
+    // point, so two different scans (different rooms) that both list "chair"
+    // first would spuriously merge into one Thing at runThingCorrespondence's
+    // 0.75 m match radius. Offset each scan's fallback grid by a hash of its
+    // own scanId — far past that radius — so distinct scans can never collide.
     const labels = asStringArray(meta['labels'])
+    const scanOffset = fnv1aMod(scan.scanId, 97) * 20
     labels.forEach((label, index) => {
       const safeName = label.replace(/[^a-zA-Z0-9]/g, '_').replace(/^_+/, '') || 'Object'
       const name = `${safeName}_${String(index + 1).padStart(3, '0')}`
@@ -2385,7 +2487,7 @@ async function detectionLikesForWorld(world: WorldProject): Promise<DetectionLik
         label,
         confidence: null,
         worldPos: {
-          x: index % 12,
+          x: (index % 12) + scanOffset,
           y: 0,
           z: Math.floor(index / 12),
         },
@@ -3986,8 +4088,10 @@ app.post('/projects/:id/merge', async (c) => {
 
     const floorIds = new Set(target.floors.map(floor => floor.floorId))
     const roomIds = new Set(target.floors.flatMap(floor => floor.rooms.map(room => room.roomId)))
+    const areaIds = new Set((target.areas ?? []).map(area => area.areaId))
     const floorIdMap = new Map<string, string>()
     const roomIdMap = new Map<string, string>()
+    const areaIdMap = new Map<string, string>()
     for (const sourceFloor of source.floors) {
       const floorId = floorIds.has(sourceFloor.floorId) ? `floor-${crypto.randomUUID()}` : sourceFloor.floorId
       floorIds.add(floorId)
@@ -4000,9 +4104,45 @@ app.post('/projects/:id/merge', async (c) => {
       })
       target.floors.push({ ...sourceFloor, floorId, rooms })
     }
+
+    // Areas were dropped entirely by the original merge — any scan whose
+    // areaId pointed into the source Place would reference an area that
+    // exists nowhere afterward. Renumber ids on collision first (so
+    // parentAreaId remapping below has the final id for every area, source
+    // and target alike), then remap each copied area's own references.
+    for (const sourceArea of source.areas ?? []) {
+      const areaId = areaIds.has(sourceArea.areaId) ? `area-${crypto.randomUUID()}` : sourceArea.areaId
+      areaIds.add(areaId)
+      areaIdMap.set(sourceArea.areaId, areaId)
+    }
+    for (const sourceArea of source.areas ?? []) {
+      target.areas = [
+        ...(target.areas ?? []),
+        {
+          ...sourceArea,
+          areaId: areaIdMap.get(sourceArea.areaId)!,
+          parentAreaId: sourceArea.parentAreaId ? (areaIdMap.get(sourceArea.parentAreaId) ?? null) : null,
+          floorId: sourceArea.floorId ? (floorIdMap.get(sourceArea.floorId) ?? sourceArea.floorId) : sourceArea.floorId,
+          roomId: sourceArea.roomId ? (roomIdMap.get(sourceArea.roomId) ?? sourceArea.roomId) : sourceArea.roomId,
+        },
+      ]
+    }
+
+    // `source` is about to be deleted: any Place that named it as a parent —
+    // including `target` itself, if target was a direct child of source —
+    // must be repointed, or projectHierarchyError() rejects every later PUT
+    // to that Place with "upper-level Place no longer exists".
+    for (const project of projects) {
+      if (project.projectId === sourceProjectId || project.parentProjectId !== sourceProjectId) continue
+      project.parentProjectId = project.projectId === targetProjectId
+        ? (source.parentProjectId ?? null) // target adopts source's own parent, not itself
+        : targetProjectId
+      project.updatedAt = Date.now()
+    }
+
     target.updatedAt = Date.now()
     projects.splice(projects.indexOf(source), 1)
-    return { result: { target, floorIdMap: Object.fromEntries(floorIdMap), roomIdMap: Object.fromEntries(roomIdMap) } as unknown as { target: ProjectRecord }, save: true }
+    return { result: { target }, save: true }
   })
 
   if (!merged.target) return c.json({ error: 'Target project not found' }, 404)

@@ -1113,7 +1113,14 @@ function applyTimelineWindow(start: number, end: number): void {
 function scanInTimeline(scan: ScanManifest): boolean {
   const time = effectiveSessionTime(scan)
   if (time === Number.NEGATIVE_INFINITY) {
-    return timelineStart === Number.NEGATIVE_INFINITY && timelineEnd === Number.POSITIVE_INFINITY
+    // An undated scan has no place on the timeline, so only show it while the
+    // full known range is selected. applyRange() always resolves start/end to
+    // real session timestamps once the scrubber is shown (never literal
+    // +/-Infinity), so comparing against the actual earliest/latest session
+    // time — not against literal Infinity — is what "full range" means here.
+    const earliest = timelineSessions[0]?.time ?? Number.NEGATIVE_INFINITY
+    const latest = timelineSessions[timelineSessions.length - 1]?.time ?? Number.POSITIVE_INFINITY
+    return timelineStart <= earliest && timelineEnd >= latest
   }
   return time >= timelineStart && time <= timelineEnd
 }

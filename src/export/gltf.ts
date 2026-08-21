@@ -404,6 +404,15 @@ async function uploadToServer(
     const metadata = JSON.stringify({
       detectionCount: store.detections.size,
       labels: [...store.detections.values()].map(d => d.label),
+      // `labels` above stays a plain string[] for process-scan's text summary
+      // reader; this carries each detection's real world position/confidence
+      // alongside its label so server-side thing-correspondence can match on
+      // actual geometry instead of fabricating a position from array index.
+      detections: [...store.detections.values()].map(d => ({
+        label: d.label,
+        confidence: d.confidence,
+        worldPos: d.worldPos,
+      })),
       exportedAt: new Date().toISOString(),
       capturedAt,
       // Server session id or null — main.ts reads this straight into

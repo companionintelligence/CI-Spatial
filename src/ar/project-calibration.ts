@@ -170,7 +170,10 @@ function sessionToProjectMatrix([origin, xPoint, planePoint]: Vec3[]): number[] 
   const xAxis = normalize(subtract(xPoint, origin))
   let yAxis = normalize(cross(xAxis, subtract(planePoint, origin)))
   if (yAxis.y < 0) yAxis = scale(yAxis, -1)
-  const zAxis = normalize(cross(yAxis, xAxis))
+  // Right-handed basis: z = x × y, not y × x. The latter has determinant -1,
+  // which decompose()s into a negative x-scale and mirrors every scan aligned
+  // through this matrix (left/right walls swap, face winding inverts).
+  const zAxis = normalize(cross(xAxis, yAxis))
   return [
     xAxis.x, yAxis.x, zAxis.x, 0,
     xAxis.y, yAxis.y, zAxis.y, 0,
