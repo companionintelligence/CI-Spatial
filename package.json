@@ -33,6 +33,7 @@
     "eval:cv": "node scripts/eval-cv.mjs",
     "test:api": "playwright test --project=api",
     "test:mock": "playwright test --project=chromium-mock",
+    "test:tablet-user": "node scripts/tablet-user-suite.mjs",
     "test": "playwright test --project=webkit-desktop",
     "test:mobile": "playwright test --project=webkit-iphone15",
     "test:iphone": "playwright test --project=iphone-usb",

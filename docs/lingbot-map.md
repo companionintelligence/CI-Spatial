@@ -7,8 +7,8 @@ reconstruction from a stream of RGB keyframes.
 
 The integration adds a new `lingbot-map-reconstruct` world-job type that
 spawns a Python worker over a session's keyframe directory and lands three
-sibling artifacts plus a quantised `.lingbot.glb` sidecar that the existing
-desktop viewer can load alongside the original SLAM scan.
+sibling artifacts plus a quantised `.lingbot.glb` sidecar that the Companion
+Scan Spatial Editor can load alongside the original SLAM scan.
 
 ## Architecture
 
@@ -30,7 +30,7 @@ Mobile app   ──upload .glb──►  Deno server  ──fork──►  scrip
                        <scan>.lingbot.glb in SCANS_DIR
                                   │
                                   ▼
-                          Desktop viewer overlay
+                          Spatial Editor overlay
                           (src/viewer/lingbot-map.ts)
 ```
 
@@ -75,14 +75,14 @@ export LINGBOT_MAP_MODEL_PATH=~/models/lingbot-map/checkpoint.pt
 
 ## Triggering a reconstruction from the editor
 
-1. Open the world editor (`/viewer.html?world=<slug>`).
+1. Open the Companion Scan Spatial Editor (`/editor?project=<id>`).
 2. Select a scan that has streamed keyframes.
-3. Switch to the **World** tab. The Processing Queue dropdown includes
-   the new `LingBot-Map reconstruct` entry.
+3. In the right drawer, use **Reconstruct**. It queues the
+   `LingBot-Map reconstruct` step for the selected scan.
 
-![Job dropdown in the world editor — defaults visible](screenshots/viewer-job-dropdown.png)
+![Legacy advanced-queue screenshot](screenshots/viewer-job-dropdown.png)
 
-4. Pick `LingBot-Map reconstruct` and click **Queue Job**.
+4. Confirm the reconstruction action.
 
 ![Job dropdown with LingBot-Map selected](screenshots/viewer-job-dropdown-selected.png)
 

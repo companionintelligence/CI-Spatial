@@ -5,17 +5,37 @@
  *   POSTs the image to the Deno inference server (localhost:8000, proxied by Vite).
  *   Faster in practice since the server runs multi-threaded ONNX on all machine cores.
  *
- * WebGPU path (opt-in via settings):
- *   Spawns a Web Worker with LFM2.5-VL-1.6B-ONNX on-device.
- *   Only available on Chrome 121+ / Safari TP with WebGPU support.
+ * WebGPU path (GATED OFF — see WEBGPU_INFERENCE_ENABLED below):
+ *   Intended to spawn a Web Worker running LFM2.5-VL-1.6B-ONNX on-device.
+ *   Disabled at build time because it has never worked: the worker asks
+ *   Transformers.js for an 'image-text-to-text' pipeline task that no released
+ *   version registers, so every capture throws. Wave 05 replaces that call with
+ *   the hand-rolled driver; until then the toggle is not offered.
  *
  * User preference persists in localStorage key 'infer-mode' ('server' | 'webgpu').
+ * A stored 'webgpu' is resolved to server at read time and deliberately NOT
+ * overwritten, so the choice survives for wave 05 to honour.
  * Both paths expose the same async interface:
  *   router.infer(blob) → Promise<RawDetection[]>
  */
 import { inferViaServer } from './server'
 import type { RawDetection } from './prompt'
 import { INFER_MODE_KEY } from '../shared/storage-keys'
+
+/**
+ * Build-time gate for the on-device WebGPU inference path.
+ *
+ * Off by default. The path cannot work in any released Transformers.js —
+ * `pipeline('image-text-to-text', ...)` is not a registered task in 3.8.1 or
+ * 4.2.0 — so offering it in the UI advertises a privacy guarantee
+ * ("On-device — no data leaves your phone") that the code cannot honour, and
+ * every capture throws before it is persisted.
+ *
+ * Set VITE_ENABLE_WEBGPU_INFERENCE=true to develop against it (wave 05).
+ * Wave 05 ticket 0004 removes this gate once the path genuinely runs.
+ */
+export const WEBGPU_INFERENCE_ENABLED =
+  import.meta.env?.VITE_ENABLE_WEBGPU_INFERENCE === 'true'
 
 export type InferMode = 'server' | 'webgpu'
 
@@ -41,8 +61,16 @@ export class InferenceRouter {
   private onProgress: ProgressCallback | null = null
   private onModeChange: ModeChangeCallback | null = null
 
-  /** True if the browser has a WebGPU adapter exposed. */
+  /**
+   * True if the on-device path is both enabled and supported here.
+   *
+   * The gate lives here rather than at each call site because every route into
+   * the worker already funnels through this getter — init(), setMode() and the
+   * HUD failure copy in main.ts. Returning false therefore closes all of them
+   * at once, and no code path can dispatch a capture to webgpu.worker.ts.
+   */
   get hasWebGPU(): boolean {
+    if (!WEBGPU_INFERENCE_ENABLED) return false
     return typeof navigator !== 'undefined' && 'gpu' in navigator
   }
 
@@ -72,6 +100,10 @@ export class InferenceRouter {
    * Spawns the WebGPU worker on first switch to 'webgpu'.
    */
   setMode(mode: InferMode): void {
+    // While gated, never persist a preference the app cannot honour — and in
+    // particular never overwrite an existing 'webgpu' with 'server', so a user
+    // who opted in before the gate gets it back when wave 05 lifts it.
+    if (mode === 'webgpu' && !WEBGPU_INFERENCE_ENABLED) return
     if (typeof localStorage !== 'undefined') localStorage.setItem(INFER_MODE_KEY, mode)
     const want = mode === 'webgpu' && this.hasWebGPU
     if (want === this.useWorker) return

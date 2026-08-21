@@ -1,5 +1,28 @@
 /**
- * WebGPU inference worker — runs LFM2.5-VL-1.6B-ONNX entirely on-device.
+ * WebGPU inference worker — UNREFERENCED. Nothing spawns this today.
+ *
+ * Gated off behind WEBGPU_INFERENCE_ENABLED (src/inference/router.ts) because it
+ * cannot work as written, for two independent reasons:
+ *
+ *   1. It calls pipeline('image-text-to-text', ...), which is not a registered
+ *      Transformers.js pipeline task in ANY released version. Verified against
+ *      3.8.1 (50 tasks) and 4.2.0 (23 tasks) — the string appears only in JSDoc.
+ *      Upgrading the dependency does not fix this; the pipeline() API has never
+ *      been able to express this model.
+ *   2. env.localModelPath points at /models/, which download_models.py populates
+ *      and which is documented as an optional step — so the weights are usually
+ *      absent anyway.
+ *
+ * Deliberately KEPT rather than deleted: the env configuration, progress
+ * protocol, message handler, dtype choices and parseDetections wiring below are
+ * all correct and are what wave 05 builds on. Only the model construction is
+ * wrong. See docs/factory/05-on-device-inference/ — ticket 0003 replaces the
+ * pipeline() call with the hand-rolled LFM2.5-VL driver on onnxruntime-web, and
+ * ticket 0004 lifts the gate.
+ *
+ * Original intent follows.
+ *
+ * Runs LFM2.5-VL-1.6B-ONNX entirely on-device.
  *
  * Uses @huggingface/transformers (Transformers.js v3) which handles:
  *   - Tokenisation

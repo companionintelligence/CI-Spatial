@@ -84,9 +84,10 @@ still telling you to fetch it from 8th.io/xrjs.
 ### The capture
 
 `docs/DEVICE_TESTING.md` Checklist A is already the exact protocol, and it ends
-where a fixture would begin: *step 8 — side panel → export GLB → file lands in
-`scans/` on the box*, then *step 9 — open `/viewer.html?world=default` on a
-desktop and the new scan appears in the world*. Walk the room slowly, let the
+where a fixture would begin: choose the target **Place** and optional **Area**,
+calibrate, then *export GLB → file lands in `scans/` on the box*, and open
+`/editor?project=default` on desktop to verify the new scan appears in that
+Place. Walk the room slowly, let the
 point count climb, toggle auto-capture and keyframe streaming, then export.
 
 Budget an afternoon, most of it standing up the box rather than walking the room.
@@ -134,8 +135,7 @@ bearer tokens:
 ```
 
 `main.ts:1452` (`activeMemberForToken`) authorises purely on string equality with
-that value, and `main.ts:1429` builds share URLs as
-`viewer.html?world=<slug>&token=<token>`. There are owner, editor and viewer
+that value. There are owner, editor, commenter, and viewer
 tokens, all with `expiresAt: null` and no `revokedAt`. Anyone with the repo has
 the owner link for any deployment seeded from this default world. These are
 minted per world by `createWorldMembers()` (`main.ts:1263`), so they should never

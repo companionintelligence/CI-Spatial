@@ -6,7 +6,7 @@
  *   - Inline edit of label + description
  */
 import type { DetectionStore, StoredDetection } from '../scene/store'
-import type { InferMode } from '../inference/router'
+import { WEBGPU_INFERENCE_ENABLED, type InferMode } from '../inference/router'
 import { icon, iconLabel, type IconName } from './icons'
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -202,9 +202,14 @@ export class SidePanel {
       }
 
       this._aiServerBtn = mkToggle('monitor', 'Server', 'server')
-      this._aiWebGPUBtn = mkToggle('bolt', 'WebGPU', 'webgpu')
       aiRow.appendChild(this._aiServerBtn)
-      aiRow.appendChild(this._aiWebGPUBtn)
+      // The WebGPU control is not built while the path is gated off. Every
+      // consumer of _aiWebGPUBtn is already null-guarded, so leaving it null is
+      // enough — the button simply never exists. Wave 05 restores it.
+      if (WEBGPU_INFERENCE_ENABLED) {
+        this._aiWebGPUBtn = mkToggle('bolt', 'WebGPU', 'webgpu')
+        aiRow.appendChild(this._aiWebGPUBtn)
+      }
       aiWrap.appendChild(aiRow)
 
       const aiNote = document.createElement('div')

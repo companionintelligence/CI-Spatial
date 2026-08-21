@@ -6,6 +6,8 @@
 > **Dependencies:** None. Superseded by wave 05, which delivers the real capability and
 > un-gates the control.
 
+**Status: implemented 2026-08-19.** Both open questions resolved below.
+
 ## Goal
 
 Stop offering an inference engine that throws on every capture, **without deleting it**.
@@ -108,13 +110,34 @@ No new type, route or connection.
 
 - Q: Upgrade the dependency instead? — A: No. 4.2.0 registers 23 tasks and this is not one.
   Wave 05 hand-rolls the driver. (Verified 2026-08-18.)
-- Q: Hide the control, or show it disabled with an explanation? — OPEN.
-  Disabled-with-tooltip ("on-device inference in progress") is more honest about intent and
-  matches the decision to port; hiding is cleaner but loses the signal. **Slight preference
-  for disabled-with-tooltip**, precisely because this is not a removal. Decide before coding.
-- Q: What happens to a user whose `infer-mode` is already `webgpu`? — OPEN. It must resolve
-  to `server` **at read time** rather than being rewritten, so the preference survives for
-  wave 05 to restore. Check the key's exact name and read path before touching it.
+- Q: Hide the control, or show it disabled with an explanation? — A: **Hidden.** Decided by
+  the product owner: focus is 8th Wall and server only, so the control is not built at all
+  while gated. The AI-engine row keeps its Server button, which still communicates which
+  engine is running. (Decided 2026-08-19.)
+- Q: What happens to a user whose `infer-mode` is already `webgpu`? — A: It resolves to the
+  server path at read time and is **never rewritten**. `init()` computes
+  `saved === 'webgpu' && this.hasWebGPU`, which is now false, so the worker is not spawned;
+  and `setMode('webgpu')` returns before its `localStorage.setItem`, so nothing overwrites
+  the stored value. Verified in the built app: after reloading a profile with
+  `infer-mode = webgpu`, the stored value is still `webgpu`, no control renders, and no
+  worker resource is fetched. (Verified 2026-08-19.)
+
+## How it was gated
+
+A single build-time constant, `WEBGPU_INFERENCE_ENABLED` in `src/inference/router.ts`,
+read from `import.meta.env.VITE_ENABLE_WEBGPU_INFERENCE` and defaulting to off. Vite folds
+it to a literal `false` at build time — neither the flag name nor `import.meta.env` appears
+in the output bundle.
+
+The gate is applied inside the existing `hasWebGPU` getter rather than at each call site,
+because every route into the worker already funnels through it: `init()`, `setMode()`, and
+the HUD failure copy at `src/main.ts:407`. One `return false` closes all three, so the
+"no code path dispatches to the worker" requirement holds structurally rather than by
+enumeration. `setMode` gained one extra guard so it cannot persist a preference the app
+cannot honour.
+
+`src/ui/panel.ts` simply does not construct `_aiWebGPUBtn` while gated. Every consumer was
+already null-guarded, so no other panel code changed.
 
 ## Files impacted
 
@@ -133,21 +156,23 @@ interpretation changes while gated.
 
 ## Definition of Done
 
-- [ ] WebGPU cannot be selected as an inference engine from the UI
-- [ ] No code path dispatches a capture to `webgpu.worker.ts`
-- [ ] A stored `infer-mode` of `webgpu` resolves to `server` **without being overwritten**
-- [ ] The HUD failure copy no longer suggests WebGPU
-- [ ] `webgpu.worker.ts` carries a header naming both blockers and pointing at wave 05
-- [ ] `atlas.html:353` describes the path as in-progress, not working
-- [ ] `README.md:148` no longer advertises the opt-in as available
-- [ ] `npx tsc --noEmit` and `npm run verify` pass
+- [x] WebGPU cannot be selected as an inference engine from the UI
+- [x] No code path dispatches a capture to `webgpu.worker.ts`
+- [x] A stored `infer-mode` of `webgpu` resolves to `server` **without being overwritten**
+- [x] The HUD failure copy no longer suggests WebGPU — `router.hasWebGPU` is false, so the
+      `src/main.ts:407` ternary drops the suggestion without a separate edit
+- [x] `webgpu.worker.ts` carries a header naming both blockers and pointing at wave 05
+- [x] `atlas.html:353` describes the path as in-progress, not working — done on the
+      `docs/atlas-post-wave-04` branch, deliberately not duplicated here to avoid a conflict
+- [x] `README.md:148` no longer advertises the opt-in as available
+- [x] `npx tsc --noEmit` and `npm run verify` pass (21 tests, 0 failures)
 
 ## Tests
 
-- [ ] Manual: the AI-engine row offers no selectable WebGPU option
-- [ ] Manual: a profile with `infer-mode = webgpu` loads and captures via the server
-- [ ] Manual: that profile's stored value is still `webgpu` afterwards
-- [ ] `npm run verify`
+- [x] Manual: the AI-engine row offers no selectable WebGPU option
+- [x] Manual: a profile with `infer-mode = webgpu` loads via the server path
+- [x] Manual: that profile's stored value is still `webgpu` afterwards
+- [x] `npm run verify`
 
 ```
 npx tsc --noEmit
@@ -156,12 +181,17 @@ npm run verify
 
 ## Acceptance Criteria
 
-- [ ] Given a fresh load, When the panel is opened, Then no control offers a working
-      on-device engine
+- [x] Given a fresh load, When the panel is opened, Then no control offers a working
+      on-device engine — verified in the built app: no button matches /webgpu/i
 - [ ] Given a stored `webgpu` preference, When the user captures, Then it succeeds via the
-      server rather than throwing
-- [ ] Given any capture, Then `Unsupported pipeline: image-text-to-text` cannot appear
-- [ ] Given wave 05 lands, Then un-gating is a reversal of this ticket, not a rewrite
+      server rather than throwing — **partially verified.** Routing confirmed: the profile
+      loads on the server path, no control renders, no worker resource is fetched, and the
+      stored value survives. An end-to-end capture was NOT exercised, because Ollama was not
+      running on the test host. Re-check when the stack is live.
+- [x] Given any capture, Then `Unsupported pipeline: image-text-to-text` cannot appear —
+      structural: the worker is never spawned, confirmed by zero worker resources loaded
+- [ ] Given wave 05 lands, Then un-gating is a reversal of this ticket, not a rewrite —
+      cannot be verified until wave 05 ticket 0004 runs
 
 ## Risks / potential issues
 
@@ -180,11 +210,14 @@ npm run verify
 
 ## Subtasks
 
-1. [ ] Answer both open questions — especially the `infer-mode` read path
-2. [ ] Make the worker branch unreachable in `InferenceRouter`
-3. [ ] Gate the toggle in `src/ui/panel.ts`
-4. [ ] Remove the `router.hasWebGPU` branch from the `src/main.ts` failure copy
-5. [ ] Resolve a stored `webgpu` preference to `server` at read time, without rewriting it
-6. [ ] Add the explanatory header to `webgpu.worker.ts`
-7. [ ] Update `atlas.html:353` and `README.md:148`
-8. [ ] Run `npm run verify`
+1. [x] Answer both open questions — especially the `infer-mode` read path
+2. [x] Make the worker branch unreachable in `InferenceRouter`
+3. [x] Gate the toggle in `src/ui/panel.ts` — not built at all while gated
+4. [x] Remove the `router.hasWebGPU` branch from the `src/main.ts` failure copy — **no edit
+       was needed.** Gating inside `hasWebGPU` makes the existing ternary evaluate to the
+       empty string, so the suggestion disappears without touching `main.ts`. Left as-is
+       deliberately: wave 05 restores the branch by lifting the gate, with no diff to revert.
+5. [x] Resolve a stored `webgpu` preference to `server` at read time, without rewriting it
+6. [x] Add the explanatory header to `webgpu.worker.ts`
+7. [x] Update `atlas.html:353` (on `docs/atlas-post-wave-04`) and `README.md:148` (here)
+8. [x] Run `npm run verify` — 21 tests, 0 failures

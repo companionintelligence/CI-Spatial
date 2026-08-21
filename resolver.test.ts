@@ -21,7 +21,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as THREE from 'three'
-import { resolveDetections } from './src/spatial/resolver.ts'
+import { imagePointToViewportPoint, resolveDetections } from './src/spatial/resolver.ts'
 import type { ARProvider, Pose, HitResult } from './src/ar/provider.ts'
 import type { RawDetection } from './src/inference/prompt.ts'
 
@@ -71,6 +71,44 @@ test('resolveDetections: a finite hitTest position resolves normally', async () 
 
   assert.equal(results.length, 1)
   assert.deepEqual(results[0].worldPos, FINITE_HIT.position)
+})
+
+test('imagePointToViewportPoint: cover-crops image coordinates into a narrower viewport', () => {
+  const mapped = imagePointToViewportPoint(
+    0.25,
+    0.5,
+    { width: 16, height: 9 },
+    { width: 4, height: 3 },
+  )
+
+  assert.equal(mapped.y, 0.5)
+  assert.equal(+mapped.x.toFixed(6), 0.166667)
+})
+
+test('resolveDetections: hitTest receives viewport coordinates, not raw image coordinates', async () => {
+  let received: { x: number; y: number } | null = null
+  const provider = {
+    ...providerReturning(FINITE_HIT),
+    hitTest: (x: number, y: number) => {
+      received = { x, y }
+      return FINITE_HIT
+    },
+  }
+
+  const results = await resolveDetections([{
+    ...detection,
+    bbox: [0.2, 0.4, 0.3, 0.6],
+  }], 1000, {
+    provider,
+    imageSize: { width: 16, height: 9 },
+    viewportSize: { width: 4, height: 3 },
+  })
+
+  assert.equal(results.length, 1)
+  assert.deepEqual(received && {
+    x: +received.x.toFixed(6),
+    y: +received.y.toFixed(6),
+  }, { x: 0.166667, y: 0.5 })
 })
 
 test('resolveDetections: a non-finite hitTest position falls through to the camera-pose fallback', async () => {

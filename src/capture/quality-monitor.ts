@@ -43,7 +43,10 @@ export interface QualitySnapshot {
 export interface FrameQuality {
   lowLight: boolean
   reflective: boolean
+  /** True when the decoded image is effectively a single flat colour. */
+  uniformFrame: boolean
   meanLuminance: number
+  luminanceStddev: number
 }
 
 /**
@@ -59,7 +62,7 @@ export interface FrameQuality {
  * and is kept. Doubt favours keeping the photograph.
  */
 export function isFrameUnusable(q: FrameQuality): boolean {
-  return q.lowLight || q.reflective
+  return q.lowLight || q.reflective || q.uniformFrame
 }
 
 export interface QualityCounts {
@@ -72,6 +75,7 @@ export interface QualityCounts {
 // Tunable thresholds
 const LUMI_LOW   = 0.22   // mean luminance below this = too dark
 const LUMI_REFL  = 0.17   // luminance stddev above this (with mean > 0.30) = reflective
+const LUMI_UNIFORM = 0.012 // solid canvas/camera placeholder, not a usable room view
 const DRIFT_MED  = 0.8    // m/s — triggers 'medium' drift warning
 const DRIFT_HIGH = 2.0    // m/s — triggers 'high' drift warning
 const TARGET_PTS_M2 = 600 // SLAM points per m² for a "full" scan
@@ -242,6 +246,10 @@ export class ScanQualityMonitor {
       const variance = sumSq / n - mean * mean
       const stddev = Math.sqrt(Math.max(0, variance))
 
+      // A camera permission/startup failure can still produce a decodable JPEG,
+      // but its pixels are nearly identical. Do not send that placeholder to
+      // inference as if it were a photograph of the room.
+      const uniformFrame = stddev < LUMI_UNIFORM
       const lowLight  = mean < LUMI_LOW
       const reflective = stddev > LUMI_REFL && mean > 0.30
 
@@ -250,9 +258,9 @@ export class ScanQualityMonitor {
 
       this._lastLowLight   = lowLight
       this._lastReflective = reflective
-      return { lowLight, reflective, meanLuminance: mean }
+      return { lowLight, reflective, uniformFrame, meanLuminance: mean, luminanceStddev: stddev }
     } catch {
-      return { lowLight: false, reflective: false, meanLuminance: 0.5 }
+      return { lowLight: false, reflective: false, uniformFrame: false, meanLuminance: 0.5, luminanceStddev: 0 }
     }
   }
 

@@ -103,6 +103,55 @@ function extractPointBatch(source: unknown, pose: Pose): Point3[] {
   return raw.filter((p) => usefulWorldPoint(p, pose))
 }
 
+function pointFromUnknown(value: unknown): Point3 | null {
+  if (Array.isArray(value) && value.length >= 3) {
+    const [x, y, z] = value
+    return typeof x === 'number' && typeof y === 'number' && typeof z === 'number'
+      ? { x, y, z }
+      : null
+  }
+  if (!value || typeof value !== 'object') return null
+  const obj = value as Record<string, unknown>
+  return typeof obj['x'] === 'number' && typeof obj['y'] === 'number' && typeof obj['z'] === 'number'
+    ? { x: obj['x'], y: obj['y'], z: obj['z'] }
+    : null
+}
+
+function rotationFromUnknown(value: unknown): Pose['rotation'] | null {
+  if (Array.isArray(value) && value.length >= 4) {
+    const [x, y, z, w] = value
+    return typeof x === 'number' && typeof y === 'number' && typeof z === 'number' && typeof w === 'number'
+      ? { x, y, z, w }
+      : null
+  }
+  if (!value || typeof value !== 'object') return null
+  const obj = value as Record<string, unknown>
+  return typeof obj['x'] === 'number'
+    && typeof obj['y'] === 'number'
+    && typeof obj['z'] === 'number'
+    && typeof obj['w'] === 'number'
+    ? { x: obj['x'], y: obj['y'], z: obj['z'], w: obj['w'] }
+    : null
+}
+
+function poseFromReality(reality: Record<string, unknown>): Pose | null {
+  const position = pointFromUnknown(reality['position'] ?? reality['pos'] ?? reality['cameraPosition'])
+  const rotation = rotationFromUnknown(reality['rotation'] ?? reality['rot'] ?? reality['cameraRotation'])
+  return position && rotation ? { position, rotation } : null
+}
+
+function findRealityObject(source: unknown, depth = 0): Record<string, unknown> | null {
+  if (!source || typeof source !== 'object' || depth > 3) return null
+  const obj = source as Record<string, unknown>
+  if (poseFromReality(obj)) return obj
+
+  for (const key of ['reality', 'xrController', 'xrcontroller', 'camera', 'slam']) {
+    const nested = findRealityObject(obj[key], depth + 1)
+    if (nested) return nested
+  }
+  return null
+}
+
 export class EighthWallProvider implements ARProvider {
   private captureQueue: Array<{
     resolve: (frame: RawFrame) => void
@@ -121,6 +170,50 @@ export class EighthWallProvider implements ARProvider {
   private _fovY = 60
   /** Viewport aspect ratio at XR8.run() time */
   private _aspect = 9 / 16
+
+  private _syncReality(source: unknown, label: string, canvas: HTMLCanvasElement): void {
+    const reality = findRealityObject(source)
+    if (!reality) return
+
+    if (!this._diagLogged) {
+      this._diagLogged = true
+      console.log(`[8thwall] ${label} reality keys:`, JSON.stringify(Object.keys(reality)))
+    }
+
+    const pose = poseFromReality(reality)
+    if (!pose) return
+
+    this.latestPose = pose
+
+    const status = (reality['trackingStatus'] as string | undefined) ?? 'UNKNOWN'
+    if (status !== this._lastTrackingStatus) {
+      console.log('[8thwall] trackingStatus:', status)
+      this._lastTrackingStatus = status
+    }
+
+    if (!this._slamReady) {
+      console.log(`[8thwall] SLAM ready — first pose received via ${label}`)
+      this._slamReady = true
+    }
+
+    // Camera intrinsics → vertical FOV
+    const intr = reality['intrinsics'] as Record<string, unknown> | null | undefined
+    if (intr) {
+      const fy = (intr['fy'] as number | undefined)
+        ?? (intr['focalLength'] as Record<string, number> | undefined)?.y
+      const imgH = (intr['height'] as number | undefined) ?? canvas.height
+      if (fy && imgH) {
+        this._fovY = 2 * Math.atan(imgH / (2 * fy)) * (180 / Math.PI)
+      }
+    }
+
+    // Harvest world points. xr.js builds vary: some expose worldPoints, others points.
+    const newPts = [
+      ...extractPointBatch(reality['worldPoints'], this.latestPose),
+      ...extractPointBatch(reality['points'], this.latestPose),
+    ]
+    if (newPts.length > 0) this._latestWorldPoints = newPts
+  }
 
   async start(canvas: HTMLCanvasElement): Promise<void> {
     // Wait for xr.js to finish loading if it hasn't yet
@@ -146,56 +239,17 @@ export class EighthWallProvider implements ARProvider {
         // onUpdate runs AFTER all module onProcessCpu hooks, so processCpuResult
         // is fully populated (XrController has written its reality pose into it).
         // This is the correct place to read SLAM pose in this xr.js build.
-        onUpdate({ processCpuResult }: { processCpuResult: Record<string, unknown> }) {
-          const reality = (processCpuResult as Record<string, Record<string, unknown>>)?.reality
-          if (!reality) return
-
-          if (!self._diagLogged) {
-            self._diagLogged = true
-            console.log('[8thwall] onUpdate reality keys:', JSON.stringify(Object.keys(reality)))
-          }
-
-          if (reality.position && reality.rotation) {
-            self.latestPose = {
-              position: reality.position as { x: number; y: number; z: number },
-              rotation: reality.rotation as { x: number; y: number; z: number; w: number },
-            }
-
-            const status = (reality.trackingStatus as string | undefined) ?? 'UNKNOWN'
-            if (status !== self._lastTrackingStatus) {
-              console.log('[8thwall] trackingStatus:', status)
-              self._lastTrackingStatus = status
-            }
-
-            if (!self._slamReady) {
-              console.log('[8thwall] SLAM ready — first pose received via onUpdate')
-              self._slamReady = true
-            }
-
-            // Camera intrinsics → vertical FOV
-            const intr = reality.intrinsics as Record<string, unknown> | null | undefined
-            if (intr) {
-              const fy = (intr['fy'] as number | undefined)
-                ?? (intr['focalLength'] as Record<string, number> | undefined)?.y
-              const imgH = (intr['height'] as number | undefined) ?? canvas.height
-              if (fy && imgH) {
-                self._fovY = 2 * Math.atan(imgH / (2 * fy)) * (180 / Math.PI)
-              }
-            }
-
-            // Harvest world points.  xr.js builds vary: some expose
-            // reality.worldPoints, others expose reality.points.
-            const newPts = [
-              ...extractPointBatch(reality.worldPoints, self.latestPose),
-              ...extractPointBatch(reality.points, self.latestPose),
-            ]
-            if (newPts.length > 0) self._latestWorldPoints = newPts
-          }
+        onUpdate(args: { processCpuResult?: Record<string, unknown>; processGpuResult?: Record<string, unknown>; frameStartResult?: Record<string, unknown> }) {
+          self._syncReality(args.processCpuResult ?? args.processGpuResult ?? args.frameStartResult, 'onUpdate', canvas)
         },
 
-        onProcessCpu({ processGpuResult }: {
+        onProcessCpu({ processCpuResult, processGpuResult, frameStartResult }: {
+          processCpuResult?: Record<string, unknown>
           processGpuResult: Record<string, unknown>
+          frameStartResult?: Record<string, unknown>
         }) {
+          self._syncReality(processCpuResult ?? processGpuResult ?? frameStartResult, 'onProcessCpu', canvas)
+
           // Only do the expensive pixel copy when a capture is pending
           if (self.captureQueue.length === 0) return
 
@@ -239,12 +293,11 @@ export class EighthWallProvider implements ARProvider {
 
     XR8.run({ canvas, allowedDevices: XR8.XrConfig.device().ANY })
 
-    // Fallback: if SLAM hasn't provided a pose within 5 s of XR8.run(),
-    // unlock the capture button anyway so the app remains usable.
+    // Diagnostics only: captures may proceed without stable tracking after the
+    // caller's wait timeout, but isTracking() should mean a real pose arrived.
     setTimeout(() => {
       if (!this._slamReady) {
-        console.warn('[8thwall] Pose not received in 5 s — forcing _slamReady=true (pose may be at origin)')
-        this._slamReady = true
+        console.warn('[8thwall] Pose not received in 5 s — capture can continue, but scan geometry will be sparse')
       }
     }, 5000)
   }
