@@ -56,7 +56,7 @@ export interface Room {
 export type AreaKind = 'site' | 'building' | 'floor' | 'room' | 'zone' | 'outdoor'
 
 /** The semantic level represented by a Place/Project in the broader Place graph. */
-export type PlaceType = 'building' | 'floor' | 'room'
+export type PlaceType = 'building' | 'floor' | 'room' | 'other'
 
 export interface PlaceArea {
   areaId: string
