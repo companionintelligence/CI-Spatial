@@ -232,25 +232,59 @@ to that unrelated service instead of the adb forward, which only binds
 
 ### Diagnosing "connection refused"
 
-Work down this list — the layers fail differently and the symptoms overlap:
+Work down this list — the layers fail differently and the symptoms overlap.
 
-1. **Is the host reachable at all?** `tailscale ping <host>`. A pong with the
-   port still refusing means the network is fine and the app is the problem.
-2. **Is the server actually listening?** Check the socket *state*, not just the
-   address:
+**1. Is the host reachable at all?** `tailscale ping <host>`.
 
-   ```bash
-   adb -s <serial> shell "cat /proc/net/tcp6 | awk '\$2 ~ /:1F90/ {print \$2, \$4}'"
-   ```
+- *A pong, but the port still refuses* — the network is fine and the app is the
+  problem. Skip to step 3.
+- *No reply at all* — the device is not on the tailnet, and no amount of
+  app-side debugging will help. `tailscale status` showing `offline, last seen
+  <N>h ago` together with `tx <n> rx 0` means you are transmitting into a void.
+  **A device can be awake, on Wi-Fi, and serving MCP perfectly while being
+  completely absent from the tailnet** — observed on the tab-s8-ultra, which
+  answered 200 with all 57 tools on its LAN address while its tailnet name was
+  unreachable. Go to step 2.
 
-   `1F90` is port 8080 hex; state `0A` is LISTEN. **Anything else is not a
-   listener** — `06` is TIME_WAIT, and stale TIME_WAIT rows from earlier
-   connections look identical in the address column. Grepping the address alone
-   will tell you the server is bound to loopback when in fact it is not running
-   at all. Address `00000000...0000` is the `0.0.0.0` wildcard;
-   `0000...FFFF00000100007F` is `::ffff:127.0.0.1`.
-3. **Is it bound to loopback?** Then only on-device clients reach it. Change the
-   bind in **Settings → General**.
+**2. Is Tailscale actually running on the device?** Installed is not the same as
+connected — the Android client is an app that has to be launched, and it does
+not reliably survive the device sleeping. With the device on USB:
+
+```bash
+adb -s <serial> shell "pidof com.tailscale.ipn || echo NOT RUNNING"
+```
+
+```bash
+adb -s <serial> shell "ip -4 addr show | grep -A1 tun"
+```
+
+No pid, or no `100.x` address on a `tun` interface, means the VPN is down. Open
+the Tailscale app on the device and turn it on — that needs Android's
+VPN-consent dialog and possibly a re-login, so it cannot be driven over adb.
+
+To prove the app itself is healthy while the tunnel is down, probe the device's
+LAN address directly. A 200 there isolates the fault to Tailscale:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://<lan-ip>:8080/mcp -H "Authorization: Bearer <token>" -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"cc","version":"1"}}}'
+```
+
+**3. Is the server actually listening?** Check the socket *state*, not just the
+address:
+
+```bash
+adb -s <serial> shell "cat /proc/net/tcp6 | awk '\$2 ~ /:1F90/ {print \$2, \$4}'"
+```
+
+`1F90` is port 8080 hex; state `0A` is LISTEN. **Anything else is not a
+listener** — `06` is TIME_WAIT, and stale TIME_WAIT rows from earlier
+connections look identical in the address column. Grepping the address alone
+will tell you the server is bound to loopback when in fact it is not running at
+all. Address `00000000...0000` is the `0.0.0.0` wildcard;
+`0000...FFFF00000100007F` is `::ffff:127.0.0.1`.
+
+**4. Is it bound to loopback?** Then only on-device clients reach it. Change the
+bind in **Settings → General**.
 
 ### Tunnels (Cloudflare / ngrok) — read before trusting one
 

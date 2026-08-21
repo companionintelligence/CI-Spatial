@@ -3,7 +3,7 @@
   "configurations": [
     {
       "name": "companion-scan-web",
-      "url": "https://localhost:5173",
+      "url": "https://<your-host>.ts.net:5173",
       "port": 5173
     }
   ]
