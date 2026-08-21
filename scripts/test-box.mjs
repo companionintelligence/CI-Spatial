@@ -19,6 +19,22 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
+const isWindows = process.platform === 'win32'
+
+/**
+ * spawn() that also works on Windows.
+ *
+ * Node >= 18.20 refuses to launch .cmd/.bat shims (which is what `npx` and
+ * `npm` are on Windows) unless a shell is used — it throws EINVAL. Shell mode
+ * re-joins argv into one command string, so any argument containing spaces
+ * has to be quoted here or it would split apart.
+ */
+function spawnCompat(cmd, args, opts = {}) {
+  if (!isWindows) return spawn(cmd, args, opts)
+  const quoted = args.map((a) => (/[\s"]/.test(a) ? `"${String(a).replace(/"/g, '\\"')}"` : a))
+  return spawn(cmd, quoted, { ...opts, shell: true })
+}
+
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const API_PORT = Number(process.env.TEST_BOX_API_PORT ?? 8100)
 const VITE_PORT = Number(process.env.TEST_BOX_VITE_PORT ?? 5273)
@@ -27,27 +43,26 @@ const VITE_URL = `https://localhost:${VITE_PORT}`
 const RUN_DIR = join(root, '.test-run')
 
 const denoBin = (() => {
-  try { return execSync('command -v deno', { shell: '/bin/sh' }).toString().trim() } catch { /* not on PATH */ }
-  return join(homedir(), '.deno', 'bin', 'deno')
+  try {
+    // `command -v` is POSIX-only; Windows has `where`, which can return several
+    // matches (one per line) — take the first.
+    const out = isWindows
+      ? execSync('where deno').toString()
+      : execSync('command -v deno', { shell: '/bin/sh' }).toString()
+    const first = out.split(/\r?\n/).map((l) => l.trim()).find(Boolean)
+    if (first) return first
+  } catch { /* not on PATH */ }
+  return join(homedir(), '.deno', 'bin', isWindows ? 'deno.exe' : 'deno')
 })()
-
-// Launch the two npm-installed CLIs through node with their own JS entry
-// points instead of `npx`. On Windows `npx` is a .cmd shim: bare 'npx' is
-// ENOENT (spawn() calls CreateProcess directly and never tries PATHEXT), and
-// 'npx.cmd' is EINVAL on Node 18.20+/20.12+/22+ unless spawned with a shell.
-// The .js entry points are plain files on every platform, so no shim, no
-// shell quoting, and one less process between us and the server.
-const VITE_CLI = join(root, 'node_modules', 'vite', 'bin', 'vite.js')
-const PLAYWRIGHT_CLI = join(root, 'node_modules', '@playwright', 'test', 'cli.js')
 
 const children = []
 function shutdown(code) {
   for (const child of children) {
     try {
-      // Windows has no process groups: kill(-pid) throws, and swallowing that
-      // leaves the API server holding :8100, so the next run dies AddrInUse
-      // against its own orphan. taskkill /T is the equivalent tree kill.
-      if (process.platform === 'win32') {
+      if (isWindows) {
+        // No POSIX process groups here, so a negative pid is meaningless
+        // (it throws EINVAL). taskkill /T walks the tree instead, which is
+        // what `detached` + negative-pid buys us on POSIX.
         execSync(`taskkill /pid ${child.pid} /T /F`, { stdio: 'ignore' })
       } else {
         process.kill(-child.pid, 'SIGTERM')
@@ -67,11 +82,14 @@ function launch(name, cmd, args, env) {
   const logPath = join(RUN_DIR, `${name}.log`)
   const logFd = openSync(logPath, 'a')
   console.log(`[test-box] ${name} logs → ${logPath}`)
-  const child = spawn(cmd, args, {
+  const child = spawnCompat(cmd, args, {
     cwd: root,
     env: { ...process.env, ...env },
     stdio: ['ignore', logFd, logFd],
-    detached: true, // own process group so shutdown kills grandchildren too
+    // POSIX: own process group so shutdown kills grandchildren too. Windows
+    // has no equivalent — shutdown() uses taskkill /T there instead, and
+    // combining detached with shell mode just orphans the cmd.exe wrapper.
+    detached: !isWindows,
   })
   child.on('exit', (code) => {
     if (!finished) {
@@ -151,12 +169,13 @@ launch('deno', denoBin, ['run', '--allow-net', '--allow-read', '--allow-write', 
 const NOWATCH_CONFIG = join(RUN_DIR, '.vite.nowatch.mjs')
 writeFileSync(
   NOWATCH_CONFIG,
-  // A file:// URL, not a bare path: on Windows a raw absolute path is a
-  // 'c:' URL scheme the ESM loader rejects (ERR_UNSUPPORTED_ESM_URL_SCHEME).
+  // pathToFileURL, not a raw path: on Windows the raw form is
+  // C:\devel\...\vite.config.ts, whose backslashes are escape sequences inside
+  // this string literal and which isn't a valid module specifier anyway.
   `import base from '${pathToFileURL(join(root, 'vite.config.ts')).href}'\n` +
     `export default { ...base, server: { ...(base.server || {}), watch: null } }\n`,
 )
-launch('vite', process.execPath, [VITE_CLI, '--config', NOWATCH_CONFIG, '--host', '--port', String(VITE_PORT), '--strictPort'], {
+launch('vite', 'npx', ['vite', '--config', NOWATCH_CONFIG, '--host', '--port', String(VITE_PORT), '--strictPort'], {
   API_TARGET: API_URL,
 })
 
@@ -171,7 +190,7 @@ try {
   // stdout pipes, and once the 64KB pipe buffer fills, Deno's blocking console.log
   // wedges the API server mid-request.
   await new Promise((resolve, reject) => {
-    const seed = spawn('node', ['scripts/seed-test-homes.mjs'], {
+    const seed = spawnCompat('node', ['scripts/seed-test-homes.mjs'], {
       cwd: root,
       stdio: 'inherit',
       env: { ...process.env, SERVER_URL: API_URL },
@@ -182,7 +201,7 @@ try {
 
   // 4. Test suites
   console.log('[test-box] running playwright: api + chromium-mock')
-  const pw = spawn(process.execPath, [PLAYWRIGHT_CLI, 'test', '--project=api', '--project=chromium-mock'], {
+  const pw = spawnCompat('npx', ['playwright', 'test', '--project=api', '--project=chromium-mock'], {
     cwd: root,
     stdio: 'inherit',
     env: {
