@@ -1,0 +1,19 @@
+{
+  "name": "osmo-ble",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Web app + MCP server for pairing and testing basic BLE controls on a DJI Osmo Mobile 6",
+  "scripts": {
+    "web": "node web/server.mjs",
+    "backend": "node --watch server/backend.mjs",
+    "mcp": "node server/mcp-server.mjs",
+    "test:protocol": "node protocol/duml.test.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@stoprocent/noble": "^2.3.10",
+    "ws": "^8.18.0",
+    "zod": "^3.24.0"
+  }
+}
