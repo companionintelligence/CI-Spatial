@@ -1710,21 +1710,47 @@ function createSemanticLabels(root: THREE.Object3D, scanId: string): void {
 // ─── Selection, inspector, and edit patches ──────────────────────────────────
 
 function selectScan(scanId: string, focus: boolean, openEdit = true): void {
+  // Gating the whole selection on the 3D scene having loaded left every
+  // freshly-ingested scan permanently unselectable: registerSessionScan()
+  // gives video/photo-ingest scans a synthetic filename that never lands on
+  // disk (scan_id.ts), so their GLB 404s and loadedScans never gets a
+  // `loaded: true` entry for them — clicking such a scan did nothing at all,
+  // and job queueing (queueGuidedWorkflow) requires selectedScanId to be set.
+  // Only the operations below that need actual geometry (camera focus,
+  // transform gizmo, inspector) are gated on a loaded scan now; everything
+  // else — selection state, panels, and job queueing — only needs the scan
+  // to exist in the manifest.
+  if (!world?.scans.some(scan => scan.scanId === scanId)) return
   const loaded = loadedScans.get(scanId)
-  if (!loaded || !loaded.loaded) return
 
   document.querySelectorAll('.scan-item').forEach(el => el.classList.remove('active'))
   scanItems.get(scanId)?.classList.add('active')
   selectedScanId = scanId
-  selectedTransformTarget = loaded.root
-  // Keep editor.selectedObject in sync the same way selectEditableObject() does —
-  // handlers like "Hide Object" read it directly, and without this a whole-scan
-  // selection made from the scan list (as opposed to a 3D-view pick) left it null.
-  editor.selectObject(loaded.root)
-  transformControls?.attach(loaded.root)
-  showInspector(loaded.root)
-  syncEditPanel(loaded.root, openEdit)
-  if (focus) fitCamera(loaded.root)
+
+  if (loaded?.loaded) {
+    selectedTransformTarget = loaded.root
+    // Keep editor.selectedObject in sync the same way selectEditableObject() does —
+    // handlers like "Hide Object" read it directly, and without this a whole-scan
+    // selection made from the scan list (as opposed to a 3D-view pick) left it null.
+    editor.selectObject(loaded.root)
+    transformControls?.attach(loaded.root)
+    showInspector(loaded.root)
+    syncEditPanel(loaded.root, openEdit)
+    if (focus) fitCamera(loaded.root)
+  } else {
+    // No geometry to show yet (still processing, or a session-backed scan
+    // whose synthetic filename never gets a real GLB). Drop any 3D-object
+    // selection left over from a previously-selected loaded scan instead of
+    // leaving the inspector/gizmo pointed at it under the new scan's name.
+    selectedTransformTarget = null
+    editor.clearSelection()
+    transformControls?.detach()
+    hideInspectorOnly()
+    const noSelection = document.getElementById('edit-no-selection')
+    const selectedInfo = document.getElementById('edit-selected-info')
+    if (noSelection) noSelection.style.display = 'block'
+    if (selectedInfo) selectedInfo.style.display = 'none'
+  }
   void refreshQualityPanel(scanId)
   void refreshLingBotMapPanel(scanId)
   void refreshSplatLayerPanel(scanId)
