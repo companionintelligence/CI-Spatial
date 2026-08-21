@@ -1657,7 +1657,14 @@ function showInspector(obj: THREE.Object3D): void {
     data.tag ? rowHtml('Category', `<span style="background:rgba(114,221,212,0.18);color:#72ddd4;padding:1px 6px;border-radius:4px;font-weight:700;">${escHtml(String(data.tag))}</span>`) : '',
     data.aiLabel ? rowHtml('Label', escHtml(data.aiLabel)) : '',
     data.confidence !== undefined ? rowHtml('Conf', `<span class="inspector-confidence" style="background:${confColor}22;color:${confColor};">${Math.round(data.confidence * 100)}%</span>`) : '',
+    // 'Scan' comes from the viewer's own loaded-scan registry — which file this
+    // node was loaded from. 'Source' comes from the node's baked-in extras —
+    // which capture(s) the geometry itself came from. They agree today and will
+    // not once a merged per-place GLB exists, which is the whole reason
+    // provenance is written per node.
     scan ? rowHtml('Scan', escHtml(scan.manifest.name)) : '',
+    data.sourceScanIds?.length ? rowHtml('Source', escHtml(data.sourceScanIds.join(', '))) : '',
+    data.captureIndex !== undefined ? rowHtml('Capture', `#${data.captureIndex}`) : '',
     rowHtml('World', `${transform.x.toFixed(2)}, ${transform.y.toFixed(2)}, ${transform.z.toFixed(2)}m`),
     data.dimensions ? rowHtml('Size', `${data.dimensions.w} x ${data.dimensions.h} x ${data.dimensions.d}m`) : '',
     data.roomName ? rowHtml('Room', escHtml(data.roomName)) : '',

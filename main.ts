@@ -46,6 +46,8 @@ import {
   WorldJobPump,
 } from './world_job_pump.ts'
 import { withWorldLock } from './world_lock.ts'
+import { legacyScanId, safeSlug, scanIdFor } from './scan_id.ts'
+import { newServerSessionId, resolveSessionDir, sessionDirPath } from './session_id.ts'
 import { loadSessionIndex, sessionForScan, type SessionIndex } from './scan_index.ts'
 import { pruneScansMissingFromDisk } from './world_prune.ts'
 import { runLingBotMapReconstruction } from './lingbot_map.ts'
@@ -737,15 +739,26 @@ app.delete('/scans', async (c) => {
 // On finalize the session is linked to the exported .glb.  This is the raw
 // input a dense-reconstruction stage (photogrammetry / splats) consumes.
 
-const SESSION_ID_RE = /^(sess|session)-[a-z0-9-]+$/
 const KEYFRAME_FILE_RE = /^kf-\d{5}\.jpg$/
 
-function sessionDir(id: string): string | null {
-  return SESSION_ID_RE.test(id) ? `${SESSIONS_DIR}/${id}` : null
+/**
+ * Shape-only resolution, bound to this server's SESSIONS_DIR. Says nothing
+ * about existence — use `resolveSessionDirFor` where that matters.
+ */
+function sessionDir(id: string | null | undefined): string | null {
+  return sessionDirPath(SESSIONS_DIR, id)
+}
+
+/** Shape *and* existence. See session_id.ts for why both resolvers exist. */
+function resolveSessionDirFor(id: string | null | undefined): Promise<string | null> {
+  return resolveSessionDir(SESSIONS_DIR, id)
 }
 
 app.post('/sessions', async (c) => {
-  const sessionId = `sess-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  // The single minting site for a capture-session id, and the only place that
+  // creates the directory one names. Both halves living here is what makes the
+  // id trustworthy downstream.
+  const sessionId = newServerSessionId()
   await Deno.mkdir(`${SESSIONS_DIR}/${sessionId}`, { recursive: true })
   const record = { sessionId, startedAt: new Date().toISOString(), keyframeCount: 0 }
   await Deno.writeTextFile(`${SESSIONS_DIR}/${sessionId}/session.json`, JSON.stringify(record, null, 2))
@@ -1175,15 +1188,6 @@ interface StoredScanInfo {
   meta: Record<string, unknown>
 }
 
-function safeSlug(raw: string | undefined, fallback = 'default'): string {
-  const slug = (raw ?? fallback)
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-  return slug || fallback
-}
-
 function worldPath(slug: string): string {
   return `${WORLDS_DIR}/${safeSlug(slug)}.json`
 }
@@ -1356,12 +1360,6 @@ function inferWorldOrigin(scans: StoredScanInfo[]): GeoPose {
   return { lat: null, lng: null, altitudeM: null, bearing: null, accuracyM: null }
 }
 
-function scanIdFor(filename: string, meta: Record<string, unknown>): string {
-  const sessionId = asString(meta['sessionId'])
-  if (sessionId) return `scan-${safeSlug(sessionId)}`
-  return `scan-${safeSlug(filename.replace(/\.glb$/, ''))}`
-}
-
 function scanNameFor(filename: string, meta: Record<string, unknown>): string {
   return asString(meta['scanName']) ?? filename.replace(/^\d+_/, '').replace(/\.glb$/, '')
 }
@@ -1373,7 +1371,7 @@ function scanManifestFromStored(
   slug: string,
 ): ScanManifest {
   const geoPose = geoPoseFromMeta(scan.meta)
-  const scanId = scanIdFor(scan.filename, scan.meta)
+  const scanId = scanIdFor(scan.filename)
   const qualitySummary = qualitySummaryFromMeta(scan.meta)
   const translation = hasGeoPose(origin) && hasGeoPose(geoPose)
     ? geoToEnu(origin, geoPose)
@@ -1524,12 +1522,36 @@ async function mutateWorldFiles(mutator: (world: WorldProject) => boolean | Prom
 }
 
 async function removeScanFromWorlds(filename: string): Promise<number> {
+  // Derived, not looked up from a single shared value: the scan row is about
+  // to be filtered out, and this must also work for a world whose entry was
+  // already pruned. `patch.scanId` used to be compared against `filename`
+  // here — a scanId is never a filename, so that arm never matched and
+  // scan-scoped patches outlived the scan they described.
+  const removedScanId = scanIdFor(filename)
   return mutateWorldFiles((world) => {
+    // mutateWorldFiles reads the world raw — no refreshWorldScans pass — so a
+    // job/patch here can still name the LEGACY id if this scan's row was
+    // renamed by a GET that ran before this delete (refreshWorldScans's own
+    // self-heal) but this particular reference was part of a collision that
+    // self-heal correctly left alone (see the count guard there). Matching
+    // only `removedScanId` would leave such a reference behind — recompute
+    // the legacy id from the row still in `world.scans`, before it's filtered
+    // out below, and match either.
+    const removedRow = world.scans.find(scan => scan.filename === filename)
+    const removedLegacyScanId = removedRow ? legacyScanId(removedRow) : null
+    const isRemovedScanId = (scanId: string | undefined): boolean =>
+      scanId === removedScanId || (removedLegacyScanId !== null && scanId === removedLegacyScanId)
+
     const beforeScans = world.scans.length
     world.scans = world.scans.filter(scan => scan.filename !== filename)
-    world.editPatches = world.editPatches.filter(patch => patch.targetId !== filename && patch.scanId !== filename)
+    world.editPatches = world.editPatches.filter(
+      patch => patch.targetId !== filename && !isRemovedScanId(patch.scanId),
+    )
     world.jobs = world.jobs.filter(job => {
       if (!job.scanId) return true
+      // Explicit, rather than relying on the survivor scan below: while ids
+      // collided, a sibling sharing the removed scan's id kept its jobs alive.
+      if (isRemovedScanId(job.scanId)) return false
       return world.scans.some(scan => scan.scanId === job.scanId)
     })
     return world.scans.length !== beforeScans
@@ -1637,11 +1659,38 @@ async function refreshWorldScans(world: WorldProject): Promise<void> {
     )
   }
 
+  // Ids currently on disk, counted before any renames below touch them — the
+  // only way to tell an unambiguous rename from one still tangled in a
+  // not-yet-migrated collision. A count of 1 means no sibling scan shares
+  // this id, so any job/patch naming it can only have meant this scan; a
+  // count > 1 is exactly the collision `deno task migrate-scan-ids` exists to
+  // resolve; a guess made here, live, on every GET, could differ request to
+  // request and is not this function's call to make.
+  const scansByCurrentId = new Map<string, number>()
+  for (const scan of world.scans) {
+    scansByCurrentId.set(scan.scanId, (scansByCurrentId.get(scan.scanId) ?? 0) + 1)
+  }
+
   world.scans = world.scans.map((scan, index) => {
     const storedScan = storedByFilename.get(scan.filename)
     if (!storedScan) return scan
     const next = scanManifestFromStored(storedScan, world.originGeoPose, index, world.shareSlug)
+    if (next.scanId !== scan.scanId && scansByCurrentId.get(scan.scanId) === 1) {
+      // Repoint references live, the same self-heal this function already
+      // does for the scan row itself (below) — otherwise the id moves out
+      // from under a still-pending job's exact-match lookup the moment this
+      // GET persists it, well before an operator gets a chance to run the
+      // offline migration. Safe here specifically because the id is unique:
+      // see the collision-count guard above.
+      for (const patch of world.editPatches) {
+        if (patch.scanId === scan.scanId) patch.scanId = next.scanId
+      }
+      for (const job of world.jobs) {
+        if (job.scanId === scan.scanId) job.scanId = next.scanId
+      }
+    }
     changed = changed
+      || scan.scanId !== next.scanId
       || scan.status !== next.status
       || scan.frameSetUrl !== next.frameSetUrl
       || JSON.stringify(scan.qualitySummary ?? null) !== JSON.stringify(next.qualitySummary ?? null)
@@ -1654,15 +1703,59 @@ async function refreshWorldScans(world: WorldProject): Promise<void> {
     .filter(shouldIncludeInWorld)
     .filter(scan => !existing.has(scan.filename))
     .slice(0, 12)
-  if (additions.length === 0) {
-    if (changed) await writeWorldUnlocked(world)
-    return
+
+  if (additions.length > 0) {
+    const origin = world.originGeoPose
+    const nextIndex = world.scans.length
+    world.scans.push(...additions.map((scan, i) => scanManifestFromStored(scan, origin, nextIndex + i, world.shareSlug)))
   }
 
-  const origin = world.originGeoPose
-  const nextIndex = world.scans.length
-  world.scans.push(...additions.map((scan, i) => scanManifestFromStored(scan, origin, nextIndex + i, world.shareSlug)))
-  await writeWorldUnlocked(world)
+  warnOnScanIdCollision(world)
+
+  if (changed || additions.length > 0) await writeWorldUnlocked(world)
+}
+
+/** Per-slug memo of the last logged colliding-id set, so the warn does not repeat every GET. */
+const lastScanIdCollisionLogged = new Map<string, string>()
+
+/**
+ * `scanIdFor()` is lossy — `safeSlug()` collapses every character outside
+ * `[a-z0-9_-]`, so two distinct filenames can in principle derive the same
+ * id (`a.b.glb` and `a-b.glb` both become `scan-a-b`). `migrate_scan_ids.ts`
+ * refuses to run over a world with this collision; it throws, which is the
+ * right call for a one-shot, human-attended script. It is NOT the right call
+ * here: `refreshWorldScans` runs inside `readWorldUnlocked`'s try/catch,
+ * which treats ANY thrown error as "no world file" and silently replaces the
+ * response with a freshly synthesized empty world — throwing here would make
+ * the failure mode worse, not better.
+ *
+ * So this only warns, throttled per-slug so it doesn't repeat on every GET.
+ * It does not attempt to resolve the collision (there is no safe automatic
+ * choice — see the migration's own reasoning), only to make it visible
+ * rather than let the viewer silently discard one of the colliding scans the
+ * way it did before ticket 0001. An operator sees the log and renames the
+ * offending file, the same fix the migration's own error message asks for.
+ */
+function warnOnScanIdCollision(world: WorldProject): void {
+  const byId = new Map<string, string[]>()
+  for (const scan of world.scans) {
+    const bucket = byId.get(scan.scanId)
+    if (bucket) bucket.push(scan.filename)
+    else byId.set(scan.scanId, [scan.filename])
+  }
+  const collisions = [...byId.entries()].filter(([, filenames]) => filenames.length > 1)
+  if (collisions.length === 0) {
+    lastScanIdCollisionLogged.delete(world.worldId)
+    return
+  }
+  const detail = collisions.map(([id, filenames]) => `${id} <- ${filenames.join(', ')}`).join('; ')
+  if (lastScanIdCollisionLogged.get(world.worldId) === detail) return
+  lastScanIdCollisionLogged.set(world.worldId, detail)
+  console.warn(
+    `[worlds] '${world.shareSlug}': ${collisions.length} scanId(s) are shared by more than one scan — ` +
+    `safeSlug() is lossy, so distinct filenames can derive the same id. The viewer will only show one ` +
+    `of each colliding set. Rename the offending file(s) to resolve: ${detail}`,
+  )
 }
 
 /** Best client-facing base URL: request origin → forwarded host → Vite default */
@@ -2012,10 +2105,11 @@ async function _dispatchWorldJob(slug: string, jobId: string): Promise<void> {
     // "Single-flight execution".
     await sleep(650)
     try {
+      const placeholderPreflight = await keyframePreflight(slug, jobId)
       const { world: current, value: currentJob } = await updateWorld(slug, (current) => {
         const currentJob = current.jobs.find(j => j.jobId === jobId)
         if (!currentJob || currentJob.status === 'failed') return null
-        const failure = jobFailureReason(currentJob, current)
+        const failure = jobFailureReason(currentJob, current, placeholderPreflight)
         if (failure) {
           currentJob.status = 'failed'
           currentJob.error = failure
@@ -2489,7 +2583,13 @@ async function _runOptimizeScanJob(slug: string, jobId: string): Promise<void> {
     const glb = await Deno.readFile(sourcePath)
     console.log(`[world-jobs] optimizing ${filename} (${(glb.byteLength / 1024).toFixed(0)} KB)`)
 
-    const result = await optimizeScan(glb)
+    // Stamp the one provenance field the client cannot know. Derived from the
+    // filename rather than looked up in world.scans: since 07-scan-identity/0001
+    // `scanManifestFromStored` sets `scanId = scanIdFor(filename)`, so the two
+    // are identical by construction — and deriving also works in the window
+    // between an upload and `refreshWorldScans` adding the entry, where a
+    // lookup would find nothing and silently stamp nothing.
+    const result = await optimizeScan(glb, { provenance: { scanId: scanIdFor(filename) } })
     const base = filename.replace(/\.glb$/, '')
 
     const optimizedName = `${base}.opt.glb`
@@ -2592,10 +2692,11 @@ function markJobFailed(job: WorldJob, reason: string): WorldJob {
 function claimScanJob(
   world: WorldProject,
   jobId: string,
+  preflight: JobPreflight = {},
 ): { ok: true; job: WorldJob; scan: ScanManifest } | { ok: false; job: WorldJob } | null {
   const job = world.jobs.find(j => j.jobId === jobId)
   if (!job) return null
-  const failure = jobFailureReason(job, world)
+  const failure = jobFailureReason(job, world, preflight)
   if (failure) return { ok: false, job: markJobFailed(job, failure) }
   // jobFailureReason already rejected every scan-backed type without a scan.
   return { ok: true, job, scan: scanForJob(job, world)! }
@@ -2611,7 +2712,8 @@ async function claimJobScan(
   slug: string,
   jobId: string,
 ): Promise<{ scan: ScanManifest; payload: WorldJob['payload'] } | null> {
-  const { world, value: claimed } = await updateWorld(slug, (world) => claimScanJob(world, jobId))
+  const preflight = await keyframePreflight(slug, jobId)
+  const { world, value: claimed } = await updateWorld(slug, (world) => claimScanJob(world, jobId, preflight))
   if (!claimed) return null
   if (!claimed.ok) {
     broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job: claimed.job })
@@ -2629,9 +2731,12 @@ async function claimSessionJob(
   slug: string,
   jobId: string,
 ): Promise<{ scan: ScanManifest; sessionId: string; sessionPath: string } | null> {
+  const preflight = await keyframePreflight(slug, jobId)
   const { world, value: start } = await updateWorld(slug, (world) => {
-    const claimed = claimScanJob(world, jobId)
+    const claimed = claimScanJob(world, jobId, preflight)
     if (!claimed?.ok) return claimed
+    // Reached only when preflight already proved the directory exists, so this
+    // is the shape resolver: it builds the path rather than re-proving it.
     const sessionPath = claimed.scan.sessionId ? sessionDir(claimed.scan.sessionId) : null
     if (!sessionPath) {
       return {
@@ -2700,7 +2805,47 @@ function scanForJob(job: WorldJob, world: WorldProject): ScanManifest | null {
   return world.scans.find(scan => scan.scanId === job.scanId || scan.filename === job.scanId) ?? null
 }
 
-function jobFailureReason(job: WorldJob, world: WorldProject): string | null {
+/** The job types that cannot run without RGB keyframe observations. */
+const KEYFRAME_JOB_TYPES = ['depth-reconstruct', 'lingbot-map-reconstruct', 'splat-train']
+
+/**
+ * Filesystem facts `jobFailureReason` needs but must not look up itself.
+ *
+ * It runs inside `updateWorld` mutators, and ADR 0004 keeps I/O out of that
+ * critical section — so existence is resolved by `keyframePreflight()` before
+ * the lock is taken and passed in. Absent means "not resolved", which falls
+ * back to the shape-only check rather than inventing a verdict.
+ */
+interface JobPreflight {
+  /** Whether the scan's keyframe session directory is present on disk. */
+  keyframeDirExists?: boolean
+}
+
+/**
+ * Resolve the filesystem half of a job's preflight, outside the world lock.
+ *
+ * Reads one locked snapshot, then stats — so the answer is a snapshot older
+ * than the write that consumes it. That staleness is benign: it can only make
+ * preflight miss a directory that vanished in the last instant, and the runner
+ * still fails on it. What it buys is the failure landing at preflight, with
+ * the actionable message, for the case that actually happens — an id that was
+ * never a server session at all.
+ */
+async function keyframePreflight(slug: string, jobId: string): Promise<JobPreflight> {
+  try {
+    const world = await loadWorld(slug)
+    const job = world.jobs.find(j => j.jobId === jobId)
+    if (!job || !KEYFRAME_JOB_TYPES.includes(job.type)) return {}
+    const scan = scanForJob(job, world)
+    if (!scan?.sessionId) return {}
+    return { keyframeDirExists: await resolveSessionDirFor(scan.sessionId) !== null }
+  } catch {
+    // A preflight hint is never worth failing a dispatch over.
+    return {}
+  }
+}
+
+function jobFailureReason(job: WorldJob, world: WorldProject, preflight: JobPreflight = {}): string | null {
   const scan = scanForJob(job, world)
   if (['align-scan', 'extract-layers', 'semantic-pass', 'depth-reconstruct', 'lingbot-map-reconstruct', 'splat-train', 'splat-detect', 'splat-finish', 'memory-push'].includes(job.type) && !scan) {
     return `${job.type} requires a selected scan.`
@@ -2708,7 +2853,12 @@ function jobFailureReason(job: WorldJob, world: WorldProject): string | null {
   if (job.type === 'memory-push' && !memoryPushCfg.enabled) {
     return 'Companion Memory is not connected. Connect it from the Hub, or set CI_SERVER_URL and CI_SERVER_TOKEN.'
   }
-  if ((job.type === 'depth-reconstruct' || job.type === 'lingbot-map-reconstruct' || job.type === 'splat-train') && scan && !scan.sessionId) {
+  // A sessionId that names no directory is not a session. Until this checked
+  // existence, the guard was defeated by its own truthiness: the id was a
+  // non-empty string, so preflight passed and the job failed later inside the
+  // runner, where the message is about a missing path instead of about the
+  // thing the user can actually do something about.
+  if (KEYFRAME_JOB_TYPES.includes(job.type) && scan && (!scan.sessionId || preflight.keyframeDirExists === false)) {
     return `${job.type} requires RGB keyframe observations. Start keyframe streaming before export.`
   }
   if (job.type === 'align-scan' && world.scans.length < 2) {
@@ -2866,13 +3016,25 @@ function jobArtifactsFor(job: WorldJob, world: WorldProject): WorldJob['artifact
 
 async function frameObservationsForScan(scan: ScanManifest, limit = 500): Promise<FrameObservation[]> {
   if (!scan.sessionId) return []
-  const dir = sessionDir(scan.sessionId)
-  if (!dir) return []
+
+  // "No such session" and "a session that streamed nothing" both used to
+  // return [] silently, which is how four scans pointing at a directory that
+  // was never created looked exactly like four scans with no keyframes. They
+  // are different failures and only one of them is a bug, so say which.
+  const dir = await resolveSessionDirFor(scan.sessionId)
+  if (!dir) {
+    console.warn(
+      `[frames] scan ${scan.scanId} names session '${scan.sessionId}', which has no directory under ` +
+      `${SESSIONS_DIR}. Its keyframes are unreachable — the id is stale or was never a server session.`,
+    )
+    return []
+  }
 
   let raw = ''
   try {
     raw = await Deno.readTextFile(`${dir}/keyframes.jsonl`)
   } catch {
+    // The session exists and simply streamed nothing. Not an error.
     return []
   }
 

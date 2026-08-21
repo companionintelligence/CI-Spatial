@@ -19,9 +19,15 @@ import {
 
 Deno.test('isValidSessionDir accepts canonical session ids, rejects traversal', () => {
   assert(isValidSessionDir('/tmp/scans/sessions/sess-12345-abcde'))
-  assert(isValidSessionDir('./scans/sessions/session-19710101-test'))
   assert(!isValidSessionDir('/etc/passwd'))
   assert(!isValidSessionDir('../../etc'))
+})
+
+Deno.test('isValidSessionDir rejects the retired client-minted shape', () => {
+  // 07-scan-identity/0002 cut SESSION_ID_RE over to sess-* only, everywhere —
+  // session-* named a directory the server never created. This file used to
+  // carry its own, wider copy of the regex that still accepted it.
+  assert(!isValidSessionDir('./scans/sessions/session-19710101-test'))
 })
 
 Deno.test('resolveParams honours explicit overrides over env defaults', () => {

@@ -21,6 +21,7 @@ import type { WorldDetection } from '../spatial/resolver'
 // Explicit .ts extension so Node's ESM loader can resolve this when detection_store.test.ts
 // imports the store directly — the same reason src/shared/test-homes.ts:10 carries one.
 import { SCAN_DB_NAME } from '../shared/storage-keys.ts'
+import { isServerSessionId, newLocalSessionId } from '../shared/session-id.ts'
 // Type-only, so it is erased before Node's loader sees it and needs no .ts
 // extension. Reusing CaptureResult's pose is the point: a capture record stores
 // the pose the capture module already produced, it does not declare a new one.
@@ -117,7 +118,11 @@ export class DetectionStore {
   private db: IDBDatabase | null = null
 
   constructor() {
-    this._sessionId = `session-${Date.now()}`
+    // Local until a server session exists. The old `session-${Date.now()}` was
+    // minted here too, but looked like a server id and was accepted as one —
+    // so every scan named a keyframe directory that had never been created.
+    // `local-…` is deliberately a shape SESSION_ID_RE rejects.
+    this._sessionId = newLocalSessionId()
     this._startedAt = Date.now()
   }
 
@@ -128,9 +133,56 @@ export class DetectionStore {
    * this too. When it didn't, restored detections were written back under a
    * fresh id — the original record stayed behind with the pre-edit data and
    * the reload silently forked into two half-sessions.
+   *
+   * It may be a `local-…` id (no server session) or a `sess-…` one adopted
+   * from the server — see {@link adoptServerSession}. Use
+   * `isServerSessionId()` before treating it as a keyframe-directory name;
+   * anything persisted server-side must record `null` rather than a local id.
    */
   get sessionId(): string {
     return this._sessionId
+  }
+
+  /**
+   * Take the server's capture-session id as this store's identity, carrying
+   * the existing record over to it.
+   *
+   * Called when `KeyframeStreamer.start()` opens a session — which can happen
+   * after captures already exist under the local id. Those captures belong to
+   * the same walkthrough, so the record is *renamed*, not forked: everything
+   * already written is re-keyed to the server id and the local record is
+   * dropped. Not doing this is the fork bug the `sessionId` setter comment
+   * above describes, and it would strand every capture taken before the user
+   * pressed the stream button.
+   *
+   * A no-op when the id is unchanged, and refuses ids that are not
+   * server-minted so a local id can never masquerade as one.
+   */
+  async adoptServerSession(sessionId: string): Promise<void> {
+    if (!isServerSessionId(sessionId) || sessionId === this._sessionId) return
+    const previous = this._sessionId
+    this._sessionId = sessionId
+
+    // In-memory first, and unconditionally: the live capture records reference
+    // the session by value, and they must follow it even when IndexedDB never
+    // opened. Persisting is the optional half, not the re-keying.
+    const moved: CaptureRecord[] = []
+    for (const [key, rec] of this._captures) {
+      if (rec.sessionId !== previous) continue
+      const next = { ...rec, sessionId }
+      this._captures.set(key, next)
+      moved.push(next)
+    }
+
+    if (!this.db) return
+    // Captures before the session record: a crash between the two leaves
+    // captures pointing at a session row that is about to be written, rather
+    // than a session row whose captures cannot be found.
+    for (const rec of moved) {
+      await idbPut(this.db, CAPTURES_STORE, rec).catch(() => {})
+    }
+    await this.persist()
+    await idbDelete(this.db, STORE_NAME, previous).catch(() => {})
   }
 
   get startedAt(): number {
