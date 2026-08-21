@@ -3,6 +3,7 @@ import type { Project, ProjectSpatialFrame, ScanCalibration, Vec3 } from '../wor
 
 const MIN_REFERENCE_DISTANCE_M = 0.75
 const DEFAULT_TOLERANCE_M = 0.3048 // One foot.
+const TRACKING_TIMEOUT_MS = 10_000
 
 export interface CalibrationResult {
   calibration: ScanCalibration
@@ -35,6 +36,8 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
   const existingFrame = options.project.spatialFrame
   const isFirstCalibration = !existingFrame
   const points: Vec3[] = []
+  const trackingWaitStartedAt = Date.now()
+  let trackingEverEstablished = false
 
   const overlay = document.createElement('section')
   overlay.id = 'project-calibration'
@@ -72,10 +75,16 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
     indicators.forEach((indicator, index) => indicator.classList.toggle('active', index <= step))
     reset.disabled = points.length === 0
     if (!options.provider.isTracking()) {
-      status.textContent = 'Waiting for stable AR tracking. Slowly look around the floor.'
+      const stalled = !trackingEverEstablished && Date.now() - trackingWaitStartedAt > TRACKING_TIMEOUT_MS
+      status.textContent = stalled
+        ? "Still not tracking — check the camera isn't covered, or Continue uncalibrated."
+        : 'Waiting for stable AR tracking. Slowly look around the floor.'
+      skip.classList.toggle('project-calibration-link-promoted', stalled)
       lock.disabled = true
       return
     }
+    trackingEverEstablished = true
+    skip.classList.remove('project-calibration-link-promoted')
     status.textContent = `Tracking ready. Reference ${points.length + 1} of 3: ${REFERENCE_LABELS[step]}.`
     lock.disabled = false
     if (points.length === 0) {
