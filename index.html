@@ -1165,6 +1165,78 @@
         padding: 24px;
       }
 
+      /* Project-frame calibration runs over the live camera before capture begins. */
+      #project-calibration {
+        position: fixed;
+        inset: 0;
+        z-index: 40;
+        color: var(--ci-text);
+      }
+      .project-calibration-backdrop {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: linear-gradient(180deg, rgba(3,15,23,0.18), transparent 42%, rgba(3,15,23,0.62));
+      }
+      .project-calibration-reticle {
+        position: absolute;
+        top: 50%; left: 50%;
+        width: 54px; height: 54px;
+        margin: -27px;
+        border: 2px solid #72ddd4;
+        border-radius: 50%;
+        box-shadow: 0 0 0 7px rgba(114,221,212,0.12), 0 0 28px rgba(114,221,212,0.42);
+      }
+      .project-calibration-reticle::before,
+      .project-calibration-reticle::after {
+        content: '';
+        position: absolute;
+        background: #72ddd4;
+      }
+      .project-calibration-reticle::before { width: 2px; height: 72px; top: -11px; left: 25px; }
+      .project-calibration-reticle::after { width: 72px; height: 2px; left: -11px; top: 25px; }
+      .project-calibration-reticle span {
+        position: absolute;
+        width: 8px; height: 8px;
+        top: 21px; left: 21px;
+        border-radius: 50%;
+        background: #eff0f0;
+        box-shadow: 0 0 12px #fff;
+      }
+      .project-calibration-card {
+        position: absolute;
+        right: max(16px, env(safe-area-inset-right));
+        bottom: max(18px, env(safe-area-inset-bottom));
+        left: max(16px, env(safe-area-inset-left));
+        max-width: 390px;
+        margin: auto;
+        padding: 18px;
+        border: 1px solid rgba(114,221,212,0.36);
+        border-radius: 16px;
+        background: rgba(5,22,31,0.92);
+        backdrop-filter: blur(16px);
+        box-shadow: 0 16px 45px rgba(0,0,0,0.42);
+      }
+      .project-calibration-eyebrow {
+        color: #72ddd4;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+      .project-calibration-card h2 { margin: 5px 0 8px; font-family: var(--ci-font-display); font-size: 25px; font-weight: 500; }
+      .project-calibration-card p { margin: 0; color: var(--ci-muted); font-size: 13px; line-height: 1.45; }
+      .project-calibration-progress { display: flex; gap: 7px; margin: 15px 0 10px; }
+      .project-calibration-progress span { width: 100%; height: 4px; border-radius: 999px; background: rgba(255,255,255,0.16); }
+      .project-calibration-progress span.active { background: #72ddd4; box-shadow: 0 0 11px rgba(114,221,212,0.5); }
+      .project-calibration-status { color: #eff0f0; font-size: 12px; font-weight: 700; }
+      .project-calibration-measure { min-height: 18px; margin-top: 5px; color: #72ddd4; font-size: 11px; }
+      .project-calibration-actions { display: grid; grid-template-columns: 1fr auto; gap: 9px; margin-top: 15px; }
+      #project-calibration-lock { min-height: 44px; border: 1px solid rgba(114,221,212,0.62); border-radius: 9px; background: #72ddd4; color: #06202a; font-weight: 800; cursor: pointer; }
+      #project-calibration-lock:disabled { opacity: 0.45; cursor: wait; }
+      #project-calibration-reset, .project-calibration-link { border: 0; background: transparent; color: var(--ci-muted); font-size: 11px; cursor: pointer; }
+      .project-calibration-link { grid-column: 1 / -1; justify-self: center; text-decoration: underline; }
+
       #start-brand {
         display: flex;
         flex-direction: column;
@@ -1254,9 +1326,8 @@
         transition: transform 0.15s ease-out, border-color 0.2s ease-out, background 0.2s ease-out, box-shadow 0.2s ease-out;
       }
 
-      /* :not(:disabled) so the preparing/unavailable card doesn't light up on
-         hover as if it were pressable. A <label> never matches :disabled, so
-         the upload card is unaffected. */
+      /* :not(:disabled) keeps a preparing or unavailable capture card from
+         lighting up as if it were pressable. */
       .start-path:not(:disabled):hover {
         border-color: rgba(114, 221, 212, 0.42);
         background: var(--ci-bg-elevated-strong);
@@ -1305,6 +1376,111 @@
           opacity: 0.7;
         }
       }
+
+      .place-sheet {
+        position: fixed;
+        inset: 0;
+        z-index: 80;
+        display: grid;
+        align-items: center;
+        background: rgba(0, 0, 0, 0.38);
+      }
+
+      .place-sheet[hidden] {
+        display: none;
+      }
+
+      .place-sheet-panel {
+        width: min(520px, calc(100vw - 24px));
+        margin: 0 auto;
+        padding: 14px;
+        border: 1px solid var(--ci-line);
+        border-radius: 12px;
+        background: var(--ci-bg-elevated-strong);
+        box-shadow: var(--ci-shadow);
+      }
+
+      .place-sheet-title {
+        margin-bottom: 10px;
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--ci-muted);
+        text-transform: uppercase;
+      }
+
+      .place-sheet-copy,
+      .place-location-status,
+      .place-empty {
+        margin: 0 0 10px;
+        color: var(--ci-muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .place-selected-status {
+        margin-bottom: 10px;
+        color: var(--ci-text);
+        font-size: 12px;
+      }
+
+      .place-location-status {
+        padding: 8px 10px;
+        border-radius: 8px;
+        background: rgba(114, 221, 212, 0.08);
+        color: var(--ci-text);
+      }
+
+      #place-list,
+      #place-suggestion {
+        display: grid;
+        gap: 8px;
+      }
+
+      #place-suggestion { margin-bottom: 8px; }
+      .place-suggestion-option { border-color: rgba(114, 221, 212, 0.5) !important; }
+
+      #place-list button,
+      #place-suggestion button {
+        min-height: 42px;
+        border: 1px solid var(--ci-line);
+        border-radius: 8px;
+        color: var(--ci-text);
+        background: var(--ci-surface);
+      }
+
+      #place-options .place-option {
+        display: grid;
+        gap: 3px;
+        padding: 10px 12px;
+        text-align: left;
+      }
+
+      .place-option strong { font-size: 14px; }
+      .place-option span { color: var(--ci-muted); font-size: 11px; }
+
+      #place-new-form {
+        display: grid;
+        gap: 8px;
+        margin-top: 10px;
+        padding: 10px;
+        border: 1px solid var(--ci-line);
+        border-radius: 8px;
+      }
+
+      #place-new-form[hidden] { display: none; }
+      #place-new-form label { display: grid; gap: 4px; color: var(--ci-muted); font-size: 11px; }
+      #place-new-form input {
+        min-height: 36px;
+        padding: 7px 9px;
+        border: 1px solid var(--ci-line);
+        border-radius: 6px;
+        color: var(--ci-text);
+        background: var(--ci-surface);
+      }
+      .place-coordinate-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      #place-new-save { min-height: 40px; border: 0; border-radius: 7px; color: #042226; background: #72ddd4; font-weight: 700; }
+      .place-sheet-actions { display: flex; gap: 8px; margin-top: 10px; }
+      .place-sheet-actions button { flex: 1; min-height: 40px; border: 1px solid var(--ci-line); border-radius: 7px; color: var(--ci-text); background: var(--ci-surface); }
 
       /* The status line exists only while the button can't be pressed. */
       #start-ar-btn .start-path-status {
@@ -1502,17 +1678,23 @@
           </span>
         </button>
 
-        <!-- Path 2 — upload an existing walkthrough video. The card is a
-             <label for="upload-video-input"> so a tap opens the picker with no
-             extra JS; the existing wireVideoUpload() handles the upload. -->
-        <label id="start-upload-card" class="start-path" for="upload-video-input">
+        <!-- Path 2 — the location modal runs before opening the native picker. -->
+        <button id="start-upload-card" class="start-path" type="button" aria-label="Upload a walkthrough video">
           <span class="start-path-icon" aria-hidden="true"><svg width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="5" width="18" height="14" rx="1.8"/><path d="M8 5v14M16 5v14M3 9.7h5M3 14.3h5M16 9.7h5M16 14.3h5"/></svg></span>
           <span class="start-path-copy">
             <span id="upload-video-btn" class="start-path-title">Upload a video</span>
             <span class="start-path-sub">Already have a walkthrough video? Turn it into a 3D map — no AR needed.</span>
           </span>
-          <input id="upload-video-input" type="file" accept="video/*" style="display:none;" />
-        </label>
+        </button>
+        <input id="upload-video-input" type="file" accept="video/*" style="display:none;" />
+
+        <a id="start-editor-card" class="start-path" href="/editor" aria-label="Explore and edit existing places">
+          <span class="start-path-icon" aria-hidden="true"><svg width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 5.5h16v13H4z"/><path d="M8 3.5v4M16 3.5v4M8 16.5h8M8 12.5h5"/></svg></span>
+          <span class="start-path-copy">
+            <span class="start-path-title">Place Scan Editor</span>
+            <span class="start-path-sub">Explore, compare, and edit the scans already mapped to a place.</span>
+          </span>
+        </a>
       </div>
 
       <!-- Upload progress / result line, driven by wireVideoUpload() -->

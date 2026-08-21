@@ -13,7 +13,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js'
 import { SceneEditor, SEMANTIC_TAGS, type ViewMode } from './editor'
 import { MeasureTool } from './measure'
 import { collectDetections, hasLabelledAncestor } from './detections'
-import { GeoMap, type ScanLocationEntry } from './geomap'
+import { GeoMap, type ProjectLocationEntry } from './geomap'
 import { LiveFeed } from './livefeed'
 import { loadSemanticAsset, createMediumPolyAsset } from './assets'
 import { fetchLingBotMapArtifacts, type LingBotMapOverlay } from './lingbot-map'
@@ -21,6 +21,8 @@ import { attachSparkRenderer, loadSplat, disposeSplat, type LoadedSplat } from '
 import { fetchScanSplatLayer, disposeScanSplatLayer, splatPlyUrl, splatManifestUrl, splatSogUrl, formatFinishStats, type ScanSplatLayer } from './splat-layer'
 import { fetchScanDetectLayer, type ScanDetectLayer } from './splat-detect-layer'
 import { buildTrainJobRequest, buildDetectJobRequest } from './splat-toolbox'
+import { buildThingObservationIndex, resolveThingTagsForScan } from '../../thing_tags'
+import { PlacesPanel } from './places'
 import {
   computeQualityTier,
   jobProcessingLabel,
@@ -45,6 +47,7 @@ import type {
 } from '../world/types'
 
 registerPWA()
+void refreshAccountChip()
 
 interface Label3D {
   el: HTMLElement
@@ -55,12 +58,22 @@ interface Label3D {
   layerType: LayerType
 }
 
+interface InventoryItem {
+  id: string
+  label: string
+  scanId: string
+  position: { x: number; y: number; z: number }
+  confidence: number | null
+  source: 'thing' | 'detection'
+}
+
 interface LoadedScan {
   manifest: ScanManifest
   root: THREE.Group
   layerNodes: Map<LayerType, Set<THREE.Object3D>>
   points: THREE.Points[]
   visible: boolean
+  inTimeWindow: boolean
   loaded: boolean
   error?: string
 }
@@ -89,6 +102,7 @@ interface OptimizationManifest {
 const query = new URLSearchParams(location.search)
 const initialWorldSlug = query.get('world') || 'default'
 const accessToken = query.get('token') || ''
+let activeProjectId = query.get('project') || null
 
 function withAccessToken(url: string): string {
   if (!accessToken) return url
@@ -99,6 +113,22 @@ function withAccessToken(url: string): string {
 
 function accessHeaders(extra: HeadersInit = {}): HeadersInit {
   return accessToken ? { ...extra, Authorization: `Bearer ${accessToken}` } : extra
+}
+
+async function refreshAccountChip(): Promise<void> {
+  const chip = document.getElementById('account-chip') as HTMLAnchorElement | null
+  if (!chip) return
+  const redirect = `/editor${location.search}`
+  chip.href = `/authenticate/oidc?redirect=${encodeURIComponent(redirect)}`
+  try {
+    const response = await fetch('/authenticate/whoami', { credentials: 'same-origin' })
+    if (!response.ok) return
+    const account = await response.json() as { name?: string | null; email?: string | null }
+    chip.textContent = account.name || account.email || 'Companion account'
+    chip.title = 'Connected to your Companion Intelligence Portal account. Spatial captures can be sent to Companion Memory by a processing job.'
+  } catch {
+    // OIDC is optional in local and self-hosted installs; the connect link stays useful.
+  }
 }
 
 const loader = new GLTFLoader()
@@ -116,6 +146,10 @@ const liveFeed = new LiveFeed(initialWorldSlug)
 const labelContainer = document.getElementById('viewport')!
 const loadedScans = new Map<string, LoadedScan>()
 const scanItems = new Map<string, HTMLElement>()
+let timelineSessions: Array<{ key: string; time: number; label: string; scanIds: string[] }> = []
+let timelineStart = Number.NEGATIVE_INFINITY
+let timelineEnd = Number.POSITIVE_INFINITY
+let projectLocations: ProjectLocationEntry[] = []
 // Serializes loadScanIntoWorld() calls per scanId. The initial world load
 // (loadWorldProject) and the optimize-scan job-completion reload
 // (handleJobUpdate) can both target the same scan; without this, a slow or
@@ -135,6 +169,7 @@ let controls: OrbitControls
 let transformControls: TransformControls | null = null
 let scene: THREE.Scene | null = null
 let worldGroup: THREE.Group | null = null
+let groundGrid: THREE.GridHelper | null = null
 let labels: Label3D[] = []
 let labelsVisible = true
 let cloudVisible = true
@@ -144,6 +179,11 @@ let world: WorldProject | null = null
 let selectedTransformTarget: THREE.Object3D | null = null
 let selectedScanId: string | null = null
 let isTransformDragging = false
+let placesPanel: PlacesPanel | null = null
+
+function scanRendered(loaded: Pick<LoadedScan, 'visible' | 'inTimeWindow'> | null | undefined): boolean {
+  return !!loaded && loaded.visible && loaded.inTimeWindow
+}
 
 const lingbotOverlays = new Map<string, LingBotMapOverlay>()
 let lingbotShowPoints = false
@@ -217,9 +257,17 @@ function initRenderer(): void {
   window.addEventListener('resize', onResize)
 
   geoMap.mount(document.getElementById('main-area')!)
-  geoMap.onScanSelect = (filename: string) => {
-    const item = document.querySelector<HTMLElement>(`.scan-item[data-filename="${cssEscape(filename)}"]`)
-    item?.click()
+  geoMap.onProjectSelect = (projectId: string) => {
+    if (projectId === activeProjectId) {
+      geoMap.close()
+      return
+    }
+    activeProjectId = projectId
+    const nextUrl = new URL(location.href)
+    nextUrl.searchParams.set('project', projectId)
+    history.replaceState(null, '', nextUrl)
+    geoMap.close()
+    void loadWorldProject()
   }
 
   liveFeed.mount(document.getElementById('main-area')!)
@@ -306,6 +354,7 @@ function initWorldScene(): void {
   const grid = new THREE.GridHelper(80, 80, 0x2f3645, 0x1d2230)
   grid.name = 'World ENU meter grid'
   scene.add(grid)
+  groundGrid = grid
 
   const axes = new THREE.AxesHelper(1.5)
   axes.name = 'World axes'
@@ -513,7 +562,8 @@ function updateLabels(): void {
 function isLabelVisible(label: Label3D): boolean {
   if (!labelsVisible || !globalLayerVisible.labels) return false
   if (!label.scanId) return true
-  return loadedScans.get(label.scanId)?.visible ?? true
+  const loaded = loadedScans.get(label.scanId)
+  return loaded ? scanRendered(loaded) : true
 }
 
 // ─── World loading ───────────────────────────────────────────────────────────
@@ -523,28 +573,35 @@ async function loadWorldProject(): Promise<void> {
   initWorldScene()
 
   try {
-    const slug = encodeURIComponent(initialWorldSlug)
-    const loadedWorld = await fetchJson<WorldProject>(`/worlds/${slug}`)
-    world = loadedWorld
-    document.title = `${loadedWorld.name} - Companion Scan`
-    document.getElementById('viewer-placeholder')!.style.display = loadedWorld.scans.length ? 'none' : 'flex'
+    const [loadedWorld, locations] = await Promise.all([
+      fetchJson<WorldProject>(activeWorldUrl()),
+      fetchJson<ProjectLocationEntry[]>('/project-locations').catch(() => []),
+    ])
+    projectLocations = locations
+    const scopedWorld = scopeWorldToActiveProject(loadedWorld)
+    world = scopedWorld
+    document.title = `${scopedWorld.name} - Companion Scan Spatial Editor`
+    setText('sidebar-title', scopedWorld.name)
+    document.getElementById('viewer-placeholder')!.style.display = scopedWorld.scans.length ? 'none' : 'flex'
 
-    buildScanList(loadedWorld.scans)
+    buildScanList(scopedWorld.scans)
+    buildTimeline(scopedWorld.scans)
     renderWorldPanel()
     renderLayerPanel()
-    void loadGeoLocations()
+    renderPlacesPanel()
+    void geoMap.updatePins(projectLocations, activeProjectId)
     void loadShareLinks()
 
-    if (loadedWorld.scans.length === 0) {
+    if (scopedWorld.scans.length === 0) {
       updateHudInfo('No scans in this world yet.')
       return
     }
 
-    const results = await Promise.allSettled(loadedWorld.scans.map(enqueueScanLoad))
+    const results = await Promise.allSettled(scopedWorld.scans.map(enqueueScanLoad))
     const loadedCount = results.filter(result => result.status === 'fulfilled').length
     if (loadedCount > 0 && worldGroup) {
       fitCamera(worldGroup)
-      const first = loadedWorld.scans.find(scan => loadedScans.get(scan.scanId)?.loaded)
+      const first = scopedWorld.scans.find(scan => loadedScans.get(scan.scanId)?.loaded)
       if (first) selectScan(first.scanId, false, false)
     } else {
       const placeholder = document.getElementById('viewer-placeholder')!
@@ -564,6 +621,37 @@ async function loadWorldProject(): Promise<void> {
   } finally {
     showLoading(false)
   }
+}
+
+function scopeWorldToActiveProject(source: WorldProject): WorldProject {
+  const fallbackProjectId = source.projectId ?? projectLocations[0]?.projectId ?? 'proj-default'
+  activeProjectId ??= fallbackProjectId
+  const activeProject = projectLocations.find((project) => project.projectId === activeProjectId)
+  const scans = source.projectId === activeProjectId
+    ? source.scans
+    : source.scans.filter((scan) => (scan.projectId ?? 'proj-default') === activeProjectId)
+  const scanIds = new Set(scans.map(scan => scan.scanId))
+  const thingObservations = source.thingObservations.filter(observation => scanIds.has(observation.scanId))
+  const observedThingIds = new Set(thingObservations.map(observation => observation.thingId))
+  const things = source.things.filter(thing =>
+    observedThingIds.has(thing.thingId)
+    || scanIds.has(thing.firstSeenScanId)
+    || scanIds.has(thing.lastSeenScanId))
+  return {
+    ...source,
+    projectId: activeProjectId,
+    name: activeProject?.name ?? source.name,
+    scans,
+    things,
+    thingObservations,
+  }
+}
+
+function activeWorldUrl(): string {
+  if (activeProjectId && activeProjectId !== 'proj-default') {
+    return `/projects/${encodeURIComponent(activeProjectId)}/world`
+  }
+  return `/worlds/${encodeURIComponent(initialWorldSlug)}`
 }
 
 function buildScanList(scans: ScanManifest[]): void {
@@ -586,6 +674,105 @@ function buildScanList(scans: ScanManifest[]): void {
   }
 }
 
+function buildTimeline(scans: ScanManifest[]): void {
+  const scrubber = document.getElementById('timeline-scrubber') as HTMLElement | null
+  const startRange = document.getElementById('timeline-start') as HTMLInputElement | null
+  const endRange = document.getElementById('timeline-end') as HTMLInputElement | null
+  const label = document.getElementById('timeline-label')
+  const fill = document.getElementById('timeline-range-fill')
+  if (!scrubber || !startRange || !endRange || !label || !fill) return
+
+  const groups = new Map<string, { time: number; scanIds: string[] }>()
+  scans.forEach((scan) => {
+    const parsed = scan.capturedAt ? Date.parse(scan.capturedAt) : Number.NaN
+    const time = Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY
+    const key = scan.sessionId ?? scan.scanId
+    const group = groups.get(key)
+    if (group) {
+      group.time = Math.min(group.time, time)
+      group.scanIds.push(scan.scanId)
+    } else {
+      groups.set(key, { time, scanIds: [scan.scanId] })
+    }
+  })
+
+  timelineSessions = [...groups.entries()]
+    .map(([key, group]) => ({
+      key,
+      time: group.time,
+      scanIds: group.scanIds,
+      label: group.time === Number.NEGATIVE_INFINITY
+        ? 'Unknown date'
+        : new Date(group.time).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
+    }))
+    .sort((a, b) => a.time - b.time)
+
+  if (timelineSessions.length <= 1) {
+    scrubber.hidden = true
+    applyTimelineWindow(Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY)
+    return
+  }
+
+  scrubber.hidden = false
+  const latest = timelineSessions.length - 1
+  startRange.max = String(latest)
+  endRange.max = String(latest)
+  startRange.value = '0'
+  endRange.value = String(latest)
+
+  const applyRange = () => {
+    let startIndex = Number(startRange.value)
+    let endIndex = Number(endRange.value)
+    if (startIndex > endIndex) {
+      if (document.activeElement === startRange) endIndex = startIndex
+      else startIndex = endIndex
+      startRange.value = String(startIndex)
+      endRange.value = String(endIndex)
+    }
+    const start = timelineSessions[startIndex]?.time ?? Number.NEGATIVE_INFINITY
+    const end = timelineSessions[endIndex]?.time ?? Number.POSITIVE_INFINITY
+    const startPercent = (startIndex / latest) * 100
+    const endPercent = (endIndex / latest) * 100
+    fill.style.left = `${startPercent}%`
+    fill.style.width = `${endPercent - startPercent}%`
+    label.textContent = startIndex === 0 && endIndex === latest
+      ? 'All scans'
+      : `${timelineSessions[startIndex]?.label ?? 'Start'} - ${timelineSessions[endIndex]?.label ?? 'End'}`
+    applyTimelineWindow(start, end)
+  }
+  startRange.oninput = applyRange
+  endRange.oninput = applyRange
+  applyRange()
+}
+
+function applyTimelineWindow(start: number, end: number): void {
+  timelineStart = start
+  timelineEnd = end
+  for (const loaded of loadedScans.values()) {
+    loaded.inTimeWindow = scanInTimeline(loaded.manifest)
+  }
+  for (const [scanId, item] of scanItems) {
+    const scan = world?.scans.find(candidate => candidate.scanId === scanId)
+    const inTime = !scan || scanInTimeline(scan)
+    item.classList.toggle('out-of-time', !inTime)
+  }
+  applyLayerVisibility()
+}
+
+function scanInTimeline(scan: ScanManifest): boolean {
+  const time = effectiveSessionTime(scan)
+  if (time === Number.NEGATIVE_INFINITY) {
+    return timelineStart === Number.NEGATIVE_INFINITY && timelineEnd === Number.POSITIVE_INFINITY
+  }
+  return time >= timelineStart && time <= timelineEnd
+}
+
+function effectiveSessionTime(scan: ScanManifest): number {
+  if (!world) return Number.NEGATIVE_INFINITY
+  const key = scan.sessionId ?? scan.scanId
+  return timelineSessions.find(session => session.key === key)?.time ?? Number.NEGATIVE_INFINITY
+}
+
 function buildScanItem(scan: ScanManifest): HTMLElement {
   const item = document.createElement('div')
   item.className = 'scan-item'
@@ -602,7 +789,7 @@ function buildScanItem(scan: ScanManifest): HTMLElement {
     const loaded = loadedScans.get(scan.scanId)
     if (loaded) {
       loaded.visible = checkbox.checked
-      loaded.root.visible = loaded.visible
+      loaded.root.visible = scanRendered(loaded)
       applyLayerVisibility()
     }
   })
@@ -625,7 +812,9 @@ function buildScanItem(scan: ScanManifest): HTMLElement {
 
   item.append(checkbox, details)
   item.addEventListener('click', () => {
-    selectScan(scan.scanId, true)
+    // Scan selection opens its identified-item inventory; object picking still
+    // opens Edit for direct annotation.
+    selectScan(scan.scanId, true, false)
   })
   return item
 }
@@ -689,6 +878,7 @@ async function loadScanIntoWorld(scan: ScanManifest): Promise<void> {
         layerNodes: new Map(),
         points: [],
         visible: false,
+        inTimeWindow: true,
         loaded: false,
         error: message,
       })
@@ -783,13 +973,15 @@ function integrateScanRoot(scan: ScanManifest, root: THREE.Group): void {
   createSemanticLabels(root, scan.scanId)
 
   worldGroup.add(root)
-  root.visible = previous?.visible ?? true
+  const inTimeWindow = previous?.inTimeWindow ?? scanInTimeline(scan)
+  root.visible = scanRendered({ visible: previous?.visible ?? true, inTimeWindow })
   loadedScans.set(scan.scanId, {
     manifest: scan,
     root,
     layerNodes,
     points,
     visible: previous?.visible ?? true,
+    inTimeWindow,
     loaded: true,
   })
 
@@ -807,6 +999,7 @@ function integrateScanRoot(scan: ScanManifest, root: THREE.Group): void {
     if (match) selectEditableObject(match, false)
     else clearSelection()
   }
+  renderItemsPanel()
 }
 
 function removeLabelsForScan(scanId: string): void {
@@ -876,8 +1069,15 @@ function assignStableObjectIds(root: THREE.Object3D, scanId: string): void {
 
 function applyStoredPatches(root: THREE.Object3D, scan: ScanManifest): void {
   if (!world) return
+  const thingTags = resolveThingTagsForScan(
+    world.editPatches,
+    world.things ?? [],
+    buildThingObservationIndex(world.thingObservations ?? []),
+    scan.scanId,
+  )
 
   for (const patch of world.editPatches) {
+    if (patch.scope === 'thing') continue
     if (patch.scanId && patch.scanId !== scan.scanId && patch.scanId !== scan.filename) continue
 
     if (patch.scope === 'scan' && (patch.targetId === scan.filename || patch.scanId === scan.scanId)) {
@@ -894,6 +1094,14 @@ function applyStoredPatches(root: THREE.Object3D, scan: ScanManifest): void {
     if (patch.label) target.userData['label'] = patch.label
     if (patch.notes) target.userData['notes'] = patch.notes
     if (typeof patch.visible === 'boolean') target.visible = patch.visible
+  }
+
+  for (const [targetId, tag] of thingTags) {
+    const target = findObjectByTargetId(root, targetId)
+    if (!target) continue
+    if (tag.category) target.userData['tag'] = tag.category
+    if (tag.label) target.userData['label'] = tag.label
+    if (tag.notes) target.userData['notes'] = tag.notes
   }
 }
 
@@ -1162,6 +1370,8 @@ function selectScan(scanId: string, focus: boolean, openEdit = true): void {
   void refreshQualityPanel(scanId)
   void refreshLingBotMapPanel(scanId)
   void refreshSplatLayerPanel(scanId)
+  renderPlacesPanel()
+  renderItemsPanel()
 }
 
 // ─── Map-quality headline (per-scan tier + processing state) ──────────────────
@@ -1553,6 +1763,32 @@ async function queueSplatToolboxJob(kind: 'train' | 'detect'): Promise<void> {
   setTimeout(() => { void refreshJobs() }, 1000)
 }
 
+async function queueSenseNovaJob(): Promise<void> {
+  if (!world) return
+  if (!selectedScanId) {
+    setText('sensenova-status', 'Select a scan first, then run SenseNova.')
+    return
+  }
+  const task = (document.getElementById('sensenova-task') as HTMLSelectElement | null)?.value ?? 'recon3d'
+  const query = (document.getElementById('sensenova-query') as HTMLInputElement | null)?.value.trim() ?? ''
+  const response = await fetch(withAccessToken(`/worlds/${encodeURIComponent(world.shareSlug)}/jobs`), {
+    method: 'POST',
+    headers: accessHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({
+      type: 'sensenova-vision',
+      scanId: selectedScanId,
+      payload: { task, ...(query ? { query } : {}), source: 'viewer-processing-studio', requestedAt: new Date().toISOString() },
+    }),
+  })
+  if (!response.ok) throw new Error(await response.text())
+  const job = await response.json() as WorldJob
+  world.jobs.unshift(job)
+  setText('sensenova-status', `Queued SenseNova ${task.replace(/_/g, ' ')}.`)
+  renderWorldPanel()
+  flashButton('btn-sensenova-run', 'Queued')
+  setTimeout(() => { void refreshJobs() }, 1000)
+}
+
 // ─── Gaussian splats (Spark) ──────────────────────────────────────────────────
 
 async function addSplat(source: Parameters<typeof loadSplat>[0]): Promise<void> {
@@ -1641,6 +1877,7 @@ function clearSelection(): void {
   const selectedInfo = document.getElementById('edit-selected-info')!
   noSelection.style.display = 'block'
   selectedInfo.style.display = 'none'
+  renderItemsPanel()
 }
 
 function showInspector(obj: THREE.Object3D): void {
@@ -1751,14 +1988,24 @@ async function saveObjectSemanticPatch(obj: THREE.Object3D): Promise<void> {
   if (!world) return
   const data = editor.getInspectorData(obj)
   const scan = scanForObject(obj)
+  const originTargetId = stableObjectId(obj)
+  const thing = thingForTarget(originTargetId)
   await postEditPatch({
-    scope: 'object',
+    scope: thing ? 'thing' : 'object',
     scanId: scan?.manifest.scanId,
-    targetId: stableObjectId(obj),
+    targetId: thing?.thingId ?? originTargetId,
+    originTargetId: thing ? originTargetId : undefined,
     label: data.aiLabel ?? data.name,
     category: data.tag ? String(data.tag) : undefined,
     notes: data.notes,
   })
+}
+
+function thingForTarget(targetId: string) {
+  if (!world) return null
+  const observation = (world.thingObservations ?? []).find(obs => obs.targetId === targetId)
+  if (!observation) return null
+  return (world.things ?? []).find(thing => thing.thingId === observation.thingId) ?? null
 }
 
 async function postEditPatch(body: Partial<EditPatch> & { targetId: string; scope: EditPatch['scope'] }): Promise<void> {
@@ -1786,6 +2033,114 @@ function serializeTransform(obj: THREE.Object3D): EditPatch['transform'] {
 
 // ─── Panels ──────────────────────────────────────────────────────────────────
 
+function inventoryItems(): InventoryItem[] {
+  if (!world) return []
+
+  const observations = world.thingObservations ?? []
+  if (world.things.length > 0) {
+    const preferredObservations = selectedScanId
+      ? observations.filter(observation => observation.scanId === selectedScanId)
+      : observations
+    const observationsByThing = new Map<string, typeof observations[number]>()
+    for (const observation of preferredObservations) {
+      const current = observationsByThing.get(observation.thingId)
+      if (!current || (observation.observedAt ?? '') > (current.observedAt ?? '')) {
+        observationsByThing.set(observation.thingId, observation)
+      }
+    }
+
+    return world.things
+      .filter(thing => !selectedScanId || observationsByThing.has(thing.thingId))
+      .map(thing => {
+        const observation = observationsByThing.get(thing.thingId)
+          ?? observations.find(candidate => candidate.thingId === thing.thingId && candidate.scanId === thing.lastSeenScanId)
+          ?? observations.find(candidate => candidate.thingId === thing.thingId)
+        return {
+          id: thing.thingId,
+          label: thing.canonicalLabel,
+          scanId: observation?.scanId ?? thing.lastSeenScanId,
+          position: observation?.worldPos ?? thing.position,
+          confidence: observation?.confidence ?? null,
+          source: 'thing',
+        }
+      })
+  }
+
+  // A correspondence job has not run yet. Surface the actual labelled nodes in
+  // each loaded GLB rather than hiding the inventory behind that later step.
+  const records: InventoryItem[] = []
+  for (const [scanId, loaded] of loadedScans) {
+    if (!loaded.loaded || (selectedScanId && scanId !== selectedScanId)) continue
+    loaded.root.updateMatrixWorld(true)
+    loaded.root.traverse((node) => {
+      const data = node.userData as Record<string, unknown>
+      const label = typeof data['label'] === 'string' ? data['label'] : ''
+      if (!label) return
+      // The renderer can label an optimized proxy that no longer has a Mesh
+      // below it. It is still a real identified item, so follow the same
+      // one-label-per-ancestor rule used by createSemanticLabels().
+      if (hasLabelledAncestor(node, loaded.root)) return
+      const position = node.getWorldPosition(new THREE.Vector3())
+      records.push({
+        id: String(data['objectId'] ?? node.uuid),
+        label,
+        scanId,
+        position: { x: position.x, y: position.y, z: position.z },
+        confidence: typeof data['confidence'] === 'number' ? data['confidence'] : null,
+        source: 'detection',
+      })
+    })
+  }
+  return records
+}
+
+function placeLabel(): string {
+  const place = projectLocations.find(location => location.projectId === activeProjectId)
+  if (!place) return world?.name ?? 'Current project'
+  return place.address ? `${place.name} - ${place.address}` : place.name
+}
+
+function formatItemPosition(position: InventoryItem['position']): string {
+  return `ENU ${position.x.toFixed(1)}, ${position.y.toFixed(1)}, ${position.z.toFixed(1)} m`
+}
+
+function renderItemsPanel(): void {
+  const list = document.getElementById('items-list')
+  const title = document.getElementById('items-panel-title')
+  const description = document.getElementById('items-panel-description')
+  if (!list || !title || !description || !world) return
+
+  const selectedScan = selectedScanId
+    ? world.scans.find(scan => scan.scanId === selectedScanId) ?? null
+    : null
+  const items = inventoryItems()
+  title.textContent = selectedScan ? 'Items in selected scan' : 'Project items'
+  description.textContent = selectedScan
+    ? `${selectedScan.name} - ${items.length} identified item${items.length === 1 ? '' : 's'}.`
+    : `${items.length} identified item${items.length === 1 ? '' : 's'} across this project space.`
+  list.innerHTML = ''
+
+  if (items.length === 0) {
+    list.innerHTML = `<div class="inventory-empty">No identified items yet. Process a scan to generate things for this project.</div>`
+    return
+  }
+
+  for (const item of items.sort((a, b) => a.label.localeCompare(b.label))) {
+    const scan = world.scans.find(candidate => candidate.scanId === item.scanId)
+    const row = document.createElement('div')
+    row.className = 'inventory-item'
+    const confidence = item.confidence == null ? '' : `${Math.round(item.confidence * 100)}%`
+    row.innerHTML = `
+      <div class="inventory-item-heading">
+        <span class="inventory-item-name">${escHtml(item.label)}</span>
+        ${confidence ? `<span class="inventory-item-confidence">${confidence}</span>` : ''}
+      </div>
+      <div class="inventory-item-meta">Place: ${escHtml(placeLabel())}<br>Scan: ${escHtml(scan?.name ?? item.scanId)}<br>${formatItemPosition(item.position)}</div>
+    `
+    list.appendChild(row)
+  }
+}
+
 function renderWorldPanel(): void {
   if (!world) return
 
@@ -1800,7 +2155,9 @@ function renderWorldPanel(): void {
   setText('world-layer-count', String(LAYER_ORDER.length))
   setText('world-job-count', String(queueJobs.length))
   setText('world-origin-label', hasGeoPose(world.originGeoPose) ? 'GPS' : 'Local')
+  renderToolbarSummary(queueJobs)
   renderJobs(queueJobs)
+  renderItemsPanel()
   if (selectedScanId) renderQualityProcessing(selectedScanId)
 }
 
@@ -1841,6 +2198,18 @@ function renderLayerPanel(): void {
     row.append(left, toggle)
     list.appendChild(row)
   }
+}
+
+function renderPlacesPanel(): void {
+  const root = document.getElementById('places-list')
+  if (!root) return
+  placesPanel ??= new PlacesPanel(
+    root,
+    accessHeaders,
+    () => selectedScanId && world ? world.scans.find(scan => scan.scanId === selectedScanId) ?? null : null,
+    () => { void refreshWorldScans() },
+  )
+  void placesPanel.render()
 }
 
 function renderJobs(jobs: WorldJob[]): void {
@@ -1953,6 +2322,30 @@ function layerSource(type: LayerType): string {
   return [...sources].join(' + ')
 }
 
+function syncViewMenu(): void {
+  const setChecked = (id: string, checked: boolean) => {
+    const control = document.getElementById(id) as HTMLInputElement | null
+    if (control) control.checked = checked
+  }
+  setChecked('view-toggle-map', geoMap.isOpen)
+  setChecked('view-toggle-points', cloudVisible && globalLayerVisible.points)
+  setChecked('view-toggle-floor', globalLayerVisible.floor)
+  setChecked('view-toggle-mesh', globalLayerVisible.mesh)
+  setChecked('view-toggle-frustums', globalLayerVisible.cameraFrustums || globalLayerVisible.rgbFrames)
+  setChecked('view-toggle-grid', groundGrid?.visible ?? true)
+  setChecked('view-toggle-labels', labelsVisible && globalLayerVisible.labels)
+}
+
+function renderToolbarSummary(queueJobs: WorldJob[]): void {
+  if (!world) return
+  const activeJobs = queueJobs.filter(job => job.status === 'queued' || job.status === 'processing')
+  setText('toolbar-project-name', world.name)
+  setText('toolbar-scan-count', String(world.scans.length))
+  setText('toolbar-layer-count', String(LAYER_ORDER.length))
+  setText('toolbar-job-count', `${activeJobs.length}/${queueJobs.length}`)
+  document.getElementById('toolbar-jobs')?.classList.toggle('is-active', activeJobs.length > 0)
+}
+
 // ─── Layer visibility ────────────────────────────────────────────────────────
 
 function applyLayerVisibility(): void {
@@ -1960,10 +2353,10 @@ function applyLayerVisibility(): void {
   const meshesAllowedByMode = editor.mode !== 'points'
 
   for (const loaded of loadedScans.values()) {
-    loaded.root.visible = loaded.visible
+    loaded.root.visible = scanRendered(loaded)
     for (const [type, nodes] of loaded.layerNodes) {
       for (const node of nodes) {
-        const visible = loaded.visible && layerVisibilityFor(type, pointsAllowedByMode, meshesAllowedByMode)
+        const visible = scanRendered(loaded) && layerVisibilityFor(type, pointsAllowedByMode, meshesAllowedByMode)
         node.visible = visible
       }
     }
@@ -1973,7 +2366,7 @@ function applyLayerVisibility(): void {
     const scanId = String(obj.userData['scanId'] ?? '')
     obj.visible = detectionBoundsVisible
       && globalLayerVisible.detections
-      && (loadedScans.get(scanId)?.visible ?? true)
+      && (scanRendered(loadedScans.get(scanId)) || !loadedScans.has(scanId))
   }
 
   for (const label of labels) {
@@ -1998,6 +2391,7 @@ function applyLayerVisibility(): void {
   // `active-hud` had no rule anywhere in viewer.html — a typo for `active`, so
   // the teal on-state this line was meant to apply had never once rendered.
   setToggle('btn-toggle-bounds', detectionBoundsVisible)
+  syncViewMenu()
 }
 
 function layerVisibilityFor(type: LayerType, pointsAllowedByMode: boolean, meshesAllowedByMode: boolean): boolean {
@@ -2010,19 +2404,6 @@ function layerVisibilityFor(type: LayerType, pointsAllowedByMode: boolean, meshe
 }
 
 // ─── Geomap and live metadata ────────────────────────────────────────────────
-
-async function loadGeoLocations(): Promise<void> {
-  try {
-    const response = await fetch('/scan-locations')
-    if (!response.ok) return
-    const locations = await response.json() as ScanLocationEntry[]
-    const countEl = document.getElementById('geomap-count')
-    if (countEl) countEl.textContent = locations.length > 0 ? `${locations.length} mapped` : ''
-    await geoMap.updatePins(locations)
-  } catch {
-    // Geomap is optional.
-  }
-}
 
 function upsertLiveFrustum(meta: Record<string, unknown>): void {
   if (!scene) return
@@ -2375,10 +2756,6 @@ function escHtml(value: string): string {
     .replace(/"/g, '&quot;')
 }
 
-function cssEscape(value: string): string {
-  return CSS.escape ? CSS.escape(value) : value.replace(/"/g, '\\"')
-}
-
 function safeObjectToken(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-|-$/g, '') || 'node'
 }
@@ -2448,14 +2825,44 @@ function flashButton(id: string, text: string): void {
 }
 
 function switchSidebarTab(name: string): void {
+  const isDetailsTab = ['scans', 'world', 'layers', 'edit'].includes(name)
+  const detailsPanelId = name === 'scans' ? 'details-items' : `tab-${name}`
+  const projectInfo = document.getElementById('sidebar-project-info')
+  const layerInfo = document.getElementById('sidebar-layer-info')
+  // World owns project-wide facts. Other views use this left-drawer region for
+  // their own navigation and controls instead of repeating the same overview.
+  if (projectInfo) projectInfo.hidden = name !== 'world'
+  if (layerInfo) layerInfo.hidden = name !== 'layers'
   document.querySelectorAll('.sidebar-tab').forEach(button => {
     const el = button as HTMLButtonElement
-    el.classList.toggle('active', el.dataset['tab'] === name)
+    const isActive = el.dataset['tab'] === name
+    el.classList.toggle('active', isActive)
+    el.setAttribute('aria-selected', String(isActive))
   })
   document.querySelectorAll('.sidebar-panel').forEach(panel => {
     const el = panel as HTMLElement
     el.classList.toggle('active', el.id === `tab-${name}`)
   })
+
+  document.querySelectorAll('.details-panel').forEach(panel => {
+    const el = panel as HTMLElement
+    el.classList.toggle('active', isDetailsTab && el.id === detailsPanelId)
+  })
+
+  const drawer = document.getElementById('details-drawer')
+  if (isDetailsTab) drawer?.classList.remove('collapsed')
+
+  const title = document.getElementById('details-drawer-title')
+  if (title && isDetailsTab) {
+    title.textContent = name === 'scans'
+      ? 'Items'
+      : name === 'world'
+        ? 'Project'
+        : name === 'edit'
+          ? 'Edit & annotate'
+          : name[0].toUpperCase() + name.slice(1)
+  }
+  if (name === 'scans') renderItemsPanel()
 }
 
 // ─── DOM wiring ──────────────────────────────────────────────────────────────
@@ -2495,14 +2902,10 @@ document.getElementById('edit-save-notes')?.addEventListener('click', () => {
     .catch(error => console.error('[viewer] notes patch failed:', error))
 })
 
-document.querySelectorAll<HTMLButtonElement>('.mode-btn[data-mode]').forEach(button => {
-  button.addEventListener('click', () => {
-    const mode = button.dataset['mode'] as ViewMode
-    editor.setMode(mode)
-    document.querySelectorAll('.mode-btn[data-mode]').forEach(item => item.classList.remove('active'))
-    button.classList.add('active')
-    applyLayerVisibility()
-  })
+const viewModeSelect = document.getElementById('view-mode-select') as HTMLSelectElement | null
+viewModeSelect?.addEventListener('change', () => {
+  editor.setMode(viewModeSelect.value as ViewMode)
+  applyLayerVisibility()
 })
 
 document.getElementById('btn-reset-camera')!.addEventListener('click', () => {
@@ -2581,6 +2984,12 @@ document.getElementById('btn-splat-detect')?.addEventListener('click', () => {
     flashButton('btn-splat-detect', 'Failed')
   })
 })
+document.getElementById('btn-sensenova-run')?.addEventListener('click', () => {
+  void queueSenseNovaJob().catch((error) => {
+    setText('sensenova-status', `Could not queue SenseNova: ${errorMessage(error)}`)
+    flashButton('btn-sensenova-run', 'Failed')
+  })
+})
 
 document.getElementById('btn-load-splat-url')?.addEventListener('click', () => {
   const input = document.getElementById('splat-url-input') as HTMLInputElement | null
@@ -2599,10 +3008,51 @@ document.getElementById('splat-file-input')?.addEventListener('change', (e) => {
 
 document.getElementById('inspector-close')!.addEventListener('click', clearSelection)
 
-document.getElementById('btn-geomap')!.addEventListener('click', () => {
-  geoMap.toggle()
-  const isOpen = document.getElementById('geomap-drawer')?.classList.contains('geomap-open')
-  document.getElementById('btn-geomap')!.classList.toggle('active', !!isOpen)
+const viewToggle = (id: string) => document.getElementById(id) as HTMLInputElement | null
+
+viewToggle('view-toggle-map')?.addEventListener('change', (event) => {
+  if ((event.target as HTMLInputElement).checked) geoMap.open()
+  else geoMap.close()
+  syncViewMenu()
+})
+
+viewToggle('view-toggle-points')?.addEventListener('change', (event) => {
+  cloudVisible = (event.target as HTMLInputElement).checked
+  globalLayerVisible.points = cloudVisible
+  renderLayerPanel()
+  applyLayerVisibility()
+})
+
+viewToggle('view-toggle-floor')?.addEventListener('change', (event) => {
+  globalLayerVisible.floor = (event.target as HTMLInputElement).checked
+  renderLayerPanel()
+  applyLayerVisibility()
+})
+
+viewToggle('view-toggle-mesh')?.addEventListener('change', (event) => {
+  globalLayerVisible.mesh = (event.target as HTMLInputElement).checked
+  renderLayerPanel()
+  applyLayerVisibility()
+})
+
+viewToggle('view-toggle-frustums')?.addEventListener('change', (event) => {
+  const visible = (event.target as HTMLInputElement).checked
+  globalLayerVisible.cameraFrustums = visible
+  globalLayerVisible.rgbFrames = visible
+  renderLayerPanel()
+  applyLayerVisibility()
+})
+
+viewToggle('view-toggle-grid')?.addEventListener('change', (event) => {
+  if (groundGrid) groundGrid.visible = (event.target as HTMLInputElement).checked
+  syncViewMenu()
+})
+
+viewToggle('view-toggle-labels')?.addEventListener('change', (event) => {
+  labelsVisible = (event.target as HTMLInputElement).checked
+  globalLayerVisible.labels = labelsVisible
+  renderLayerPanel()
+  applyLayerVisibility()
 })
 
 document.getElementById('btn-livefeed')!.addEventListener('click', () => {
@@ -2681,6 +3131,9 @@ function connectServerEvents(): void {
           scanDetectLayers.delete(wj.scanId)
           if (selectedScanId === wj.scanId) void refreshSplatDetectPanel(wj.scanId)
         }
+        if (t === 'thing-correspondence' && wj?.status === 'completed') {
+          scheduleWorldRefresh()
+        }
         if ((t === 'lingbot-map-reconstruct' || t === 'splat-train')
           && wj?.status === 'completed' && selectedScanId
           && (!wj.scanId || wj.scanId === selectedScanId)) {
@@ -2707,9 +3160,12 @@ function scheduleWorldRefresh(): void {
 async function refreshWorldScans(): Promise<void> {
   if (!world) return
   try {
-    const updated = await fetchJson<WorldProject>(`/worlds/${encodeURIComponent(initialWorldSlug)}`)
-    world = updated
-    const fresh = updated.scans.filter((scan) => !scanItems.has(scan.scanId))
+    const updated = await fetchJson<WorldProject>(activeWorldUrl())
+    world = scopeWorldToActiveProject(updated)
+    buildTimeline(world.scans)
+    renderWorldPanel()
+    renderPlacesPanel()
+    const fresh = world.scans.filter((scan) => !scanItems.has(scan.scanId))
     if (fresh.length === 0) return
 
     document.getElementById('viewer-placeholder')!.style.display = 'none'
@@ -2721,7 +3177,6 @@ async function refreshWorldScans(): Promise<void> {
       listEl.prepend(item)
       void enqueueScanLoad(scan).catch(() => { /* status chip shows the error */ })
     }
-    renderWorldPanel()
     updateHudInfo()
   } catch (error) {
     console.warn('[viewer] world refresh failed:', error)

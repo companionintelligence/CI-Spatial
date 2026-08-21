@@ -14,6 +14,7 @@ import { createEighthWallProvider } from './ar/eighthwall'
 import { createWebXRProvider, WebXRProvider, isImmersiveARSupported } from './ar/webxr'
 import type { ARProvider, Pose } from './ar/provider'
 import { RoomScanner } from './ar/scanner'
+import { runProjectCalibration } from './ar/project-calibration'
 import { PointCloud } from './scene/pointcloud'
 import { CaptureModule } from './capture/capture'
 import { AutoCapture } from './capture/auto-capture'
@@ -22,9 +23,9 @@ import { ScanQualityMonitor, isFrameUnusable } from './capture/quality-monitor'
 import type { FrameQuality } from './capture/quality-monitor'
 import { InferenceRouter } from './inference/router'
 import { InferServerError } from './inference/server'
-import { resolveDetections, mergeDetections } from './spatial/resolver'
+import { bucket, resolveDetections, mergeDetections } from './spatial/resolver'
 import { DetectionStore } from './scene/store'
-import { ProjectStore } from './project/project-store'
+import { ProjectStore, type Project, type ScanCalibration, type ScanEntry } from './project/project-store'
 import { AROverlay } from './ui/overlay'
 import { SidePanel, type ExportOutcome } from './ui/panel'
 import { SessionHistory } from './ui/history'
@@ -32,15 +33,27 @@ import { exportToGLB } from './export/gltf'
 import { isServerSessionId } from './shared/session-id.ts'
 import { exportSessionSummary } from './export/summary'
 import { GeoTracker, type GeoFix } from './geo/geo-tracker'
+import { distanceM } from './world/geo'
 import { RtcBroadcaster } from './rtc/broadcaster'
 import { registerPWA } from './pwa'
 import { installRemoteLog } from './debug/remote-log'
 import { iconLabel } from './ui/icons'
-import { ONBOARDING_KEY } from './shared/storage-keys'
+import { ONBOARDING_KEY, PLACE_SELECTION_SESSION_KEY } from './shared/storage-keys'
 import * as THREE from 'three'
 
 const CAPTURE_FRAME_TIMEOUT_MS = 8000
 const TRACKING_WAIT_MS = 2500
+let requestPlaceSelection: ((afterSelection?: () => void) => void) | null = null
+
+function poseIsFinite(pose: Pose): boolean {
+  return Number.isFinite(pose.position.x)
+    && Number.isFinite(pose.position.y)
+    && Number.isFinite(pose.position.z)
+    && Number.isFinite(pose.rotation.x)
+    && Number.isFinite(pose.rotation.y)
+    && Number.isFinite(pose.rotation.z)
+    && Number.isFinite(pose.rotation.w)
+}
 
 // One-time HUD notices — module-level so repeated triggers stay quiet
 let quotaWarningShown = false
@@ -99,47 +112,50 @@ async function main() {
   // it covers the start screen and is dismissed before section 4b returns.
   const startBtn = document.getElementById('start-ar-btn') as HTMLButtonElement | null
   let startPressed = false
-  const startArPressed = new Promise<void>((resolve) => {
-    startBtn?.addEventListener('click', async () => {
-      startPressed = true
-      // ↓ Initiate BEFORE any await — this preserves the user-gesture context in Safari
-      type PermAPI = { requestPermission?(): Promise<string> }
-      const p1 = (DeviceOrientationEvent as unknown as PermAPI).requestPermission?.()
-      const p2 = (DeviceMotionEvent as unknown as PermAPI).requestPermission?.()
+  let selectedProject: Project | null = null
+  let projectSelectionReady = false
+  let resolveStartAr: () => void = () => {}
+  const beginArSession = async () => {
+    if (startPressed) return
+    startPressed = true
+    // This runs from the place-choice tap, which is still a real user gesture.
+    // That keeps Safari's motion permission request eligible after the modal.
+    type PermAPI = { requestPermission?(): Promise<string> }
+    const p1 = (DeviceOrientationEvent as unknown as PermAPI).requestPermission?.()
+    const p2 = (DeviceMotionEvent as unknown as PermAPI).requestPermission?.()
 
-      // Hide the start screen immediately
-      document.getElementById('start-screen')?.remove()
-      // Tapped before the boot reached section 5: say so, rather than leaving
-      // the last boot status (e.g. "AI: WebGPU") on screen as if nothing happened.
-      overlay.setStatus('Starting AR…')
+    document.getElementById('start-screen')?.remove()
+    overlay.setStatus('Starting AR…')
 
-      // Denial RESOLVES with the string 'denied' — it does not reject. The
-      // promise rejects only when requestPermission() was called outside a
-      // user gesture. Catching alone therefore never fired on the one case it
-      // was written for: the user tapped "Don't Allow" and landed in a session
-      // that never tracks, staring at "Move camera to initialise tracking…"
-      // forever with nothing to explain it.
-      //
-      // On platforms without the API (Android, desktop) both are undefined,
-      // there is nothing to grant, and the banner must stay down.
-      const permissionChecks = [p1, p2].filter((p): p is Promise<string> => p !== undefined)
-      const denialNotice = 'Enable motion & orientation access in Settings → Safari → Motion & Orientation Access.'
-      try {
-        const outcomes = await Promise.all(permissionChecks)
-        const refused = outcomes.filter((outcome) => outcome !== 'granted')
-        if (refused.length > 0) {
-          console.warn(`[main] Motion/orientation permission ${refused.join('/')} — SLAM will not track`)
-          showPermissionBanner(denialNotice)
-        }
-      } catch (err) {
-        // A rejection is the other failure: requestPermission() reached outside
-        // a genuine gesture, or the API itself errored. The user still ends up
-        // without motion access, so they get the same guidance.
-        console.warn('[main] Motion/orientation permission request failed — SLAM may not track', err)
+    const permissionChecks = [p1, p2].filter((p): p is Promise<string> => p !== undefined)
+    const denialNotice = 'Enable motion & orientation access in Settings → Safari → Motion & Orientation Access.'
+    try {
+      const outcomes = await Promise.all(permissionChecks)
+      const refused = outcomes.filter((outcome) => outcome !== 'granted')
+      if (refused.length > 0) {
+        console.warn(`[main] Motion/orientation permission ${refused.join('/')} — SLAM will not track`)
         showPermissionBanner(denialNotice)
       }
-      resolve()
-    }, { once: true })
+    } catch (err) {
+      console.warn('[main] Motion/orientation permission request failed — SLAM may not track', err)
+      showPermissionBanner(denialNotice)
+    }
+    resolveStartAr()
+  }
+
+  const startArPressed = new Promise<void>((resolve) => {
+    resolveStartAr = resolve
+    startBtn?.addEventListener('click', () => {
+      if (startPressed) return
+      if (!projectSelectionReady) {
+        overlay.setStatus('Preparing project selection...')
+        return
+      }
+      // Every new capture starts by confirming its place, even when a project
+      // was used previously. The selection defines this scan's shared frame.
+      requestPlaceSelection?.(() => { void beginArSession() })
+      overlay.setStatus('Choose or create a project before calibrating the scan.')
+    })
   })
   // The button ships `disabled aria-busy="true"` with a "Preparing…" line in
   // index.html, so it never advertises itself as pressable before this point —
@@ -164,8 +180,17 @@ async function main() {
   void checkStorageQuota(store, overlay)
   const projectStore = new ProjectStore()
   await projectStore.open()
+  selectedProject = await resolveInitialProject(projectStore)
+  projectSelectionReady = true
+  let sessionScanEntry: ScanEntry | null = null
+  let sessionCalibration: ScanCalibration | undefined
   const qualityMonitor = new ScanQualityMonitor()
   const geoTracker = new GeoTracker()
+  const placePicker = mountPlacePicker(projectStore, geoTracker, selectedProject, (project) => {
+    selectedProject = project
+    sessionScanEntry = null
+  })
+  requestPlaceSelection = placePicker.open
   const pointCloud = new PointCloud(0.05)   // 5 cm voxel deduplication grid
   const poseHistory: Pose[] = []
   const scanner = new RoomScanner()
@@ -342,7 +367,7 @@ async function main() {
     let pendingCaptureId: string | null = null
     let frameQuality: Promise<FrameQuality> | null = null
     try {
-      const { blob, pose, timestamp } = await capture.capture(CAPTURE_FRAME_TIMEOUT_MS)
+      const { blob, pose, timestamp, frameWidth, frameHeight } = await capture.capture(CAPTURE_FRAME_TIMEOUT_MS)
       console.log(`[main] Captured blob: ${blob.size} bytes, type=${blob.type}, pose=`, pose)
 
       // Store the frame BEFORE anything is asked of it. The photograph is the
@@ -373,11 +398,14 @@ async function main() {
       // tick). The promise is kept, not discarded, because the failure path below
       // needs its verdict to decide whether this frame is worth retaining.
       frameQuality = qualityMonitor.analyseFrame(blob)
-      void frameQuality.then(({ lowLight, reflective }) => {
-        updateQualityOverlay(qualityMonitor.tick(provider, pointCloud))
-        if (lowLight)   overlay.setStatus('⚠ Low light — add more lighting')
-        if (reflective) overlay.setStatus('⚠ Reflective surface detected')
-      })
+      const quality = await frameQuality
+      updateQualityOverlay(qualityMonitor.tick(provider, pointCloud))
+      if (quality.uniformFrame) {
+        overlay.setStatus('Camera feed unavailable — close Chrome, reopen the app, then retry')
+        throw new Error('Camera frame is uniform; the live camera feed is not available')
+      }
+      if (quality.lowLight)   overlay.setStatus('⚠ Low light — add more lighting')
+      if (quality.reflective) overlay.setStatus('⚠ Reflective surface detected')
 
       const rawDets = await router.infer(blob)
 
@@ -405,7 +433,10 @@ async function main() {
         asyncHitTest,
         cameraPose: pose,
         captureCamera,
+        imageSize: { width: frameWidth, height: frameHeight },
+        viewportSize: { width: window.innerWidth, height: window.innerHeight },
         pointCloud,
+        sessionId: store.sessionId,
       })
       console.log(`[main] World detections (${worldDets.length}):`, JSON.stringify(worldDets))
 
@@ -490,6 +521,10 @@ async function main() {
 
         if (name === 'NotAllowedError' || message.includes('NotAllowedError')) {
           overlay.setStatus('Camera access denied — check browser settings')
+        } else if (message.includes('Camera frame is uniform')) {
+          // Keep the recovery instruction from the frame-validity guard visible;
+          // this is a camera lifecycle problem, not an inference failure.
+          overlay.setStatus('Camera feed unavailable — close Chrome, reopen the app, then retry')
         } else if (message.includes('Timed out')) {
           // Check if the timeout is actually due to denied camera permission
           let denied = false
@@ -540,11 +575,13 @@ async function main() {
     setAutosaveStatus('Exporting scan...')
     overlay.setStatus('Exporting scan...')
     try {
+      const scanEntry = await ensureSessionScanEntry()
       const result = await exportToGLB(
-        { store, pointCloud, poseHistory, geoFix: geoTracker.snapshot() ?? undefined, qualitySummary: currentQualitySummary() },
+        { store, pointCloud, poseHistory, scanEntry, geoFix: geoTracker.snapshot() ?? undefined, qualitySummary: currentQualitySummary() },
         { download: true, upload: true, filenamePrefix: 'room-scan', autoSaved: false },
       )
       if (result.upload === 'uploaded' && result.uploadedFilename) {
+        await updateSessionScanFilename(result.uploadedFilename)
         overlay.setStatus('Scan exported & synced ✓')
         setAutosaveStatus(`Scan exported & synced ✓ ${shortName(result.uploadedFilename)}`)
 
@@ -602,7 +639,7 @@ async function main() {
         return
       }
       const result = await exportToGLB(
-        { store, pointCloud, poseHistory, geoFix: geoTracker.snapshot() ?? undefined, qualitySummary: currentQualitySummary() },
+        { store, pointCloud, poseHistory, scanEntry: await ensureSessionScanEntry(), geoFix: geoTracker.snapshot() ?? undefined, qualitySummary: currentQualitySummary() },
         { download: false, upload: true, filenamePrefix: 'autosave-room-scan', autoSaved: true },
       )
       const time = new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
@@ -614,6 +651,7 @@ async function main() {
       // glbFilename stayed null — leaving `byGlb` nothing to match on and the
       // one-scan-to-one-session assumption false.
       if (result.uploadedFilename) {
+        await updateSessionScanFilename(result.uploadedFilename)
         lastUploadedFilename = result.uploadedFilename
         currentSessionGlbFilename = result.uploadedFilename
         if (keyframes?.active) {
@@ -869,7 +907,35 @@ async function main() {
   } catch (e) {
     console.error('[main] AR provider start failed:', e)
     showPermissionBanner('Camera access denied. Please check your browser or OS permission settings and allow camera access.')
+    return
   }
+  overlay.setStatus('Calibrate the project frame…')
+
+  if (selectedProject) {
+    const calibration = await runProjectCalibration({
+      provider,
+      project: selectedProject,
+      hitTest: async () => asyncHitTest
+        ? await asyncHitTest(0.5, 0.5)
+        : provider.hitTest(0.5, 0.5),
+    })
+    if (calibration) {
+      sessionCalibration = calibration.calibration
+      if (calibration.spatialFrame) {
+        selectedProject.spatialFrame = calibration.spatialFrame
+        await projectStore.updateProject(selectedProject)
+        await persistProjectSpatialFrame(selectedProject)
+      }
+      overlay.setStatus(
+        calibration.calibration.status === 'verified'
+          ? `Project aligned within ${(calibration.calibration.residualM * 100).toFixed(0)} cm`
+          : 'Project frame established. Start scanning.',
+      )
+    } else {
+      overlay.setStatus('Scanning without project alignment')
+    }
+  }
+
   overlay.setStatus('Move camera to initialise tracking…')
 
   // ── WebRTC live-feed broadcaster (optional) ───────────────────────────────
@@ -937,7 +1003,7 @@ async function main() {
   scanner.start(provider, (frame) => {
     const inserted = pointCloud.add(frame.points)
     const added = inserted.length
-    if (frame.points.length > 0) poseHistory.push(frame.pose)
+    if (provider.isTracking() && poseIsFinite(frame.pose)) poseHistory.push(frame.pose)
 
     // Live geometry to the viewer — no-ops unless the stream is running
     broadcaster.sendPoints(inserted)
@@ -976,6 +1042,39 @@ async function main() {
       poseCount: poseHistory.length,
       keyframeCount: latestKeyframeCount,
     })
+  }
+
+  async function ensureSessionScanEntry(): Promise<ScanEntry> {
+    if (sessionScanEntry) return sessionScanEntry
+    sessionScanEntry = await projectStore.addScan({
+      projectId: selectedProject?.projectId ?? null,
+      sessionId: store.sessionId,
+      name: selectedProject ? `${selectedProject.name} scan` : 'Unassigned scan',
+      status: 'draft',
+      capturedAt: Date.now(),
+      qualitySummary: entryQualitySummary(),
+      calibration: sessionCalibration,
+    })
+    return sessionScanEntry
+  }
+
+  async function updateSessionScanFilename(filename: string): Promise<void> {
+    if (!sessionScanEntry) return
+    sessionScanEntry.scanFilename = filename
+    sessionScanEntry.qualitySummary = entryQualitySummary()
+    sessionScanEntry.status = 'ready'
+    await projectStore.updateScan(sessionScanEntry)
+  }
+
+  function entryQualitySummary(): ScanEntry['qualitySummary'] {
+    const summary = currentQualitySummary()
+    return {
+      coverageScore: summary.coverageScore,
+      lowLightFrames: summary.lowLightFrames,
+      driftEvents: summary.driftEvents,
+      reflectiveWarnings: summary.reflectiveWarnings,
+      pointCount: summary.pointCount,
+    }
   }
 
   function updateVerdictUI(): void {
@@ -1054,6 +1153,226 @@ function setupStatusOverlay() {
 function setAutosaveStatus(text: string): void {
   const el = document.getElementById('autosave-status')
   if (el) el.textContent = text
+}
+
+async function resolveInitialProject(projectStore: ProjectStore): Promise<Project | null> {
+  const queryProject = new URLSearchParams(location.search).get('project')
+  const projects = await fetchProjects().catch(() => [])
+  const fromQuery = queryProject ? projects.find(project => project.projectId === queryProject) : null
+  if (fromQuery) {
+    sessionStorage.setItem(PLACE_SELECTION_SESSION_KEY, JSON.stringify({ projectId: fromQuery.projectId }))
+    return fromQuery
+  }
+
+  const stored = sessionStorage.getItem(PLACE_SELECTION_SESSION_KEY) || localStorage.getItem(PLACE_SELECTION_SESSION_KEY)
+  if (stored) {
+    try {
+      const projectId = (JSON.parse(stored) as { projectId?: string | null }).projectId
+      if (projectId === null) return null
+      const match = projects.find(project => project.projectId === projectId)
+      if (match) return match
+      if (projectId) {
+        const mirrored = await projectStore.getProject(projectId)
+        if (mirrored) return mirrored
+      }
+    } catch { /* bad prior value */ }
+  }
+
+  // A place must never be inferred from the first project in the registry.
+  // The user explicitly chooses a saved place or creates a new one.
+  return null
+}
+
+function mountPlacePicker(
+  projectStore: ProjectStore,
+  geoTracker: GeoTracker,
+  selected: Project | null,
+  onSelect: (project: Project | null) => void,
+): { open: (afterSelection?: () => void) => void } {
+  const startScreen = document.getElementById('start-screen')
+  if (!startScreen) return { open: () => {} }
+  let currentSelected = selected
+  let pendingSelectionAction: (() => void) | null = null
+
+  const sheet = document.createElement('div')
+  sheet.id = 'place-sheet'
+  sheet.className = 'place-sheet'
+  sheet.hidden = true
+  document.body.appendChild(sheet)
+
+  const render = async () => {
+    const projects = await fetchProjects().catch(() => [])
+    const fix = geoTracker.snapshot()
+    const nearby = projects
+      .map(project => ({ project, distance: fix && project.geoPose ? distanceM(fixToGeoPose(fix), project.geoPose) : null }))
+      .filter(item => item.distance !== null && item.distance <= 100)
+      .sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity))
+
+    sheet.innerHTML = `
+      <div class="place-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="place-title">
+        <div class="place-sheet-title" id="place-title">Scanner location</div>
+        <p class="place-sheet-copy">Choose the project for this scan. Saved places within 100 m are shown below.</p>
+        <div class="place-selected-status">Selected: <strong>${currentSelected ? escapeHtml(currentSelected.name) : 'none yet'}</strong></div>
+        <div id="place-location-status" class="place-location-status"></div>
+        <div id="place-suggestion" hidden></div>
+        <div id="place-list"></div>
+        <div id="place-new-form" hidden>
+          <label>Place name<input id="place-new-name" type="text" maxlength="80" placeholder="e.g. Living room" /></label>
+          <label>Address or note<input id="place-new-address" type="text" maxlength="160" placeholder="Optional" /></label>
+          <div class="place-coordinate-grid">
+            <label>Latitude<input id="place-new-lat" type="number" step="any" /></label>
+            <label>Longitude<input id="place-new-lng" type="number" step="any" /></label>
+          </div>
+          <button id="place-new-save" type="button">Save new place</button>
+        </div>
+        <div class="place-sheet-actions">
+          <button id="place-new-btn" type="button">New place</button>
+          ${currentSelected ? '<button id="place-continue-btn" type="button">Use selected place</button>' : ''}
+          <button id="place-skip-btn" type="button">Cancel</button>
+        </div>
+      </div>`
+
+    const status = sheet.querySelector<HTMLElement>('#place-location-status')!
+    if (fix) {
+      status.textContent = `Current location ±${Math.round(fix.accuracy)} m${fix.address ? ` · ${fix.address}` : ''}`
+    } else {
+      status.textContent = 'Location unavailable. You can still create a place by entering coordinates.'
+    }
+
+    const suggestion = sheet.querySelector<HTMLElement>('#place-suggestion')!
+    const list = sheet.querySelector<HTMLElement>('#place-list')!
+    const nearest = nearby[0]
+    if (nearest) {
+      suggestion.hidden = false
+      const suggestionButton = document.createElement('button')
+      suggestionButton.type = 'button'
+      suggestionButton.className = 'place-option place-suggestion-option'
+      suggestionButton.innerHTML = `<strong>Suggested: ${escapeHtml(nearest.project.name)}</strong><span>${Math.round(nearest.distance ?? 0)} m away · location accuracy ±${Math.round(fix?.accuracy ?? 0)} m</span>`
+      suggestionButton.addEventListener('click', () => select(nearest.project))
+      suggestion.appendChild(suggestionButton)
+    }
+    if (nearby.length === 0) {
+      list.innerHTML = '<p class="place-empty">No saved places within 100 m.</p>'
+    } else {
+      for (const item of nearby) {
+        const btn = document.createElement('button')
+        btn.type = 'button'
+        btn.className = 'place-option'
+        btn.innerHTML = `<strong>${escapeHtml(item.project.name)}</strong><span>${Math.round(item.distance ?? 0)} m away${item.project.address ? ` · ${escapeHtml(item.project.address)}` : ''}</span>`
+        btn.addEventListener('click', () => select(item.project))
+        list.appendChild(btn)
+      }
+    }
+
+    const newForm = sheet.querySelector<HTMLElement>('#place-new-form')!
+    const newBtn = sheet.querySelector<HTMLButtonElement>('#place-new-btn')!
+    const lat = sheet.querySelector<HTMLInputElement>('#place-new-lat')!
+    const lng = sheet.querySelector<HTMLInputElement>('#place-new-lng')!
+    if (fix) {
+      lat.value = String(fix.lat)
+      lng.value = String(fix.lng)
+    }
+    newBtn.addEventListener('click', () => {
+      newForm.hidden = !newForm.hidden
+      if (!newForm.hidden) sheet.querySelector<HTMLInputElement>('#place-new-name')?.focus()
+    })
+    sheet.querySelector<HTMLButtonElement>('#place-new-save')?.addEventListener('click', () => {
+      void createPlace()
+    })
+    sheet.querySelector<HTMLButtonElement>('#place-continue-btn')?.addEventListener('click', () => {
+      if (currentSelected) select(currentSelected)
+    })
+    sheet.querySelector<HTMLButtonElement>('#place-skip-btn')?.addEventListener('click', () => {
+      currentSelected = null
+      onSelect(null)
+      pendingSelectionAction = null
+      sessionStorage.setItem(PLACE_SELECTION_SESSION_KEY, JSON.stringify({ projectId: null }))
+      sheet.hidden = true
+    })
+
+    async function createPlace(): Promise<void> {
+      const name = sheet.querySelector<HTMLInputElement>('#place-new-name')?.value.trim() ?? ''
+      const address = sheet.querySelector<HTMLInputElement>('#place-new-address')?.value.trim() ?? ''
+      const latitude = Number(lat.value)
+      const longitude = Number(lng.value)
+      if (!name || !Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
+        status.textContent = 'Enter a name and valid latitude/longitude.'
+        return
+      }
+      const geoPose = { ...fixToGeoPose(fix), lat: latitude, lng: longitude, address: address || fix?.address || null, displayAddress: address || fix?.displayAddress || null }
+      const response = await fetch('/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, address, geoPose }) })
+      if (!response.ok) {
+        status.textContent = 'Could not save this place. Try again.'
+        return
+      }
+      const project = await response.json() as Project
+      await projectStore.updateProject(project).catch(() => {})
+      select(project)
+    }
+
+    function select(project: Project): void {
+      currentSelected = project
+      onSelect(project)
+      sheet.hidden = true
+      sessionStorage.setItem(PLACE_SELECTION_SESSION_KEY, JSON.stringify({ projectId: project.projectId }))
+      void projectStore.updateProject(project).catch(() => {})
+      const action = pendingSelectionAction
+      pendingSelectionAction = null
+      action?.()
+    }
+  }
+
+  const open = (afterSelection?: () => void) => {
+    pendingSelectionAction = afterSelection ?? null
+    sheet.hidden = false
+    void render()
+  }
+  sheet.addEventListener('click', (event) => {
+    if (event.target === sheet) {
+      pendingSelectionAction = null
+      sheet.hidden = true
+    }
+  })
+  return { open }
+}
+
+function fixToGeoPose(fix: GeoFix | null): NonNullable<Project['geoPose']> {
+  return {
+    lat: fix?.lat ?? null,
+    lng: fix?.lng ?? null,
+    altitudeM: fix?.altitudeM ?? null,
+    bearing: fix?.bearing ?? null,
+    accuracyM: fix?.accuracy ?? null,
+    fixedAt: fix?.fixedAt ?? null,
+    address: fix?.address ?? null,
+    displayAddress: fix?.displayAddress ?? null,
+  }
+}
+
+function escapeHtml(value: string): string {
+  const el = document.createElement('span')
+  el.textContent = value
+  return el.innerHTML
+}
+
+async function fetchProjects(): Promise<Project[]> {
+  const response = await fetch('/projects')
+  if (!response.ok) return []
+  return await response.json() as Project[]
+}
+
+/** Mirror the locally-created project frame so other devices use the same references. */
+async function persistProjectSpatialFrame(project: Project): Promise<void> {
+  try {
+    const response = await fetch(`/projects/${encodeURIComponent(project.projectId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(project),
+    })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  } catch (error) {
+    console.warn('[calibration] Project frame saved locally but could not sync:', error)
+  }
 }
 
 /** One-time HUD warning when IndexedDB usage crosses 80 % of the browser quota. */
@@ -1146,7 +1465,11 @@ function wireVideoUpload(): void {
   const progress = document.getElementById('upload-video-progress')
   const openLink = document.getElementById('upload-video-open') as HTMLAnchorElement | null
   const btn = document.getElementById('upload-video-btn')
+  const uploadCard = document.getElementById('start-upload-card')
   if (!input) return
+
+  // The file picker opens only after the user confirms a project in the modal.
+  uploadCard?.addEventListener('click', () => requestPlaceSelection?.(() => input.click()))
 
   input.addEventListener('change', () => {
     const file = input.files?.[0]
@@ -1310,10 +1633,6 @@ function updateXrModeLink(use8thWall: boolean, webxrSupported: boolean): void {
     link.setAttribute('aria-label', 'Switch to 8th Wall scanner')
     link.classList.add('active')
   }
-}
-
-function bucket(p: { x: number; y: number; z: number }): string {
-  return `${p.x.toFixed(1)},${p.y.toFixed(1)},${p.z.toFixed(1)}`
 }
 
 let _inferDialogTimer: ReturnType<typeof setTimeout> | null = null
