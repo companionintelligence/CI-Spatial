@@ -92,6 +92,17 @@ import type {
   ReviewComment,
 } from './src/world/types.ts'
 
+// An unguarded async callback anywhere below (there is no lint/type check that
+// catches this) throws an unhandled rejection, and Deno's default is to
+// terminate the whole process on that — silently as far as this server is
+// concerned, since nothing here was logging it. Every client this server
+// serves loses their connection to fix one caller's edge case. Log loudly and
+// keep running instead; a caller-scoped failure should stay caller-scoped.
+globalThis.addEventListener('unhandledrejection', (event) => {
+  console.error('[fatal] unhandled rejection — server would otherwise have exited on this:', event.reason)
+  event.preventDefault()
+})
+
 const PORT = Number(Deno.env.get('PORT') ?? 8000)
 // Vite dev-server port. Same variable name and default as vite.config.ts's read of
 // process.env.VITE_PORT — deliberately parallel one-liners (see docs/foundation-updates/0002
