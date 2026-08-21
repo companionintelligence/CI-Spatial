@@ -379,6 +379,38 @@
         color: #72ddd4;
         transform: scale(0.94);
       }
+      /* Gimbal Control — external subsystem (osmo-ble), not part of this app; opens in a new
+         tab so no unsaved-scan-progress guard is needed (that guard only applies to same-tab
+         nav links — see navLinks in src/main.ts). */
+      #gimbal-link {
+        pointer-events: all;
+        position: absolute;
+        right: max(16px, env(safe-area-inset-right));
+        bottom: calc(190px + env(safe-area-inset-bottom));
+        min-width: 126px;
+        height: 48px;
+        padding: 0 16px;
+        border-radius: 999px;
+        border: 1px solid var(--ci-line);
+        background: linear-gradient(180deg, rgba(16, 44, 57, 0.9), rgba(5, 22, 31, 0.94));
+        color: var(--ci-text);
+        font-size: 14px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        backdrop-filter: blur(12px);
+        box-shadow: var(--ci-shadow);
+        text-decoration: none;
+        transition: border-color 0.2s ease-out, background 0.2s ease-out, color 0.2s ease-out, transform 0.15s ease-out, box-shadow 0.2s ease-out;
+      }
+      #gimbal-link:hover, #gimbal-link:active {
+        background: rgba(114,221,212, 0.18);
+        border-color: #72ddd4;
+        color: #72ddd4;
+        transform: scale(0.94);
+      }
 
       /* ── AR runtime switch (8th Wall ↔ WebXR / HelloXR) ── */
       #xr-mode-link {
@@ -854,7 +886,8 @@
         flex: 0 0 48px;
       }
 
-      #scanner-action-rail #viewer-link {
+      #scanner-action-rail #viewer-link,
+      #scanner-action-rail #gimbal-link {
         font-size: 17px;
         gap: 0;
       }
@@ -1552,6 +1585,7 @@
       <div id="scanner-action-rail" aria-label="Scanner actions">
         <a href="/webxr.html" id="xr-mode-link" aria-label="Switch AR runtime" title="Switch to WebXR scanner (HelloXR on iOS)"><svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3.4 9.6A1.7 1.7 0 0 1 5.1 8h13.8a1.7 1.7 0 0 1 1.7 1.6v4.3a1.7 1.7 0 0 1-1.7 1.7h-3.2l-1.9-2.2h-3.6l-1.9 2.2H5.1a1.7 1.7 0 0 1-1.7-1.7z"/></svg></a>
         <a href="/viewer.html" id="viewer-link" aria-label="Open 3D Viewer" title="Desktop 3D Viewer"><svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="4.5" width="18" height="12" rx="1.6"/><path d="M9 20h6M12 16.5V20"/></svg></a>
+        <a href="http://localhost:8787/" id="gimbal-link" target="_blank" rel="noopener noreferrer" aria-label="Open Gimbal Control" title="Gimbal Control (Osmo Mobile 6 — separate subsystem)"><svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4.2"/><path d="M12 3.4v2.4M12 18.2v2.4M3.4 12h2.4M18.2 12h2.4M6.2 6.2l1.7 1.7M16.1 16.1l1.7 1.7M6.2 17.8l1.7-1.7M16.1 7.9l1.7-1.7"/></svg></a>
         <div class="scanner-rail-divider" style="width:20px; height:1px; background:rgba(255,255,255,0.15); margin:4px 0; align-self:center; flex-shrink:0;"></div>
         <button id="panel-toggle" aria-label="Detections" data-count=""><svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 3.4 8.4 4.3-8.4 4.3-8.4-4.3z"/><path d="m4.4 12 7.6 3.9 7.6-3.9"/><path d="m4.4 16.2 7.6 3.9 7.6-3.9"/></svg></button>
         <button id="stream-btn" aria-label="Stream keyframes" title="Stream keyframes to server">
