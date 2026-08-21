@@ -27,6 +27,10 @@
       "headers": {
         "Authorization": "Bearer ${ANDROID_MCP_TOKEN_BEAM_PRO}"
       }
+    },
+    "osmo-gimbal": {
+      "command": "node",
+      "args": ["/Users/liam/devel/device-firmware-diag/osmo-ble/server/mcp-server.mjs"]
     }
   }
 }
