@@ -467,6 +467,10 @@ All three are served read-only at `/sessions/<id>/<artifact>`. The desktop edito
 
 See [docs/lingbot-map.md](docs/lingbot-map.md) for the full architecture diagram, UI walkthrough with screenshots, test setup, and CC-BY clip provenance.
 
+### SenseNova Vision (optional, WSL)
+
+`sensenova_vision.ts` drives the upstream [SenseNova-Vision](https://github.com/OpenSenseNova/SenseNova-Vision) launcher for recon3d / camera-pose / depth / normal / bbox / pan-seg tasks against a session's keyframes, invoking it through WSL when `SENSENOVA_BASH` points at `wsl.exe`. Install the isolated Linux runtime with `scripts/setup-sensenova-wsl.sh` (run as root inside WSL), then set `SENSENOVA_DIR`, `SENSENOVA_MODEL_PATH`, and `SENSENOVA_BASH` — see `.env.example` for details. If unset or the runtime isn't installed, the worker returns a `skipped` result with a remediation hint instead of failing.
+
 For the splat tools (view / train / detect / ingest-video / compress) see [docs/splat-toolbox.md](docs/splat-toolbox.md).
 For the two-story-house field acceptance protocol see [docs/HOUSE_VALIDATION.md](docs/HOUSE_VALIDATION.md) (`npm run links:house`, `npm run test:house`).
 
