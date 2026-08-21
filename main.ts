@@ -1665,6 +1665,7 @@ async function removeAllScansFromWorlds(): Promise<number> {
     world.scans = []
     world.editPatches = world.editPatches.filter(patch => patch.scope === 'world')
     world.jobs = world.jobs.filter(job => !job.scanId)
+    world.comments = []
     world.originGeoPose = { lat: null, lng: null, altitudeM: null, bearing: null, accuracyM: null }
     world.localFrame.origin = world.originGeoPose
     return hadScans
@@ -1798,11 +1799,18 @@ async function refreshWorldScans(world: WorldProject): Promise<void> {
     scansByCurrentId.set(scan.scanId, (scansByCurrentId.get(scan.scanId) ?? 0) + 1)
   }
 
+  const droppedScanIds = new Set<string>()
   world.scans = world.scans.map((scan, index) => {
     const storedScan = storedByFilename.get(scan.filename)
     if (!storedScan) return scan
     if (!belongsToCurrentWorld(world, storedScan, existingScanFilenames)) {
       changed = true
+      // Dropped here because it no longer belongs to this world (e.g. a
+      // project reassignment via rewriteScanProject) rather than deleted —
+      // its jobs/patches/comments would otherwise dangle, referencing a
+      // scanId no longer present in world.scans. Swept below, once every
+      // row this pass drops is known.
+      droppedScanIds.add(scan.scanId)
       return null
     }
     const next = scanManifestFromStored(storedScan, world.originGeoPose, index, world.shareSlug)
@@ -1831,6 +1839,12 @@ async function refreshWorldScans(world: WorldProject): Promise<void> {
       || JSON.stringify(scan.layerIndex) !== JSON.stringify(next.layerIndex)
     return { ...scan, ...next, localToWorld: scan.localToWorld, name: scan.name || next.name }
   }).filter((scan): scan is ScanManifest => scan !== null)
+
+  if (droppedScanIds.size > 0) {
+    world.editPatches = world.editPatches.filter(patch => !patch.scanId || !droppedScanIds.has(patch.scanId))
+    world.jobs = world.jobs.filter(job => !job.scanId || !droppedScanIds.has(job.scanId))
+    world.comments = (world.comments ?? []).filter(comment => !comment.scanId || !droppedScanIds.has(comment.scanId))
+  }
 
   const existing = new Set(world.scans.map(scan => scan.filename))
   const additions = stored

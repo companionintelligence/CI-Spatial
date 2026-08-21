@@ -592,7 +592,14 @@ async function main() {
         { download: true, upload: true, filenamePrefix: 'room-scan', autoSaved: false },
       )
       if (result.upload === 'uploaded' && result.uploadedFilename) {
-        await updateSessionScanFilename(result.uploadedFilename)
+        try {
+          await updateSessionScanFilename(result.uploadedFilename)
+        } catch (error) {
+          // Best-effort Places bookkeeping — must not suppress the
+          // export-succeeded outcome below, or a scan that really did upload
+          // reports 'failed' and callers skip keyframes.rotate() for it.
+          console.error('[export] updateSessionScanFilename failed (non-fatal)', error)
+        }
         overlay.setStatus('Scan exported & synced ✓')
         setAutosaveStatus(`Scan exported & synced ✓ ${shortName(result.uploadedFilename)}`)
 
@@ -662,7 +669,14 @@ async function main() {
       // glbFilename stayed null — leaving `byGlb` nothing to match on and the
       // one-scan-to-one-session assumption false.
       if (result.uploadedFilename) {
-        await updateSessionScanFilename(result.uploadedFilename)
+        try {
+          await updateSessionScanFilename(result.uploadedFilename)
+        } catch (error) {
+          // Best-effort Places bookkeeping — must not suppress the rotate
+          // below, or the exact "glbFilename stayed null" bug this block
+          // exists to fix comes back, now gated on an unrelated IndexedDB write.
+          console.error('[autosave] updateSessionScanFilename failed (non-fatal)', error)
+        }
         lastUploadedFilename = result.uploadedFilename
         currentSessionGlbFilename = result.uploadedFilename
         if (keyframes?.active) {
