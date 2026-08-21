@@ -74,6 +74,20 @@ export class WebXRProvider implements ARProvider {
   async start(canvas: HTMLCanvasElement): Promise<void> {
     if (!navigator.xr) throw new Error('WebXR not available')
 
+    // requestSession() must run while the user gesture that triggered start()
+    // is still active. Awaiting getUserMedia()'s permission prompt first burns
+    // through that window, so requestSession() then rejects with
+    // "SecurityError: ... requires user activation". Request the XR session
+    // first, and set up the companion camera stream after.
+    this.session = await navigator.xr.requestSession('immersive-ar', {
+      requiredFeatures: ['hit-test'],
+      optionalFeatures: ['dom-overlay'],
+      // Without an explicit root the dom-overlay feature never activates and
+      // the entire HTML UI is invisible inside the immersive session
+      // (HelloXR on iOS, Quest browser).
+      domOverlay: { root: document.body },
+    })
+
     // Set up a companion video stream for camera pixel data.
     // XR camera-access is too sparsely supported to rely on.
     // Camera denial is non-fatal: tracking/hit-testing still work, only
@@ -91,15 +105,6 @@ export class WebXRProvider implements ARProvider {
     } catch (e) {
       console.warn('[webxr] No camera stream — frame capture disabled:', e)
     }
-
-    this.session = await navigator.xr.requestSession('immersive-ar', {
-      requiredFeatures: ['hit-test'],
-      optionalFeatures: ['dom-overlay'],
-      // Without an explicit root the dom-overlay feature never activates and
-      // the entire HTML UI is invisible inside the immersive session
-      // (HelloXR on iOS, Quest browser).
-      domOverlay: { root: document.body },
-    })
 
     const gl = canvas.getContext('webgl2', { xrCompatible: true }) as WebGL2RenderingContext
     await this.session.updateRenderState({ baseLayer: new XRWebGLLayer(this.session, gl) })
@@ -402,8 +407,13 @@ export class WebXRProvider implements ARProvider {
   }
 
   isTracking(): boolean {
-    // WebXR is considered tracking as soon as the session is active
-    return this.session !== null
+    // session !== null only means requestSession() resolved — the device has not
+    // necessarily locked onto anything yet. _haveRealProjection flips true in the
+    // frame loop once frame.getViewerPose() has returned a real pose with a usable
+    // projection (see onXRFrame above), and stop() resets it — so it already tracks
+    // "actually locked on" for its own purpose (aiming the hit-test probe grid).
+    // Reuse it here instead of a second, looser notion of "tracking".
+    return this.session !== null && this._haveRealProjection
   }
 
   getCameraFovY(): number {

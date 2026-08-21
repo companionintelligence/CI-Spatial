@@ -60,6 +60,22 @@ const OLLAMA_NUM_CTX = (() => {
   }
   return n
 })()
+
+function normalizeOllamaHost(rawHost: string | undefined): string {
+  const raw = rawHost?.trim() || 'http://localhost:11434'
+  const candidate = /^[a-z][a-z\d+.-]*:\/\//i.test(raw) ? raw : `http://${raw}`
+
+  try {
+    const url = new URL(candidate)
+    // 0.0.0.0 and :: are server bind addresses, not client destinations.
+    if (url.hostname === '0.0.0.0' || url.hostname === '[::]' || url.hostname === '::') {
+      url.hostname = '127.0.0.1'
+    }
+    return url.toString().replace(/\/$/, '')
+  } catch {
+    throw new Error(`OLLAMA_HOST must be a URL or host:port, received "${raw}"`)
+  }
+}
 const NUM_THREADS = (() => { try { return Math.max(1, navigator?.hardwareConcurrency ?? 4) } catch { return 4 } })()
 
 // ─── ONNX prompt token IDs ───────────────────────────────────────────────────
@@ -171,7 +187,7 @@ export class InferenceEngine {
   constructor() {
     const requested = Deno.env.get('INFERENCE_MODE')
     this._mode = requested === 'onnx' ? 'onnx' : requested === 'mock' ? 'mock' : 'ollama'
-    this.ollamaUrl = Deno.env.get('OLLAMA_HOST') ?? 'http://localhost:11434'
+    this.ollamaUrl = normalizeOllamaHost(Deno.env.get('OLLAMA_HOST'))
     this.ollamaModel = Deno.env.get('OLLAMA_MODEL') ?? 'qwen3-vl:4b'
     this.modelId = this._mode === 'onnx' ? 'LiquidAI/LFM2.5-VL-1.6B-ONNX'
       : this._mode === 'mock' ? 'mock/color-blob-v1'

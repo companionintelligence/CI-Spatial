@@ -15,8 +15,8 @@
  * POST /sessions/:id/keyframes         multipart { image, meta } → { ok, index }
  * POST /sessions/:id/finalize          JSON { glbFilename?, … } → session record
  * GET  /sessions/:id                   → session record
- * POST /ingest-video      multipart { video: File, name?, fps? } → 202 { sessionId, scanId, jobId, frameCount }
- * POST /ingest-photos     multipart { files: File[], name? } → 202 { sessionId, scanId, jobId, frameCount, droppedBlurry }
+ * POST /ingest-video      multipart { video: File, name?, fps?, projectId?, areaId? } → 202 { sessionId, scanId, jobId, frameCount }
+ * POST /ingest-photos     multipart { files: File[], name?, projectId?, areaId? } → 202 { sessionId, scanId, jobId, frameCount, droppedBlurry }
  * POST /upload-summary     multipart { file: File(.md) } → { filename }
  * POST /process-scan       JSON { filename, action, sessionId? } → { action, result }
  * POST /client-logs        JSON { entries: [{ ts, level, msg, stack?, url? }], ua? } → 204
@@ -46,12 +46,15 @@ import {
   WorldJobPump,
 } from './world_job_pump.ts'
 import { withWorldLock } from './world_lock.ts'
+import { legacyScanId, safeSlug, scanIdFor } from './scan_id.ts'
+import { newServerSessionId, resolveSessionDir, sessionDirPath } from './session_id.ts'
 import { loadSessionIndex, sessionForScan, type SessionIndex } from './scan_index.ts'
 import { pruneScansMissingFromDisk } from './world_prune.ts'
 import { runLingBotMapReconstruction } from './lingbot_map.ts'
 import { runSplatTrain } from './splat_train.ts'
 import { runSplatDetect } from './splat_detect.ts'
 import { runSplatFinish } from './splat_finish.ts'
+import { runSenseNovaVision, senseNovaTask } from './sensenova_vision.ts'
 import { configFromEnv as portalAuthConfig, registerPortalAuth } from './portal_auth.ts'
 import {
   configFromEnv as memoryPushConfig,
@@ -61,19 +64,31 @@ import {
 import { composeYUpTransform, geoToEnu, hasGeoPose } from './src/world/geo.ts'
 import { defaultLayerIndex } from './src/world/layers.ts'
 import { EVENT } from './src/shared/events.ts'
+import {
+  ensureWorldProjectCollections,
+  placeScanTransform,
+  scanProjectId,
+  shouldIncludeStoredScanInWorld,
+} from './world_membership.ts'
+import { runThingCorrespondence, type DetectionLike } from './thing_match.ts'
 import type {
   EditPatch,
+  Floor,
   FrameObservation,
   GeoPose,
   MemberRole,
+  Project,
   ScanManifest,
   ScanManifestStatus,
   ScanQualitySummary,
+  Thing,
+  ThingObservation,
   WorldJob,
   WorldJobStatus,
   WorldJobType,
   WorldMember,
   WorldProject,
+  ReviewComment,
 } from './src/world/types.ts'
 
 const PORT = Number(Deno.env.get('PORT') ?? 8000)
@@ -238,6 +253,7 @@ const engineLoadPromise = engine.load().then(() => {
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
 const app = new Hono()
+const WEBRTC_LIVE_ENABLED = Deno.env.get('VITE_ENABLE_WEBRTC_LIVE') === 'true'
 
 app.onError((err, c) => {
   console.error('[server-error]', err)
@@ -737,15 +753,26 @@ app.delete('/scans', async (c) => {
 // On finalize the session is linked to the exported .glb.  This is the raw
 // input a dense-reconstruction stage (photogrammetry / splats) consumes.
 
-const SESSION_ID_RE = /^(sess|session)-[a-z0-9-]+$/
 const KEYFRAME_FILE_RE = /^kf-\d{5}\.jpg$/
 
-function sessionDir(id: string): string | null {
-  return SESSION_ID_RE.test(id) ? `${SESSIONS_DIR}/${id}` : null
+/**
+ * Shape-only resolution, bound to this server's SESSIONS_DIR. Says nothing
+ * about existence — use `resolveSessionDirFor` where that matters.
+ */
+function sessionDir(id: string | null | undefined): string | null {
+  return sessionDirPath(SESSIONS_DIR, id)
+}
+
+/** Shape *and* existence. See session_id.ts for why both resolvers exist. */
+function resolveSessionDirFor(id: string | null | undefined): Promise<string | null> {
+  return resolveSessionDir(SESSIONS_DIR, id)
 }
 
 app.post('/sessions', async (c) => {
-  const sessionId = `sess-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  // The single minting site for a capture-session id, and the only place that
+  // creates the directory one names. Both halves living here is what makes the
+  // id trustworthy downstream.
+  const sessionId = newServerSessionId()
   await Deno.mkdir(`${SESSIONS_DIR}/${sessionId}`, { recursive: true })
   const record = { sessionId, startedAt: new Date().toISOString(), keyframeCount: 0 }
   await Deno.writeTextFile(`${SESSIONS_DIR}/${sessionId}/session.json`, JSON.stringify(record, null, 2))
@@ -892,7 +919,8 @@ app.post('/sessions/:id/finalize', async (c) => {
 //
 // POST /ingest-video   multipart { video: File, name?, fps? }
 // Extracts keyframes with scripts/ingest-video.mjs into a capture session, then
-// registers a session-backed scan in the default world and auto-enqueues a
+// registers a session-backed scan in the selected Place (or the legacy default
+// workspace when none is supplied) and auto-enqueues a
 // lingbot-map-reconstruct job (which estimates the per-frame poses splat-train +
 // splat-detect later consume). Returns 202 { sessionId, scanId, jobId, frameCount }.
 const INGEST_VIDEO_SCRIPT = localScriptPath('./scripts/ingest-video.mjs')
@@ -920,6 +948,15 @@ app.post('/ingest-video', async (c) => {
 
   const nameRaw = form.get('name')
   const scanName = typeof nameRaw === 'string' && nameRaw.trim().length > 0 ? nameRaw.trim() : null
+  const projectIdRaw = form.get('projectId')
+  const projectId = typeof projectIdRaw === 'string' && projectIdRaw.trim().length > 0 ? projectIdRaw.trim() : null
+  const areaIdRaw = form.get('areaId')
+  const areaId = typeof areaIdRaw === 'string' && areaIdRaw.trim().length > 0 ? areaIdRaw.trim() : null
+  const selectedProject = projectId ? (await loadProjects()).find(project => project.projectId === projectId) : null
+  if (projectId && !selectedProject) return c.json({ error: 'Selected Place was not found' }, 404)
+  if (areaId && !selectedProject?.areas?.some(area => area.areaId === areaId)) {
+    return c.json({ error: 'Selected Area was not found in this Place' }, 404)
+  }
   const fpsRaw = form.get('fps')
   const fps = typeof fpsRaw === 'string' && Number.isFinite(Number(fpsRaw)) && Number(fpsRaw) > 0
     ? String(Number(fpsRaw))
@@ -965,11 +1002,14 @@ app.post('/ingest-video', async (c) => {
       return c.json({ error: `ingest returned an invalid session id: ${sessionId}` }, 500)
     }
 
-    // Register a session-backed scan in the default world + enqueue reconstruction.
-    const { world, value: { scan, job } } = await updateWorld('default', (world) => {
-      const scan = registerSessionScan(world, sessionId, scanName ?? undefined, frameCount)
+    // Register in the Place-specific world when selected. This keeps uploads
+    // from silently leaking into the default workspace.
+    const targetSlug = projectId ? projectWorldSlug(projectId) : 'default'
+    if (projectId) await loadProjectWorld(projectId)
+    const { world, value: { scan, job } } = await updateWorld(targetSlug, (world) => {
+      const scan = registerSessionScan(world, sessionId, scanName ?? undefined, frameCount, 'video-ingest', projectId, areaId)
       const job = createWorldJob(world, 'lingbot-map-reconstruct', scan.scanId, {
-        source: 'video-ingest',
+        source: 'video-ingest', projectId, areaId,
         sessionId,
         frameCount,
       })
@@ -990,7 +1030,7 @@ app.post('/ingest-video', async (c) => {
 // POST /ingest-photos   multipart { files: File[], name? }
 // Saves the photos to a temp dir, runs scripts/ingest-photos.mjs (EXIF time
 // ordering + blur filter) in --single-session mode (one upload = one session),
-// then registers a session-backed scan and auto-enqueues lingbot-map-reconstruct
+// then registers a session-backed scan in the selected Place and auto-enqueues lingbot-map-reconstruct
 // exactly like /ingest-video. Returns 202 { sessionId, scanId, jobId, frameCount,
 // droppedBlurry }.
 const INGEST_PHOTOS_SCRIPT = localScriptPath('./scripts/ingest-photos.mjs')
@@ -1015,6 +1055,15 @@ app.post('/ingest-photos', async (c) => {
 
   const nameRaw = form.get('name')
   const scanName = typeof nameRaw === 'string' && nameRaw.trim().length > 0 ? nameRaw.trim() : null
+  const projectIdRaw = form.get('projectId')
+  const projectId = typeof projectIdRaw === 'string' && projectIdRaw.trim().length > 0 ? projectIdRaw.trim() : null
+  const areaIdRaw = form.get('areaId')
+  const areaId = typeof areaIdRaw === 'string' && areaIdRaw.trim().length > 0 ? areaIdRaw.trim() : null
+  const selectedProject = projectId ? (await loadProjects()).find(project => project.projectId === projectId) : null
+  if (projectId && !selectedProject) return c.json({ error: 'Selected Place was not found' }, 404)
+  if (areaId && !selectedProject?.areas?.some(area => area.areaId === areaId)) {
+    return c.json({ error: 'Selected Area was not found in this Place' }, 404)
+  }
 
   // Save the upload to a temp dir the ingest script reads, then delete it.
   // The index prefix keeps upload order stable for photos without EXIF.
@@ -1062,12 +1111,13 @@ app.post('/ingest-photos', async (c) => {
       return c.json({ error: `ingest returned an invalid session id: ${sessionId}` }, 500)
     }
 
-    // Register a session-backed scan in the default world + enqueue reconstruction
-    // (mirrors /ingest-video).
-    const { world, value: { scan, job } } = await updateWorld('default', (world) => {
-      const scan = registerSessionScan(world, sessionId, scanName ?? undefined, frameCount, 'photo-ingest')
+    // Mirrors video ingest while retaining the user-selected Place/Area.
+    const targetSlug = projectId ? projectWorldSlug(projectId) : 'default'
+    if (projectId) await loadProjectWorld(projectId)
+    const { world, value: { scan, job } } = await updateWorld(targetSlug, (world) => {
+      const scan = registerSessionScan(world, sessionId, scanName ?? undefined, frameCount, 'photo-ingest', projectId, areaId)
       const job = createWorldJob(world, 'lingbot-map-reconstruct', scan.scanId, {
-        source: 'photo-ingest',
+        source: 'photo-ingest', projectId, areaId,
         sessionId,
         frameCount,
       })
@@ -1149,6 +1199,39 @@ app.get('/scan-locations', async (c) => {
   }
 })
 
+// ── GET /project-locations — one map marker per saved project ───────────────
+// A project keeps its confirmed geoPose. Older projects can inherit the newest
+// geotagged scan assigned to them, so the desktop map remains useful while
+// existing data migrates to project-level locations.
+app.get('/project-locations', async (c) => {
+  try {
+    const [projects, scans] = await Promise.all([loadProjects(), listStoredScans()])
+    return c.json(projects.map((project) => {
+      const projectScans = scans.filter((scan) => (scanProjectId(scan.meta) ?? 'proj-default') === project.projectId)
+      const newestLocatedScan = projectScans.find((scan) => hasGeoPose(geoPoseFromMeta(scan.meta)))
+      const geo = hasGeoPose(project.geoPose)
+        ? project.geoPose
+        : newestLocatedScan ? geoPoseFromMeta(newestLocatedScan.meta) : null
+      const capturedAt = projectScans
+        .map((scan) => asString(scan.meta['capturedAt']) ?? asString(scan.meta['exportedAt']) ?? scan.uploadedAt)
+        .sort()
+        .at(-1) ?? null
+      return {
+        projectId: project.projectId,
+        name: project.name,
+        address: project.address ?? geo?.address ?? null,
+        lat: geo?.lat ?? null,
+        lng: geo?.lng ?? null,
+        scanCount: projectScans.length,
+        capturedAt,
+      }
+    }))
+  } catch (err) {
+    console.error('[project-locations error]', err)
+    return c.json([], 200)
+  }
+})
+
 // ── World projects, edit patches, and processing jobs ────────────────────────
 
 const WORLD_JOB_TYPES = new Set<WorldJobType>([
@@ -1158,30 +1241,23 @@ const WORLD_JOB_TYPES = new Set<WorldJobType>([
   'merge-points',
   'semantic-pass',
   'depth-reconstruct',
+  'thing-correspondence',
   'lingbot-map-reconstruct',
   'splat-train',
   'splat-detect',
   'splat-finish',
+  'sensenova-vision',
   'memory-push',
   'export-world',
 ])
 
-const DEFAULT_WORKER_CAPABILITIES = ['cpu', 'onnx', 'ollama', 'open3d', 'splat', 'vggt', 'lingbot-map']
+const DEFAULT_WORKER_CAPABILITIES = ['cpu', 'onnx', 'ollama', 'open3d', 'splat', 'vggt', 'lingbot-map', 'sensenova-vision']
 
 interface StoredScanInfo {
   filename: string
   size: number
   uploadedAt: string
   meta: Record<string, unknown>
-}
-
-function safeSlug(raw: string | undefined, fallback = 'default'): string {
-  const slug = (raw ?? fallback)
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-  return slug || fallback
 }
 
 function worldPath(slug: string): string {
@@ -1202,6 +1278,13 @@ function asString(value: unknown): string | null {
 
 function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+}
+
+function matrixFromMeta(value: unknown): number[] | null {
+  if (!Array.isArray(value) || value.length !== 16 || !value.every(item => typeof item === 'number' && Number.isFinite(item))) {
+    return null
+  }
+  return [...value] as number[]
 }
 
 function geoPoseFromMeta(meta: Record<string, unknown>): GeoPose {
@@ -1356,12 +1439,6 @@ function inferWorldOrigin(scans: StoredScanInfo[]): GeoPose {
   return { lat: null, lng: null, altitudeM: null, bearing: null, accuracyM: null }
 }
 
-function scanIdFor(filename: string, meta: Record<string, unknown>): string {
-  const sessionId = asString(meta['sessionId'])
-  if (sessionId) return `scan-${safeSlug(sessionId)}`
-  return `scan-${safeSlug(filename.replace(/\.glb$/, ''))}`
-}
-
 function scanNameFor(filename: string, meta: Record<string, unknown>): string {
   return asString(meta['scanName']) ?? filename.replace(/^\d+_/, '').replace(/\.glb$/, '')
 }
@@ -1373,15 +1450,19 @@ function scanManifestFromStored(
   slug: string,
 ): ScanManifest {
   const geoPose = geoPoseFromMeta(scan.meta)
-  const scanId = scanIdFor(scan.filename, scan.meta)
+  const scanId = scanIdFor(scan.filename)
   const qualitySummary = qualitySummaryFromMeta(scan.meta)
-  const translation = hasGeoPose(origin) && hasGeoPose(geoPose)
-    ? geoToEnu(origin, geoPose)
-    : { x: (index % 6) * 3, y: 0, z: Math.floor(index / 6) * 3 }
-  const localToWorld = composeYUpTransform(translation, geoPose.bearing, 1)
+  const placement = placeScanTransform(origin, geoPose, index)
+  const translation = placement.translation
+  // Project calibration is an indoor transform derived from persistent AR
+  // references. It takes precedence over metre-scale-inaccurate GPS/compass.
+  const localToWorld = matrixFromMeta(scan.meta['projectTransform'])
+    ?? composeYUpTransform(translation, geoPose.bearing, 1)
 
   return {
     scanId,
+    projectId: scanProjectId(scan.meta),
+    areaId: asString(scan.meta['areaId']),
     sessionId: asString(scan.meta['sessionId']),
     filename: scan.filename,
     name: scanNameFor(scan.filename, scan.meta),
@@ -1390,6 +1471,8 @@ function scanManifestFromStored(
     geoPose,
     localToWorld,
     accuracyM: geoPose.accuracyM,
+    geoDistanceM: placement.geoDistanceM,
+    ...(placement.geoOutlier ? { geoOutlier: true } : {}),
     capturedAt: asString(scan.meta['capturedAt']) ?? asString(scan.meta['exportedAt']) ?? scan.uploadedAt,
     pointCount: asNumber(scan.meta['pointCount']),
     detectionCount: asNumber(scan.meta['detectionCount']),
@@ -1417,6 +1500,8 @@ function registerSessionScan(
   scanName: string | undefined,
   frameCount: number,
   source: 'video-ingest' | 'photo-ingest' = 'video-ingest',
+  projectId: string | null = null,
+  areaId: string | null = null,
 ): ScanManifest {
   const filename = `${sessionId}.glb`
   const existing = world.scans.find(s => s.filename === filename || s.sessionId === sessionId)
@@ -1430,6 +1515,8 @@ function registerSessionScan(
       sessionId,
       source,
       keyframeCount: frameCount,
+      projectId,
+      areaId,
       ...(scanName ? { scanName } : {}),
     },
   }
@@ -1440,7 +1527,7 @@ function registerSessionScan(
 
 function createWorldMembers(): WorldMember[] {
   const now = new Date().toISOString()
-  return (['owner', 'editor', 'viewer', 'scanner'] as const).map((role) => ({
+  return (['owner', 'editor', 'commenter', 'viewer', 'scanner'] as const).map((role) => ({
     memberId: `${role}-${crypto.randomUUID()}`,
     role,
     token: `${role}-${crypto.randomUUID()}`,
@@ -1463,16 +1550,24 @@ async function writeWorldUnlocked(world: WorldProject): Promise<void> {
   await Deno.rename(tmp, worldPath(world.shareSlug))
 }
 
-async function synthesizeWorld(slug: string): Promise<WorldProject> {
+async function synthesizeWorld(slug: string, projectId: string | null = null): Promise<WorldProject> {
   const stored = await listStoredScans()
-  const included = stored.filter(shouldIncludeInWorld).slice(0, 24)
-  const source = included.length > 0 ? included : stored.slice(0, 8)
+  const included = stored
+    .filter(scan => shouldIncludeStoredScanInWorld(projectId, scan, shouldIncludeInWorld))
+    .slice(0, 24)
+  // The legacy default world can offer a few stored scans before any project
+  // exists. A named project must never borrow scans from another project.
+  const source = included.length > 0 || projectId !== null ? included : stored.slice(0, 8)
   const originGeoPose = inferWorldOrigin(source)
   const now = new Date().toISOString()
+  const projectName = projectId === null
+    ? null
+    : (await loadProjects()).find(project => project.projectId === projectId)?.name ?? null
   const world: WorldProject = {
     worldId: `world-${safeSlug(slug)}`,
-    name: slug === 'default' ? 'Default World Scan' : slug.replace(/-/g, ' '),
+    name: projectName ?? (slug === 'default' ? 'Default World Scan' : slug.replace(/-/g, ' ')),
     shareSlug: safeSlug(slug),
+    projectId,
     originGeoPose,
     localFrame: {
       type: 'ENU_Y_UP',
@@ -1481,7 +1576,10 @@ async function synthesizeWorld(slug: string): Promise<WorldProject> {
       axes: { x: 'east', y: 'up', z: 'north' },
     },
     scans: source.map((scan, i) => scanManifestFromStored(scan, originGeoPose, i, slug)),
+    things: [],
+    thingObservations: [],
     members: createWorldMembers(),
+    comments: [],
     jobs: [],
     editPatches: [],
     createdAt: now,
@@ -1524,12 +1622,37 @@ async function mutateWorldFiles(mutator: (world: WorldProject) => boolean | Prom
 }
 
 async function removeScanFromWorlds(filename: string): Promise<number> {
+  // Derived, not looked up from a single shared value: the scan row is about
+  // to be filtered out, and this must also work for a world whose entry was
+  // already pruned. `patch.scanId` used to be compared against `filename`
+  // here — a scanId is never a filename, so that arm never matched and
+  // scan-scoped patches outlived the scan they described.
+  const removedScanId = scanIdFor(filename)
   return mutateWorldFiles((world) => {
+    // mutateWorldFiles reads the world raw — no refreshWorldScans pass — so a
+    // job/patch here can still name the LEGACY id if this scan's row was
+    // renamed by a GET that ran before this delete (refreshWorldScans's own
+    // self-heal) but this particular reference was part of a collision that
+    // self-heal correctly left alone (see the count guard there). Matching
+    // only `removedScanId` would leave such a reference behind — recompute
+    // the legacy id from the row still in `world.scans`, before it's filtered
+    // out below, and match either.
+    const removedRow = world.scans.find(scan => scan.filename === filename)
+    const removedLegacyScanId = removedRow ? legacyScanId(removedRow) : null
+    const isRemovedScanId = (scanId: string | undefined): boolean =>
+      scanId === removedScanId || (removedLegacyScanId !== null && scanId === removedLegacyScanId)
+
     const beforeScans = world.scans.length
     world.scans = world.scans.filter(scan => scan.filename !== filename)
-    world.editPatches = world.editPatches.filter(patch => patch.targetId !== filename && patch.scanId !== filename)
+    world.editPatches = world.editPatches.filter(
+      patch => patch.targetId !== filename && !isRemovedScanId(patch.scanId),
+    )
+    world.comments = (world.comments ?? []).filter(comment => !isRemovedScanId(comment.scanId ?? undefined))
     world.jobs = world.jobs.filter(job => {
       if (!job.scanId) return true
+      // Explicit, rather than relying on the survivor scan below: while ids
+      // collided, a sibling sharing the removed scan's id kept its jobs alive.
+      if (isRemovedScanId(job.scanId)) return false
       return world.scans.some(scan => scan.scanId === job.scanId)
     })
     return world.scans.length !== beforeScans
@@ -1557,6 +1680,7 @@ async function readWorldUnlocked(slug: string): Promise<WorldProject> {
   const safe = safeSlug(slug)
   try {
     const world = JSON.parse(await Deno.readTextFile(worldPath(safe))) as WorldProject
+    ensureWorldProjectCollections(world)
     await refreshWorldScans(world)
     return world
   } catch {
@@ -1567,6 +1691,29 @@ async function readWorldUnlocked(slug: string): Promise<WorldProject> {
 /** Read a world under its lock — a snapshot no in-flight cycle is mid-write on. */
 function loadWorld(slug: string): Promise<WorldProject> {
   return withWorldLock(safeSlug(slug), () => readWorldUnlocked(slug))
+}
+
+function projectWorldSlug(projectId: string): string {
+  return safeSlug(`project-${projectId}`)
+}
+
+/**
+ * Each project receives an independent world manifest. This prevents the
+ * desktop viewer from blending scans, patches, and jobs across places.
+ */
+function loadProjectWorld(projectId: string): Promise<WorldProject> {
+  const slug = projectWorldSlug(projectId)
+  return withWorldLock(slug, async () => {
+    try {
+      const world = JSON.parse(await Deno.readTextFile(worldPath(slug))) as WorldProject
+      ensureWorldProjectCollections(world)
+      if (world.projectId !== projectId) return await synthesizeWorld(slug, projectId)
+      await refreshWorldScans(world)
+      return world
+    } catch {
+      return synthesizeWorld(slug, projectId)
+    }
+  })
 }
 
 /**
@@ -1601,8 +1748,10 @@ async function updateWorld<T>(
 const lastPruneSkipLogged = new Map<string, number>()
 
 async function refreshWorldScans(world: WorldProject): Promise<void> {
+  ensureWorldProjectCollections(world)
   const stored = await listStoredScans()
   const storedByFilename = new Map(stored.map(scan => [scan.filename, scan]))
+  const existingScanFilenames = new Set(world.scans.map(scan => scan.filename))
   let changed = false
 
   // Reconcile against disk: a scan whose .glb has gone (deleted out of band, or a
@@ -1637,32 +1786,118 @@ async function refreshWorldScans(world: WorldProject): Promise<void> {
     )
   }
 
+  // Ids currently on disk, counted before any renames below touch them — the
+  // only way to tell an unambiguous rename from one still tangled in a
+  // not-yet-migrated collision. A count of 1 means no sibling scan shares
+  // this id, so any job/patch naming it can only have meant this scan; a
+  // count > 1 is exactly the collision `deno task migrate-scan-ids` exists to
+  // resolve; a guess made here, live, on every GET, could differ request to
+  // request and is not this function's call to make.
+  const scansByCurrentId = new Map<string, number>()
+  for (const scan of world.scans) {
+    scansByCurrentId.set(scan.scanId, (scansByCurrentId.get(scan.scanId) ?? 0) + 1)
+  }
+
   world.scans = world.scans.map((scan, index) => {
     const storedScan = storedByFilename.get(scan.filename)
     if (!storedScan) return scan
+    if (!belongsToCurrentWorld(world, storedScan, existingScanFilenames)) {
+      changed = true
+      return null
+    }
     const next = scanManifestFromStored(storedScan, world.originGeoPose, index, world.shareSlug)
+    if (next.scanId !== scan.scanId && scansByCurrentId.get(scan.scanId) === 1) {
+      // Repoint references live, the same self-heal this function already
+      // does for the scan row itself (below) — otherwise the id moves out
+      // from under a still-pending job's exact-match lookup the moment this
+      // GET persists it, well before an operator gets a chance to run the
+      // offline migration. Safe here specifically because the id is unique:
+      // see the collision-count guard above.
+      for (const patch of world.editPatches) {
+        if (patch.scanId === scan.scanId) patch.scanId = next.scanId
+      }
+      for (const job of world.jobs) {
+        if (job.scanId === scan.scanId) job.scanId = next.scanId
+      }
+    }
     changed = changed
+      || scan.scanId !== next.scanId
+      || scan.projectId !== next.projectId
       || scan.status !== next.status
+      || scan.geoDistanceM !== next.geoDistanceM
+      || !!scan.geoOutlier !== !!next.geoOutlier
       || scan.frameSetUrl !== next.frameSetUrl
       || JSON.stringify(scan.qualitySummary ?? null) !== JSON.stringify(next.qualitySummary ?? null)
       || JSON.stringify(scan.layerIndex) !== JSON.stringify(next.layerIndex)
     return { ...scan, ...next, localToWorld: scan.localToWorld, name: scan.name || next.name }
-  })
+  }).filter((scan): scan is ScanManifest => scan !== null)
 
   const existing = new Set(world.scans.map(scan => scan.filename))
   const additions = stored
-    .filter(shouldIncludeInWorld)
+    .filter(scan => shouldIncludeStoredScanInWorld(world.projectId, scan, shouldIncludeInWorld, existingScanFilenames))
     .filter(scan => !existing.has(scan.filename))
     .slice(0, 12)
-  if (additions.length === 0) {
-    if (changed) await writeWorldUnlocked(world)
-    return
+
+  if (additions.length > 0) {
+    const origin = world.originGeoPose
+    const nextIndex = world.scans.length
+    world.scans.push(...additions.map((scan, i) => scanManifestFromStored(scan, origin, nextIndex + i, world.shareSlug)))
   }
 
-  const origin = world.originGeoPose
-  const nextIndex = world.scans.length
-  world.scans.push(...additions.map((scan, i) => scanManifestFromStored(scan, origin, nextIndex + i, world.shareSlug)))
-  await writeWorldUnlocked(world)
+  warnOnScanIdCollision(world)
+
+  if (changed || additions.length > 0) await writeWorldUnlocked(world)
+}
+
+function belongsToCurrentWorld(
+  world: WorldProject,
+  scan: StoredScanInfo,
+  existingScanFilenames: Set<string>,
+): boolean {
+  return shouldIncludeStoredScanInWorld(world.projectId ?? null, scan, shouldIncludeInWorld, existingScanFilenames)
+}
+
+/** Per-slug memo of the last logged colliding-id set, so the warn does not repeat every GET. */
+const lastScanIdCollisionLogged = new Map<string, string>()
+
+/**
+ * `scanIdFor()` is lossy — `safeSlug()` collapses every character outside
+ * `[a-z0-9_-]`, so two distinct filenames can in principle derive the same
+ * id (`a.b.glb` and `a-b.glb` both become `scan-a-b`). `migrate_scan_ids.ts`
+ * refuses to run over a world with this collision; it throws, which is the
+ * right call for a one-shot, human-attended script. It is NOT the right call
+ * here: `refreshWorldScans` runs inside `readWorldUnlocked`'s try/catch,
+ * which treats ANY thrown error as "no world file" and silently replaces the
+ * response with a freshly synthesized empty world — throwing here would make
+ * the failure mode worse, not better.
+ *
+ * So this only warns, throttled per-slug so it doesn't repeat on every GET.
+ * It does not attempt to resolve the collision (there is no safe automatic
+ * choice — see the migration's own reasoning), only to make it visible
+ * rather than let the viewer silently discard one of the colliding scans the
+ * way it did before ticket 0001. An operator sees the log and renames the
+ * offending file, the same fix the migration's own error message asks for.
+ */
+function warnOnScanIdCollision(world: WorldProject): void {
+  const byId = new Map<string, string[]>()
+  for (const scan of world.scans) {
+    const bucket = byId.get(scan.scanId)
+    if (bucket) bucket.push(scan.filename)
+    else byId.set(scan.scanId, [scan.filename])
+  }
+  const collisions = [...byId.entries()].filter(([, filenames]) => filenames.length > 1)
+  if (collisions.length === 0) {
+    lastScanIdCollisionLogged.delete(world.worldId)
+    return
+  }
+  const detail = collisions.map(([id, filenames]) => `${id} <- ${filenames.join(', ')}`).join('; ')
+  if (lastScanIdCollisionLogged.get(world.worldId) === detail) return
+  lastScanIdCollisionLogged.set(world.worldId, detail)
+  console.warn(
+    `[worlds] '${world.shareSlug}': ${collisions.length} scanId(s) are shared by more than one scan — ` +
+    `safeSlug() is lossy, so distinct filenames can derive the same id. The viewer will only show one ` +
+    `of each colliding set. Rename the offending file(s) to resolve: ${detail}`,
+  )
 }
 
 /** Best client-facing base URL: request origin → forwarded host → Vite default */
@@ -1699,9 +1934,10 @@ function shareLinks(c: { req: { url: string; header: (name: string) => string | 
   const base = clientBaseUrl(c)
   const byRole = new Map(world.members.filter(m => !m.revokedAt).map(m => [m.role, m.token]))
   return {
-    owner: `${base}/viewer.html?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('owner') ?? '')}`,
-    editor: `${base}/viewer.html?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('editor') ?? '')}`,
-    viewer: `${base}/viewer.html?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('viewer') ?? '')}`,
+    owner: `${base}/editor?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('owner') ?? '')}`,
+    editor: `${base}/editor?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('editor') ?? '')}`,
+    commenter: `${base}/editor?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('commenter') ?? '')}`,
+    viewer: `${base}/editor?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('viewer') ?? '')}`,
     scanner: `${base}/scanner.html?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('scanner') ?? '')}`,
   }
 }
@@ -1709,8 +1945,9 @@ function shareLinks(c: { req: { url: string; header: (name: string) => string | 
 const ROLE_RANK: Record<MemberRole, number> = {
   scanner: 0,
   viewer: 1,
-  editor: 2,
-  owner: 3,
+  commenter: 2,
+  editor: 3,
+  owner: 4,
 }
 
 function requestToken(c: { req: { query: (name: string) => string | undefined; header: (name: string) => string | undefined } }): string | null {
@@ -1964,6 +2201,8 @@ async function _dispatchWorldJob(slug: string, jobId: string): Promise<void> {
             ? 'splat-analyzer'
             : job.type === 'splat-finish'
               ? 'splat-transform'
+              : job.type === 'sensenova-vision'
+                ? 'sensenova-vision'
               : job.type === 'memory-push'
                 ? 'companion-memory'
                 : 'local-coordinator'
@@ -1995,8 +2234,18 @@ async function _dispatchWorldJob(slug: string, jobId: string): Promise<void> {
       return
     }
 
+    if (job.type === 'sensenova-vision') {
+      await _runSenseNovaVisionJob(slug, jobId)
+      return
+    }
+
     if (job.type === 'memory-push') {
       await _runMemoryPushJob(slug, jobId)
+      return
+    }
+
+    if (job.type === 'thing-correspondence') {
+      await _runThingCorrespondenceJob(slug, jobId)
       return
     }
 
@@ -2012,10 +2261,11 @@ async function _dispatchWorldJob(slug: string, jobId: string): Promise<void> {
     // "Single-flight execution".
     await sleep(650)
     try {
+      const placeholderPreflight = await keyframePreflight(slug, jobId)
       const { world: current, value: currentJob } = await updateWorld(slug, (current) => {
         const currentJob = current.jobs.find(j => j.jobId === jobId)
         if (!currentJob || currentJob.status === 'failed') return null
-        const failure = jobFailureReason(currentJob, current)
+        const failure = jobFailureReason(currentJob, current, placeholderPreflight)
         if (failure) {
           currentJob.status = 'failed'
           currentJob.error = failure
@@ -2085,6 +2335,66 @@ async function recoverWorldJobsOnBoot(): Promise<void> {
   }
 }
 
+async function _runThingCorrespondenceJob(slug: string, jobId: string): Promise<void> {
+  try {
+    const world = await loadWorld(slug)
+    const detections = await detectionLikesForWorld(world)
+    const result = runThingCorrespondence(world, detections)
+
+    await commitWorldJob(slug, jobId, (currentJob, current) => {
+      current.things = result.things
+      current.thingObservations = result.observations
+      currentJob.progress = 1
+      currentJob.status = 'completed'
+      currentJob.result = jobResultFor(currentJob)
+      currentJob.artifacts = [
+        {
+          type: 'thing-correspondence-summary',
+          label: 'Thing correspondence summary',
+          metadata: {
+            things: result.things.length,
+            observations: result.observations.length,
+          },
+        },
+        ...result.artifacts,
+      ]
+      currentJob.updatedAt = new Date().toISOString()
+    })
+  } catch (err) {
+    console.error('[thing-correspondence] job failed:', err)
+    await failWorldJob(slug, jobId, errorMessage(err))
+  }
+}
+
+async function detectionLikesForWorld(world: WorldProject): Promise<DetectionLike[]> {
+  const detections: DetectionLike[] = []
+  for (const scan of world.scans) {
+    let meta: Record<string, unknown> = {}
+    try {
+      meta = JSON.parse(await Deno.readTextFile(scanMetaPath(scan.filename))) as Record<string, unknown>
+    } catch { /* no metadata sidecar */ }
+    const labels = asStringArray(meta['labels'])
+    labels.forEach((label, index) => {
+      const safeName = label.replace(/[^a-zA-Z0-9]/g, '_').replace(/^_+/, '') || 'Object'
+      const name = `${safeName}_${String(index + 1).padStart(3, '0')}`
+      detections.push({
+        scanId: scan.scanId,
+        sessionId: scan.sessionId,
+        targetId: `${scan.scanId}:${name}:lod`,
+        label,
+        confidence: null,
+        worldPos: {
+          x: index % 12,
+          y: 0,
+          z: Math.floor(index / 12),
+        },
+        observedAt: scan.capturedAt,
+      })
+    })
+  }
+  return detections
+}
+
 async function _runLingBotMapJob(slug: string, jobId: string): Promise<void> {
   try {
     const start = await claimSessionJob(slug, jobId)
@@ -2148,6 +2458,48 @@ async function _runLingBotMapJob(slug: string, jobId: string): Promise<void> {
   } catch (err) {
     console.error('[lingbot-map job error]', err)
     await failWorldJob(slug, jobId, errorMessage(err))
+  }
+}
+
+async function _runSenseNovaVisionJob(slug: string, jobId: string): Promise<void> {
+  try {
+    const start = await claimSessionJob(slug, jobId)
+    if (!start) return
+    const { scan, sessionPath, payload } = start
+    const task = senseNovaTask(payload?.['task'])
+    const query = asString(payload?.['query']) ?? undefined
+    const outputDir = `${SCANS_DIR}/.sensenova/${safeSlug(jobId)}`
+    const result = await runSenseNovaVision({ sessionDir: sessionPath, outputDir, task, query })
+
+    await commitWorldJob(slug, jobId, (currentJob, current) => {
+      currentJob.progress = 1
+      if (result.status === 'ok') {
+        currentJob.status = 'completed'
+        currentJob.result = `SenseNova ${task} completed with ${result.files.length} artifact${result.files.length === 1 ? '' : 's'}.`
+        currentJob.artifacts = [{
+          type: 'sensenova-output',
+          label: `${scan.name} SenseNova ${task}`,
+          metadata: { task, files: result.files, outputDir: result.outputDir },
+        }]
+        applyCompletedJobToWorld(currentJob, current)
+      } else if (result.status === 'skipped') {
+        currentJob.status = 'completed'
+        currentJob.result = `SenseNova ${task} skipped: ${result.remediation ?? 'runtime unavailable'}`
+        currentJob.artifacts = [{
+          type: 'sensenova-skip',
+          label: 'SenseNova runtime setup required',
+          metadata: { task, remediation: result.remediation ?? null },
+        }]
+      } else {
+        currentJob.status = 'failed'
+        currentJob.error = result.error ?? 'SenseNova worker failed'
+        currentJob.result = currentJob.error
+      }
+      currentJob.updatedAt = new Date().toISOString()
+    })
+  } catch (error) {
+    console.error('[sensenova] job failed:', error)
+    await failWorldJob(slug, jobId, errorMessage(error))
   }
 }
 
@@ -2489,7 +2841,13 @@ async function _runOptimizeScanJob(slug: string, jobId: string): Promise<void> {
     const glb = await Deno.readFile(sourcePath)
     console.log(`[world-jobs] optimizing ${filename} (${(glb.byteLength / 1024).toFixed(0)} KB)`)
 
-    const result = await optimizeScan(glb)
+    // Stamp the one provenance field the client cannot know. Derived from the
+    // filename rather than looked up in world.scans: since 07-scan-identity/0001
+    // `scanManifestFromStored` sets `scanId = scanIdFor(filename)`, so the two
+    // are identical by construction — and deriving also works in the window
+    // between an upload and `refreshWorldScans` adding the entry, where a
+    // lookup would find nothing and silently stamp nothing.
+    const result = await optimizeScan(glb, { provenance: { scanId: scanIdFor(filename) } })
     const base = filename.replace(/\.glb$/, '')
 
     const optimizedName = `${base}.opt.glb`
@@ -2592,10 +2950,11 @@ function markJobFailed(job: WorldJob, reason: string): WorldJob {
 function claimScanJob(
   world: WorldProject,
   jobId: string,
+  preflight: JobPreflight = {},
 ): { ok: true; job: WorldJob; scan: ScanManifest } | { ok: false; job: WorldJob } | null {
   const job = world.jobs.find(j => j.jobId === jobId)
   if (!job) return null
-  const failure = jobFailureReason(job, world)
+  const failure = jobFailureReason(job, world, preflight)
   if (failure) return { ok: false, job: markJobFailed(job, failure) }
   // jobFailureReason already rejected every scan-backed type without a scan.
   return { ok: true, job, scan: scanForJob(job, world)! }
@@ -2611,7 +2970,8 @@ async function claimJobScan(
   slug: string,
   jobId: string,
 ): Promise<{ scan: ScanManifest; payload: WorldJob['payload'] } | null> {
-  const { world, value: claimed } = await updateWorld(slug, (world) => claimScanJob(world, jobId))
+  const preflight = await keyframePreflight(slug, jobId)
+  const { world, value: claimed } = await updateWorld(slug, (world) => claimScanJob(world, jobId, preflight))
   if (!claimed) return null
   if (!claimed.ok) {
     broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job: claimed.job })
@@ -2628,10 +2988,13 @@ async function claimJobScan(
 async function claimSessionJob(
   slug: string,
   jobId: string,
-): Promise<{ scan: ScanManifest; sessionId: string; sessionPath: string } | null> {
+): Promise<{ scan: ScanManifest; sessionId: string; sessionPath: string; payload: WorldJob['payload'] } | null> {
+  const preflight = await keyframePreflight(slug, jobId)
   const { world, value: start } = await updateWorld(slug, (world) => {
-    const claimed = claimScanJob(world, jobId)
+    const claimed = claimScanJob(world, jobId, preflight)
     if (!claimed?.ok) return claimed
+    // Reached only when preflight already proved the directory exists, so this
+    // is the shape resolver: it builds the path rather than re-proving it.
     const sessionPath = claimed.scan.sessionId ? sessionDir(claimed.scan.sessionId) : null
     if (!sessionPath) {
       return {
@@ -2646,7 +3009,7 @@ async function claimSessionJob(
     broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job: start.job })
     return null
   }
-  return { scan: start.scan, sessionId: start.scan.sessionId!, sessionPath: start.sessionPath }
+  return { scan: start.scan, sessionId: start.scan.sessionId!, sessionPath: start.sessionPath, payload: start.job.payload }
 }
 
 /**
@@ -2700,7 +3063,47 @@ function scanForJob(job: WorldJob, world: WorldProject): ScanManifest | null {
   return world.scans.find(scan => scan.scanId === job.scanId || scan.filename === job.scanId) ?? null
 }
 
-function jobFailureReason(job: WorldJob, world: WorldProject): string | null {
+/** The job types that cannot run without RGB keyframe observations. */
+const KEYFRAME_JOB_TYPES = ['depth-reconstruct', 'lingbot-map-reconstruct', 'splat-train']
+
+/**
+ * Filesystem facts `jobFailureReason` needs but must not look up itself.
+ *
+ * It runs inside `updateWorld` mutators, and ADR 0004 keeps I/O out of that
+ * critical section — so existence is resolved by `keyframePreflight()` before
+ * the lock is taken and passed in. Absent means "not resolved", which falls
+ * back to the shape-only check rather than inventing a verdict.
+ */
+interface JobPreflight {
+  /** Whether the scan's keyframe session directory is present on disk. */
+  keyframeDirExists?: boolean
+}
+
+/**
+ * Resolve the filesystem half of a job's preflight, outside the world lock.
+ *
+ * Reads one locked snapshot, then stats — so the answer is a snapshot older
+ * than the write that consumes it. That staleness is benign: it can only make
+ * preflight miss a directory that vanished in the last instant, and the runner
+ * still fails on it. What it buys is the failure landing at preflight, with
+ * the actionable message, for the case that actually happens — an id that was
+ * never a server session at all.
+ */
+async function keyframePreflight(slug: string, jobId: string): Promise<JobPreflight> {
+  try {
+    const world = await loadWorld(slug)
+    const job = world.jobs.find(j => j.jobId === jobId)
+    if (!job || !KEYFRAME_JOB_TYPES.includes(job.type)) return {}
+    const scan = scanForJob(job, world)
+    if (!scan?.sessionId) return {}
+    return { keyframeDirExists: await resolveSessionDirFor(scan.sessionId) !== null }
+  } catch {
+    // A preflight hint is never worth failing a dispatch over.
+    return {}
+  }
+}
+
+function jobFailureReason(job: WorldJob, world: WorldProject, preflight: JobPreflight = {}): string | null {
   const scan = scanForJob(job, world)
   if (['align-scan', 'extract-layers', 'semantic-pass', 'depth-reconstruct', 'lingbot-map-reconstruct', 'splat-train', 'splat-detect', 'splat-finish', 'memory-push'].includes(job.type) && !scan) {
     return `${job.type} requires a selected scan.`
@@ -2708,7 +3111,12 @@ function jobFailureReason(job: WorldJob, world: WorldProject): string | null {
   if (job.type === 'memory-push' && !memoryPushCfg.enabled) {
     return 'Companion Memory is not connected. Connect it from the Hub, or set CI_SERVER_URL and CI_SERVER_TOKEN.'
   }
-  if ((job.type === 'depth-reconstruct' || job.type === 'lingbot-map-reconstruct' || job.type === 'splat-train') && scan && !scan.sessionId) {
+  // A sessionId that names no directory is not a session. Until this checked
+  // existence, the guard was defeated by its own truthiness: the id was a
+  // non-empty string, so preflight passed and the job failed later inside the
+  // runner, where the message is about a missing path instead of about the
+  // thing the user can actually do something about.
+  if (KEYFRAME_JOB_TYPES.includes(job.type) && scan && (!scan.sessionId || preflight.keyframeDirExists === false)) {
     return `${job.type} requires RGB keyframe observations. Start keyframe streaming before export.`
   }
   if (job.type === 'align-scan' && world.scans.length < 2) {
@@ -2736,6 +3144,9 @@ function applyCompletedJobToWorld(job: WorldJob, world: WorldProject): void {
   else if (job.type === 'splat-finish') {
     scan.status = scan.qualitySummary?.status ?? 'ready'
   }
+  else if (job.type === 'sensenova-vision') {
+    scan.status = scan.qualitySummary?.status ?? 'ready'
+  }
 }
 
 function jobResultFor(job: WorldJob): string {
@@ -2752,6 +3163,8 @@ function jobResultFor(job: WorldJob): string {
       return 'Semantic pass queued through the local coordinator. Server masks/detections can attach to this job artifact.'
     case 'depth-reconstruct':
       return 'Depth reconstruction inputs validated. Depth Anything or WebXR depth artifacts can attach here.'
+    case 'thing-correspondence':
+      return 'Thing correspondence resolved scan observations into durable cross-session objects.'
     case 'lingbot-map-reconstruct':
       return 'LingBot-Map streaming reconstruction complete. Point cloud + per-frame poses written to the session.'
     case 'splat-train':
@@ -2760,6 +3173,8 @@ function jobResultFor(job: WorldJob): string {
       return 'Splat scene detected with splat-analyzer. The .interactions.json sidecar carries 3D object boxes.'
     case 'splat-finish':
       return 'Splat finished with splat-transform. The web-optimized .sog and .compressed.ply sidecars are ready for delivery.'
+    case 'sensenova-vision':
+      return 'SenseNova-Vision processed the scan keyframes and wrote task-specific visual geometry artifacts.'
     case 'memory-push':
       return 'Scan pushed to Companion Memory as a capture.scan event with the GLB attached.'
     case 'export-world':
@@ -2807,6 +3222,12 @@ function jobArtifactsFor(job: WorldJob, world: WorldProject): WorldJob['artifact
         url: scan.frameSetUrl,
         metadata: { sessionId: scan.sessionId, keyframes: scan.qualitySummary?.keyframeCount ?? null },
       }] : []
+    case 'thing-correspondence':
+      return [{
+        type: 'thing-correspondence-plan',
+        label: `${world.name} thing correspondence inputs`,
+        metadata: { scans: world.scans.length, observations: world.thingObservations?.length ?? 0 },
+      }]
     case 'lingbot-map-reconstruct': {
       if (!scan || !scan.sessionId) return []
       const sessionId = scan.sessionId
@@ -2847,6 +3268,12 @@ function jobArtifactsFor(job: WorldJob, world: WorldProject): WorldJob['artifact
         label: `${scan.name} splat finish inputs`,
         metadata: { sessionId: scan.sessionId, canonicalLayer: 'splat' },
       }] : []
+    case 'sensenova-vision':
+      return scan ? [{
+        type: 'sensenova-plan',
+        label: `${scan.name} SenseNova inputs`,
+        metadata: { sessionId: scan.sessionId, task: job.payload?.['task'] ?? 'recon3d' },
+      }] : []
     case 'export-world':
       return [{
         type: 'world-export-plan',
@@ -2856,6 +3283,8 @@ function jobArtifactsFor(job: WorldJob, world: WorldProject): WorldJob['artifact
       }]
     case 'ingest':
     case 'merge-points':
+    case 'memory-push':
+    case 'optimize-scan':
       return scan ? [{
         type: `${job.type}-report`,
         label: `${scan.name} ${job.type} report`,
@@ -2866,13 +3295,25 @@ function jobArtifactsFor(job: WorldJob, world: WorldProject): WorldJob['artifact
 
 async function frameObservationsForScan(scan: ScanManifest, limit = 500): Promise<FrameObservation[]> {
   if (!scan.sessionId) return []
-  const dir = sessionDir(scan.sessionId)
-  if (!dir) return []
+
+  // "No such session" and "a session that streamed nothing" both used to
+  // return [] silently, which is how four scans pointing at a directory that
+  // was never created looked exactly like four scans with no keyframes. They
+  // are different failures and only one of them is a bug, so say which.
+  const dir = await resolveSessionDirFor(scan.sessionId)
+  if (!dir) {
+    console.warn(
+      `[frames] scan ${scan.scanId} names session '${scan.sessionId}', which has no directory under ` +
+      `${SESSIONS_DIR}. Its keyframes are unreachable — the id is stale or was never a server session.`,
+    )
+    return []
+  }
 
   let raw = ''
   try {
     raw = await Deno.readTextFile(`${dir}/keyframes.jsonl`)
   } catch {
+    // The session exists and simply streamed nothing. Not an error.
     return []
   }
 
@@ -2948,6 +3389,7 @@ function normaliseIntrinsics(value: unknown): FrameObservation['intrinsics'] {
 
 app.get('/worlds', async (c) => {
   const worlds: WorldProject[] = []
+  const stored = await listStoredScans().catch(() => [])
   try {
     for await (const entry of Deno.readDir(WORLDS_DIR)) {
       if (!entry.isFile || !entry.name.endsWith('.json')) continue
@@ -2962,14 +3404,16 @@ app.get('/worlds', async (c) => {
     worldId: w.worldId,
     name: w.name,
     shareSlug: w.shareSlug,
+    projectId: w.projectId ?? null,
     scanCount: w.scans.length,
+    scanCountTotal: stored.filter(scan => shouldIncludeStoredScanInWorld(w.projectId ?? null, scan, shouldIncludeInWorld, new Set(w.scans.map(s => s.filename)))).length,
     jobCount: w.jobs.length,
     updatedAt: w.updatedAt,
   })))
 })
 
 app.post('/worlds', async (c) => {
-  const body = await c.req.json().catch(() => ({})) as { name?: string; shareSlug?: string }
+  const body = await c.req.json().catch(() => ({})) as { name?: string; shareSlug?: string; projectId?: string | null }
   const slug = safeSlug(body.shareSlug ?? body.name ?? `world-${Date.now()}`)
   const existingPath = worldPath(slug)
   try {
@@ -2980,6 +3424,7 @@ app.post('/worlds', async (c) => {
     // synthesizeWorld already wrote the file; renaming it is a second cycle,
     // so it goes through the lock like every other world mutation.
     if (body.name?.trim()) world.name = body.name.trim()
+    if (body.projectId !== undefined) world.projectId = body.projectId
   })
   return c.json(world, 201)
 })
@@ -3008,13 +3453,15 @@ app.get('/worlds/:slug/patches', async (c) => {
 
 app.post('/worlds/:slug/patches', async (c) => {
   const slug = c.req.param('slug')
-  const denied = denyUnlessWorldRole(c, await loadWorld(slug), 'editor')
+  const authWorld = await loadWorld(slug)
+  const denied = denyUnlessWorldRole(c, authWorld, 'editor')
   if (denied) return denied
+  const actor = activeMemberForToken(authWorld, requestToken(c))
   const body = await c.req.json().catch(() => ({})) as Partial<EditPatch>
   const targetId = objectKey(body.targetId)
   if (!targetId) return c.json({ error: 'targetId is required' }, 400)
   const scope = body.scope ?? 'object'
-  if (!['scan', 'object', 'point-selection', 'layer', 'world'].includes(scope)) {
+  if (!['scan', 'object', 'point-selection', 'layer', 'world', 'thing'].includes(scope)) {
     return c.json({ error: 'Invalid patch scope' }, 400)
   }
   const { world, value: patch } = await updateWorld(slug, (world) => {
@@ -3029,7 +3476,8 @@ app.post('/worlds/:slug/patches', async (c) => {
       category: objectKey(body.category) ?? undefined,
       notes: objectKey(body.notes) ?? undefined,
       visible: typeof body.visible === 'boolean' ? body.visible : undefined,
-      actorId: objectKey(body.actorId) ?? 'local-editor',
+      actorId: actor?.memberId ?? 'local-editor',
+      originTargetId: objectKey(body.originTargetId) ?? undefined,
       createdAt: new Date().toISOString(),
     }
     world.editPatches.push(patch)
@@ -3037,6 +3485,54 @@ app.post('/worlds/:slug/patches', async (c) => {
     return patch
   })
   return c.json({ ok: true, patch, world })
+})
+
+// ── Place review comments ───────────────────────────────────────────────────
+// Comments intentionally have their own immutable collection rather than being
+// overloaded into EditPatch notes. A commenter may review a scan without being
+// able to alter geometry, processing, or semantic source data.
+app.get('/worlds/:slug/comments', async (c) => {
+  const world = await loadWorld(c.req.param('slug'))
+  const denied = denyUnlessWorldRole(c, world, 'viewer', { allowAnonymous: true })
+  if (denied) return denied
+  return c.json([...(world.comments ?? [])].sort((a, b) => b.createdAt.localeCompare(a.createdAt)))
+})
+
+app.post('/worlds/:slug/comments', async (c) => {
+  const slug = c.req.param('slug')
+  const authWorld = await loadWorld(slug)
+  const denied = denyUnlessWorldRole(c, authWorld, 'commenter')
+  if (denied) return denied
+  const actor = activeMemberForToken(authWorld, requestToken(c))
+  const body = await c.req.json().catch(() => ({})) as Partial<ReviewComment>
+  const text = typeof body.body === 'string' ? body.body.trim() : ''
+  if (!text) return c.json({ error: 'Comment text is required' }, 400)
+  if (text.length > 4_000) return c.json({ error: 'Comment must be 4,000 characters or fewer' }, 400)
+  const scanId = objectKey(body.scanId) ?? null
+  const thingId = objectKey(body.thingId) ?? null
+  const areaId = objectKey(body.areaId) ?? null
+  if (scanId && !authWorld.scans.some(scan => scan.scanId === scanId)) {
+    return c.json({ error: 'Scan not found in this Place' }, 404)
+  }
+  if (thingId && !authWorld.things.some(thing => thing.thingId === thingId)) {
+    return c.json({ error: 'Thing not found in this Place' }, 404)
+  }
+  const { value: comment } = await updateWorld(slug, (world) => {
+    const comment: ReviewComment = {
+      commentId: `comment-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
+      worldId: world.worldId,
+      body: text,
+      scanId,
+      thingId,
+      areaId,
+      actorId: actor?.memberId ?? 'local-commenter',
+      actorRole: actor?.role ?? 'local',
+      createdAt: new Date().toISOString(),
+    }
+    ;(world.comments ??= []).push(comment)
+    return comment
+  })
+  return c.json(comment, 201)
 })
 
 app.get('/worlds/:slug/jobs', async (c) => {
@@ -3244,23 +3740,93 @@ app.post('/process-scan', async (c) => {
 
 // ── Project management (in-memory, persisted to projects.json) ────────────────
 
-interface ProjectRecord {
-  projectId: string
-  name: string
-  address?: string
-  notes?: string
-  createdAt: number
-  updatedAt: number
-  floors: unknown[]
+type ProjectRecord = Project
+
+function isPlaceType(value: unknown): value is NonNullable<ProjectRecord['placeType']> {
+  return value === 'building' || value === 'floor' || value === 'room'
+}
+
+const DEFAULT_PROJECT: ProjectRecord = {
+  projectId: 'proj-default',
+  name: 'Unassigned',
+  createdAt: 0,
+  updatedAt: 0,
+  floors: [{ floorId: 'floor-default', name: 'Ground Floor', level: 0, rooms: [] }],
+  areas: [{ areaId: 'area-default', name: 'Unassigned', kind: 'site', parentAreaId: null }],
 }
 
 const PROJECTS_FILE = Deno.env.get('PROJECTS_FILE') ?? './projects.json'
 let projectMutationQueue: Promise<void> = Promise.resolve()
 
+/**
+ * Existing records stored only floors and rooms. Surface them as a stable Area
+ * graph at the API boundary, keeping old captures usable while new UI writes
+ * use the more flexible place-area vocabulary.
+ */
+function withDerivedAreas(project: ProjectRecord): ProjectRecord {
+  if (project.areas && project.areas.length > 0) return project
+  const rootAreaId = `area-${project.projectId}`
+  const areas: NonNullable<ProjectRecord['areas']> = [{
+    areaId: rootAreaId,
+    name: project.name,
+    kind: 'site',
+    parentAreaId: null,
+  }]
+  for (const floor of project.floors) {
+    const floorAreaId = `area-${floor.floorId}`
+    areas.push({
+      areaId: floorAreaId,
+      name: floor.name,
+      kind: 'floor',
+      parentAreaId: rootAreaId,
+      floorId: floor.floorId,
+    })
+    for (const room of floor.rooms) {
+      areas.push({
+        areaId: `area-${room.roomId}`,
+        name: room.name,
+        kind: 'room',
+        parentAreaId: floorAreaId,
+        floorId: floor.floorId,
+        roomId: room.roomId,
+      })
+    }
+  }
+  return { ...project, areas }
+}
+
+/** Reject missing parents and loops before persisting the cross-Place tree. */
+function projectHierarchyError(
+  projects: ProjectRecord[],
+  projectId: string,
+  parentProjectId: string | null | undefined,
+): string | null {
+  if (!parentProjectId) return null
+  if (parentProjectId === projectId) return 'A Place cannot contain itself.'
+
+  const byId = new Map(projects.map(project => [project.projectId, project]))
+  let cursor = parentProjectId
+  const visited = new Set<string>()
+  while (cursor) {
+    if (cursor === projectId) return 'A Place cannot be linked below one of its descendants.'
+    if (visited.has(cursor)) return 'The selected parent hierarchy contains a cycle.'
+    visited.add(cursor)
+    const parent = byId.get(cursor)
+    if (!parent) return 'The selected upper-level Place no longer exists.'
+    cursor = parent.parentProjectId ?? ''
+  }
+  return null
+}
+
 async function loadProjects(): Promise<ProjectRecord[]> {
+  let projects: ProjectRecord[] = []
   try {
-    return JSON.parse(await Deno.readTextFile(PROJECTS_FILE)) as ProjectRecord[]
-  } catch { return [] }
+    projects = JSON.parse(await Deno.readTextFile(PROJECTS_FILE)) as ProjectRecord[]
+  } catch { /* no registry yet */ }
+  if (!projects.some(project => project.projectId === DEFAULT_PROJECT.projectId)) {
+    projects.unshift({ ...DEFAULT_PROJECT, floors: DEFAULT_PROJECT.floors.map(floor => ({ ...floor, rooms: [...floor.rooms] })) })
+  }
+  return projects.map(withDerivedAreas)
 }
 
 async function saveProjects(projects: ProjectRecord[]): Promise<void> {
@@ -3291,26 +3857,49 @@ app.get('/projects', async (c) => {
 app.post('/projects', async (c) => {
   const body = await c.req.json().catch(() => ({})) as {
     name?: string
+    placeType?: ProjectRecord['placeType']
+    parentProjectId?: string | null
     address?: string
     notes?: string
+    geoPose?: ProjectRecord['geoPose']
   }
   if (!body.name?.trim()) return c.json({ error: 'name is required' }, 400)
+  if (body.placeType !== undefined && !isPlaceType(body.placeType)) {
+    return c.json({ error: 'placeType must be building, floor, or room' }, 400)
+  }
   const name = body.name.trim()
-  const project = await mutateProjects((projects) => {
+  const created = await mutateProjects<{ project: ProjectRecord | null; error?: string }>((projects) => {
+    const hierarchyError = projectHierarchyError(projects, '', body.parentProjectId)
+    if (hierarchyError) return { result: { project: null, error: hierarchyError }, save: false }
     const now = Date.now()
     const project: ProjectRecord = {
       projectId: `proj-${now}`,
       name,
+      placeType: body.placeType,
+      parentProjectId: body.parentProjectId ?? null,
       address: body.address,
       notes: body.notes,
+      geoPose: body.geoPose,
       createdAt: now,
       updatedAt: now,
+      areas: [{ areaId: `area-${now}`, name, kind: 'site', parentAreaId: null }],
       floors: [{ floorId: `floor-${now}`, name: 'Ground Floor', level: 0, rooms: [] }],
     }
     projects.push(project)
-    return { result: project, save: true }
+    return { result: { project }, save: true }
   })
-  return c.json(project, 201)
+  if (created.error) return c.json({ error: created.error }, 400)
+  return c.json(created.project, 201)
+})
+
+app.get('/projects/:id/world', async (c) => {
+  const projectId = c.req.param('id')
+  const project = (await loadProjects()).find(item => item.projectId === projectId)
+  if (!project) return c.json({ error: 'Project not found' }, 404)
+  const world = await loadProjectWorld(projectId)
+  const denied = denyUnlessWorldRole(c, world, 'viewer', { allowAnonymous: true })
+  if (denied) return denied
+  return c.json(redactWorldForClient(world, requestToken(c)))
 })
 
 app.get('/projects/:id', async (c) => {
@@ -3321,31 +3910,176 @@ app.get('/projects/:id', async (c) => {
   return c.json(project)
 })
 
+app.patch('/projects/:id/scans/:scanId', async (c) => {
+  const projectId = c.req.param('id')
+  const scanId = c.req.param('scanId')
+  const body = await c.req.json().catch(() => ({})) as { floorId?: string | null; roomId?: string | null; areaId?: string | null }
+  const projects = await loadProjects()
+  const project = projects.find(p => p.projectId === projectId)
+  if (!project) return c.json({ error: 'Project not found' }, 404)
+  if (body.floorId && !project.floors.some(floor => floor.floorId === body.floorId)) {
+    return c.json({ error: 'Floor not found' }, 404)
+  }
+  if (body.roomId && !project.floors.some(floor => floor.rooms.some(room => room.roomId === body.roomId))) {
+    return c.json({ error: 'Room not found' }, 404)
+  }
+  if (body.areaId && !(project.areas ?? []).some(area => area.areaId === body.areaId)) {
+    return c.json({ error: 'Area not found' }, 404)
+  }
+  const updated = await rewriteScanProject(scanId, projectId, body.floorId ?? null, body.roomId ?? null, body.areaId ?? null)
+  if (!updated) return c.json({ error: 'Scan not found' }, 404)
+  return c.json({ ok: true })
+})
+
 app.put('/projects/:id', async (c) => {
   const id = c.req.param('id')
   const body = await c.req.json().catch(() => null) as ProjectRecord | null
   if (!body) return c.json({ error: 'Invalid JSON' }, 400)
-  const updated = await mutateProjects<ProjectRecord | null>((projects) => {
+  if (body.placeType !== undefined && !isPlaceType(body.placeType)) {
+    return c.json({ error: 'placeType must be building, floor, or room' }, 400)
+  }
+  const updated = await mutateProjects<{ project: ProjectRecord | null; error?: string }>((projects) => {
     const idx = projects.findIndex(p => p.projectId === id)
-    if (idx === -1) return { result: null, save: false }
+    if (idx === -1) return { result: { project: null }, save: false }
+    const hierarchyError = projectHierarchyError(projects, id, body.parentProjectId)
+    if (hierarchyError) return { result: { project: null, error: hierarchyError }, save: false }
     projects[idx] = { ...body, projectId: id, updatedAt: Date.now() }
-    return { result: projects[idx], save: true }
+    return { result: { project: projects[idx] }, save: true }
   })
-  if (!updated) return c.json({ error: 'Not found' }, 404)
-  return c.json(updated)
+  if (updated.error) return c.json({ error: updated.error }, 400)
+  if (!updated.project) return c.json({ error: 'Not found' }, 404)
+  return c.json(updated.project)
 })
 
 app.delete('/projects/:id', async (c) => {
   const id = c.req.param('id')
-  const deleted = await mutateProjects((projects) => {
+  const scanCount = await countScansForProject(id)
+  if (scanCount > 0) return c.json({ error: 'project has scans', scanCount }, 409)
+  const deleted = await mutateProjects<{ deleted: boolean; childCount: number }>((projects) => {
     const idx = projects.findIndex(p => p.projectId === id)
-    if (idx === -1) return { result: false, save: false }
+    if (idx === -1) return { result: { deleted: false, childCount: 0 }, save: false }
+    const childCount = projects.filter(project => project.parentProjectId === id).length
+    if (childCount > 0) return { result: { deleted: false, childCount }, save: false }
     projects.splice(idx, 1)
-    return { result: true, save: true }
+    return { result: { deleted: true, childCount: 0 }, save: true }
   })
-  if (!deleted) return c.json({ error: 'Not found' }, 404)
+  if (deleted.childCount > 0) {
+    return c.json({ error: 'project has linked child Places', childCount: deleted.childCount }, 409)
+  }
+  if (!deleted.deleted) return c.json({ error: 'Not found' }, 404)
   return c.json({ ok: true })
 })
+
+app.post('/projects/:id/merge', async (c) => {
+  const targetProjectId = c.req.param('id')
+  const body = await c.req.json().catch(() => ({})) as { sourceProjectId?: string }
+  const sourceProjectId = body.sourceProjectId
+  if (!sourceProjectId) return c.json({ error: 'sourceProjectId is required' }, 400)
+  if (sourceProjectId === targetProjectId) return c.json({ error: 'cannot merge a project into itself' }, 400)
+
+  const merged = await mutateProjects<{ target: ProjectRecord | null; alreadyMerged?: boolean }>((projects) => {
+    const target = projects.find(p => p.projectId === targetProjectId) ?? null
+    const source = projects.find(p => p.projectId === sourceProjectId) ?? null
+    if (!target) return { result: { target: null }, save: false }
+    if (!source) return { result: { target, alreadyMerged: true }, save: false }
+
+    const floorIds = new Set(target.floors.map(floor => floor.floorId))
+    const roomIds = new Set(target.floors.flatMap(floor => floor.rooms.map(room => room.roomId)))
+    const floorIdMap = new Map<string, string>()
+    const roomIdMap = new Map<string, string>()
+    for (const sourceFloor of source.floors) {
+      const floorId = floorIds.has(sourceFloor.floorId) ? `floor-${crypto.randomUUID()}` : sourceFloor.floorId
+      floorIds.add(floorId)
+      floorIdMap.set(sourceFloor.floorId, floorId)
+      const rooms = sourceFloor.rooms.map((room) => {
+        const roomId = roomIds.has(room.roomId) ? `room-${crypto.randomUUID()}` : room.roomId
+        roomIds.add(roomId)
+        roomIdMap.set(room.roomId, roomId)
+        return { ...room, roomId }
+      })
+      target.floors.push({ ...sourceFloor, floorId, rooms })
+    }
+    target.updatedAt = Date.now()
+    projects.splice(projects.indexOf(source), 1)
+    return { result: { target, floorIdMap: Object.fromEntries(floorIdMap), roomIdMap: Object.fromEntries(roomIdMap) } as unknown as { target: ProjectRecord }, save: true }
+  })
+
+  if (!merged.target) return c.json({ error: 'Target project not found' }, 404)
+  if (!merged.alreadyMerged) {
+    await rewriteProjectReferences(sourceProjectId, targetProjectId)
+  }
+  return c.json({ ok: true, project: merged.target, alreadyMerged: merged.alreadyMerged ?? false })
+})
+
+async function countScansForProject(projectId: string): Promise<number> {
+  const scans = await listStoredScans()
+  return scans.filter(scan => scanProjectId(scan.meta) === projectId).length
+}
+
+async function rewriteScanProject(
+  scanId: string,
+  projectId: string | null,
+  floorId: string | null,
+  roomId: string | null,
+  areaId: string | null,
+): Promise<boolean> {
+  let updated = false
+  for await (const entry of Deno.readDir(SCANS_DIR)) {
+    if (!entry.isFile || !entry.name.endsWith('.json')) continue
+    const path = `${SCANS_DIR}/${entry.name}`
+    try {
+      const meta = JSON.parse(await Deno.readTextFile(path)) as Record<string, unknown>
+      const filename = entry.name.replace(/\.json$/, '.glb')
+      if (scanIdFor(filename) !== scanId && filename !== scanId && asString(meta['sessionId']) !== scanId) continue
+      meta['projectId'] = projectId
+      meta['floorId'] = floorId
+      meta['roomId'] = roomId
+      meta['areaId'] = areaId
+      await Deno.writeTextFile(path, JSON.stringify(meta, null, 2))
+      updated = true
+    } catch { /* ignore one malformed sidecar */ }
+  }
+  if (updated) {
+    await mutateWorldFiles((world) => {
+      let changed = false
+      for (const scan of world.scans) {
+        if (scan.scanId !== scanId && scan.filename !== scanId && scan.sessionId !== scanId) continue
+        scan.projectId = projectId
+        scan.areaId = areaId
+        changed = true
+      }
+      return changed
+    })
+  }
+  return updated
+}
+
+async function rewriteProjectReferences(sourceProjectId: string, targetProjectId: string): Promise<void> {
+  for await (const entry of Deno.readDir(SCANS_DIR)) {
+    if (!entry.isFile || !entry.name.endsWith('.json')) continue
+    const path = `${SCANS_DIR}/${entry.name}`
+    try {
+      const meta = JSON.parse(await Deno.readTextFile(path)) as Record<string, unknown>
+      if (meta['projectId'] !== sourceProjectId) continue
+      meta['projectId'] = targetProjectId
+      await Deno.writeTextFile(path, JSON.stringify(meta, null, 2))
+    } catch { /* ignore */ }
+  }
+  await mutateWorldFiles((world) => {
+    let changed = false
+    if (world.projectId === sourceProjectId) {
+      world.projectId = targetProjectId
+      changed = true
+    }
+    for (const scan of world.scans) {
+      if (scan.projectId === sourceProjectId) {
+        scan.projectId = targetProjectId
+        changed = true
+      }
+    }
+    return changed
+  })
+}
 
 console.log(`[server] CORS origin prefix: ${ALLOWED_ORIGIN_PREFIX}`)
 
@@ -3401,6 +4135,9 @@ interface RtcPeer {
 const rtcRooms = new Map<string, Partial<Record<'phone' | 'viewer', RtcPeer>>>()
 
 app.get('/rtc-signal', (c) => {
+  if (!WEBRTC_LIVE_ENABLED) {
+    return c.json({ error: 'WebRTC live streaming is disabled.' }, 404)
+  }
   const { socket, response } = Deno.upgradeWebSocket(c.req.raw)
   const url = new URL(c.req.url)
   const roomId = (url.searchParams.get('room') ?? 'default').replace(/[^a-zA-Z0-9_-]/g, '')
@@ -3479,8 +4216,8 @@ registerPortalAuth(app, portalAuthConfig(), {
   ownerDestination: async () => {
     const world = await loadWorld('default')
     const owner = world.members.find((m) => m.role === 'owner' && !m.revokedAt)
-    if (!owner) return '/viewer.html?world=default'
-    return `/viewer.html?world=${world.shareSlug}&token=${encodeURIComponent(owner.token)}`
+    if (!owner) return '/editor?world=default'
+    return `/editor?world=${world.shareSlug}&token=${encodeURIComponent(owner.token)}`
   },
 })
 
@@ -3540,6 +4277,7 @@ if (staticAvailable) {
   app.get('*', async (c) => {
     let p = new URL(c.req.url).pathname
     if (p === '/') p = '/index.html'
+    if (p === '/editor' || p === '/editor/') p = '/viewer.html'
     if (p.includes('..')) return c.notFound()
     const file = `${STATIC_DIR}${p}`
     try {

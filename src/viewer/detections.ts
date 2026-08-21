@@ -15,7 +15,10 @@ import * as THREE from 'three'
  * optimization. `exportToGLB` gives every detection a wireframe child, and
  * glTF-Transform's `quantize()` cannot put a dequantization transform on a node
  * that has both a mesh and children — so it hoists the mesh into a new unnamed
- * sibling, leaving the labelled node holding only children.
+ * child, leaving the labelled node holding only children. (`transformMeshParents`
+ * in `@gltf-transform/functions`: `parent.addChild(targetNode).setMesh(null)` —
+ * the labelled node stays the *ancestor*, which is why the search below walks
+ * `node.children`.)
  *
  * Measured on a real capture: 8 of 8 detection nodes carry a mesh in the source
  * GLB, 0 of 8 in the `.opt.glb`. Since the viewer *prefers* the optimized file,

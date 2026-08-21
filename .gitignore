@@ -31,6 +31,7 @@ out/
 tmp/
 temp/
 .cache/
+.runtime/
 
 # Logs
 *.log
@@ -78,3 +79,7 @@ test-data/
 tests/fixtures/lingbot-map/source.mp4
 tests/fixtures/lingbot-map/*.webm
 tests/fixtures/lingbot-map/*.mov
+
+# Claude Code MCP local overrides — machine-local secrets (bearer tokens,
+# personal paths). Highest precedence over the checked-in .mcp.json.
+.mcp.local.json

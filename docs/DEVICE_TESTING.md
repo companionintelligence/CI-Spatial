@@ -14,7 +14,7 @@ native WebXR scanner.
 
   ```bash
   npm run qr -- "/smoke.html?debug=remote"        # diagnostics page
-  npm run qr -- "/scanner.html?world=default"     # scanner
+  npm run qr -- "/?project=default"               # scanner / uploader entry
   npm run qr -- "/webxr.html"                     # WebXR entry (Android)
   ```
 
@@ -35,14 +35,15 @@ Suggested devices: `iphone182`, `liam-ipad-pro`.
 | # | Step | Expected result |
 |---|------|-----------------|
 | 1 | Open the scanner URL in Safari | Page loads with **no certificate warning** (Tailscale cert is CA-trusted) |
-| 2 | Tap **Start AR** | Camera + motion permission prompts appear immediately (they must originate from the tap) |
-| 3 | Grant both permissions | Camera feed visible; status HUD shows SLAM initialising, then tracking |
+| 2 | Select or create a **Place**, optionally choose an Area, and complete calibration | GPS/history may suggest a Place; Place selection and alignment are explicit before the scanner opens |
+| 3 | Tap **Scan a Place** and grant permissions | Camera + motion permission prompts appear immediately (they must originate from the tap) |
+| 4 | Grant both permissions | Camera feed visible; status HUD shows SLAM initialising, then tracking |
 | 4 | Walk slowly around the room | Point count in the HUD stats grows; compass/geo chip resolves an address outdoors |
 | 5 | Tap the capture button | Progress sweep → detection labels pinned in 3D within ~5–30 s (model-dependent; watch `X-Inference-Ms` in server logs) |
 | 6 | Toggle 📷 auto-capture and keep walking | Capture ring pulses on movement; count badge increments; HUD shows per-capture status |
 | 7 | Toggle ☁ keyframe streaming | Stream count badge increments as you move; box side: `journalctl --user -u cscan-server -f` shows `POST /sessions/<id>/keyframes` |
 | 8 | Open the side panel → export GLB | Upload toast; file lands in `scans/` on the box; optimization job logs run (Draco + LODs) |
-| 9 | On a desktop browser open `/viewer.html?world=default` | The new scan appears in the world; LODs load progressively |
+| 10 | On a desktop browser open `/editor?project=default` | The new scan appears in the selected Place; LODs load progressively |
 | 10 | Share-sheet → Add to Home Screen, launch the PWA | Standalone app opens to the scanner with the same session history |
 | 11 | Airplane-mode ON (keep Wi-Fi off), capture | HUD shows offline/queue messaging rather than a spinner hang |
 | 12 | Airplane-mode OFF | Queued uploads flush (watch server logs); no data lost |
@@ -53,7 +54,10 @@ errors (page must be loaded with `?debug=remote`).
 
 ## Checklist B — Android Chrome (WebXR)
 
-Suggested device: `hanzlas-z-fold7`.
+Suggested devices: `hanzlas-z-fold7`, `tab-s8-ultra`. The latter can also be
+driven remotely over MCP for the UI/permission steps — see
+[Remote-controlled testing](#remote-controlled-testing-android-remote-control-mcp)
+below.
 
 | # | Step | Expected result |
 |---|------|-----------------|
@@ -67,16 +71,244 @@ Suggested device: `hanzlas-z-fold7`.
 
 Copy per test session:
 
-| Step | iphone182 | liam-ipad-pro | z-fold7 | Notes |
-|------|-----------|---------------|---------|-------|
-| Smoke page all green | | | | |
-| A2/B2 permissions from tap | | | | |
-| Tracking + point growth | | | | |
-| Capture → detection latency | | | | |
-| Keyframe streaming | | | | |
-| Export → viewer visible | | | | |
-| PWA install | | | | |
-| Offline queue + flush | | | | |
+| Step | iphone182 | liam-ipad-pro | z-fold7 | tab-s8-ultra | Notes |
+|------|-----------|---------------|---------|--------------|-------|
+| Smoke page all green | | | | | |
+| A2/B2 permissions from tap | | | | | |
+| Tracking + point growth | | | | | |
+| Capture → detection latency | | | | | |
+| Keyframe streaming | | | | | |
+| Export → viewer visible | | | | | |
+| PWA install | | | | | |
+| Offline queue + flush | | | | | |
+
+## Remote-controlled testing (android-remote-control-mcp)
+
+For Android devices, [android-remote-control-mcp](https://github.com/danielealbano/android-remote-control-mcp)
+lets Claude Code drive Checklist B's UI steps directly — tapping **Start AR**,
+granting the camera permission, hitting capture — without a human holding the
+device for every run. It can't replace the physical "sweep the camera around
+the room" steps, so use it for the repeatable UI/permission-flow parts and for
+unattended `/smoke.html` checks, not as a full substitute for a walked run.
+
+### One-time device setup
+
+1. Install the `gms` build (or `foss`, on devices without Google Play
+   services): `adb install -r android-remote-control-mcp-<version>-gms-release.apk`
+2. **Settings → Apps → Android Remote Control MCP → ⋮ → Allow restricted
+   settings**, confirm with PIN/biometric (Android 13+ blocks sideloaded apps
+   from requesting Accessibility by default), then enable the **Accessibility
+   Service** toggle. Nothing works without this — it's how the app reads the
+   screen and injects taps.
+3. In **Settings → Security**, confirm the **HTTPS** toggle is off (plain HTTP
+   is the documented default, but the `edge` channel has been observed with
+   it on). If it's on, Windows Node clients — including Claude Code's own
+   runtime — complete the TLS handshake against the app's auto-generated
+   self-signed cert and then get cleanly rejected (`self-signed certificate`)
+   or reset, and the app documents no way for a client to trust or pin that
+   cert. Plain HTTP avoids the whole problem.
+4. Open the app's **Server** tab → **Start**. Note the bearer token under
+   **Settings → Access**.
+
+### The test fleet
+
+Every device runs its own server with its own bearer token, reachable on the
+tailnet at port 8080. There is no shared token — one per device, supplied
+via `.mcp.local.json` or the matching env var below.
+
+| Tailnet host | Tailscale IP | Device | `.mcp.json` server | Token env var |
+|---|---|---|---|---|
+| `liams-tab-s8-ultra` | 100.86.76.113 | Galaxy Tab S8 Ultra (SM-X900) | `android-tab-s8-ultra` | `ANDROID_MCP_TOKEN_TAB_S8_ULTRA` |
+| `galaxy-tab-s9-ultra` | 100.102.92.116 | Galaxy Tab S9 Ultra (SM-X910) | `android-tab-s9-ultra` | `ANDROID_MCP_TOKEN_TAB_S9_ULTRA` |
+| `beam-pro-1` | 100.127.78.6 | XREAL X4000 | `android-beam-pro-1` | `ANDROID_MCP_TOKEN_BEAM_PRO_1` |
+| `beam-pro` | 100.97.126.117 | XREAL X4200 | `android-beam-pro` | `ANDROID_MCP_TOKEN_BEAM_PRO` |
+
+### Connecting Claude Code (tailnet — preferred)
+
+`.mcp.json` points each server at `http://<host>.capybara-ulmer.ts.net:8080/mcp`,
+with every token left as a `${...}` placeholder. Supply the real tokens one of
+two ways.
+
+**Preferred — `.mcp.local.json` (persists across restarts).** Claude Code reads
+a machine-local override file at the repo root that takes precedence over
+`.mcp.json`. It is gitignored (`.gitignore`, "Claude Code MCP local
+overrides"), so the tokens never enter history, and unlike a shell export it
+survives closing and reopening the session:
+
+```bash
+cat > .mcp.local.json <<'JSON'
+{
+  "mcpServers": {
+    "android-tab-s8-ultra": {
+      "type": "http",
+      "url": "http://liams-tab-s8-ultra.capybara-ulmer.ts.net:8080/mcp",
+      "headers": { "Authorization": "Bearer <tab-s8 token>" }
+    },
+    "android-tab-s9-ultra": {
+      "type": "http",
+      "url": "http://galaxy-tab-s9-ultra.capybara-ulmer.ts.net:8080/mcp",
+      "headers": { "Authorization": "Bearer <tab-s9 token>" }
+    },
+    "android-beam-pro-1": {
+      "type": "http",
+      "url": "http://beam-pro-1.capybara-ulmer.ts.net:8080/mcp",
+      "headers": { "Authorization": "Bearer <beam-pro-1 token>" }
+    },
+    "android-beam-pro": {
+      "type": "http",
+      "url": "http://beam-pro.capybara-ulmer.ts.net:8080/mcp",
+      "headers": { "Authorization": "Bearer <beam-pro token>" }
+    }
+  }
+}
+JSON
+```
+
+**Alternative — shell export.** Same "shell export, not an auto-loaded `.env`
+file" convention as every other secret in this repo (see `.env.example`). One
+variable per device, and it must be re-done for every new session:
+
+```bash
+export ANDROID_MCP_TOKEN_TAB_S8_ULTRA=<token from that device's Settings → Access>
+export ANDROID_MCP_TOKEN_TAB_S9_ULTRA=<token from that device's Settings → Access>
+export ANDROID_MCP_TOKEN_BEAM_PRO_1=<token from that device's Settings → Access>
+export ANDROID_MCP_TOKEN_BEAM_PRO=<token from that device's Settings → Access>
+```
+
+Export only the devices you actually need — a server whose variable is unset
+simply fails to authenticate, it does not break the others.
+
+Either way the tokens are read when the session starts, so a value supplied
+mid-session does not take effect until Claude Code is restarted. **Never
+hardcode them into `.mcp.json` itself** — that file is tracked, and a token
+granting tap and screen-read control of a device is permanent once committed.
+
+**The server must be bound to `0.0.0.0`, not `127.0.0.1`, or the tailnet address
+refuses connections.** Set this in **Settings → General**. This is a deliberate
+exposure tradeoff: on the tailnet, any peer can drive the device with just the
+bearer token. See "Security notes" below.
+
+### Connecting over adb (fallback, USB only)
+
+Useful when a device isn't on the tailnet, or when you don't want to widen its
+bind address. Forward a free host port to the device's 8080 — one host port per
+device, since several devices cannot share one:
+
+```bash
+adb -s <serial> forward tcp:8081 tcp:8080
+```
+
+The tracked `.mcp.json` points that server at its tailnet hostname, so the
+forward alone is not enough — override the URL for this machine in
+`.mcp.local.json`, which takes precedence:
+
+```bash
+cat > .mcp.local.json <<'JSON'
+{
+  "mcpServers": {
+    "android-tab-s9-ultra": {
+      "type": "http",
+      "url": "http://127.0.0.1:8081/mcp",
+      "headers": { "Authorization": "Bearer <tab-s9 token>" }
+    }
+  }
+}
+JSON
+```
+
+Restart Claude Code afterward — MCP config is read at session start. Delete the
+override to go back to the tailnet path.
+
+Use the literal `127.0.0.1`, not `localhost`, and choose the host port
+deliberately rather than defaulting to 8080. On a machine that also runs Docker
+Desktop and/or WSL, `:8080` is frequently already taken on
+`0.0.0.0`/`[::]`/`[::1]` — verified here, Docker Desktop held `0.0.0.0:8080`
+and `[::]:8080` while wslrelay held `[::1]:8080`, which is why the example
+forwards to 8081 instead. An IPv6-first resolver will happily route `localhost`
+to that unrelated service instead of the adb forward, which only binds
+`127.0.0.1` (IPv4). If a forward seems to hang or reset, run
+`netstat -ano | findstr :<host-port>` and check which PID actually owns
+`127.0.0.1:<host-port>` before assuming the phone is the problem.
+
+### Diagnosing "connection refused"
+
+Work down this list — the layers fail differently and the symptoms overlap:
+
+1. **Is the host reachable at all?** `tailscale ping <host>`. A pong with the
+   port still refusing means the network is fine and the app is the problem.
+2. **Is the server actually listening?** Check the socket *state*, not just the
+   address:
+
+   ```bash
+   adb -s <serial> shell "cat /proc/net/tcp6 | awk '\$2 ~ /:1F90/ {print \$2, \$4}'"
+   ```
+
+   `1F90` is port 8080 hex; state `0A` is LISTEN. **Anything else is not a
+   listener** — `06` is TIME_WAIT, and stale TIME_WAIT rows from earlier
+   connections look identical in the address column. Grepping the address alone
+   will tell you the server is bound to loopback when in fact it is not running
+   at all. Address `00000000...0000` is the `0.0.0.0` wildcard;
+   `0000...FFFF00000100007F` is `::ffff:127.0.0.1`.
+3. **Is it bound to loopback?** Then only on-device clients reach it. Change the
+   bind in **Settings → General**.
+
+### Tunnels (Cloudflare / ngrok) — read before trusting one
+
+The app has a **Settings → Tunnel** page with an **Enable Remote Access**
+toggle; `cloudflared` is bundled inside the app itself (`libcloudflared.so`,
+spawned as a child of the app process), not installed separately. Three
+non-obvious behaviors, all observed:
+
+- **A dead tunnel URL does not mean the tunnel is off.** In Cloudflare "Free /
+  Random temporary URL" mode, every reconnect mints a *brand-new* hostname. An
+  old URL returning 530/1033 while a fresh one silently serves traffic is the
+  normal state, not an anomaly. Check the app's **Public URL** row or the
+  `libcloudflared.so` process — never a URL you saved earlier.
+- **The Enable Remote Access toggle is inert while the server is running.** It
+  reports `clickable` but not `enabled`, so both accessibility clicks and
+  coordinate taps are silently no-ops. Stop the MCP server first, flip the
+  toggle, then start the server again. Confirm with the node attribute, not the
+  pixels — the switch renders almost identically on and off in dark mode:
+
+  ```bash
+  adb -s <serial> shell "uiautomator dump /sdcard/ui.xml >/dev/null; cat /sdcard/ui.xml" | tr '<' '
+' | grep 'checkable="true"'
+  ```
+
+- **Stopping the MCP server kills the tunnel** (cloudflared is its child), but
+  starting the server respawns it unless the toggle was turned off in between.
+  `adb shell kill <cloudflared-pid>` fails with "Operation not permitted" — it
+  runs as the app's UID, not shell's.
+
+A `trycloudflare` quick tunnel is reachable by **anyone on the internet** with
+the URL; the bearer token is the only control. Prefer the tailnet.
+
+### Driving a device / taking screenshots
+
+- `android_open_uri` opens a URL via `ACTION_VIEW`. It routes to the installed
+  app when one claims the domain (reddit.com opens the Reddit app, not Chrome).
+- `android_get_screen_state` with `include_screenshot=true` returns a JPEG with
+  the accessibility node tree **drawn over it** in red. It is a debug aid, not a
+  clean screenshot. For a real one use `adb exec-out screencap -p > out.png`,
+  which needs USB.
+- **An all-black screencap almost always means the screen is off, not a capture
+  failure.** Check `dumpsys display | grep committedState` and wake with
+  `input keyevent KEYCODE_WAKEUP`. Some devices (the XREAL X4000) re-sleep
+  within seconds, so chain wake, swipe, and capture in one `adb shell`
+  invocation rather than as separate commands.
+- A device with a set lock screen (`locksettings get-disabled` → `false`,
+  `dumpsys trust` → `deviceLocked=1`) cannot be driven past the keyguard
+  without its PIN. Leave those devices unlocked before an unattended run.
+
+### Security notes (from upstream)
+
+- Upstream default bind is `127.0.0.1`. Widening it to `0.0.0.0` for tailnet
+  access means any tailnet peer can read the screen and inject taps, with only
+  the bearer token in the way. Do it deliberately, not by habit.
+- The server is fully open to anyone who can reach it if both bearer-token and
+  OAuth auth are disabled — don't disable both.
+- Rotate a token that has been pasted into chat, a ticket, or a log.
+- Stop the server (and any tunnel) when you're done testing.
 
 ## Triage
 

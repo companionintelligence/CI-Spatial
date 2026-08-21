@@ -14,31 +14,51 @@ import { createEighthWallProvider } from './ar/eighthwall'
 import { createWebXRProvider, WebXRProvider, isImmersiveARSupported } from './ar/webxr'
 import type { ARProvider, Pose } from './ar/provider'
 import { RoomScanner } from './ar/scanner'
+import { runProjectCalibration } from './ar/project-calibration'
 import { PointCloud } from './scene/pointcloud'
 import { CaptureModule } from './capture/capture'
 import { AutoCapture } from './capture/auto-capture'
 import { KeyframeStreamer } from './capture/keyframes'
-import { ScanQualityMonitor } from './capture/quality-monitor'
+import { ScanQualityMonitor, isFrameUnusable } from './capture/quality-monitor'
+import type { FrameQuality } from './capture/quality-monitor'
 import { InferenceRouter } from './inference/router'
 import { InferServerError } from './inference/server'
-import { resolveDetections, mergeDetections } from './spatial/resolver'
+import { bucket, resolveDetections, mergeDetections } from './spatial/resolver'
 import { DetectionStore } from './scene/store'
-import { ProjectStore } from './project/project-store'
+import { ProjectStore, type Project, type ScanCalibration, type ScanEntry } from './project/project-store'
+import type { AreaKind, PlaceArea } from './world/types'
 import { AROverlay } from './ui/overlay'
 import { SidePanel, type ExportOutcome } from './ui/panel'
 import { SessionHistory } from './ui/history'
 import { exportToGLB } from './export/gltf'
+import { isServerSessionId } from './shared/session-id.ts'
 import { exportSessionSummary } from './export/summary'
 import { GeoTracker, type GeoFix } from './geo/geo-tracker'
-import { RtcBroadcaster } from './rtc/broadcaster'
+import { distanceM } from './world/geo'
+import type { RtcBroadcaster } from './rtc/broadcaster'
+import { WEBRTC_LIVE_ENABLED } from './rtc/feature'
 import { registerPWA } from './pwa'
 import { installRemoteLog } from './debug/remote-log'
 import { iconLabel } from './ui/icons'
-import { ONBOARDING_KEY } from './shared/storage-keys'
+import { ONBOARDING_KEY, PLACE_SELECTION_SESSION_KEY } from './shared/storage-keys'
 import * as THREE from 'three'
 
 const CAPTURE_FRAME_TIMEOUT_MS = 8000
 const TRACKING_WAIT_MS = 2500
+let requestPlaceSelection: ((afterSelection?: () => void) => void) | null = null
+// Upload selection is wired before IndexedDB and Place data finish loading, so
+// retain its current target in module state for the upload handler.
+let uploadPlaceTarget: { projectId: string | null; areaId: string | null } = { projectId: null, areaId: null }
+
+function poseIsFinite(pose: Pose): boolean {
+  return Number.isFinite(pose.position.x)
+    && Number.isFinite(pose.position.y)
+    && Number.isFinite(pose.position.z)
+    && Number.isFinite(pose.rotation.x)
+    && Number.isFinite(pose.rotation.y)
+    && Number.isFinite(pose.rotation.z)
+    && Number.isFinite(pose.rotation.w)
+}
 
 // One-time HUD notices — module-level so repeated triggers stay quiet
 let quotaWarningShown = false
@@ -62,7 +82,7 @@ async function main() {
 
   // Walkthrough-video upload — a server-side path that needs no AR runtime or
   // secure context, so wire it before the isSecureContext bail-out below.
-  wireVideoUpload()
+  wireContentUpload()
 
   // Camera, WebXR, and IndexedDB all need a secure context; fail fast with
   // actionable guidance instead of a cascade of cryptic permission errors.
@@ -97,47 +117,51 @@ async function main() {
   // it covers the start screen and is dismissed before section 4b returns.
   const startBtn = document.getElementById('start-ar-btn') as HTMLButtonElement | null
   let startPressed = false
-  const startArPressed = new Promise<void>((resolve) => {
-    startBtn?.addEventListener('click', async () => {
-      startPressed = true
-      // ↓ Initiate BEFORE any await — this preserves the user-gesture context in Safari
-      type PermAPI = { requestPermission?(): Promise<string> }
-      const p1 = (DeviceOrientationEvent as unknown as PermAPI).requestPermission?.()
-      const p2 = (DeviceMotionEvent as unknown as PermAPI).requestPermission?.()
+  let selectedProject: Project | null = null
+  let selectedAreaId: string | null = null
+  let projectSelectionReady = false
+  let resolveStartAr: () => void = () => {}
+  const beginArSession = async () => {
+    if (startPressed) return
+    startPressed = true
+    // This runs from the place-choice tap, which is still a real user gesture.
+    // That keeps Safari's motion permission request eligible after the modal.
+    type PermAPI = { requestPermission?(): Promise<string> }
+    const p1 = (DeviceOrientationEvent as unknown as PermAPI).requestPermission?.()
+    const p2 = (DeviceMotionEvent as unknown as PermAPI).requestPermission?.()
 
-      // Hide the start screen immediately
-      document.getElementById('start-screen')?.remove()
-      // Tapped before the boot reached section 5: say so, rather than leaving
-      // the last boot status (e.g. "AI: WebGPU") on screen as if nothing happened.
-      overlay.setStatus('Starting AR…')
+    document.getElementById('start-screen')?.remove()
+    overlay.setStatus('Starting AR…')
 
-      // Denial RESOLVES with the string 'denied' — it does not reject. The
-      // promise rejects only when requestPermission() was called outside a
-      // user gesture. Catching alone therefore never fired on the one case it
-      // was written for: the user tapped "Don't Allow" and landed in a session
-      // that never tracks, staring at "Move camera to initialise tracking…"
-      // forever with nothing to explain it.
-      //
-      // On platforms without the API (Android, desktop) both are undefined,
-      // there is nothing to grant, and the banner must stay down.
-      const permissionChecks = [p1, p2].filter((p): p is Promise<string> => p !== undefined)
-      const denialNotice = 'Enable motion & orientation access in Settings → Safari → Motion & Orientation Access.'
-      try {
-        const outcomes = await Promise.all(permissionChecks)
-        const refused = outcomes.filter((outcome) => outcome !== 'granted')
-        if (refused.length > 0) {
-          console.warn(`[main] Motion/orientation permission ${refused.join('/')} — SLAM will not track`)
-          showPermissionBanner(denialNotice)
-        }
-      } catch (err) {
-        // A rejection is the other failure: requestPermission() reached outside
-        // a genuine gesture, or the API itself errored. The user still ends up
-        // without motion access, so they get the same guidance.
-        console.warn('[main] Motion/orientation permission request failed — SLAM may not track', err)
+    const permissionChecks = [p1, p2].filter((p): p is Promise<string> => p !== undefined)
+    const denialNotice = 'Enable motion & orientation access in Settings → Safari → Motion & Orientation Access.'
+    try {
+      const outcomes = await Promise.all(permissionChecks)
+      const refused = outcomes.filter((outcome) => outcome !== 'granted')
+      if (refused.length > 0) {
+        console.warn(`[main] Motion/orientation permission ${refused.join('/')} — SLAM will not track`)
         showPermissionBanner(denialNotice)
       }
-      resolve()
-    }, { once: true })
+    } catch (err) {
+      console.warn('[main] Motion/orientation permission request failed — SLAM may not track', err)
+      showPermissionBanner(denialNotice)
+    }
+    resolveStartAr()
+  }
+
+  const startArPressed = new Promise<void>((resolve) => {
+    resolveStartAr = resolve
+    startBtn?.addEventListener('click', () => {
+      if (startPressed) return
+      if (!projectSelectionReady) {
+        overlay.setStatus('Preparing project selection...')
+        return
+      }
+      // Every new capture starts by confirming its place, even when a project
+      // was used previously. The selection defines this scan's shared frame.
+      requestPlaceSelection?.(() => { void beginArSession() })
+      overlay.setStatus('Choose or create a project before calibrating the scan.')
+    })
   })
   // The button ships `disabled aria-busy="true"` with a "Preparing…" line in
   // index.html, so it never advertises itself as pressable before this point —
@@ -162,12 +186,23 @@ async function main() {
   void checkStorageQuota(store, overlay)
   const projectStore = new ProjectStore()
   await projectStore.open()
+  selectedProject = await resolveInitialProject(projectStore)
+  projectSelectionReady = true
+  let sessionScanEntry: ScanEntry | null = null
+  let sessionCalibration: ScanCalibration | undefined
   const qualityMonitor = new ScanQualityMonitor()
   const geoTracker = new GeoTracker()
+  const placePicker = mountPlacePicker(projectStore, geoTracker, selectedProject, (project, areaId) => {
+    selectedProject = project
+    selectedAreaId = areaId
+    uploadPlaceTarget = { projectId: project?.projectId ?? null, areaId }
+    sessionScanEntry = null
+  })
+  requestPlaceSelection = placePicker.open
   const pointCloud = new PointCloud(0.05)   // 5 cm voxel deduplication grid
   const poseHistory: Pose[] = []
   const scanner = new RoomScanner()
-  let captureCount = 0    // total successful captures this session
+  let captureCount = 0    // total captures this session, inferred or not
   let autoSaveTimer: ReturnType<typeof setTimeout> | null = null
   let autoSaveInFlight = false
   let autoSaveQueued = false
@@ -189,10 +224,32 @@ async function main() {
   // user action, long after assignment.
   let keyframes: KeyframeStreamer | null = null
 
+  // The most recent GLB this tab has EVER uploaded, across session
+  // boundaries — never reset. Lets requestServerProcessing identify "my
+  // scan" without depending on sessionId resolution.
+  let lastUploadedFilename: string | undefined
+
+  // The GLB uploaded since the CURRENTLY OPEN keyframe session started —
+  // undefined whenever this session hasn't produced one yet. This is what the
+  // session-exit paths that don't have a fresh filename in hand (the stream
+  // toggle, pagehide) send as the backlink `session.json.glbFilename`, which
+  // scan_index.ts's `byGlb` map resolves a scan through when its sessionId is
+  // null. Cleared every time a new session opens (kfStreamer.onSessionId
+  // below) — reusing `lastUploadedFilename` here instead would attach a
+  // PREVIOUS session's filename to a session that produced no scan of its
+  // own, since that variable is deliberately never reset. The export/autosave
+  // handlers don't read this for their OWN rotate() calls — they already have
+  // the fresh filename in hand locally — only for the two paths that don't.
+  let currentSessionGlbFilename: string | undefined
+
   const panel = new SidePanel(
     store,
     async () => {
       const { outcome, uploadedFilename } = await exportManualScan()
+      if (uploadedFilename) {
+        lastUploadedFilename = uploadedFilename
+        currentSessionGlbFilename = uploadedFilename
+      }
       // Nothing was written on a cancel or a failure, so there is no scan for
       // a fresh keyframe session to be linked against.
       if (outcome !== 'cancelled' && outcome !== 'failed' && keyframes?.active) {
@@ -207,7 +264,7 @@ async function main() {
       return outcome
     },
     () => exportSessionSummary({ store, pointCloud, poseHistory, captureCount, geoFix: geoTracker.snapshot() ?? undefined }),
-    (action) => requestServerProcessing(action, store),
+    (action) => requestServerProcessing(action, store, lastUploadedFilename),
     (mode) => {
       router.setMode(mode)
       overlay.setStatus(`AI: ${mode === 'server' ? 'Server' : 'WebGPU'}`)
@@ -215,6 +272,9 @@ async function main() {
     router.path,
   )
   panel.mount()
+  // WebRTC live view is an experimental feature and must not appear in normal
+  // scanning until its device connection path is reliable.
+  if (!WEBRTC_LIVE_ENABLED) panel.streamButton?.remove()
 
   const history = new SessionHistory(store)
   history.mount()
@@ -312,9 +372,31 @@ async function main() {
       }
     }
     overlay.setStatus('Capturing next frame...')
+    // Named before the try so the catch can reach them: the frame is stored by
+    // then, and the failure path's job is to mark that record and decide whether
+    // its image is worth holding — not to mourn it.
+    let pendingCaptureId: string | null = null
+    let frameQuality: Promise<FrameQuality> | null = null
     try {
-      const { blob, pose, timestamp } = await capture.capture(CAPTURE_FRAME_TIMEOUT_MS)
+      const { blob, pose, timestamp, frameWidth, frameHeight } = await capture.capture(CAPTURE_FRAME_TIMEOUT_MS)
       console.log(`[main] Captured blob: ${blob.size} bytes, type=${blob.type}, pose=`, pose)
+
+      // Store the frame BEFORE anything is asked of it. The photograph is the
+      // unrepeatable half of a capture — the user had to be standing there — and
+      // inference is the cheap, retryable half. Ordered the other way round, a
+      // failed detection took the frame, the pose and the timestamp down with it.
+      // See docs/factory/04-capture-path-truthfulness/0003.
+      //
+      // captureCount advances here rather than after a successful inference, so a
+      // capture whose detection fails still owns its index and the next capture
+      // cannot collide with it.
+      const captureIndex = ++captureCount
+      pendingCaptureId = store.captureIdFor(captureIndex)
+      // Not awaited: the write stays off the shutter's critical path, which
+      // already has no flash, haptic or sound to cover latency
+      // (docs/UI_MANUAL.md:169-176). It is reconciled before the detections land.
+      const capturePersisted = store.putCapture({ captureIndex, timestamp, pose, blob })
+
       overlay.setStatus('Analysing…')
 
       // Show indeterminate analysis progress bar
@@ -323,12 +405,18 @@ async function main() {
       if (progFill) progFill.classList.add('analyzing')
       if (progWrap) progWrap.classList.add('visible')
 
-      // Async frame quality analysis (non-blocking — updates overlay on next tick)
-      void qualityMonitor.analyseFrame(blob).then(({ lowLight, reflective }) => {
-        updateQualityOverlay(qualityMonitor.tick(provider, pointCloud))
-        if (lowLight)   overlay.setStatus('⚠ Low light — add more lighting')
-        if (reflective) overlay.setStatus('⚠ Reflective surface detected')
-      })
+      // Async frame quality analysis (non-blocking — updates overlay on next
+      // tick). The promise is kept, not discarded, because the failure path below
+      // needs its verdict to decide whether this frame is worth retaining.
+      frameQuality = qualityMonitor.analyseFrame(blob)
+      const quality = await frameQuality
+      updateQualityOverlay(qualityMonitor.tick(provider, pointCloud))
+      if (quality.uniformFrame) {
+        overlay.setStatus('Camera feed unavailable — close Chrome, reopen the app, then retry')
+        throw new Error('Camera frame is uniform; the live camera feed is not available')
+      }
+      if (quality.lowLight)   overlay.setStatus('⚠ Low light — add more lighting')
+      if (quality.reflective) overlay.setStatus('⚠ Reflective surface detected')
 
       const rawDets = await router.infer(blob)
 
@@ -356,21 +444,25 @@ async function main() {
         asyncHitTest,
         cameraPose: pose,
         captureCamera,
+        imageSize: { width: frameWidth, height: frameHeight },
+        viewportSize: { width: window.innerWidth, height: window.innerHeight },
         pointCloud,
+        sessionId: store.sessionId,
       })
       console.log(`[main] World detections (${worldDets.length}):`, JSON.stringify(worldDets))
 
-      // Tag each resolved detection with the current capture index
-      const currentCaptureIdx = captureCount + 1  // will increment after
-      for (const wd of worldDets) wd.captureIndex = currentCaptureIdx
+      // Tag each resolved detection with the index its frame was stored under
+      for (const wd of worldDets) wd.captureIndex = captureIndex
 
       // Build thumbnail map keyed by label (best-effort). Each object gets the
       // frame cropped to ITS OWN box — handing every row the same whole-frame
       // thumbnail (which is what this did) made the review panel look like a
       // list of duplicate images rather than a list of objects.
       const thumbMap = new Map<string, string>()
+      const captureKeys = new Set<string>()
       for (const wd of worldDets) {
         const key = `${wd.label}:${bucket(wd.worldPos)}`
+        captureKeys.add(key)
         if (thumbMap.has(key)) continue
         thumbMap.set(key, await capture.captureDetectionThumbnail(blob, wd.bbox))
       }
@@ -380,7 +472,11 @@ async function main() {
 
       showInferDialog(worldDets)
 
-      captureCount++
+      // Attach the detections to the record that already holds the frame, so the
+      // success path ends with exactly one record per capture rather than two.
+      await capturePersisted
+      await store.attachDetections(pendingCaptureId, [...captureKeys])
+
       await store.saveSnapshot()
       void checkStorageQuota(store, overlay)
       queueAutoSave()
@@ -389,6 +485,27 @@ async function main() {
       )
     } catch (e) {
       clearAnalysisProgress()
+      // The frame is already stored. Record why its inference failed and keep
+      // it — that is what makes a failure cost a label instead of the
+      // photograph. Null only when capture.capture() itself threw, in which
+      // case there is no frame to keep. Status is set synchronously, so the
+      // record is correct before the HUD copy below runs.
+      if (pendingCaptureId) {
+        const id = pendingCaptureId
+        void store.markCaptureFailed(id, e instanceof Error ? e.message : String(e))
+        // Retaining the frame is only worth it when the frame is the good half of
+        // the capture. A server or engine error leaves a perfectly readable
+        // photograph that re-inference can still use; a frame the quality monitor
+        // flagged will read no better on a second pass, so its image goes and only
+        // the record stays. This is correlation, not proven cause — a dark frame
+        // captured during a server outage is discarded too. That is the intended
+        // trade: an unreadable frame is not worth 140 KB of a user's quota.
+        if (frameQuality) {
+          void frameQuality
+            .then((q) => (isFrameUnusable(q) ? store.discardFrame(id, 'quality') : undefined))
+            .catch(() => { /* frame could not be analysed — doubt keeps the photograph */ })
+        }
+      }
       if (e instanceof InferServerError) {
         // Server-path inference failures carry a typed code — map each to
         // actionable HUD guidance instead of a generic "failed" message.
@@ -415,6 +532,10 @@ async function main() {
 
         if (name === 'NotAllowedError' || message.includes('NotAllowedError')) {
           overlay.setStatus('Camera access denied — check browser settings')
+        } else if (message.includes('Camera frame is uniform')) {
+          // Keep the recovery instruction from the frame-validity guard visible;
+          // this is a camera lifecycle problem, not an inference failure.
+          overlay.setStatus('Camera feed unavailable — close Chrome, reopen the app, then retry')
         } else if (message.includes('Timed out')) {
           // Check if the timeout is actually due to denied camera permission
           let denied = false
@@ -465,11 +586,13 @@ async function main() {
     setAutosaveStatus('Exporting scan...')
     overlay.setStatus('Exporting scan...')
     try {
+      const scanEntry = await ensureSessionScanEntry()
       const result = await exportToGLB(
-        { store, pointCloud, poseHistory, geoFix: geoTracker.snapshot() ?? undefined, qualitySummary: currentQualitySummary() },
+        { store, pointCloud, poseHistory, scanEntry, geoFix: geoTracker.snapshot() ?? undefined, qualitySummary: currentQualitySummary() },
         { download: true, upload: true, filenamePrefix: 'room-scan', autoSaved: false },
       )
       if (result.upload === 'uploaded' && result.uploadedFilename) {
+        await updateSessionScanFilename(result.uploadedFilename)
         overlay.setStatus('Scan exported & synced ✓')
         setAutosaveStatus(`Scan exported & synced ✓ ${shortName(result.uploadedFilename)}`)
 
@@ -527,11 +650,31 @@ async function main() {
         return
       }
       const result = await exportToGLB(
-        { store, pointCloud, poseHistory, geoFix: geoTracker.snapshot() ?? undefined, qualitySummary: currentQualitySummary() },
+        { store, pointCloud, poseHistory, scanEntry: await ensureSessionScanEntry(), geoFix: geoTracker.snapshot() ?? undefined, qualitySummary: currentQualitySummary() },
         { download: false, upload: true, filenamePrefix: 'autosave-room-scan', autoSaved: true },
       )
       const time = new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
       setAutosaveStatus(result.uploadedFilename ? `Autosaved ${shortName(result.uploadedFilename)} · ${time}` : `Autosaved locally · ${time}`)
+
+      // Rotate the keyframe session, exactly as manual export does. Autosave
+      // used to neither rotate nor finalize, so one server session accumulated
+      // keyframes across every autosaved GLB in the walkthrough and its
+      // glbFilename stayed null — leaving `byGlb` nothing to match on and the
+      // one-scan-to-one-session assumption false.
+      if (result.uploadedFilename) {
+        await updateSessionScanFilename(result.uploadedFilename)
+        lastUploadedFilename = result.uploadedFilename
+        currentSessionGlbFilename = result.uploadedFilename
+        if (keyframes?.active) {
+          await keyframes.rotate({
+            glbFilename: result.uploadedFilename,
+            pointCount: pointCloud.count,
+            detectionCount: store.detections.size,
+            poseCount: poseHistory.length,
+            qualitySummary: currentQualitySummary(),
+          })
+        }
+      }
     } catch (error) {
       setAutosaveStatus('Autosave failed')
       console.error('[autosave]', error)
@@ -583,9 +726,29 @@ async function main() {
     if (countEl) countEl.textContent = s.active ? `${s.sent}` : ''
   }
 
+  // The server session is the only id that names a real keyframe directory, so
+  // the store adopts it the moment one is opened; everything exported from here
+  // on records that id rather than a local one.
+  //
+  // `null` (the session closed) is deliberately a no-op: the captures already
+  // in the store came from that session, and its directory still holds their
+  // keyframes, so reverting to a local id would strand the association. See
+  // KeyframeStreamer.onSessionId.
+  kfStreamer.onSessionId = (sessionId) => {
+    if (sessionId) {
+      void store.adoptServerSession(sessionId)
+      // A fresh session has produced no GLB of its own yet. Clearing this
+      // here — rather than leaving the previous session's value in place —
+      // is what stops a later stream-toggle-off or pagehide on THIS session
+      // from misattributing a scan it had nothing to do with.
+      currentSessionGlbFilename = undefined
+    }
+  }
+
   document.getElementById('stream-btn')?.addEventListener('click', () => {
     if (kfStreamer.active) {
       void kfStreamer.stop({
+        glbFilename: currentSessionGlbFilename,
         pointCount: pointCloud.count,
         detectionCount: store.detections.size,
         poseCount: poseHistory.length,
@@ -692,6 +855,7 @@ async function main() {
     try {
       if (kfStreamer.active) {
         void kfStreamer.stop({
+          glbFilename: currentSessionGlbFilename,
           pointCount: pointCloud.count,
           detectionCount: store.detections.size,
           poseCount: poseHistory.length,
@@ -754,10 +918,38 @@ async function main() {
   } catch (e) {
     console.error('[main] AR provider start failed:', e)
     showPermissionBanner('Camera access denied. Please check your browser or OS permission settings and allow camera access.')
+    return
   }
+  overlay.setStatus('Calibrate the project frame…')
+
+  if (selectedProject) {
+    const calibration = await runProjectCalibration({
+      provider,
+      project: selectedProject,
+      hitTest: async () => asyncHitTest
+        ? await asyncHitTest(0.5, 0.5)
+        : provider.hitTest(0.5, 0.5),
+    })
+    if (calibration) {
+      sessionCalibration = calibration.calibration
+      if (calibration.spatialFrame) {
+        selectedProject.spatialFrame = calibration.spatialFrame
+        await projectStore.updateProject(selectedProject)
+        await persistProjectSpatialFrame(selectedProject)
+      }
+      overlay.setStatus(
+        calibration.calibration.status === 'verified'
+          ? `Project aligned within ${(calibration.calibration.residualM * 100).toFixed(0)} cm`
+          : 'Project frame established. Start scanning.',
+      )
+    } else {
+      overlay.setStatus('Scanning without project alignment')
+    }
+  }
+
   overlay.setStatus('Move camera to initialise tracking…')
 
-  // ── WebRTC live-feed broadcaster (optional) ───────────────────────────────
+  // ── WebRTC live-feed broadcaster (experimental, opt-in) ──────────────────
   // The live-feed room is a rendezvous key, and both halves have to name it
   // the same way or they never meet. The editor uses the world it is viewing
   // (viewer.ts: `query.get('world') || 'default'`) while this side was
@@ -767,26 +959,27 @@ async function main() {
   // Not the same thing as where scans land: uploads are parked in the default
   // world on purpose (ADR 0003, "these have no world association"), which is
   // why the "View in 3D" links still point there.
-  const liveFeedRoom = searchParams.get('world') || 'default'
-  const broadcaster = new RtcBroadcaster(liveFeedRoom)
-  rtc = broadcaster   // hand it to the pagehide teardown armed above
-  broadcaster.onStatus = ({ state, message }) => {
-    const btn = document.getElementById('rtc-stream-btn') as HTMLButtonElement | null
-    if (btn) {
-      // Only show the badge while actively streaming
-      btn.style.display = state === 'streaming' ? 'flex' : 'none'
+  if (WEBRTC_LIVE_ENABLED) {
+    const { RtcBroadcaster } = await import('./rtc/broadcaster')
+    const liveFeedRoom = searchParams.get('world') || 'default'
+    const broadcaster = new RtcBroadcaster(liveFeedRoom)
+    rtc = broadcaster   // hand it to the pagehide teardown armed above
+    broadcaster.onStatus = ({ state, message }) => {
+      const btn = document.getElementById('rtc-stream-btn') as HTMLButtonElement | null
+      if (btn) {
+        // Only show the badge while actively streaming
+        btn.style.display = state === 'streaming' ? 'flex' : 'none'
+      }
+      if (state === 'error') overlay.setStatus(`RTC: ${message}`)
     }
-    if (state === 'error') overlay.setStatus(`RTC: ${message}`)
-  }
-  const streamBtn = document.getElementById('rtc-stream-btn') as HTMLButtonElement | null
-  streamBtn?.addEventListener('click', () => {
-    // Clicking the LIVE badge stops the stream
-    broadcaster.stop()
-  })
+    const streamBtn = document.getElementById('rtc-stream-btn') as HTMLButtonElement | null
+    streamBtn?.addEventListener('click', () => {
+      // Clicking the LIVE badge stops the stream
+      broadcaster.stop()
+    })
 
-  // Wire the panel "Start Live Stream" button
-  if (panel.streamButton) {
-    panel.streamButton.addEventListener('click', () => {
+    // Wire the panel "Start Live Stream" button.
+    panel.streamButton?.addEventListener('click', () => {
       if (broadcaster.isRunning) {
         broadcaster.stop()
         panel.streamButton!.innerHTML = iconLabel('broadcast', 'Start Live Stream', { size: '15px' })
@@ -795,38 +988,38 @@ async function main() {
         panel.streamButton!.innerHTML = iconLabel('broadcast', 'Stop Stream', { size: '15px' })
       }
     })
+
+    // Mirror detection updates to the desktop viewer over the RTC data channel.
+    // Snapshots are small (<= 50 objects), so a throttled full sync is simpler
+    // and more robust than per-mutation deltas.
+    let detSyncTimer: ReturnType<typeof setTimeout> | null = null
+    store.subscribe(() => {
+      if (detSyncTimer) return
+      detSyncTimer = setTimeout(() => {
+        detSyncTimer = null
+        broadcaster.sendJson({
+          t: 'dets',
+          items: [...store.detections.values()].map((d) => ({
+            label: d.label,
+            confidence: d.confidence,
+            pos: [d.worldPos.x, d.worldPos.y, d.worldPos.z],
+          })),
+        })
+      }, 1000)
+    })
   }
 
   overlay.setProgress(null)
-
-  // Mirror detection updates to the desktop viewer over the RTC data channel.
-  // Snapshots are small (≤ ~50 objects), so a throttled full sync is simpler
-  // and more robust than per-mutation deltas.
-  let detSyncTimer: ReturnType<typeof setTimeout> | null = null
-  store.subscribe(() => {
-    if (detSyncTimer) return
-    detSyncTimer = setTimeout(() => {
-      detSyncTimer = null
-      broadcaster.sendJson({
-        t: 'dets',
-        items: [...store.detections.values()].map((d) => ({
-          label: d.label,
-          confidence: d.confidence,
-          pos: [d.worldPos.x, d.worldPos.y, d.worldPos.z],
-        })),
-      })
-    }, 1000)
-  })
 
   // ── 6. Continuous SLAM point-cloud accumulation ──────────────────────────────
   scanner.start(provider, (frame) => {
     const inserted = pointCloud.add(frame.points)
     const added = inserted.length
-    if (frame.points.length > 0) poseHistory.push(frame.pose)
+    if (provider.isTracking() && poseIsFinite(frame.pose)) poseHistory.push(frame.pose)
 
-    // Live geometry to the viewer — no-ops unless the stream is running
-    broadcaster.sendPoints(inserted)
-    broadcaster.sendJson({
+    // Live geometry is available only when the experimental flag is enabled.
+    rtc?.sendPoints(inserted)
+    rtc?.sendJson({
       t: 'pose',
       p: [frame.pose.position.x, frame.pose.position.y, frame.pose.position.z],
       q: [frame.pose.rotation.x, frame.pose.rotation.y, frame.pose.rotation.z, frame.pose.rotation.w],
@@ -861,6 +1054,40 @@ async function main() {
       poseCount: poseHistory.length,
       keyframeCount: latestKeyframeCount,
     })
+  }
+
+  async function ensureSessionScanEntry(): Promise<ScanEntry> {
+    if (sessionScanEntry) return sessionScanEntry
+    sessionScanEntry = await projectStore.addScan({
+      projectId: selectedProject?.projectId ?? null,
+      areaId: selectedAreaId,
+      sessionId: store.sessionId,
+      name: selectedProject ? `${selectedProject.name} scan` : 'Unassigned scan',
+      status: 'draft',
+      capturedAt: Date.now(),
+      qualitySummary: entryQualitySummary(),
+      calibration: sessionCalibration,
+    })
+    return sessionScanEntry
+  }
+
+  async function updateSessionScanFilename(filename: string): Promise<void> {
+    if (!sessionScanEntry) return
+    sessionScanEntry.scanFilename = filename
+    sessionScanEntry.qualitySummary = entryQualitySummary()
+    sessionScanEntry.status = 'ready'
+    await projectStore.updateScan(sessionScanEntry)
+  }
+
+  function entryQualitySummary(): ScanEntry['qualitySummary'] {
+    const summary = currentQualitySummary()
+    return {
+      coverageScore: summary.coverageScore,
+      lowLightFrames: summary.lowLightFrames,
+      driftEvents: summary.driftEvents,
+      reflectiveWarnings: summary.reflectiveWarnings,
+      pointCount: summary.pointCount,
+    }
   }
 
   function updateVerdictUI(): void {
@@ -939,6 +1166,303 @@ function setupStatusOverlay() {
 function setAutosaveStatus(text: string): void {
   const el = document.getElementById('autosave-status')
   if (el) el.textContent = text
+}
+
+async function resolveInitialProject(projectStore: ProjectStore): Promise<Project | null> {
+  const queryProject = new URLSearchParams(location.search).get('project')
+  const projects = await fetchProjects().catch(() => [])
+  const fromQuery = queryProject ? projects.find(project => project.projectId === queryProject) : null
+  if (fromQuery) {
+    sessionStorage.setItem(PLACE_SELECTION_SESSION_KEY, JSON.stringify({ projectId: fromQuery.projectId }))
+    return fromQuery
+  }
+
+  const stored = sessionStorage.getItem(PLACE_SELECTION_SESSION_KEY) || localStorage.getItem(PLACE_SELECTION_SESSION_KEY)
+  if (stored) {
+    try {
+      const projectId = (JSON.parse(stored) as { projectId?: string | null }).projectId
+      if (projectId === null) return null
+      const match = projects.find(project => project.projectId === projectId)
+      if (match) return match
+      if (projectId) {
+        const mirrored = await projectStore.getProject(projectId)
+        if (mirrored) return mirrored
+      }
+    } catch { /* bad prior value */ }
+  }
+
+  // A place must never be inferred from the first project in the registry.
+  // The user explicitly chooses a saved place or creates a new one.
+  return null
+}
+
+function mountPlacePicker(
+  projectStore: ProjectStore,
+  geoTracker: GeoTracker,
+  selected: Project | null,
+  onSelect: (project: Project | null, areaId: string | null) => void,
+): { open: (afterSelection?: () => void) => void } {
+  const startScreen = document.getElementById('start-screen')
+  if (!startScreen) return { open: () => {} }
+  let currentSelected = selected
+  let currentAreaId: string | null = null
+  let pendingSelectionAction: (() => void) | null = null
+
+  const sheet = document.createElement('div')
+  sheet.id = 'place-sheet'
+  sheet.className = 'place-sheet'
+  sheet.hidden = true
+  document.body.appendChild(sheet)
+
+  const render = async () => {
+    const projects = await fetchProjects().catch(() => [])
+    const fix = geoTracker.snapshot()
+    const nearby = projects
+      .map(project => ({ project, distance: fix && project.geoPose ? distanceM(fixToGeoPose(fix), project.geoPose) : null }))
+      .filter(item => item.distance !== null && item.distance <= 100)
+      .sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity))
+
+    sheet.innerHTML = `
+      <div class="place-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="place-title">
+        <div class="place-sheet-title" id="place-title">Scanner location</div>
+        <p class="place-sheet-copy">Choose the project for this scan. Saved places within 100 m are shown below.</p>
+        <div class="place-selected-status">Selected: <strong>${currentSelected ? escapeHtml(currentSelected.name) : 'none yet'}</strong></div>
+        <div id="place-location-status" class="place-location-status"></div>
+        <div id="place-suggestion" hidden></div>
+        <div id="place-list"></div>
+        ${currentSelected ? `
+          <div class="place-area-picker">
+            <div class="place-area-heading">Area <span>(optional)</span></div>
+            <div id="place-area-list"></div>
+            <button id="place-area-new-btn" type="button" class="place-area-new">Add an area</button>
+            <div id="place-area-new-form" hidden>
+              <label>Area name<input id="place-area-name" type="text" maxlength="80" placeholder="e.g. Living room" /></label>
+              <label>Area type
+                <select id="place-area-kind" class="ci-select"><option value="room">Room</option><option value="floor">Floor</option><option value="zone">Zone</option><option value="building">Building</option><option value="outdoor">Outdoor</option></select>
+              </label>
+              <button id="place-area-save" type="button">Save area</button>
+            </div>
+          </div>` : ''}
+        <div id="place-new-form" hidden>
+          <label>Place name<input id="place-new-name" type="text" maxlength="80" placeholder="e.g. Living room" /></label>
+          <label>Address or note<input id="place-new-address" type="text" maxlength="160" placeholder="Optional" /></label>
+          <div class="place-coordinate-grid">
+            <label>Latitude<input id="place-new-lat" type="number" step="any" /></label>
+            <label>Longitude<input id="place-new-lng" type="number" step="any" /></label>
+          </div>
+          <button id="place-new-save" type="button">Save new place</button>
+        </div>
+        <div class="place-sheet-actions">
+          <button id="place-new-btn" type="button">New place</button>
+          ${currentSelected ? '<button id="place-continue-btn" type="button">Use selected place</button>' : ''}
+          <button id="place-skip-btn" type="button">Cancel</button>
+        </div>
+      </div>`
+
+    const status = sheet.querySelector<HTMLElement>('#place-location-status')!
+    if (fix) {
+      status.textContent = `Current location ±${Math.round(fix.accuracy)} m${fix.address ? ` · ${fix.address}` : ''}`
+    } else {
+      status.textContent = 'Location unavailable. You can still create a place by entering coordinates.'
+    }
+
+    const suggestion = sheet.querySelector<HTMLElement>('#place-suggestion')!
+    const list = sheet.querySelector<HTMLElement>('#place-list')!
+    const nearest = nearby[0]
+    if (nearest) {
+      suggestion.hidden = false
+      const suggestionButton = document.createElement('button')
+      suggestionButton.type = 'button'
+      suggestionButton.className = 'place-option place-suggestion-option'
+      suggestionButton.innerHTML = `<strong>Suggested: ${escapeHtml(nearest.project.name)}</strong><span>${Math.round(nearest.distance ?? 0)} m away · location accuracy ±${Math.round(fix?.accuracy ?? 0)} m</span>`
+      suggestionButton.addEventListener('click', () => chooseProject(nearest.project))
+      suggestion.appendChild(suggestionButton)
+    }
+    if (nearby.length === 0) {
+      list.innerHTML = '<p class="place-empty">No saved places within 100 m.</p>'
+    } else {
+      for (const item of nearby) {
+        const btn = document.createElement('button')
+        btn.type = 'button'
+        btn.className = 'place-option'
+        btn.innerHTML = `<strong>${escapeHtml(item.project.name)}</strong><span>${Math.round(item.distance ?? 0)} m away${item.project.address ? ` · ${escapeHtml(item.project.address)}` : ''}</span>`
+        btn.addEventListener('click', () => chooseProject(item.project))
+        list.appendChild(btn)
+      }
+    }
+
+    const newForm = sheet.querySelector<HTMLElement>('#place-new-form')!
+    const newBtn = sheet.querySelector<HTMLButtonElement>('#place-new-btn')!
+    const lat = sheet.querySelector<HTMLInputElement>('#place-new-lat')!
+    const lng = sheet.querySelector<HTMLInputElement>('#place-new-lng')!
+    if (fix) {
+      lat.value = String(fix.lat)
+      lng.value = String(fix.lng)
+    }
+    newBtn.addEventListener('click', () => {
+      newForm.hidden = !newForm.hidden
+      if (!newForm.hidden) sheet.querySelector<HTMLInputElement>('#place-new-name')?.focus()
+    })
+    sheet.querySelector<HTMLButtonElement>('#place-new-save')?.addEventListener('click', () => {
+      void createPlace()
+    })
+    sheet.querySelector<HTMLButtonElement>('#place-continue-btn')?.addEventListener('click', () => {
+      if (currentSelected) confirmSelection()
+    })
+    sheet.querySelector<HTMLButtonElement>('#place-skip-btn')?.addEventListener('click', () => {
+      currentSelected = null
+      currentAreaId = null
+      onSelect(null, null)
+      pendingSelectionAction = null
+      sessionStorage.setItem(PLACE_SELECTION_SESSION_KEY, JSON.stringify({ projectId: null }))
+      sheet.hidden = true
+    })
+
+    async function createPlace(): Promise<void> {
+      const name = sheet.querySelector<HTMLInputElement>('#place-new-name')?.value.trim() ?? ''
+      const address = sheet.querySelector<HTMLInputElement>('#place-new-address')?.value.trim() ?? ''
+      const latitude = Number(lat.value)
+      const longitude = Number(lng.value)
+      if (!name || !Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
+        status.textContent = 'Enter a name and valid latitude/longitude.'
+        return
+      }
+      const geoPose = { ...fixToGeoPose(fix), lat: latitude, lng: longitude, address: address || fix?.address || null, displayAddress: address || fix?.displayAddress || null }
+      const response = await fetch('/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, address, geoPose }) })
+      if (!response.ok) {
+        status.textContent = 'Could not save this place. Try again.'
+        return
+      }
+      const project = await response.json() as Project
+      await projectStore.updateProject(project).catch(() => {})
+      chooseProject(project)
+    }
+
+    function chooseProject(project: Project): void {
+      currentSelected = project
+      currentAreaId = null
+      void render()
+    }
+
+    const areaList = sheet.querySelector<HTMLElement>('#place-area-list')
+    if (areaList && currentSelected) {
+      const areas = currentSelected.areas ?? []
+      const makeAreaButton = (label: string, areaId: string | null, detail: string) => {
+        const button = document.createElement('button')
+        button.type = 'button'
+        button.className = `place-option${currentAreaId === areaId ? ' place-option-selected' : ''}`
+        button.innerHTML = `<strong>${escapeHtml(label)}</strong><span>${escapeHtml(detail)}</span>`
+        button.addEventListener('click', () => {
+          currentAreaId = areaId
+          void render()
+        })
+        areaList.appendChild(button)
+      }
+      makeAreaButton('Whole place', null, 'No Area assignment')
+      for (const area of areas) {
+        makeAreaButton(area.name, area.areaId, area.kind)
+      }
+      const newAreaForm = sheet.querySelector<HTMLElement>('#place-area-new-form')!
+      sheet.querySelector<HTMLButtonElement>('#place-area-new-btn')?.addEventListener('click', () => {
+        newAreaForm.hidden = !newAreaForm.hidden
+        if (!newAreaForm.hidden) sheet.querySelector<HTMLInputElement>('#place-area-name')?.focus()
+      })
+      sheet.querySelector<HTMLButtonElement>('#place-area-save')?.addEventListener('click', () => {
+        void createArea()
+      })
+    }
+
+    async function createArea(): Promise<void> {
+      if (!currentSelected) return
+      const name = sheet.querySelector<HTMLInputElement>('#place-area-name')?.value.trim() ?? ''
+      const kind = sheet.querySelector<HTMLSelectElement>('#place-area-kind')?.value as AreaKind | undefined
+      if (!name || !kind) {
+        status.textContent = 'Enter an Area name and type.'
+        return
+      }
+      const area: PlaceArea = {
+        areaId: `area-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        name,
+        kind,
+        parentAreaId: currentSelected.areas?.find(candidate => candidate.kind === 'site')?.areaId ?? null,
+      }
+      const update = { ...currentSelected, areas: [...(currentSelected.areas ?? []), area] }
+      const response = await fetch(`/projects/${encodeURIComponent(currentSelected.projectId)}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(update),
+      })
+      if (!response.ok) {
+        status.textContent = 'Could not save the Area. Try again.'
+        return
+      }
+      currentSelected = await response.json() as Project
+      currentAreaId = area.areaId
+      void projectStore.updateProject(currentSelected).catch(() => {})
+      void render()
+    }
+
+    function confirmSelection(): void {
+      if (!currentSelected) return
+      onSelect(currentSelected, currentAreaId)
+      sheet.hidden = true
+      sessionStorage.setItem(PLACE_SELECTION_SESSION_KEY, JSON.stringify({ projectId: currentSelected.projectId, areaId: currentAreaId }))
+      void projectStore.updateProject(currentSelected).catch(() => {})
+      const action = pendingSelectionAction
+      pendingSelectionAction = null
+      action?.()
+    }
+  }
+
+  const open = (afterSelection?: () => void) => {
+    pendingSelectionAction = afterSelection ?? null
+    sheet.hidden = false
+    void render()
+  }
+  sheet.addEventListener('click', (event) => {
+    if (event.target === sheet) {
+      pendingSelectionAction = null
+      sheet.hidden = true
+    }
+  })
+  return { open }
+}
+
+function fixToGeoPose(fix: GeoFix | null): NonNullable<Project['geoPose']> {
+  return {
+    lat: fix?.lat ?? null,
+    lng: fix?.lng ?? null,
+    altitudeM: fix?.altitudeM ?? null,
+    bearing: fix?.bearing ?? null,
+    accuracyM: fix?.accuracy ?? null,
+    fixedAt: fix?.fixedAt ?? null,
+    address: fix?.address ?? null,
+    displayAddress: fix?.displayAddress ?? null,
+  }
+}
+
+function escapeHtml(value: string): string {
+  const el = document.createElement('span')
+  el.textContent = value
+  return el.innerHTML
+}
+
+async function fetchProjects(): Promise<Project[]> {
+  const response = await fetch('/projects')
+  if (!response.ok) return []
+  return await response.json() as Project[]
+}
+
+/** Mirror the locally-created project frame so other devices use the same references. */
+async function persistProjectSpatialFrame(project: Project): Promise<void> {
+  try {
+    const response = await fetch(`/projects/${encodeURIComponent(project.projectId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(project),
+    })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  } catch (error) {
+    console.warn('[calibration] Project frame saved locally but could not sync:', error)
+  }
 }
 
 /** One-time HUD warning when IndexedDB usage crosses 80 % of the browser quota. */
@@ -1020,32 +1544,45 @@ function showArHelp(): void {
 }
 
 /**
- * Wire the "or upload a walkthrough video" secondary action on the start
- * screen. POSTs the chosen file to /ingest-video (multipart) with a simple
- * upload-% readout, then reveals the "open the 3D editor" link on success.
+ * Wire the Place-scoped media upload path. One video is ingested as a
+ * walkthrough; one or more images become a photo-ingest session.
  * Deliberately isolated from the AR start flow: it neither removes the start
  * screen nor touches the onboarding/insecure-context paths.
  */
-function wireVideoUpload(): void {
+function wireContentUpload(): void {
   const input = document.getElementById('upload-video-input') as HTMLInputElement | null
   const progress = document.getElementById('upload-video-progress')
   const openLink = document.getElementById('upload-video-open') as HTMLAnchorElement | null
   const btn = document.getElementById('upload-video-btn')
+  const uploadCard = document.getElementById('start-upload-card')
   if (!input) return
 
+  // The file picker opens only after the user confirms a project in the modal.
+  uploadCard?.addEventListener('click', () => requestPlaceSelection?.(() => input.click()))
+
   input.addEventListener('change', () => {
-    const file = input.files?.[0]
-    if (!file) return
+    const files = [...(input.files ?? [])]
+    if (files.length === 0) return
+    const allPhotos = files.every(file => file.type.startsWith('image/'))
+    const oneVideo = files.length === 1 && files[0]!.type.startsWith('video/')
+    if (!allPhotos && !oneVideo) {
+      if (progress) progress.textContent = 'Choose one video or one or more photos from the same Place.'
+      input.value = ''
+      return
+    }
     if (btn) btn.setAttribute('aria-disabled', 'true')
     if (openLink) openLink.hidden = true
     if (progress) progress.textContent = 'Uploading… 0%'
 
     const form = new FormData()
-    form.append('video', file, file.name)
-    form.append('name', file.name.replace(/\.[^.]+$/, ''))
+    if (oneVideo) form.append('video', files[0]!, files[0]!.name)
+    else for (const file of files) form.append('files', file, file.name)
+    form.append('name', oneVideo ? files[0]!.name.replace(/\.[^.]+$/, '') : `Photo set ${new Date().toLocaleDateString()}`)
+    if (uploadPlaceTarget.projectId) form.append('projectId', uploadPlaceTarget.projectId)
+    if (uploadPlaceTarget.areaId) form.append('areaId', uploadPlaceTarget.areaId)
 
     const xhr = new XMLHttpRequest()
-    xhr.open('POST', '/ingest-video')
+    xhr.open('POST', oneVideo ? '/ingest-video' : '/ingest-photos')
     xhr.upload.addEventListener('progress', (e) => {
       if (!progress || !e.lengthComputable) return
       progress.textContent = `Uploading… ${Math.round((e.loaded / e.total) * 100)}%`
@@ -1053,14 +1590,20 @@ function wireVideoUpload(): void {
     xhr.addEventListener('load', () => {
       if (btn) btn.removeAttribute('aria-disabled')
       if (xhr.status >= 200 && xhr.status < 300) {
-        let frameCount: number | undefined
-        try { frameCount = (JSON.parse(xhr.responseText) as { frameCount?: number }).frameCount } catch { /* ignore */ }
+        let result: { frameCount?: number; droppedBlurry?: number } = {}
+        try { result = JSON.parse(xhr.responseText) as typeof result } catch { /* ignore */ }
         if (progress) {
-          progress.textContent = frameCount
-            ? `Uploaded — ${frameCount} keyframes extracted.`
+          const dropNote = result.droppedBlurry ? ` ${result.droppedBlurry} blurry photo${result.droppedBlurry === 1 ? '' : 's'} skipped.` : ''
+          progress.textContent = result.frameCount
+            ? `Uploaded — ${result.frameCount} keyframes extracted.${dropNote}`
             : 'Uploaded — processing started.'
         }
-        if (openLink) openLink.hidden = false
+        if (openLink) {
+          openLink.href = uploadPlaceTarget.projectId
+            ? `/editor?project=${encodeURIComponent(uploadPlaceTarget.projectId)}`
+            : '/editor'
+          openLink.hidden = false
+        }
       } else {
         let message = `Upload failed (${xhr.status})`
         try {
@@ -1197,10 +1740,6 @@ function updateXrModeLink(use8thWall: boolean, webxrSupported: boolean): void {
   }
 }
 
-function bucket(p: { x: number; y: number; z: number }): string {
-  return `${p.x.toFixed(1)},${p.y.toFixed(1)},${p.z.toFixed(1)}`
-}
-
 let _inferDialogTimer: ReturnType<typeof setTimeout> | null = null
 
 function showInferDialog(dets: Array<{ label: string; description: string; confidence: number; worldPos: { x: number; y: number; z: number } }>): void {
@@ -1278,23 +1817,35 @@ function hideInferDialog(): void {
 
 /**
  * Send a request to the server's /process-scan endpoint.
- * The server-side scan list must contain scans from the current session;
- * if no matching filename is passed we request processing on the newest scan.
+ *
+ * Passes `filename` explicitly when this tab has one — the GLB it most
+ * recently uploaded — rather than relying on `sessionId` alone to resolve it.
+ * `store.sessionId` may be a `local-…` placeholder (no keyframe session was
+ * ever opened, the common case for a plain export), and since
+ * src/export/gltf.ts now writes `null` server-side for exactly that case, a
+ * raw local id sent here could never match anything: `findFilenameBySessionId`
+ * does a plain string comparison against the stored value, so a `local-…`
+ * string sent by the client can never equal a stored `null`, and the request
+ * would silently fall through to the server's "most recently uploaded by
+ * anyone" fallback — reopening the cross-session misattribution this
+ * function's `filename`-avoidance was originally written to prevent.
+ * `filename` is an unambiguous identifier the server already accepts and
+ * prefers over the `sessionId` lookup, so use it when we have it; `sessionId`
+ * is still sent, filtered to the shape the server would actually recognize,
+ * as a fallback for the case this tab has no filename yet.
  */
-async function requestServerProcessing(action: string, store: DetectionStore): Promise<void> {
+async function requestServerProcessing(action: string, store: DetectionStore, filename: string | undefined): Promise<void> {
   const overlay = setupStatusOverlay()
   overlay.setStatus(`Processing: ${action}…`)
   try {
-    // Find the newest scan for this session on the server
-    const listResp = await fetch('/scans')
-    if (!listResp.ok) throw new Error(`/scans returned ${listResp.status}`)
-    const list = await listResp.json() as Array<{ filename: string }>
-    const filename = list[0]?.filename ?? ''
-
     const resp = await fetch('/process-scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filename, action, sessionId: store.sessionId }),
+      body: JSON.stringify({
+        action,
+        filename,
+        sessionId: isServerSessionId(store.sessionId) ? store.sessionId : undefined,
+      }),
     })
     if (!resp.ok) throw new Error(`/process-scan returned ${resp.status}`)
     const result = await resp.json() as { action: string; result: string }

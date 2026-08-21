@@ -66,6 +66,12 @@ export const ONBOARDING_KEY = 'companion-scan-onboarded'
 export const GEO_FIX_SESSION_KEY = 'ci-xr-geo-fix'
 
 /**
+ * sessionStorage key: selected place for this scanner tab. A missing value
+ * means "decide later" and exports use projectId:null.
+ */
+export const PLACE_SELECTION_SESSION_KEY = 'ci-xr-place-selection'
+
+/**
  * IndexedDB database name for the scan-session store (detections keyed by
  * sessionId). Read/written by src/scene/store.ts. Do not rename — orphans
  * every existing user's persisted session data, since the browser opens a

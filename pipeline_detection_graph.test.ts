@@ -5,7 +5,7 @@
  * unnoticed: `exportToGLB` gives every detection a wireframe child, and
  * glTF-Transform's `quantize()` cannot put a dequantization transform on a node
  * holding both a mesh and children — so it hoists the mesh into a new unnamed
- * sibling. Measured on a real capture, 8 of 8 detection nodes carried a mesh
+ * child. Measured on a real capture, 8 of 8 detection nodes carried a mesh
  * before optimization and 0 of 8 after. The viewer prefers the optimized file
  * and gated its detection features on `instanceof THREE.Mesh`, so boxes,
  * sample points and semantic proxy models silently vanished from every
@@ -43,17 +43,37 @@ const CUBE_INDICES = new Uint16Array([
  * detection nodes that carry the label extras, a box mesh, AND a wireframe
  * child. That child is what makes the node a hoist candidate.
  */
-async function buildExporterShapedScan(detections: string[]): Promise<Uint8Array> {
+async function buildExporterShapedScan(
+  detections: string[],
+  opts: {
+    /** Stamped onto every node, the way src/export/gltf.ts does. */
+    sessionId?: string
+    /** Add an extras-only Room_* node: no mesh, no children. prune() bait. */
+    withEmptyRoomNode?: boolean
+  } = {},
+): Promise<Uint8Array> {
   const doc = new Document()
   const buffer = doc.createBuffer()
   const scene = doc.createScene('Scene')
+  const provenance = opts.sessionId
+    ? { sessionId: opts.sessionId, capturedAt: '2026-08-19T21:18:33.000Z' }
+    : {}
 
   // A point cloud, so the pipeline has something to decimate for its LODs.
   const cloud = new Float32Array(3000)
   for (let i = 0; i < cloud.length; i++) cloud[i] = (i % 97) / 97
   const cloudPos = doc.createAccessor('cloud-pos').setType('VEC3').setArray(cloud).setBuffer(buffer)
   const cloudPrim = doc.createPrimitive().setMode(0 /* POINTS */).setAttribute('POSITION', cloudPos)
-  scene.addChild(doc.createNode('point-cloud').setMesh(doc.createMesh('cloud').addPrimitive(cloudPrim)))
+  const cloudNode = doc.createNode('point-cloud').setMesh(doc.createMesh('cloud').addPrimitive(cloudPrim))
+  cloudNode.setExtras({ type: 'slam_feature_points', ...provenance })
+  scene.addChild(cloudNode)
+
+  // An extras-only node: exactly the shape a Room_*/Floor_* group has for an
+  // autosave taken before there is any geometry. prune() disposes this unless
+  // it is called with keepExtras.
+  if (opts.withEmptyRoomNode) {
+    scene.addChild(doc.createNode('Room_Unknown').setExtras({ type: 'room', ...provenance }))
+  }
 
   detections.forEach((label, i) => {
     const pos = doc.createAccessor(`box-pos-${i}`).setType('VEC3').setArray(CUBE_POSITIONS).setBuffer(buffer)
@@ -64,7 +84,7 @@ async function buildExporterShapedScan(detections: string[]): Promise<Uint8Array
     const node = doc.createNode(name)
       .setMesh(doc.createMesh(name).addPrimitive(prim))
       .setTranslation([i, 0, i])
-    node.setExtras({ objectId: name, objectType: 'detection', label, confidence: 0.9 })
+    node.setExtras({ objectId: name, objectType: 'detection', label, confidence: 0.9, ...provenance })
 
     // The wireframe overlay exportToGLB nests under every detection mesh.
     const wirePos = doc.createAccessor(`wire-pos-${i}`).setType('VEC3').setArray(CUBE_POSITIONS).setBuffer(buffer)
@@ -155,7 +175,7 @@ function freshDetection(label: string): THREE.Object3D {
   return mesh
 }
 
-/** The same detection after quantize hoists the mesh into an unnamed sibling. */
+/** The same detection after quantize hoists the mesh into an unnamed child. */
 function hoistedDetection(label: string): THREE.Object3D {
   const node = new THREE.Object3D()
   node.name = `${label}_001`
@@ -282,4 +302,228 @@ test('optimizeScan: a dropped extension is reported rather than lost quietly', a
   const dropped = result.stages.filter((s) => s.name === 'extensions')
 
   assert.equal(dropped.length, 0, 'nothing should be dropped for a scan using only known extensions')
+})
+
+// ── Provenance preservation (07-scan-identity/0004) ────────────────────────
+//
+// The viewer prefers the optimized file, so provenance written by the exporter
+// and dropped here would be invisible in exactly the scans users see, with no
+// error — the same failure shape the detection-mesh comment at the top of this
+// file documents.
+
+const SESSION_A = 'sess-aaaaaaaa-1111-2222-3333-444444444444'
+const SESSION_B = 'sess-bbbbbbbb-5555-6666-7777-888888888888'
+const FIXTURE_CAPTURED_AT = '2026-08-19T21:18:33.000Z'
+
+/** Every named node's extras, keyed by node name. */
+function extrasByName(glb: Uint8Array): Map<string, Record<string, unknown>> {
+  const out = new Map<string, Record<string, unknown>>()
+  for (const node of glbJson(glb).nodes ?? []) {
+    const name = node['name']
+    if (typeof name !== 'string' || name === '') continue
+    out.set(name, (node['extras'] ?? {}) as Record<string, unknown>)
+  }
+  return out
+}
+
+test('optimizeScan: provenance survives dedup + prune + quantize + Draco', async () => {
+  const source = await buildExporterShapedScan(['monitor', 'chair'], { sessionId: SESSION_A })
+
+  const result = await optimizeScan(source, { provenance: { scanId: 'scan-fixture-001' } })
+  const extras = extrasByName(result.optimized.bytes)
+
+  for (const name of ['monitor_001', 'chair_002']) {
+    const e = extras.get(name)
+    assert.ok(e, `${name} vanished from the optimized document`)
+    assert.equal(e['sessionId'], SESSION_A, `${name} lost its sessionId`)
+    assert.equal(e['capturedAt'], FIXTURE_CAPTURED_AT, `${name} lost its capturedAt`)
+    assert.notEqual(e['label'], undefined, `${name} lost its label`)
+    // Stamped server-side before the transforms, so it is subject to the same
+    // preservation guarantees as everything the exporter wrote.
+    assert.equal(e['scanId'], 'scan-fixture-001', `${name} lost the server-stamped scanId`)
+  }
+})
+
+test('optimizeScan: a point-cloud node keeps its provenance', async () => {
+  // Asserted separately from mesh nodes: Draco skips non-TRIANGLES primitives,
+  // so point-cloud provenance takes a structurally different path.
+  const source = await buildExporterShapedScan(['monitor'], { sessionId: SESSION_A })
+
+  const result = await optimizeScan(source, { provenance: { scanId: 'scan-fixture-002' } })
+  const cloud = extrasByName(result.optimized.bytes).get('point-cloud')
+
+  assert.ok(cloud, 'the point-cloud node did not survive')
+  assert.equal(cloud['sessionId'], SESSION_A)
+  assert.equal(cloud['scanId'], 'scan-fixture-002')
+})
+
+test('optimizeScan: every LOD keeps provenance too', async () => {
+  const source = await buildExporterShapedScan(['monitor'], { sessionId: SESSION_A })
+
+  const result = await optimizeScan(source, {
+    provenance: { scanId: 'scan-fixture-003' },
+    lodMinPoints: 1, // the fixture cloud is small; force the LOD path
+  })
+  assert.ok(result.lods.length > 0, 'no LODs were produced, so nothing was asserted')
+
+  for (const lod of result.lods) {
+    const cloud = extrasByName(lod.bytes).get('point-cloud')
+    assert.ok(cloud, `LOD @${lod.voxelM}m lost the point-cloud node`)
+    assert.equal(cloud['sessionId'], SESSION_A, `LOD @${lod.voxelM}m lost its sessionId`)
+    assert.equal(cloud['scanId'], 'scan-fixture-003', `LOD @${lod.voxelM}m lost its scanId`)
+  }
+})
+
+test('optimizeScan: an extras-only node survives prune()', async () => {
+  // Fails without prune({ keepExtras: true }): PRUNE_DEFAULTS.keepExtras is
+  // false, and nodeTreeShake() disposes a node with no children, no mesh and —
+  // with keepExtras off — no reason to be kept for its extras alone.
+  const source = await buildExporterShapedScan(['monitor'], {
+    sessionId: SESSION_A,
+    withEmptyRoomNode: true,
+  })
+  assert.ok(extrasByName(source).has('Room_Unknown'), 'fixture did not build the empty node')
+
+  const result = await optimizeScan(source, { provenance: { scanId: 'scan-fixture-004' } })
+  const room = extrasByName(result.optimized.bytes).get('Room_Unknown')
+
+  assert.ok(room, 'prune() disposed the provenance-only node')
+  assert.equal(room['sessionId'], SESSION_A)
+})
+
+test('optimizeScan: dedup does not attribute one session geometry to another', async () => {
+  // The cross-session case the pipeline has never exercised: today it runs on a
+  // single-session document. Two walkthroughs of one place plausibly contain
+  // byte-identical geometry — every detection box is a BoxGeometry built from
+  // the same bbox maths — and dedup() merges MESH with keepUniqueNames: false.
+  // Nodes are safe only because NODE is absent from DEDUP_DEFAULTS.propertyTypes,
+  // which is exactly why provenance lives on nodes and never on a mesh.
+  const a = await buildExporterShapedScan(['chair'], { sessionId: SESSION_A })
+  const b = await buildExporterShapedScan(['chair'], { sessionId: SESSION_B })
+
+  const optA = await optimizeScan(a, { provenance: { scanId: 'scan-session-a' } })
+  const optB = await optimizeScan(b, { provenance: { scanId: 'scan-session-b' } })
+
+  const chairA = extrasByName(optA.optimized.bytes).get('chair_001')
+  const chairB = extrasByName(optB.optimized.bytes).get('chair_001')
+
+  assert.equal(chairA?.['sessionId'], SESSION_A)
+  assert.equal(chairB?.['sessionId'], SESSION_B)
+  assert.equal(chairA?.['scanId'], 'scan-session-a')
+  assert.equal(chairB?.['scanId'], 'scan-session-b')
+  assert.notEqual(
+    chairA?.['sessionId'],
+    chairB?.['sessionId'],
+    'identical geometry must not collapse two sessions into one identity',
+  )
+})
+
+test('optimizeScan: no provenance option means nothing is stamped, not undefined', async () => {
+  const source = await buildExporterShapedScan(['monitor'], { sessionId: SESSION_A })
+
+  const result = await optimizeScan(source)
+  const monitor = extrasByName(result.optimized.bytes).get('monitor_001')
+
+  assert.ok(monitor)
+  assert.equal('scanId' in monitor, false, 'a caller with no scan context must not write the key')
+  assert.equal(monitor['sessionId'], SESSION_A, 'the client-written half is untouched')
+})
+
+test('optimizeScan: a hoisted child carries no second copy of the identity', async () => {
+  // The invariant, stated as a test: quantize() hoists the mesh into a new
+  // unnamed child with no extras, so a consumer keying on the mesh-bearing node
+  // finds nothing and must walk UP. Copying provenance down would put two
+  // records on one logical object — the duplication hasLabelledAncestor()
+  // already exists to defend against.
+  const source = await buildExporterShapedScan(['chair'], { sessionId: SESSION_A })
+
+  const result = await optimizeScan(source, { provenance: { scanId: 'scan-fixture-005' } })
+  const nodes = glbJson(result.optimized.bytes).nodes ?? []
+
+  const labelled = nodes.find((n) => (n['extras'] as Record<string, unknown> | undefined)?.['label'] === 'chair')
+  assert.ok(labelled, 'the labelled node did not survive')
+  assert.equal((labelled['extras'] as Record<string, unknown>)['sessionId'], SESSION_A)
+
+  for (const child of (labelled['children'] ?? []) as number[]) {
+    const childExtras = (nodes[child]?.['extras'] ?? {}) as Record<string, unknown>
+    if (childExtras['label'] !== undefined) continue // the wireframe, which the exporter names
+    assert.equal(
+      childExtras['sessionId'],
+      undefined,
+      'a hoisted child must not carry a second copy of the identity',
+    )
+    assert.equal(
+      childExtras['scanId'],
+      undefined,
+      'a hoisted child must not carry the server-stamped scanId either',
+    )
+  }
+})
+
+test('optimizeScan: the wireframe child never gets stamped with scanId', async () => {
+  // stampScanId() used to iterate every node unconditionally, which included
+  // the wireframe overlay — bare on purpose (src/export/gltf.ts) so a
+  // traversal doesn't double-count it as a second logical object. Fails
+  // without the fix: the wireframe child ends up with extras={scanId:...}
+  // even though it had no extras at all going in.
+  const source = await buildExporterShapedScan(['chair'], { sessionId: SESSION_A })
+  const sourceNodes = glbJson(source).nodes ?? []
+  const sourceLabelled = sourceNodes.find((n) => (n['extras'] as Record<string, unknown> | undefined)?.['label'] === 'chair')
+  assert.ok(sourceLabelled, 'fixture did not build a labelled chair node')
+  const sourceWireframe = (sourceLabelled['children'] as number[])
+    .map((i) => sourceNodes[i])
+    .find((n) => (n['extras'] as Record<string, unknown> | undefined)?.['label'] === undefined)
+  assert.ok(sourceWireframe, 'fixture did not build a bare wireframe child')
+  assert.deepEqual(sourceWireframe['extras'] ?? {}, {}, 'fixture wireframe must start genuinely bare')
+
+  const result = await optimizeScan(source, { provenance: { scanId: 'scan-wireframe-check' } })
+  const nodes = glbJson(result.optimized.bytes).nodes ?? []
+  const labelled = nodes.find((n) => (n['extras'] as Record<string, unknown> | undefined)?.['label'] === 'chair')
+  assert.ok(labelled, 'the labelled node did not survive optimization')
+  const wireframe = (labelled['children'] as number[])
+    .map((i) => nodes[i])
+    .find((n) => (n['extras'] as Record<string, unknown> | undefined)?.['label'] === undefined)
+  assert.ok(wireframe, 'the wireframe child did not survive optimization')
+
+  assert.deepEqual(
+    wireframe['extras'] ?? {},
+    {},
+    'the wireframe child must stay bare — stampScanId must not give it a scanId',
+  )
+})
+
+test('optimizeScan: a genuinely empty structural node is still pruned when scanId is stamped', async () => {
+  // The other half of the same bug: stampScanId() giving every node non-empty
+  // extras made prune()'s keepExtras-gated disposal unreachable for the whole
+  // document, not just for the wireframe. A node with no mesh, no children and
+  // no extras of its own must still be prunable even on the real
+  // provenance-stamping path every production optimize-scan job uses. Fails
+  // without the fix: the bare node survives instead of being disposed.
+  const doc = new Document()
+  const buffer = doc.createBuffer()
+  const scene = doc.createScene('Scene')
+
+  const pos = doc.createAccessor('pos').setType('VEC3').setArray(CUBE_POSITIONS).setBuffer(buffer)
+  const idx = doc.createAccessor('idx').setType('SCALAR').setArray(CUBE_INDICES).setBuffer(buffer)
+  const prim = doc.createPrimitive().setMode(4 /* TRIANGLES */).setAttribute('POSITION', pos).setIndices(idx)
+  scene.addChild(doc.createNode('anchor').setMesh(doc.createMesh('anchor-mesh').addPrimitive(prim)))
+
+  // No mesh, no children, no extras — exactly what prune() is supposed to be
+  // free to dispose regardless of what stampScanId() does elsewhere.
+  scene.addChild(doc.createNode('Truly_Empty_Node'))
+
+  const io = new NodeIO().registerExtensions([KHRDracoMeshCompression, KHRMeshQuantization])
+  const source = await io.writeBinary(doc)
+  assert.ok(
+    (glbJson(source).nodes ?? []).some((n) => n['name'] === 'Truly_Empty_Node'),
+    'fixture did not build the empty node',
+  )
+
+  const result = await optimizeScan(source, { provenance: { scanId: 'scan-prune-check' } })
+  const names = (glbJson(result.optimized.bytes).nodes ?? []).map((n) => n['name'])
+
+  assert.ok(
+    !names.includes('Truly_Empty_Node'),
+    'stampScanId must not make an unrelated empty node permanently un-prunable',
+  )
 })

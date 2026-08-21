@@ -23,10 +23,9 @@ npm run qr -- "/scanner.html?world=default"   # QR code for on-device testing
 npm run logs:watch           # stream a phone's console over the wire (?debug=remote)
 ```
 
-`OLLAMA_HOST` must be a full URL (`http://localhost:11434`) — if this machine's
-`OLLAMA_HOST` env var is set to a bind address like `0.0.0.0:11434` (common when
-Ollama itself is configured to listen on all interfaces), override it explicitly for
-this process or the inference engine's client fetch will fail.
+`OLLAMA_HOST` may be a full URL (`http://localhost:11434`) or a host:port bind
+address such as `0.0.0.0:11434`; the inference engine normalizes the latter to an
+HTTP URL before making requests.
 
 ## Hard rule: reuse, don't duplicate
 

@@ -153,6 +153,23 @@ Deno.test('sessionForScan: with no sessionId, the first glbFilename match in rea
   })
 })
 
+Deno.test('sessionForScan: an explicitly null sessionId resolves through the glbFilename backlink', async () => {
+  // Live only since 07-scan-identity/0002. Every sidecar used to carry a
+  // client-minted sessionId, so `explicit` was always truthy and this branch
+  // was unreachable — which is why setting `glbFilename` alone would have
+  // fixed nothing. A scan captured without keyframe streaming now writes
+  // `sessionId: null`, and the backlink is what resolves it.
+  await withTempDir(async (dir) => {
+    const sessionsDir = `${dir}/sessions`
+    await writeSession(sessionsDir, 'sess-real', { glbFilename: 'autosaved.glb', tag: 'by-glb' })
+
+    const index = await loadSessionIndex(sessionsDir)
+    const record = await sessionForScan(index, sessionsDir, 'autosaved.glb', { sessionId: null })
+
+    assertEquals(record?.['tag'], 'by-glb')
+  })
+})
+
 Deno.test('sessionForScan: an unmatched scan resolves to null', async () => {
   await withTempDir(async (dir) => {
     const sessionsDir = `${dir}/sessions`

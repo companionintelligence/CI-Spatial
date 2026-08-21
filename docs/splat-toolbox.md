@@ -3,14 +3,14 @@
 The **Splat Toolbox** is the set of tools that turn a Companion-Scan capture
 session into a viewable, trainable, and queryable 3D Gaussian-splat scene. Each
 tool is a thin Deno/Node driver over a proven external engine, wired into the
-world-editor as a job type (or exposed as a script). This document is the
+Companion Scan Spatial Editor as a job type (or exposed as a script). This document is the
 inventory: what each tool is, when you reach for it, and how to drive it from
 the **editor UI**, from a **scanner/session**, and from **curl**.
 
 All the trained/derived artifacts land next to the scan in `SCANS_DIR` as
 sidecars (`<base>.splat.ply`, `<base>.splat-train.manifest.json`,
 `<base>.interactions.json`, `<base>.splat-detect.manifest.json`), and are served
-back through the `/scans/:filename` routes the viewer already understands.
+back through the `/scans/:filename` routes the Spatial Editor already understands.
 
 ---
 
@@ -42,7 +42,7 @@ alongside a warm model.
 
 ## View — SparkJS
 
-**What:** renders a trained `<base>.splat.ply` in the desktop viewer as a
+**What:** renders a trained `<base>.splat.ply` in the Spatial Editor as a
 **Trained Splat** layer under the owning scan, using SparkJS's `SplatMesh`.
 
 **When:** any time a scan has a `splat-train` manifest with `status: ok`.
