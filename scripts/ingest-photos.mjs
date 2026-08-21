@@ -20,8 +20,8 @@
  *
  * Usage:
  *   node scripts/ingest-photos.mjs <photos-dir> [--session-id <id>]
- *     [--scans-dir <dir>] [--max-long-edge 1440] [--min-sharpness 60]
- *     [--cluster-gap-hours 2] [--single-session true]
+ *     [--scans-dir <dir>] [--sessions-dir <dir>] [--max-long-edge 1440]
+ *     [--min-sharpness 60] [--cluster-gap-hours 2] [--single-session true]
  *
  * Prints one JSON line per session, then the LAST stdout line is the summary
  * the server route parses:
@@ -34,7 +34,7 @@ import { filterBlurryFrames } from './ingest-quality.mjs'
 
 const argv = process.argv.slice(2)
 if (argv.length === 0 || argv[0].startsWith('--')) {
-  console.error('usage: node scripts/ingest-photos.mjs <photos-dir> [--session-id <id>] [--scans-dir <dir>] [--max-long-edge 1440] [--min-sharpness 60] [--cluster-gap-hours 2] [--single-session true]')
+  console.error('usage: node scripts/ingest-photos.mjs <photos-dir> [--session-id <id>] [--scans-dir <dir>] [--sessions-dir <dir>] [--max-long-edge 1440] [--min-sharpness 60] [--cluster-gap-hours 2] [--single-session true]')
   process.exit(2)
 }
 const PHOTOS_DIR = argv[0]
@@ -42,6 +42,14 @@ const args = parseArgs(argv.slice(1))
 
 const ROOT = path.resolve(import.meta.dirname, '..')
 const SCANS_DIR = args['scans-dir'] || process.env.SCANS_DIR || path.join(ROOT, 'scans')
+// Must match main.ts's own SESSIONS_DIR resolution exactly (`Deno.env.get('SESSIONS_DIR')
+// ?? \`${SCANS_DIR}/sessions\``) — main.ts is where keyframePreflight/resolveSessionDirFor
+// look for what this script writes. Deployments that set SESSIONS_DIR independently of
+// SCANS_DIR (.env.example documents this as supported) need this script to land keyframes
+// in the same place, or the auto-enqueued lingbot-map-reconstruct job fails with
+// "requires RGB keyframe observations" even though the keyframes were captured fine —
+// they were just written to the wrong directory.
+const SESSIONS_DIR = args['sessions-dir'] || process.env.SESSIONS_DIR || path.join(SCANS_DIR, 'sessions')
 const MAX_LONG_EDGE = Math.floor(clampNumber(args['max-long-edge'], 1440, 240, 8192))
 const MIN_SHARPNESS = clampNumber(args['min-sharpness'] ?? process.env.INGEST_MIN_SHARPNESS, 60, 0, 100000)
 const CLUSTER_GAP_HOURS = clampNumber(args['cluster-gap-hours'], 2, 0, 24 * 365)
@@ -170,7 +178,7 @@ async function main() {
   for (let ci = 0; ci < clusters.length; ci++) {
     const cluster = clusters[ci]
     const sessionId = ci === 0 ? baseSessionId : `${baseSessionId}-p${ci + 1}`
-    const sessionDir = path.join(SCANS_DIR, 'sessions', sessionId)
+    const sessionDir = path.join(SESSIONS_DIR, sessionId)
     await mkdir(sessionDir, { recursive: true })
 
     // Blur gate runs on the ORIGINALS (the metric downscales internally), so

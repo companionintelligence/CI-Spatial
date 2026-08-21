@@ -20,7 +20,7 @@
  *   kf-NNNNN.jpg stays contiguous and keyframes.jsonl matches; the dropped
  *   count is recorded as `droppedBlurry`.
  *
- * Outputs (under <scans-dir>/sessions/<sessionId>/):
+ * Outputs (under <sessions-dir>/<sessionId>/, default <scans-dir>/sessions/):
  *   kf-00000.jpg …            scaled keyframes (long edge capped, quality ~85)
  *   keyframes.jsonl           one record per frame: { index, file, timestamp }
  *   session.json              { sessionId, source: 'video-ingest', … }
@@ -28,7 +28,7 @@
  * Usage:
  *   node scripts/ingest-video.mjs <video-path> [--session-id <id>] [--fps 2]
  *     [--max-frames 300] [--max-long-edge 1440] [--min-sharpness 60]
- *     [--scans-dir <dir>]
+ *     [--scans-dir <dir>] [--sessions-dir <dir>]
  *
  * Prints JSON { sessionId, frameCount, sessionDir, droppedBlurry, fps } on
  * stdout as the LAST line (the /ingest-video server route parses exactly that).
@@ -40,7 +40,7 @@ import { filterBlurryFrames } from './ingest-quality.mjs'
 
 const argv = process.argv.slice(2)
 if (argv.length === 0 || argv[0].startsWith('--')) {
-  console.error('usage: node scripts/ingest-video.mjs <video-path> [--session-id <id>] [--fps 2] [--max-frames 300] [--max-long-edge 1440] [--min-sharpness 60] [--scans-dir <dir>]')
+  console.error('usage: node scripts/ingest-video.mjs <video-path> [--session-id <id>] [--fps 2] [--max-frames 300] [--max-long-edge 1440] [--min-sharpness 60] [--scans-dir <dir>] [--sessions-dir <dir>]')
   process.exit(2)
 }
 const VIDEO = argv[0]
@@ -48,6 +48,14 @@ const args = parseArgs(argv.slice(1))
 
 const ROOT = path.resolve(import.meta.dirname, '..')
 const SCANS_DIR = args['scans-dir'] || process.env.SCANS_DIR || path.join(ROOT, 'scans')
+// Must match main.ts's own SESSIONS_DIR resolution exactly (`Deno.env.get('SESSIONS_DIR')
+// ?? \`${SCANS_DIR}/sessions\``) — main.ts is where keyframePreflight/resolveSessionDirFor
+// look for what this script writes. Deployments that set SESSIONS_DIR independently of
+// SCANS_DIR (.env.example documents this as supported) need this script to land keyframes
+// in the same place, or the auto-enqueued lingbot-map-reconstruct job fails with
+// "requires RGB keyframe observations" even though the keyframes were captured fine —
+// they were just written to the wrong directory.
+const SESSIONS_DIR = args['sessions-dir'] || process.env.SESSIONS_DIR || path.join(SCANS_DIR, 'sessions')
 const MAX_FRAMES = Math.floor(clampNumber(args['max-frames'], 300, 1, 2000))
 const MAX_LONG_EDGE = Math.floor(clampNumber(args['max-long-edge'], 1440, 240, 8192))
 // Blur gate: frames below this variance-of-Laplacian are dropped. 0 disables.
@@ -113,7 +121,7 @@ async function main() {
     console.error(`error: session id "${sessionId}" must match ${SESSION_ID_RE}`)
     process.exit(2)
   }
-  const sessionDir = path.join(SCANS_DIR, 'sessions', sessionId)
+  const sessionDir = path.join(SESSIONS_DIR, sessionId)
   await mkdir(sessionDir, { recursive: true })
 
   const durationSeconds = probeDurationSeconds(VIDEO)

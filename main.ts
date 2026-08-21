@@ -977,7 +977,7 @@ app.post('/ingest-video', async (c) => {
   try {
     // Run the ingest script; the LAST stdout line is JSON { sessionId, frameCount, sessionDir }.
     const cmd = new Deno.Command('node', {
-      args: [INGEST_VIDEO_SCRIPT, tmpVideo, '--scans-dir', SCANS_DIR, '--fps', fps],
+      args: [INGEST_VIDEO_SCRIPT, tmpVideo, '--scans-dir', SCANS_DIR, '--sessions-dir', SESSIONS_DIR, '--fps', fps],
       stdout: 'piped',
       stderr: 'piped',
     })
@@ -1086,7 +1086,7 @@ app.post('/ingest-photos', async (c) => {
     // Run the ingest script; the LAST stdout line is JSON
     // { sessionId, frameCount, sessionDir, droppedBlurry, … }.
     const cmd = new Deno.Command('node', {
-      args: [INGEST_PHOTOS_SCRIPT, tmpDir, '--scans-dir', SCANS_DIR, '--single-session', 'true'],
+      args: [INGEST_PHOTOS_SCRIPT, tmpDir, '--scans-dir', SCANS_DIR, '--sessions-dir', SESSIONS_DIR, '--single-session', 'true'],
       stdout: 'piped',
       stderr: 'piped',
     })
