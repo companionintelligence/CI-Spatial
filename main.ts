@@ -1677,6 +1677,7 @@ async function removeAllScansFromWorlds(): Promise<number> {
     world.scans = []
     world.editPatches = world.editPatches.filter(patch => patch.scope === 'world')
     world.jobs = world.jobs.filter(job => !job.scanId)
+    world.comments = []
     world.originGeoPose = { lat: null, lng: null, altitudeM: null, bearing: null, accuracyM: null }
     world.localFrame.origin = world.originGeoPose
     return hadScans
@@ -3846,7 +3847,7 @@ app.post('/process-scan', async (c) => {
 type ProjectRecord = Project
 
 function isPlaceType(value: unknown): value is NonNullable<ProjectRecord['placeType']> {
-  return value === 'building' || value === 'floor' || value === 'room'
+  return value === 'building' || value === 'floor' || value === 'room' || value === 'other'
 }
 
 const DEFAULT_PROJECT: ProjectRecord = {
@@ -3968,7 +3969,7 @@ app.post('/projects', async (c) => {
   }
   if (!body.name?.trim()) return c.json({ error: 'name is required' }, 400)
   if (body.placeType !== undefined && !isPlaceType(body.placeType)) {
-    return c.json({ error: 'placeType must be building, floor, or room' }, 400)
+    return c.json({ error: 'placeType must be building, floor, room, or other' }, 400)
   }
   const name = body.name.trim()
   const created = await mutateProjects<{ project: ProjectRecord | null; error?: string }>((projects) => {
@@ -4039,7 +4040,7 @@ app.put('/projects/:id', async (c) => {
   const body = await c.req.json().catch(() => null) as ProjectRecord | null
   if (!body) return c.json({ error: 'Invalid JSON' }, 400)
   if (body.placeType !== undefined && !isPlaceType(body.placeType)) {
-    return c.json({ error: 'placeType must be building, floor, or room' }, 400)
+    return c.json({ error: 'placeType must be building, floor, room, or other' }, 400)
   }
   const updated = await mutateProjects<{ project: ProjectRecord | null; error?: string }>((projects) => {
     const idx = projects.findIndex(p => p.projectId === id)

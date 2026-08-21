@@ -26,7 +26,7 @@ import { InferServerError } from './inference/server'
 import { bucket, resolveDetections, mergeDetections } from './spatial/resolver'
 import { DetectionStore } from './scene/store'
 import { ProjectStore, type Project, type ScanCalibration, type ScanEntry } from './project/project-store'
-import type { AreaKind, PlaceArea } from './world/types'
+import type { AreaKind, PlaceArea, PlaceType } from './world/types'
 import { AROverlay } from './ui/overlay'
 import { SidePanel, type ExportOutcome } from './ui/panel'
 import { SessionHistory } from './ui/history'
@@ -592,7 +592,14 @@ async function main() {
         { download: true, upload: true, filenamePrefix: 'room-scan', autoSaved: false },
       )
       if (result.upload === 'uploaded' && result.uploadedFilename) {
-        await updateSessionScanFilename(result.uploadedFilename)
+        try {
+          await updateSessionScanFilename(result.uploadedFilename)
+        } catch (error) {
+          // Best-effort Places bookkeeping — must not suppress the
+          // export-succeeded outcome below, or a scan that really did upload
+          // reports 'failed' and callers skip keyframes.rotate() for it.
+          console.error('[export] updateSessionScanFilename failed (non-fatal)', error)
+        }
         overlay.setStatus('Scan exported & synced ✓')
         setAutosaveStatus(`Scan exported & synced ✓ ${shortName(result.uploadedFilename)}`)
 
@@ -662,7 +669,14 @@ async function main() {
       // glbFilename stayed null — leaving `byGlb` nothing to match on and the
       // one-scan-to-one-session assumption false.
       if (result.uploadedFilename) {
-        await updateSessionScanFilename(result.uploadedFilename)
+        try {
+          await updateSessionScanFilename(result.uploadedFilename)
+        } catch (error) {
+          // Best-effort Places bookkeeping — must not suppress the rotate
+          // below, or the exact "glbFilename stayed null" bug this block
+          // exists to fix comes back, now gated on an unrelated IndexedDB write.
+          console.error('[autosave] updateSessionScanFilename failed (non-fatal)', error)
+        }
         lastUploadedFilename = result.uploadedFilename
         currentSessionGlbFilename = result.uploadedFilename
         if (keyframes?.active) {
@@ -1256,12 +1270,21 @@ function mountPlacePicker(
             </div>
           </div>` : ''}
         <div id="place-new-form" hidden>
-          <label>Place name<input id="place-new-name" type="text" maxlength="80" placeholder="e.g. Living room" /></label>
-          <label>Address or note<input id="place-new-address" type="text" maxlength="160" placeholder="Optional" /></label>
+          <label>Address<input id="place-new-address" type="text" maxlength="160" placeholder="Detected from device location" /></label>
           <div class="place-coordinate-grid">
             <label>Latitude<input id="place-new-lat" type="number" step="any" /></label>
             <label>Longitude<input id="place-new-lng" type="number" step="any" /></label>
           </div>
+          <label>Project type
+            <select id="place-new-type" class="ci-select">
+              <option value="building">Building</option>
+              <option value="floor">Floor</option>
+              <option value="room" selected>Room</option>
+              <option value="other">Other</option>
+            </select>
+          </label>
+          <label>Project name<input id="place-new-name" type="text" maxlength="80" placeholder="e.g. Living room" /></label>
+          <div id="place-new-name-preview" class="place-new-name-preview"></div>
           <button id="place-new-save" type="button">Save new place</button>
         </div>
         <div class="place-sheet-actions">
@@ -1327,13 +1350,24 @@ function mountPlacePicker(
     const newBtn = sheet.querySelector<HTMLButtonElement>('#place-new-btn')!
     const lat = sheet.querySelector<HTMLInputElement>('#place-new-lat')!
     const lng = sheet.querySelector<HTMLInputElement>('#place-new-lng')!
+    const newAddress = sheet.querySelector<HTMLInputElement>('#place-new-address')!
+    const newName = sheet.querySelector<HTMLInputElement>('#place-new-name')!
+    const namePreview = sheet.querySelector<HTMLElement>('#place-new-name-preview')!
     if (fix) {
       lat.value = String(fix.lat)
       lng.value = String(fix.lng)
+      newAddress.value = fix.address ?? ''
     }
+    const updateNamePreview = () => {
+      const composed = composeProjectName(newAddress.value, newName.value)
+      namePreview.textContent = composed ? `Saved as: ${composed}` : ''
+    }
+    newAddress.addEventListener('input', updateNamePreview)
+    newName.addEventListener('input', updateNamePreview)
+    updateNamePreview()
     newBtn.addEventListener('click', () => {
       newForm.hidden = !newForm.hidden
-      if (!newForm.hidden) sheet.querySelector<HTMLInputElement>('#place-new-name')?.focus()
+      if (!newForm.hidden) newName.focus()
     })
     sheet.querySelector<HTMLButtonElement>('#place-new-save')?.addEventListener('click', () => {
       void createPlace()
@@ -1359,16 +1393,22 @@ function mountPlacePicker(
     })
 
     async function createPlace(): Promise<void> {
-      const name = sheet.querySelector<HTMLInputElement>('#place-new-name')?.value.trim() ?? ''
-      const address = sheet.querySelector<HTMLInputElement>('#place-new-address')?.value.trim() ?? ''
+      const projectName = newName.value.trim()
+      const address = newAddress.value.trim()
+      const placeType = sheet.querySelector<HTMLSelectElement>('#place-new-type')?.value as PlaceType | undefined
       const latitude = Number(lat.value)
       const longitude = Number(lng.value)
-      if (!name || !Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
-        status.textContent = 'Enter a name and valid latitude/longitude.'
+      const name = composeProjectName(address, projectName)
+      if (!name || !placeType || !Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
+        status.textContent = 'Enter a project name and valid latitude/longitude.'
         return
       }
       const geoPose = { ...fixToGeoPose(fix), lat: latitude, lng: longitude, address: address || fix?.address || null, displayAddress: address || fix?.displayAddress || null }
-      const response = await fetch('/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, address, geoPose }) })
+      const response = await fetch('/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, placeType, address, geoPose }),
+      })
       if (!response.ok) {
         status.textContent = 'Could not save this place. Try again.'
         return
@@ -1477,6 +1517,14 @@ function fixToGeoPose(fix: GeoFix | null): NonNullable<Project['geoPose']> {
     address: fix?.address ?? null,
     displayAddress: fix?.displayAddress ?? null,
   }
+}
+
+/** The stored project name is always address-qualified, so two same-named rooms in different buildings read as distinct places. */
+function composeProjectName(address: string, projectName: string): string {
+  const name = projectName.trim()
+  if (!name) return ''
+  const trimmedAddress = address.trim()
+  return trimmedAddress ? `${trimmedAddress}-${name}` : name
 }
 
 function escapeHtml(value: string): string {

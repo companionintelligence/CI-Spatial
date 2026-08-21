@@ -16,7 +16,7 @@ Companion Scan is a mobile-first, privacy-respecting Augmented Reality (AR) appl
 
 The following block diagram represents the modular structure of the Companion Scan system, showing the boundary between client-side components running in the mobile browser and server-side components running on the local host.
 
-Inference is **engine-agnostic**: the server exposes one `/infer` contract and `INFERENCE_MODE` selects the backend. The default is `ollama` (running whatever `OLLAMA_MODEL` is set to — `moondream:latest` out of the box); `onnx` runs the bundled `LiquidAI/LFM2.5-VL-1.6B-ONNX` via `onnxruntime-node`; `mock` is a deterministic colour-blob CV engine for CI and tests. There is no `llama.cpp` in the system.
+Inference is **engine-agnostic**: the server exposes one `/infer` contract and `INFERENCE_MODE` selects the backend. The default is `ollama` (running whatever `OLLAMA_MODEL` is set to — `qwen3-vl:4b` out of the box); `onnx` runs the bundled `LiquidAI/LFM2.5-VL-1.6B-ONNX` via `onnxruntime-node`; `mock` is a deterministic colour-blob CV engine for CI and tests. There is no `llama.cpp` in the system.
 
 ```mermaid
 graph TB
@@ -287,7 +287,7 @@ graph LR
     end
 
     subgraph engine ["Inference Engine — INFERENCE_MODE"]
-        Infer[ollama moondream:latest / onnx LFM2.5-VL / mock CV]
+        Infer[ollama qwen3-vl:4b / onnx LFM2.5-VL / mock CV]
     end
 
     UI -- HTTPS POST/GET --> Vite
@@ -304,7 +304,7 @@ The server exposes one `/infer` contract; `INFERENCE_MODE` picks the backend at 
 
 | Mode | Backend | Model | Purpose |
 |---|---|---|---|
-| `ollama` (**default**) | Local Ollama daemon over HTTP | `OLLAMA_MODEL`, defaults to **`moondream:latest`** (pick with `npm run bench:models`) | Production inference on the host GPU. |
+| `ollama` (**default**) | Local Ollama daemon over HTTP | `OLLAMA_MODEL`, defaults to **`qwen3-vl:4b`** (pick with `npm run bench:models`) | Production inference on the host GPU. |
 | `onnx` | `onnxruntime-node`, in-process | Bundled **`LiquidAI/LFM2.5-VL-1.6B-ONNX`** (~1.5 GB via `download_models.py`) | Self-contained inference with no external daemon. |
 | `mock` | Deterministic colour-blob CV | none | CI, unit tests, and offline development. |
 
@@ -494,7 +494,7 @@ is **not** auto-loaded. Values below come from `.env.example`:
 - `API_TARGET`: upstream the Vite proxy forwards to (defaults to `http://localhost:8000`).
 - `INFERENCE_MODE`: `ollama` (default), `onnx`, or `mock` (see section 4).
 - `OLLAMA_HOST`: address of the local Ollama daemon (defaults to `http://localhost:11434`).
-- `OLLAMA_MODEL`: vision model Ollama serves in `ollama` mode. **Defaults to `moondream:latest`.**
+- `OLLAMA_MODEL`: vision model Ollama serves in `ollama` mode. **Defaults to `qwen3-vl:4b`.**
 - `INFER_MAX_IMAGE_BYTES`: reject inbound inference images larger than this (defaults to `12000000`).
 - `WORLD_STRICT_AUTH`: set to `1` to enforce role-token auth on world routes (default: anonymous access allowed).
 - `LINGBOT_MAP_PYTHON` / `LINGBOT_MAP_MODEL_PATH`: wire the real LingBot-Map reconstruction worker.

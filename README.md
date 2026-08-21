@@ -126,7 +126,7 @@ graph TD
     end
 
     subgraph Server ["Deno Server Backend"]
-        Server_Infer -->|Forward JPEG| Ollama["Ollama Vision API (moondream)"]
+        Server_Infer -->|Forward JPEG| Ollama["Ollama Vision API (qwen3-vl)"]
         Server_Infer -->|Local ONNX| LFM["LiquidAI ONNX Runtime (LFM-2.5)"]
         Server_Storage -->|Write GLB & sidecars| ScansDir["/scans/ directory"]
         Server_Storage -->|World Manifests & Patches| WorldsDir["/worlds/ directory"]
@@ -192,7 +192,7 @@ npm ci
 
 ### 2. (Optional) Download the ONNX model (~1.5 GB)
 
-The default `ollama` mode needs no bundled model — install [Ollama](https://ollama.com) and pull a vision model (`ollama pull moondream:latest`). Only run the downloader if you plan to use `INFERENCE_MODE=onnx`:
+The default `ollama` mode needs no bundled model — install [Ollama](https://ollama.com) and pull a vision model (`ollama pull qwen3-vl:4b`). Only run the downloader if you plan to use `INFERENCE_MODE=onnx`:
 
 ```bash
 python3 download_models.py
@@ -421,7 +421,7 @@ By default, world reads are open for local/Tailscale development and world membe
 
 Inference is engine-agnostic. The Deno server picks its engine from `INFERENCE_MODE`:
 
-- **`ollama`** (default) — POSTs a JPEG to a local [Ollama](https://ollama.com) server running whatever `OLLAMA_MODEL` names (`moondream:latest` by default). Use `npm run bench:models` to compare candidates.
+- **`ollama`** (default) — POSTs a JPEG to a local [Ollama](https://ollama.com) server running whatever `OLLAMA_MODEL` names (`qwen3-vl:4b` by default). Use `npm run bench:models` to compare candidates.
 - **`onnx`** — runs the bundled `LiquidAI/LFM2.5-VL-1.6B-ONNX` locally via `onnxruntime-node` (CPU/GPU). ~2–8s on Apple Silicon.
 - **`mock`** — a deterministic colour-blob CV engine for CI and tests; needs no model download.
 
