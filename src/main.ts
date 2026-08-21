@@ -1217,19 +1217,31 @@ function mountPlacePicker(
   const render = async () => {
     const projects = await fetchProjects().catch(() => [])
     const fix = geoTracker.snapshot()
-    const nearby = projects
-      .map(project => ({ project, distance: fix && project.geoPose ? distanceM(fixToGeoPose(fix), project.geoPose) : null }))
+    const distanced = projects.map(project => ({
+      project,
+      distance: fix && project.geoPose ? distanceM(fixToGeoPose(fix), project.geoPose) : null,
+    }))
+    const nearby = distanced
       .filter(item => item.distance !== null && item.distance <= 100)
       .sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity))
+    // Every saved place must stay reachable even with no GPS fix (indoors, or
+    // permission denied) — without this, "nearby" is always empty and there is
+    // no way to pick an existing place at all, only to create a new one.
+    const nearbyIds = new Set(nearby.map(item => item.project.projectId))
+    const others = distanced
+      .filter(item => !nearbyIds.has(item.project.projectId))
+      .sort((a, b) => a.project.name.localeCompare(b.project.name))
 
     sheet.innerHTML = `
       <div class="place-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="place-title">
         <div class="place-sheet-title" id="place-title">Scanner location</div>
-        <p class="place-sheet-copy">Choose the project for this scan. Saved places within 100 m are shown below.</p>
+        <p class="place-sheet-copy">Choose the project for this scan. Places within 100 m are suggested first; every saved place is listed below.</p>
         <div class="place-selected-status">Selected: <strong>${currentSelected ? escapeHtml(currentSelected.name) : 'none yet'}</strong></div>
         <div id="place-location-status" class="place-location-status"></div>
         <div id="place-suggestion" hidden></div>
         <div id="place-list"></div>
+        <div id="place-list-other-heading" class="place-list-other-heading" hidden>All places</div>
+        <div id="place-list-other"></div>
         ${currentSelected ? `
           <div class="place-area-picker">
             <div class="place-area-heading">Area <span>(optional)</span></div>
@@ -1279,7 +1291,9 @@ function mountPlacePicker(
       suggestion.appendChild(suggestionButton)
     }
     if (nearby.length === 0) {
-      list.innerHTML = '<p class="place-empty">No saved places within 100 m.</p>'
+      list.innerHTML = fix
+        ? '<p class="place-empty">No saved places within 100 m.</p>'
+        : ''
     } else {
       for (const item of nearby) {
         const btn = document.createElement('button')
@@ -1288,6 +1302,24 @@ function mountPlacePicker(
         btn.innerHTML = `<strong>${escapeHtml(item.project.name)}</strong><span>${Math.round(item.distance ?? 0)} m away${item.project.address ? ` · ${escapeHtml(item.project.address)}` : ''}</span>`
         btn.addEventListener('click', () => chooseProject(item.project))
         list.appendChild(btn)
+      }
+    }
+
+    const otherHeading = sheet.querySelector<HTMLElement>('#place-list-other-heading')!
+    const otherList = sheet.querySelector<HTMLElement>('#place-list-other')!
+    otherHeading.hidden = others.length === 0
+    if (others.length === 0) {
+      otherList.innerHTML = nearby.length === 0
+        ? '<p class="place-empty">No saved places yet — create one below.</p>'
+        : ''
+    } else {
+      for (const item of others) {
+        const btn = document.createElement('button')
+        btn.type = 'button'
+        btn.className = 'place-option'
+        btn.innerHTML = `<strong>${escapeHtml(item.project.name)}</strong><span>${item.project.address ? escapeHtml(item.project.address) : 'No location saved'}</span>`
+        btn.addEventListener('click', () => chooseProject(item.project))
+        otherList.appendChild(btn)
       }
     }
 
@@ -1313,9 +1345,17 @@ function mountPlacePicker(
       currentSelected = null
       currentAreaId = null
       onSelect(null, null)
-      pendingSelectionAction = null
       sessionStorage.setItem(PLACE_SELECTION_SESSION_KEY, JSON.stringify({ projectId: null }))
       sheet.hidden = true
+      // Cancel means "proceed without a Place", not "abandon the action that
+      // opened this sheet" — confirmSelection() below already treats an
+      // explicit Place pick this way; unassigned (null) is supported
+      // end-to-end (ensureSessionScanEntry, upload's projectId: null), so
+      // Cancel should resume the same way instead of leaving the caller (AR
+      // start or Upload Content) as a dead click.
+      const action = pendingSelectionAction
+      pendingSelectionAction = null
+      action?.()
     })
 
     async function createPlace(): Promise<void> {
@@ -1557,8 +1597,18 @@ function wireContentUpload(): void {
   const uploadCard = document.getElementById('start-upload-card')
   if (!input) return
 
-  // The file picker opens only after the user confirms a project in the modal.
-  uploadCard?.addEventListener('click', () => requestPlaceSelection?.(() => input.click()))
+  // The file picker opens after the user confirms a project in the modal —
+  // but the picker (requestPlaceSelection) isn't wired until deep in main(),
+  // after the isSecureContext check this function is deliberately called
+  // before. On an insecure context main() returns before ever reaching it, so
+  // requestPlaceSelection stays null forever; on a secure context there is
+  // also a brief window before it's assigned. Fall back to opening the file
+  // picker directly (an unassigned upload) rather than a dead click with no
+  // feedback — this is the same "no Place" path Cancel already allows.
+  uploadCard?.addEventListener('click', () => {
+    if (requestPlaceSelection) requestPlaceSelection(() => input.click())
+    else input.click()
+  })
 
   input.addEventListener('change', () => {
     const files = [...(input.files ?? [])]

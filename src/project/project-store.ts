@@ -143,6 +143,15 @@ export class ProjectStore {
 
   async listScans(projectId: string | null): Promise<ScanEntry[]> {
     if (!this.db) return []
+    // `null` is not a valid IndexedDB key: a scan with projectId: null never
+    // gets an entry in the byProject index at all (the spec skips index entries
+    // for invalid key-path values), so it can never be found through it, and
+    // passing `null` as the index query is itself invalid. Unassigned scans
+    // therefore need a full-store scan, not the index.
+    if (projectId === null) {
+      const all = await this._getAll<ScanEntry>(SCANS_STORE)
+      return all.filter(scan => scan.projectId === null).sort((a, b) => b.capturedAt - a.capturedAt)
+    }
     return new Promise((resolve, reject) => {
       const tx = this.db!.transaction(SCANS_STORE, 'readonly')
       const req = tx.objectStore(SCANS_STORE).index('byProject').getAll(projectId)

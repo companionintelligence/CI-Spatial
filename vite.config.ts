@@ -97,6 +97,7 @@ const PROXIED_ROUTES = [
   '/sessions',
   '/jobs',
   '/client-logs',
+  '/authenticate',
 ]
 
 const proxy: Record<string, object> = {}
@@ -122,8 +123,29 @@ for (const route of ['/rtc-signal', '/events']) {
   }
 }
 
+// main.ts's static handler rewrites `/editor` (the Spatial Editor's canonical
+// URL — see README.md, docs/UX_FLOW.md) to viewer.html; Vite's dev server has
+// no equivalent, so the same URL falls through to the SPA fallback (index.html,
+// the scanner start screen) instead. Mirror the rewrite here so `/editor` works
+// identically on `vite dev` and the production Deno static server.
+function rewriteEditorRoute() {
+  return {
+    name: 'rewrite-editor-route',
+    configureServer(server: { middlewares: { use: (fn: (req: { url?: string }, res: unknown, next: () => void) => void) => void } }) {
+      server.middlewares.use((req, _res, next) => {
+        if (req.url === '/editor' || req.url === '/editor/') {
+          req.url = '/viewer.html'
+        } else if (req.url?.startsWith('/editor?')) {
+          req.url = `/viewer.html?${req.url.slice('/editor?'.length)}`
+        }
+        next()
+      })
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: tsCert ? [] : [basicSsl()],
+  plugins: tsCert ? [rewriteEditorRoute()] : [basicSsl(), rewriteEditorRoute()],
   build: {
     rollupOptions: {
       input: {
