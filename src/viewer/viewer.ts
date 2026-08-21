@@ -768,6 +768,7 @@ const PLACE_TYPE_LABELS: Record<NonNullable<Project['placeType']>, string> = {
   building: 'Building',
   floor: 'Floor',
   room: 'Room',
+  other: 'Other',
 }
 
 function canUseProjectAsParent(candidateId: string, projectId: string): boolean {
