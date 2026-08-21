@@ -14,7 +14,7 @@ import { SceneEditor, SEMANTIC_TAGS, type ViewMode } from './editor'
 import { MeasureTool } from './measure'
 import { collectDetections, hasLabelledAncestor } from './detections'
 import { GeoMap, type ProjectLocationEntry } from './geomap'
-import { LiveFeed } from './livefeed'
+import type { LiveFeed } from './livefeed'
 import { loadSemanticAsset, createMediumPolyAsset } from './assets'
 import { fetchLingBotMapArtifacts, type LingBotMapOverlay } from './lingbot-map'
 import { attachSparkRenderer, loadSplat, disposeSplat, type LoadedSplat } from './splat-viewer'
@@ -31,20 +31,28 @@ import {
   QUALITY_TIER_BLURBS,
   type QualityTier,
 } from './quality-tier'
-import { enuToGeo, hasGeoPose, matrixTranslation } from '../world/geo'
+import { distanceM, enuToGeo, hasGeoPose, matrixTranslation } from '../world/geo'
 import { LAYER_LABELS, LAYER_ORDER } from '../world/layers'
 import { registerPWA } from '../pwa'
 import { iconLabel } from '../ui/icons'
 import { EVENT } from '../shared/events'
+import { WEBRTC_LIVE_ENABLED } from '../rtc/feature'
 import type {
   EditPatch,
   FrameObservation,
   LayerType,
+  PlaceArea,
+  Project,
+  ReviewComment,
   ScanManifest,
   WorldJob,
   WorldJobType,
   WorldProject,
 } from '../world/types'
+
+// Place composition remains opt-in while its building/floor/room editing flow
+// is refined. The static HTML stays hidden unless this build-time flag is set.
+const PLACE_COMPOSER_ENABLED = import.meta.env?.VITE_ENABLE_PLACE_COMPOSER === 'true'
 
 registerPWA()
 void refreshAccountChip()
@@ -142,7 +150,7 @@ const measure = new MeasureTool(() => scene, document.getElementById('viewport')
 // Test hook: lets Playwright assert measured distances against expected.json
 ;(window as unknown as { __measureTool: MeasureTool }).__measureTool = measure
 const geoMap = new GeoMap()
-const liveFeed = new LiveFeed(initialWorldSlug)
+let liveFeed: LiveFeed | null = null
 const labelContainer = document.getElementById('viewport')!
 const loadedScans = new Map<string, LoadedScan>()
 const scanItems = new Map<string, HTMLElement>()
@@ -150,6 +158,8 @@ let timelineSessions: Array<{ key: string; time: number; label: string; scanIds:
 let timelineStart = Number.NEGATIVE_INFINITY
 let timelineEnd = Number.POSITIVE_INFINITY
 let projectLocations: ProjectLocationEntry[] = []
+let knownProjects: Project[] = []
+let currentProject: Project | null = null
 // Serializes loadScanIntoWorld() calls per scanId. The initial world load
 // (loadWorldProject) and the optimize-scan job-completion reload
 // (handleJobUpdate) can both target the same scan; without this, a slow or
@@ -167,6 +177,7 @@ let renderer: THREE.WebGLRenderer
 let camera: THREE.PerspectiveCamera
 let controls: OrbitControls
 let transformControls: TransformControls | null = null
+let viewportResizeObserver: ResizeObserver | null = null
 let scene: THREE.Scene | null = null
 let worldGroup: THREE.Group | null = null
 let groundGrid: THREE.GridHelper | null = null
@@ -255,35 +266,55 @@ function initRenderer(): void {
 
   onResize()
   window.addEventListener('resize', onResize)
+  // Drawer resizing and responsive layout changes do not fire `window.resize`.
+  // Keep the WebGL drawing buffer synchronized with the actual viewport size.
+  viewportResizeObserver?.disconnect()
+  viewportResizeObserver = new ResizeObserver(() => onResize())
+  viewportResizeObserver.observe(document.getElementById('viewport')!)
+  requestAnimationFrame(onResize)
 
   geoMap.mount(document.getElementById('main-area')!)
   geoMap.onProjectSelect = (projectId: string) => {
-    if (projectId === activeProjectId) {
-      geoMap.close()
-      return
-    }
-    activeProjectId = projectId
-    const nextUrl = new URL(location.href)
-    nextUrl.searchParams.set('project', projectId)
-    history.replaceState(null, '', nextUrl)
-    geoMap.close()
-    void loadWorldProject()
+    selectActiveProject(projectId)
   }
 
-  liveFeed.mount(document.getElementById('main-area')!)
-  liveFeed.onStatus = ({ state }) => {
-    const btn = document.getElementById('btn-livefeed')!
+  if (WEBRTC_LIVE_ENABLED) void initializeLiveFeed()
+
+  canvas.addEventListener('click', (event) => {
+    if (!scene || isTransformDragging) return
+    const rect = canvas.getBoundingClientRect()
+    const ndx = ((event.clientX - rect.left) / rect.width) * 2 - 1
+    const ndy = -((event.clientY - rect.top) / rect.height) * 2 + 1
+    // Measure mode swallows clicks before selection
+    if (measure.handleClick(ndx, ndy, camera)) return
+    const obj = editor.pick(ndx, ndy, camera)
+    if (obj) {
+      selectEditableObject(obj)
+    } else {
+      clearSelection()
+    }
+  })
+}
+
+async function initializeLiveFeed(): Promise<void> {
+  const { LiveFeed } = await import('./livefeed')
+  const feed = new LiveFeed(initialWorldSlug)
+  liveFeed = feed
+  feed.mount(document.getElementById('main-area')!)
+  feed.onStatus = ({ state }) => {
+    const btn = document.getElementById('btn-livefeed') as HTMLButtonElement | null
+    if (!btn) return
     btn.classList.toggle('active', state === 'live')
     // innerHTML, not textContent: the button holds an inline SVG icon.
     btn.innerHTML = iconLabel('broadcast', state === 'live' ? 'Live *' : 'Live', { size: '14px' })
   }
-  liveFeed.onMeta = (meta) => {
+  feed.onMeta = (meta) => {
     upsertLiveFrustum(meta)
   }
   // Live geometry from the phone's data channel: point-cloud deltas,
   // detection snapshots, and camera pose — the scan grows in the editor
   // in real time while someone walks the room.
-  liveFeed.onData = (msg) => {
+  feed.onData = (msg) => {
     switch (msg['t']) {
       case 'hello':
         liveReset()
@@ -303,21 +334,8 @@ function initRenderer(): void {
       }
     }
   }
-
-  canvas.addEventListener('click', (event) => {
-    if (!scene || isTransformDragging) return
-    const rect = canvas.getBoundingClientRect()
-    const ndx = ((event.clientX - rect.left) / rect.width) * 2 - 1
-    const ndy = -((event.clientY - rect.top) / rect.height) * 2 + 1
-    // Measure mode swallows clicks before selection
-    if (measure.handleClick(ndx, ndy, camera)) return
-    const obj = editor.pick(ndx, ndy, camera)
-    if (obj) {
-      selectEditableObject(obj)
-    } else {
-      clearSelection()
-    }
-  })
+  const button = document.getElementById('btn-livefeed') as HTMLButtonElement | null
+  if (button) button.hidden = false
 }
 
 function onResize(): void {
@@ -573,13 +591,16 @@ async function loadWorldProject(): Promise<void> {
   initWorldScene()
 
   try {
-    const [loadedWorld, locations] = await Promise.all([
+    const [loadedWorld, locations, projects] = await Promise.all([
       fetchJson<WorldProject>(activeWorldUrl()),
       fetchJson<ProjectLocationEntry[]>('/project-locations').catch(() => []),
+      fetchJson<Project[]>('/projects').catch(() => []),
     ])
     projectLocations = locations
+    knownProjects = projects
     const scopedWorld = scopeWorldToActiveProject(loadedWorld)
     world = scopedWorld
+    currentProject = projects.find(project => project.projectId === activeProjectId) ?? null
     document.title = `${scopedWorld.name} - Companion Scan Spatial Editor`
     setText('sidebar-title', scopedWorld.name)
     document.getElementById('viewer-placeholder')!.style.display = scopedWorld.scans.length ? 'none' : 'flex'
@@ -588,7 +609,10 @@ async function loadWorldProject(): Promise<void> {
     buildTimeline(scopedWorld.scans)
     renderWorldPanel()
     renderLayerPanel()
-    renderPlacesPanel()
+    if (PLACE_COMPOSER_ENABLED) renderPlacesPanel()
+    renderProjectHierarchyEditor()
+    renderProjectSwitcher()
+    renderThingsPanel()
     void geoMap.updatePins(projectLocations, activeProjectId)
     void loadShareLinks()
 
@@ -644,6 +668,332 @@ function scopeWorldToActiveProject(source: WorldProject): WorldProject {
     scans,
     things,
     thingObservations,
+    comments: (source.comments ?? []).filter(comment => !comment.scanId || scanIds.has(comment.scanId)),
+  }
+}
+
+function selectActiveProject(projectId: string): void {
+  if (projectId === activeProjectId) {
+    geoMap.close()
+    return
+  }
+  activeProjectId = projectId
+  selectedScanId = null
+  selectedTransformTarget = null
+  hideInspectorOnly()
+  const nextUrl = new URL(location.href)
+  nextUrl.searchParams.set('project', projectId)
+  history.replaceState(null, '', nextUrl)
+  geoMap.close()
+  void loadWorldProject()
+}
+
+function projectDistanceMeters(a: ProjectLocationEntry, b: ProjectLocationEntry): number | null {
+  if (a.lat === null || a.lng === null || b.lat === null || b.lng === null) return null
+  return distanceM(
+    { lat: a.lat, lng: a.lng, altitudeM: null, bearing: null, accuracyM: null },
+    { lat: b.lat, lng: b.lng, altitudeM: null, bearing: null, accuracyM: null },
+  )
+}
+
+function normalizedAddress(address: string | null): string | null {
+  const value = address?.trim().toLocaleLowerCase()
+  return value || null
+}
+
+function renderProjectSwitcher(): void {
+  const root = document.getElementById('project-switcher')
+  const nearbyList = document.getElementById('nearby-projects-list')
+  const otherList = document.getElementById('other-projects-list')
+  const nearbyCount = document.getElementById('nearby-project-count')
+  const otherCount = document.getElementById('other-project-count')
+  if (!root || !nearbyList || !otherList || !nearbyCount || !otherCount) return
+
+  const active = projectLocations.find(project => project.projectId === activeProjectId) ?? null
+  const activeAddress = normalizedAddress(active?.address ?? null)
+  const candidates = projectLocations.filter(project => project.projectId !== activeProjectId)
+  const nearby = candidates
+    .map(project => {
+      const distance = active ? projectDistanceMeters(active, project) : null
+      const sameAddress = Boolean(activeAddress && activeAddress === normalizedAddress(project.address))
+      return { project, distance, sameAddress }
+    })
+    .filter(item => item.sameAddress || (item.distance !== null && item.distance <= 50))
+    .sort((a, b) => Number(b.sameAddress) - Number(a.sameAddress) || (a.distance ?? Infinity) - (b.distance ?? Infinity))
+  const nearbyIds = new Set(nearby.map(item => item.project.projectId))
+  const other = candidates
+    .filter(project => !nearbyIds.has(project.projectId))
+    .sort((a, b) => a.name.localeCompare(b.name))
+
+  nearbyCount.textContent = String(nearby.length)
+  otherCount.textContent = String(other.length)
+  const renderList = (
+    list: HTMLElement,
+    entries: Array<{ project: ProjectLocationEntry; distance?: number | null; sameAddress?: boolean }>,
+    empty: string,
+  ) => {
+    list.replaceChildren()
+    if (entries.length === 0) {
+      const message = document.createElement('p')
+      message.className = 'project-switcher-empty'
+      message.textContent = empty
+      list.appendChild(message)
+      return
+    }
+    for (const entry of entries) {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'project-switcher-option'
+      const title = document.createElement('span')
+      title.className = 'project-switcher-name'
+      title.textContent = entry.project.name
+      const meta = document.createElement('span')
+      meta.className = 'project-switcher-meta'
+      meta.textContent = entry.sameAddress
+        ? 'Same address'
+        : entry.distance !== null && entry.distance !== undefined
+          ? `${Math.round(entry.distance)} m away`
+          : entry.project.address ?? 'Location unavailable'
+      button.append(title, meta)
+      button.addEventListener('click', () => selectActiveProject(entry.project.projectId))
+      list.appendChild(button)
+    }
+  }
+
+  renderList(nearbyList, nearby, 'No other Places at this address or within 50 m.')
+  renderList(otherList, other.map(project => ({ project })), 'No other Places are available.')
+}
+
+const PLACE_TYPE_LABELS: Record<NonNullable<Project['placeType']>, string> = {
+  building: 'Building',
+  floor: 'Floor',
+  room: 'Room',
+}
+
+function canUseProjectAsParent(candidateId: string, projectId: string): boolean {
+  if (candidateId === projectId) return false
+  const projectsById = new Map(knownProjects.map(project => [project.projectId, project]))
+  const visited = new Set<string>()
+  let cursor = candidateId
+  while (cursor) {
+    if (cursor === projectId || visited.has(cursor)) return false
+    visited.add(cursor)
+    cursor = projectsById.get(cursor)?.parentProjectId ?? ''
+  }
+  return true
+}
+
+function normalizedHierarchyName(value: string): string {
+  return value.trim().toLocaleLowerCase()
+}
+
+function hierarchyNameCandidates(kind: 'building' | 'floor'): string[] {
+  const names = new Set<string>()
+  for (const project of knownProjects) {
+    const fieldName = kind === 'building' ? project.buildingName : project.floorName
+    if (fieldName?.trim()) names.add(fieldName.trim())
+    if (project.placeType === kind && project.name.trim()) names.add(project.name.trim())
+    for (const area of project.areas ?? []) {
+      if (area.kind === kind && area.name.trim()) names.add(area.name.trim())
+    }
+    if (kind === 'floor') {
+      for (const floor of project.floors) {
+        if (floor.name.trim()) names.add(floor.name.trim())
+      }
+    }
+  }
+  return [...names].sort((a, b) => a.localeCompare(b))
+}
+
+function setHierarchySuggestions(id: string, values: string[]): void {
+  const list = document.getElementById(id) as HTMLDataListElement | null
+  if (!list) return
+  list.replaceChildren(...values.map(value => new Option(value, value)))
+}
+
+function hierarchyContextFromAncestors(project: Project, kind: 'building' | 'floor'): string {
+  const projectsById = new Map(knownProjects.map(candidate => [candidate.projectId, candidate]))
+  const visited = new Set<string>([project.projectId])
+  let cursor = project.parentProjectId ?? null
+  while (cursor && !visited.has(cursor)) {
+    const parent = projectsById.get(cursor)
+    if (!parent) break
+    if (parent.placeType === kind) return parent.name
+    visited.add(cursor)
+    cursor = parent.parentProjectId ?? null
+  }
+  return ''
+}
+
+function matchingParentProjectId(
+  type: NonNullable<Project['placeType']>,
+  buildingName: string,
+  floorName: string,
+): string | null {
+  const match = (value: string, candidateType: NonNullable<Project['placeType']>) => knownProjects
+    .filter(candidate => canUseProjectAsParent(candidate.projectId, currentProject?.projectId ?? ''))
+    .filter(candidate => candidate.placeType === candidateType)
+    .filter(candidate => normalizedHierarchyName(candidate.name) === normalizedHierarchyName(value))
+    .sort((a, b) => b.updatedAt - a.updatedAt)[0] ?? null
+
+  if (type === 'floor' && buildingName) return match(buildingName, 'building')?.projectId ?? null
+  if (type === 'room' && floorName) {
+    const floor = match(floorName, 'floor')
+    if (!floor) return null
+    if (!buildingName || normalizedHierarchyName(floor.buildingName ?? '') === normalizedHierarchyName(buildingName)) {
+      return floor.projectId
+    }
+  }
+  return null
+}
+
+function syncProjectHierarchyFields(): void {
+  const type = document.getElementById('project-place-type') as HTMLSelectElement | null
+  const nameLabel = document.getElementById('project-place-name-label')
+  const floorField = document.getElementById('project-floor-name-field')
+  const buildingField = document.getElementById('project-building-name-field')
+  if (!type || !nameLabel || !floorField || !buildingField) return
+
+  const selectedType = type.value as Project['placeType'] | ''
+  nameLabel.textContent = selectedType ? `${PLACE_TYPE_LABELS[selectedType]} name` : 'Place name'
+  floorField.hidden = selectedType !== 'room'
+  buildingField.hidden = selectedType !== 'floor' && selectedType !== 'room'
+}
+
+function updateProjectHierarchyPreview(): void {
+  const preview = document.getElementById('project-hierarchy-preview')
+  const type = document.getElementById('project-place-type') as HTMLSelectElement | null
+  const name = document.getElementById('project-place-name') as HTMLInputElement | null
+  const floor = document.getElementById('project-floor-name') as HTMLInputElement | null
+  const building = document.getElementById('project-building-name') as HTMLInputElement | null
+  if (!preview || !type || !name || !floor || !building || !currentProject) return
+
+  const selectedType = type.value as Project['placeType'] | ''
+  const level = selectedType ? PLACE_TYPE_LABELS[selectedType] : 'Place'
+  const path = selectedType === 'room'
+    ? [building.value.trim(), floor.value.trim(), name.value.trim() || currentProject.name]
+    : selectedType === 'floor'
+      ? [building.value.trim(), name.value.trim() || currentProject.name]
+      : [name.value.trim() || currentProject.name]
+  const visiblePath = path.filter(Boolean)
+  preview.textContent = `${level} path: ${visiblePath.join(' › ')}`
+}
+
+function renderProjectHierarchyEditor(): void {
+  const root = document.getElementById('project-hierarchy-editor')
+  const type = document.getElementById('project-place-type') as HTMLSelectElement | null
+  const name = document.getElementById('project-place-name') as HTMLInputElement | null
+  const floor = document.getElementById('project-floor-name') as HTMLInputElement | null
+  const building = document.getElementById('project-building-name') as HTMLInputElement | null
+  const status = document.getElementById('project-hierarchy-status')
+  if (!root || !type || !name || !floor || !building) return
+
+  root.hidden = !currentProject || !document.getElementById('tab-btn-world')?.classList.contains('active')
+  if (!currentProject) return
+  const project = currentProject
+
+  type.value = project.placeType ?? ''
+  name.value = project.name
+  building.value = project.buildingName ?? hierarchyContextFromAncestors(project, 'building')
+  floor.value = project.floorName ?? hierarchyContextFromAncestors(project, 'floor')
+  setHierarchySuggestions('project-building-name-options', hierarchyNameCandidates('building'))
+  setHierarchySuggestions('project-floor-name-options', hierarchyNameCandidates('floor'))
+  syncProjectHierarchyFields()
+  if (status) status.textContent = ''
+  updateProjectHierarchyPreview()
+}
+
+async function saveProjectHierarchy(): Promise<void> {
+  const type = document.getElementById('project-place-type') as HTMLSelectElement | null
+  const name = document.getElementById('project-place-name') as HTMLInputElement | null
+  const floor = document.getElementById('project-floor-name') as HTMLInputElement | null
+  const building = document.getElementById('project-building-name') as HTMLInputElement | null
+  const status = document.getElementById('project-hierarchy-status')
+  const button = document.getElementById('project-hierarchy-save') as HTMLButtonElement | null
+  if (!currentProject || !type || !name || !floor || !building) return
+
+  const nextName = name.value.trim()
+  const nextType = type.value as Project['placeType'] | ''
+  const nextBuildingName = nextType === 'building'
+    ? nextName
+    : building.value.trim()
+  const nextFloorName = nextType === 'floor'
+    ? nextName
+    : nextType === 'room'
+      ? floor.value.trim()
+      : ''
+  if (!nextName) {
+    if (status) status.textContent = 'Enter a name before saving this Place.'
+    name.focus()
+    return
+  }
+
+  if (button) button.disabled = true
+  if (status) status.textContent = 'Saving Place structure...'
+  try {
+    const response = await fetch(withAccessToken(`/projects/${encodeURIComponent(currentProject.projectId)}`), {
+      method: 'PUT',
+      headers: accessHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        ...currentProject,
+        name: nextName,
+        placeType: nextType || undefined,
+        parentProjectId: nextType ? matchingParentProjectId(nextType, nextBuildingName, nextFloorName) : null,
+        buildingName: nextBuildingName || undefined,
+        floorName: nextFloorName || undefined,
+        roomName: nextType === 'room' ? nextName : undefined,
+      }),
+    })
+    if (!response.ok) throw new Error(await response.text())
+    const updated = await response.json() as Project
+    currentProject = updated
+    knownProjects = knownProjects.map(project => project.projectId === updated.projectId ? updated : project)
+    if (world) world.name = updated.name
+    setText('sidebar-title', updated.name)
+    document.title = `${updated.name} - Companion Scan Spatial Editor`
+    renderProjectHierarchyEditor()
+    renderProjectSwitcher()
+    renderItemsPanel()
+    if (status) status.textContent = 'Place structure saved.'
+  } catch (error) {
+    if (status) status.textContent = `Could not save: ${errorMessage(error)}`
+  } finally {
+    if (button) button.disabled = false
+  }
+}
+
+function renderThingsPanel(): void {
+  const list = document.getElementById('things-list')
+  const summary = document.getElementById('things-panel-summary')
+  if (!list || !summary || !world) return
+
+  const byLabel = new Map<string, { count: number; confidence: number | null; scanId: string }>()
+  for (const scan of world.scans.filter(scanInTimeline)) {
+    for (const item of inventoryItems(scan.scanId)) {
+      const key = item.label.trim().toLocaleLowerCase()
+      const current = byLabel.get(key)
+      if (current) {
+        current.count += 1
+        current.confidence = Math.max(current.confidence ?? 0, item.confidence ?? 0) || null
+      } else {
+        byLabel.set(key, { count: 1, confidence: item.confidence, scanId: scan.scanId })
+      }
+    }
+  }
+
+  const things = [...byLabel.entries()].sort(([a], [b]) => a.localeCompare(b))
+  summary.textContent = things.length
+    ? `${things.length} identified thing${things.length === 1 ? '' : 's'} in the visible scan range.`
+    : 'No Things are visible in the current scan range.'
+  list.replaceChildren()
+  for (const [label, thing] of things) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'things-list-item'
+    const confidence = thing.confidence == null ? '' : ` · ${Math.round(thing.confidence * 100)}%`
+    button.innerHTML = `<strong>${escHtml(label)}</strong><span>${thing.count} observation${thing.count === 1 ? '' : 's'}${confidence}</span>`
+    button.addEventListener('click', () => selectScan(thing.scanId, true, false))
+    list.appendChild(button)
   }
 }
 
@@ -757,6 +1107,7 @@ function applyTimelineWindow(start: number, end: number): void {
     item.classList.toggle('out-of-time', !inTime)
   }
   applyLayerVisibility()
+  renderItemsPanel()
 }
 
 function scanInTimeline(scan: ScanManifest): boolean {
@@ -1370,7 +1721,7 @@ function selectScan(scanId: string, focus: boolean, openEdit = true): void {
   void refreshQualityPanel(scanId)
   void refreshLingBotMapPanel(scanId)
   void refreshSplatLayerPanel(scanId)
-  renderPlacesPanel()
+  if (PLACE_COMPOSER_ENABLED) renderPlacesPanel()
   renderItemsPanel()
 }
 
@@ -2033,13 +2384,13 @@ function serializeTransform(obj: THREE.Object3D): EditPatch['transform'] {
 
 // ─── Panels ──────────────────────────────────────────────────────────────────
 
-function inventoryItems(): InventoryItem[] {
+function inventoryItems(scanId: string | null = null): InventoryItem[] {
   if (!world) return []
 
   const observations = world.thingObservations ?? []
   if (world.things.length > 0) {
-    const preferredObservations = selectedScanId
-      ? observations.filter(observation => observation.scanId === selectedScanId)
+    const preferredObservations = scanId
+      ? observations.filter(observation => observation.scanId === scanId)
       : observations
     const observationsByThing = new Map<string, typeof observations[number]>()
     for (const observation of preferredObservations) {
@@ -2050,7 +2401,7 @@ function inventoryItems(): InventoryItem[] {
     }
 
     return world.things
-      .filter(thing => !selectedScanId || observationsByThing.has(thing.thingId))
+      .filter(thing => !scanId || observationsByThing.has(thing.thingId))
       .map(thing => {
         const observation = observationsByThing.get(thing.thingId)
           ?? observations.find(candidate => candidate.thingId === thing.thingId && candidate.scanId === thing.lastSeenScanId)
@@ -2069,8 +2420,8 @@ function inventoryItems(): InventoryItem[] {
   // A correspondence job has not run yet. Surface the actual labelled nodes in
   // each loaded GLB rather than hiding the inventory behind that later step.
   const records: InventoryItem[] = []
-  for (const [scanId, loaded] of loadedScans) {
-    if (!loaded.loaded || (selectedScanId && scanId !== selectedScanId)) continue
+  for (const [loadedScanId, loaded] of loadedScans) {
+    if (!loaded.loaded || (scanId && loadedScanId !== scanId)) continue
     loaded.root.updateMatrixWorld(true)
     loaded.root.traverse((node) => {
       const data = node.userData as Record<string, unknown>
@@ -2084,7 +2435,7 @@ function inventoryItems(): InventoryItem[] {
       records.push({
         id: String(data['objectId'] ?? node.uuid),
         label,
-        scanId,
+        scanId: loadedScanId,
         position: { x: position.x, y: position.y, z: position.z },
         confidence: typeof data['confidence'] === 'number' ? data['confidence'] : null,
         source: 'detection',
@@ -2092,6 +2443,103 @@ function inventoryItems(): InventoryItem[] {
     })
   }
   return records
+}
+
+interface OutlinerLocation {
+  building: string
+  floor: string
+  room: string
+}
+
+interface OutlinerRoom {
+  scans: ScanManifest[]
+}
+
+interface OutlinerFloor {
+  rooms: Map<string, OutlinerRoom>
+}
+
+interface OutlinerBuilding {
+  floors: Map<string, OutlinerFloor>
+}
+
+function outlinerLocationForScan(scan: ScanManifest): OutlinerLocation {
+  const areas = currentProject?.areas ?? []
+  const areasById = new Map(areas.map(area => [area.areaId, area]))
+  const ancestry: PlaceArea[] = []
+  const visited = new Set<string>()
+  let current = scan.areaId ? areasById.get(scan.areaId) : undefined
+  while (current && !visited.has(current.areaId)) {
+    ancestry.unshift(current)
+    visited.add(current.areaId)
+    current = current.parentAreaId ? areasById.get(current.parentAreaId) : undefined
+  }
+
+  const linkedFloorId = [...ancestry].reverse().find(area => area.floorId)?.floorId ?? null
+  const linkedRoomId = [...ancestry].reverse().find(area => area.roomId)?.roomId ?? null
+  const linkedFloor = linkedFloorId
+    ? currentProject?.floors.find(floor => floor.floorId === linkedFloorId)
+    : undefined
+  const linkedRoom = linkedFloor?.rooms.find(room => room.roomId === linkedRoomId)
+
+  return {
+    building: ancestry.find(area => area.kind === 'building')?.name ?? 'Unassigned building',
+    floor: ancestry.find(area => area.kind === 'floor')?.name ?? linkedFloor?.name ?? 'Unassigned floor',
+    room: ancestry.find(area => area.kind === 'room')?.name ?? linkedRoom?.name ?? 'Unassigned room',
+  }
+}
+
+function createOutlinerGroup(kind: string, name: string, detail: string, open: boolean): HTMLDetailsElement {
+  const group = document.createElement('details')
+  group.className = `scene-tree-group scene-tree-${kind}`
+  group.open = open
+
+  const summary = document.createElement('summary')
+  summary.className = 'scene-tree-row'
+  const label = document.createElement('span')
+  label.className = 'scene-tree-label'
+  label.textContent = name
+  const meta = document.createElement('span')
+  meta.className = 'scene-tree-meta'
+  meta.textContent = detail
+  summary.append(label, meta)
+  group.appendChild(summary)
+  return group
+}
+
+function scanDateLabel(scan: ScanManifest): string {
+  if (!scan.capturedAt) return 'Unknown date'
+  const date = new Date(scan.capturedAt)
+  return Number.isNaN(date.getTime())
+    ? 'Unknown date'
+    : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+function appendOutlinerScan(parent: HTMLElement, scan: ScanManifest, items: InventoryItem[]): void {
+  const row = document.createElement('button')
+  row.type = 'button'
+  row.className = 'scene-tree-scan'
+  row.classList.toggle('active', scan.scanId === selectedScanId)
+  row.setAttribute('aria-pressed', String(scan.scanId === selectedScanId))
+  row.innerHTML = `
+    <span class="scene-tree-scan-name">${escHtml(scan.name)}</span>
+    <span class="scene-tree-scan-meta">${scanDateLabel(scan)} · ${items.length} thing${items.length === 1 ? '' : 's'}</span>
+  `
+  row.addEventListener('click', () => selectScan(scan.scanId, true, false))
+  parent.appendChild(row)
+
+  if (items.length === 0) return
+  const things = createOutlinerGroup('things', 'Things', `${items.length} identified`, scan.scanId === selectedScanId)
+  for (const item of items.sort((a, b) => a.label.localeCompare(b.label))) {
+    const thing = document.createElement('button')
+    thing.type = 'button'
+    thing.className = 'scene-tree-thing'
+    const confidence = item.confidence == null ? '' : ` · ${Math.round(item.confidence * 100)}%`
+    thing.innerHTML = `<span>${escHtml(item.label)}</span><small>${formatItemPosition(item.position)}${confidence}</small>`
+    thing.addEventListener('click', () => selectScan(scan.scanId, true, false))
+    things.appendChild(thing)
+  }
+  parent.appendChild(things)
 }
 
 function placeLabel(): string {
@@ -2106,38 +2554,132 @@ function formatItemPosition(position: InventoryItem['position']): string {
 
 function renderItemsPanel(): void {
   const list = document.getElementById('items-list')
-  const title = document.getElementById('items-panel-title')
-  const description = document.getElementById('items-panel-description')
-  if (!list || !title || !description || !world) return
+  if (!list || !world) return
 
   const selectedScan = selectedScanId
     ? world.scans.find(scan => scan.scanId === selectedScanId) ?? null
     : null
-  const items = inventoryItems()
-  title.textContent = selectedScan ? 'Items in selected scan' : 'Project items'
-  description.textContent = selectedScan
-    ? `${selectedScan.name} - ${items.length} identified item${items.length === 1 ? '' : 's'}.`
-    : `${items.length} identified item${items.length === 1 ? '' : 's'} across this project space.`
+  const visibleScans = world.scans.filter(scanInTimeline)
+  const itemsByScan = new Map(visibleScans.map(scan => [scan.scanId, inventoryItems(scan.scanId)]))
   list.innerHTML = ''
+  renderReviewComments()
 
-  if (items.length === 0) {
-    list.innerHTML = `<div class="inventory-empty">No identified items yet. Process a scan to generate things for this project.</div>`
+  if (visibleScans.length === 0) {
+    list.innerHTML = `<div class="inventory-empty">No scans are in this date range. Expand the range to show this Place.</div>`
     return
   }
 
-  for (const item of items.sort((a, b) => a.label.localeCompare(b.label))) {
-    const scan = world.scans.find(candidate => candidate.scanId === item.scanId)
-    const row = document.createElement('div')
-    row.className = 'inventory-item'
-    const confidence = item.confidence == null ? '' : `${Math.round(item.confidence * 100)}%`
+  const hierarchy = new Map<string, OutlinerBuilding>()
+  for (const scan of visibleScans) {
+    const location = outlinerLocationForScan(scan)
+    let building = hierarchy.get(location.building)
+    if (!building) {
+      building = { floors: new Map() }
+      hierarchy.set(location.building, building)
+    }
+    let floor = building.floors.get(location.floor)
+    if (!floor) {
+      floor = { rooms: new Map() }
+      building.floors.set(location.floor, floor)
+    }
+    let room = floor.rooms.get(location.room)
+    if (!room) {
+      room = { scans: [] }
+      floor.rooms.set(location.room, room)
+    }
+    room.scans.push(scan)
+  }
+
+  const place = createOutlinerGroup('place', placeLabel(), `${visibleScans.length} scan${visibleScans.length === 1 ? '' : 's'}`, true)
+  for (const [buildingName, building] of hierarchy) {
+    const buildingScans = [...building.floors.values()].reduce((total, floor) => total + [...floor.rooms.values()].reduce((count, room) => count + room.scans.length, 0), 0)
+    const buildingNode = createOutlinerGroup('building', buildingName, `${buildingScans} scan${buildingScans === 1 ? '' : 's'}`, Boolean(selectedScan && visibleScans.some(scan => scan.scanId === selectedScan.scanId && outlinerLocationForScan(scan).building === buildingName)))
+    for (const [floorName, floor] of building.floors) {
+      const floorScans = [...floor.rooms.values()].reduce((total, room) => total + room.scans.length, 0)
+      const floorNode = createOutlinerGroup('floor', floorName, `${floorScans} scan${floorScans === 1 ? '' : 's'}`, Boolean(selectedScan && outlinerLocationForScan(selectedScan).building === buildingName && outlinerLocationForScan(selectedScan).floor === floorName))
+      for (const [roomName, room] of floor.rooms) {
+        const roomNode = createOutlinerGroup('room', roomName, `${room.scans.length} scan${room.scans.length === 1 ? '' : 's'}`, Boolean(selectedScan && outlinerLocationForScan(selectedScan).building === buildingName && outlinerLocationForScan(selectedScan).floor === floorName && outlinerLocationForScan(selectedScan).room === roomName))
+        for (const scan of room.scans.sort((a, b) => (a.capturedAt ?? '').localeCompare(b.capturedAt ?? ''))) {
+          appendOutlinerScan(roomNode, scan, itemsByScan.get(scan.scanId) ?? [])
+        }
+        floorNode.appendChild(roomNode)
+      }
+      buildingNode.appendChild(floorNode)
+    }
+    place.appendChild(buildingNode)
+  }
+  list.appendChild(place)
+}
+
+function renderReviewComments(): void {
+  const list = document.getElementById('review-comments-list')
+  const scope = document.getElementById('review-comments-scope')
+  const input = document.getElementById('review-comment-input') as HTMLTextAreaElement | null
+  if (!list || !scope || !world) return
+
+  const selectedScan = selectedScanId
+    ? world.scans.find(scan => scan.scanId === selectedScanId) ?? null
+    : null
+  const comments = (world.comments ?? [])
+    .filter(comment => !selectedScanId || comment.scanId === selectedScanId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  scope.textContent = selectedScan ? selectedScan.name : placeLabel()
+  if (input) input.placeholder = selectedScan
+    ? `Leave a review note for ${selectedScan.name}`
+    : 'Leave a review note for this Place'
+  list.innerHTML = ''
+
+  if (comments.length === 0) {
+    list.innerHTML = `<div class="inventory-empty">No comments for ${selectedScan ? 'this scan' : 'this Place'} yet.</div>`
+    return
+  }
+
+  for (const comment of comments) {
+    const row = document.createElement('article')
+    row.className = 'review-comment'
+    const target = comment.scanId
+      ? world.scans.find(scan => scan.scanId === comment.scanId)?.name ?? 'scan'
+      : 'Place'
+    const when = new Date(comment.createdAt).toLocaleString(undefined, {
+      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+    })
     row.innerHTML = `
-      <div class="inventory-item-heading">
-        <span class="inventory-item-name">${escHtml(item.label)}</span>
-        ${confidence ? `<span class="inventory-item-confidence">${confidence}</span>` : ''}
-      </div>
-      <div class="inventory-item-meta">Place: ${escHtml(placeLabel())}<br>Scan: ${escHtml(scan?.name ?? item.scanId)}<br>${formatItemPosition(item.position)}</div>
+      <div class="review-comment-body">${escHtml(comment.body)}</div>
+      <div class="review-comment-meta">${escHtml(comment.actorRole)} review · ${escHtml(target)} · ${escHtml(when)}</div>
     `
     list.appendChild(row)
+  }
+}
+
+async function addReviewComment(): Promise<void> {
+  if (!world) return
+  const input = document.getElementById('review-comment-input') as HTMLTextAreaElement | null
+  const status = document.getElementById('review-comment-status')
+  const button = document.getElementById('review-comment-submit') as HTMLButtonElement | null
+  const body = input?.value.trim() ?? ''
+  if (!body) {
+    if (status) status.textContent = 'Write a note before adding it.'
+    input?.focus()
+    return
+  }
+  if (button) button.disabled = true
+  if (status) status.textContent = 'Saving review note...'
+  try {
+    const response = await fetch(withAccessToken(`/worlds/${encodeURIComponent(world.shareSlug)}/comments`), {
+      method: 'POST',
+      headers: accessHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ body, scanId: selectedScanId ?? null }),
+    })
+    if (!response.ok) throw new Error(await response.text())
+    const comment = await response.json() as ReviewComment
+    ;(world.comments ??= []).unshift(comment)
+    if (input) input.value = ''
+    if (status) status.textContent = 'Comment saved.'
+    renderReviewComments()
+  } catch (error) {
+    if (status) status.textContent = `Could not add comment: ${errorMessage(error)}`
+  } finally {
+    if (button) button.disabled = false
   }
 }
 
@@ -2245,13 +2787,20 @@ async function loadShareLinks(): Promise<void> {
   try {
     const payload = await fetchJson<ShareLinksResponse>(`/worlds/${encodeURIComponent(world.shareSlug)}/share`)
     target.innerHTML = ''
-    for (const role of ['owner', 'editor', 'viewer', 'scanner']) {
+    const labels: Record<string, string> = {
+      viewer: 'View only',
+      commenter: 'Comment',
+      editor: 'Edit',
+      scanner: 'Scanner',
+      owner: 'Owner',
+    }
+    for (const role of ['viewer', 'commenter', 'editor', 'scanner', 'owner']) {
       const url = payload.links[role]
       if (!url) continue
       const row = document.createElement('div')
       row.className = 'world-link-row'
       const label = document.createElement('span')
-      label.textContent = role
+      label.textContent = labels[role] ?? role
       label.title = url
       const copy = document.createElement('button')
       copy.className = 'copy-link-btn'
@@ -2273,10 +2822,8 @@ async function loadShareLinks(): Promise<void> {
   }
 }
 
-async function queueSelectedJob(): Promise<void> {
+async function queueJob(type: WorldJobType): Promise<void> {
   if (!world) return
-  const select = document.getElementById('job-type') as HTMLSelectElement
-  const type = select.value as WorldJobType
   const response = await fetch(withAccessToken(`/worlds/${encodeURIComponent(world.shareSlug)}/jobs`), {
     method: 'POST',
     headers: accessHeaders({ 'Content-Type': 'application/json' }),
@@ -2289,8 +2836,36 @@ async function queueSelectedJob(): Promise<void> {
   if (!response.ok) throw new Error(await response.text())
   const job = await response.json() as WorldJob
   world.jobs.unshift(job)
+}
+
+async function queueSelectedJob(): Promise<void> {
+  const select = document.getElementById('job-type') as HTMLSelectElement
+  await queueJob(select.value as WorldJobType)
   renderWorldPanel()
   flashButton('btn-queue-job', 'Queued')
+  setTimeout(() => { void refreshJobs() }, 1000)
+}
+
+const GUIDED_WORKFLOWS: Record<string, WorldJobType[]> = {
+  prepare: ['ingest', 'extract-layers', 'align-scan'],
+  understand: ['semantic-pass', 'thing-correspondence'],
+  reconstruct: ['lingbot-map-reconstruct', 'splat-train'],
+  publish: ['memory-push', 'export-world'],
+}
+
+async function queueGuidedWorkflow(name: string, button: HTMLButtonElement): Promise<void> {
+  if (!selectedScanId) {
+    button.textContent = 'Select scan'
+    setTimeout(() => { button.textContent = name[0].toUpperCase() + name.slice(1) }, 1500)
+    return
+  }
+  const types = GUIDED_WORKFLOWS[name]
+  if (!types) return
+  button.textContent = 'Queuing...'
+  for (const type of types) await queueJob(type)
+  renderWorldPanel()
+  button.textContent = 'Queued'
+  setTimeout(() => { button.textContent = name[0].toUpperCase() + name.slice(1) }, 1500)
   setTimeout(() => { void refreshJobs() }, 1000)
 }
 
@@ -2331,7 +2906,9 @@ function syncViewMenu(): void {
   setChecked('view-toggle-points', cloudVisible && globalLayerVisible.points)
   setChecked('view-toggle-floor', globalLayerVisible.floor)
   setChecked('view-toggle-mesh', globalLayerVisible.mesh)
-  setChecked('view-toggle-frustums', globalLayerVisible.cameraFrustums || globalLayerVisible.rgbFrames)
+  setChecked('view-toggle-path', globalLayerVisible.cameraPath)
+  setChecked('view-toggle-frustums', globalLayerVisible.cameraFrustums)
+  setChecked('view-toggle-images', globalLayerVisible.rgbFrames)
   setChecked('view-toggle-grid', groundGrid?.visible ?? true)
   setChecked('view-toggle-labels', labelsVisible && globalLayerVisible.labels)
 }
@@ -2825,14 +3402,18 @@ function flashButton(id: string, text: string): void {
 }
 
 function switchSidebarTab(name: string): void {
-  const isDetailsTab = ['scans', 'world', 'layers', 'edit'].includes(name)
-  const detailsPanelId = name === 'scans' ? 'details-items' : `tab-${name}`
-  const projectInfo = document.getElementById('sidebar-project-info')
+  if (name === 'places' && !PLACE_COMPOSER_ENABLED) {
+    switchSidebarTab('scans')
+    return
+  }
+  const isDetailsTab = ['scans', 'things', 'world', 'layers', 'edit'].includes(name)
+  const detailsPanelId = name === 'scans' || name === 'things' ? 'details-items' : `tab-${name}`
   const layerInfo = document.getElementById('sidebar-layer-info')
-  // World owns project-wide facts. Other views use this left-drawer region for
-  // their own navigation and controls instead of repeating the same overview.
-  if (projectInfo) projectInfo.hidden = name !== 'world'
+  const hierarchyEditor = document.getElementById('project-hierarchy-editor')
+  const projectSwitcher = document.getElementById('project-switcher')
   if (layerInfo) layerInfo.hidden = name !== 'layers'
+  if (hierarchyEditor) hierarchyEditor.hidden = name !== 'world'
+  if (projectSwitcher) projectSwitcher.hidden = name !== 'world'
   document.querySelectorAll('.sidebar-tab').forEach(button => {
     const el = button as HTMLButtonElement
     const isActive = el.dataset['tab'] === name
@@ -2854,7 +3435,7 @@ function switchSidebarTab(name: string): void {
 
   const title = document.getElementById('details-drawer-title')
   if (title && isDetailsTab) {
-    title.textContent = name === 'scans'
+    title.textContent = name === 'scans' || name === 'things'
       ? 'Items'
       : name === 'world'
         ? 'Project'
@@ -2862,16 +3443,32 @@ function switchSidebarTab(name: string): void {
           ? 'Edit & annotate'
           : name[0].toUpperCase() + name.slice(1)
   }
-  if (name === 'scans') renderItemsPanel()
+  if (name === 'scans' || name === 'things') renderItemsPanel()
+  if (name === 'things') renderThingsPanel()
+  if (name === 'world') renderProjectHierarchyEditor()
 }
 
 // ─── DOM wiring ──────────────────────────────────────────────────────────────
+
+if (PLACE_COMPOSER_ENABLED) {
+  document.getElementById('tab-btn-places')?.removeAttribute('hidden')
+  document.getElementById('tab-places')?.removeAttribute('hidden')
+}
 
 document.querySelectorAll('.sidebar-tab').forEach(button => {
   button.addEventListener('click', () => {
     switchSidebarTab((button as HTMLButtonElement).dataset['tab']!)
   })
 })
+
+document.getElementById('project-place-type')?.addEventListener('change', () => {
+  syncProjectHierarchyFields()
+  updateProjectHierarchyPreview()
+})
+document.getElementById('project-place-name')?.addEventListener('input', updateProjectHierarchyPreview)
+document.getElementById('project-floor-name')?.addEventListener('input', updateProjectHierarchyPreview)
+document.getElementById('project-building-name')?.addEventListener('input', updateProjectHierarchyPreview)
+document.getElementById('project-hierarchy-save')?.addEventListener('click', () => void saveProjectHierarchy())
 
 const tagGrid = document.getElementById('tag-grid')!
 for (const tag of SEMANTIC_TAGS) {
@@ -2960,6 +3557,20 @@ document.getElementById('btn-queue-job')?.addEventListener('click', () => {
   })
 })
 
+document.getElementById('review-comment-submit')?.addEventListener('click', () => {
+  void addReviewComment()
+})
+
+document.querySelectorAll<HTMLButtonElement>('[data-workflow]').forEach((button) => {
+  button.addEventListener('click', () => {
+    void queueGuidedWorkflow(button.dataset['workflow'] ?? '', button).catch((error) => {
+      console.error('[viewer] guided workflow queue failed:', error)
+      button.textContent = 'Failed'
+      setTimeout(() => { button.textContent = button.dataset['workflow'] ?? 'Retry' }, 1500)
+    })
+  })
+})
+
 document.getElementById('lingbot-map-points-toggle')?.addEventListener('change', (e) => {
   setLingBotPointsVisible((e.target as HTMLInputElement).checked)
 })
@@ -3035,10 +3646,20 @@ viewToggle('view-toggle-mesh')?.addEventListener('change', (event) => {
   applyLayerVisibility()
 })
 
+viewToggle('view-toggle-path')?.addEventListener('change', (event) => {
+  globalLayerVisible.cameraPath = (event.target as HTMLInputElement).checked
+  renderLayerPanel()
+  applyLayerVisibility()
+})
+
 viewToggle('view-toggle-frustums')?.addEventListener('change', (event) => {
-  const visible = (event.target as HTMLInputElement).checked
-  globalLayerVisible.cameraFrustums = visible
-  globalLayerVisible.rgbFrames = visible
+  globalLayerVisible.cameraFrustums = (event.target as HTMLInputElement).checked
+  renderLayerPanel()
+  applyLayerVisibility()
+})
+
+viewToggle('view-toggle-images')?.addEventListener('change', (event) => {
+  globalLayerVisible.rgbFrames = (event.target as HTMLInputElement).checked
   renderLayerPanel()
   applyLayerVisibility()
 })
@@ -3055,7 +3676,8 @@ viewToggle('view-toggle-labels')?.addEventListener('change', (event) => {
   applyLayerVisibility()
 })
 
-document.getElementById('btn-livefeed')!.addEventListener('click', () => {
+document.getElementById('btn-livefeed')?.addEventListener('click', () => {
+  if (!liveFeed) return
   liveFeed.toggle()
   if (liveFeed.isOpen) liveFeed.connect()
 })
@@ -3160,11 +3782,18 @@ function scheduleWorldRefresh(): void {
 async function refreshWorldScans(): Promise<void> {
   if (!world) return
   try {
-    const updated = await fetchJson<WorldProject>(activeWorldUrl())
+    const [updated, projects] = await Promise.all([
+      fetchJson<WorldProject>(activeWorldUrl()),
+      fetchJson<Project[]>('/projects').catch(() => []),
+    ])
     world = scopeWorldToActiveProject(updated)
+    knownProjects = projects
+    currentProject = projects.find(project => project.projectId === activeProjectId) ?? currentProject
     buildTimeline(world.scans)
     renderWorldPanel()
-    renderPlacesPanel()
+    if (PLACE_COMPOSER_ENABLED) renderPlacesPanel()
+    renderProjectHierarchyEditor()
+    renderThingsPanel()
     const fresh = world.scans.filter((scan) => !scanItems.has(scan.scanId))
     if (fresh.length === 0) return
 

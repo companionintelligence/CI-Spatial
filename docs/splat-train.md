@@ -7,7 +7,8 @@ cross-platform Gaussian-splat trainer that runs headless on `wgpu`.
 The integration makes the reserved `splat-train` world-job type real: it
 converts a scan's keyframe session into a Nerfstudio dataset, spawns the Brush
 CLI over it, lands the exported INRIA 3DGS `.ply` as a scan sidecar, and
-surfaces it as an auto-loading **Trained Splat** layer in the world editor.
+surfaces it as an auto-loading **Trained Splat** layer in the Companion Scan
+Spatial Editor.
 
 ## Architecture
 
@@ -27,7 +28,7 @@ Mobile app   ──upload .glb──►  Deno server  ──fork──►  brush
                           <base>.splat.ply in SCANS_DIR      │
                                   │◄─────────────────────────┘
                                   ▼
-                          Desktop viewer splat layer
+                          Spatial Editor splat layer
                           (src/viewer/splat-layer.ts →
                            splat-viewer.ts → SplatMesh)
 ```
@@ -117,14 +118,14 @@ PLY header and writes the `splat-train` manifest itself.
 
 ## Triggering a training run from the editor
 
-1. Open the world editor (`/viewer.html?world=<slug>`).
+1. Open the Companion Scan Spatial Editor (`/editor?project=<id>`).
 2. Select a scan that has streamed keyframes.
-3. Switch to the **World** tab. The Processing Queue dropdown includes the
-   `Splat train` entry.
+3. In the right drawer, use **Reconstruct** to queue `Splat train` for the
+   selected scan.
 
 ![Job dropdown with Splat train selected](splat-train/screenshots/viewer-job-dropdown-splat.png)
 
-4. Pick `Splat train` and click **Queue Job**. The local coordinator
+4. Confirm the training action. The local coordinator
    transitions `queued → processing → completed`. On success the job surfaces a
    `splat-ply` artifact (the `.ply` + gaussian count + manifest link).
 5. Switch to the **Layers** tab. The **Trained Splat** section reports the
@@ -209,7 +210,7 @@ in CI, but the served-`.ply` → `SplatMesh` data path is identical to a real ru
 ## Screenshots
 
 Real Brush output (334,681 gaussians, 15k iterations, trained on beta-1's second
-RX 7900 XTX in ~6 minutes) loaded in the world editor:
+RX 7900 XTX in ~6 minutes) loaded in the Spatial Editor:
 
 ![Real trained splat rendering in the viewer](splat-train/screenshots/viewer-real-splat-loaded.png)
 

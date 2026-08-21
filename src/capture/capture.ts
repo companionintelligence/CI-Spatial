@@ -15,6 +15,9 @@ export interface CaptureResult {
     rotation: { x: number; y: number; z: number; w: number }
   }
   timestamp: number
+  /** Raw camera-frame dimensions before JPEG downscaling. Bboxes are normalized against this aspect. */
+  frameWidth: number
+  frameHeight: number
 }
 
 export interface CaptureModuleOptions {
@@ -67,7 +70,7 @@ export class CaptureModule {
       blob = await oc.convertToBlob({ type: 'image/jpeg', quality: FALLBACK_QUALITY })
     }
 
-    return { blob, pose, timestamp }
+    return { blob, pose, timestamp, frameWidth: width, frameHeight: height }
   }
 
   /**

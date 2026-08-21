@@ -1,6 +1,6 @@
 # UI / UX Flow — Screenshot Gallery
 
-Mobile (scanner) and desktop (world editor) screenshots of **every everyday-user
+Mobile (scanner/uploader) and desktop (Companion Scan Spatial Editor) screenshots of **every everyday-user
 flow**, captured automatically from the running app in the deterministic mock
 runtime (`?mock=xr8`, `INFERENCE_MODE=mock`).
 
@@ -47,7 +47,7 @@ UX_FLOW **Phase 0 (Install / FTUE)** and **Phase 1 (Scan a room)**.
 
 ---
 
-## 🖥 Desktop — the world editor (`viewer.html`)
+## 🖥 Desktop — Companion Scan Spatial Editor (`/editor`, implemented by `viewer.html`)
 
 UX_FLOW **Phase 2 (Structure)**, **Phase 3 (Process)**, and **Phase 4 (Export / Share)**.
 
@@ -77,7 +77,7 @@ UX_FLOW **Phase 2 (Structure)**, **Phase 3 (Process)**, and **Phase 4 (Export / 
 
 ### Phase 4 — Export / share the world
 
-| World tab (stats · share links · queue) |
+| Project details and guided processing |
 |---|
-| ![world tab](desktop/03-world-tab.png) |
-| World stats (scans / layers / jobs / origin), role-scoped **Share Links** (owner / editor / viewer / scanner), and the async **Processing Queue** with live job status. |
+| ![legacy project-details screenshot](desktop/03-world-tab.png) |
+| Place/project stats, role-scoped **Share** (view / comment / edit / scanner / owner), and the right-drawer guided processing flow. |

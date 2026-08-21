@@ -14,7 +14,7 @@ native WebXR scanner.
 
   ```bash
   npm run qr -- "/smoke.html?debug=remote"        # diagnostics page
-  npm run qr -- "/scanner.html?world=default"     # scanner
+  npm run qr -- "/?project=default"               # scanner / uploader entry
   npm run qr -- "/webxr.html"                     # WebXR entry (Android)
   ```
 
@@ -35,14 +35,15 @@ Suggested devices: `iphone182`, `liam-ipad-pro`.
 | # | Step | Expected result |
 |---|------|-----------------|
 | 1 | Open the scanner URL in Safari | Page loads with **no certificate warning** (Tailscale cert is CA-trusted) |
-| 2 | Tap **Start AR** | Camera + motion permission prompts appear immediately (they must originate from the tap) |
-| 3 | Grant both permissions | Camera feed visible; status HUD shows SLAM initialising, then tracking |
+| 2 | Select or create a **Place**, optionally choose an Area, and complete calibration | GPS/history may suggest a Place; Place selection and alignment are explicit before the scanner opens |
+| 3 | Tap **Scan a Place** and grant permissions | Camera + motion permission prompts appear immediately (they must originate from the tap) |
+| 4 | Grant both permissions | Camera feed visible; status HUD shows SLAM initialising, then tracking |
 | 4 | Walk slowly around the room | Point count in the HUD stats grows; compass/geo chip resolves an address outdoors |
 | 5 | Tap the capture button | Progress sweep → detection labels pinned in 3D within ~5–30 s (model-dependent; watch `X-Inference-Ms` in server logs) |
 | 6 | Toggle 📷 auto-capture and keep walking | Capture ring pulses on movement; count badge increments; HUD shows per-capture status |
 | 7 | Toggle ☁ keyframe streaming | Stream count badge increments as you move; box side: `journalctl --user -u cscan-server -f` shows `POST /sessions/<id>/keyframes` |
 | 8 | Open the side panel → export GLB | Upload toast; file lands in `scans/` on the box; optimization job logs run (Draco + LODs) |
-| 9 | On a desktop browser open `/viewer.html?world=default` | The new scan appears in the world; LODs load progressively |
+| 10 | On a desktop browser open `/editor?project=default` | The new scan appears in the selected Place; LODs load progressively |
 | 10 | Share-sheet → Add to Home Screen, launch the PWA | Standalone app opens to the scanner with the same session history |
 | 11 | Airplane-mode ON (keep Wi-Fi off), capture | HUD shows offline/queue messaging rather than a spinner hang |
 | 12 | Airplane-mode OFF | Queued uploads flush (watch server logs); no data lost |

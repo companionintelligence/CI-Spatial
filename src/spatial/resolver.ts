@@ -15,6 +15,7 @@ import * as THREE from 'three'
 import type { ARProvider, Pose, HitResult } from '../ar/provider'
 import type { RawDetection } from '../inference/prompt'
 import type { PointCloud } from '../scene/pointcloud'
+import type { DetectionObservation } from '../world/types'
 
 // Widened from 0.3 m: hit-test/raycast noise and viewing-angle differences
 // commonly place the same real object 0.3-0.4 m apart across two captures,
@@ -26,7 +27,15 @@ import type { PointCloud } from '../scene/pointcloud'
 const DEDUP_RADIUS_M = 0.4
 const FALLBACK_DEPTH_M = 2.0
 
+export interface ViewSize {
+  width: number
+  height: number
+}
+
 export interface WorldDetection extends RawDetection {
+  detectionId: string
+  observations: DetectionObservation[]
+  lastSeenAt: number
   worldPos: { x: number; y: number; z: number }
   worldRot: { x: number; y: number; z: number; w: number }
   captureTimestamp: number
@@ -49,8 +58,13 @@ export interface ResolveOptions {
    * the bbox NDC.
    */
   captureCamera?: THREE.PerspectiveCamera
+  /** Dimensions of the image sent to inference, or the same aspect before downscale. */
+  imageSize?: ViewSize
+  /** Dimensions of the live AR viewport receiving XR hit-tests. */
+  viewportSize?: ViewSize
   /** Accumulated point cloud from room scanning, used for raycasting fallback */
   pointCloud?: PointCloud
+  sessionId?: string
 }
 
 /**
@@ -151,6 +165,37 @@ function pointOnCaptureRay(
   return { x: point.x, y: point.y, z: point.z }
 }
 
+/**
+ * Convert a VLM bbox point from captured-image coordinates into live viewport
+ * coordinates. XR8 renders the camera feed as a full-bleed canvas; when the
+ * captured camera frame has a different aspect ratio than the viewport, the
+ * visual feed is effectively cover-cropped. Hit-tests and Three.js rays must
+ * use the post-crop viewport coordinate, not the raw image coordinate.
+ */
+export function imagePointToViewportPoint(
+  x: number,
+  y: number,
+  imageSize: ViewSize | undefined,
+  viewportSize: ViewSize | undefined,
+): { x: number; y: number } {
+  if (!imageSize || !viewportSize) return { x, y }
+  const iw = imageSize.width
+  const ih = imageSize.height
+  const vw = viewportSize.width
+  const vh = viewportSize.height
+  if (![iw, ih, vw, vh].every((n) => Number.isFinite(n) && n > 0)) return { x, y }
+
+  const scale = Math.max(vw / iw, vh / ih)
+  const displayedW = iw * scale
+  const displayedH = ih * scale
+  const offsetX = (vw - displayedW) / 2
+  const offsetY = (vh - displayedH) / 2
+  return {
+    x: (x * iw * scale + offsetX) / vw,
+    y: (y * ih * scale + offsetY) / vh,
+  }
+}
+
 export async function resolveDetections(
   detections: RawDetection[],
   timestamp: number,
@@ -161,8 +206,19 @@ export async function resolveDetections(
   for (const det of detections) {
     console.log(`[resolver] Resolving object "${det.label}" with bbox:`, JSON.stringify(det.bbox))
     const [x1, y1, x2, y2] = det.bbox
-    const cx = (x1 + x2) / 2
-    const cy = (y1 + y2) / 2
+    const imageCx = (x1 + x2) / 2
+    const imageCy = (y1 + y2) / 2
+    const mapped = imagePointToViewportPoint(imageCx, imageCy, opts.imageSize, opts.viewportSize)
+    const cx = mapped.x
+    const cy = mapped.y
+    if (cx !== imageCx || cy !== imageCy) {
+      console.log('[resolver] image bbox center mapped to viewport:', JSON.stringify({
+        image: { x: imageCx, y: imageCy },
+        viewport: { x: cx, y: cy },
+        imageSize: opts.imageSize,
+        viewportSize: opts.viewportSize,
+      }))
+    }
 
     let hitPos: { x: number; y: number; z: number } | null = null
     let hitRot = { x: 0, y: 0, z: 0, w: 1 }
@@ -290,7 +346,13 @@ export async function resolveDetections(
 
     console.log(`[resolver] Resolved "${det.label}" to worldPos:`, JSON.stringify(hitPos), 'worldRot:', JSON.stringify(hitRot))
 
+    const captureIndex = (det as { captureIndex?: number }).captureIndex
+    const observation = observationFromDetection(det, hitPos, hitRot, timestamp, opts.sessionId ?? 'local', captureIndex)
     results.push({
+      ...det,
+      detectionId: `det-${timestamp}-${crypto.randomUUID().slice(0, 8)}`,
+      observations: [observation],
+      lastSeenAt: timestamp,
       label: det.label,
       confidence: det.confidence,
       description: det.description,
@@ -321,10 +383,13 @@ export function mergeDetections(
     if (key) {
       // Update confidence; keep earlier timestamp, description of higher confidence
       const prev = merged.get(key)!
+      const observations = appendObservation(prev.observations, observationFromWorldDetection(det))
       merged.set(key, {
         ...prev,
         confidence: Math.max(prev.confidence, det.confidence),
         description: det.confidence > prev.confidence ? det.description : prev.description,
+        observations,
+        lastSeenAt: Math.max(prev.lastSeenAt ?? prev.captureTimestamp, det.captureTimestamp),
       })
     } else {
       // New unique detection — key by label + position bucket
@@ -334,6 +399,49 @@ export function mergeDetections(
   }
 
   return merged
+}
+
+export function observationFromWorldDetection(det: WorldDetection): DetectionObservation {
+  return det.observations?.[0] ?? observationFromDetection(
+    det,
+    det.worldPos,
+    det.worldRot,
+    det.captureTimestamp,
+    'local',
+    det.captureIndex,
+  )
+}
+
+function observationFromDetection(
+  det: RawDetection,
+  worldPos: { x: number; y: number; z: number },
+  worldRot: { x: number; y: number; z: number; w: number },
+  captureTimestamp: number,
+  sessionId: string,
+  captureIndex?: number,
+): DetectionObservation {
+  return {
+    observationId: `obs-${captureTimestamp}-${crypto.randomUUID().slice(0, 8)}`,
+    sessionId,
+    label: det.label,
+    confidence: det.confidence,
+    description: det.description,
+    bbox: det.bbox,
+    worldPos,
+    worldRot,
+    captureTimestamp,
+    ...(captureIndex !== undefined ? { captureIndex } : {}),
+  }
+}
+
+function appendObservation(
+  existing: DetectionObservation[] | undefined,
+  incoming: DetectionObservation,
+): DetectionObservation[] {
+  const observations = existing?.length ? [...existing] : []
+  observations.push(incoming)
+  if (observations.length <= 50) return observations
+  return [observations[0], ...observations.slice(-49)]
 }
 
 /** Nearest same-label entry within DEDUP_RADIUS_M, not just the first one iterated. */
@@ -359,6 +467,6 @@ function dist(
 }
 
 /** Coarse pos bucket for key generation */
-function bucket(p: { x: number; y: number; z: number }): string {
+export function bucket(p: { x: number; y: number; z: number }): string {
   return `${p.x.toFixed(1)},${p.y.toFixed(1)},${p.z.toFixed(1)}`
 }

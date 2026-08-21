@@ -15,8 +15,8 @@
  * POST /sessions/:id/keyframes         multipart { image, meta } → { ok, index }
  * POST /sessions/:id/finalize          JSON { glbFilename?, … } → session record
  * GET  /sessions/:id                   → session record
- * POST /ingest-video      multipart { video: File, name?, fps? } → 202 { sessionId, scanId, jobId, frameCount }
- * POST /ingest-photos     multipart { files: File[], name? } → 202 { sessionId, scanId, jobId, frameCount, droppedBlurry }
+ * POST /ingest-video      multipart { video: File, name?, fps?, projectId?, areaId? } → 202 { sessionId, scanId, jobId, frameCount }
+ * POST /ingest-photos     multipart { files: File[], name?, projectId?, areaId? } → 202 { sessionId, scanId, jobId, frameCount, droppedBlurry }
  * POST /upload-summary     multipart { file: File(.md) } → { filename }
  * POST /process-scan       JSON { filename, action, sessionId? } → { action, result }
  * POST /client-logs        JSON { entries: [{ ts, level, msg, stack?, url? }], ua? } → 204
@@ -88,6 +88,7 @@ import type {
   WorldJobType,
   WorldMember,
   WorldProject,
+  ReviewComment,
 } from './src/world/types.ts'
 
 const PORT = Number(Deno.env.get('PORT') ?? 8000)
@@ -252,6 +253,7 @@ const engineLoadPromise = engine.load().then(() => {
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
 const app = new Hono()
+const WEBRTC_LIVE_ENABLED = Deno.env.get('VITE_ENABLE_WEBRTC_LIVE') === 'true'
 
 app.onError((err, c) => {
   console.error('[server-error]', err)
@@ -917,7 +919,8 @@ app.post('/sessions/:id/finalize', async (c) => {
 //
 // POST /ingest-video   multipart { video: File, name?, fps? }
 // Extracts keyframes with scripts/ingest-video.mjs into a capture session, then
-// registers a session-backed scan in the default world and auto-enqueues a
+// registers a session-backed scan in the selected Place (or the legacy default
+// workspace when none is supplied) and auto-enqueues a
 // lingbot-map-reconstruct job (which estimates the per-frame poses splat-train +
 // splat-detect later consume). Returns 202 { sessionId, scanId, jobId, frameCount }.
 const INGEST_VIDEO_SCRIPT = localScriptPath('./scripts/ingest-video.mjs')
@@ -945,6 +948,15 @@ app.post('/ingest-video', async (c) => {
 
   const nameRaw = form.get('name')
   const scanName = typeof nameRaw === 'string' && nameRaw.trim().length > 0 ? nameRaw.trim() : null
+  const projectIdRaw = form.get('projectId')
+  const projectId = typeof projectIdRaw === 'string' && projectIdRaw.trim().length > 0 ? projectIdRaw.trim() : null
+  const areaIdRaw = form.get('areaId')
+  const areaId = typeof areaIdRaw === 'string' && areaIdRaw.trim().length > 0 ? areaIdRaw.trim() : null
+  const selectedProject = projectId ? (await loadProjects()).find(project => project.projectId === projectId) : null
+  if (projectId && !selectedProject) return c.json({ error: 'Selected Place was not found' }, 404)
+  if (areaId && !selectedProject?.areas?.some(area => area.areaId === areaId)) {
+    return c.json({ error: 'Selected Area was not found in this Place' }, 404)
+  }
   const fpsRaw = form.get('fps')
   const fps = typeof fpsRaw === 'string' && Number.isFinite(Number(fpsRaw)) && Number(fpsRaw) > 0
     ? String(Number(fpsRaw))
@@ -990,11 +1002,14 @@ app.post('/ingest-video', async (c) => {
       return c.json({ error: `ingest returned an invalid session id: ${sessionId}` }, 500)
     }
 
-    // Register a session-backed scan in the default world + enqueue reconstruction.
-    const { world, value: { scan, job } } = await updateWorld('default', (world) => {
-      const scan = registerSessionScan(world, sessionId, scanName ?? undefined, frameCount)
+    // Register in the Place-specific world when selected. This keeps uploads
+    // from silently leaking into the default workspace.
+    const targetSlug = projectId ? projectWorldSlug(projectId) : 'default'
+    if (projectId) await loadProjectWorld(projectId)
+    const { world, value: { scan, job } } = await updateWorld(targetSlug, (world) => {
+      const scan = registerSessionScan(world, sessionId, scanName ?? undefined, frameCount, 'video-ingest', projectId, areaId)
       const job = createWorldJob(world, 'lingbot-map-reconstruct', scan.scanId, {
-        source: 'video-ingest',
+        source: 'video-ingest', projectId, areaId,
         sessionId,
         frameCount,
       })
@@ -1015,7 +1030,7 @@ app.post('/ingest-video', async (c) => {
 // POST /ingest-photos   multipart { files: File[], name? }
 // Saves the photos to a temp dir, runs scripts/ingest-photos.mjs (EXIF time
 // ordering + blur filter) in --single-session mode (one upload = one session),
-// then registers a session-backed scan and auto-enqueues lingbot-map-reconstruct
+// then registers a session-backed scan in the selected Place and auto-enqueues lingbot-map-reconstruct
 // exactly like /ingest-video. Returns 202 { sessionId, scanId, jobId, frameCount,
 // droppedBlurry }.
 const INGEST_PHOTOS_SCRIPT = localScriptPath('./scripts/ingest-photos.mjs')
@@ -1040,6 +1055,15 @@ app.post('/ingest-photos', async (c) => {
 
   const nameRaw = form.get('name')
   const scanName = typeof nameRaw === 'string' && nameRaw.trim().length > 0 ? nameRaw.trim() : null
+  const projectIdRaw = form.get('projectId')
+  const projectId = typeof projectIdRaw === 'string' && projectIdRaw.trim().length > 0 ? projectIdRaw.trim() : null
+  const areaIdRaw = form.get('areaId')
+  const areaId = typeof areaIdRaw === 'string' && areaIdRaw.trim().length > 0 ? areaIdRaw.trim() : null
+  const selectedProject = projectId ? (await loadProjects()).find(project => project.projectId === projectId) : null
+  if (projectId && !selectedProject) return c.json({ error: 'Selected Place was not found' }, 404)
+  if (areaId && !selectedProject?.areas?.some(area => area.areaId === areaId)) {
+    return c.json({ error: 'Selected Area was not found in this Place' }, 404)
+  }
 
   // Save the upload to a temp dir the ingest script reads, then delete it.
   // The index prefix keeps upload order stable for photos without EXIF.
@@ -1087,12 +1111,13 @@ app.post('/ingest-photos', async (c) => {
       return c.json({ error: `ingest returned an invalid session id: ${sessionId}` }, 500)
     }
 
-    // Register a session-backed scan in the default world + enqueue reconstruction
-    // (mirrors /ingest-video).
-    const { world, value: { scan, job } } = await updateWorld('default', (world) => {
-      const scan = registerSessionScan(world, sessionId, scanName ?? undefined, frameCount, 'photo-ingest')
+    // Mirrors video ingest while retaining the user-selected Place/Area.
+    const targetSlug = projectId ? projectWorldSlug(projectId) : 'default'
+    if (projectId) await loadProjectWorld(projectId)
+    const { world, value: { scan, job } } = await updateWorld(targetSlug, (world) => {
+      const scan = registerSessionScan(world, sessionId, scanName ?? undefined, frameCount, 'photo-ingest', projectId, areaId)
       const job = createWorldJob(world, 'lingbot-map-reconstruct', scan.scanId, {
-        source: 'photo-ingest',
+        source: 'photo-ingest', projectId, areaId,
         sessionId,
         frameCount,
       })
@@ -1437,6 +1462,7 @@ function scanManifestFromStored(
   return {
     scanId,
     projectId: scanProjectId(scan.meta),
+    areaId: asString(scan.meta['areaId']),
     sessionId: asString(scan.meta['sessionId']),
     filename: scan.filename,
     name: scanNameFor(scan.filename, scan.meta),
@@ -1474,6 +1500,8 @@ function registerSessionScan(
   scanName: string | undefined,
   frameCount: number,
   source: 'video-ingest' | 'photo-ingest' = 'video-ingest',
+  projectId: string | null = null,
+  areaId: string | null = null,
 ): ScanManifest {
   const filename = `${sessionId}.glb`
   const existing = world.scans.find(s => s.filename === filename || s.sessionId === sessionId)
@@ -1487,7 +1515,8 @@ function registerSessionScan(
       sessionId,
       source,
       keyframeCount: frameCount,
-      projectId: null,
+      projectId,
+      areaId,
       ...(scanName ? { scanName } : {}),
     },
   }
@@ -1498,7 +1527,7 @@ function registerSessionScan(
 
 function createWorldMembers(): WorldMember[] {
   const now = new Date().toISOString()
-  return (['owner', 'editor', 'viewer', 'scanner'] as const).map((role) => ({
+  return (['owner', 'editor', 'commenter', 'viewer', 'scanner'] as const).map((role) => ({
     memberId: `${role}-${crypto.randomUUID()}`,
     role,
     token: `${role}-${crypto.randomUUID()}`,
@@ -1550,6 +1579,7 @@ async function synthesizeWorld(slug: string, projectId: string | null = null): P
     things: [],
     thingObservations: [],
     members: createWorldMembers(),
+    comments: [],
     jobs: [],
     editPatches: [],
     createdAt: now,
@@ -1617,6 +1647,7 @@ async function removeScanFromWorlds(filename: string): Promise<number> {
     world.editPatches = world.editPatches.filter(
       patch => patch.targetId !== filename && !isRemovedScanId(patch.scanId),
     )
+    world.comments = (world.comments ?? []).filter(comment => !isRemovedScanId(comment.scanId ?? undefined))
     world.jobs = world.jobs.filter(job => {
       if (!job.scanId) return true
       // Explicit, rather than relying on the survivor scan below: while ids
@@ -1905,6 +1936,7 @@ function shareLinks(c: { req: { url: string; header: (name: string) => string | 
   return {
     owner: `${base}/editor?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('owner') ?? '')}`,
     editor: `${base}/editor?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('editor') ?? '')}`,
+    commenter: `${base}/editor?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('commenter') ?? '')}`,
     viewer: `${base}/editor?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('viewer') ?? '')}`,
     scanner: `${base}/scanner.html?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('scanner') ?? '')}`,
   }
@@ -1913,8 +1945,9 @@ function shareLinks(c: { req: { url: string; header: (name: string) => string | 
 const ROLE_RANK: Record<MemberRole, number> = {
   scanner: 0,
   viewer: 1,
-  editor: 2,
-  owner: 3,
+  commenter: 2,
+  editor: 3,
+  owner: 4,
 }
 
 function requestToken(c: { req: { query: (name: string) => string | undefined; header: (name: string) => string | undefined } }): string | null {
@@ -3454,6 +3487,54 @@ app.post('/worlds/:slug/patches', async (c) => {
   return c.json({ ok: true, patch, world })
 })
 
+// ── Place review comments ───────────────────────────────────────────────────
+// Comments intentionally have their own immutable collection rather than being
+// overloaded into EditPatch notes. A commenter may review a scan without being
+// able to alter geometry, processing, or semantic source data.
+app.get('/worlds/:slug/comments', async (c) => {
+  const world = await loadWorld(c.req.param('slug'))
+  const denied = denyUnlessWorldRole(c, world, 'viewer', { allowAnonymous: true })
+  if (denied) return denied
+  return c.json([...(world.comments ?? [])].sort((a, b) => b.createdAt.localeCompare(a.createdAt)))
+})
+
+app.post('/worlds/:slug/comments', async (c) => {
+  const slug = c.req.param('slug')
+  const authWorld = await loadWorld(slug)
+  const denied = denyUnlessWorldRole(c, authWorld, 'commenter')
+  if (denied) return denied
+  const actor = activeMemberForToken(authWorld, requestToken(c))
+  const body = await c.req.json().catch(() => ({})) as Partial<ReviewComment>
+  const text = typeof body.body === 'string' ? body.body.trim() : ''
+  if (!text) return c.json({ error: 'Comment text is required' }, 400)
+  if (text.length > 4_000) return c.json({ error: 'Comment must be 4,000 characters or fewer' }, 400)
+  const scanId = objectKey(body.scanId) ?? null
+  const thingId = objectKey(body.thingId) ?? null
+  const areaId = objectKey(body.areaId) ?? null
+  if (scanId && !authWorld.scans.some(scan => scan.scanId === scanId)) {
+    return c.json({ error: 'Scan not found in this Place' }, 404)
+  }
+  if (thingId && !authWorld.things.some(thing => thing.thingId === thingId)) {
+    return c.json({ error: 'Thing not found in this Place' }, 404)
+  }
+  const { value: comment } = await updateWorld(slug, (world) => {
+    const comment: ReviewComment = {
+      commentId: `comment-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
+      worldId: world.worldId,
+      body: text,
+      scanId,
+      thingId,
+      areaId,
+      actorId: actor?.memberId ?? 'local-commenter',
+      actorRole: actor?.role ?? 'local',
+      createdAt: new Date().toISOString(),
+    }
+    ;(world.comments ??= []).push(comment)
+    return comment
+  })
+  return c.json(comment, 201)
+})
+
 app.get('/worlds/:slug/jobs', async (c) => {
   const world = await loadWorld(c.req.param('slug'))
   const denied = denyUnlessWorldRole(c, world, 'viewer', { allowAnonymous: true })
@@ -3661,16 +3742,81 @@ app.post('/process-scan', async (c) => {
 
 type ProjectRecord = Project
 
+function isPlaceType(value: unknown): value is NonNullable<ProjectRecord['placeType']> {
+  return value === 'building' || value === 'floor' || value === 'room'
+}
+
 const DEFAULT_PROJECT: ProjectRecord = {
   projectId: 'proj-default',
   name: 'Unassigned',
   createdAt: 0,
   updatedAt: 0,
   floors: [{ floorId: 'floor-default', name: 'Ground Floor', level: 0, rooms: [] }],
+  areas: [{ areaId: 'area-default', name: 'Unassigned', kind: 'site', parentAreaId: null }],
 }
 
 const PROJECTS_FILE = Deno.env.get('PROJECTS_FILE') ?? './projects.json'
 let projectMutationQueue: Promise<void> = Promise.resolve()
+
+/**
+ * Existing records stored only floors and rooms. Surface them as a stable Area
+ * graph at the API boundary, keeping old captures usable while new UI writes
+ * use the more flexible place-area vocabulary.
+ */
+function withDerivedAreas(project: ProjectRecord): ProjectRecord {
+  if (project.areas && project.areas.length > 0) return project
+  const rootAreaId = `area-${project.projectId}`
+  const areas: NonNullable<ProjectRecord['areas']> = [{
+    areaId: rootAreaId,
+    name: project.name,
+    kind: 'site',
+    parentAreaId: null,
+  }]
+  for (const floor of project.floors) {
+    const floorAreaId = `area-${floor.floorId}`
+    areas.push({
+      areaId: floorAreaId,
+      name: floor.name,
+      kind: 'floor',
+      parentAreaId: rootAreaId,
+      floorId: floor.floorId,
+    })
+    for (const room of floor.rooms) {
+      areas.push({
+        areaId: `area-${room.roomId}`,
+        name: room.name,
+        kind: 'room',
+        parentAreaId: floorAreaId,
+        floorId: floor.floorId,
+        roomId: room.roomId,
+      })
+    }
+  }
+  return { ...project, areas }
+}
+
+/** Reject missing parents and loops before persisting the cross-Place tree. */
+function projectHierarchyError(
+  projects: ProjectRecord[],
+  projectId: string,
+  parentProjectId: string | null | undefined,
+): string | null {
+  if (!parentProjectId) return null
+  if (parentProjectId === projectId) return 'A Place cannot contain itself.'
+
+  const byId = new Map(projects.map(project => [project.projectId, project]))
+  let cursor = parentProjectId
+  const visited = new Set<string>()
+  while (cursor) {
+    if (cursor === projectId) return 'A Place cannot be linked below one of its descendants.'
+    if (visited.has(cursor)) return 'The selected parent hierarchy contains a cycle.'
+    visited.add(cursor)
+    const parent = byId.get(cursor)
+    if (!parent) return 'The selected upper-level Place no longer exists.'
+    cursor = parent.parentProjectId ?? ''
+  }
+  return null
+}
 
 async function loadProjects(): Promise<ProjectRecord[]> {
   let projects: ProjectRecord[] = []
@@ -3680,7 +3826,7 @@ async function loadProjects(): Promise<ProjectRecord[]> {
   if (!projects.some(project => project.projectId === DEFAULT_PROJECT.projectId)) {
     projects.unshift({ ...DEFAULT_PROJECT, floors: DEFAULT_PROJECT.floors.map(floor => ({ ...floor, rooms: [...floor.rooms] })) })
   }
-  return projects
+  return projects.map(withDerivedAreas)
 }
 
 async function saveProjects(projects: ProjectRecord[]): Promise<void> {
@@ -3711,28 +3857,39 @@ app.get('/projects', async (c) => {
 app.post('/projects', async (c) => {
   const body = await c.req.json().catch(() => ({})) as {
     name?: string
+    placeType?: ProjectRecord['placeType']
+    parentProjectId?: string | null
     address?: string
     notes?: string
     geoPose?: ProjectRecord['geoPose']
   }
   if (!body.name?.trim()) return c.json({ error: 'name is required' }, 400)
+  if (body.placeType !== undefined && !isPlaceType(body.placeType)) {
+    return c.json({ error: 'placeType must be building, floor, or room' }, 400)
+  }
   const name = body.name.trim()
-  const project = await mutateProjects((projects) => {
+  const created = await mutateProjects<{ project: ProjectRecord | null; error?: string }>((projects) => {
+    const hierarchyError = projectHierarchyError(projects, '', body.parentProjectId)
+    if (hierarchyError) return { result: { project: null, error: hierarchyError }, save: false }
     const now = Date.now()
     const project: ProjectRecord = {
       projectId: `proj-${now}`,
       name,
+      placeType: body.placeType,
+      parentProjectId: body.parentProjectId ?? null,
       address: body.address,
       notes: body.notes,
       geoPose: body.geoPose,
       createdAt: now,
       updatedAt: now,
+      areas: [{ areaId: `area-${now}`, name, kind: 'site', parentAreaId: null }],
       floors: [{ floorId: `floor-${now}`, name: 'Ground Floor', level: 0, rooms: [] }],
     }
     projects.push(project)
-    return { result: project, save: true }
+    return { result: { project }, save: true }
   })
-  return c.json(project, 201)
+  if (created.error) return c.json({ error: created.error }, 400)
+  return c.json(created.project, 201)
 })
 
 app.get('/projects/:id/world', async (c) => {
@@ -3756,7 +3913,7 @@ app.get('/projects/:id', async (c) => {
 app.patch('/projects/:id/scans/:scanId', async (c) => {
   const projectId = c.req.param('id')
   const scanId = c.req.param('scanId')
-  const body = await c.req.json().catch(() => ({})) as { floorId?: string | null; roomId?: string | null }
+  const body = await c.req.json().catch(() => ({})) as { floorId?: string | null; roomId?: string | null; areaId?: string | null }
   const projects = await loadProjects()
   const project = projects.find(p => p.projectId === projectId)
   if (!project) return c.json({ error: 'Project not found' }, 404)
@@ -3766,7 +3923,10 @@ app.patch('/projects/:id/scans/:scanId', async (c) => {
   if (body.roomId && !project.floors.some(floor => floor.rooms.some(room => room.roomId === body.roomId))) {
     return c.json({ error: 'Room not found' }, 404)
   }
-  const updated = await rewriteScanProject(scanId, projectId, body.floorId ?? null, body.roomId ?? null)
+  if (body.areaId && !(project.areas ?? []).some(area => area.areaId === body.areaId)) {
+    return c.json({ error: 'Area not found' }, 404)
+  }
+  const updated = await rewriteScanProject(scanId, projectId, body.floorId ?? null, body.roomId ?? null, body.areaId ?? null)
   if (!updated) return c.json({ error: 'Scan not found' }, 404)
   return c.json({ ok: true })
 })
@@ -3775,27 +3935,38 @@ app.put('/projects/:id', async (c) => {
   const id = c.req.param('id')
   const body = await c.req.json().catch(() => null) as ProjectRecord | null
   if (!body) return c.json({ error: 'Invalid JSON' }, 400)
-  const updated = await mutateProjects<ProjectRecord | null>((projects) => {
+  if (body.placeType !== undefined && !isPlaceType(body.placeType)) {
+    return c.json({ error: 'placeType must be building, floor, or room' }, 400)
+  }
+  const updated = await mutateProjects<{ project: ProjectRecord | null; error?: string }>((projects) => {
     const idx = projects.findIndex(p => p.projectId === id)
-    if (idx === -1) return { result: null, save: false }
+    if (idx === -1) return { result: { project: null }, save: false }
+    const hierarchyError = projectHierarchyError(projects, id, body.parentProjectId)
+    if (hierarchyError) return { result: { project: null, error: hierarchyError }, save: false }
     projects[idx] = { ...body, projectId: id, updatedAt: Date.now() }
-    return { result: projects[idx], save: true }
+    return { result: { project: projects[idx] }, save: true }
   })
-  if (!updated) return c.json({ error: 'Not found' }, 404)
-  return c.json(updated)
+  if (updated.error) return c.json({ error: updated.error }, 400)
+  if (!updated.project) return c.json({ error: 'Not found' }, 404)
+  return c.json(updated.project)
 })
 
 app.delete('/projects/:id', async (c) => {
   const id = c.req.param('id')
   const scanCount = await countScansForProject(id)
   if (scanCount > 0) return c.json({ error: 'project has scans', scanCount }, 409)
-  const deleted = await mutateProjects((projects) => {
+  const deleted = await mutateProjects<{ deleted: boolean; childCount: number }>((projects) => {
     const idx = projects.findIndex(p => p.projectId === id)
-    if (idx === -1) return { result: false, save: false }
+    if (idx === -1) return { result: { deleted: false, childCount: 0 }, save: false }
+    const childCount = projects.filter(project => project.parentProjectId === id).length
+    if (childCount > 0) return { result: { deleted: false, childCount }, save: false }
     projects.splice(idx, 1)
-    return { result: true, save: true }
+    return { result: { deleted: true, childCount: 0 }, save: true }
   })
-  if (!deleted) return c.json({ error: 'Not found' }, 404)
+  if (deleted.childCount > 0) {
+    return c.json({ error: 'project has linked child Places', childCount: deleted.childCount }, 409)
+  }
+  if (!deleted.deleted) return c.json({ error: 'Not found' }, 404)
   return c.json({ ok: true })
 })
 
@@ -3850,6 +4021,7 @@ async function rewriteScanProject(
   projectId: string | null,
   floorId: string | null,
   roomId: string | null,
+  areaId: string | null,
 ): Promise<boolean> {
   let updated = false
   for await (const entry of Deno.readDir(SCANS_DIR)) {
@@ -3862,6 +4034,7 @@ async function rewriteScanProject(
       meta['projectId'] = projectId
       meta['floorId'] = floorId
       meta['roomId'] = roomId
+      meta['areaId'] = areaId
       await Deno.writeTextFile(path, JSON.stringify(meta, null, 2))
       updated = true
     } catch { /* ignore one malformed sidecar */ }
@@ -3872,6 +4045,7 @@ async function rewriteScanProject(
       for (const scan of world.scans) {
         if (scan.scanId !== scanId && scan.filename !== scanId && scan.sessionId !== scanId) continue
         scan.projectId = projectId
+        scan.areaId = areaId
         changed = true
       }
       return changed
@@ -3961,6 +4135,9 @@ interface RtcPeer {
 const rtcRooms = new Map<string, Partial<Record<'phone' | 'viewer', RtcPeer>>>()
 
 app.get('/rtc-signal', (c) => {
+  if (!WEBRTC_LIVE_ENABLED) {
+    return c.json({ error: 'WebRTC live streaming is disabled.' }, 404)
+  }
   const { socket, response } = Deno.upgradeWebSocket(c.req.raw)
   const url = new URL(c.req.url)
   const roomId = (url.searchParams.get('room') ?? 'default').replace(/[^a-zA-Z0-9_-]/g, '')

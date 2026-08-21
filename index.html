@@ -1479,6 +1479,39 @@
       }
       .place-coordinate-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
       #place-new-save { min-height: 40px; border: 0; border-radius: 7px; color: #042226; background: #72ddd4; font-weight: 700; }
+      .place-area-picker { display:grid; gap:7px; margin-top:10px; padding:10px; border:1px solid var(--ci-line); border-radius:8px; background:rgba(255,255,255,.025); }
+      .place-area-heading { color:var(--ci-text); font-size:12px; font-weight:700; }
+      .place-area-heading span { color:var(--ci-muted); font-weight:400; }
+      #place-area-list { display:grid; gap:5px; max-height:160px; overflow:auto; }
+      #place-area-list .place-option { display:grid; gap:3px; padding:8px 9px; text-align:left; border:1px solid var(--ci-line); border-radius:7px; color:var(--ci-text); background:var(--ci-surface); }
+      #place-area-list .place-option-selected { border-color:rgba(114,221,212,.72); background:rgba(114,221,212,.1); }
+      .place-area-new { justify-self:start; border:0; background:transparent; color:var(--ci-accent); font-size:11px; font-weight:700; }
+      #place-area-new-form { display:grid; gap:7px; padding-top:3px; }
+      #place-area-new-form[hidden] { display:none; }
+      #place-area-new-form label { display:grid; gap:4px; color:var(--ci-muted); font-size:11px; }
+      .ci-select {
+        min-height: 36px;
+        padding: 0 34px 0 9px;
+        border: 1px solid rgba(114, 221, 212, 0.32);
+        border-radius: 7px;
+        appearance: none;
+        -webkit-appearance: none;
+        color-scheme: dark;
+        color: var(--ci-text);
+        background-color: var(--ci-surface);
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none' stroke='%2372ddd4' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E");
+        background-position: right 9px center;
+        background-repeat: no-repeat;
+        background-size: 16px;
+        cursor: pointer;
+        font: inherit;
+      }
+      .ci-select:hover { border-color: rgba(114, 221, 212, 0.56); background-color: rgba(114, 221, 212, 0.1); }
+      .ci-select:focus-visible { outline: none; border-color: var(--ci-mint); box-shadow: 0 0 0 3px rgba(114, 221, 212, 0.18); }
+      .ci-select option { color: var(--ci-text); background: #082432; }
+      .ci-select option:checked { color: #061820; background: #72ddd4; }
+      #place-area-new-form input { min-height:36px; padding:7px 9px; border:1px solid var(--ci-line); border-radius:7px; color:var(--ci-text); background:var(--ci-surface); }
+      #place-area-save { min-height:36px; border:1px solid rgba(114,221,212,.55); border-radius:7px; color:var(--ci-mint); background:rgba(114,221,212,.1); font-weight:700; }
       .place-sheet-actions { display: flex; gap: 8px; margin-top: 10px; }
       .place-sheet-actions button { flex: 1; min-height: 40px; border: 1px solid var(--ci-line); border-radius: 7px; color: var(--ci-text); background: var(--ci-surface); }
 
@@ -1669,24 +1702,24 @@
              attaches the handler at the top of its boot (section 0) and clears
              both there, so the not-pressable state lasts ~50ms in practice —
              and stays put if the bundle never loads at all. -->
-        <button id="start-ar-btn" class="start-path" aria-label="Scan a room with live AR" disabled aria-busy="true">
+        <button id="start-ar-btn" class="start-path" aria-label="Scan a Place with live AR" disabled aria-busy="true">
           <span class="start-path-icon" aria-hidden="true"><svg width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="2.2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 16.2a6 6 0 0 0 0-8.4"/><path d="M4.8 4.8a10.2 10.2 0 0 0 0 14.4M19.2 19.2a10.2 10.2 0 0 0 0-14.4"/></svg></span>
           <span class="start-path-copy">
-            <span class="start-path-title">Scan a room</span>
-            <span class="start-path-sub">Point your phone and walk the room to build a 3D map.</span>
+            <span class="start-path-title">Scan a Place</span>
+            <span class="start-path-sub">Choose a Place, align it, then walk the space to build a 3D map.</span>
             <span class="start-path-status" aria-live="polite">Preparing…</span>
           </span>
         </button>
 
         <!-- Path 2 — the location modal runs before opening the native picker. -->
-        <button id="start-upload-card" class="start-path" type="button" aria-label="Upload a walkthrough video">
+        <button id="start-upload-card" class="start-path" type="button" aria-label="Upload content from a Place">
           <span class="start-path-icon" aria-hidden="true"><svg width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="5" width="18" height="14" rx="1.8"/><path d="M8 5v14M16 5v14M3 9.7h5M3 14.3h5M16 9.7h5M16 14.3h5"/></svg></span>
           <span class="start-path-copy">
-            <span id="upload-video-btn" class="start-path-title">Upload a video</span>
-            <span class="start-path-sub">Already have a walkthrough video? Turn it into a 3D map — no AR needed.</span>
+            <span id="upload-video-btn" class="start-path-title">Upload Content</span>
+            <span class="start-path-sub">Add a walkthrough video or photo set from a Place — no AR needed.</span>
           </span>
         </button>
-        <input id="upload-video-input" type="file" accept="video/*" style="display:none;" />
+        <input id="upload-video-input" type="file" accept="video/*,image/jpeg,image/png,image/webp" multiple style="display:none;" />
 
         <a id="start-editor-card" class="start-path" href="/editor" aria-label="Explore and edit existing places">
           <span class="start-path-icon" aria-hidden="true"><svg width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 5.5h16v13H4z"/><path d="M8 3.5v4M16 3.5v4M8 16.5h8M8 12.5h5"/></svg></span>
@@ -1700,7 +1733,7 @@
       <!-- Upload progress / result line, driven by wireVideoUpload() -->
       <div id="upload-video-progress" aria-live="polite"
         style="max-width:380px;width:100%;text-align:center;font-size:12px;color:var(--ci-muted);line-height:1.55;"></div>
-      <a id="upload-video-open" href="/viewer.html?world=default" hidden
+      <a id="upload-video-open" href="/editor" hidden
         style="color:#72ddd4;font-size:12px;font-weight:700;text-decoration:none;">
         Processing started — open the 3D editor →
       </a>

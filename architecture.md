@@ -1,5 +1,11 @@
 # Companion Scan — System Architecture & Trace Documentation
 
+> **Product model note:** the user-facing hierarchy is **Place → Area → Scan
+> session/segment → Scan → Layer → Thing/Observation**. `WorldProject` is the
+> compatible internal ENU scene record for a Place, not a competing product
+> concept. The full contract and migration rules live in
+> [docs/PLACE_SCAN_DESIGN.md](docs/PLACE_SCAN_DESIGN.md).
+
 Companion Scan is a mobile-first, privacy-respecting Augmented Reality (AR) application designed to capture, reconstruct, and index physical rooms into a structured **4D map**. It leverages SLAM tracking, frame capture, vision-language models (VLMs), spatial coordinate resolution, an anchored multi-scan world model, asynchronous reconstruction jobs, and persistent client-server storage.
 
 > **Companion documents.** This file is the technical system-design authority: diagrams, data model, the complete API surface, deployment topology, and known shortcomings. The everyday-user experience — first-time-user onboarding (FTUE), the happy-path capture story, and the mental model separating manual capture vs. auto-capture vs. keyframe streaming vs. live WebRTC — lives in **[`docs/UX_FLOW.md`](docs/UX_FLOW.md)**. Read the two together: section 2's sequence diagram below is the *technical trace* (what the code does, frame by frame), while `docs/UX_FLOW.md` is the *experience design* (what the person holding the phone sees and decides). Timelines and shipped-vs-planned status live only in [`roadmap.md`](roadmap.md).
@@ -353,7 +359,7 @@ A **world** (`WorldProject`, `src/world/types.ts`) is an anchored spatial contai
 
 #### Roles & Tokens (`WORLD_STRICT_AUTH`)
 
-Worlds carry role-scoped membership (`MemberRole`: `owner | editor | viewer | scanner`) and share slugs. The environment flag `WORLD_STRICT_AUTH=1` (`main.ts`) turns on strict token enforcement: requests must present a valid role token, and anonymous access is rejected. When unset (default), routes allow anonymous access — appropriate for a single-owner LAN/Tailnet deployment. Recipients of a `shareSlug` open `/worlds/:slug` at their granted role (e.g. a `viewer` link is read-only).
+Places/projects carry role-scoped membership (`MemberRole`: `owner | editor | commenter | viewer | scanner`) and share slugs. The environment flag `WORLD_STRICT_AUTH=1` (`main.ts`) turns on strict token enforcement: requests must present a valid role token, and anonymous access is rejected. When unset (default), routes allow anonymous access — appropriate for a single-owner LAN/Tailnet deployment. Recipients open the Spatial Editor at `/editor?project=<id>` with their granted role; a `viewer` link is read-only and a `commenter` link reserves comment capability without edit rights.
 
 ### World Job Types & Processing (`/worlds/:slug/jobs`)
 
@@ -404,7 +410,7 @@ gates that stage when textured reconstruction meshes arrive.
 Verify the pipeline standalone with `npm run smoke:pipeline` (plain Node, no
 model or AR hardware required).
 
-### Progressive Loading (World Scan Editor)
+### Progressive Loading (Companion Scan Spatial Editor)
 
 `loadScanIntoWorld` checks `/scans/:filename/manifest` first: when artifacts
 exist it renders the coarsest LOD within a few hundred ms, then streams the
@@ -644,7 +650,7 @@ in **[`roadmap.md`](roadmap.md)**, which is the single owner of status and
 timelines. In brief:
 
 - **Shipped:** AR SLAM capture, engine-agnostic inference (ollama / onnx / mock),
-  spatial resolver, IndexedDB + GLB export, the desktop world editor (ENU
+  spatial resolver, IndexedDB + GLB export, the Companion Scan Spatial Editor (ENU
   multi-scan model, layers, measure, transform, progressive LOD), the scan
   optimization pipeline (quantization / Draco / LODs), keyframe streaming, the
   WebRTC live-geometry channel, the async world job queue, the splat toolbox
@@ -670,7 +676,7 @@ The following matrix documents the architectural limitations of the current desi
 | **Silent Backend Failures** | Uncaught route crashes return a generic response or drop connection without logging details. | Register Hono's `app.onError` to log full stack traces, and add handler-entry logs (Done). | Integrate central logger service (Winston / Deno log streams). |
 | **Newest Scan Race Condition** | `/process-scan` processes wrong file if uploads fail or occur out of order. | Implement `sessionId` matching in companion JSON files to lookup scans (Done). | Require explicit `scanId` parameter in API request payloads. |
 | **SLAM Coordinate Drift** | Detections lose alignment over long scanning durations (>10 mins). | Advise user via HUD to return to the origin/loop closure points. | Integrate visual-inertial loop closure (ORB-SLAM / WebXR anchor APIs). |
-| **Completion Verdict Hidden on Phone** | The quality verdict (`ready` / `needs-review` / `needs-rescan`) is computed but only surfaced in the desktop viewer — the phone user cannot tell if they have captured enough. | Surface `qualityMonitor.summary()` as a status chip plus a Done/Finish affordance (planned; see `docs/UX_FLOW.md`). | Close the export loop with an in-app "View in 3D →" link back to the world. |
+| **Completion Verdict Hidden on Phone** | The quality verdict (`ready` / `needs-review` / `needs-rescan`) is computed but only surfaced in the Spatial Editor — the phone user cannot tell if they have captured enough. | Surface `qualityMonitor.summary()` as a status chip plus a Done/Finish affordance (planned; see `docs/UX_FLOW.md`). | Close the export loop with an in-app "Open Place in 3D" link. |
 | **Placeholder Reconstruction Jobs** | Some job runners emit plan/placeholder artifacts unless the real worker is wired via env vars; the distinction is invisible to the user. | Runners report a "hint" when a worker is unset. | Surface planned-vs-real status per job in the editor; ship default workers. |
 | **GLB File Size Overhead** | High point-cloud density leads to files exceeding 1 MB quickly. | Voxel downsample + KHR_mesh_quantization + guarded Draco in the optimization pipeline (Done). | KTX2 texture compression once textured reconstruction meshes arrive. |
 | **No Authentication (default)** | With `WORLD_STRICT_AUTH` unset, anyone on the LAN/Tailnet can view or delete stored scans and worlds. | Namespace uploads behind generated session identifiers; opt-in `WORLD_STRICT_AUTH=1` role tokens. | Implement JWT-based auth gate on all state-modifying endpoints. |

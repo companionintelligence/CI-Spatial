@@ -31,6 +31,35 @@ export interface StoredDetection extends WorldDetection {
   thumbnailDataUrl?: string
 }
 
+export function normalizeStoredDetection(det: StoredDetection, sessionId: string): StoredDetection {
+  const captureTimestamp = typeof det.captureTimestamp === 'number' ? det.captureTimestamp : Date.now()
+  return {
+    ...det,
+    detectionId: det.detectionId ?? `det-${sessionId}-${captureTimestamp}-${stableDetectionKey(det).slice(0, 8)}`,
+    lastSeenAt: det.lastSeenAt ?? captureTimestamp,
+    observations: Array.isArray(det.observations) && det.observations.length > 0
+      ? det.observations
+      : [{
+        observationId: `obs-${sessionId}-${captureTimestamp}-${stableDetectionKey(det).slice(0, 8)}`,
+        sessionId,
+        label: det.label,
+        confidence: det.confidence,
+        description: det.description,
+        bbox: det.bbox,
+        worldPos: det.worldPos,
+        worldRot: det.worldRot,
+        captureTimestamp,
+        ...(det.captureIndex !== undefined ? { captureIndex: det.captureIndex } : {}),
+      }],
+  }
+}
+
+function stableDetectionKey(det: Pick<WorldDetection, 'label' | 'worldPos'>): string {
+  return `${det.label}-${det.worldPos.x.toFixed(2)}-${det.worldPos.y.toFixed(2)}-${det.worldPos.z.toFixed(2)}`
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+}
+
 /**
  * Where a capture is in its lifecycle.
  *
@@ -558,7 +587,10 @@ export class DetectionStore {
     const sessions = await getAllSessions(this.db)
     const record = sessions.find((s) => s.sessionId === sessionId)
     if (!record) return null
-    return new Map(record.detections as Array<[string, StoredDetection]>)
+    return new Map(
+      (record.detections as Array<[string, StoredDetection]>)
+        .map(([key, det]) => [key, normalizeStoredDetection(det, record.sessionId)]),
+    )
   }
 
   /** Return all sessions stored in IndexedDB */
@@ -609,7 +641,10 @@ export class DetectionStore {
   private adopt(record: { sessionId: string; startedAt: number; detections: unknown }): void {
     this._sessionId = record.sessionId
     this._startedAt = record.startedAt
-    this._detections = new Map(record.detections as Array<[string, StoredDetection]>)
+    this._detections = new Map(
+      (record.detections as Array<[string, StoredDetection]>)
+        .map(([key, det]) => [key, normalizeStoredDetection(det, record.sessionId)]),
+    )
   }
 
   private notify(): void {

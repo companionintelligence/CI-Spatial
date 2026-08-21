@@ -93,6 +93,7 @@ const PROXIED_ROUTES = [
   '/projects',
   '/worlds',
   '/scan-locations',
+  '/project-locations',
   '/sessions',
   '/jobs',
   '/client-logs',

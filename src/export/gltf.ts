@@ -169,11 +169,13 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
     floorName,
     roomName,
     projectId:       scanEntry?.projectId ?? null,
+    areaId:          scanEntry?.areaId ?? null,
     autoSaved,
     pointCount:      pointCloud.count,
     detectionCount:  store.detections.size,
     poseCount:       poseHistory.length,
     qualitySummary:  qualitySummary ?? null,
+    calibration:     scanEntry?.calibration ?? null,
     boundingBox:     bb,
     floorY,
     // ── Geo metadata ─────────────────────────────────────────────────────────
@@ -397,7 +399,7 @@ async function uploadToServer(
    */
   serverSessionId: string | null,
 ): Promise<{ filename?: string; outcome: UploadOutcome }> {
-  const { store, pointCloud, poseHistory, geoFix, qualitySummary } = data
+  const { store, pointCloud, poseHistory, scanEntry, geoFix, qualitySummary } = data
   try {
     const metadata = JSON.stringify({
       detectionCount: store.detections.size,
@@ -409,6 +411,16 @@ async function uploadToServer(
       // that does not exist. See scene.userData above.
       sessionId:  serverSessionId,
       scanName: filename.replace(/\.glb$/, ''),
+      projectId: scanEntry?.projectId ?? null,
+      areaId: scanEntry?.areaId ?? null,
+      floorId: scanEntry?.floorId ?? null,
+      roomId: scanEntry?.roomId ?? null,
+      projectTransform: scanEntry?.calibration?.sessionToProject ?? null,
+      calibrationMethod: scanEntry?.calibration?.method ?? null,
+      calibrationResidualM: scanEntry?.calibration?.residualM ?? null,
+      calibrationToleranceM: scanEntry?.calibration?.toleranceM ?? null,
+      calibrationStatus: scanEntry?.calibration?.status ?? 'uncalibrated',
+      calibration: scanEntry?.calibration ?? null,
       autoSaved,
       pointCount: pointCloud.count,
       poseCount: poseHistory.length,
@@ -423,6 +435,8 @@ async function uploadToServer(
       // Geo fields — written flat so the server can index them for /scan-locations
       geoLat:     geoFix?.lat          ?? null,
       geoLng:     geoFix?.lng          ?? null,
+      geoAltitudeM: geoFix?.altitudeM  ?? null,
+      geoAccuracy: geoFix?.accuracy    ?? null,
       geoBearing: geoFix?.bearing      ?? null,
       geoAddress: geoFix?.address      ?? null,
       geoDisplayAddress: geoFix?.displayAddress ?? null,

@@ -11,7 +11,11 @@ export type LayerType =
   | 'splat'
   | 'semanticMasks'
 
-export type MemberRole = 'scanner' | 'viewer' | 'editor' | 'owner'
+/**
+ * Capabilities for a shared Place workspace. `commenter` can inspect a place
+ * and leave review notes, but cannot change spatial source data.
+ */
+export type MemberRole = 'scanner' | 'viewer' | 'commenter' | 'editor' | 'owner'
 
 export type WorldJobType =
   | 'ingest'
@@ -20,10 +24,12 @@ export type WorldJobType =
   | 'merge-points'
   | 'semantic-pass'
   | 'depth-reconstruct'
+  | 'thing-correspondence'
   | 'lingbot-map-reconstruct'
   | 'splat-train'
   | 'splat-detect'
   | 'splat-finish'
+  | 'sensenova-vision'
   | 'memory-push'
   | 'export-world'
   | 'optimize-scan'
@@ -33,6 +39,120 @@ export type WorldJobStatus = 'queued' | 'processing' | 'completed' | 'failed'
 export type ScanReviewStatus = 'ready' | 'needs-review' | 'needs-rescan'
 
 export type ScanManifestStatus = ScanReviewStatus | 'processing' | 'aligned' | 'error'
+
+export type ScanStatus = 'draft' | 'ready' | 'archived'
+
+export interface Room {
+  roomId: string
+  name: string
+  zone?: string
+}
+
+/**
+ * A named region inside a Place. Floors and rooms remain the legacy storage
+ * projection, while Areas are the user-facing hierarchy that can also model a
+ * wing, outdoor zone, or sub-building without inventing another Place.
+ */
+export type AreaKind = 'site' | 'building' | 'floor' | 'room' | 'zone' | 'outdoor'
+
+/** The semantic level represented by a Place/Project in the broader Place graph. */
+export type PlaceType = 'building' | 'floor' | 'room'
+
+export interface PlaceArea {
+  areaId: string
+  name: string
+  kind: AreaKind
+  parentAreaId?: string | null
+  floorId?: string | null
+  roomId?: string | null
+  notes?: string
+}
+
+export interface Floor {
+  floorId: string
+  /** Display label, e.g. "Ground Floor" or "Level 2" */
+  name: string
+  /** Ordinal level number (0 = ground) */
+  level: number
+  rooms: Room[]
+}
+
+export interface Project {
+  projectId: string
+  name: string
+  /** Optional level for this Place in the cross-project building hierarchy. */
+  placeType?: PlaceType
+  /** Optional parent Place, such as a Building for a Floor or a Floor for a Room. */
+  parentProjectId?: string | null
+  /** Human-readable hierarchy context, retained even before a matching parent Place exists. */
+  buildingName?: string
+  floorName?: string
+  roomName?: string
+  address?: string
+  notes?: string
+  /** Location confirmed when this place was created or edited. */
+  geoPose?: GeoPose
+  /** Stable indoor reference triangle used to align every AR session in this project. */
+  spatialFrame?: ProjectSpatialFrame
+  createdAt: number
+  updatedAt: number
+  /**
+   * Canonical user-facing containment graph. Older projects can omit this;
+   * their `floors` and `rooms` continue to work and are surfaced as Areas.
+   */
+  areas?: PlaceArea[]
+  floors: Floor[]
+}
+
+/** `Project` is the durable API/storage name; the product calls it a Place. */
+export type Place = Project
+
+export interface ProjectSpatialFrame {
+  version: 1
+  method: 'raycast-reference-triangle'
+  /** Pairwise distances origin→X, origin→plane, X→plane in metres. */
+  referenceDistancesM: [number, number, number]
+  referenceLabels: [string, string, string]
+  toleranceM: number
+  createdAt: string
+}
+
+export interface ScanCalibration {
+  method: 'raycast-reference-triangle'
+  /** Matrix that maps the current AR session's local coordinates into project space. */
+  sessionToProject: number[]
+  referenceDistancesM: [number, number, number]
+  residualM: number
+  toleranceM: number
+  calibratedAt: string
+  status: 'verified' | 'provisional' | 'uncalibrated'
+}
+
+export interface ScanEntryQualitySummary {
+  coverageScore: number
+  lowLightFrames: number
+  driftEvents: number
+  reflectiveWarnings: number
+  pointCount: number
+}
+
+export interface ScanEntry {
+  scanId: string
+  projectId: string | null
+  sessionId: string
+  /** Filename of the uploaded .glb on the server (if already uploaded) */
+  scanFilename?: string
+  floorId?: string
+  roomId?: string
+  /** User-facing area assignment, independent of legacy floor/room fields. */
+  areaId?: string | null
+  name: string
+  status: ScanStatus
+  capturedAt: number
+  notes?: string
+  qualitySummary?: ScanEntryQualitySummary
+  calibration?: ScanCalibration
+}
 
 export interface Vec3 {
   x: number
@@ -132,19 +252,28 @@ export interface EditPatch {
   patchId: string
   worldId: string
   scanId?: string
+  /**
+   * For scope 'thing' this is a Thing.thingId; for every other scope it keeps
+   * its existing meaning.
+   */
   targetId: string
-  scope: 'scan' | 'object' | 'point-selection' | 'layer' | 'world'
+  scope: 'scan' | 'object' | 'point-selection' | 'layer' | 'world' | 'thing'
   transform?: TransformPatch
   label?: string
   category?: string
   notes?: string
   visible?: boolean
   actorId?: string
+  /** Fallback object id for thing-scoped patches if correspondence changes. */
+  originTargetId?: string
   createdAt: string
 }
 
 export interface ScanManifest {
   scanId: string
+  projectId: string | null
+  /** The Area within the current Place where this scan belongs. */
+  areaId?: string | null
   sessionId: string | null
   filename: string
   name: string
@@ -153,6 +282,8 @@ export interface ScanManifest {
   geoPose: GeoPose
   localToWorld: number[]
   accuracyM: number | null
+  geoDistanceM: number | null
+  geoOutlier?: boolean
   capturedAt: string | null
   pointCount: number | null
   detectionCount: number | null
@@ -169,6 +300,22 @@ export interface WorldMember {
   createdAt: string
   expiresAt?: string | null
   revokedAt?: string | null
+}
+
+/**
+ * An append-only review note in a Place workspace. Comments may concern the
+ * whole Place or be anchored to a specific Area, Scan, or persistent Thing.
+ */
+export interface ReviewComment {
+  commentId: string
+  worldId: string
+  body: string
+  scanId?: string | null
+  thingId?: string | null
+  areaId?: string | null
+  actorId: string
+  actorRole: MemberRole | 'local'
+  createdAt: string
 }
 
 export interface WorldJob {
@@ -188,14 +335,68 @@ export interface WorldJob {
   updatedAt: string
 }
 
+export interface DetectionObservation {
+  observationId: string
+  sessionId: string
+  label: string
+  confidence: number
+  description: string
+  bbox: [number, number, number, number]
+  worldPos: Vec3
+  worldRot: Quat
+  captureTimestamp: number
+  captureIndex?: number
+}
+
+export type ThingChangeKind = 'new' | 'matched' | 'moved' | 'removed' | 'ambiguous'
+
+export interface Thing {
+  thingId: string
+  worldId: string
+  /** Place and Area provenance make Things resolvable outside a loaded scene. */
+  projectId?: string | null
+  areaId?: string | null
+  canonicalLabel: string
+  representativeTargetId: string
+  position: Vec3
+  firstSeenScanId: string
+  lastSeenScanId: string
+  observationIds: string[]
+  createdAt: string
+  updatedAt: string
+  origin: 'matcher' | 'user'
+  changeKind?: ThingChangeKind
+}
+
+export interface ThingObservation {
+  observationId: string
+  thingId: string
+  scanId: string
+  projectId?: string | null
+  areaId?: string | null
+  sessionId: string | null
+  targetId: string
+  label: string
+  canonicalLabel: string
+  confidence: number | null
+  worldPos: Vec3
+  observedAt: string | null
+  origin: 'matcher' | 'user'
+}
+
 export interface WorldProject {
   worldId: string
   name: string
   shareSlug: string
+  projectId: string | null
   originGeoPose: GeoPose
   localFrame: LocalFrame
   scans: ScanManifest[]
+  things: Thing[]
+  thingObservations: ThingObservation[]
   members: WorldMember[]
+  /** Older world files omit this collection; readers initialize it to `[]`. */
+  comments?: ReviewComment[]
   jobs: WorldJob[]
   editPatches: EditPatch[]
   createdAt: string

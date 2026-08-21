@@ -1,5 +1,12 @@
 # Wave: 08-places-and-things
 
+> **Historical implementation wave:** this folder records the starting state
+> and decisions for the place/thing migration. Its "today" language describes
+> the state when the tickets were written, not necessarily the current build.
+> The current product contract is [PLACE_SCAN_DESIGN.md](../../PLACE_SCAN_DESIGN.md):
+> **Place → Area → Scan session/segment → Scan → Layer → Thing/Observation**.
+> `WorldProject` remains the compatible internal ENU composition for a Place.
+
 Nine tickets to make the product's own tagline true. `index.html` says *"Private spatial
 memory for places you own."* Today the system has no concept of a place, no concept of a
 thing that persists between visits, and no way to look at a moment in time.

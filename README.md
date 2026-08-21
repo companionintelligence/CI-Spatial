@@ -1,6 +1,8 @@
 # Companion Scan
 
-An AR room-scanning application that uses 8th Wall SLAM for spatial mapping, an engine-agnostic vision-language inference layer for object detection, and Three.js for 3D visualisation. Inference defaults to a local Ollama server running `moondream:latest`; a bundled ONNX model (`LiquidAI/LFM2.5-VL-1.6B-ONNX`) and a deterministic mock CV engine are alternates selected via `INFERENCE_MODE`. Results are exported as `.glb` files and can be composed into shared world projects in the browser-based scan editor.
+Companion Scan turns AR captures and uploaded media into a private, structured record of a **Place**. It uses 8th Wall/WebXR for capture, an engine-agnostic vision layer for object detection, and Three.js for the **Companion Scan Spatial Editor** at `/editor`. Several scans combine in one Place, are assigned to Areas such as rooms or floors, and remain independently traceable through layers and Things. Inference defaults to local Ollama; bundled ONNX and deterministic mock CV engines are alternatives selected via `INFERENCE_MODE`.
+
+The current product contract is [Place-First Product Design](docs/PLACE_SCAN_DESIGN.md). `WorldProject` remains the internal ENU scene format during the compatibility migration; it is not the primary user-facing noun.
 
 ---
 
@@ -137,7 +139,7 @@ graph TD
 
     Ollama & LFM -->|Bounding Box JSON| Server_Infer
     Server_Infer -->|RawDetections| Cap
-    WebRTC -->|Live Geometry & Detections| DesktopEditor["Desktop Viewer & Editor"]
+    WebRTC -->|Live Geometry & Detections| DesktopEditor["Companion Scan Spatial Editor"]
 ```
 
 ---
@@ -155,12 +157,12 @@ graph TD
 - **Grouped Action Rail** — Vertically stacks and groups navigation links separate from live scanning tools with a visual divider line, while keeping direct DOM hierarchy for E2E testing compliance.
 - **Session persistence** — every scan is saved to IndexedDB; browse, reload, edit, or delete past sessions from the history drawer.
 - **GLTF export** — exports the full scan (point cloud + camera path + labelled boxes) as a `.glb` file, saved locally and uploaded to the server.
-- **Shareable scanner/viewer links** — editor/owner share links carry capability tokens; regular world manifests redact stored tokens, and strict role enforcement is available with `WORLD_STRICT_AUTH=1`.
+- **Role-scoped Place links** — view, comment, edit, scanner, and owner links carry capability tokens; regular project manifests redact stored tokens, and strict role enforcement is available with `WORLD_STRICT_AUTH=1`.
 - **Processing queue foundation** — world jobs cover ingest, layer extraction, alignment, point merging, semantic passes, depth reconstruction, splat training, and world export; the local coordinator validates inputs and records artifacts while heavier Open3D/CV/splat workers remain pluggable.
 - **Automatic scan optimization** — every upload is queued as an `optimize-scan` WorldJob (single-flight, crash-recovering): quantization + Draco + point-cloud LODs (`.opt.glb`, `.lodN.glb`, `.manifest.json`), roughly halving file size.
 - **Keyframe streaming** — ☁ button streams pose+intrinsics-tagged keyframes to the server while you walk: reconstruction-ready `FrameObservation` sidecars under `scans/sessions/`.
 - **Live geometry to desktop** — the WebRTC live stream also carries point-cloud deltas, detections, and camera pose; the desktop editor shows the scan growing in real time.
-- **Desktop world editor** — `/viewer` places scans in a shared ENU world with transform gizmos, semantic tagging, layer toggles, and progressive LOD-first loading (Draco-aware).
+- **Companion Scan Spatial Editor** — `/editor` places scans in a shared ENU Place frame with transform gizmos, semantic tagging, layer toggles, guided processing, and progressive LOD-first loading (Draco-aware).
 - **PWA** — installable on iOS/Android with app-shell caching and an offline write queue for uploads, keyframes, patches, jobs, summaries, and project writes.
 
 ---
@@ -229,12 +231,12 @@ This uses `concurrently` to run:
 - **Deno inference server** on `:8000` (`npm run server`)
 - **Vite dev server** on `:5173` with HTTPS (`npm run dev`)
 
-Open `https://<tailscale-hostname>:5173` on your phone to scan, or on desktop to use the world editor at `https://<tailscale-hostname>:5173/viewer.html?world=default`.
+Open `https://<tailscale-hostname>:5173` on your phone to scan or upload content from a Place, or use the Spatial Editor on desktop at `https://<tailscale-hostname>:5173/editor?project=default`.
 
 Key routes (replace the hostname with your machine's):
 
-- Scanner: `https://<your-tailscale-hostname>:5173/scanner.html?world=default`
-- Viewer/editor: `https://<your-tailscale-hostname>:5173/viewer.html?world=default`
+- Scanner / uploader: `https://<your-tailscale-hostname>:5173/?project=default`
+- Spatial Editor: `https://<your-tailscale-hostname>:5173/editor?project=default`
 - WebXR scanner: `https://<your-tailscale-hostname>:5173/webxr.html`
 
 For persistent serving from a Linux box (systemd units, GPU inference, cert renewal) see [docs/DEPLOY.md](docs/DEPLOY.md); for the on-device test protocol — including driving an Android device's UI directly through [android-remote-control-mcp](https://github.com/danielealbano/android-remote-control-mcp) as a Claude Code connector — see [docs/DEVICE_TESTING.md](docs/DEVICE_TESTING.md#remote-controlled-testing-android-remote-control-mcp).
@@ -401,7 +403,7 @@ The full, canonical route table lives in [architecture.md](architecture.md); the
 | `GET` | `/scan-locations` | Returns geo-located scan positions |
 | `GET`/`POST` | `/worlds` | List / create world projects |
 | `GET` | `/worlds/:slug` | World manifest: scans, layers, members, jobs, patches (+ `.splat` sidecars) |
-| `GET` | `/worlds/:slug/share` | Returns owner/editor/viewer/scanner role links |
+| `GET` | `/worlds/:slug/share` | Compatibility endpoint returning view/comment/edit/scanner/owner links scoped to one Place |
 | `POST` | `/worlds/:slug/patches` | Persists transform, label, category, notes, visibility edit patches |
 | `GET`/`POST` | `/worlds/:slug/jobs` | List / queue async world jobs (`align-scan`, `semantic-pass`, `splat-train`, `lingbot-map-reconstruct`, …) |
 | `GET` | `/jobs` / `/jobs/:id` | Legacy view of `optimize-scan` jobs (shimmed from WorldJob data, shape unchanged) |

@@ -26,6 +26,7 @@ import { InferServerError } from './inference/server'
 import { bucket, resolveDetections, mergeDetections } from './spatial/resolver'
 import { DetectionStore } from './scene/store'
 import { ProjectStore, type Project, type ScanCalibration, type ScanEntry } from './project/project-store'
+import type { AreaKind, PlaceArea } from './world/types'
 import { AROverlay } from './ui/overlay'
 import { SidePanel, type ExportOutcome } from './ui/panel'
 import { SessionHistory } from './ui/history'
@@ -34,7 +35,8 @@ import { isServerSessionId } from './shared/session-id.ts'
 import { exportSessionSummary } from './export/summary'
 import { GeoTracker, type GeoFix } from './geo/geo-tracker'
 import { distanceM } from './world/geo'
-import { RtcBroadcaster } from './rtc/broadcaster'
+import type { RtcBroadcaster } from './rtc/broadcaster'
+import { WEBRTC_LIVE_ENABLED } from './rtc/feature'
 import { registerPWA } from './pwa'
 import { installRemoteLog } from './debug/remote-log'
 import { iconLabel } from './ui/icons'
@@ -44,6 +46,9 @@ import * as THREE from 'three'
 const CAPTURE_FRAME_TIMEOUT_MS = 8000
 const TRACKING_WAIT_MS = 2500
 let requestPlaceSelection: ((afterSelection?: () => void) => void) | null = null
+// Upload selection is wired before IndexedDB and Place data finish loading, so
+// retain its current target in module state for the upload handler.
+let uploadPlaceTarget: { projectId: string | null; areaId: string | null } = { projectId: null, areaId: null }
 
 function poseIsFinite(pose: Pose): boolean {
   return Number.isFinite(pose.position.x)
@@ -77,7 +82,7 @@ async function main() {
 
   // Walkthrough-video upload — a server-side path that needs no AR runtime or
   // secure context, so wire it before the isSecureContext bail-out below.
-  wireVideoUpload()
+  wireContentUpload()
 
   // Camera, WebXR, and IndexedDB all need a secure context; fail fast with
   // actionable guidance instead of a cascade of cryptic permission errors.
@@ -113,6 +118,7 @@ async function main() {
   const startBtn = document.getElementById('start-ar-btn') as HTMLButtonElement | null
   let startPressed = false
   let selectedProject: Project | null = null
+  let selectedAreaId: string | null = null
   let projectSelectionReady = false
   let resolveStartAr: () => void = () => {}
   const beginArSession = async () => {
@@ -186,8 +192,10 @@ async function main() {
   let sessionCalibration: ScanCalibration | undefined
   const qualityMonitor = new ScanQualityMonitor()
   const geoTracker = new GeoTracker()
-  const placePicker = mountPlacePicker(projectStore, geoTracker, selectedProject, (project) => {
+  const placePicker = mountPlacePicker(projectStore, geoTracker, selectedProject, (project, areaId) => {
     selectedProject = project
+    selectedAreaId = areaId
+    uploadPlaceTarget = { projectId: project?.projectId ?? null, areaId }
     sessionScanEntry = null
   })
   requestPlaceSelection = placePicker.open
@@ -264,6 +272,9 @@ async function main() {
     router.path,
   )
   panel.mount()
+  // WebRTC live view is an experimental feature and must not appear in normal
+  // scanning until its device connection path is reliable.
+  if (!WEBRTC_LIVE_ENABLED) panel.streamButton?.remove()
 
   const history = new SessionHistory(store)
   history.mount()
@@ -938,7 +949,7 @@ async function main() {
 
   overlay.setStatus('Move camera to initialise tracking…')
 
-  // ── WebRTC live-feed broadcaster (optional) ───────────────────────────────
+  // ── WebRTC live-feed broadcaster (experimental, opt-in) ──────────────────
   // The live-feed room is a rendezvous key, and both halves have to name it
   // the same way or they never meet. The editor uses the world it is viewing
   // (viewer.ts: `query.get('world') || 'default'`) while this side was
@@ -948,26 +959,27 @@ async function main() {
   // Not the same thing as where scans land: uploads are parked in the default
   // world on purpose (ADR 0003, "these have no world association"), which is
   // why the "View in 3D" links still point there.
-  const liveFeedRoom = searchParams.get('world') || 'default'
-  const broadcaster = new RtcBroadcaster(liveFeedRoom)
-  rtc = broadcaster   // hand it to the pagehide teardown armed above
-  broadcaster.onStatus = ({ state, message }) => {
-    const btn = document.getElementById('rtc-stream-btn') as HTMLButtonElement | null
-    if (btn) {
-      // Only show the badge while actively streaming
-      btn.style.display = state === 'streaming' ? 'flex' : 'none'
+  if (WEBRTC_LIVE_ENABLED) {
+    const { RtcBroadcaster } = await import('./rtc/broadcaster')
+    const liveFeedRoom = searchParams.get('world') || 'default'
+    const broadcaster = new RtcBroadcaster(liveFeedRoom)
+    rtc = broadcaster   // hand it to the pagehide teardown armed above
+    broadcaster.onStatus = ({ state, message }) => {
+      const btn = document.getElementById('rtc-stream-btn') as HTMLButtonElement | null
+      if (btn) {
+        // Only show the badge while actively streaming
+        btn.style.display = state === 'streaming' ? 'flex' : 'none'
+      }
+      if (state === 'error') overlay.setStatus(`RTC: ${message}`)
     }
-    if (state === 'error') overlay.setStatus(`RTC: ${message}`)
-  }
-  const streamBtn = document.getElementById('rtc-stream-btn') as HTMLButtonElement | null
-  streamBtn?.addEventListener('click', () => {
-    // Clicking the LIVE badge stops the stream
-    broadcaster.stop()
-  })
+    const streamBtn = document.getElementById('rtc-stream-btn') as HTMLButtonElement | null
+    streamBtn?.addEventListener('click', () => {
+      // Clicking the LIVE badge stops the stream
+      broadcaster.stop()
+    })
 
-  // Wire the panel "Start Live Stream" button
-  if (panel.streamButton) {
-    panel.streamButton.addEventListener('click', () => {
+    // Wire the panel "Start Live Stream" button.
+    panel.streamButton?.addEventListener('click', () => {
       if (broadcaster.isRunning) {
         broadcaster.stop()
         panel.streamButton!.innerHTML = iconLabel('broadcast', 'Start Live Stream', { size: '15px' })
@@ -976,28 +988,28 @@ async function main() {
         panel.streamButton!.innerHTML = iconLabel('broadcast', 'Stop Stream', { size: '15px' })
       }
     })
+
+    // Mirror detection updates to the desktop viewer over the RTC data channel.
+    // Snapshots are small (<= 50 objects), so a throttled full sync is simpler
+    // and more robust than per-mutation deltas.
+    let detSyncTimer: ReturnType<typeof setTimeout> | null = null
+    store.subscribe(() => {
+      if (detSyncTimer) return
+      detSyncTimer = setTimeout(() => {
+        detSyncTimer = null
+        broadcaster.sendJson({
+          t: 'dets',
+          items: [...store.detections.values()].map((d) => ({
+            label: d.label,
+            confidence: d.confidence,
+            pos: [d.worldPos.x, d.worldPos.y, d.worldPos.z],
+          })),
+        })
+      }, 1000)
+    })
   }
 
   overlay.setProgress(null)
-
-  // Mirror detection updates to the desktop viewer over the RTC data channel.
-  // Snapshots are small (≤ ~50 objects), so a throttled full sync is simpler
-  // and more robust than per-mutation deltas.
-  let detSyncTimer: ReturnType<typeof setTimeout> | null = null
-  store.subscribe(() => {
-    if (detSyncTimer) return
-    detSyncTimer = setTimeout(() => {
-      detSyncTimer = null
-      broadcaster.sendJson({
-        t: 'dets',
-        items: [...store.detections.values()].map((d) => ({
-          label: d.label,
-          confidence: d.confidence,
-          pos: [d.worldPos.x, d.worldPos.y, d.worldPos.z],
-        })),
-      })
-    }, 1000)
-  })
 
   // ── 6. Continuous SLAM point-cloud accumulation ──────────────────────────────
   scanner.start(provider, (frame) => {
@@ -1005,9 +1017,9 @@ async function main() {
     const added = inserted.length
     if (provider.isTracking() && poseIsFinite(frame.pose)) poseHistory.push(frame.pose)
 
-    // Live geometry to the viewer — no-ops unless the stream is running
-    broadcaster.sendPoints(inserted)
-    broadcaster.sendJson({
+    // Live geometry is available only when the experimental flag is enabled.
+    rtc?.sendPoints(inserted)
+    rtc?.sendJson({
       t: 'pose',
       p: [frame.pose.position.x, frame.pose.position.y, frame.pose.position.z],
       q: [frame.pose.rotation.x, frame.pose.rotation.y, frame.pose.rotation.z, frame.pose.rotation.w],
@@ -1048,6 +1060,7 @@ async function main() {
     if (sessionScanEntry) return sessionScanEntry
     sessionScanEntry = await projectStore.addScan({
       projectId: selectedProject?.projectId ?? null,
+      areaId: selectedAreaId,
       sessionId: store.sessionId,
       name: selectedProject ? `${selectedProject.name} scan` : 'Unassigned scan',
       status: 'draft',
@@ -1187,11 +1200,12 @@ function mountPlacePicker(
   projectStore: ProjectStore,
   geoTracker: GeoTracker,
   selected: Project | null,
-  onSelect: (project: Project | null) => void,
+  onSelect: (project: Project | null, areaId: string | null) => void,
 ): { open: (afterSelection?: () => void) => void } {
   const startScreen = document.getElementById('start-screen')
   if (!startScreen) return { open: () => {} }
   let currentSelected = selected
+  let currentAreaId: string | null = null
   let pendingSelectionAction: (() => void) | null = null
 
   const sheet = document.createElement('div')
@@ -1216,6 +1230,19 @@ function mountPlacePicker(
         <div id="place-location-status" class="place-location-status"></div>
         <div id="place-suggestion" hidden></div>
         <div id="place-list"></div>
+        ${currentSelected ? `
+          <div class="place-area-picker">
+            <div class="place-area-heading">Area <span>(optional)</span></div>
+            <div id="place-area-list"></div>
+            <button id="place-area-new-btn" type="button" class="place-area-new">Add an area</button>
+            <div id="place-area-new-form" hidden>
+              <label>Area name<input id="place-area-name" type="text" maxlength="80" placeholder="e.g. Living room" /></label>
+              <label>Area type
+                <select id="place-area-kind" class="ci-select"><option value="room">Room</option><option value="floor">Floor</option><option value="zone">Zone</option><option value="building">Building</option><option value="outdoor">Outdoor</option></select>
+              </label>
+              <button id="place-area-save" type="button">Save area</button>
+            </div>
+          </div>` : ''}
         <div id="place-new-form" hidden>
           <label>Place name<input id="place-new-name" type="text" maxlength="80" placeholder="e.g. Living room" /></label>
           <label>Address or note<input id="place-new-address" type="text" maxlength="160" placeholder="Optional" /></label>
@@ -1248,7 +1275,7 @@ function mountPlacePicker(
       suggestionButton.type = 'button'
       suggestionButton.className = 'place-option place-suggestion-option'
       suggestionButton.innerHTML = `<strong>Suggested: ${escapeHtml(nearest.project.name)}</strong><span>${Math.round(nearest.distance ?? 0)} m away · location accuracy ±${Math.round(fix?.accuracy ?? 0)} m</span>`
-      suggestionButton.addEventListener('click', () => select(nearest.project))
+      suggestionButton.addEventListener('click', () => chooseProject(nearest.project))
       suggestion.appendChild(suggestionButton)
     }
     if (nearby.length === 0) {
@@ -1259,7 +1286,7 @@ function mountPlacePicker(
         btn.type = 'button'
         btn.className = 'place-option'
         btn.innerHTML = `<strong>${escapeHtml(item.project.name)}</strong><span>${Math.round(item.distance ?? 0)} m away${item.project.address ? ` · ${escapeHtml(item.project.address)}` : ''}</span>`
-        btn.addEventListener('click', () => select(item.project))
+        btn.addEventListener('click', () => chooseProject(item.project))
         list.appendChild(btn)
       }
     }
@@ -1280,11 +1307,12 @@ function mountPlacePicker(
       void createPlace()
     })
     sheet.querySelector<HTMLButtonElement>('#place-continue-btn')?.addEventListener('click', () => {
-      if (currentSelected) select(currentSelected)
+      if (currentSelected) confirmSelection()
     })
     sheet.querySelector<HTMLButtonElement>('#place-skip-btn')?.addEventListener('click', () => {
       currentSelected = null
-      onSelect(null)
+      currentAreaId = null
+      onSelect(null, null)
       pendingSelectionAction = null
       sessionStorage.setItem(PLACE_SELECTION_SESSION_KEY, JSON.stringify({ projectId: null }))
       sheet.hidden = true
@@ -1307,15 +1335,77 @@ function mountPlacePicker(
       }
       const project = await response.json() as Project
       await projectStore.updateProject(project).catch(() => {})
-      select(project)
+      chooseProject(project)
     }
 
-    function select(project: Project): void {
+    function chooseProject(project: Project): void {
       currentSelected = project
-      onSelect(project)
+      currentAreaId = null
+      void render()
+    }
+
+    const areaList = sheet.querySelector<HTMLElement>('#place-area-list')
+    if (areaList && currentSelected) {
+      const areas = currentSelected.areas ?? []
+      const makeAreaButton = (label: string, areaId: string | null, detail: string) => {
+        const button = document.createElement('button')
+        button.type = 'button'
+        button.className = `place-option${currentAreaId === areaId ? ' place-option-selected' : ''}`
+        button.innerHTML = `<strong>${escapeHtml(label)}</strong><span>${escapeHtml(detail)}</span>`
+        button.addEventListener('click', () => {
+          currentAreaId = areaId
+          void render()
+        })
+        areaList.appendChild(button)
+      }
+      makeAreaButton('Whole place', null, 'No Area assignment')
+      for (const area of areas) {
+        makeAreaButton(area.name, area.areaId, area.kind)
+      }
+      const newAreaForm = sheet.querySelector<HTMLElement>('#place-area-new-form')!
+      sheet.querySelector<HTMLButtonElement>('#place-area-new-btn')?.addEventListener('click', () => {
+        newAreaForm.hidden = !newAreaForm.hidden
+        if (!newAreaForm.hidden) sheet.querySelector<HTMLInputElement>('#place-area-name')?.focus()
+      })
+      sheet.querySelector<HTMLButtonElement>('#place-area-save')?.addEventListener('click', () => {
+        void createArea()
+      })
+    }
+
+    async function createArea(): Promise<void> {
+      if (!currentSelected) return
+      const name = sheet.querySelector<HTMLInputElement>('#place-area-name')?.value.trim() ?? ''
+      const kind = sheet.querySelector<HTMLSelectElement>('#place-area-kind')?.value as AreaKind | undefined
+      if (!name || !kind) {
+        status.textContent = 'Enter an Area name and type.'
+        return
+      }
+      const area: PlaceArea = {
+        areaId: `area-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        name,
+        kind,
+        parentAreaId: currentSelected.areas?.find(candidate => candidate.kind === 'site')?.areaId ?? null,
+      }
+      const update = { ...currentSelected, areas: [...(currentSelected.areas ?? []), area] }
+      const response = await fetch(`/projects/${encodeURIComponent(currentSelected.projectId)}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(update),
+      })
+      if (!response.ok) {
+        status.textContent = 'Could not save the Area. Try again.'
+        return
+      }
+      currentSelected = await response.json() as Project
+      currentAreaId = area.areaId
+      void projectStore.updateProject(currentSelected).catch(() => {})
+      void render()
+    }
+
+    function confirmSelection(): void {
+      if (!currentSelected) return
+      onSelect(currentSelected, currentAreaId)
       sheet.hidden = true
-      sessionStorage.setItem(PLACE_SELECTION_SESSION_KEY, JSON.stringify({ projectId: project.projectId }))
-      void projectStore.updateProject(project).catch(() => {})
+      sessionStorage.setItem(PLACE_SELECTION_SESSION_KEY, JSON.stringify({ projectId: currentSelected.projectId, areaId: currentAreaId }))
+      void projectStore.updateProject(currentSelected).catch(() => {})
       const action = pendingSelectionAction
       pendingSelectionAction = null
       action?.()
@@ -1454,13 +1544,12 @@ function showArHelp(): void {
 }
 
 /**
- * Wire the "or upload a walkthrough video" secondary action on the start
- * screen. POSTs the chosen file to /ingest-video (multipart) with a simple
- * upload-% readout, then reveals the "open the 3D editor" link on success.
+ * Wire the Place-scoped media upload path. One video is ingested as a
+ * walkthrough; one or more images become a photo-ingest session.
  * Deliberately isolated from the AR start flow: it neither removes the start
  * screen nor touches the onboarding/insecure-context paths.
  */
-function wireVideoUpload(): void {
+function wireContentUpload(): void {
   const input = document.getElementById('upload-video-input') as HTMLInputElement | null
   const progress = document.getElementById('upload-video-progress')
   const openLink = document.getElementById('upload-video-open') as HTMLAnchorElement | null
@@ -1472,18 +1561,28 @@ function wireVideoUpload(): void {
   uploadCard?.addEventListener('click', () => requestPlaceSelection?.(() => input.click()))
 
   input.addEventListener('change', () => {
-    const file = input.files?.[0]
-    if (!file) return
+    const files = [...(input.files ?? [])]
+    if (files.length === 0) return
+    const allPhotos = files.every(file => file.type.startsWith('image/'))
+    const oneVideo = files.length === 1 && files[0]!.type.startsWith('video/')
+    if (!allPhotos && !oneVideo) {
+      if (progress) progress.textContent = 'Choose one video or one or more photos from the same Place.'
+      input.value = ''
+      return
+    }
     if (btn) btn.setAttribute('aria-disabled', 'true')
     if (openLink) openLink.hidden = true
     if (progress) progress.textContent = 'Uploading… 0%'
 
     const form = new FormData()
-    form.append('video', file, file.name)
-    form.append('name', file.name.replace(/\.[^.]+$/, ''))
+    if (oneVideo) form.append('video', files[0]!, files[0]!.name)
+    else for (const file of files) form.append('files', file, file.name)
+    form.append('name', oneVideo ? files[0]!.name.replace(/\.[^.]+$/, '') : `Photo set ${new Date().toLocaleDateString()}`)
+    if (uploadPlaceTarget.projectId) form.append('projectId', uploadPlaceTarget.projectId)
+    if (uploadPlaceTarget.areaId) form.append('areaId', uploadPlaceTarget.areaId)
 
     const xhr = new XMLHttpRequest()
-    xhr.open('POST', '/ingest-video')
+    xhr.open('POST', oneVideo ? '/ingest-video' : '/ingest-photos')
     xhr.upload.addEventListener('progress', (e) => {
       if (!progress || !e.lengthComputable) return
       progress.textContent = `Uploading… ${Math.round((e.loaded / e.total) * 100)}%`
@@ -1491,14 +1590,20 @@ function wireVideoUpload(): void {
     xhr.addEventListener('load', () => {
       if (btn) btn.removeAttribute('aria-disabled')
       if (xhr.status >= 200 && xhr.status < 300) {
-        let frameCount: number | undefined
-        try { frameCount = (JSON.parse(xhr.responseText) as { frameCount?: number }).frameCount } catch { /* ignore */ }
+        let result: { frameCount?: number; droppedBlurry?: number } = {}
+        try { result = JSON.parse(xhr.responseText) as typeof result } catch { /* ignore */ }
         if (progress) {
-          progress.textContent = frameCount
-            ? `Uploaded — ${frameCount} keyframes extracted.`
+          const dropNote = result.droppedBlurry ? ` ${result.droppedBlurry} blurry photo${result.droppedBlurry === 1 ? '' : 's'} skipped.` : ''
+          progress.textContent = result.frameCount
+            ? `Uploaded — ${result.frameCount} keyframes extracted.${dropNote}`
             : 'Uploaded — processing started.'
         }
-        if (openLink) openLink.hidden = false
+        if (openLink) {
+          openLink.href = uploadPlaceTarget.projectId
+            ? `/editor?project=${encodeURIComponent(uploadPlaceTarget.projectId)}`
+            : '/editor'
+          openLink.hidden = false
+        }
       } else {
         let message = `Upload failed (${xhr.status})`
         try {
