@@ -22,6 +22,15 @@
  */
 
 import { buildBrushDataset } from './splat_train_dataset.ts'
+import { isRunnable } from './exec_probe.ts'
+import { isServerSessionId } from './src/shared/session-id.ts'
+// The manifest type lives in src/world/manifests.ts, not here — see that
+// file's header (it's the canonical, Deno-API-free home so the browser
+// viewer can type-import it without dragging this file's `Deno.*` calls into
+// its DOM-lib type-check program). Re-exported below so
+// `import type { SplatTrainManifest } from './splat_train.ts'` still works.
+import type { SplatTrainManifest } from './src/world/types.ts'
+export type { SplatTrainManifest }
 
 export interface SplatTrainRunOptions {
   /** Absolute path to the session directory (scans/sessions/<id>). */
@@ -52,37 +61,6 @@ export interface SplatTrainRunOptions {
 
 export type SplatTrainStatus = 'ok' | 'skipped' | 'error'
 
-export interface SplatTrainManifest {
-  schemaVersion: number
-  tool: 'brush'
-  status: SplatTrainStatus
-  createdAt: string
-  sessionDir: string
-  /** Basename of the landed .ply (relative to SCANS_DIR), when status is 'ok'. */
-  plyPath?: string
-  /** Basename of the compressed .ply, when Brush produced one. */
-  compressedPlyPath?: string
-  /** Number of gaussians in the exported PLY. */
-  gaussianCount?: number
-  /** Frames fed to the trainer. */
-  frameCount?: number
-  params: {
-    brushBin: string
-    device: string
-    trainIters: number
-    shDegree: number
-    maxResolution: number
-    evalEvery: number
-  }
-  timing?: { elapsedMs: number }
-  skippedReason?: string
-  remediation?: string
-  error?: string
-  /** Provenance from the world job. */
-  sessionId?: string
-  scanId?: string
-}
-
 export interface SplatTrainResult {
   status: SplatTrainStatus
   manifest: SplatTrainManifest
@@ -98,11 +76,15 @@ export interface SplatTrainResult {
 }
 
 const DEFAULT_BRUSH_BIN = `${Deno.env.get('HOME') ?? '~'}/brush/src/target/release/brush-cli`
-const SESSION_ID_RE = /^(sess|session)-[a-z0-9-]+$/
 
+/**
+ * Delegates to the shared `SESSION_ID_RE` (`src/shared/session-id.ts`) rather
+ * than a local copy — see lingbot_map.ts's `isValidSessionDir` doc comment
+ * for why this file used to carry its own, stale one.
+ */
 export function isValidSessionDir(sessionDir: string): boolean {
   const base = sessionDir.split('/').filter(Boolean).pop() ?? ''
-  return SESSION_ID_RE.test(base)
+  return isServerSessionId(base)
 }
 
 export function resolveParams(opts: SplatTrainRunOptions) {
@@ -323,20 +305,9 @@ async function findExportedPly(
   return best
 }
 
-async function isRunnable(bin: string): Promise<boolean> {
-  try {
-    const info = await Deno.stat(bin)
-    if (!info.isFile) return false
-    // On Unix, mode is available; treat any exec bit as runnable. When mode is
-    // null (unsupported platform) fall back to "exists".
-    if (typeof info.mode === 'number') {
-      return (info.mode & 0o111) !== 0
-    }
-    return true
-  } catch {
-    return false
-  }
-}
+// isRunnable now lives in ./exec_probe.ts — it was duplicated here and in
+// splat_detect.ts, and both copies mis-detected every binary as non-runnable
+// on Windows (see that file's header for the mode-bit reason).
 
 async function defaultSpawn(
   bin: string,

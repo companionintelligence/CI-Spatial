@@ -15,8 +15,8 @@
  * POST /sessions/:id/keyframes         multipart { image, meta } → { ok, index }
  * POST /sessions/:id/finalize          JSON { glbFilename?, … } → session record
  * GET  /sessions/:id                   → session record
- * POST /ingest-video      multipart { video: File, name?, fps? } → 202 { sessionId, scanId, jobId, frameCount }
- * POST /ingest-photos     multipart { files: File[], name? } → 202 { sessionId, scanId, jobId, frameCount, droppedBlurry }
+ * POST /ingest-video      multipart { video: File, name?, fps?, projectId?, areaId? } → 202 { sessionId, scanId, jobId, frameCount }
+ * POST /ingest-photos     multipart { files: File[], name?, projectId?, areaId? } → 202 { sessionId, scanId, jobId, frameCount, droppedBlurry }
  * POST /upload-summary     multipart { file: File(.md) } → { filename }
  * POST /process-scan       JSON { filename, action, sessionId? } → { action, result }
  * POST /client-logs        JSON { entries: [{ ts, level, msg, stack?, url? }], ua? } → 204
@@ -34,12 +34,27 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
+import { fromFileUrl } from '@std/path'
 import { InferenceEngine } from './inference.ts'
-import { JobQueue } from './jobs.ts'
+import type { Job, JobStatus, OptimizeScanManifest } from './jobs.ts'
+import { optimizeScan } from './pipeline.ts'
+import {
+  findDuplicateWorldJob,
+  recoverStuckWorldJobs,
+  trimWorldJobHistory,
+  worldJobTarget,
+  WorldJobPump,
+} from './world_job_pump.ts'
+import { withWorldLock } from './world_lock.ts'
+import { legacyScanId, safeSlug, scanIdFor } from './scan_id.ts'
+import { newServerSessionId, resolveSessionDir, sessionDirPath } from './session_id.ts'
+import { loadSessionIndex, sessionForScan, type SessionIndex } from './scan_index.ts'
+import { pruneScansMissingFromDisk } from './world_prune.ts'
 import { runLingBotMapReconstruction } from './lingbot_map.ts'
 import { runSplatTrain } from './splat_train.ts'
 import { runSplatDetect } from './splat_detect.ts'
 import { runSplatFinish } from './splat_finish.ts'
+import { runSenseNovaVision, senseNovaTask } from './sensenova_vision.ts'
 import { configFromEnv as portalAuthConfig, registerPortalAuth } from './portal_auth.ts'
 import {
   configFromEnv as memoryPushConfig,
@@ -48,27 +63,98 @@ import {
 } from './memory_push.ts'
 import { composeYUpTransform, geoToEnu, hasGeoPose } from './src/world/geo.ts'
 import { defaultLayerIndex } from './src/world/layers.ts'
+import { EVENT } from './src/shared/events.ts'
+import {
+  ensureWorldProjectCollections,
+  placeScanTransform,
+  scanProjectId,
+  shouldIncludeStoredScanInWorld,
+} from './world_membership.ts'
+import { runThingCorrespondence, type DetectionLike } from './thing_match.ts'
 import type {
   EditPatch,
+  Floor,
   FrameObservation,
   GeoPose,
   MemberRole,
+  Project,
   ScanManifest,
   ScanManifestStatus,
   ScanQualitySummary,
+  Thing,
+  ThingObservation,
+  Vec3,
   WorldJob,
+  WorldJobStatus,
   WorldJobType,
   WorldMember,
   WorldProject,
+  ReviewComment,
 } from './src/world/types.ts'
 
+// An unguarded async callback anywhere below (there is no lint/type check that
+// catches this) throws an unhandled rejection, and Deno's default is to
+// terminate the whole process on that — silently as far as this server is
+// concerned, since nothing here was logging it. Every client this server
+// serves loses their connection to fix one caller's edge case. Log loudly and
+// keep running instead; a caller-scoped failure should stay caller-scoped.
+globalThis.addEventListener('unhandledrejection', (event) => {
+  console.error('[fatal] unhandled rejection — server would otherwise have exited on this:', event.reason)
+  event.preventDefault()
+})
+
 const PORT = Number(Deno.env.get('PORT') ?? 8000)
+// Vite dev-server port. Same variable name and default as vite.config.ts's read of
+// process.env.VITE_PORT — deliberately parallel one-liners (see docs/foundation-updates/0002
+// for the hostname precedent this follows), not a shared module.
+const VITE_PORT = Deno.env.get('VITE_PORT') ?? '5173'
 const SERVER_STARTED_AT = Date.now()
-// Origin phones arrive from. Precedence: explicit prefix → TAILSCALE_HOSTNAME
-// (shared with vite.config.ts) → historical default.
-const TAILSCALE_HOSTNAME = Deno.env.get('TAILSCALE_HOSTNAME')
-const ALLOWED_ORIGIN_PREFIX = Deno.env.get('ALLOWED_ORIGIN_PREFIX')
-  ?? (TAILSCALE_HOSTNAME ? `https://${TAILSCALE_HOSTNAME}` : 'https://liambook.capybara-ulmer.ts.net')
+
+// Hostname phones use to reach this box. Auto-detected with the same precedence order
+// as vite.config.ts's resolveHostname() — env var → `tailscale status --json` → a
+// *.ts.net.crt file in cwd → historical default — ported to Deno's subprocess/fs APIs
+// since Vite runs under Node. The two are genuinely parallel implementations of one
+// algorithm, not a shared module (see docs/foundation-updates/0002).
+const FALLBACK_HOSTNAME = 'liambook.capybara-ulmer.ts.net'
+
+async function resolveHostname(): Promise<{ hostname: string; source: string }> {
+  const fromEnv = Deno.env.get('TAILSCALE_HOSTNAME') ?? Deno.env.get('VITE_HOSTNAME')
+  if (fromEnv) return { hostname: fromEnv, source: 'env' }
+
+  for (const bin of ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale']) {
+    try {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 3000)
+      const { success, stdout } = await new Deno.Command(bin, {
+        args: ['status', '--json'],
+        stdout: 'piped',
+        stderr: 'null',
+        stdin: 'null',
+        signal: controller.signal,
+      }).output()
+      clearTimeout(timer)
+      if (!success) continue
+      const dns = JSON.parse(new TextDecoder().decode(stdout))?.Self?.DNSName
+      if (typeof dns === 'string' && dns.length > 0) {
+        return { hostname: dns.replace(/\.$/, ''), source: 'tailscale cli' }
+      }
+    } catch { /* not installed / not running / timed out — try next */ }
+  }
+
+  try {
+    for await (const entry of Deno.readDir(Deno.cwd())) {
+      if (entry.isFile && entry.name.endsWith('.ts.net.crt')) {
+        return { hostname: entry.name.replace(/\.crt$/, ''), source: 'cert file' }
+      }
+    }
+  } catch { /* unreadable cwd — fall through */ }
+
+  return { hostname: FALLBACK_HOSTNAME, source: 'default' }
+}
+
+const { hostname: TAILSCALE_HOSTNAME, source: HOSTNAME_SOURCE } = await resolveHostname()
+console.log(`[server] Hostname: ${TAILSCALE_HOSTNAME} (via ${HOSTNAME_SOURCE})`)
+const ALLOWED_ORIGIN_PREFIX = Deno.env.get('ALLOWED_ORIGIN_PREFIX') ?? `https://${TAILSCALE_HOSTNAME}`
 
 const SCANS_DIR    = Deno.env.get('SCANS_DIR')    ?? './scans'
 // Companion Memory (CI-Server) target. Read once at boot so the job guard and
@@ -90,8 +176,20 @@ const SPLAT_FINISH_AUTO = Deno.env.get('SPLAT_FINISH_AUTO') !== '0'
 const ENGINE_LOAD_WAIT_MS = 15_000 // max time /infer waits for the model to finish loading
 const INFER_TIMEOUT_MS = 60_000    // hard cap on a single engine.infer() call
 
+/**
+ * Path to a script shipped next to this file, as a native OS path.
+ *
+ * `new URL(rel, import.meta.url).pathname` is *not* that: on Windows it yields
+ * `/C:/devel/…`, which `Deno.Command` then resolves against the drive root as
+ * `C:\C:\devel\…` and the spawned process fails with "Cannot find module".
+ * `fromFileUrl` is the conversion that respects the platform.
+ */
+function localScriptPath(relative: string): string {
+  return fromFileUrl(new URL(relative, import.meta.url))
+}
+
 const LINGBOT_MAP_SCRIPT = Deno.env.get('LINGBOT_MAP_SCRIPT') ??
-  new URL('./scripts/lingbot_map_worker.py', import.meta.url).pathname
+  localScriptPath('./scripts/lingbot_map_worker.py')
 
 function isAllowedOrigin(origin: string): boolean {
   try {
@@ -125,8 +223,31 @@ function broadcast(event: Record<string, unknown>): void {
   }
 }
 
-const jobQueue = new JobQueue(SCANS_DIR, broadcast)
-await jobQueue.init()
+// Module-level single-flight WorldJob pump (ADR 0003 "Single-flight
+// execution") — mirrors the retired JobQueue's _jobs/_pump()/_working
+// pattern (docs/factory/01-merge-jobs/0005 retired the class itself; see
+// jobs.ts's header). Dispatch itself (`_dispatchWorldJob`, defined further
+// down) stays in main.ts since it needs loadWorld/updateWorld/broadcast and
+// the per-type _run*Job functions; only the queue + pump primitive lives in
+// world_job_pump.ts, so it's unit-testable in isolation.
+const worldJobPump = new WorldJobPump((slug, jobId) => _dispatchWorldJob(slug, jobId))
+
+// Boot-time crash recovery (ADR 0003 "Crash recovery") runs at the bottom of
+// this file, right before `Deno.serve(...)` — NOT here. Recovery seeds the
+// pump synchronously (`worldJobPump.enqueue`), and dispatch for a recovered
+// job can reach the generic placeholder-completion path (`sleep`, defined
+// below) or any `_run*Job` helper's module-level `const` dependencies
+// (`WORLD_JOB_TYPES`, `LINGBOT_MAP_ARTIFACTS`, the ingest script path
+// consts, …) while those top-level statements haven't executed yet —
+// calling it this early raced ahead of their initializers and threw
+// "Cannot access '<name>' before initialization" (TDZ), silently swallowed
+// by `_dispatchWorldJob`'s own try/catch, permanently stranding the
+// recovered job in `processing` (verified with a standalone repro: the
+// first pump dispatch reliably hit the TDZ before the later `const`
+// initializer ran). Running recovery only once every other top-level
+// statement has executed — immediately before `Deno.serve` — removes the
+// race while still satisfying ADR 0003's actual requirement: recovery
+// completes before the server starts accepting requests.
 
 let modelLoaded = false
 let engineLoadSettled = false
@@ -144,6 +265,7 @@ const engineLoadPromise = engine.load().then(() => {
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
 const app = new Hono()
+const WEBRTC_LIVE_ENABLED = Deno.env.get('VITE_ENABLE_WEBRTC_LIVE') === 'true'
 
 app.onError((err, c) => {
   console.error('[server-error]', err)
@@ -209,6 +331,12 @@ app.post('/infer', async (c) => {
       return c.json({ error: `Image too large (${buffer.byteLength} bytes; max ${INFER_MAX_IMAGE_BYTES})`, code: 'too-large' }, 413)
     }
     console.log(`[infer] Received image: ${buffer.byteLength} bytes`)
+    if (!looksLikeImage(new Uint8Array(buffer))) {
+      // Not an image at all — most often a proxy or dev-server fallback page that
+      // answered 200 with HTML. That is the caller's problem, not a server fault,
+      // so it gets a 400 like every other malformed upload rather than a 500.
+      return c.json({ error: 'Uploaded file is not a recognised image (expected JPEG, PNG or WebP)', code: 'bad-image' }, 400)
+    }
     const started = Date.now()
     const detections = await Promise.race([
       engine.infer(new Uint8Array(buffer)),
@@ -224,10 +352,44 @@ app.post('/infer', async (c) => {
     c.header('X-Inference-Ms', String(elapsed))
     return c.json(detections)
   } catch (err) {
+    // A decoder throwing on truncated or corrupt pixel data is bad input, not a
+    // server fault — a phone uploading a half-written frame must not read as a
+    // 500, or the client retries a request that can never succeed.
+    if (isDecodeError(err)) {
+      console.warn('[infer] undecodable image:', String(err))
+      return c.json({ error: `Image could not be decoded: ${String(err)}`, code: 'bad-image' }, 400)
+    }
     console.error('[infer error]', err)
     return c.json({ error: String(err) }, 500)
   }
 })
+
+/** Container sniff — JPEG (SOI), PNG, WebP (RIFF….WEBP). */
+function looksLikeImage(bytes: Uint8Array): boolean {
+  if (bytes.length < 12) return false
+  if (bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF) return true
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47) return true
+  const ascii = (i: number, s: string) => [...s].every((ch, k) => bytes[i + k] === ch.charCodeAt(0))
+  if (ascii(0, 'RIFF') && ascii(8, 'WEBP')) return true
+  return false
+}
+
+/**
+ * Distinguishes "these bytes are not decodable" from a genuine server fault.
+ *
+ * Matches the vocabulary the image decoders below us actually throw in — jpeg-js
+ * ("unknown JPEG marker 0x..", "marker was not found", "Invalid JPEG"), Jimp
+ * ("Could not find MIME for Buffer", "Unsupported MIME type"), and the PNG/WebP
+ * paths. It is deliberately broad: a frame the decoder rejects is the caller's
+ * problem, and calling it 500 tells the client to retry a request that can never
+ * succeed. The cost of the opposite mistake — reporting a real fault as 400, so
+ * the client gives up — is bounded here because these words do not appear in the
+ * I/O and resource errors this route can otherwise raise.
+ */
+function isDecodeError(err: unknown): boolean {
+  const msg = String(err instanceof Error ? err.message : err).toLowerCase()
+  return /marker|jpeg|jpg|png|webp|bitmap|mime|decode|corrupt|invalid|malformed|unsupported|unexpected end|truncat|huffman|scan data/.test(msg)
+}
 
 // ── Phone-side console relay (?debug=remote pages POST here) ─────────────────
 const clientLogHits = new Map<string, number[]>()
@@ -268,12 +430,37 @@ app.post('/client-logs', async (c) => {
     } catch (e) {
       console.warn('[client-logs] append failed:', e)
     }
-    broadcast({ type: 'client-log', ...record })
+    broadcast({ type: EVENT.CLIENT_LOG, ...record })
   }
   return c.body(null, 204)
 })
 
 // ── Scan file storage ─────────────────────────────────────────────────────────
+
+/**
+ * Creates the scan file with `createNew`, so the name is claimed atomically by the
+ * filesystem rather than by a check-then-write that two concurrent uploads can both
+ * win. Returns the open handle and the name that was actually taken.
+ */
+async function createScanFileExclusive(
+  dir: string,
+  ts: number,
+  safeName: string,
+): Promise<{ file: Deno.FsFile; filename: string }> {
+  const stem = safeName.replace(/\.glb$/, '')
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const suffix = attempt === 0 ? '' : `-${crypto.randomUUID().slice(0, 8)}`
+    const filename = `${ts}_${stem}${suffix}.glb`
+    try {
+      const file = await Deno.open(`${dir}/${filename}`, { write: true, createNew: true })
+      return { file, filename }
+    } catch (err) {
+      if (err instanceof Deno.errors.AlreadyExists) continue
+      throw err
+    }
+  }
+  throw new Error(`could not allocate a unique filename for ${safeName} after 8 attempts`)
+}
 
 app.post('/upload-scan', async (c) => {
   console.log('[server] /upload-scan route triggered')
@@ -290,14 +477,21 @@ app.post('/upload-scan', async (c) => {
     .replace(/\.\./g, '__')
     .replace(/^[._-]+/, '') || 'scan'
   const safeName = rawName.endsWith('.glb') ? rawName : `${rawName}.glb`
-  const ts = Date.now()
-  // Prefix with timestamp to guarantee uniqueness
-  const filename = `${ts}_${safeName}`
-  const filePath = `${SCANS_DIR}/${filename}`
 
   try {
     const buffer = await file.arrayBuffer()
-    await Deno.writeFile(filePath, new Uint8Array(buffer))
+    // A millisecond timestamp does NOT guarantee uniqueness: two uploads landing in
+    // the same millisecond with the same name produced identical paths, so the
+    // second silently overwrote the first and both callers were told they had
+    // stored a scan. Claim the name atomically instead and disambiguate on a real
+    // collision — the common case keeps the plain `<ts>_<name>` form.
+    const { file: handle, filename } = await createScanFileExclusive(SCANS_DIR, Date.now(), safeName)
+    const filePath = `${SCANS_DIR}/${filename}`
+    try {
+      await handle.write(new Uint8Array(buffer))
+    } finally {
+      handle.close()
+    }
     console.log(`[scan] Saved ${filename} (${(buffer.byteLength / 1024).toFixed(0)} KB)`)
 
     // Optional metadata JSON alongside the .glb
@@ -309,10 +503,10 @@ app.post('/upload-scan', async (c) => {
     }
 
     // Every uploaded scan is optimized automatically (quantize/Draco/LODs)
-    const job = jobQueue.enqueue('optimize-scan', filename)
-    broadcast({ type: 'scan-added', filename, size: buffer.byteLength })
+    const job = await enqueueOptimizeScanJob(filename)
+    broadcast({ type: EVENT.SCAN_ADDED, filename, size: buffer.byteLength })
 
-    return c.json({ filename, size: buffer.byteLength, job: job.id })
+    return c.json({ filename, size: buffer.byteLength, job: job.jobId })
   } catch (err) {
     console.error('[scan upload error]', err)
     return c.json({ error: String(err) }, 500)
@@ -339,6 +533,12 @@ app.get('/scans', async (c) => {
       optimized: boolean
       job: { status: string; note: string | null } | null
     }> = []
+    // Shim (ADR 0003 / ticket 0004): per-file job status used to come from
+    // jobQueue.jobForTarget(); optimize-scan jobs now live as WorldJobs
+    // parked under the 'default' world (enqueueOptimizeScanJob) — load once
+    // outside the loop and translate through worldJobToLegacyJob.
+    const jobWorld = await loadWorld('default')
+    const optimizeScanJobs = jobWorld.jobs.filter(j => j.type === 'optimize-scan')
     for await (const entry of Deno.readDir(SCANS_DIR)) {
       if (!entry.isFile || !entry.name.endsWith('.glb')) continue
       if (isDerivedScanFile(entry.name)) continue
@@ -348,7 +548,11 @@ app.get('/scans', async (c) => {
         await Deno.stat(`${SCANS_DIR}/${entry.name.replace(/\.glb$/, '.manifest.json')}`)
         optimized = true
       } catch { /* not optimized yet */ }
-      const job = jobQueue.jobForTarget(entry.name)
+      // world.jobs is newest-first (createWorldJob unshifts), so the first
+      // match is the latest job for this target — mirrors jobForTarget()'s
+      // "scan from the end" semantics on JobQueue's oldest-first array.
+      const wj = optimizeScanJobs.find(j => worldJobTarget(j) === entry.name)
+      const job = wj ? worldJobToLegacyJob(wj) : undefined
       entries.push({
         filename: entry.name,
         size: stat.size,
@@ -389,17 +593,30 @@ app.post('/scans/:filename/optimize', async (c) => {
   } catch {
     return c.json({ error: 'Scan not found' }, 404)
   }
-  const job = jobQueue.enqueue('optimize-scan', filename)
+  const job = await enqueueOptimizeScanJob(filename)
   return c.json(job, 202)
 })
 
 // ── Job queue state ───────────────────────────────────────────────────────────
+// Shim (ADR 0003 / ticket 0004): both routes used to read `jobQueue` directly.
+// optimize-scan jobs now run as WorldJobs under the 'default' world — filter
+// to that type (the only type JobQueue ever held) and translate through
+// worldJobToLegacyJob so the response shape and job population are
+// byte-identical to before ticket 0003.
 
-app.get('/jobs', (c) => c.json([...jobQueue.jobs].reverse()))
+app.get('/jobs', async (c) => {
+  const world = await loadWorld('default')
+  // world.jobs is already newest-first (createWorldJob unshifts), matching
+  // what `[...jobQueue.jobs].reverse()` produced from JobQueue's
+  // oldest-first array — no extra reverse needed here.
+  const jobs = world.jobs.filter(j => j.type === 'optimize-scan').map(worldJobToLegacyJob)
+  return c.json(jobs)
+})
 
-app.get('/jobs/:id', (c) => {
-  const job = jobQueue.job(c.req.param('id'))
-  return job ? c.json(job) : c.json({ error: 'Not found' }, 404)
+app.get('/jobs/:id', async (c) => {
+  const world = await loadWorld('default')
+  const wj = world.jobs.find(j => j.type === 'optimize-scan' && j.jobId === c.req.param('id'))
+  return wj ? c.json(worldJobToLegacyJob(wj)) : c.json({ error: 'Not found' }, 404)
 })
 
 // ── Splat-train + splat-detect + splat-finish artifacts ──────────────────────
@@ -510,7 +727,7 @@ app.delete('/scans/:filename', async (c) => {
     }
     if (!deletedGlb && !deletedMetadata && deletedSidecars === 0) return c.json({ error: 'Scan not found' }, 404)
     await removeScanFromWorlds(filename)
-    broadcast({ type: 'scan-deleted', filename })
+    broadcast({ type: EVENT.SCAN_DELETED, filename })
     return c.json({ ok: true, filename, deleted: { glb: deletedGlb, metadata: deletedMetadata, sidecars: deletedSidecars } })
   } catch (err) {
     console.error('[scan delete error]', err)
@@ -531,7 +748,7 @@ app.delete('/scans', async (c) => {
       if (await removeIfExists(`${SCANS_DIR}/${entry.name}`)) deleted += 1
     }
     await removeAllScansFromWorlds()
-    broadcast({ type: 'scans-cleared', deleted })
+    broadcast({ type: EVENT.SCANS_CLEARED, deleted })
     return c.json({ ok: true, deleted })
   } catch (err) {
     console.error('[scans clear error]', err)
@@ -548,20 +765,31 @@ app.delete('/scans', async (c) => {
 // On finalize the session is linked to the exported .glb.  This is the raw
 // input a dense-reconstruction stage (photogrammetry / splats) consumes.
 
-const SESSION_ID_RE = /^(sess|session)-[a-z0-9-]+$/
 const KEYFRAME_FILE_RE = /^kf-\d{5}\.jpg$/
 
-function sessionDir(id: string): string | null {
-  return SESSION_ID_RE.test(id) ? `${SESSIONS_DIR}/${id}` : null
+/**
+ * Shape-only resolution, bound to this server's SESSIONS_DIR. Says nothing
+ * about existence — use `resolveSessionDirFor` where that matters.
+ */
+function sessionDir(id: string | null | undefined): string | null {
+  return sessionDirPath(SESSIONS_DIR, id)
+}
+
+/** Shape *and* existence. See session_id.ts for why both resolvers exist. */
+function resolveSessionDirFor(id: string | null | undefined): Promise<string | null> {
+  return resolveSessionDir(SESSIONS_DIR, id)
 }
 
 app.post('/sessions', async (c) => {
-  const sessionId = `sess-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  // The single minting site for a capture-session id, and the only place that
+  // creates the directory one names. Both halves living here is what makes the
+  // id trustworthy downstream.
+  const sessionId = newServerSessionId()
   await Deno.mkdir(`${SESSIONS_DIR}/${sessionId}`, { recursive: true })
   const record = { sessionId, startedAt: new Date().toISOString(), keyframeCount: 0 }
   await Deno.writeTextFile(`${SESSIONS_DIR}/${sessionId}/session.json`, JSON.stringify(record, null, 2))
   console.log(`[session] opened ${sessionId}`)
-  broadcast({ type: 'session-started', sessionId })
+  broadcast({ type: EVENT.SESSION_STARTED, sessionId })
   return c.json(record, 201)
 })
 
@@ -691,11 +919,11 @@ app.post('/sessions/:id/finalize', async (c) => {
       try {
         await Deno.stat(`${SCANS_DIR}/${glbFilename.replace(/\.glb$/, '.manifest.json')}`)
       } catch {
-        jobQueue.enqueue('optimize-scan', glbFilename)
+        await enqueueOptimizeScanJob(glbFilename)
       }
     } catch { /* glb not uploaded yet — upload-scan enqueues on arrival */ }
   }
-  broadcast({ type: 'session-finalized', sessionId: record['sessionId'], keyframeCount, glbFilename })
+  broadcast({ type: EVENT.SESSION_FINALIZED, sessionId: record['sessionId'], keyframeCount, glbFilename })
   return c.json(record)
 })
 
@@ -703,10 +931,11 @@ app.post('/sessions/:id/finalize', async (c) => {
 //
 // POST /ingest-video   multipart { video: File, name?, fps? }
 // Extracts keyframes with scripts/ingest-video.mjs into a capture session, then
-// registers a session-backed scan in the default world and auto-enqueues a
+// registers a session-backed scan in the selected Place (or the legacy default
+// workspace when none is supplied) and auto-enqueues a
 // lingbot-map-reconstruct job (which estimates the per-frame poses splat-train +
 // splat-detect later consume). Returns 202 { sessionId, scanId, jobId, frameCount }.
-const INGEST_VIDEO_SCRIPT = new URL('./scripts/ingest-video.mjs', import.meta.url).pathname
+const INGEST_VIDEO_SCRIPT = localScriptPath('./scripts/ingest-video.mjs')
 
 app.post('/ingest-video', async (c) => {
   // Guard oversized uploads up front via Content-Length (before buffering).
@@ -731,6 +960,15 @@ app.post('/ingest-video', async (c) => {
 
   const nameRaw = form.get('name')
   const scanName = typeof nameRaw === 'string' && nameRaw.trim().length > 0 ? nameRaw.trim() : null
+  const projectIdRaw = form.get('projectId')
+  const projectId = typeof projectIdRaw === 'string' && projectIdRaw.trim().length > 0 ? projectIdRaw.trim() : null
+  const areaIdRaw = form.get('areaId')
+  const areaId = typeof areaIdRaw === 'string' && areaIdRaw.trim().length > 0 ? areaIdRaw.trim() : null
+  const selectedProject = projectId ? (await loadProjects()).find(project => project.projectId === projectId) : null
+  if (projectId && !selectedProject) return c.json({ error: 'Selected Place was not found' }, 404)
+  if (areaId && !selectedProject?.areas?.some(area => area.areaId === areaId)) {
+    return c.json({ error: 'Selected Area was not found in this Place' }, 404)
+  }
   const fpsRaw = form.get('fps')
   const fps = typeof fpsRaw === 'string' && Number.isFinite(Number(fpsRaw)) && Number(fpsRaw) > 0
     ? String(Number(fpsRaw))
@@ -750,7 +988,7 @@ app.post('/ingest-video', async (c) => {
   try {
     // Run the ingest script; the LAST stdout line is JSON { sessionId, frameCount, sessionDir }.
     const cmd = new Deno.Command('node', {
-      args: [INGEST_VIDEO_SCRIPT, tmpVideo, '--scans-dir', SCANS_DIR, '--fps', fps],
+      args: [INGEST_VIDEO_SCRIPT, tmpVideo, '--scans-dir', SCANS_DIR, '--sessions-dir', SESSIONS_DIR, '--fps', fps],
       stdout: 'piped',
       stderr: 'piped',
     })
@@ -776,19 +1014,22 @@ app.post('/ingest-video', async (c) => {
       return c.json({ error: `ingest returned an invalid session id: ${sessionId}` }, 500)
     }
 
-    // Register a session-backed scan in the default world + enqueue reconstruction.
-    const world = await loadWorld('default')
-    const scan = registerSessionScan(world, sessionId, scanName ?? undefined, frameCount)
-    const job = createWorldJob(world, 'lingbot-map-reconstruct', scan.scanId, {
-      source: 'video-ingest',
-      sessionId,
-      frameCount,
+    // Register in the Place-specific world when selected. This keeps uploads
+    // from silently leaking into the default workspace.
+    const targetSlug = projectId ? projectWorldSlug(projectId) : 'default'
+    if (projectId) await loadProjectWorld(projectId)
+    const { world, value: { scan, job } } = await updateWorld(targetSlug, (world) => {
+      const scan = registerSessionScan(world, sessionId, scanName ?? undefined, frameCount, 'video-ingest', projectId, areaId)
+      const job = createWorldJob(world, 'lingbot-map-reconstruct', scan.scanId, {
+        source: 'video-ingest', projectId, areaId,
+        sessionId,
+        frameCount,
+      })
+      return { scan, job }
     })
-    world.jobs.unshift(job)
-    await saveWorld(world)
     await completeJobSoon(world.shareSlug, job.jobId)
 
-    broadcast({ type: 'video-ingested', sessionId, scanId: scan.scanId, jobId: job.jobId, frameCount })
+    broadcast({ type: EVENT.VIDEO_INGESTED, sessionId, scanId: scan.scanId, jobId: job.jobId, frameCount })
     return c.json({ sessionId, scanId: scan.scanId, jobId: job.jobId, frameCount }, 202)
   } finally {
     // Always drop the temp video — the keyframe session is the durable artifact.
@@ -801,10 +1042,10 @@ app.post('/ingest-video', async (c) => {
 // POST /ingest-photos   multipart { files: File[], name? }
 // Saves the photos to a temp dir, runs scripts/ingest-photos.mjs (EXIF time
 // ordering + blur filter) in --single-session mode (one upload = one session),
-// then registers a session-backed scan and auto-enqueues lingbot-map-reconstruct
+// then registers a session-backed scan in the selected Place and auto-enqueues lingbot-map-reconstruct
 // exactly like /ingest-video. Returns 202 { sessionId, scanId, jobId, frameCount,
 // droppedBlurry }.
-const INGEST_PHOTOS_SCRIPT = new URL('./scripts/ingest-photos.mjs', import.meta.url).pathname
+const INGEST_PHOTOS_SCRIPT = localScriptPath('./scripts/ingest-photos.mjs')
 
 app.post('/ingest-photos', async (c) => {
   // Guard oversized uploads up front via Content-Length (before buffering).
@@ -826,6 +1067,15 @@ app.post('/ingest-photos', async (c) => {
 
   const nameRaw = form.get('name')
   const scanName = typeof nameRaw === 'string' && nameRaw.trim().length > 0 ? nameRaw.trim() : null
+  const projectIdRaw = form.get('projectId')
+  const projectId = typeof projectIdRaw === 'string' && projectIdRaw.trim().length > 0 ? projectIdRaw.trim() : null
+  const areaIdRaw = form.get('areaId')
+  const areaId = typeof areaIdRaw === 'string' && areaIdRaw.trim().length > 0 ? areaIdRaw.trim() : null
+  const selectedProject = projectId ? (await loadProjects()).find(project => project.projectId === projectId) : null
+  if (projectId && !selectedProject) return c.json({ error: 'Selected Place was not found' }, 404)
+  if (areaId && !selectedProject?.areas?.some(area => area.areaId === areaId)) {
+    return c.json({ error: 'Selected Area was not found in this Place' }, 404)
+  }
 
   // Save the upload to a temp dir the ingest script reads, then delete it.
   // The index prefix keeps upload order stable for photos without EXIF.
@@ -847,7 +1097,7 @@ app.post('/ingest-photos', async (c) => {
     // Run the ingest script; the LAST stdout line is JSON
     // { sessionId, frameCount, sessionDir, droppedBlurry, … }.
     const cmd = new Deno.Command('node', {
-      args: [INGEST_PHOTOS_SCRIPT, tmpDir, '--scans-dir', SCANS_DIR, '--single-session', 'true'],
+      args: [INGEST_PHOTOS_SCRIPT, tmpDir, '--scans-dir', SCANS_DIR, '--sessions-dir', SESSIONS_DIR, '--single-session', 'true'],
       stdout: 'piped',
       stderr: 'piped',
     })
@@ -873,20 +1123,21 @@ app.post('/ingest-photos', async (c) => {
       return c.json({ error: `ingest returned an invalid session id: ${sessionId}` }, 500)
     }
 
-    // Register a session-backed scan in the default world + enqueue reconstruction
-    // (mirrors /ingest-video).
-    const world = await loadWorld('default')
-    const scan = registerSessionScan(world, sessionId, scanName ?? undefined, frameCount, 'photo-ingest')
-    const job = createWorldJob(world, 'lingbot-map-reconstruct', scan.scanId, {
-      source: 'photo-ingest',
-      sessionId,
-      frameCount,
+    // Mirrors video ingest while retaining the user-selected Place/Area.
+    const targetSlug = projectId ? projectWorldSlug(projectId) : 'default'
+    if (projectId) await loadProjectWorld(projectId)
+    const { world, value: { scan, job } } = await updateWorld(targetSlug, (world) => {
+      const scan = registerSessionScan(world, sessionId, scanName ?? undefined, frameCount, 'photo-ingest', projectId, areaId)
+      const job = createWorldJob(world, 'lingbot-map-reconstruct', scan.scanId, {
+        source: 'photo-ingest', projectId, areaId,
+        sessionId,
+        frameCount,
+      })
+      return { scan, job }
     })
-    world.jobs.unshift(job)
-    await saveWorld(world)
     await completeJobSoon(world.shareSlug, job.jobId)
 
-    broadcast({ type: 'photos-ingested', sessionId, scanId: scan.scanId, jobId: job.jobId, frameCount })
+    broadcast({ type: EVENT.PHOTOS_INGESTED, sessionId, scanId: scan.scanId, jobId: job.jobId, frameCount })
     return c.json({
       sessionId,
       scanId: scan.scanId,
@@ -913,16 +1164,10 @@ app.get('/sessions/:id', async (c) => {
 })
 
 app.get('/sessions', async (c) => {
-  const sessions: unknown[] = []
-  try {
-    for await (const entry of Deno.readDir(SESSIONS_DIR)) {
-      if (!entry.isDirectory) continue
-      try {
-        sessions.push(JSON.parse(await Deno.readTextFile(`${SESSIONS_DIR}/${entry.name}/session.json`)))
-      } catch { /* incomplete session dir */ }
-    }
-  } catch { /* sessions dir missing */ }
-  return c.json(sessions)
+  // Same sweep the scan listing needs, so it exists once (scan_index.ts) rather than
+  // twice. bySessionId preserves Deno.readDir order, so this response is unchanged.
+  const index = await loadSessionIndex(SESSIONS_DIR)
+  return c.json([...index.bySessionId.values()])
 })
 
 // ── Upload session summary (.md) ──────────────────────────────────────────────
@@ -934,6 +1179,7 @@ app.get('/scan-locations', async (c) => {
     const locations: Record<string, unknown>[] = []
     for await (const entry of Deno.readDir(SCANS_DIR)) {
       if (!entry.isFile || !entry.name.endsWith('.glb')) continue
+      if (isDerivedScanFile(entry.name)) continue // .opt/.lodN artifacts have no companion .json
       const metaPath = `${SCANS_DIR}/${entry.name.replace(/\.glb$/, '.json')}`
       let meta: Record<string, unknown> = {}
       try {
@@ -965,6 +1211,39 @@ app.get('/scan-locations', async (c) => {
   }
 })
 
+// ── GET /project-locations — one map marker per saved project ───────────────
+// A project keeps its confirmed geoPose. Older projects can inherit the newest
+// geotagged scan assigned to them, so the desktop map remains useful while
+// existing data migrates to project-level locations.
+app.get('/project-locations', async (c) => {
+  try {
+    const [projects, scans] = await Promise.all([loadProjects(), listStoredScans()])
+    return c.json(projects.map((project) => {
+      const projectScans = scans.filter((scan) => (scanProjectId(scan.meta) ?? 'proj-default') === project.projectId)
+      const newestLocatedScan = projectScans.find((scan) => hasGeoPose(geoPoseFromMeta(scan.meta)))
+      const geo = hasGeoPose(project.geoPose)
+        ? project.geoPose
+        : newestLocatedScan ? geoPoseFromMeta(newestLocatedScan.meta) : null
+      const capturedAt = projectScans
+        .map((scan) => asString(scan.meta['capturedAt']) ?? asString(scan.meta['exportedAt']) ?? scan.uploadedAt)
+        .sort()
+        .at(-1) ?? null
+      return {
+        projectId: project.projectId,
+        name: project.name,
+        address: project.address ?? geo?.address ?? null,
+        lat: geo?.lat ?? null,
+        lng: geo?.lng ?? null,
+        scanCount: projectScans.length,
+        capturedAt,
+      }
+    }))
+  } catch (err) {
+    console.error('[project-locations error]', err)
+    return c.json([], 200)
+  }
+})
+
 // ── World projects, edit patches, and processing jobs ────────────────────────
 
 const WORLD_JOB_TYPES = new Set<WorldJobType>([
@@ -974,30 +1253,23 @@ const WORLD_JOB_TYPES = new Set<WorldJobType>([
   'merge-points',
   'semantic-pass',
   'depth-reconstruct',
+  'thing-correspondence',
   'lingbot-map-reconstruct',
   'splat-train',
   'splat-detect',
   'splat-finish',
+  'sensenova-vision',
   'memory-push',
   'export-world',
 ])
 
-const DEFAULT_WORKER_CAPABILITIES = ['cpu', 'onnx', 'ollama', 'open3d', 'splat', 'vggt', 'lingbot-map']
+const DEFAULT_WORKER_CAPABILITIES = ['cpu', 'onnx', 'ollama', 'open3d', 'splat', 'vggt', 'lingbot-map', 'sensenova-vision']
 
 interface StoredScanInfo {
   filename: string
   size: number
   uploadedAt: string
   meta: Record<string, unknown>
-}
-
-function safeSlug(raw: string | undefined, fallback = 'default'): string {
-  const slug = (raw ?? fallback)
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-  return slug || fallback
 }
 
 function worldPath(slug: string): string {
@@ -1020,6 +1292,13 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
 }
 
+function matrixFromMeta(value: unknown): number[] | null {
+  if (!Array.isArray(value) || value.length !== 16 || !value.every(item => typeof item === 'number' && Number.isFinite(item))) {
+    return null
+  }
+  return [...value] as number[]
+}
+
 function geoPoseFromMeta(meta: Record<string, unknown>): GeoPose {
   return {
     lat: asNumber(meta['geoLat']),
@@ -1033,14 +1312,17 @@ function geoPoseFromMeta(meta: Record<string, unknown>): GeoPose {
   }
 }
 
-async function readScanMeta(filename: string): Promise<Record<string, unknown>> {
+async function readScanMeta(
+  filename: string,
+  index: SessionIndex,
+): Promise<Record<string, unknown>> {
   let meta: Record<string, unknown> = {}
   try {
     meta = JSON.parse(await Deno.readTextFile(scanMetaPath(filename))) as Record<string, unknown>
   } catch {
     meta = {}
   }
-  const session = await readSessionRecordForScan(filename, meta)
+  const session = await sessionForScan(index, SESSIONS_DIR, filename, meta)
   if (!session) return meta
   return {
     ...session,
@@ -1048,31 +1330,6 @@ async function readScanMeta(filename: string): Promise<Record<string, unknown>> 
     keyframeCount: asNumber(meta['keyframeCount']) ?? asNumber(session['keyframeCount']) ?? 0,
     qualitySummary: meta['qualitySummary'] ?? session['qualitySummary'] ?? null,
   }
-}
-
-async function readSessionRecordForScan(
-  filename: string,
-  meta: Record<string, unknown>,
-): Promise<Record<string, unknown> | null> {
-  const explicit = asString(meta['sessionId'])
-  const candidates: string[] = explicit ? [explicit] : []
-  try {
-    for await (const entry of Deno.readDir(SESSIONS_DIR)) {
-      if (!entry.isDirectory) continue
-      if (explicit && entry.name !== explicit) continue
-      try {
-        const record = JSON.parse(await Deno.readTextFile(`${SESSIONS_DIR}/${entry.name}/session.json`)) as Record<string, unknown>
-        if (entry.name === explicit || record['glbFilename'] === filename) return record
-      } catch { /* incomplete session dir */ }
-    }
-  } catch { /* sessions dir missing */ }
-
-  for (const sessionId of candidates) {
-    try {
-      return JSON.parse(await Deno.readTextFile(`${SESSIONS_DIR}/${sessionId}/session.json`)) as Record<string, unknown>
-    } catch { /* not found */ }
-  }
-  return null
 }
 
 function qualitySummaryFromMeta(meta: Record<string, unknown>): ScanQualitySummary | null {
@@ -1139,19 +1396,38 @@ function scanStatusFromQuality(meta: Record<string, unknown>): ScanManifestStatu
   return quality.status
 }
 
+/** Bounded so a large scans directory cannot exhaust file descriptors. */
+const SCAN_LIST_CONCURRENCY = 64
+
 async function listStoredScans(): Promise<StoredScanInfo[]> {
-  const scans: StoredScanInfo[] = []
+  const names: string[] = []
   for await (const entry of Deno.readDir(SCANS_DIR)) {
     if (!entry.isFile || !entry.name.endsWith('.glb')) continue
     if (isDerivedScanFile(entry.name)) continue // .opt/.lodN artifacts aren't standalone scans
-    const stat = await Deno.stat(`${SCANS_DIR}/${entry.name}`)
-    scans.push({
-      filename: entry.name,
-      size: stat.size,
-      uploadedAt: (stat.mtime ?? new Date()).toISOString(),
-      meta: await readScanMeta(entry.name),
-    })
+    names.push(entry.name)
   }
+
+  // Once per call, not once per scan: this is what makes the listing linear.
+  const index = await loadSessionIndex(SESSIONS_DIR)
+
+  const scans: StoredScanInfo[] = []
+  for (let i = 0; i < names.length; i += SCAN_LIST_CONCURRENCY) {
+    const batch = await Promise.all(
+      names.slice(i, i + SCAN_LIST_CONCURRENCY).map(async (filename) => {
+        const stat = await Deno.stat(`${SCANS_DIR}/${filename}`)
+        return {
+          filename,
+          size: stat.size,
+          uploadedAt: (stat.mtime ?? new Date()).toISOString(),
+          meta: await readScanMeta(filename, index),
+        }
+      }),
+    )
+    // Batches are appended in order, so `scans` keeps Deno.readDir order and the
+    // stable sort below breaks uploadedAt ties exactly as it did before.
+    scans.push(...batch)
+  }
+
   scans.sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt))
   return scans
 }
@@ -1175,12 +1451,6 @@ function inferWorldOrigin(scans: StoredScanInfo[]): GeoPose {
   return { lat: null, lng: null, altitudeM: null, bearing: null, accuracyM: null }
 }
 
-function scanIdFor(filename: string, meta: Record<string, unknown>): string {
-  const sessionId = asString(meta['sessionId'])
-  if (sessionId) return `scan-${safeSlug(sessionId)}`
-  return `scan-${safeSlug(filename.replace(/\.glb$/, ''))}`
-}
-
 function scanNameFor(filename: string, meta: Record<string, unknown>): string {
   return asString(meta['scanName']) ?? filename.replace(/^\d+_/, '').replace(/\.glb$/, '')
 }
@@ -1192,15 +1462,19 @@ function scanManifestFromStored(
   slug: string,
 ): ScanManifest {
   const geoPose = geoPoseFromMeta(scan.meta)
-  const scanId = scanIdFor(scan.filename, scan.meta)
+  const scanId = scanIdFor(scan.filename)
   const qualitySummary = qualitySummaryFromMeta(scan.meta)
-  const translation = hasGeoPose(origin) && hasGeoPose(geoPose)
-    ? geoToEnu(origin, geoPose)
-    : { x: (index % 6) * 3, y: 0, z: Math.floor(index / 6) * 3 }
-  const localToWorld = composeYUpTransform(translation, geoPose.bearing, 1)
+  const placement = placeScanTransform(origin, geoPose, index)
+  const translation = placement.translation
+  // Project calibration is an indoor transform derived from persistent AR
+  // references. It takes precedence over metre-scale-inaccurate GPS/compass.
+  const localToWorld = matrixFromMeta(scan.meta['projectTransform'])
+    ?? composeYUpTransform(translation, geoPose.bearing, 1)
 
   return {
     scanId,
+    projectId: scanProjectId(scan.meta),
+    areaId: asString(scan.meta['areaId']),
     sessionId: asString(scan.meta['sessionId']),
     filename: scan.filename,
     name: scanNameFor(scan.filename, scan.meta),
@@ -1209,6 +1483,8 @@ function scanManifestFromStored(
     geoPose,
     localToWorld,
     accuracyM: geoPose.accuracyM,
+    geoDistanceM: placement.geoDistanceM,
+    ...(placement.geoOutlier ? { geoOutlier: true } : {}),
     capturedAt: asString(scan.meta['capturedAt']) ?? asString(scan.meta['exportedAt']) ?? scan.uploadedAt,
     pointCount: asNumber(scan.meta['pointCount']),
     detectionCount: asNumber(scan.meta['detectionCount']),
@@ -1236,22 +1512,37 @@ function registerSessionScan(
   scanName: string | undefined,
   frameCount: number,
   source: 'video-ingest' | 'photo-ingest' = 'video-ingest',
+  projectId: string | null = null,
+  areaId: string | null = null,
 ): ScanManifest {
   const filename = `${sessionId}.glb`
   const existing = world.scans.find(s => s.filename === filename || s.sessionId === sessionId)
   if (existing) return existing
 
+  const meta: Record<string, unknown> = {
+    sessionId,
+    source,
+    keyframeCount: frameCount,
+    projectId,
+    areaId,
+    ...(scanName ? { scanName } : {}),
+  }
   const stored: StoredScanInfo = {
     filename,
     size: 0,
     uploadedAt: new Date().toISOString(),
-    meta: {
-      sessionId,
-      source,
-      keyframeCount: frameCount,
-      ...(scanName ? { scanName } : {}),
-    },
+    meta,
   }
+  // `${sessionId}.glb` is a synthetic filename that never lands on disk (see
+  // scan_id.ts) — refreshWorldScans() only reconciles against `stored.meta`
+  // for scans it finds on disk, so nothing else ever persists this Place
+  // assignment anywhere durable. Write it directly so any later reader of
+  // scanMetaPath(filename) for this session (e.g. thing-correspondence) sees
+  // the Place the user actually picked instead of defaulting to none. Best
+  // effort: this metadata is supplementary, not required for the response.
+  void Deno.writeTextFile(scanMetaPath(filename), JSON.stringify(meta, null, 2)).catch((err) => {
+    console.error(`[worlds] failed to persist ingest metadata for ${filename}:`, err)
+  })
   const manifest = scanManifestFromStored(stored, world.originGeoPose, world.scans.length, world.shareSlug)
   world.scans.push(manifest)
   return manifest
@@ -1259,7 +1550,7 @@ function registerSessionScan(
 
 function createWorldMembers(): WorldMember[] {
   const now = new Date().toISOString()
-  return (['owner', 'editor', 'viewer', 'scanner'] as const).map((role) => ({
+  return (['owner', 'editor', 'commenter', 'viewer', 'scanner'] as const).map((role) => ({
     memberId: `${role}-${crypto.randomUUID()}`,
     role,
     token: `${role}-${crypto.randomUUID()}`,
@@ -1268,23 +1559,38 @@ function createWorldMembers(): WorldMember[] {
   }))
 }
 
-async function saveWorld(world: WorldProject): Promise<void> {
+/**
+ * Atomic single write of a world file. Atomic is not the same as isolated —
+ * this must only be called from inside a `withWorldLock(slug, …)` critical
+ * section (i.e. from `loadWorld`/`updateWorld`/`mutateWorldFiles`), or a
+ * concurrent cycle holding an older snapshot can overwrite what it saves.
+ * See `world_lock.ts`.
+ */
+async function writeWorldUnlocked(world: WorldProject): Promise<void> {
   world.updatedAt = new Date().toISOString()
   const tmp = `${worldPath(world.shareSlug)}.${crypto.randomUUID()}.tmp`
   await Deno.writeTextFile(tmp, JSON.stringify(world, null, 2))
   await Deno.rename(tmp, worldPath(world.shareSlug))
 }
 
-async function synthesizeWorld(slug: string): Promise<WorldProject> {
+async function synthesizeWorld(slug: string, projectId: string | null = null): Promise<WorldProject> {
   const stored = await listStoredScans()
-  const included = stored.filter(shouldIncludeInWorld).slice(0, 24)
-  const source = included.length > 0 ? included : stored.slice(0, 8)
+  const included = stored
+    .filter(scan => shouldIncludeStoredScanInWorld(projectId, scan, shouldIncludeInWorld))
+    .slice(0, 24)
+  // The legacy default world can offer a few stored scans before any project
+  // exists. A named project must never borrow scans from another project.
+  const source = included.length > 0 || projectId !== null ? included : stored.slice(0, 8)
   const originGeoPose = inferWorldOrigin(source)
   const now = new Date().toISOString()
+  const projectName = projectId === null
+    ? null
+    : (await loadProjects()).find(project => project.projectId === projectId)?.name ?? null
   const world: WorldProject = {
     worldId: `world-${safeSlug(slug)}`,
-    name: slug === 'default' ? 'Default World Scan' : slug.replace(/-/g, ' '),
+    name: projectName ?? (slug === 'default' ? 'Default World Scan' : slug.replace(/-/g, ' ')),
     shareSlug: safeSlug(slug),
+    projectId,
     originGeoPose,
     localFrame: {
       type: 'ENU_Y_UP',
@@ -1293,43 +1599,83 @@ async function synthesizeWorld(slug: string): Promise<WorldProject> {
       axes: { x: 'east', y: 'up', z: 'north' },
     },
     scans: source.map((scan, i) => scanManifestFromStored(scan, originGeoPose, i, slug)),
+    things: [],
+    thingObservations: [],
     members: createWorldMembers(),
+    comments: [],
     jobs: [],
     editPatches: [],
     createdAt: now,
     updatedAt: now,
   }
-  await saveWorld(world)
+  await writeWorldUnlocked(world)
   return world
 }
 
-/** Apply a mutator to every stored world file; returns how many were updated */
+/**
+ * Apply a mutator to every stored world file; returns how many were updated.
+ * Each file's read-modify-write runs inside that slug's lock, so it can't
+ * clobber (or be clobbered by) a concurrent `updateWorld` on the same world.
+ * The lock key comes from the filename — the same name the read below uses —
+ * which is `world.shareSlug` for every world this server writes.
+ */
 async function mutateWorldFiles(mutator: (world: WorldProject) => boolean | Promise<boolean>): Promise<number> {
-  let updated = 0
+  const names: string[] = []
   try {
     for await (const entry of Deno.readDir(WORLDS_DIR)) {
-      if (!entry.isFile || !entry.name.endsWith('.json')) continue
-      try {
-        const world = JSON.parse(await Deno.readTextFile(`${WORLDS_DIR}/${entry.name}`)) as WorldProject
-        if (await mutator(world)) {
-          await saveWorld(world)
-          updated += 1
-        }
-      } catch (error) {
-        console.warn(`[world] Could not mutate ${entry.name}:`, error)
-      }
+      if (entry.isFile && entry.name.endsWith('.json')) names.push(entry.name)
     }
   } catch { /* worlds directory may be empty */ }
+
+  let updated = 0
+  for (const name of names) {
+    try {
+      const changed = await withWorldLock(safeSlug(name.replace(/\.json$/, '')), async () => {
+        const world = JSON.parse(await Deno.readTextFile(`${WORLDS_DIR}/${name}`)) as WorldProject
+        if (!await mutator(world)) return false
+        await writeWorldUnlocked(world)
+        return true
+      })
+      if (changed) updated += 1
+    } catch (error) {
+      console.warn(`[world] Could not mutate ${name}:`, error)
+    }
+  }
   return updated
 }
 
 async function removeScanFromWorlds(filename: string): Promise<number> {
+  // Derived, not looked up from a single shared value: the scan row is about
+  // to be filtered out, and this must also work for a world whose entry was
+  // already pruned. `patch.scanId` used to be compared against `filename`
+  // here — a scanId is never a filename, so that arm never matched and
+  // scan-scoped patches outlived the scan they described.
+  const removedScanId = scanIdFor(filename)
   return mutateWorldFiles((world) => {
+    // mutateWorldFiles reads the world raw — no refreshWorldScans pass — so a
+    // job/patch here can still name the LEGACY id if this scan's row was
+    // renamed by a GET that ran before this delete (refreshWorldScans's own
+    // self-heal) but this particular reference was part of a collision that
+    // self-heal correctly left alone (see the count guard there). Matching
+    // only `removedScanId` would leave such a reference behind — recompute
+    // the legacy id from the row still in `world.scans`, before it's filtered
+    // out below, and match either.
+    const removedRow = world.scans.find(scan => scan.filename === filename)
+    const removedLegacyScanId = removedRow ? legacyScanId(removedRow) : null
+    const isRemovedScanId = (scanId: string | undefined): boolean =>
+      scanId === removedScanId || (removedLegacyScanId !== null && scanId === removedLegacyScanId)
+
     const beforeScans = world.scans.length
     world.scans = world.scans.filter(scan => scan.filename !== filename)
-    world.editPatches = world.editPatches.filter(patch => patch.targetId !== filename && patch.scanId !== filename)
+    world.editPatches = world.editPatches.filter(
+      patch => patch.targetId !== filename && !isRemovedScanId(patch.scanId),
+    )
+    world.comments = (world.comments ?? []).filter(comment => !isRemovedScanId(comment.scanId ?? undefined))
     world.jobs = world.jobs.filter(job => {
       if (!job.scanId) return true
+      // Explicit, rather than relying on the survivor scan below: while ids
+      // collided, a sibling sharing the removed scan's id kept its jobs alive.
+      if (isRemovedScanId(job.scanId)) return false
       return world.scans.some(scan => scan.scanId === job.scanId)
     })
     return world.scans.length !== beforeScans
@@ -1342,16 +1688,23 @@ async function removeAllScansFromWorlds(): Promise<number> {
     world.scans = []
     world.editPatches = world.editPatches.filter(patch => patch.scope === 'world')
     world.jobs = world.jobs.filter(job => !job.scanId)
+    world.comments = []
     world.originGeoPose = { lat: null, lng: null, altitudeM: null, bearing: null, accuracyM: null }
     world.localFrame.origin = world.originGeoPose
     return hadScans
   })
 }
 
-async function loadWorld(slug: string): Promise<WorldProject> {
+/**
+ * Read (or synthesize) a world. Unlocked, and it can itself write — via
+ * `refreshWorldScans` — so callers must hold that slug's lock: use
+ * `loadWorld` to read, `updateWorld` to read-modify-write.
+ */
+async function readWorldUnlocked(slug: string): Promise<WorldProject> {
   const safe = safeSlug(slug)
   try {
     const world = JSON.parse(await Deno.readTextFile(worldPath(safe))) as WorldProject
+    ensureWorldProjectCollections(world)
     await refreshWorldScans(world)
     return world
   } catch {
@@ -1359,37 +1712,235 @@ async function loadWorld(slug: string): Promise<WorldProject> {
   }
 }
 
+/** Read a world under its lock — a snapshot no in-flight cycle is mid-write on. */
+function loadWorld(slug: string): Promise<WorldProject> {
+  return withWorldLock(safeSlug(slug), () => readWorldUnlocked(slug))
+}
+
+function projectWorldSlug(projectId: string): string {
+  return safeSlug(`project-${projectId}`)
+}
+
+/**
+ * Each project receives an independent world manifest. This prevents the
+ * desktop viewer from blending scans, patches, and jobs across places.
+ */
+function loadProjectWorld(projectId: string): Promise<WorldProject> {
+  const slug = projectWorldSlug(projectId)
+  return withWorldLock(slug, async () => {
+    try {
+      const world = JSON.parse(await Deno.readTextFile(worldPath(slug))) as WorldProject
+      ensureWorldProjectCollections(world)
+      if (world.projectId !== projectId) return await synthesizeWorld(slug, projectId)
+      await refreshWorldScans(world)
+      return world
+    } catch {
+      return synthesizeWorld(slug, projectId)
+    }
+  })
+}
+
+/**
+ * The one way to change a world on disk: load, mutate, save, all inside that
+ * slug's lock, so two concurrent cycles serialize instead of one silently
+ * overwriting the other (`world_lock.ts` explains what that cost us).
+ *
+ * The write is unconditional — a mutator can't forget to persist what it
+ * changed, which is the failure mode this whole helper exists to remove. Do
+ * only world-file work inside `mutate`: broadcasts, pump enqueues, and any
+ * long-running worker call belong outside it, after the lock is released.
+ * `mutate` must not call `loadWorld`/`updateWorld` for the same slug (the
+ * lock is not reentrant); it gets the live `world` object already.
+ *
+ * Returns the saved world alongside whatever `mutate` returned, so a caller
+ * that needs both (a created job plus `world.shareSlug`, say) gets them from
+ * one cycle.
+ */
+async function updateWorld<T>(
+  slug: string,
+  mutate: (world: WorldProject) => T | Promise<T>,
+): Promise<{ world: WorldProject; value: T }> {
+  return await withWorldLock(safeSlug(slug), async () => {
+    const world = await readWorldUnlocked(slug)
+    const value = await mutate(world)
+    await writeWorldUnlocked(world)
+    return { world, value }
+  })
+}
+
+/** Per-slug memo of the last logged stale-entry count, so the warn does not repeat. */
+const lastPruneSkipLogged = new Map<string, number>()
+
 async function refreshWorldScans(world: WorldProject): Promise<void> {
+  ensureWorldProjectCollections(world)
   const stored = await listStoredScans()
   const storedByFilename = new Map(stored.map(scan => [scan.filename, scan]))
+  const existingScanFilenames = new Set(world.scans.map(scan => scan.filename))
   let changed = false
+
+  // Reconcile against disk: a scan whose .glb has gone (deleted out of band, or a
+  // storage reset that never reached this manifest) must not survive here — the
+  // editor would keep fetching it and render a 404 row per stale entry, and the
+  // manifest would grow without bound. Deletions through DELETE /scans do prune
+  // via removeScanFromWorlds(); this is the self-heal for everything else.
+  //
+  // Guarded by pruneScansMissingFromDisk(): the manifest is the durable record
+  // and scans/ is the volatile side, so a listing thinner than the manifest is
+  // read as a stale directory rather than as 250-odd deletions. world_prune.ts
+  // documents the incident this guard exists for.
+  const prune = pruneScansMissingFromDisk(
+    world.scans,
+    new Set(storedByFilename.keys()),
+    stored.filter(shouldIncludeInWorld).length,
+  )
+  if (prune.pruned > 0) {
+    world.scans = prune.scans
+    changed = true
+    console.log(`[worlds] pruned ${prune.pruned} scan entr${prune.pruned === 1 ? 'y' : 'ies'} with no .glb on disk`)
+  } else if (prune.skipped && prune.missing > 0 && lastPruneSkipLogged.get(world.worldId) !== prune.missing) {
+    // Not an error — the manifest is intact and the editor shows these as stale
+    // rows. Logged because it is also how a lost scans/ dir announces itself,
+    // but only when the count changes: refreshWorldScans() runs on every
+    // GET /worlds/:slug and the editor polls, so an unconditional warn floods
+    // the log with the same line and buries real errors.
+    lastPruneSkipLogged.set(world.worldId, prune.missing)
+    console.warn(
+      `[worlds] kept ${prune.missing} scan entr${prune.missing === 1 ? 'y' : 'ies'} with no .glb on disk `
+      + `(${prune.skipped}) — refusing to prune against a listing of ${stored.length}`,
+    )
+  }
+
+  // Ids currently on disk, counted before any renames below touch them — the
+  // only way to tell an unambiguous rename from one still tangled in a
+  // not-yet-migrated collision. A count of 1 means no sibling scan shares
+  // this id, so any job/patch naming it can only have meant this scan; a
+  // count > 1 is exactly the collision `deno task migrate-scan-ids` exists to
+  // resolve; a guess made here, live, on every GET, could differ request to
+  // request and is not this function's call to make.
+  const scansByCurrentId = new Map<string, number>()
+  for (const scan of world.scans) {
+    scansByCurrentId.set(scan.scanId, (scansByCurrentId.get(scan.scanId) ?? 0) + 1)
+  }
+
+  // Filled by the map below with every scan evicted this pass for no longer
+  // belonging to this world's Place, so their patches/jobs/comments can be
+  // pruned alongside them — otherwise those references outlive the scan row
+  // they describe, exactly like removeScanFromWorlds() prunes for an explicit
+  // delete, just triggered by a Place reassignment instead.
+  const removedForProjectMismatch: Array<{ scanId: string; filename: string }> = []
 
   world.scans = world.scans.map((scan, index) => {
     const storedScan = storedByFilename.get(scan.filename)
     if (!storedScan) return scan
+    if (!belongsToCurrentWorld(world, storedScan, existingScanFilenames)) {
+      changed = true
+      removedForProjectMismatch.push({ scanId: scan.scanId, filename: scan.filename })
+      return null
+    }
     const next = scanManifestFromStored(storedScan, world.originGeoPose, index, world.shareSlug)
+    if (next.scanId !== scan.scanId && scansByCurrentId.get(scan.scanId) === 1) {
+      // Repoint references live, the same self-heal this function already
+      // does for the scan row itself (below) — otherwise the id moves out
+      // from under a still-pending job's exact-match lookup the moment this
+      // GET persists it, well before an operator gets a chance to run the
+      // offline migration. Safe here specifically because the id is unique:
+      // see the collision-count guard above.
+      for (const patch of world.editPatches) {
+        if (patch.scanId === scan.scanId) patch.scanId = next.scanId
+      }
+      for (const job of world.jobs) {
+        if (job.scanId === scan.scanId) job.scanId = next.scanId
+      }
+    }
     changed = changed
+      || scan.scanId !== next.scanId
+      || scan.projectId !== next.projectId
       || scan.status !== next.status
+      || scan.geoDistanceM !== next.geoDistanceM
+      || !!scan.geoOutlier !== !!next.geoOutlier
       || scan.frameSetUrl !== next.frameSetUrl
       || JSON.stringify(scan.qualitySummary ?? null) !== JSON.stringify(next.qualitySummary ?? null)
       || JSON.stringify(scan.layerIndex) !== JSON.stringify(next.layerIndex)
     return { ...scan, ...next, localToWorld: scan.localToWorld, name: scan.name || next.name }
-  })
+  }).filter((scan): scan is ScanManifest => scan !== null)
+
+  if (removedForProjectMismatch.length > 0) {
+    const removedScanIds = new Set(removedForProjectMismatch.map(entry => entry.scanId))
+    const removedFilenames = new Set(removedForProjectMismatch.map(entry => entry.filename))
+    world.editPatches = world.editPatches.filter(patch =>
+      !(patch.scanId && removedScanIds.has(patch.scanId)) && !removedFilenames.has(patch.targetId))
+    world.comments = (world.comments ?? []).filter(comment =>
+      !(comment.scanId && removedScanIds.has(comment.scanId)))
+    world.jobs = world.jobs.filter(job => !(job.scanId && removedScanIds.has(job.scanId)))
+  }
 
   const existing = new Set(world.scans.map(scan => scan.filename))
   const additions = stored
-    .filter(shouldIncludeInWorld)
+    .filter(scan => shouldIncludeStoredScanInWorld(world.projectId, scan, shouldIncludeInWorld, existingScanFilenames))
     .filter(scan => !existing.has(scan.filename))
     .slice(0, 12)
-  if (additions.length === 0) {
-    if (changed) await saveWorld(world)
-    return
+
+  if (additions.length > 0) {
+    const origin = world.originGeoPose
+    const nextIndex = world.scans.length
+    world.scans.push(...additions.map((scan, i) => scanManifestFromStored(scan, origin, nextIndex + i, world.shareSlug)))
   }
 
-  const origin = world.originGeoPose
-  const nextIndex = world.scans.length
-  world.scans.push(...additions.map((scan, i) => scanManifestFromStored(scan, origin, nextIndex + i, world.shareSlug)))
-  await saveWorld(world)
+  warnOnScanIdCollision(world)
+
+  if (changed || additions.length > 0) await writeWorldUnlocked(world)
+}
+
+function belongsToCurrentWorld(
+  world: WorldProject,
+  scan: StoredScanInfo,
+  existingScanFilenames: Set<string>,
+): boolean {
+  return shouldIncludeStoredScanInWorld(world.projectId ?? null, scan, shouldIncludeInWorld, existingScanFilenames)
+}
+
+
+/** Per-slug memo of the last logged colliding-id set, so the warn does not repeat every GET. */
+const lastScanIdCollisionLogged = new Map<string, string>()
+
+/**
+ * `scanIdFor()` is lossy — `safeSlug()` collapses every character outside
+ * `[a-z0-9_-]`, so two distinct filenames can in principle derive the same
+ * id (`a.b.glb` and `a-b.glb` both become `scan-a-b`). `migrate_scan_ids.ts`
+ * refuses to run over a world with this collision; it throws, which is the
+ * right call for a one-shot, human-attended script. It is NOT the right call
+ * here: `refreshWorldScans` runs inside `readWorldUnlocked`'s try/catch,
+ * which treats ANY thrown error as "no world file" and silently replaces the
+ * response with a freshly synthesized empty world — throwing here would make
+ * the failure mode worse, not better.
+ *
+ * So this only warns, throttled per-slug so it doesn't repeat on every GET.
+ * It does not attempt to resolve the collision (there is no safe automatic
+ * choice — see the migration's own reasoning), only to make it visible
+ * rather than let the viewer silently discard one of the colliding scans the
+ * way it did before ticket 0001. An operator sees the log and renames the
+ * offending file, the same fix the migration's own error message asks for.
+ */
+function warnOnScanIdCollision(world: WorldProject): void {
+  const byId = new Map<string, string[]>()
+  for (const scan of world.scans) {
+    const bucket = byId.get(scan.scanId)
+    if (bucket) bucket.push(scan.filename)
+    else byId.set(scan.scanId, [scan.filename])
+  }
+  const collisions = [...byId.entries()].filter(([, filenames]) => filenames.length > 1)
+  if (collisions.length === 0) {
+    lastScanIdCollisionLogged.delete(world.worldId)
+    return
+  }
+  const detail = collisions.map(([id, filenames]) => `${id} <- ${filenames.join(', ')}`).join('; ')
+  if (lastScanIdCollisionLogged.get(world.worldId) === detail) return
+  lastScanIdCollisionLogged.set(world.worldId, detail)
+  console.warn(
+    `[worlds] '${world.shareSlug}': ${collisions.length} scanId(s) are shared by more than one scan — ` +
+    `safeSlug() is lossy, so distinct filenames can derive the same id. The viewer will only show one ` +
+    `of each colliding set. Rename the offending file(s) to resolve: ${detail}`,
+  )
 }
 
 /** Best client-facing base URL: request origin → forwarded host → Vite default */
@@ -1413,12 +1964,12 @@ function clientBaseUrl(c: { req: { url: string; header: (name: string) => string
 function viteBaseUrlFromEnv(): string {
   try {
     const url = new URL(ALLOWED_ORIGIN_PREFIX)
-    if (!url.port) url.port = '5173'
+    if (!url.port) url.port = VITE_PORT
     return url.toString().replace(/\/$/, '')
   } catch {
     return TAILSCALE_HOSTNAME
-      ? `https://${TAILSCALE_HOSTNAME}:5173`
-      : 'https://liambook.capybara-ulmer.ts.net:5173'
+      ? `https://${TAILSCALE_HOSTNAME}:${VITE_PORT}`
+      : `https://liambook.capybara-ulmer.ts.net:${VITE_PORT}`
   }
 }
 
@@ -1426,9 +1977,10 @@ function shareLinks(c: { req: { url: string; header: (name: string) => string | 
   const base = clientBaseUrl(c)
   const byRole = new Map(world.members.filter(m => !m.revokedAt).map(m => [m.role, m.token]))
   return {
-    owner: `${base}/viewer.html?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('owner') ?? '')}`,
-    editor: `${base}/viewer.html?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('editor') ?? '')}`,
-    viewer: `${base}/viewer.html?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('viewer') ?? '')}`,
+    owner: `${base}/editor?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('owner') ?? '')}`,
+    editor: `${base}/editor?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('editor') ?? '')}`,
+    commenter: `${base}/editor?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('commenter') ?? '')}`,
+    viewer: `${base}/editor?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('viewer') ?? '')}`,
     scanner: `${base}/scanner.html?world=${world.shareSlug}&token=${encodeURIComponent(byRole.get('scanner') ?? '')}`,
   }
 }
@@ -1436,8 +1988,9 @@ function shareLinks(c: { req: { url: string; header: (name: string) => string | 
 const ROLE_RANK: Record<MemberRole, number> = {
   scanner: 0,
   viewer: 1,
-  editor: 2,
-  owner: 3,
+  commenter: 2,
+  editor: 3,
+  owner: 4,
 }
 
 function requestToken(c: { req: { query: (name: string) => string | undefined; header: (name: string) => string | undefined } }): string | null {
@@ -1501,9 +2054,32 @@ function applyPatchToWorld(world: WorldProject, patch: EditPatch): void {
   }
 }
 
+/**
+ * Creates (or reuses) a WorldJob and appends it to `world.jobs`. Per ADR 0003
+ * "Dedupe" and "Bounded history": every call site routes through this single
+ * function, so both guarantees apply uniformly — no call site pushes onto
+ * `world.jobs` directly anymore.
+ *
+ * Also fires the legacy `'job-update'` broadcast (via
+ * `broadcastLegacyJobUpdate`, which no-ops for every type but
+ * `optimize-scan`) immediately on creation, mirroring `JobQueue.enqueue()`
+ * (`jobs.ts:88-111`), which calls `this._emit(job)` right after construction
+ * — before the job ever runs — so a client polling/listening the way it did
+ * against `JobQueue` still observes a `status: 'queued'` event, not just the
+ * later `processing`/`completed` ones from `_dispatchWorldJob`. Only fires
+ * for a genuinely new job: the dedupe early-return above skips it, exactly
+ * like `jobs.ts:88-93`'s own `if (existing) return existing` never re-emits
+ * for a reused job.
+ */
 function createWorldJob(world: WorldProject, type: WorldJobType, scanId?: string, payload?: Record<string, unknown>): WorldJob {
+  // Dedupe (ADR 0003 "Dedupe"): reuse an existing queued/processing job for
+  // the same type+target in this world instead of creating a duplicate —
+  // jobs.ts:88-93's exact predicate, applied per-world.
+  const existing = findDuplicateWorldJob(world.jobs, type, worldJobTarget({ scanId, payload }))
+  if (existing) return existing
+
   const now = new Date().toISOString()
-  return {
+  const job: WorldJob = {
     jobId: `job-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
     worldId: world.worldId,
     type,
@@ -1515,6 +2091,82 @@ function createWorldJob(world: WorldProject, type: WorldJobType, scanId?: string
     createdAt: now,
     updatedAt: now,
   }
+  world.jobs.unshift(job)
+  // Bounded history (ADR 0003 "Bounded history"): cap at 200, trimming
+  // completed/failed jobs to the most recent 100 once exceeded.
+  world.jobs = trimWorldJobHistory(world.jobs)
+  broadcastLegacyJobUpdate(job)
+  return job
+}
+
+// ── Legacy /jobs, /jobs/:id, GET /scans job-status shim ──────────────────────
+// (ADR 0003 / ticket docs/factory/01-merge-jobs/0004)
+//
+// `GET /jobs`, `GET /jobs/:id`, and GET /scans's per-file job-status field
+// used to read `JobQueue` directly. Real optimize-scan work now happens as a
+// `WorldJob` (ticket 0003), so those three surfaces — plus the 'job-update'
+// event below — are re-pointed to read/derive from `WorldJob` data instead,
+// translated through this one function (ADR 0001: one conversion, reused)
+// so nothing external (the viewer, a script, a future integration) has to
+// change to keep working.
+
+const WORLD_JOB_STATUS_TO_LEGACY: Record<WorldJobStatus, JobStatus> = {
+  queued: 'queued',
+  processing: 'running',
+  completed: 'done',
+  failed: 'error',
+}
+
+/**
+ * Translates an `optimize-scan` `WorldJob` into the legacy `Job` shape
+ * (jobs.ts), per ADR 0003's field-mapping table: `id`←`jobId`,
+ * `type`←`'optimize-scan'`, `target`←`payload.filename` (via the shared
+ * `worldJobTarget` helper, mirroring `Job.target`), `status`← mapped through
+ * the table above, `createdAt`←`createdAt`, `error`←`error`, `note`←`result`.
+ * `startedAt`/`finishedAt` have no dedicated `WorldJob` field (no second
+ * timestamp was added — the ADR reuses `updatedAt` for both); populated only
+ * once the job has actually reached that transition, matching `Job`'s
+ * optional fields staying unset while still `queued`.
+ */
+function worldJobToLegacyJob(wj: WorldJob): Job {
+  const job: Job = {
+    id: wj.jobId,
+    type: 'optimize-scan',
+    target: worldJobTarget(wj) ?? '',
+    status: WORLD_JOB_STATUS_TO_LEGACY[wj.status],
+    createdAt: wj.createdAt,
+  }
+  if (wj.status !== 'queued') job.startedAt = wj.updatedAt
+  if (wj.status === 'completed' || wj.status === 'failed') job.finishedAt = wj.updatedAt
+  if (wj.error !== undefined) job.error = wj.error
+  if (wj.result !== undefined) job.note = wj.result
+  return job
+}
+
+/**
+ * Fires the legacy `'job-update'` event (`EVENT.JOB_UPDATE`) for
+ * `optimize-scan` `WorldJob` transitions, alongside the `'world-job-update'`
+ * broadcast every caller already sends — matching `JobQueue`'s old
+ * `_emit()` payload shape exactly (`jobs.ts:212-224`:
+ * `{ id, jobType, target, status, error, note }`, `error`/`note` `null`
+ * rather than absent). Scoped to `optimize-scan` only, matching its old
+ * scope (ticket 0004 Pinned conventions) — a no-op for every other
+ * `WorldJobType`, so it's safe to call from the shared dispatch path.
+ */
+function broadcastLegacyJobUpdate(wj: WorldJob): void {
+  if (wj.type !== 'optimize-scan') return
+  const legacy = worldJobToLegacyJob(wj)
+  broadcast({
+    type: EVENT.JOB_UPDATE,
+    job: {
+      id: legacy.id,
+      jobType: legacy.type,
+      target: legacy.target,
+      status: legacy.status,
+      error: legacy.error ?? null,
+      note: legacy.note ?? null,
+    },
+  })
 }
 
 async function enqueueLegacyProcessJob(action: string, filename: string): Promise<string | null> {
@@ -1527,21 +2179,62 @@ async function enqueueLegacyProcessJob(action: string, filename: string): Promis
   }
   const type = mapping[action]
   if (!type) return null
-  const world = await loadWorld('default')
-  const scan = world.scans.find(s => s.filename === filename)
-  const job = createWorldJob(world, type, scan?.scanId, { legacyAction: action, filename })
-  world.jobs.unshift(job)
-  await saveWorld(world)
+  const { world, value: job } = await updateWorld('default', (world) => {
+    const scan = world.scans.find(s => s.filename === filename)
+    return createWorldJob(world, type, scan?.scanId, { legacyAction: action, filename })
+  })
   await completeJobSoon(world.shareSlug, job.jobId)
   return job.jobId
 }
 
+/**
+ * Creates (or reuses) an `optimize-scan` `WorldJob` and kicks the pump — the
+ * shared implementation for all three call sites that used to do
+ * `jobQueue.enqueue('optimize-scan', filename)` (`POST /upload-scan`,
+ * `POST /scans/:filename/optimize`, `POST /sessions/:id/finalize`).
+ *
+ * Per ADR 0003 "Which world does an optimize-scan WorldJob belong to?": these
+ * routes operate on raw `SCANS_DIR` filenames with no `WorldProject`
+ * association, so the job is parked under the `'default'` world — exactly
+ * `enqueueLegacyProcessJob`'s existing pattern (`loadWorld('default')`,
+ * `scanId` left `undefined`, target carried in `payload.filename`) — reused
+ * here rather than inventing a second "raw scan job" shape (ADR 0001).
+ */
+async function enqueueOptimizeScanJob(filename: string): Promise<WorldJob> {
+  const { world, value: job } = await updateWorld(
+    'default',
+    (world) => createWorldJob(world, 'optimize-scan', undefined, { filename }),
+  )
+  await completeJobSoon(world.shareSlug, job.jobId)
+  return job
+}
+
+/**
+ * Enqueues a WorldJob for execution and kicks the single-flight pump — does
+ * not itself wait for the job to run (matches the previous behaviour: the
+ * old `setTimeout(..., 25)` body also returned long before its callback
+ * fired). ADR 0003 "Single-flight execution": actual dispatch happens in
+ * `_dispatchWorldJob`, called one-at-a-time by `worldJobPump`.
+ */
 async function completeJobSoon(slug: string, jobId: string): Promise<void> {
-  setTimeout(async () => {
-    try {
-      const world = await loadWorld(slug)
+  worldJobPump.enqueue(slug, jobId)
+}
+
+/**
+ * Pump dispatch callback — runs exactly one WorldJob to a terminal state.
+ * This is `completeJobSoon`'s old inline body, unchanged in what it does
+ * (set `processing` + `workerId` + progress, broadcast, dispatch to the
+ * per-type `_run*Job` function, or the generic placeholder-completion path)
+ * — only how it's invoked changed: `worldJobPump` now awaits this call to
+ * fully settle before dequeuing the next pending job (ADR 0003
+ * "Single-flight execution"), instead of each call scheduling its own
+ * independent, concurrent `setTimeout`.
+ */
+async function _dispatchWorldJob(slug: string, jobId: string): Promise<void> {
+  try {
+    const { world, value: job } = await updateWorld(slug, (world) => {
       const job = world.jobs.find(j => j.jobId === jobId)
-      if (!job || job.status !== 'queued') return
+      if (!job || job.status !== 'queued') return null
       job.status = 'processing'
       job.workerId = job.type === 'lingbot-map-reconstruct'
         ? 'lingbot-map'
@@ -1551,206 +2244,387 @@ async function completeJobSoon(slug: string, jobId: string): Promise<void> {
             ? 'splat-analyzer'
             : job.type === 'splat-finish'
               ? 'splat-transform'
+              : job.type === 'sensenova-vision'
+                ? 'sensenova-vision'
               : job.type === 'memory-push'
                 ? 'companion-memory'
                 : 'local-coordinator'
       job.progress = 0.35
       job.updatedAt = new Date().toISOString()
-      await saveWorld(world)
-      broadcast({ type: 'world-job-update', worldId: world.worldId, job })
+      return job
+    })
+    if (!job) return
+    broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job })
+    broadcastLegacyJobUpdate(job)
 
-      if (job.type === 'lingbot-map-reconstruct') {
-        await _runLingBotMapJob(slug, jobId)
-        return
-      }
-
-      if (job.type === 'splat-train') {
-        await _runSplatTrainJob(slug, jobId)
-        return
-      }
-
-      if (job.type === 'splat-detect') {
-        await _runSplatDetectJob(slug, jobId)
-        return
-      }
-
-      if (job.type === 'splat-finish') {
-        await _runSplatFinishJob(slug, jobId)
-        return
-      }
-
-      if (job.type === 'memory-push') {
-        await _runMemoryPushJob(slug, jobId)
-        return
-      }
-
-      setTimeout(async () => {
-        try {
-          const current = await loadWorld(slug)
-          const currentJob = current.jobs.find(j => j.jobId === jobId)
-          if (!currentJob || currentJob.status === 'failed') return
-          const failure = jobFailureReason(currentJob, current)
-          if (failure) {
-            currentJob.status = 'failed'
-            currentJob.error = failure
-            currentJob.result = failure
-            currentJob.progress = 1
-          } else {
-            currentJob.status = 'completed'
-            currentJob.result = jobResultFor(currentJob)
-            currentJob.artifacts = jobArtifactsFor(currentJob, current)
-            currentJob.progress = 1
-            applyCompletedJobToWorld(currentJob, current)
-          }
-          currentJob.updatedAt = new Date().toISOString()
-          await saveWorld(current)
-          broadcast({ type: 'world-job-update', worldId: current.worldId, job: currentJob })
-        } catch (err) {
-          console.error('[world-job complete error]', err)
-        }
-      }, 650)
-    } catch (err) {
-      console.error('[world-job start error]', err)
+    if (job.type === 'lingbot-map-reconstruct') {
+      await _runLingBotMapJob(slug, jobId)
+      return
     }
-  }, 25)
+
+    if (job.type === 'splat-train') {
+      await _runSplatTrainJob(slug, jobId)
+      return
+    }
+
+    if (job.type === 'splat-detect') {
+      await _runSplatDetectJob(slug, jobId)
+      return
+    }
+
+    if (job.type === 'splat-finish') {
+      await _runSplatFinishJob(slug, jobId)
+      return
+    }
+
+    if (job.type === 'sensenova-vision') {
+      await _runSenseNovaVisionJob(slug, jobId)
+      return
+    }
+
+    if (job.type === 'memory-push') {
+      await _runMemoryPushJob(slug, jobId)
+      return
+    }
+
+    if (job.type === 'thing-correspondence') {
+      await _runThingCorrespondenceJob(slug, jobId)
+      return
+    }
+
+    if (job.type === 'optimize-scan') {
+      await _runOptimizeScanJob(slug, jobId)
+      return
+    }
+
+    // Generic placeholder-type completion path (the seven WorldJobTypes with
+    // no dedicated runner — ADR 0003 "Placeholder WorldJobTypes"). Was its
+    // own detached `setTimeout(..., 650)`; now `await sleep(650)` so the pump
+    // waits for it to settle before dequeuing the next entry, per ADR 0003
+    // "Single-flight execution".
+    await sleep(650)
+    try {
+      const placeholderPreflight = await keyframePreflight(slug, jobId)
+      const { world: current, value: currentJob } = await updateWorld(slug, (current) => {
+        const currentJob = current.jobs.find(j => j.jobId === jobId)
+        if (!currentJob || currentJob.status === 'failed') return null
+        const failure = jobFailureReason(currentJob, current, placeholderPreflight)
+        if (failure) {
+          currentJob.status = 'failed'
+          currentJob.error = failure
+          currentJob.result = failure
+          currentJob.progress = 1
+        } else {
+          currentJob.status = 'completed'
+          currentJob.result = jobResultFor(currentJob)
+          currentJob.artifacts = jobArtifactsFor(currentJob, current)
+          currentJob.progress = 1
+          applyCompletedJobToWorld(currentJob, current)
+        }
+        currentJob.updatedAt = new Date().toISOString()
+        return currentJob
+      })
+      if (!currentJob) return
+      broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: current.worldId, job: currentJob })
+    } catch (err) {
+      console.error('[world-job complete error]', err)
+    }
+  } catch (err) {
+    console.error('[world-job start error]', err)
+  }
+}
+
+/**
+ * Boot-time crash recovery (ADR 0003 "Crash recovery"). Requeues every
+ * WorldJob left `'processing'` or `'queued'` by a previous process — both
+ * are unreachable otherwise: a `'processing'` job's process died mid-run,
+ * and a `'queued'` job has no poller once it's off the in-memory pending
+ * queue that died with the old process (nothing scans for queued WorldJobs
+ * the way jobs.ts's `_pump()` does). Reuses `mutateWorldFiles()` (the same
+ * "iterate every world file, apply logic, save only if changed" helper
+ * `removeScanFromWorlds` already uses) instead of a second `WORLDS_DIR`
+ * directory-scan implementation — ADR 0001, and this ticket's own Open
+ * Questions answer. Called once, at boot, right before `Deno.serve(...)`
+ * (see the call site's comment for why not earlier — TDZ on later
+ * module-level consts the seeded pump dispatch can reach).
+ */
+async function recoverWorldJobsOnBoot(): Promise<void> {
+  // Broadcasting/enqueueing happens after the mutateWorldFiles() pass below
+  // (not inside the mutator) so every recovered job is persisted via
+  // mutateWorldFiles' locked write before anything is broadcast or handed to the pump —
+  // mirrors the save-before-broadcast ordering every other job transition
+  // in this file follows (e.g. _runLingBotMapJob).
+  const recoveredByWorld: Array<{ worldId: string; shareSlug: string; jobs: WorldJob[] }> = []
+  await mutateWorldFiles((world) => {
+    const recovered = recoverStuckWorldJobs(world.jobs)
+    if (recovered.length === 0) return false
+    recoveredByWorld.push({ worldId: world.worldId, shareSlug: world.shareSlug, jobs: recovered })
+    return true
+  })
+  for (const { worldId, shareSlug, jobs } of recoveredByWorld) {
+    for (const job of jobs) {
+      broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId, job })
+      // Requeue is a real status transition, so it fires the legacy
+      // 'job-update' event too (no-op for every type but optimize-scan) —
+      // same pairing every other optimize-scan transition uses, per ticket
+      // 0004. Nothing is listening this early at boot, but keeping the two
+      // events paired means the rule holds wherever recovery is called from.
+      broadcastLegacyJobUpdate(job)
+      // Recovery doesn't get its own execution path — it just seeds the
+      // normal pump (ADR 0003 "Crash recovery", step 4).
+      worldJobPump.enqueue(shareSlug, job.jobId)
+    }
+    console.log(`[world-jobs] recovered ${jobs.length} stuck job(s) in world '${shareSlug}'`)
+  }
+}
+
+async function _runThingCorrespondenceJob(slug: string, jobId: string): Promise<void> {
+  try {
+    const world = await loadWorld(slug)
+    const detections = await detectionLikesForWorld(world)
+    const result = runThingCorrespondence(world, detections)
+
+    await commitWorldJob(slug, jobId, (currentJob, current) => {
+      current.things = result.things
+      current.thingObservations = result.observations
+      currentJob.progress = 1
+      currentJob.status = 'completed'
+      currentJob.result = jobResultFor(currentJob)
+      currentJob.artifacts = [
+        {
+          type: 'thing-correspondence-summary',
+          label: 'Thing correspondence summary',
+          metadata: {
+            things: result.things.length,
+            observations: result.observations.length,
+          },
+        },
+        ...result.artifacts,
+      ]
+      currentJob.updatedAt = new Date().toISOString()
+    })
+  } catch (err) {
+    console.error('[thing-correspondence] job failed:', err)
+    await failWorldJob(slug, jobId, errorMessage(err))
+  }
+}
+
+interface StoredDetectionMeta {
+  label: string
+  confidence: number | null
+  worldPos: Vec3
+}
+
+/** Parses the `detections` array gltf.ts writes alongside the plain `labels` list. */
+function detectionsFromMeta(value: unknown): StoredDetectionMeta[] {
+  if (!Array.isArray(value)) return []
+  const result: StoredDetectionMeta[] = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue
+    const record = item as Record<string, unknown>
+    const label = typeof record['label'] === 'string' ? record['label'] : null
+    const pos = record['worldPos']
+    if (!label || !pos || typeof pos !== 'object') continue
+    const posRecord = pos as Record<string, unknown>
+    const x = posRecord['x']
+    const y = posRecord['y']
+    const z = posRecord['z']
+    if (typeof x !== 'number' || typeof y !== 'number' || typeof z !== 'number') continue
+    result.push({
+      label,
+      confidence: typeof record['confidence'] === 'number' ? record['confidence'] : null,
+      worldPos: { x, y, z },
+    })
+  }
+  return result
+}
+
+/**
+ * Deterministic small hash so a scan without real detection positions (an
+ * export from before gltf.ts started recording them) still gets a fallback
+ * grid that never overlaps another scan's fallback grid — see
+ * detectionLikesForWorld below.
+ */
+function fnv1aMod(value: string, mod: number): number {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i)
+    hash = (hash * 0x01000193) >>> 0
+  }
+  return hash % mod
+}
+
+async function detectionLikesForWorld(world: WorldProject): Promise<DetectionLike[]> {
+  const detections: DetectionLike[] = []
+  for (const scan of world.scans) {
+    let meta: Record<string, unknown> = {}
+    try {
+      meta = JSON.parse(await Deno.readTextFile(scanMetaPath(scan.filename))) as Record<string, unknown>
+    } catch { /* no metadata sidecar */ }
+
+    const withPositions = detectionsFromMeta(meta['detections'])
+    if (withPositions.length > 0) {
+      withPositions.forEach((detection, index) => {
+        const safeName = detection.label.replace(/[^a-zA-Z0-9]/g, '_').replace(/^_+/, '') || 'Object'
+        const name = `${safeName}_${String(index + 1).padStart(3, '0')}`
+        detections.push({
+          scanId: scan.scanId,
+          sessionId: scan.sessionId,
+          targetId: `${scan.scanId}:${name}:lod`,
+          label: detection.label,
+          confidence: detection.confidence,
+          worldPos: detection.worldPos,
+          observedAt: scan.capturedAt,
+        })
+      })
+      continue
+    }
+
+    // Older scans exported before gltf.ts recorded real positions: labels
+    // survive, positions do not. A fabricated position keyed only on
+    // within-scan index would put the Nth label of every scan at the same
+    // point, so two different scans (different rooms) that both list "chair"
+    // first would spuriously merge into one Thing at runThingCorrespondence's
+    // 0.75 m match radius. Offset each scan's fallback grid by a hash of its
+    // own scanId — far past that radius — so distinct scans can never collide.
+    const labels = asStringArray(meta['labels'])
+    const scanOffset = fnv1aMod(scan.scanId, 97) * 20
+    labels.forEach((label, index) => {
+      const safeName = label.replace(/[^a-zA-Z0-9]/g, '_').replace(/^_+/, '') || 'Object'
+      const name = `${safeName}_${String(index + 1).padStart(3, '0')}`
+      detections.push({
+        scanId: scan.scanId,
+        sessionId: scan.sessionId,
+        targetId: `${scan.scanId}:${name}:lod`,
+        label,
+        confidence: null,
+        worldPos: {
+          x: (index % 12) + scanOffset,
+          y: 0,
+          z: Math.floor(index / 12),
+        },
+        observedAt: scan.capturedAt,
+      })
+    })
+  }
+  return detections
 }
 
 async function _runLingBotMapJob(slug: string, jobId: string): Promise<void> {
   try {
-    const world = await loadWorld(slug)
-    const job = world.jobs.find(j => j.jobId === jobId)
-    if (!job) return
-    const scan = scanForJob(job, world)
-    const failure = jobFailureReason(job, world)
-    if (failure) {
-      job.status = 'failed'
-      job.error = failure
-      job.result = failure
-      job.progress = 1
-      job.updatedAt = new Date().toISOString()
-      await saveWorld(world)
-      broadcast({ type: 'world-job-update', worldId: world.worldId, job })
-      return
-    }
-    const sessionId = scan!.sessionId!
-    const sessionPath = sessionDir(sessionId)
-    if (!sessionPath) {
-      job.status = 'failed'
-      job.error = `Invalid session id: ${sessionId}`
-      job.result = job.error
-      job.progress = 1
-      job.updatedAt = new Date().toISOString()
-      await saveWorld(world)
-      broadcast({ type: 'world-job-update', worldId: world.worldId, job })
-      return
-    }
+    const start = await claimSessionJob(slug, jobId)
+    if (!start) return
+    const { scan, sessionId, sessionPath } = start
 
-    const base = scan!.filename.replace(/\.glb$/, '')
+    const base = scan.filename.replace(/\.glb$/, '')
     const glbSidecarPath = `${SCANS_DIR}/${base}.lingbot.glb`
     const result = await runLingBotMapReconstruction({
       sessionDir: sessionPath,
       scriptPath: LINGBOT_MAP_SCRIPT,
       glbSidecarPath,
-      glbExtras: { sessionId, scanId: scan!.scanId },
+      glbExtras: { sessionId, scanId: scan.scanId },
     })
 
-    const current = await loadWorld(slug)
-    const currentJob = current.jobs.find(j => j.jobId === jobId)
-    if (!currentJob) return
-    currentJob.progress = 1
-    if (result.status === 'ok') {
-      currentJob.status = 'completed'
-      currentJob.result = jobResultFor(currentJob)
-      currentJob.artifacts = jobArtifactsFor(currentJob, current)
-      if (result.glbSidecarPath) {
-        const glbName = result.glbSidecarPath.split('/').pop()!
-        currentJob.artifacts ??= []
-        currentJob.artifacts.push({
-          type: 'lingbot-map-glb',
-          label: `${scan!.name} LingBot-Map GLB`,
-          url: `/scans/${encodeURIComponent(glbName)}`,
-          metadata: { points: result.glbPointCount ?? null },
-        })
-        const targetScan = current.scans.find(s => s.scanId === scan!.scanId)
-        if (targetScan && !targetScan.layerIndex.some(l => l.id === 'lingbot-map')) {
-          targetScan.layerIndex.push({
-            id: 'lingbot-map',
-            type: 'points',
-            label: 'LingBot-Map reconstruction',
-            visibleByDefault: false,
-            encodedInGlb: true,
-            source: 'derived',
-            count: result.glbPointCount ?? null,
+    await commitWorldJob(slug, jobId, (currentJob, current) => {
+      currentJob.progress = 1
+      if (result.status === 'ok') {
+        currentJob.status = 'completed'
+        currentJob.result = jobResultFor(currentJob)
+        currentJob.artifacts = jobArtifactsFor(currentJob, current)
+        if (result.glbSidecarPath) {
+          const glbName = result.glbSidecarPath.split('/').pop()!
+          currentJob.artifacts ??= []
+          currentJob.artifacts.push({
+            type: 'lingbot-map-glb',
+            label: `${scan.name} LingBot-Map GLB`,
+            url: `/scans/${encodeURIComponent(glbName)}`,
+            metadata: { points: result.glbPointCount ?? null },
           })
+          const targetScan = current.scans.find(s => s.scanId === scan.scanId)
+          if (targetScan && !targetScan.layerIndex.some(l => l.id === 'lingbot-map')) {
+            targetScan.layerIndex.push({
+              id: 'lingbot-map',
+              type: 'points',
+              label: 'LingBot-Map reconstruction',
+              visibleByDefault: false,
+              encodedInGlb: true,
+              source: 'derived',
+              count: result.glbPointCount ?? null,
+            })
+          }
         }
+        applyCompletedJobToWorld(currentJob, current)
+      } else if (result.status === 'skipped') {
+        currentJob.status = 'completed'
+        currentJob.result = `LingBot-Map skipped: ${result.skippedReason ?? 'unknown reason'}`
+        currentJob.artifacts = [{
+          type: 'lingbot-map-skip',
+          label: 'LingBot-Map run skipped',
+          url: `/sessions/${encodeURIComponent(sessionId)}/lingbot-map.manifest.json`,
+          metadata: { sessionId, skippedReason: result.skippedReason ?? null },
+        }]
+      } else {
+        currentJob.status = 'failed'
+        currentJob.error = result.error ?? `worker exit ${result.exitCode}`
+        currentJob.result = currentJob.error
       }
-      applyCompletedJobToWorld(currentJob, current)
-    } else if (result.status === 'skipped') {
-      currentJob.status = 'completed'
-      currentJob.result = `LingBot-Map skipped: ${result.skippedReason ?? 'unknown reason'}`
-      currentJob.artifacts = [{
-        type: 'lingbot-map-skip',
-        label: 'LingBot-Map run skipped',
-        url: `/sessions/${encodeURIComponent(sessionId)}/lingbot-map.manifest.json`,
-        metadata: { sessionId, skippedReason: result.skippedReason ?? null },
-      }]
-    } else {
-      currentJob.status = 'failed'
-      currentJob.error = result.error ?? `worker exit ${result.exitCode}`
-      currentJob.result = currentJob.error
-    }
-    currentJob.updatedAt = new Date().toISOString()
-    await saveWorld(current)
-    broadcast({ type: 'world-job-update', worldId: current.worldId, job: currentJob })
+      currentJob.updatedAt = new Date().toISOString()
+    })
   } catch (err) {
     console.error('[lingbot-map job error]', err)
-    try {
-      const recovered = await loadWorld(slug)
-      const recoveredJob = recovered.jobs.find(j => j.jobId === jobId)
-      if (recoveredJob) {
-        recoveredJob.status = 'failed'
-        recoveredJob.error = err instanceof Error ? err.message : String(err)
-        recoveredJob.result = recoveredJob.error
-        recoveredJob.progress = 1
-        recoveredJob.updatedAt = new Date().toISOString()
-        await saveWorld(recovered)
-        broadcast({ type: 'world-job-update', worldId: recovered.worldId, job: recoveredJob })
+    await failWorldJob(slug, jobId, errorMessage(err))
+  }
+}
+
+async function _runSenseNovaVisionJob(slug: string, jobId: string): Promise<void> {
+  try {
+    const start = await claimSessionJob(slug, jobId)
+    if (!start) return
+    const { scan, sessionPath, payload } = start
+    const task = senseNovaTask(payload?.['task'])
+    const query = asString(payload?.['query']) ?? undefined
+    const outputDir = `${SCANS_DIR}/.sensenova/${safeSlug(jobId)}`
+    const result = await runSenseNovaVision({ sessionDir: sessionPath, outputDir, task, query })
+
+    await commitWorldJob(slug, jobId, (currentJob, current) => {
+      currentJob.progress = 1
+      if (result.status === 'ok') {
+        currentJob.status = 'completed'
+        currentJob.result = `SenseNova ${task} completed with ${result.files.length} artifact${result.files.length === 1 ? '' : 's'}.`
+        currentJob.artifacts = [{
+          type: 'sensenova-output',
+          label: `${scan.name} SenseNova ${task}`,
+          metadata: { task, files: result.files, outputDir: result.outputDir },
+        }]
+        applyCompletedJobToWorld(currentJob, current)
+      } else if (result.status === 'skipped') {
+        currentJob.status = 'completed'
+        currentJob.result = `SenseNova ${task} skipped: ${result.remediation ?? 'runtime unavailable'}`
+        currentJob.artifacts = [{
+          type: 'sensenova-skip',
+          label: 'SenseNova runtime setup required',
+          metadata: { task, remediation: result.remediation ?? null },
+        }]
+      } else {
+        currentJob.status = 'failed'
+        currentJob.error = result.error ?? 'SenseNova worker failed'
+        currentJob.result = currentJob.error
       }
-    } catch { /* nothing more we can do */ }
+      currentJob.updatedAt = new Date().toISOString()
+    })
+  } catch (error) {
+    console.error('[sensenova] job failed:', error)
+    await failWorldJob(slug, jobId, errorMessage(error))
   }
 }
 
 async function _runSplatTrainJob(slug: string, jobId: string): Promise<void> {
   try {
-    const world = await loadWorld(slug)
-    const job = world.jobs.find(j => j.jobId === jobId)
-    if (!job) return
-    const scan = scanForJob(job, world)
-    const failure = jobFailureReason(job, world)
-    if (failure) {
-      job.status = 'failed'
-      job.error = failure
-      job.result = failure
-      job.progress = 1
-      job.updatedAt = new Date().toISOString()
-      await saveWorld(world)
-      broadcast({ type: 'world-job-update', worldId: world.worldId, job })
-      return
-    }
-    const sessionId = scan!.sessionId!
-    const sessionPath = sessionDir(sessionId)
-    if (!sessionPath) {
-      job.status = 'failed'
-      job.error = `Invalid session id: ${sessionId}`
-      job.result = job.error
-      job.progress = 1
-      job.updatedAt = new Date().toISOString()
-      await saveWorld(world)
-      broadcast({ type: 'world-job-update', worldId: world.worldId, job })
-      return
-    }
+    const start = await claimSessionJob(slug, jobId)
+    if (!start) return
+    const { scan, sessionId, sessionPath } = start
 
-    const base = scan!.filename.replace(/\.glb$/, '')
+    const base = scan.filename.replace(/\.glb$/, '')
     const outputPlyPath = `${SCANS_DIR}/${base}.splat.ply`
     const outputCompressedPlyPath = `${SCANS_DIR}/${base}.compressed.ply`
     const manifestPath = `${SCANS_DIR}/${base}.splat-train.manifest.json`
@@ -1759,138 +2633,112 @@ async function _runSplatTrainJob(slug: string, jobId: string): Promise<void> {
       outputPlyPath,
       outputCompressedPlyPath,
       manifestPath,
-      provenance: { sessionId, scanId: scan!.scanId },
+      provenance: { sessionId, scanId: scan.scanId },
     })
 
-    const current = await loadWorld(slug)
-    const currentJob = current.jobs.find(j => j.jobId === jobId)
-    if (!currentJob) return
-    currentJob.progress = 1
-    let chainedFinishJobId: string | null = null
-    if (result.status === 'ok') {
-      currentJob.status = 'completed'
-      currentJob.result = jobResultFor(currentJob)
-      currentJob.artifacts = jobArtifactsFor(currentJob, current)
-      const plyName = `${base}.splat.ply`
-      currentJob.artifacts ??= []
-      currentJob.artifacts.push({
-        type: 'splat-ply',
-        label: `${scan!.name} Gaussian splat`,
-        url: `/scans/${encodeURIComponent(plyName)}`,
-        metadata: {
-          gaussianCount: result.gaussianCount ?? null,
-          compressedUrl: result.compressedPlyPath
-            ? `/scans/${encodeURIComponent(`${base}.compressed.ply`)}`
-            : null,
-          manifestUrl: `/scans/${encodeURIComponent(`${base}.splat-train.manifest.json`)}`,
-        },
-      })
-      // Auto-chain Stage 4: enqueue splat-finish (sog + compressed.ply) for the
-      // same scan, mirroring how /ingest-video auto-enqueues reconstruction.
-      // Kill switch: SPLAT_FINISH_AUTO=0.
-      if (SPLAT_FINISH_AUTO) {
-        const finishJob = createWorldJob(current, 'splat-finish', scan!.scanId, {
-          source: 'auto-chain',
-          trainJobId: jobId,
-          sessionId,
+    const chainedFinishJobId = await commitWorldJob(slug, jobId, (currentJob, current) => {
+      let chained: string | null = null
+      currentJob.progress = 1
+      if (result.status === 'ok') {
+        currentJob.status = 'completed'
+        currentJob.result = jobResultFor(currentJob)
+        currentJob.artifacts = jobArtifactsFor(currentJob, current)
+        const plyName = `${base}.splat.ply`
+        currentJob.artifacts ??= []
+        currentJob.artifacts.push({
+          type: 'splat-ply',
+          label: `${scan.name} Gaussian splat`,
+          url: `/scans/${encodeURIComponent(plyName)}`,
+          metadata: {
+            gaussianCount: result.gaussianCount ?? null,
+            compressedUrl: result.compressedPlyPath
+              ? `/scans/${encodeURIComponent(`${base}.compressed.ply`)}`
+              : null,
+            manifestUrl: `/scans/${encodeURIComponent(`${base}.splat-train.manifest.json`)}`,
+          },
         })
-        current.jobs.unshift(finishJob)
-        chainedFinishJobId = finishJob.jobId
-      }
-      // Promote the scan's reserved 'splat' layer from 'future' to a real
-      // 'sidecar' layer carrying the trained gaussian count. Falls back to a
-      // fresh entry if the default index somehow lacked one.
-      const targetScan = current.scans.find(s => s.scanId === scan!.scanId)
-      if (targetScan) {
-        const existing = targetScan.layerIndex.find(l => l.type === 'splat')
-        if (existing) {
-          existing.source = 'sidecar'
-          existing.count = result.gaussianCount ?? existing.count ?? null
-        } else {
-          targetScan.layerIndex.push({
-            id: 'layer-splat',
-            type: 'splat',
-            label: 'Gaussian splat',
-            visibleByDefault: false,
-            encodedInGlb: false,
-            source: 'sidecar',
-            count: result.gaussianCount ?? null,
+        // Auto-chain Stage 4: enqueue splat-finish (sog + compressed.ply) for the
+        // same scan, mirroring how /ingest-video auto-enqueues reconstruction.
+        // Kill switch: SPLAT_FINISH_AUTO=0. The pump is kicked after the world
+        // is saved and the lock released, below.
+        if (SPLAT_FINISH_AUTO) {
+          const finishJob = createWorldJob(current, 'splat-finish', scan.scanId, {
+            source: 'auto-chain',
+            trainJobId: jobId,
+            sessionId,
           })
+          chained = finishJob.jobId
         }
+        // Promote the scan's reserved 'splat' layer from 'future' to a real
+        // 'sidecar' layer carrying the trained gaussian count. Falls back to a
+        // fresh entry if the default index somehow lacked one.
+        const targetScan = current.scans.find(s => s.scanId === scan.scanId)
+        if (targetScan) {
+          const existing = targetScan.layerIndex.find(l => l.type === 'splat')
+          if (existing) {
+            existing.source = 'sidecar'
+            existing.count = result.gaussianCount ?? existing.count ?? null
+          } else {
+            targetScan.layerIndex.push({
+              id: 'layer-splat',
+              type: 'splat',
+              label: 'Gaussian splat',
+              visibleByDefault: false,
+              encodedInGlb: false,
+              source: 'sidecar',
+              count: result.gaussianCount ?? null,
+            })
+          }
+        }
+        applyCompletedJobToWorld(currentJob, current)
+      } else if (result.status === 'skipped') {
+        currentJob.status = 'completed'
+        currentJob.result = `Splat train skipped: ${result.manifest.skippedReason ?? 'unknown reason'}`
+        currentJob.artifacts = [{
+          type: 'splat-skip',
+          label: 'Splat training skipped',
+          url: `/scans/${encodeURIComponent(`${base}.splat-train.manifest.json`)}`,
+          metadata: {
+            sessionId,
+            skippedReason: result.manifest.skippedReason ?? null,
+            remediation: result.manifest.remediation ?? null,
+          },
+        }]
+      } else {
+        currentJob.status = 'failed'
+        currentJob.error = result.manifest.error ?? `brush exit ${result.exitCode}`
+        currentJob.result = currentJob.error
       }
-      applyCompletedJobToWorld(currentJob, current)
-    } else if (result.status === 'skipped') {
-      currentJob.status = 'completed'
-      currentJob.result = `Splat train skipped: ${result.manifest.skippedReason ?? 'unknown reason'}`
-      currentJob.artifacts = [{
-        type: 'splat-skip',
-        label: 'Splat training skipped',
-        url: `/scans/${encodeURIComponent(`${base}.splat-train.manifest.json`)}`,
-        metadata: {
-          sessionId,
-          skippedReason: result.manifest.skippedReason ?? null,
-          remediation: result.manifest.remediation ?? null,
-        },
-      }]
-    } else {
-      currentJob.status = 'failed'
-      currentJob.error = result.manifest.error ?? `brush exit ${result.exitCode}`
-      currentJob.result = currentJob.error
-    }
-    currentJob.updatedAt = new Date().toISOString()
-    await saveWorld(current)
-    broadcast({ type: 'world-job-update', worldId: current.worldId, job: currentJob })
+      currentJob.updatedAt = new Date().toISOString()
+      return chained
+    })
     if (chainedFinishJobId) await completeJobSoon(slug, chainedFinishJobId)
   } catch (err) {
     console.error('[splat-train job error]', err)
-    try {
-      const recovered = await loadWorld(slug)
-      const recoveredJob = recovered.jobs.find(j => j.jobId === jobId)
-      if (recoveredJob) {
-        recoveredJob.status = 'failed'
-        recoveredJob.error = err instanceof Error ? err.message : String(err)
-        recoveredJob.result = recoveredJob.error
-        recoveredJob.progress = 1
-        recoveredJob.updatedAt = new Date().toISOString()
-        await saveWorld(recovered)
-        broadcast({ type: 'world-job-update', worldId: recovered.worldId, job: recoveredJob })
-      }
-    } catch { /* nothing more we can do */ }
+    await failWorldJob(slug, jobId, errorMessage(err))
   }
 }
 
 async function _runSplatDetectJob(slug: string, jobId: string): Promise<void> {
   try {
-    const world = await loadWorld(slug)
-    const job = world.jobs.find(j => j.jobId === jobId)
-    if (!job) return
-    const scan = scanForJob(job, world)
-    const failure = jobFailureReason(job, world)
-    if (failure) {
-      job.status = 'failed'
-      job.error = failure
-      job.result = failure
-      job.progress = 1
-      job.updatedAt = new Date().toISOString()
-      await saveWorld(world)
-      broadcast({ type: 'world-job-update', worldId: world.worldId, job })
-      return
-    }
+    const claimed = await claimJobScan(slug, jobId)
+    if (!claimed) return
+    const { scan, payload } = claimed
 
-    const base = scan!.filename.replace(/\.glb$/, '')
+    const base = scan.filename.replace(/\.glb$/, '')
     const splatPlyPath = `${SCANS_DIR}/${base}.splat.ply`
-    const sessionId = scan!.sessionId ?? undefined
+    const sessionId = scan.sessionId ?? undefined
     const sessionPath = sessionId ? sessionDir(sessionId) ?? undefined : undefined
     const outputInteractionsPath = `${SCANS_DIR}/${base}.interactions.json`
     const manifestPath = `${SCANS_DIR}/${base}.splat-detect.manifest.json`
     // Prompt: explicit job param wins; the driver defaults the env prompt otherwise.
-    const prompt = typeof job.payload?.['prompt'] === 'string' && (job.payload['prompt'] as string).trim().length > 0
-      ? (job.payload['prompt'] as string).trim()
+    const prompt = typeof payload?.['prompt'] === 'string' && (payload['prompt'] as string).trim().length > 0
+      ? (payload['prompt'] as string).trim()
       : undefined
     // Tuning knobs: forwarded from the job payload as strings; unset lets the
     // driver fall back to its env defaults / run_local.py's own defaults.
     const payloadStr = (key: string): string | undefined => {
-      const v = job.payload?.[key]
+      const v = payload?.[key]
       if (typeof v === 'number') return String(v)
       return typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined
     }
@@ -1905,86 +2753,71 @@ async function _runSplatDetectJob(slug: string, jobId: string): Promise<void> {
       scoreThreshold: payloadStr('scoreThreshold'),
       minVotes: payloadStr('minVotes'),
       minPeakScore: payloadStr('minPeakScore'),
-      provenance: { sessionId, scanId: scan!.scanId },
+      provenance: { sessionId, scanId: scan.scanId },
     })
 
-    const current = await loadWorld(slug)
-    const currentJob = current.jobs.find(j => j.jobId === jobId)
-    if (!currentJob) return
-    currentJob.progress = 1
-    if (result.status === 'ok') {
-      currentJob.status = 'completed'
-      currentJob.result = jobResultFor(currentJob)
-      currentJob.artifacts = jobArtifactsFor(currentJob, current)
-      const interactionsName = `${base}.interactions.json`
-      currentJob.artifacts ??= []
-      currentJob.artifacts.push({
-        type: 'splat-detections',
-        label: `${scan!.name} splat detections`,
-        url: `/scans/${encodeURIComponent(interactionsName)}`,
-        metadata: {
-          objectCount: result.objectCount ?? null,
-          prompt: result.manifest.prompt,
-          manifestUrl: `/scans/${encodeURIComponent(`${base}.splat-detect.manifest.json`)}`,
-        },
-      })
-      // Promote a 'detections' layer carrying the detected object count.
-      const targetScan = current.scans.find(s => s.scanId === scan!.scanId)
-      if (targetScan) {
-        const existing = targetScan.layerIndex.find(l => l.type === 'detections')
-        if (existing) {
-          existing.source = 'sidecar'
-          existing.count = result.objectCount ?? existing.count ?? null
-        } else {
-          targetScan.layerIndex.push({
-            id: 'layer-splat-detections',
-            type: 'detections',
-            label: 'Splat detections',
-            visibleByDefault: false,
-            encodedInGlb: false,
-            source: 'sidecar',
-            count: result.objectCount ?? null,
-          })
+    await commitWorldJob(slug, jobId, (currentJob, current) => {
+      currentJob.progress = 1
+      if (result.status === 'ok') {
+        currentJob.status = 'completed'
+        currentJob.result = jobResultFor(currentJob)
+        currentJob.artifacts = jobArtifactsFor(currentJob, current)
+        const interactionsName = `${base}.interactions.json`
+        currentJob.artifacts ??= []
+        currentJob.artifacts.push({
+          type: 'splat-detections',
+          label: `${scan.name} splat detections`,
+          url: `/scans/${encodeURIComponent(interactionsName)}`,
+          metadata: {
+            objectCount: result.objectCount ?? null,
+            prompt: result.manifest.prompt,
+            manifestUrl: `/scans/${encodeURIComponent(`${base}.splat-detect.manifest.json`)}`,
+          },
+        })
+        // Promote a 'detections' layer carrying the detected object count.
+        const targetScan = current.scans.find(s => s.scanId === scan.scanId)
+        if (targetScan) {
+          const existing = targetScan.layerIndex.find(l => l.type === 'detections')
+          if (existing) {
+            existing.source = 'sidecar'
+            existing.count = result.objectCount ?? existing.count ?? null
+          } else {
+            targetScan.layerIndex.push({
+              id: 'layer-splat-detections',
+              type: 'detections',
+              label: 'Splat detections',
+              visibleByDefault: false,
+              encodedInGlb: false,
+              source: 'sidecar',
+              count: result.objectCount ?? null,
+            })
+          }
+          if (typeof result.objectCount === 'number') targetScan.detectionCount = result.objectCount
         }
-        if (typeof result.objectCount === 'number') targetScan.detectionCount = result.objectCount
+        applyCompletedJobToWorld(currentJob, current)
+      } else if (result.status === 'skipped') {
+        currentJob.status = 'completed'
+        currentJob.result = `Splat detect skipped: ${result.manifest.skippedReason ?? 'unknown reason'}`
+        currentJob.artifacts = [{
+          type: 'splat-detect-skip',
+          label: 'Splat detection skipped',
+          url: `/scans/${encodeURIComponent(`${base}.splat-detect.manifest.json`)}`,
+          metadata: {
+            sessionId: sessionId ?? null,
+            skippedReason: result.manifest.skippedReason ?? null,
+            remediation: result.manifest.remediation ?? null,
+          },
+        }]
+      } else {
+        currentJob.status = 'failed'
+        currentJob.error = result.manifest.error ?? `splat-analyzer exit ${result.exitCode}`
+        currentJob.result = currentJob.error
       }
-      applyCompletedJobToWorld(currentJob, current)
-    } else if (result.status === 'skipped') {
-      currentJob.status = 'completed'
-      currentJob.result = `Splat detect skipped: ${result.manifest.skippedReason ?? 'unknown reason'}`
-      currentJob.artifacts = [{
-        type: 'splat-detect-skip',
-        label: 'Splat detection skipped',
-        url: `/scans/${encodeURIComponent(`${base}.splat-detect.manifest.json`)}`,
-        metadata: {
-          sessionId: sessionId ?? null,
-          skippedReason: result.manifest.skippedReason ?? null,
-          remediation: result.manifest.remediation ?? null,
-        },
-      }]
-    } else {
-      currentJob.status = 'failed'
-      currentJob.error = result.manifest.error ?? `splat-analyzer exit ${result.exitCode}`
-      currentJob.result = currentJob.error
-    }
-    currentJob.updatedAt = new Date().toISOString()
-    await saveWorld(current)
-    broadcast({ type: 'world-job-update', worldId: current.worldId, job: currentJob })
+      currentJob.updatedAt = new Date().toISOString()
+    })
   } catch (err) {
     console.error('[splat-detect job error]', err)
-    try {
-      const recovered = await loadWorld(slug)
-      const recoveredJob = recovered.jobs.find(j => j.jobId === jobId)
-      if (recoveredJob) {
-        recoveredJob.status = 'failed'
-        recoveredJob.error = err instanceof Error ? err.message : String(err)
-        recoveredJob.result = recoveredJob.error
-        recoveredJob.progress = 1
-        recoveredJob.updatedAt = new Date().toISOString()
-        await saveWorld(recovered)
-        broadcast({ type: 'world-job-update', worldId: recovered.worldId, job: recoveredJob })
-      }
-    } catch { /* nothing more we can do */ }
+    await failWorldJob(slug, jobId, errorMessage(err))
   }
 }
 
@@ -1996,84 +2829,47 @@ async function _runSplatDetectJob(slug: string, jobId: string): Promise<void> {
  */
 async function _runMemoryPushJob(slug: string, jobId: string): Promise<void> {
   try {
-    const world = await loadWorld(slug)
-    const job = world.jobs.find(j => j.jobId === jobId)
-    if (!job) return
-    const scan = scanForJob(job, world)
-    const failure = jobFailureReason(job, world)
-    if (failure) {
-      job.status = 'failed'
-      job.error = failure
-      job.result = failure
-      job.progress = 1
-      job.updatedAt = new Date().toISOString()
-      await saveWorld(world)
-      broadcast({ type: 'world-job-update', worldId: world.worldId, job })
-      return
-    }
+    const claimed = await claimJobScan(slug, jobId)
+    if (!claimed) return
+    const { scan } = claimed
 
-    const pushed = await pushScanToMemory(memoryPushCfg, scan!, { scansDir: SCANS_DIR })
+    const pushed = await pushScanToMemory(memoryPushCfg, scan, { scansDir: SCANS_DIR })
 
-    const current = await loadWorld(slug)
-    const currentJob = current.jobs.find(j => j.jobId === jobId)
-    if (!currentJob) return
-    currentJob.progress = 1
-    currentJob.status = 'completed'
-    currentJob.result = pushed.eventDuplicate > 0
-      ? 'Scan was already in Companion Memory — nothing to add.'
-      : jobResultFor(currentJob)
-    currentJob.artifacts = [{
-      type: 'memory-event',
-      label: `${scan!.name} in Companion Memory`,
-      metadata: {
-        sourceSystem: memoryPushCfg.sourceSystem,
-        sourceId: pushed.sourceId,
-        glbFileId: pushed.glbFileId,
-        glbSkippedReason: pushed.glbSkippedReason ?? null,
-        detectionCount: pushed.detectionCount,
-        ingested: pushed.eventIngested,
-        duplicate: pushed.eventDuplicate,
-      },
-    }]
-    currentJob.updatedAt = new Date().toISOString()
-    await saveWorld(current)
-    broadcast({ type: 'world-job-update', worldId: current.worldId, job: currentJob })
+    await commitWorldJob(slug, jobId, (currentJob) => {
+      currentJob.progress = 1
+      currentJob.status = 'completed'
+      currentJob.result = pushed.eventDuplicate > 0
+        ? 'Scan was already in Companion Memory — nothing to add.'
+        : jobResultFor(currentJob)
+      currentJob.artifacts = [{
+        type: 'memory-event',
+        label: `${scan.name} in Companion Memory`,
+        metadata: {
+          sourceSystem: memoryPushCfg.sourceSystem,
+          sourceId: pushed.sourceId,
+          glbFileId: pushed.glbFileId,
+          glbSkippedReason: pushed.glbSkippedReason ?? null,
+          detectionCount: pushed.detectionCount,
+          extentCount: pushed.extentCount,
+          ingested: pushed.eventIngested,
+          duplicate: pushed.eventDuplicate,
+        },
+      }]
+      currentJob.updatedAt = new Date().toISOString()
+    })
   } catch (err) {
     console.error('[memory-push] job failed:', err)
-    try {
-      const current = await loadWorld(slug)
-      const currentJob = current.jobs.find(j => j.jobId === jobId)
-      if (!currentJob) return
-      currentJob.status = 'failed'
-      currentJob.progress = 1
-      currentJob.error = err instanceof Error ? err.message : String(err)
-      currentJob.result = currentJob.error
-      currentJob.updatedAt = new Date().toISOString()
-      await saveWorld(current)
-      broadcast({ type: 'world-job-update', worldId: current.worldId, job: currentJob })
-    } catch { /* world unreadable — the error is already logged */ }
+    await failWorldJob(slug, jobId, errorMessage(err))
   }
 }
 
 async function _runSplatFinishJob(slug: string, jobId: string): Promise<void> {
   try {
-    const world = await loadWorld(slug)
-    const job = world.jobs.find(j => j.jobId === jobId)
-    if (!job) return
-    const scan = scanForJob(job, world)
-    const failure = jobFailureReason(job, world)
-    if (failure) {
-      job.status = 'failed'
-      job.error = failure
-      job.result = failure
-      job.progress = 1
-      job.updatedAt = new Date().toISOString()
-      await saveWorld(world)
-      broadcast({ type: 'world-job-update', worldId: world.worldId, job })
-      return
-    }
+    const claimed = await claimJobScan(slug, jobId)
+    if (!claimed) return
+    const { scan } = claimed
 
-    const base = scan!.filename.replace(/\.glb$/, '')
+    const base = scan.filename.replace(/\.glb$/, '')
     const splatPlyPath = `${SCANS_DIR}/${base}.splat.ply`
     const outputSogPath = `${SCANS_DIR}/${base}.sog`
     const outputCompressedPlyPath = `${SCANS_DIR}/${base}.compressed.ply`
@@ -2083,67 +2879,298 @@ async function _runSplatFinishJob(slug: string, jobId: string): Promise<void> {
       outputSogPath,
       outputCompressedPlyPath,
       manifestPath,
-      provenance: { sessionId: scan!.sessionId ?? undefined, scanId: scan!.scanId },
+      provenance: { sessionId: scan.sessionId ?? undefined, scanId: scan.scanId },
     })
 
-    const current = await loadWorld(slug)
-    const currentJob = current.jobs.find(j => j.jobId === jobId)
-    if (!currentJob) return
-    currentJob.progress = 1
-    if (result.status === 'ok') {
-      currentJob.status = 'completed'
-      currentJob.result = jobResultFor(currentJob)
-      currentJob.artifacts = jobArtifactsFor(currentJob, current)
-      currentJob.artifacts ??= []
-      currentJob.artifacts.push({
-        type: 'splat-sog',
-        label: `${scan!.name} web-optimized splat (.sog)`,
-        url: `/scans/${encodeURIComponent(`${base}.sog`)}`,
-        metadata: {
-          inputBytes: result.sizes?.inputBytes ?? null,
-          sogBytes: result.sizes?.sogBytes ?? null,
-          compressedBytes: result.sizes?.compressedBytes ?? null,
-          compressedPlyUrl: `/scans/${encodeURIComponent(`${base}.compressed.ply`)}`,
-          manifestUrl: `/scans/${encodeURIComponent(`${base}.splat-finish.manifest.json`)}`,
-        },
-      })
-      applyCompletedJobToWorld(currentJob, current)
-    } else if (result.status === 'skipped') {
-      currentJob.status = 'completed'
-      currentJob.result = `Splat finish skipped: ${result.manifest.skippedReason ?? 'unknown reason'}`
-      currentJob.artifacts = [{
-        type: 'splat-finish-skip',
-        label: 'Splat finish skipped',
-        url: `/scans/${encodeURIComponent(`${base}.splat-finish.manifest.json`)}`,
-        metadata: {
-          skippedReason: result.manifest.skippedReason ?? null,
-          remediation: result.manifest.remediation ?? null,
-        },
-      }]
-    } else {
-      currentJob.status = 'failed'
-      currentJob.error = result.manifest.error ?? `splat-transform exit ${result.exitCode}`
-      currentJob.result = currentJob.error
-    }
-    currentJob.updatedAt = new Date().toISOString()
-    await saveWorld(current)
-    broadcast({ type: 'world-job-update', worldId: current.worldId, job: currentJob })
+    await commitWorldJob(slug, jobId, (currentJob, current) => {
+      currentJob.progress = 1
+      if (result.status === 'ok') {
+        currentJob.status = 'completed'
+        currentJob.result = jobResultFor(currentJob)
+        currentJob.artifacts = jobArtifactsFor(currentJob, current)
+        currentJob.artifacts ??= []
+        currentJob.artifacts.push({
+          type: 'splat-sog',
+          label: `${scan.name} web-optimized splat (.sog)`,
+          url: `/scans/${encodeURIComponent(`${base}.sog`)}`,
+          metadata: {
+            inputBytes: result.sizes?.inputBytes ?? null,
+            sogBytes: result.sizes?.sogBytes ?? null,
+            compressedBytes: result.sizes?.compressedBytes ?? null,
+            compressedPlyUrl: `/scans/${encodeURIComponent(`${base}.compressed.ply`)}`,
+            manifestUrl: `/scans/${encodeURIComponent(`${base}.splat-finish.manifest.json`)}`,
+          },
+        })
+        applyCompletedJobToWorld(currentJob, current)
+      } else if (result.status === 'skipped') {
+        currentJob.status = 'completed'
+        currentJob.result = `Splat finish skipped: ${result.manifest.skippedReason ?? 'unknown reason'}`
+        currentJob.artifacts = [{
+          type: 'splat-finish-skip',
+          label: 'Splat finish skipped',
+          url: `/scans/${encodeURIComponent(`${base}.splat-finish.manifest.json`)}`,
+          metadata: {
+            skippedReason: result.manifest.skippedReason ?? null,
+            remediation: result.manifest.remediation ?? null,
+          },
+        }]
+      } else {
+        currentJob.status = 'failed'
+        currentJob.error = result.manifest.error ?? `splat-transform exit ${result.exitCode}`
+        currentJob.result = currentJob.error
+      }
+      currentJob.updatedAt = new Date().toISOString()
+    })
   } catch (err) {
     console.error('[splat-finish job error]', err)
-    try {
-      const recovered = await loadWorld(slug)
-      const recoveredJob = recovered.jobs.find(j => j.jobId === jobId)
-      if (recoveredJob) {
-        recoveredJob.status = 'failed'
-        recoveredJob.error = err instanceof Error ? err.message : String(err)
-        recoveredJob.result = recoveredJob.error
-        recoveredJob.progress = 1
-        recoveredJob.updatedAt = new Date().toISOString()
-        await saveWorld(recovered)
-        broadcast({ type: 'world-job-update', worldId: recovered.worldId, job: recoveredJob })
-      }
-    } catch { /* nothing more we can do */ }
+    await failWorldJob(slug, jobId, errorMessage(err))
   }
+}
+
+/**
+ * Runs `pipeline.ts`'s `optimizeScan()` on a stored .glb and writes the same
+ * three artifact files `jobs.ts`'s `JobQueue._runOptimize()` always has:
+ *   <base>.opt.glb            quantized (+Draco) full-quality scan
+ *   <base>.lodN.glb           voxel-downsampled point-cloud previews
+ *   <base>.manifest.json      artifact index + stats + per-stage log
+ * Ported near-verbatim from `_runOptimize()` (jobs.ts) — same filenames, same
+ * manifest shape, same content — only the caller changed (ADR 0003
+ * "optimize-scan", ticket 01-merge-jobs/0003). Unlike every other `_run*Job`,
+ * this type has no associated scan: `optimize-scan` `WorldJob`s carry their
+ * target in `payload.filename` (mirroring `Job.target`), not `scanId` — see
+ * `enqueueOptimizeScanJob` — so this function doesn't use `scanForJob`/
+ * `jobFailureReason`, which are keyed on `job.scanId`.
+ */
+async function _runOptimizeScanJob(slug: string, jobId: string): Promise<void> {
+  try {
+    // Read-only: this job's target. `failWorldJob` no-ops if the job is gone.
+    const world = await loadWorld(slug)
+    const filename = objectKey(world.jobs.find(j => j.jobId === jobId)?.payload?.['filename'])
+    if (!filename) {
+      await failWorldJob(slug, jobId, 'optimize-scan requires payload.filename.')
+      return
+    }
+
+    // ── Ported near-verbatim from jobs.ts's JobQueue._runOptimize() ──────────
+    const sourcePath = `${SCANS_DIR}/${filename}`
+    const glb = await Deno.readFile(sourcePath)
+    console.log(`[world-jobs] optimizing ${filename} (${(glb.byteLength / 1024).toFixed(0)} KB)`)
+
+    // Stamp the one provenance field the client cannot know. Derived from the
+    // filename rather than looked up in world.scans: since 07-scan-identity/0001
+    // `scanManifestFromStored` sets `scanId = scanIdFor(filename)`, so the two
+    // are identical by construction — and deriving also works in the window
+    // between an upload and `refreshWorldScans` adding the entry, where a
+    // lookup would find nothing and silently stamp nothing.
+    const result = await optimizeScan(glb, { provenance: { scanId: scanIdFor(filename) } })
+    const base = filename.replace(/\.glb$/, '')
+
+    const optimizedName = `${base}.opt.glb`
+    await Deno.writeFile(`${SCANS_DIR}/${optimizedName}`, result.optimized.bytes)
+
+    // pipeline returns coarsest-first; name finest as lod1, coarser as lod2…
+    const lodEntries: OptimizeScanManifest['artifacts']['lods'] = []
+    const finestFirst = [...result.lods].sort((a, b) => (a.voxelM ?? 0) - (b.voxelM ?? 0))
+    for (let i = 0; i < finestFirst.length; i++) {
+      const lod = finestFirst[i]
+      const lodFilename = `${base}.lod${i + 1}.glb`
+      await Deno.writeFile(`${SCANS_DIR}/${lodFilename}`, lod.bytes)
+      lodEntries.push({
+        filename: lodFilename,
+        bytes: lod.bytes.byteLength,
+        points: lod.points ?? 0,
+        voxelM: lod.voxelM ?? 0,
+      })
+    }
+    lodEntries.sort((a, b) => b.voxelM - a.voxelM) // coarsest first for the manifest
+
+    const manifest: OptimizeScanManifest = {
+      source: filename,
+      createdAt: new Date().toISOString(),
+      stats: result.stats as unknown as Record<string, number>,
+      stages: result.stages,
+      artifacts: {
+        optimized: {
+          filename: optimizedName,
+          bytes: result.optimized.bytes.byteLength,
+          draco: result.optimized.draco,
+          quantized: result.optimized.quantized,
+        },
+        lods: lodEntries,
+      },
+    }
+    await Deno.writeTextFile(
+      `${SCANS_DIR}/${base}.manifest.json`,
+      JSON.stringify(manifest, null, 2),
+    )
+
+    const ratio = result.optimized.bytes.byteLength / glb.byteLength
+    const note = `${(glb.byteLength / 1024).toFixed(0)} KB → ${(result.optimized.bytes.byteLength / 1024).toFixed(0)} KB (${Math.round(ratio * 100)}%)` +
+      (lodEntries.length ? ` + ${lodEntries.length} LODs` : '')
+    console.log(`[world-jobs] ${filename}: ${note}`)
+    // ── End ported section ────────────────────────────────────────────────
+
+    await commitWorldJob(slug, jobId, (currentJob) => {
+      currentJob.status = 'completed'
+      currentJob.result = note // Job.note → WorldJob.result, per ADR 0003's field mapping
+      currentJob.artifacts = [
+        {
+          type: 'optimized-glb',
+          label: `${filename} optimized (.opt.glb)`,
+          url: `/scans/${encodeURIComponent(optimizedName)}`,
+          metadata: {
+            bytes: result.optimized.bytes.byteLength,
+            draco: result.optimized.draco,
+            quantized: result.optimized.quantized,
+          },
+        },
+        ...lodEntries.map(lod => ({
+          type: 'optimized-lod',
+          label: `${filename} LOD (${lod.filename})`,
+          url: `/scans/${encodeURIComponent(lod.filename)}`,
+          metadata: { bytes: lod.bytes, points: lod.points, voxelM: lod.voxelM },
+        })),
+        {
+          type: 'optimize-manifest',
+          label: `${filename} optimization manifest`,
+          url: `/scans/${encodeURIComponent(`${base}.manifest.json`)}`,
+        },
+      ]
+      currentJob.progress = 1
+      currentJob.updatedAt = new Date().toISOString()
+    })
+  } catch (err) {
+    console.error('[optimize-scan] job failed:', err)
+    await failWorldJob(slug, jobId, errorMessage(err))
+  }
+}
+
+/** Mark a job failed in place — the status/error/result/progress/updatedAt set every runner writes. */
+function markJobFailed(job: WorldJob, reason: string): WorldJob {
+  job.status = 'failed'
+  job.error = reason
+  job.result = reason
+  job.progress = 1
+  job.updatedAt = new Date().toISOString()
+  return job
+}
+
+/**
+ * The opening move every scan-backed `_run*Job` makes, as one mutation:
+ * find the job, and either hand back its scan or mark it failed in place.
+ * Returns `null` when the job is gone (nothing to broadcast), `ok: false`
+ * when it was just failed (caller broadcasts and returns). Must be called
+ * from inside an `updateWorld` mutator — it mutates `world`.
+ */
+function claimScanJob(
+  world: WorldProject,
+  jobId: string,
+  preflight: JobPreflight = {},
+): { ok: true; job: WorldJob; scan: ScanManifest } | { ok: false; job: WorldJob } | null {
+  const job = world.jobs.find(j => j.jobId === jobId)
+  if (!job) return null
+  const failure = jobFailureReason(job, world, preflight)
+  if (failure) return { ok: false, job: markJobFailed(job, failure) }
+  // jobFailureReason already rejected every scan-backed type without a scan.
+  return { ok: true, job, scan: scanForJob(job, world)! }
+}
+
+/**
+ * Locked start step for the scan-backed runners that don't need a session
+ * directory (splat-detect, splat-finish, memory-push): claim the job and hand
+ * back its scan (plus its payload, which splat-detect reads its tuning knobs
+ * from), or mark it failed and broadcast. `null` means "stop here".
+ */
+async function claimJobScan(
+  slug: string,
+  jobId: string,
+): Promise<{ scan: ScanManifest; payload: WorldJob['payload'] } | null> {
+  const preflight = await keyframePreflight(slug, jobId)
+  const { world, value: claimed } = await updateWorld(slug, (world) => claimScanJob(world, jobId, preflight))
+  if (!claimed) return null
+  if (!claimed.ok) {
+    broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job: claimed.job })
+    return null
+  }
+  return { scan: claimed.scan, payload: claimed.job.payload }
+}
+
+/**
+ * Locked start step for the session-backed runners (lingbot-map-reconstruct,
+ * splat-train): the above plus resolving the scan's keyframe session
+ * directory, which is its own failure the two shared verbatim.
+ */
+async function claimSessionJob(
+  slug: string,
+  jobId: string,
+): Promise<{ scan: ScanManifest; sessionId: string; sessionPath: string; payload: WorldJob['payload'] } | null> {
+  const preflight = await keyframePreflight(slug, jobId)
+  const { world, value: start } = await updateWorld(slug, (world) => {
+    const claimed = claimScanJob(world, jobId, preflight)
+    if (!claimed?.ok) return claimed
+    // Reached only when preflight already proved the directory exists, so this
+    // is the shape resolver: it builds the path rather than re-proving it.
+    const sessionPath = claimed.scan.sessionId ? sessionDir(claimed.scan.sessionId) : null
+    if (!sessionPath) {
+      return {
+        ok: false as const,
+        job: markJobFailed(claimed.job, `Invalid session id: ${claimed.scan.sessionId}`),
+      }
+    }
+    return { ok: true as const, job: claimed.job, scan: claimed.scan, sessionPath }
+  })
+  if (!start) return null
+  if (!start.ok) {
+    broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job: start.job })
+    return null
+  }
+  return { scan: start.scan, sessionId: start.scan.sessionId!, sessionPath: start.sessionPath, payload: start.job.payload }
+}
+
+/**
+ * How every `_run*Job` records a job transition: re-find the job in a fresh,
+ * locked snapshot (the one the runner loaded before the worker ran is stale
+ * by now), apply `mutate`, persist, then broadcast. Returns false when the
+ * job has vanished — nothing was written or broadcast.
+ *
+ * Broadcasting after the lock is released, never inside `mutate`, keeps the
+ * save-before-broadcast ordering every transition in this file follows.
+ *
+ * Returns whatever `mutate` returned (`null` if the job was gone), which is
+ * how a runner gets a follow-on job id back out of the critical section
+ * without capturing a `let` across it.
+ */
+async function commitWorldJob<T>(
+  slug: string,
+  jobId: string,
+  mutate: (job: WorldJob, world: WorldProject) => T,
+): Promise<T | null> {
+  const { world, value } = await updateWorld(slug, (world) => {
+    const job = world.jobs.find(j => j.jobId === jobId)
+    if (!job) return null
+    return { job, out: mutate(job, world) }
+  })
+  if (!value) return null
+  broadcast({ type: EVENT.WORLD_JOB_UPDATE, worldId: world.worldId, job: value.job })
+  // No-op for every type but optimize-scan (ticket 0004's paired events).
+  broadcastLegacyJobUpdate(value.job)
+  return value.out
+}
+
+/**
+ * Terminal failure path shared by every `_run*Job`'s catch block. Swallows
+ * its own errors — it is already the error path, and the original failure has
+ * been logged by the caller.
+ */
+async function failWorldJob(slug: string, jobId: string, reason: string): Promise<void> {
+  try {
+    await commitWorldJob(slug, jobId, (job) => { markJobFailed(job, reason) })
+  } catch { /* nothing more we can do */ }
+}
+
+/** The message `failWorldJob` records for a thrown error. */
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }
 
 function scanForJob(job: WorldJob, world: WorldProject): ScanManifest | null {
@@ -2151,7 +3178,47 @@ function scanForJob(job: WorldJob, world: WorldProject): ScanManifest | null {
   return world.scans.find(scan => scan.scanId === job.scanId || scan.filename === job.scanId) ?? null
 }
 
-function jobFailureReason(job: WorldJob, world: WorldProject): string | null {
+/** The job types that cannot run without RGB keyframe observations. */
+const KEYFRAME_JOB_TYPES = ['depth-reconstruct', 'lingbot-map-reconstruct', 'splat-train']
+
+/**
+ * Filesystem facts `jobFailureReason` needs but must not look up itself.
+ *
+ * It runs inside `updateWorld` mutators, and ADR 0004 keeps I/O out of that
+ * critical section — so existence is resolved by `keyframePreflight()` before
+ * the lock is taken and passed in. Absent means "not resolved", which falls
+ * back to the shape-only check rather than inventing a verdict.
+ */
+interface JobPreflight {
+  /** Whether the scan's keyframe session directory is present on disk. */
+  keyframeDirExists?: boolean
+}
+
+/**
+ * Resolve the filesystem half of a job's preflight, outside the world lock.
+ *
+ * Reads one locked snapshot, then stats — so the answer is a snapshot older
+ * than the write that consumes it. That staleness is benign: it can only make
+ * preflight miss a directory that vanished in the last instant, and the runner
+ * still fails on it. What it buys is the failure landing at preflight, with
+ * the actionable message, for the case that actually happens — an id that was
+ * never a server session at all.
+ */
+async function keyframePreflight(slug: string, jobId: string): Promise<JobPreflight> {
+  try {
+    const world = await loadWorld(slug)
+    const job = world.jobs.find(j => j.jobId === jobId)
+    if (!job || !KEYFRAME_JOB_TYPES.includes(job.type)) return {}
+    const scan = scanForJob(job, world)
+    if (!scan?.sessionId) return {}
+    return { keyframeDirExists: await resolveSessionDirFor(scan.sessionId) !== null }
+  } catch {
+    // A preflight hint is never worth failing a dispatch over.
+    return {}
+  }
+}
+
+function jobFailureReason(job: WorldJob, world: WorldProject, preflight: JobPreflight = {}): string | null {
   const scan = scanForJob(job, world)
   if (['align-scan', 'extract-layers', 'semantic-pass', 'depth-reconstruct', 'lingbot-map-reconstruct', 'splat-train', 'splat-detect', 'splat-finish', 'memory-push'].includes(job.type) && !scan) {
     return `${job.type} requires a selected scan.`
@@ -2159,7 +3226,12 @@ function jobFailureReason(job: WorldJob, world: WorldProject): string | null {
   if (job.type === 'memory-push' && !memoryPushCfg.enabled) {
     return 'Companion Memory is not connected. Connect it from the Hub, or set CI_SERVER_URL and CI_SERVER_TOKEN.'
   }
-  if ((job.type === 'depth-reconstruct' || job.type === 'lingbot-map-reconstruct' || job.type === 'splat-train') && scan && !scan.sessionId) {
+  // A sessionId that names no directory is not a session. Until this checked
+  // existence, the guard was defeated by its own truthiness: the id was a
+  // non-empty string, so preflight passed and the job failed later inside the
+  // runner, where the message is about a missing path instead of about the
+  // thing the user can actually do something about.
+  if (KEYFRAME_JOB_TYPES.includes(job.type) && scan && (!scan.sessionId || preflight.keyframeDirExists === false)) {
     return `${job.type} requires RGB keyframe observations. Start keyframe streaming before export.`
   }
   if (job.type === 'align-scan' && world.scans.length < 2) {
@@ -2187,6 +3259,9 @@ function applyCompletedJobToWorld(job: WorldJob, world: WorldProject): void {
   else if (job.type === 'splat-finish') {
     scan.status = scan.qualitySummary?.status ?? 'ready'
   }
+  else if (job.type === 'sensenova-vision') {
+    scan.status = scan.qualitySummary?.status ?? 'ready'
+  }
 }
 
 function jobResultFor(job: WorldJob): string {
@@ -2203,6 +3278,8 @@ function jobResultFor(job: WorldJob): string {
       return 'Semantic pass queued through the local coordinator. Server masks/detections can attach to this job artifact.'
     case 'depth-reconstruct':
       return 'Depth reconstruction inputs validated. Depth Anything or WebXR depth artifacts can attach here.'
+    case 'thing-correspondence':
+      return 'Thing correspondence resolved scan observations into durable cross-session objects.'
     case 'lingbot-map-reconstruct':
       return 'LingBot-Map streaming reconstruction complete. Point cloud + per-frame poses written to the session.'
     case 'splat-train':
@@ -2211,10 +3288,19 @@ function jobResultFor(job: WorldJob): string {
       return 'Splat scene detected with splat-analyzer. The .interactions.json sidecar carries 3D object boxes.'
     case 'splat-finish':
       return 'Splat finished with splat-transform. The web-optimized .sog and .compressed.ply sidecars are ready for delivery.'
+    case 'sensenova-vision':
+      return 'SenseNova-Vision processed the scan keyframes and wrote task-specific visual geometry artifacts.'
     case 'memory-push':
       return 'Scan pushed to Companion Memory as a capture.scan event with the GLB attached.'
     case 'export-world':
       return 'World export manifest is ready for a combined GLB and semantic JSON worker.'
+    case 'optimize-scan':
+      // Dead branch at runtime: _runOptimizeScanJob always sets
+      // currentJob.result itself (the size-reduction note, ADR 0003's
+      // Job.note → WorldJob.result mapping) and never calls jobResultFor —
+      // present only so this switch stays exhaustive under `deno check`
+      // now that WorldJobType includes 'optimize-scan'.
+      return 'Scan optimized: quantized (+Draco) GLB and coarse-to-fine LOD previews written.'
   }
 }
 
@@ -2251,6 +3337,12 @@ function jobArtifactsFor(job: WorldJob, world: WorldProject): WorldJob['artifact
         url: scan.frameSetUrl,
         metadata: { sessionId: scan.sessionId, keyframes: scan.qualitySummary?.keyframeCount ?? null },
       }] : []
+    case 'thing-correspondence':
+      return [{
+        type: 'thing-correspondence-plan',
+        label: `${world.name} thing correspondence inputs`,
+        metadata: { scans: world.scans.length, observations: world.thingObservations?.length ?? 0 },
+      }]
     case 'lingbot-map-reconstruct': {
       if (!scan || !scan.sessionId) return []
       const sessionId = scan.sessionId
@@ -2291,6 +3383,12 @@ function jobArtifactsFor(job: WorldJob, world: WorldProject): WorldJob['artifact
         label: `${scan.name} splat finish inputs`,
         metadata: { sessionId: scan.sessionId, canonicalLayer: 'splat' },
       }] : []
+    case 'sensenova-vision':
+      return scan ? [{
+        type: 'sensenova-plan',
+        label: `${scan.name} SenseNova inputs`,
+        metadata: { sessionId: scan.sessionId, task: job.payload?.['task'] ?? 'recon3d' },
+      }] : []
     case 'export-world':
       return [{
         type: 'world-export-plan',
@@ -2300,6 +3398,8 @@ function jobArtifactsFor(job: WorldJob, world: WorldProject): WorldJob['artifact
       }]
     case 'ingest':
     case 'merge-points':
+    case 'memory-push':
+    case 'optimize-scan':
       return scan ? [{
         type: `${job.type}-report`,
         label: `${scan.name} ${job.type} report`,
@@ -2310,13 +3410,25 @@ function jobArtifactsFor(job: WorldJob, world: WorldProject): WorldJob['artifact
 
 async function frameObservationsForScan(scan: ScanManifest, limit = 500): Promise<FrameObservation[]> {
   if (!scan.sessionId) return []
-  const dir = sessionDir(scan.sessionId)
-  if (!dir) return []
+
+  // "No such session" and "a session that streamed nothing" both used to
+  // return [] silently, which is how four scans pointing at a directory that
+  // was never created looked exactly like four scans with no keyframes. They
+  // are different failures and only one of them is a bug, so say which.
+  const dir = await resolveSessionDirFor(scan.sessionId)
+  if (!dir) {
+    console.warn(
+      `[frames] scan ${scan.scanId} names session '${scan.sessionId}', which has no directory under ` +
+      `${SESSIONS_DIR}. Its keyframes are unreachable — the id is stale or was never a server session.`,
+    )
+    return []
+  }
 
   let raw = ''
   try {
     raw = await Deno.readTextFile(`${dir}/keyframes.jsonl`)
   } catch {
+    // The session exists and simply streamed nothing. Not an error.
     return []
   }
 
@@ -2392,6 +3504,7 @@ function normaliseIntrinsics(value: unknown): FrameObservation['intrinsics'] {
 
 app.get('/worlds', async (c) => {
   const worlds: WorldProject[] = []
+  const stored = await listStoredScans().catch(() => [])
   try {
     for await (const entry of Deno.readDir(WORLDS_DIR)) {
       if (!entry.isFile || !entry.name.endsWith('.json')) continue
@@ -2406,25 +3519,28 @@ app.get('/worlds', async (c) => {
     worldId: w.worldId,
     name: w.name,
     shareSlug: w.shareSlug,
+    projectId: w.projectId ?? null,
     scanCount: w.scans.length,
+    scanCountTotal: stored.filter(scan => shouldIncludeStoredScanInWorld(w.projectId ?? null, scan, shouldIncludeInWorld, new Set(w.scans.map(s => s.filename)))).length,
     jobCount: w.jobs.length,
     updatedAt: w.updatedAt,
   })))
 })
 
 app.post('/worlds', async (c) => {
-  const body = await c.req.json().catch(() => ({})) as { name?: string; shareSlug?: string }
+  const body = await c.req.json().catch(() => ({})) as { name?: string; shareSlug?: string; projectId?: string | null }
   const slug = safeSlug(body.shareSlug ?? body.name ?? `world-${Date.now()}`)
   const existingPath = worldPath(slug)
   try {
     await Deno.stat(existingPath)
     return c.json({ error: 'World already exists', shareSlug: slug }, 409)
   } catch { /* create */ }
-  const world = await synthesizeWorld(slug)
-  if (body.name?.trim()) {
-    world.name = body.name.trim()
-    await saveWorld(world)
-  }
+  const { world } = await updateWorld(slug, (world) => {
+    // synthesizeWorld already wrote the file; renaming it is a second cycle,
+    // so it goes through the lock like every other world mutation.
+    if (body.name?.trim()) world.name = body.name.trim()
+    if (body.projectId !== undefined) world.projectId = body.projectId
+  })
   return c.json(world, 201)
 })
 
@@ -2451,34 +3567,87 @@ app.get('/worlds/:slug/patches', async (c) => {
 })
 
 app.post('/worlds/:slug/patches', async (c) => {
-  const world = await loadWorld(c.req.param('slug'))
-  const denied = denyUnlessWorldRole(c, world, 'editor')
+  const slug = c.req.param('slug')
+  const authWorld = await loadWorld(slug)
+  const denied = denyUnlessWorldRole(c, authWorld, 'editor')
   if (denied) return denied
+  const actor = activeMemberForToken(authWorld, requestToken(c))
   const body = await c.req.json().catch(() => ({})) as Partial<EditPatch>
   const targetId = objectKey(body.targetId)
   if (!targetId) return c.json({ error: 'targetId is required' }, 400)
   const scope = body.scope ?? 'object'
-  if (!['scan', 'object', 'point-selection', 'layer', 'world'].includes(scope)) {
+  if (!['scan', 'object', 'point-selection', 'layer', 'world', 'thing'].includes(scope)) {
     return c.json({ error: 'Invalid patch scope' }, 400)
   }
-  const patch: EditPatch = {
-    patchId: `patch-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
-    worldId: world.worldId,
-    scanId: objectKey(body.scanId) ?? undefined,
-    targetId,
-    scope,
-    transform: body.transform,
-    label: objectKey(body.label) ?? undefined,
-    category: objectKey(body.category) ?? undefined,
-    notes: objectKey(body.notes) ?? undefined,
-    visible: typeof body.visible === 'boolean' ? body.visible : undefined,
-    actorId: objectKey(body.actorId) ?? 'local-editor',
-    createdAt: new Date().toISOString(),
-  }
-  world.editPatches.push(patch)
-  applyPatchToWorld(world, patch)
-  await saveWorld(world)
+  const { world, value: patch } = await updateWorld(slug, (world) => {
+    const patch: EditPatch = {
+      patchId: `patch-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
+      worldId: world.worldId,
+      scanId: objectKey(body.scanId) ?? undefined,
+      targetId,
+      scope,
+      transform: body.transform,
+      label: objectKey(body.label) ?? undefined,
+      category: objectKey(body.category) ?? undefined,
+      notes: objectKey(body.notes) ?? undefined,
+      visible: typeof body.visible === 'boolean' ? body.visible : undefined,
+      actorId: actor?.memberId ?? 'local-editor',
+      originTargetId: objectKey(body.originTargetId) ?? undefined,
+      createdAt: new Date().toISOString(),
+    }
+    world.editPatches.push(patch)
+    applyPatchToWorld(world, patch)
+    return patch
+  })
   return c.json({ ok: true, patch, world })
+})
+
+// ── Place review comments ───────────────────────────────────────────────────
+// Comments intentionally have their own immutable collection rather than being
+// overloaded into EditPatch notes. A commenter may review a scan without being
+// able to alter geometry, processing, or semantic source data.
+app.get('/worlds/:slug/comments', async (c) => {
+  const world = await loadWorld(c.req.param('slug'))
+  const denied = denyUnlessWorldRole(c, world, 'viewer', { allowAnonymous: true })
+  if (denied) return denied
+  return c.json([...(world.comments ?? [])].sort((a, b) => b.createdAt.localeCompare(a.createdAt)))
+})
+
+app.post('/worlds/:slug/comments', async (c) => {
+  const slug = c.req.param('slug')
+  const authWorld = await loadWorld(slug)
+  const denied = denyUnlessWorldRole(c, authWorld, 'commenter')
+  if (denied) return denied
+  const actor = activeMemberForToken(authWorld, requestToken(c))
+  const body = await c.req.json().catch(() => ({})) as Partial<ReviewComment>
+  const text = typeof body.body === 'string' ? body.body.trim() : ''
+  if (!text) return c.json({ error: 'Comment text is required' }, 400)
+  if (text.length > 4_000) return c.json({ error: 'Comment must be 4,000 characters or fewer' }, 400)
+  const scanId = objectKey(body.scanId) ?? null
+  const thingId = objectKey(body.thingId) ?? null
+  const areaId = objectKey(body.areaId) ?? null
+  if (scanId && !authWorld.scans.some(scan => scan.scanId === scanId)) {
+    return c.json({ error: 'Scan not found in this Place' }, 404)
+  }
+  if (thingId && !authWorld.things.some(thing => thing.thingId === thingId)) {
+    return c.json({ error: 'Thing not found in this Place' }, 404)
+  }
+  const { value: comment } = await updateWorld(slug, (world) => {
+    const comment: ReviewComment = {
+      commentId: `comment-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
+      worldId: world.worldId,
+      body: text,
+      scanId,
+      thingId,
+      areaId,
+      actorId: actor?.memberId ?? 'local-commenter',
+      actorRole: actor?.role ?? 'local',
+      createdAt: new Date().toISOString(),
+    }
+    ;(world.comments ??= []).push(comment)
+    return comment
+  })
+  return c.json(comment, 201)
 })
 
 app.get('/worlds/:slug/jobs', async (c) => {
@@ -2490,8 +3659,7 @@ app.get('/worlds/:slug/jobs', async (c) => {
 
 app.post('/worlds/:slug/jobs', async (c) => {
   const slug = c.req.param('slug')
-  const world = await loadWorld(slug)
-  const denied = denyUnlessWorldRole(c, world, 'editor')
+  const denied = denyUnlessWorldRole(c, await loadWorld(slug), 'editor')
   if (denied) return denied
   const body = await c.req.json().catch(() => ({})) as {
     type?: WorldJobType
@@ -2502,9 +3670,7 @@ app.post('/worlds/:slug/jobs', async (c) => {
   if (!type || !WORLD_JOB_TYPES.has(type)) {
     return c.json({ error: `type must be one of ${[...WORLD_JOB_TYPES].join(', ')}` }, 400)
   }
-  const job = createWorldJob(world, type, body.scanId, body.payload)
-  world.jobs.unshift(job)
-  await saveWorld(world)
+  const { value: job } = await updateWorld(slug, (world) => createWorldJob(world, type, body.scanId, body.payload))
   await completeJobSoon(slug, job.jobId)
   return c.json(job, 202)
 })
@@ -2689,23 +3855,93 @@ app.post('/process-scan', async (c) => {
 
 // ── Project management (in-memory, persisted to projects.json) ────────────────
 
-interface ProjectRecord {
-  projectId: string
-  name: string
-  address?: string
-  notes?: string
-  createdAt: number
-  updatedAt: number
-  floors: unknown[]
+type ProjectRecord = Project
+
+function isPlaceType(value: unknown): value is NonNullable<ProjectRecord['placeType']> {
+  return value === 'building' || value === 'floor' || value === 'room' || value === 'other'
+}
+
+const DEFAULT_PROJECT: ProjectRecord = {
+  projectId: 'proj-default',
+  name: 'Unassigned',
+  createdAt: 0,
+  updatedAt: 0,
+  floors: [{ floorId: 'floor-default', name: 'Ground Floor', level: 0, rooms: [] }],
+  areas: [{ areaId: 'area-default', name: 'Unassigned', kind: 'site', parentAreaId: null }],
 }
 
 const PROJECTS_FILE = Deno.env.get('PROJECTS_FILE') ?? './projects.json'
 let projectMutationQueue: Promise<void> = Promise.resolve()
 
+/**
+ * Existing records stored only floors and rooms. Surface them as a stable Area
+ * graph at the API boundary, keeping old captures usable while new UI writes
+ * use the more flexible place-area vocabulary.
+ */
+function withDerivedAreas(project: ProjectRecord): ProjectRecord {
+  if (project.areas && project.areas.length > 0) return project
+  const rootAreaId = `area-${project.projectId}`
+  const areas: NonNullable<ProjectRecord['areas']> = [{
+    areaId: rootAreaId,
+    name: project.name,
+    kind: 'site',
+    parentAreaId: null,
+  }]
+  for (const floor of project.floors) {
+    const floorAreaId = `area-${floor.floorId}`
+    areas.push({
+      areaId: floorAreaId,
+      name: floor.name,
+      kind: 'floor',
+      parentAreaId: rootAreaId,
+      floorId: floor.floorId,
+    })
+    for (const room of floor.rooms) {
+      areas.push({
+        areaId: `area-${room.roomId}`,
+        name: room.name,
+        kind: 'room',
+        parentAreaId: floorAreaId,
+        floorId: floor.floorId,
+        roomId: room.roomId,
+      })
+    }
+  }
+  return { ...project, areas }
+}
+
+/** Reject missing parents and loops before persisting the cross-Place tree. */
+function projectHierarchyError(
+  projects: ProjectRecord[],
+  projectId: string,
+  parentProjectId: string | null | undefined,
+): string | null {
+  if (!parentProjectId) return null
+  if (parentProjectId === projectId) return 'A Place cannot contain itself.'
+
+  const byId = new Map(projects.map(project => [project.projectId, project]))
+  let cursor = parentProjectId
+  const visited = new Set<string>()
+  while (cursor) {
+    if (cursor === projectId) return 'A Place cannot be linked below one of its descendants.'
+    if (visited.has(cursor)) return 'The selected parent hierarchy contains a cycle.'
+    visited.add(cursor)
+    const parent = byId.get(cursor)
+    if (!parent) return 'The selected upper-level Place no longer exists.'
+    cursor = parent.parentProjectId ?? ''
+  }
+  return null
+}
+
 async function loadProjects(): Promise<ProjectRecord[]> {
+  let projects: ProjectRecord[] = []
   try {
-    return JSON.parse(await Deno.readTextFile(PROJECTS_FILE)) as ProjectRecord[]
-  } catch { return [] }
+    projects = JSON.parse(await Deno.readTextFile(PROJECTS_FILE)) as ProjectRecord[]
+  } catch { /* no registry yet */ }
+  if (!projects.some(project => project.projectId === DEFAULT_PROJECT.projectId)) {
+    projects.unshift({ ...DEFAULT_PROJECT, floors: DEFAULT_PROJECT.floors.map(floor => ({ ...floor, rooms: [...floor.rooms] })) })
+  }
+  return projects.map(withDerivedAreas)
 }
 
 async function saveProjects(projects: ProjectRecord[]): Promise<void> {
@@ -2736,26 +3972,49 @@ app.get('/projects', async (c) => {
 app.post('/projects', async (c) => {
   const body = await c.req.json().catch(() => ({})) as {
     name?: string
+    placeType?: ProjectRecord['placeType']
+    parentProjectId?: string | null
     address?: string
     notes?: string
+    geoPose?: ProjectRecord['geoPose']
   }
   if (!body.name?.trim()) return c.json({ error: 'name is required' }, 400)
+  if (body.placeType !== undefined && !isPlaceType(body.placeType)) {
+    return c.json({ error: 'placeType must be building, floor, room, or other' }, 400)
+  }
   const name = body.name.trim()
-  const project = await mutateProjects((projects) => {
+  const created = await mutateProjects<{ project: ProjectRecord | null; error?: string }>((projects) => {
+    const hierarchyError = projectHierarchyError(projects, '', body.parentProjectId)
+    if (hierarchyError) return { result: { project: null, error: hierarchyError }, save: false }
     const now = Date.now()
     const project: ProjectRecord = {
       projectId: `proj-${now}`,
       name,
+      placeType: body.placeType,
+      parentProjectId: body.parentProjectId ?? null,
       address: body.address,
       notes: body.notes,
+      geoPose: body.geoPose,
       createdAt: now,
       updatedAt: now,
+      areas: [{ areaId: `area-${now}`, name, kind: 'site', parentAreaId: null }],
       floors: [{ floorId: `floor-${now}`, name: 'Ground Floor', level: 0, rooms: [] }],
     }
     projects.push(project)
-    return { result: project, save: true }
+    return { result: { project }, save: true }
   })
-  return c.json(project, 201)
+  if (created.error) return c.json({ error: created.error }, 400)
+  return c.json(created.project, 201)
+})
+
+app.get('/projects/:id/world', async (c) => {
+  const projectId = c.req.param('id')
+  const project = (await loadProjects()).find(item => item.projectId === projectId)
+  if (!project) return c.json({ error: 'Project not found' }, 404)
+  const world = await loadProjectWorld(projectId)
+  const denied = denyUnlessWorldRole(c, world, 'viewer', { allowAnonymous: true })
+  if (denied) return denied
+  return c.json(redactWorldForClient(world, requestToken(c)))
 })
 
 app.get('/projects/:id', async (c) => {
@@ -2766,31 +4025,214 @@ app.get('/projects/:id', async (c) => {
   return c.json(project)
 })
 
+app.patch('/projects/:id/scans/:scanId', async (c) => {
+  const projectId = c.req.param('id')
+  const scanId = c.req.param('scanId')
+  const body = await c.req.json().catch(() => ({})) as { floorId?: string | null; roomId?: string | null; areaId?: string | null }
+  const projects = await loadProjects()
+  const project = projects.find(p => p.projectId === projectId)
+  if (!project) return c.json({ error: 'Project not found' }, 404)
+  if (body.floorId && !project.floors.some(floor => floor.floorId === body.floorId)) {
+    return c.json({ error: 'Floor not found' }, 404)
+  }
+  if (body.roomId && !project.floors.some(floor => floor.rooms.some(room => room.roomId === body.roomId))) {
+    return c.json({ error: 'Room not found' }, 404)
+  }
+  if (body.areaId && !(project.areas ?? []).some(area => area.areaId === body.areaId)) {
+    return c.json({ error: 'Area not found' }, 404)
+  }
+  const updated = await rewriteScanProject(scanId, projectId, body.floorId ?? null, body.roomId ?? null, body.areaId ?? null)
+  if (!updated) return c.json({ error: 'Scan not found' }, 404)
+  return c.json({ ok: true })
+})
+
 app.put('/projects/:id', async (c) => {
   const id = c.req.param('id')
   const body = await c.req.json().catch(() => null) as ProjectRecord | null
   if (!body) return c.json({ error: 'Invalid JSON' }, 400)
-  const updated = await mutateProjects<ProjectRecord | null>((projects) => {
+  if (body.placeType !== undefined && !isPlaceType(body.placeType)) {
+    return c.json({ error: 'placeType must be building, floor, room, or other' }, 400)
+  }
+  const updated = await mutateProjects<{ project: ProjectRecord | null; error?: string }>((projects) => {
     const idx = projects.findIndex(p => p.projectId === id)
-    if (idx === -1) return { result: null, save: false }
+    if (idx === -1) return { result: { project: null }, save: false }
+    const hierarchyError = projectHierarchyError(projects, id, body.parentProjectId)
+    if (hierarchyError) return { result: { project: null, error: hierarchyError }, save: false }
     projects[idx] = { ...body, projectId: id, updatedAt: Date.now() }
-    return { result: projects[idx], save: true }
+    return { result: { project: projects[idx] }, save: true }
   })
-  if (!updated) return c.json({ error: 'Not found' }, 404)
-  return c.json(updated)
+  if (updated.error) return c.json({ error: updated.error }, 400)
+  if (!updated.project) return c.json({ error: 'Not found' }, 404)
+  return c.json(updated.project)
 })
 
 app.delete('/projects/:id', async (c) => {
   const id = c.req.param('id')
-  const deleted = await mutateProjects((projects) => {
+  const scanCount = await countScansForProject(id)
+  if (scanCount > 0) return c.json({ error: 'project has scans', scanCount }, 409)
+  const deleted = await mutateProjects<{ deleted: boolean; childCount: number }>((projects) => {
     const idx = projects.findIndex(p => p.projectId === id)
-    if (idx === -1) return { result: false, save: false }
+    if (idx === -1) return { result: { deleted: false, childCount: 0 }, save: false }
+    const childCount = projects.filter(project => project.parentProjectId === id).length
+    if (childCount > 0) return { result: { deleted: false, childCount }, save: false }
     projects.splice(idx, 1)
-    return { result: true, save: true }
+    return { result: { deleted: true, childCount: 0 }, save: true }
   })
-  if (!deleted) return c.json({ error: 'Not found' }, 404)
+  if (deleted.childCount > 0) {
+    return c.json({ error: 'project has linked child Places', childCount: deleted.childCount }, 409)
+  }
+  if (!deleted.deleted) return c.json({ error: 'Not found' }, 404)
   return c.json({ ok: true })
 })
+
+app.post('/projects/:id/merge', async (c) => {
+  const targetProjectId = c.req.param('id')
+  const body = await c.req.json().catch(() => ({})) as { sourceProjectId?: string }
+  const sourceProjectId = body.sourceProjectId
+  if (!sourceProjectId) return c.json({ error: 'sourceProjectId is required' }, 400)
+  if (sourceProjectId === targetProjectId) return c.json({ error: 'cannot merge a project into itself' }, 400)
+
+  const merged = await mutateProjects<{ target: ProjectRecord | null; alreadyMerged?: boolean }>((projects) => {
+    const target = projects.find(p => p.projectId === targetProjectId) ?? null
+    const source = projects.find(p => p.projectId === sourceProjectId) ?? null
+    if (!target) return { result: { target: null }, save: false }
+    if (!source) return { result: { target, alreadyMerged: true }, save: false }
+
+    const floorIds = new Set(target.floors.map(floor => floor.floorId))
+    const roomIds = new Set(target.floors.flatMap(floor => floor.rooms.map(room => room.roomId)))
+    const areaIds = new Set((target.areas ?? []).map(area => area.areaId))
+    const floorIdMap = new Map<string, string>()
+    const roomIdMap = new Map<string, string>()
+    const areaIdMap = new Map<string, string>()
+    for (const sourceFloor of source.floors) {
+      const floorId = floorIds.has(sourceFloor.floorId) ? `floor-${crypto.randomUUID()}` : sourceFloor.floorId
+      floorIds.add(floorId)
+      floorIdMap.set(sourceFloor.floorId, floorId)
+      const rooms = sourceFloor.rooms.map((room) => {
+        const roomId = roomIds.has(room.roomId) ? `room-${crypto.randomUUID()}` : room.roomId
+        roomIds.add(roomId)
+        roomIdMap.set(room.roomId, roomId)
+        return { ...room, roomId }
+      })
+      target.floors.push({ ...sourceFloor, floorId, rooms })
+    }
+
+    // Areas were dropped entirely by the original merge — any scan whose
+    // areaId pointed into the source Place would reference an area that
+    // exists nowhere afterward. Renumber ids on collision first (so
+    // parentAreaId remapping below has the final id for every area, source
+    // and target alike), then remap each copied area's own references.
+    for (const sourceArea of source.areas ?? []) {
+      const areaId = areaIds.has(sourceArea.areaId) ? `area-${crypto.randomUUID()}` : sourceArea.areaId
+      areaIds.add(areaId)
+      areaIdMap.set(sourceArea.areaId, areaId)
+    }
+    for (const sourceArea of source.areas ?? []) {
+      target.areas = [
+        ...(target.areas ?? []),
+        {
+          ...sourceArea,
+          areaId: areaIdMap.get(sourceArea.areaId)!,
+          parentAreaId: sourceArea.parentAreaId ? (areaIdMap.get(sourceArea.parentAreaId) ?? null) : null,
+          floorId: sourceArea.floorId ? (floorIdMap.get(sourceArea.floorId) ?? sourceArea.floorId) : sourceArea.floorId,
+          roomId: sourceArea.roomId ? (roomIdMap.get(sourceArea.roomId) ?? sourceArea.roomId) : sourceArea.roomId,
+        },
+      ]
+    }
+
+    // `source` is about to be deleted: any Place that named it as a parent —
+    // including `target` itself, if target was a direct child of source —
+    // must be repointed, or projectHierarchyError() rejects every later PUT
+    // to that Place with "upper-level Place no longer exists".
+    for (const project of projects) {
+      if (project.projectId === sourceProjectId || project.parentProjectId !== sourceProjectId) continue
+      project.parentProjectId = project.projectId === targetProjectId
+        ? (source.parentProjectId ?? null) // target adopts source's own parent, not itself
+        : targetProjectId
+      project.updatedAt = Date.now()
+    }
+
+    target.updatedAt = Date.now()
+    projects.splice(projects.indexOf(source), 1)
+    return { result: { target }, save: true }
+  })
+
+  if (!merged.target) return c.json({ error: 'Target project not found' }, 404)
+  if (!merged.alreadyMerged) {
+    await rewriteProjectReferences(sourceProjectId, targetProjectId)
+  }
+  return c.json({ ok: true, project: merged.target, alreadyMerged: merged.alreadyMerged ?? false })
+})
+
+async function countScansForProject(projectId: string): Promise<number> {
+  const scans = await listStoredScans()
+  return scans.filter(scan => scanProjectId(scan.meta) === projectId).length
+}
+
+async function rewriteScanProject(
+  scanId: string,
+  projectId: string | null,
+  floorId: string | null,
+  roomId: string | null,
+  areaId: string | null,
+): Promise<boolean> {
+  let updated = false
+  for await (const entry of Deno.readDir(SCANS_DIR)) {
+    if (!entry.isFile || !entry.name.endsWith('.json')) continue
+    const path = `${SCANS_DIR}/${entry.name}`
+    try {
+      const meta = JSON.parse(await Deno.readTextFile(path)) as Record<string, unknown>
+      const filename = entry.name.replace(/\.json$/, '.glb')
+      if (scanIdFor(filename) !== scanId && filename !== scanId && asString(meta['sessionId']) !== scanId) continue
+      meta['projectId'] = projectId
+      meta['floorId'] = floorId
+      meta['roomId'] = roomId
+      meta['areaId'] = areaId
+      await Deno.writeTextFile(path, JSON.stringify(meta, null, 2))
+      updated = true
+    } catch { /* ignore one malformed sidecar */ }
+  }
+  if (updated) {
+    await mutateWorldFiles((world) => {
+      let changed = false
+      for (const scan of world.scans) {
+        if (scan.scanId !== scanId && scan.filename !== scanId && scan.sessionId !== scanId) continue
+        scan.projectId = projectId
+        scan.areaId = areaId
+        changed = true
+      }
+      return changed
+    })
+  }
+  return updated
+}
+
+async function rewriteProjectReferences(sourceProjectId: string, targetProjectId: string): Promise<void> {
+  for await (const entry of Deno.readDir(SCANS_DIR)) {
+    if (!entry.isFile || !entry.name.endsWith('.json')) continue
+    const path = `${SCANS_DIR}/${entry.name}`
+    try {
+      const meta = JSON.parse(await Deno.readTextFile(path)) as Record<string, unknown>
+      if (meta['projectId'] !== sourceProjectId) continue
+      meta['projectId'] = targetProjectId
+      await Deno.writeTextFile(path, JSON.stringify(meta, null, 2))
+    } catch { /* ignore */ }
+  }
+  await mutateWorldFiles((world) => {
+    let changed = false
+    if (world.projectId === sourceProjectId) {
+      world.projectId = targetProjectId
+      changed = true
+    }
+    for (const scan of world.scans) {
+      if (scan.projectId === sourceProjectId) {
+        scan.projectId = targetProjectId
+        changed = true
+      }
+    }
+    return changed
+  })
+}
 
 console.log(`[server] CORS origin prefix: ${ALLOWED_ORIGIN_PREFIX}`)
 
@@ -2802,7 +4244,29 @@ app.get('/events', (c) => {
   const { socket, response } = Deno.upgradeWebSocket(c.req.raw)
   socket.addEventListener('open', () => {
     eventSockets.add(socket)
-    socket.send(JSON.stringify({ type: 'hello', jobs: jobQueue.jobs.filter(j => j.status === 'queued' || j.status === 'running').length }))
+    // Shim (ADR 0003 / ticket 0004): this "pending jobs" count used to read
+    // jobQueue.jobs directly — a fifth JobQueue consumer beyond the four
+    // named surfaces, found via this ticket's closing grep and folded into
+    // scope here. Same translate-then-count as the other surfaces so the
+    // legacy queued|running vocabulary is preserved.
+    // Guarded: an unhandled rejection here would terminate the Deno process,
+    // so a client that disconnects between 'open' and this send (or a
+    // transiently unreadable world file) must not be able to take the server
+    // down. The handshake is best-effort — no in-repo listener branches on
+    // 'hello', so dropping it degrades nothing.
+    void (async () => {
+      try {
+        const world = await loadWorld('default')
+        if (socket.readyState !== WebSocket.OPEN) return
+        const pending = world.jobs
+          .filter(j => j.type === 'optimize-scan')
+          .map(worldJobToLegacyJob)
+          .filter(j => j.status === 'queued' || j.status === 'running').length
+        socket.send(JSON.stringify({ type: 'hello', jobs: pending }))
+      } catch (err) {
+        console.error('[events] hello handshake failed:', err)
+      }
+    })()
   })
   socket.addEventListener('close', () => eventSockets.delete(socket))
   socket.addEventListener('error', () => eventSockets.delete(socket))
@@ -2824,6 +4288,9 @@ interface RtcPeer {
 const rtcRooms = new Map<string, Partial<Record<'phone' | 'viewer', RtcPeer>>>()
 
 app.get('/rtc-signal', (c) => {
+  if (!WEBRTC_LIVE_ENABLED) {
+    return c.json({ error: 'WebRTC live streaming is disabled.' }, 404)
+  }
   const { socket, response } = Deno.upgradeWebSocket(c.req.raw)
   const url = new URL(c.req.url)
   const roomId = (url.searchParams.get('room') ?? 'default').replace(/[^a-zA-Z0-9_-]/g, '')
@@ -2833,7 +4300,16 @@ app.get('/rtc-signal', (c) => {
   const room = rtcRooms.get(roomId)!
 
   const peer: RtcPeer = { ws: socket, role }
+  // A role has exactly one live socket. Reconnects (and a second editor tab) arrive
+  // while the previous socket is still half-open, so the incumbent is closed here
+  // rather than silently dropped — otherwise its later close event would delete the
+  // peer that replaced it and wedge the room for both sides.
+  const previous = room[role]
   room[role] = peer
+  if (previous && previous.ws !== socket) {
+    console.log(`[rtc] ${role} reconnected to room "${roomId}" — closing the superseded socket`)
+    try { previous.ws.close() } catch { /* already gone */ }
+  }
   console.log(`[rtc] ${role} joined room "${roomId}"`)
 
   // Notify each side when both peers are present
@@ -2865,6 +4341,13 @@ app.get('/rtc-signal', (c) => {
   })
 
   socket.addEventListener('close', () => {
+    // Only the socket that currently holds the slot may clear it. A superseded
+    // socket closing after its replacement registered must not evict the live peer,
+    // nor tell the other side that this role has left when it has not.
+    if (room[role] !== peer) {
+      console.log(`[rtc] superseded ${role} socket closed in room "${roomId}" — live peer kept`)
+      return
+    }
     console.log(`[rtc] ${role} left room "${roomId}"`)
     delete room[role]
     if (!room.phone && !room.viewer) rtcRooms.delete(roomId)
@@ -2886,8 +4369,8 @@ registerPortalAuth(app, portalAuthConfig(), {
   ownerDestination: async () => {
     const world = await loadWorld('default')
     const owner = world.members.find((m) => m.role === 'owner' && !m.revokedAt)
-    if (!owner) return '/viewer.html?world=default'
-    return `/viewer.html?world=${world.shareSlug}&token=${encodeURIComponent(owner.token)}`
+    if (!owner) return '/editor?world=default'
+    return `/editor?world=${world.shareSlug}&token=${encodeURIComponent(owner.token)}`
   },
 })
 
@@ -2947,6 +4430,7 @@ if (staticAvailable) {
   app.get('*', async (c) => {
     let p = new URL(c.req.url).pathname
     if (p === '/') p = '/index.html'
+    if (p === '/editor' || p === '/editor/') p = '/viewer.html'
     if (p.includes('..')) return c.notFound()
     const file = `${STATIC_DIR}${p}`
     try {
@@ -2963,5 +4447,12 @@ if (staticAvailable) {
     }
   })
 }
+
+// Boot-time crash recovery (ADR 0003 "Crash recovery") — called once, after
+// every module-level const/function this module's job dispatch chain
+// depends on has been initialized (see the comment where `worldJobPump` is
+// constructed, above, for why this can't run any earlier), and before the
+// server starts accepting requests.
+await recoverWorldJobsOnBoot()
 
 Deno.serve({ hostname: '0.0.0.0', port: PORT }, app.fetch)

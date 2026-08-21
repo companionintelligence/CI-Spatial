@@ -18,9 +18,6 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Companion Scan" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <!-- Leaflet for geo map in session history drawer -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 
     <!--
       8th Wall Engine binary (OSS, no license key required).
@@ -892,13 +889,18 @@
         gap: 0;
       }
 
-      /* ── Finish Scan Button style ── */
+      /* ── Menu Button style ── */
       .finish-btn {
         pointer-events: all;
         position: absolute;
-        bottom: calc(53px + env(safe-area-inset-bottom));
-        left: calc(50% - 90px);
-        transform: translateX(-50%);
+        /* Bottom-right, sitting on the capture button's centre line: `bottom` is
+           raised to that line (the capture button's own 38px offset plus half of
+           its 78px height) and translateY(50%) drops this button back down by half
+           of its own height, so the two centres agree without hardcoding this
+           one's height. `right` clears the 48px action rail and its gutter. */
+        bottom: calc(38px + 39px + env(safe-area-inset-bottom));
+        right: calc(max(14px, env(safe-area-inset-right)) + 60px);
+        transform: translateY(50%);
         padding: 8px 16px;
         font-size: 13px;
         font-weight: 700;
@@ -916,8 +918,18 @@
         justify-content: center;
       }
       .finish-btn:active {
-        transform: translateX(-50%) scale(0.95);
+        transform: translateY(50%) scale(0.95);
         opacity: 0.9;
+      }
+
+      /* Narrow phones: the 78px capture button and the 48px action rail leave
+         only ~80px of clear width between them at 360px, which a 16px-padded
+         pill overruns. Tighten the padding rather than lift the button off the
+         capture button's centre line. */
+      @media (max-width: 380px) {
+        .finish-btn {
+          padding: 8px 10px;
+        }
       }
 
       /* Panel content scroll */
@@ -994,7 +1006,14 @@
          under the words "No objects yet". */
       .panel-btn-primary:disabled,
       .panel-btn-ghost:disabled {
-        opacity: 0.32;
+        /* 0.32 put these labels at 2.06-2.13:1 against the panel — under the
+           3:1 WCAG minimum for a UI component, and far under 4.5:1 for text.
+           "Unavailable" should not mean "illegible": a user who cannot read
+           Export Summary cannot tell whether the app is disabled or broken.
+           0.5 measures ~3.1:1 and is still plainly dimmer than the 12:1 an
+           enabled control reads at, so the affordance the comment above
+           describes survives intact. */
+        opacity: 0.5;
         cursor: not-allowed;
         box-shadow: none;
         transform: none;
@@ -1179,6 +1198,78 @@
         padding: 24px;
       }
 
+      /* Project-frame calibration runs over the live camera before capture begins. */
+      #project-calibration {
+        position: fixed;
+        inset: 0;
+        z-index: 40;
+        color: var(--ci-text);
+      }
+      .project-calibration-backdrop {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: linear-gradient(180deg, rgba(3,15,23,0.18), transparent 42%, rgba(3,15,23,0.62));
+      }
+      .project-calibration-reticle {
+        position: absolute;
+        top: 50%; left: 50%;
+        width: 54px; height: 54px;
+        margin: -27px;
+        border: 2px solid #72ddd4;
+        border-radius: 50%;
+        box-shadow: 0 0 0 7px rgba(114,221,212,0.12), 0 0 28px rgba(114,221,212,0.42);
+      }
+      .project-calibration-reticle::before,
+      .project-calibration-reticle::after {
+        content: '';
+        position: absolute;
+        background: #72ddd4;
+      }
+      .project-calibration-reticle::before { width: 2px; height: 72px; top: -11px; left: 25px; }
+      .project-calibration-reticle::after { width: 72px; height: 2px; left: -11px; top: 25px; }
+      .project-calibration-reticle span {
+        position: absolute;
+        width: 8px; height: 8px;
+        top: 21px; left: 21px;
+        border-radius: 50%;
+        background: #eff0f0;
+        box-shadow: 0 0 12px #fff;
+      }
+      .project-calibration-card {
+        position: absolute;
+        right: max(16px, env(safe-area-inset-right));
+        bottom: max(18px, env(safe-area-inset-bottom));
+        left: max(16px, env(safe-area-inset-left));
+        max-width: 390px;
+        margin: auto;
+        padding: 18px;
+        border: 1px solid rgba(114,221,212,0.36);
+        border-radius: 16px;
+        background: rgba(5,22,31,0.92);
+        backdrop-filter: blur(16px);
+        box-shadow: 0 16px 45px rgba(0,0,0,0.42);
+      }
+      .project-calibration-eyebrow {
+        color: #72ddd4;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+      .project-calibration-card h2 { margin: 5px 0 8px; font-family: var(--ci-font-display); font-size: 25px; font-weight: 500; }
+      .project-calibration-card p { margin: 0; color: var(--ci-muted); font-size: 13px; line-height: 1.45; }
+      .project-calibration-progress { display: flex; gap: 7px; margin: 15px 0 10px; }
+      .project-calibration-progress span { width: 100%; height: 4px; border-radius: 999px; background: rgba(255,255,255,0.16); }
+      .project-calibration-progress span.active { background: #72ddd4; box-shadow: 0 0 11px rgba(114,221,212,0.5); }
+      .project-calibration-status { color: #eff0f0; font-size: 12px; font-weight: 700; }
+      .project-calibration-measure { min-height: 18px; margin-top: 5px; color: #72ddd4; font-size: 11px; }
+      .project-calibration-actions { display: grid; grid-template-columns: 1fr auto; gap: 9px; margin-top: 15px; }
+      #project-calibration-lock { min-height: 44px; border: 1px solid rgba(114,221,212,0.62); border-radius: 9px; background: #72ddd4; color: #06202a; font-weight: 800; cursor: pointer; }
+      #project-calibration-lock:disabled { opacity: 0.45; cursor: wait; }
+      #project-calibration-reset, .project-calibration-link { border: 0; background: transparent; color: var(--ci-muted); font-size: 11px; cursor: pointer; }
+      .project-calibration-link { grid-column: 1 / -1; justify-self: center; text-decoration: underline; }
+
       #start-brand {
         display: flex;
         flex-direction: column;
@@ -1268,13 +1359,15 @@
         transition: transform 0.15s ease-out, border-color 0.2s ease-out, background 0.2s ease-out, box-shadow 0.2s ease-out;
       }
 
-      .start-path:hover {
+      /* :not(:disabled) keeps a preparing or unavailable capture card from
+         lighting up as if it were pressable. */
+      .start-path:not(:disabled):hover {
         border-color: rgba(114, 221, 212, 0.42);
         background: var(--ci-bg-elevated-strong);
         box-shadow: var(--ci-shadow), 0 0 0 5px rgba(114, 221, 212, 0.06);
       }
 
-      .start-path:active {
+      .start-path:not(:disabled):active {
         transform: scale(0.98);
       }
 
@@ -1286,14 +1379,204 @@
         box-shadow: 0 18px 44px rgba(114,221,212,0.18);
       }
 
-      #start-ar-btn.start-path:hover {
+      #start-ar-btn.start-path:not(:disabled):hover {
         background: linear-gradient(180deg, rgba(114,221,212,1), rgba(114,221,212,0.88));
         box-shadow: 0 20px 54px rgba(114,221,212,0.22);
       }
 
+      /* Terminally unusable (no secure context, no AR runtime) — flat and dead. */
       #start-ar-btn.start-path:disabled {
         cursor: not-allowed;
         opacity: 0.4;
+        box-shadow: none;
+      }
+
+      /* Still booting: dimmed but visibly alive, so the wait reads as "not yet"
+         rather than "broken". Pairs with the "Preparing…" status line below. */
+      #start-ar-btn.start-path[aria-busy="true"]:disabled {
+        cursor: progress;
+        animation: start-preparing-pulse 1.7s ease-in-out infinite;
+      }
+
+      @keyframes start-preparing-pulse {
+        0%, 100% { opacity: 0.55; }
+        50%      { opacity: 0.85; }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        #start-ar-btn.start-path[aria-busy="true"]:disabled {
+          animation: none;
+          opacity: 0.7;
+        }
+      }
+
+      .place-sheet {
+        position: fixed;
+        inset: 0;
+        z-index: 80;
+        display: grid;
+        align-items: center;
+        background: rgba(0, 0, 0, 0.38);
+      }
+
+      .place-sheet[hidden] {
+        display: none;
+      }
+
+      .place-sheet-panel {
+        width: min(520px, calc(100vw - 24px));
+        margin: 0 auto;
+        padding: 14px;
+        border: 1px solid var(--ci-line);
+        border-radius: 12px;
+        background: var(--ci-bg-elevated-strong);
+        box-shadow: var(--ci-shadow);
+      }
+
+      .place-sheet-title {
+        margin-bottom: 10px;
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--ci-muted);
+        text-transform: uppercase;
+      }
+
+      .place-sheet-copy,
+      .place-location-status,
+      .place-empty {
+        margin: 0 0 10px;
+        color: var(--ci-muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .place-selected-status {
+        margin-bottom: 10px;
+        color: var(--ci-text);
+        font-size: 12px;
+      }
+
+      .place-location-status {
+        padding: 8px 10px;
+        border-radius: 8px;
+        background: rgba(114, 221, 212, 0.08);
+        color: var(--ci-text);
+      }
+
+      #place-list,
+      #place-suggestion,
+      #place-list-other {
+        display: grid;
+        gap: 8px;
+      }
+
+      #place-list-other { max-height: 180px; overflow: auto; }
+
+      #place-list-other-heading {
+        margin: 12px 0 8px;
+        color: var(--ci-muted);
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      #place-list-other-heading[hidden] { display: none; }
+
+      #place-suggestion { margin-bottom: 8px; }
+      .place-suggestion-option { border-color: rgba(114, 221, 212, 0.5) !important; }
+
+      #place-list button,
+      #place-suggestion button,
+      #place-list-other button {
+        min-height: 42px;
+        border: 1px solid var(--ci-line);
+        border-radius: 8px;
+        color: var(--ci-text);
+        background: var(--ci-surface);
+      }
+
+      #place-list .place-option,
+      #place-suggestion .place-option,
+      #place-list-other .place-option {
+        display: grid;
+        gap: 3px;
+        padding: 10px 12px;
+        text-align: left;
+      }
+
+      .place-option strong { font-size: 14px; }
+      .place-option span { color: var(--ci-muted); font-size: 11px; }
+
+      #place-new-form {
+        display: grid;
+        gap: 8px;
+        margin-top: 10px;
+        padding: 10px;
+        border: 1px solid var(--ci-line);
+        border-radius: 8px;
+      }
+
+      #place-new-form[hidden] { display: none; }
+      #place-new-form label { display: grid; gap: 4px; color: var(--ci-muted); font-size: 11px; }
+      #place-new-form input {
+        min-height: 36px;
+        padding: 7px 9px;
+        border: 1px solid var(--ci-line);
+        border-radius: 6px;
+        color: var(--ci-text);
+        background: var(--ci-surface);
+      }
+      .place-coordinate-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      .place-new-name-preview { min-height: 14px; color: var(--ci-muted); font-size: 11px; }
+      #place-new-save { min-height: 40px; border: 0; border-radius: 7px; color: #042226; background: #72ddd4; font-weight: 700; }
+      .place-area-picker { display:grid; gap:7px; margin-top:10px; padding:10px; border:1px solid var(--ci-line); border-radius:8px; background:rgba(255,255,255,.025); }
+      .place-area-heading { color:var(--ci-text); font-size:12px; font-weight:700; }
+      .place-area-heading span { color:var(--ci-muted); font-weight:400; }
+      #place-area-list { display:grid; gap:5px; max-height:160px; overflow:auto; }
+      #place-area-list .place-option { display:grid; gap:3px; padding:8px 9px; text-align:left; border:1px solid var(--ci-line); border-radius:7px; color:var(--ci-text); background:var(--ci-surface); }
+      #place-area-list .place-option-selected { border-color:rgba(114,221,212,.72); background:rgba(114,221,212,.1); }
+      .place-area-new { justify-self:start; border:0; background:transparent; color:var(--ci-accent); font-size:11px; font-weight:700; }
+      #place-area-new-form { display:grid; gap:7px; padding-top:3px; }
+      #place-area-new-form[hidden] { display:none; }
+      #place-area-new-form label { display:grid; gap:4px; color:var(--ci-muted); font-size:11px; }
+      .ci-select {
+        min-height: 36px;
+        padding: 0 34px 0 9px;
+        border: 1px solid rgba(114, 221, 212, 0.32);
+        border-radius: 7px;
+        appearance: none;
+        -webkit-appearance: none;
+        color-scheme: dark;
+        color: var(--ci-text);
+        background-color: var(--ci-surface);
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none' stroke='%2372ddd4' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E");
+        background-position: right 9px center;
+        background-repeat: no-repeat;
+        background-size: 16px;
+        cursor: pointer;
+        font: inherit;
+      }
+      .ci-select:hover { border-color: rgba(114, 221, 212, 0.56); background-color: rgba(114, 221, 212, 0.1); }
+      .ci-select:focus-visible { outline: none; border-color: var(--ci-mint); box-shadow: 0 0 0 3px rgba(114, 221, 212, 0.18); }
+      .ci-select option { color: var(--ci-text); background: #082432; }
+      .ci-select option:checked { color: #061820; background: #72ddd4; }
+      #place-area-new-form input { min-height:36px; padding:7px 9px; border:1px solid var(--ci-line); border-radius:7px; color:var(--ci-text); background:var(--ci-surface); }
+      #place-area-save { min-height:36px; border:1px solid rgba(114,221,212,.55); border-radius:7px; color:var(--ci-mint); background:rgba(114,221,212,.1); font-weight:700; }
+      .place-sheet-actions { display: flex; gap: 8px; margin-top: 10px; }
+      .place-sheet-actions button { flex: 1; min-height: 40px; border: 1px solid var(--ci-line); border-radius: 7px; color: var(--ci-text); background: var(--ci-surface); }
+
+      /* The status line exists only while the button can't be pressed. */
+      #start-ar-btn .start-path-status {
+        display: none;
+      }
+
+      #start-ar-btn:disabled .start-path-status {
+        display: block;
+        margin-top: 2px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        color: rgba(4, 22, 32, 0.72);
       }
 
       .start-path-icon {
@@ -1463,32 +1746,44 @@
 
       <div id="start-paths" role="group" aria-label="Choose how to capture your space">
         <!-- Path 1 — live AR (primary). Must stay a <button>: the iOS motion
-             permission request in its click handler needs a real user gesture. -->
-        <button id="start-ar-btn" class="start-path" aria-label="Scan a room with live AR">
+             permission request in its click handler needs a real user gesture.
+             Ships `disabled aria-busy` on purpose — this markup paints before
+             any script runs, and a tap then would be silently dropped. main.ts
+             attaches the handler at the top of its boot (section 0) and clears
+             both there, so the not-pressable state lasts ~50ms in practice —
+             and stays put if the bundle never loads at all. -->
+        <button id="start-ar-btn" class="start-path" aria-label="Scan a Place with live AR" disabled aria-busy="true">
           <span class="start-path-icon" aria-hidden="true"><svg width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="2.2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 16.2a6 6 0 0 0 0-8.4"/><path d="M4.8 4.8a10.2 10.2 0 0 0 0 14.4M19.2 19.2a10.2 10.2 0 0 0 0-14.4"/></svg></span>
           <span class="start-path-copy">
-            <span class="start-path-title">Scan a room</span>
-            <span class="start-path-sub">Point your phone and walk the room to build a 3D map.</span>
+            <span class="start-path-title">Scan a Place</span>
+            <span class="start-path-sub">Choose a Place, align it, then walk the space to build a 3D map.</span>
+            <span class="start-path-status" aria-live="polite">Preparing…</span>
           </span>
         </button>
 
-        <!-- Path 2 — upload an existing walkthrough video. The card is a
-             <label for="upload-video-input"> so a tap opens the picker with no
-             extra JS; the existing wireVideoUpload() handles the upload. -->
-        <label id="start-upload-card" class="start-path" for="upload-video-input">
+        <!-- Path 2 — the location modal runs before opening the native picker. -->
+        <button id="start-upload-card" class="start-path" type="button" aria-label="Upload content from a Place">
           <span class="start-path-icon" aria-hidden="true"><svg width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="5" width="18" height="14" rx="1.8"/><path d="M8 5v14M16 5v14M3 9.7h5M3 14.3h5M16 9.7h5M16 14.3h5"/></svg></span>
           <span class="start-path-copy">
-            <span id="upload-video-btn" class="start-path-title">Upload a video</span>
-            <span class="start-path-sub">Already have a walkthrough video? Turn it into a 3D map — no AR needed.</span>
+            <span id="upload-video-btn" class="start-path-title">Upload Content</span>
+            <span class="start-path-sub">Add a walkthrough video or photo set from a Place — no AR needed.</span>
           </span>
-          <input id="upload-video-input" type="file" accept="video/*" style="display:none;" />
-        </label>
+        </button>
+        <input id="upload-video-input" type="file" accept="video/*,image/jpeg,image/png,image/webp" multiple style="display:none;" />
+
+        <a id="start-editor-card" class="start-path" href="/editor" aria-label="Explore and edit existing places">
+          <span class="start-path-icon" aria-hidden="true"><svg width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 5.5h16v13H4z"/><path d="M8 3.5v4M16 3.5v4M8 16.5h8M8 12.5h5"/></svg></span>
+          <span class="start-path-copy">
+            <span class="start-path-title">Place Scan Editor</span>
+            <span class="start-path-sub">Explore, compare, and edit the scans already mapped to a place.</span>
+          </span>
+        </a>
       </div>
 
       <!-- Upload progress / result line, driven by wireVideoUpload() -->
       <div id="upload-video-progress" aria-live="polite"
         style="max-width:380px;width:100%;text-align:center;font-size:12px;color:var(--ci-muted);line-height:1.55;"></div>
-      <a id="upload-video-open" href="/viewer.html?world=default" hidden
+      <a id="upload-video-open" href="/editor" hidden
         style="color:#72ddd4;font-size:12px;font-weight:700;text-decoration:none;">
         Processing started — open the 3D editor →
       </a>
@@ -1531,6 +1826,12 @@
                 <a id="export-view-link" href="/viewer.html?world=default" style="display:none; color:#72ddd4; font-weight:700; text-decoration:none; margin-left:8px;">View in 3D →</a>
                 <span id="scan-stats"></span>
               </div>
+              <!-- Scan-quality guidance. Deliberately its own line rather than
+                   #status-text: this is persistent state refreshed on every
+                   750ms scanner tick, and writing it into the status line
+                   erased every transient message within one tick. -->
+              <div id="verdict-hint" aria-live="polite"
+                style="display:none; font-size:11px; line-height:1.4; color:#ffb74d; margin-top:2px; max-width:34ch;"></div>
               <div id="geo-chip">
                 <div id="geo-text">
                   <span id="geo-address">Locating…</span>
@@ -1580,7 +1881,7 @@
 
       </div>
 
-      <button id="finish-scan-btn" class="finish-btn">Done</button>
+      <button id="finish-scan-btn" class="finish-btn">Menu</button>
       <button id="capture-btn" aria-label="Capture"></button>
       <div id="scanner-action-rail" aria-label="Scanner actions">
         <a href="/webxr.html" id="xr-mode-link" aria-label="Switch AR runtime" title="Switch to WebXR scanner (HelloXR on iOS)"><svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3.4 9.6A1.7 1.7 0 0 1 5.1 8h13.8a1.7 1.7 0 0 1 1.7 1.6v4.3a1.7 1.7 0 0 1-1.7 1.7h-3.2l-1.9-2.2h-3.6l-1.9 2.2H5.1a1.7 1.7 0 0 1-1.7-1.7z"/></svg></a>

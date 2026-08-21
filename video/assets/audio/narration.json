@@ -1,0 +1,70 @@
+{
+  "_": "Written by `ci-video narrate`. Records which line each mp3 is a read of, in which voice, on which engine, at what prosody — so a later edit to any of those can be detected instead of silently keeping the old recording. Commit this with the mp3s.",
+  "engine": "edge",
+  "voice": "en-GB-SoniaNeural",
+  "scenes": {
+    "close": {
+      "text": "Map a room with Companion Scan. Visit ci dot computer. UnCloud your life.",
+      "seconds": 6.711,
+      "prosody": {
+        "rate": "-8%",
+        "pitch": "-2Hz",
+        "volume": "+0%"
+      }
+    },
+    "the-walk": {
+      "text": "Walk the room and watch a spatial map form as you move.",
+      "seconds": 3.677,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "two-ways-in": {
+      "text": "Walk a room with the camera, or hand it a walkthrough video you already have.",
+      "seconds": 4.679,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "the-meter": {
+      "text": "Coverage is scored while you walk, off the point count itself. It goes from sparse to good, and the app is the thing that says so.",
+      "seconds": 8.022,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "named-not-numbered": {
+      "text": "The map is not just geometry. Every object keeps the label it was given, and the confidence it was given with.",
+      "seconds": 7.178,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "pick-a-room": {
+      "text": "Pick any room and the camera frames it. Its tag, its notes and where it sits are all yours to change.",
+      "seconds": 6.959,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "how-good-a-map": {
+      "text": "Then open the world editor to clean up and organize the result.",
+      "seconds": 4.227,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    }
+  }
+}

@@ -31,6 +31,7 @@ out/
 tmp/
 temp/
 .cache/
+.runtime/
 
 # Logs
 *.log
@@ -55,6 +56,7 @@ tokenizer_config.json
 test-results/
 scans/
 summaries/
+worlds/
 
 # TLS certificates (tailscale cert output) — machine-local, never commit
 *.crt
@@ -77,3 +79,12 @@ test-data/
 tests/fixtures/lingbot-map/source.mp4
 tests/fixtures/lingbot-map/*.webm
 tests/fixtures/lingbot-map/*.mov
+
+# Claude Code MCP local overrides — machine-local secrets (bearer tokens,
+# personal paths). Highest precedence over the checked-in .mcp.json.
+.mcp.local.json
+
+# Claude Code preview/launch config — the dev-server URL embeds this machine's
+# Tailscale hostname, which vite.config.ts resolveHostname() derives per box.
+# Copy .claude/launch.json.example and fill in your own hostname.
+.claude/launch.json

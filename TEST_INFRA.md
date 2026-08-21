@@ -1,6 +1,6 @@
-# Test Infrastructure Guide — Companion Scan
+# Test Infrastructure Guide — CI-Spatial
 
-This guide details the test architecture, configuration, commands, and setups for testing the **CI-Web-XR-Scan** project.
+This guide details the test architecture, configuration, commands, and setups for testing the **CI-Spatial** project.
 
 ---
 
@@ -75,7 +75,7 @@ The test suite contains **53+ browser and server checks** organized across 4 dis
 ### Tier 2: Boundary & Corner Cases (Tests 16–30)
 *   **Security & Validation:** Rejects missing image params on `/infer` (400), sanitizes filenames and blocks path traversal attempts on `/scans/:filename`.
 *   **Robustness:** Truncated VLM JSON string parsing and recovery, denormalized pixel coordinates normalization, server startup fallback when ONNX models are missing.
-*   **Fallback Physics:** Null hit-test placements (2.0 meters in front of camera), point cloud raycast projections, duplicate detections mitigation (dedup within `0.3m`), corrupt/NaN camera intrinsics fallback, invalid view mode recovery, divide-by-zero model scaling protection, CDN Leaflet library load failure recovery.
+*   **Fallback Physics:** Null hit-test placements (2.0 meters in front of camera), point cloud raycast projections, duplicate detections mitigation (dedup within `0.3m`), corrupt/NaN camera intrinsics fallback, invalid view mode recovery, divide-by-zero model scaling protection, and the geo map never reaching a CDN for Leaflet (it is bundled from npm; Test 30 asserts zero unpkg requests).
 
 ### Tier 3: Cross-Feature Combinations (Tests 31–33)
 *   **Inference Toggles:** Toggling from remote server inference to local client-side WebGPU (F1 + F2).

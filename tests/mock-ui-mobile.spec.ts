@@ -40,8 +40,11 @@ test.describe('mobile scanner flow screenshots', () => {
   test('01 start screen', async ({ page }) => {
     page.on('pageerror', (err) => console.error('[page]', err))
     // ?mock skips onboarding, so this is the clean start screen.
+    // Wait for *enabled*, not merely visible: #start-ar-btn paints disabled
+    // with a "Preparing…" line until boot attaches its click handler, and the
+    // documentation shot should show the ready state a user can actually tap.
     await page.goto('/?mock=xr8')
-    await expect(page.locator('#start-ar-btn')).toBeVisible({ timeout: 20_000 })
+    await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
     await expect(page.locator('#upload-video-btn')).toBeVisible()
     await page.screenshot({ path: join(SHOTS, '01-start-screen.png') })
   })
@@ -53,7 +56,7 @@ test.describe('mobile scanner flow screenshots', () => {
     // real markup keeps the styling authentic; we set active step/dot directly
     // so the shot is deterministic regardless of the first-run localStorage gate.
     await page.goto('/?mock=xr8')
-    await expect(page.locator('#start-ar-btn')).toBeVisible({ timeout: 20_000 })
+    await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
 
     for (const step of [0, 1, 2, 3, 4]) {
       await page.evaluate((i) => {
@@ -75,7 +78,7 @@ test.describe('mobile scanner flow screenshots', () => {
   test('05 live scanning HUD (tracking)', async ({ page }) => {
     page.on('pageerror', (err) => console.error('[page]', err))
     await page.goto('/?mock=xr8')
-    await expect(page.locator('#start-ar-btn')).toBeVisible({ timeout: 20_000 })
+    await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
     await page.click('#start-ar-btn')
 
     // Wait for the scripted SLAM mock to accumulate points / lock tracking.
@@ -92,7 +95,7 @@ test.describe('mobile scanner flow screenshots', () => {
   test('06 capture + latest-scan dialog', async ({ page }) => {
     page.on('pageerror', (err) => console.error('[page]', err))
     await page.goto('/?mock=xr8')
-    await expect(page.locator('#start-ar-btn')).toBeVisible({ timeout: 20_000 })
+    await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
     await page.click('#start-ar-btn')
     await page.waitForFunction(() => /[1-9]\d*/.test(document.getElementById('scan-stats')?.textContent ?? ''),
       { timeout: 30_000 }).catch(() => {})
@@ -107,7 +110,7 @@ test.describe('mobile scanner flow screenshots', () => {
   test('07 detections side panel', async ({ page }) => {
     page.on('pageerror', (err) => console.error('[page]', err))
     await page.goto('/?mock=xr8')
-    await expect(page.locator('#start-ar-btn')).toBeVisible({ timeout: 20_000 })
+    await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
     await page.click('#start-ar-btn')
     await page.waitForFunction(() => /[1-9]\d*/.test(document.getElementById('scan-stats')?.textContent ?? ''),
       { timeout: 30_000 }).catch(() => {})
@@ -124,7 +127,7 @@ test.describe('mobile scanner flow screenshots', () => {
   test('08 history drawer', async ({ page }) => {
     page.on('pageerror', (err) => console.error('[page]', err))
     await page.goto('/?mock=xr8')
-    await expect(page.locator('#start-ar-btn')).toBeVisible({ timeout: 20_000 })
+    await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
     await page.click('#start-ar-btn')
     await page.waitForTimeout(2500)
     await page.click('#history-btn')

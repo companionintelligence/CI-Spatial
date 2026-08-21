@@ -1,0 +1,30 @@
+#!/bin/sh
+# Pre-push guard: refuse to push anything that doesn't pass locally.
+#
+# Runs `npm run verify` — deno check + the full Deno test suite + the
+# frontend type-check. All three are hermetic (no servers, no browsers, no
+# seeded corpus), so this is deterministic and takes only a few seconds.
+#
+# Deliberately NOT run here: the Playwright suites (tests/mock-*, tests/api-*).
+# They need a Vite server, a Deno API, a browser binary, and a seeded scan
+# corpus, which is minutes of setup and not something to put in front of every
+# push. Use `npm run test:box` for that loop.
+#
+# Enable once per clone:
+#   git config core.hooksPath .githooks
+#
+# Bypass for a genuine emergency (documented so nobody invents a worse way):
+#   git push --no-verify
+
+set -e
+
+echo "[pre-push] npm run verify (deno check + deno test + tsc)"
+
+if ! npm run --silent verify; then
+  echo ""
+  echo "[pre-push] FAILED — not pushing."
+  echo "[pre-push] Fix the above, or re-run with --no-verify if you truly must."
+  exit 1
+fi
+
+echo "[pre-push] green — pushing."

@@ -38,6 +38,8 @@ test.describe('WebXR emulated scanner', () => {
       timeout: 15_000,
     }).toBeTruthy()
 
+    // The button only becomes enabled once its click handler is attached.
+    await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
     await page.click('#start-ar-btn')
 
     // Status must not report AR-unavailable, and the session should reach

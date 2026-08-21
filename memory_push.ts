@@ -30,9 +30,16 @@
  *   POST {base}/v1/events      { events: [CaptureEvent] } → { ingested, duplicate, rejected }
  * Idempotency is (source_system, source_id); re-pushing a scan counts as
  * `duplicate` rather than erroring, so a retried job is safe.
+ *
+ * Each detected object travels as a full oriented box — centre, orientation,
+ * 3D extent (metres and whole millimetres), detector confidence and vote count
+ * — qualified by a sibling `object_extents` block naming its frame of
+ * reference and the detector's parameters. See "Detected objects" below for why
+ * both halves are mandatory.
  */
 import type { Context, Hono } from 'hono'
-import type { GeoPose, ScanManifest } from './src/world/types.ts'
+import type { GeoPose, ScanManifest, SplatDetectManifest, Vec3 } from './src/world/types.ts'
+import { type DetectObjectRecord, parseDetectRecords } from './src/world/detect-objects.ts'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -70,12 +77,6 @@ export function configFromEnv(env: (k: string) => string | undefined = Deno.env.
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-/** One detected object from the `<base>.interactions.json` sidecar. */
-interface DetectedObject {
-  label?: string
-  position?: { x: number; y: number; z: number }
-}
-
 export interface MemoryPushResult {
   /** CI-Server file id for the uploaded GLB, or null when it was skipped. */
   glbFileId: string | null
@@ -84,6 +85,8 @@ export interface MemoryPushResult {
   eventIngested: number
   eventDuplicate: number
   detectionCount: number
+  /** How many of those detections shipped a 3D extent (the rest are label + position only). */
+  extentCount: number
   /** The `source_id` used — stable per scan, so re-pushes dedupe. */
   sourceId: string
 }
@@ -105,6 +108,113 @@ function authHeaders(cfg: MemoryPushConfig): Record<string, string> {
 function redact(text: string, cfg: MemoryPushConfig): string {
   if (!cfg.token) return text
   return text.split(cfg.token).join('«redacted»')
+}
+
+// ── Detected objects ──────────────────────────────────────────────────────────
+//
+// The `<base>.interactions.json` sidecar carries an oriented 3D box per object,
+// not just a point: centre, orientation, and full extent, plus the per-view
+// scores the analyzer clustered. All of it ships, because CI-Server's
+// `ci.inventory` has canonical SI columns (length_mm/width_mm/height_mm, CHECK
+// > 0) that a real extent maps onto — and nothing can populate them from a scan
+// if the wire drops the numbers.
+//
+// The one place these numbers may NOT come from is the GLB exporter:
+// src/export/gltf.ts derives its `dimensions` from a 2D bbox fraction times
+// hard-coded constants (bw = max((x2-x1)*3.5, 0.25), and friends). Those are
+// invented, and they look exactly as plausible as a measurement. Only
+// interactions.json extents are the detector's own 3D output.
+
+/** Non-negative, non-degenerate extent, or null. `ci.inventory` CHECKs > 0. */
+function positiveExtent(scale: Vec3 | undefined): Vec3 | null {
+  if (!scale) return null
+  const x = Math.abs(scale.x), y = Math.abs(scale.y), z = Math.abs(scale.z)
+  return x > 0 && y > 0 && z > 0 ? { x, y, z } : null
+}
+
+/** The same extent in whole millimetres, or null when an axis is sub-millimetre. */
+function wholeMillimetres(extent: Vec3): Vec3 | null {
+  const x = Math.round(extent.x * 1000)
+  const y = Math.round(extent.y * 1000)
+  const z = Math.round(extent.z * 1000)
+  return x >= 1 && y >= 1 && z >= 1 ? { x, y, z } : null
+}
+
+/**
+ * One object as it goes on the wire. Fields the sidecar did not carry are
+ * omitted rather than defaulted — an absent extent means "the detector did not
+ * give us one", which is not the same as a zero.
+ */
+function eventObject(d: DetectObjectRecord) {
+  const extentM = positiveExtent(d.scale)
+  const extentMm = extentM ? wholeMillimetres(extentM) : null
+  return {
+    label: d.label,
+    position: d.position,
+    ...(d.rotation ? { rotation: d.rotation } : {}),
+    ...(extentM ? { extent_m: extentM } : {}),
+    ...(extentMm ? { extent_mm: extentMm } : {}),
+    ...(d.score !== undefined ? { confidence: d.score } : {}),
+    ...(d.frameVotes !== undefined ? { frame_votes: d.frameVotes } : {}),
+  }
+}
+
+/**
+ * What the detector was actually told to do, read off the `splat-detect`
+ * manifest that sits beside the sidecar. A null threshold means the run used
+ * splat_analyzer's own default — that number belongs to the tool, so we record
+ * the absence rather than guessing it here.
+ *
+ * `params.python` / `params.detectDir` are deliberately not forwarded: they are
+ * appliance filesystem paths, not detector semantics.
+ */
+function detectorProvenance(manifest: SplatDetectManifest | null) {
+  if (!manifest) return null
+  const p = manifest.params ?? ({} as SplatDetectManifest['params'])
+  return {
+    tool: manifest.tool ?? null,
+    prompt: manifest.prompt ?? null,
+    run_at: manifest.createdAt ?? null,
+    object_count: manifest.objectCount ?? null,
+    quality: p.quality ?? null,
+    renderer: p.renderer ?? null,
+    point_splat_size: p.pointSplatSize ?? null,
+    score_threshold: p.scoreThreshold ?? null,
+    min_votes: p.minVotes ?? null,
+    min_peak_score: p.minPeakScore ?? null,
+  }
+}
+
+/**
+ * Frame of reference + provenance for the per-object geometry. This travels
+ * with the numbers because the numbers are not measured truth: splat-detect has
+ * never been validated on a furnished room, and the splat frame's alignment to
+ * the world frame is unvalidated (docs/SPLAT_DETECT_ROADMAP.md, phases 1 and 3).
+ * A consumer that reads an extent without reading this block would be treating
+ * an uncalibrated detector's bounding box as a tape-measure reading.
+ */
+function extentProvenance(manifest: SplatDetectManifest | null) {
+  return {
+    source: 'splat-analyzer interactions.json (oriented 3D bounding boxes)',
+    frame: 'splat_local',
+    units: 'm',
+    convention:
+      'position = box centre; rotation = xyzw quaternion; extent_m = full side lengths '
+      + "along the box's own axes, so x/y/z carry no length/width/height meaning. "
+      + 'extent_mm is extent_m × 1000 rounded to whole millimetres — the same measurement '
+      + 'in SI units, not a second one. confidence is the peak per-view detector score '
+      + '(what min_peak_score gates on); frame_votes is how many rendered views the object '
+      + 'appeared in (what min_votes gates on).',
+    world_frame_aligned: false,
+    calibrated: false,
+    caveat:
+      'Detector output under the parameters below, not measured dimensions. The splat '
+      + "frame's alignment to the world/ENU frame this event's `location` uses is "
+      + 'unvalidated, and splat-detect has never been validated on a furnished room '
+      + '(docs/SPLAT_DETECT_ROADMAP.md, phases 1 and 3). An extent is a bounding volume, '
+      + "not the object's own volume.",
+    detector: detectorProvenance(manifest),
+  }
 }
 
 /** Human-readable one-liner for the memory event title. */
@@ -172,18 +282,30 @@ export async function pushScanToMemory(
     console.warn(`[memory-push] ${glbSkippedReason} (${glbPath})`)
   }
 
-  // 2. Detections sidecar (written by the splat-detect job) — optional.
-  let detections: DetectedObject[] = []
+  // 2. Detections sidecar (written by the splat-detect job) — optional, and its
+  //    manifest alongside it, which records how the detector was parameterised.
+  let detections: DetectObjectRecord[] = []
   const base = scan.filename.replace(/\.glb$/i, '')
   try {
     const raw = await readTextFile(`${deps.scansDir}/${base}.interactions.json`)
-    const parsed = JSON.parse(raw) as { objects?: DetectedObject[] }
-    if (Array.isArray(parsed.objects)) detections = parsed.objects
+    detections = parseDetectRecords(JSON.parse(raw))
   } catch { /* no detections yet — a scan is still a memory without them */ }
+
+  let detectManifest: SplatDetectManifest | null = null
+  if (detections.length) {
+    try {
+      const raw = await readTextFile(`${deps.scansDir}/${base}.splat-detect.manifest.json`)
+      const parsed = JSON.parse(raw) as SplatDetectManifest | null
+      if (parsed && typeof parsed === 'object') detectManifest = parsed
+    } catch { /* sidecar predates the manifest, or was hand-placed — extents still ship */ }
+  }
 
   const labels = [...new Set(
     detections.map((d) => (d.label ?? '').trim()).filter(Boolean),
   )].sort()
+
+  const objects = detections.filter((d) => d.label).map(eventObject)
+  const extentCount = objects.filter((o) => 'extent_m' in o).length
 
   // 3. The event. CaptureEvent has no top-level geo column on this endpoint —
   // the controller folds `payload` into event.metadata — so location travels in
@@ -212,9 +334,10 @@ export async function pushScanToMemory(
       point_count: scan.pointCount ?? null,
       detection_count: detections.length || scan.detectionCount || 0,
       detected_labels: labels,
-      objects: detections
-        .filter((d) => d.label && d.position)
-        .map((d) => ({ label: d.label, position: d.position })),
+      objects,
+      // Only when there is geometry to qualify — a label-and-position-only
+      // sidecar ships exactly as it did before.
+      ...(extentCount ? { object_extents: extentProvenance(detectManifest) } : {}),
       // Flat lat/lon mirrors the shape the (draft) unified capture spec uses,
       // so this payload can be promoted to real geo columns without a migration.
       location: geo
@@ -254,6 +377,7 @@ export async function pushScanToMemory(
     eventIngested: ingest?.ingested ?? 0,
     eventDuplicate: ingest?.duplicate ?? 0,
     detectionCount: detections.length,
+    extentCount,
     sourceId,
   }
 }

@@ -1,5 +1,11 @@
 # Companion Scan — System Architecture & Trace Documentation
 
+> **Product model note:** the user-facing hierarchy is **Place → Area → Scan
+> session/segment → Scan → Layer → Thing/Observation**. `WorldProject` is the
+> compatible internal ENU scene record for a Place, not a competing product
+> concept. The full contract and migration rules live in
+> [docs/PLACE_SCAN_DESIGN.md](docs/PLACE_SCAN_DESIGN.md).
+
 Companion Scan is a mobile-first, privacy-respecting Augmented Reality (AR) application designed to capture, reconstruct, and index physical rooms into a structured **4D map**. It leverages SLAM tracking, frame capture, vision-language models (VLMs), spatial coordinate resolution, an anchored multi-scan world model, asynchronous reconstruction jobs, and persistent client-server storage.
 
 > **Companion documents.** This file is the technical system-design authority: diagrams, data model, the complete API surface, deployment topology, and known shortcomings. The everyday-user experience — first-time-user onboarding (FTUE), the happy-path capture story, and the mental model separating manual capture vs. auto-capture vs. keyframe streaming vs. live WebRTC — lives in **[`docs/UX_FLOW.md`](docs/UX_FLOW.md)**. Read the two together: section 2's sequence diagram below is the *technical trace* (what the code does, frame by frame), while `docs/UX_FLOW.md` is the *experience design* (what the person holding the phone sees and decides). Timelines and shipped-vs-planned status live only in [`roadmap.md`](roadmap.md).
@@ -10,7 +16,7 @@ Companion Scan is a mobile-first, privacy-respecting Augmented Reality (AR) appl
 
 The following block diagram represents the modular structure of the Companion Scan system, showing the boundary between client-side components running in the mobile browser and server-side components running on the local host.
 
-Inference is **engine-agnostic**: the server exposes one `/infer` contract and `INFERENCE_MODE` selects the backend. The default is `ollama` (running whatever `OLLAMA_MODEL` is set to — `moondream:latest` out of the box); `onnx` runs the bundled `LiquidAI/LFM2.5-VL-1.6B-ONNX` via `onnxruntime-node`; `mock` is a deterministic colour-blob CV engine for CI and tests. There is no `llama.cpp` in the system.
+Inference is **engine-agnostic**: the server exposes one `/infer` contract and `INFERENCE_MODE` selects the backend. The default is `ollama` (running whatever `OLLAMA_MODEL` is set to — `qwen3-vl:4b` out of the box); `onnx` runs the bundled `LiquidAI/LFM2.5-VL-1.6B-ONNX` via `onnxruntime-node`; `mock` is a deterministic colour-blob CV engine for CI and tests. There is no `llama.cpp` in the system.
 
 ```mermaid
 graph TB
@@ -281,7 +287,7 @@ graph LR
     end
 
     subgraph engine ["Inference Engine — INFERENCE_MODE"]
-        Infer[ollama moondream:latest / onnx LFM2.5-VL / mock CV]
+        Infer[ollama qwen3-vl:4b / onnx LFM2.5-VL / mock CV]
     end
 
     UI -- HTTPS POST/GET --> Vite
@@ -298,7 +304,7 @@ The server exposes one `/infer` contract; `INFERENCE_MODE` picks the backend at 
 
 | Mode | Backend | Model | Purpose |
 |---|---|---|---|
-| `ollama` (**default**) | Local Ollama daemon over HTTP | `OLLAMA_MODEL`, defaults to **`moondream:latest`** (pick with `npm run bench:models`) | Production inference on the host GPU. |
+| `ollama` (**default**) | Local Ollama daemon over HTTP | `OLLAMA_MODEL`, defaults to **`qwen3-vl:4b`** (pick with `npm run bench:models`) | Production inference on the host GPU. |
 | `onnx` | `onnxruntime-node`, in-process | Bundled **`LiquidAI/LFM2.5-VL-1.6B-ONNX`** (~1.5 GB via `download_models.py`) | Self-contained inference with no external daemon. |
 | `mock` | Deterministic colour-blob CV | none | CI, unit tests, and offline development. |
 
@@ -306,7 +312,7 @@ On the client, WebGPU (on-device ONNX in a Web Worker) versus server inference i
 
 ### API Routes & Interface Specification
 
-Routes are registered at the top level of `main.ts`. (Server-side Deno modules live at the **repo root** — `main.ts`, `inference.ts`, `jobs.ts`, `pipeline.ts`, `lingbot_map*.ts`, `splat_train.ts`, `splat_detect.ts` — there is no `server/` subdirectory.)
+Routes are registered at the top level of `main.ts`. (Server-side Deno modules live at the **repo root** — `main.ts`, `inference.ts`, `jobs.ts` (legacy type shapes only), `world_job_pump.ts`, `pipeline.ts`, `lingbot_map*.ts`, `splat_train.ts`, `splat_detect.ts` — there is no `server/` subdirectory.)
 
 | Endpoint | Method | Payload | Success Response | Notes |
 |---|---|---|---|---|
@@ -317,7 +323,7 @@ Routes are registered at the top level of `main.ts`. (Server-side Deno modules l
 | `/scans` | GET | None | `[{ filename, size, uploadedAt }]` | Lists uploaded files, newest first. |
 | `/scans/:filename` | GET | Filename param | Binary stream (`model/gltf-binary`) | Serves GLB with `public, max-age=3600`. |
 | `/scans/:filename/manifest` | GET | Filename param | `ScanManifest` JSON | Optimization artifact index (optimized + LODs + stage log). 404 until the job runs. |
-| `/scans/:filename/optimize` | POST | Filename param | `Job` (202) | Manually (re-)enqueue the optimization job. |
+| `/scans/:filename/optimize` | POST | Filename param | `WorldJob` (202) | Manually (re-)enqueue the optimization job (dedupes against an in-flight one). |
 | `/scan-locations` | GET | None | `[{ filename, geoLat, geoLng, geoBearing, … }]` | Geo metadata for all scans (map view). |
 | `/upload-summary` | POST | Multipart `{ file: File(.md) }` | `{"filename":"..."}` | Saves a summary document to `./summaries/`. |
 | `/sessions` | POST | None | `{"sessionId":"sess-..."}` (201) | Opens a keyframe capture session (`scans/sessions/<id>/`). |
@@ -332,7 +338,7 @@ Routes are registered at the top level of `main.ts`. (Server-side Deno modules l
 | `/worlds/:slug` | GET | Slug param | `WorldProject` | Fetch a world (read-only view when opened via a `shareSlug`). |
 | `/worlds/:slug/frames/:scanId` | GET | — | Frame observations | Per-scan camera-path / frame stream. |
 | `/worlds/:slug/*.splat` | GET | — | Splat binary | Trained 3DGS splat sidecar. |
-| `/jobs` / `/jobs/:id` | GET | — | `WorldJob[]` / `WorldJob` | Async world job queue state (`scans/jobs.json`). |
+| `/jobs` / `/jobs/:id` | GET | — | legacy `Job[]` / `Job` | Back-compat view of `optimize-scan` WorldJobs, translated to the retired JobQueue's response shape (ADR 0003) — response is byte-identical to the pre-merge API. |
 | `/rtc-signal` | GET | Query `room`, `role` | WebSocket upgrade (101) | WebRTC signaling relay between `phone` and `viewer`. |
 | `/events` | GET | None | WebSocket upgrade (101) | Broadcast stream: `scan-added`, `job-update`, `session-*`. The viewer subscribes to refresh scans and job chips live. |
 | `/client-logs` | POST | JSON log batch | `{"ok":true}` | Remote debug-log sink from mobile clients. |
@@ -353,11 +359,11 @@ A **world** (`WorldProject`, `src/world/types.ts`) is an anchored spatial contai
 
 #### Roles & Tokens (`WORLD_STRICT_AUTH`)
 
-Worlds carry role-scoped membership (`MemberRole`: `owner | editor | viewer | scanner`) and share slugs. The environment flag `WORLD_STRICT_AUTH=1` (`main.ts`) turns on strict token enforcement: requests must present a valid role token, and anonymous access is rejected. When unset (default), routes allow anonymous access — appropriate for a single-owner LAN/Tailnet deployment. Recipients of a `shareSlug` open `/worlds/:slug` at their granted role (e.g. a `viewer` link is read-only).
+Places/projects carry role-scoped membership (`MemberRole`: `owner | editor | commenter | viewer | scanner`) and share slugs. The environment flag `WORLD_STRICT_AUTH=1` (`main.ts`) turns on strict token enforcement: requests must present a valid role token, and anonymous access is rejected. When unset (default), routes allow anonymous access — appropriate for a single-owner LAN/Tailnet deployment. Recipients open the Spatial Editor at `/editor?project=<id>` with their granted role; a `viewer` link is read-only and a `commenter` link reserves comment capability without edit rights.
 
-### World Job Types & Processing (`/jobs`)
+### World Job Types & Processing (`/worlds/:slug/jobs`)
 
-The `/jobs` queue runs **asynchronous** world jobs (`WorldJobType`, status `queued | processing | completed | failed`). These are distinct from the synchronous `/process-scan` actions (`object-count`, `scene-description`, `floor-plan`). Ten job types:
+The `/worlds/:slug/jobs` queue runs **asynchronous** world jobs (`WorldJobType`, status `queued | processing | completed | failed`) — this is the real job queue; `GET /jobs` is only the legacy `optimize-scan` compatibility shim described in the route table above. World jobs are distinct from the synchronous `/process-scan` actions (`object-count`, `scene-description`, `floor-plan`). Thirteen job types:
 
 | Job type | Worker / method | Produces |
 |---|---|---|
@@ -370,17 +376,25 @@ The `/jobs` queue runs **asynchronous** world jobs (`WorldJobType`, status `queu
 | `lingbot-map-reconstruct` | LingBot-Map (Python, `LINGBOT_MAP_PYTHON` / `LINGBOT_MAP_MODEL_PATH`) | `*.point-cloud.ply` + `*.poses.json` + manifest |
 | `splat-train` | **Brush** (wgpu/AMD, GPU-pinned) 3D Gaussian Splatting | `*.splat.ply` |
 | `splat-detect` | **OWLv2** open-vocabulary detection over the splat | `*.interactions.json` (3D boxes) |
+| `splat-finish` | **@playcanvas/splat-transform** web-delivery compression | `*.sog` + `*.compressed.ply` |
+| `memory-push` | CI-Server `/v1/events` push (`memory_push.ts`) | a `capture.scan` memory event with the GLB attached |
 | `export-world` | world composition | combined GLB + semantic JSON |
+| `optimize-scan` | `pipeline.ts` (quantize / Draco / point-cloud LODs) | `*.opt.glb` + `*.lodN.glb` + `*.manifest.json` |
 
-The editor's Queue-Job dropdown exposes nine of these; `splat-detect` is fired from the Splat Toolbox section instead. Many runners emit a **plan/placeholder** artifact and report a "hint" when the real worker (Brush, LingBot-Map Python, Open3D) is not wired via env vars — the planned-vs-real distinction is intentional so the queue works end-to-end in CI.
+The editor's Queue-Job dropdown exposes ten of these. The other three are reached differently: `splat-detect` is fired from the Splat Toolbox section, `optimize-scan` is queued automatically on every upload (never manually — and filtered out of the Processing Queue panel; see [`docs/UX_FLOW.md`](docs/UX_FLOW.md) § Phase 3), and `memory-push` has no UI entry point at all, only the generic `POST /worlds/:slug/jobs` API. Many runners emit a **plan/placeholder** artifact and report a "hint" when the real worker (Brush, LingBot-Map Python, Open3D) is not wired via env vars — the planned-vs-real distinction is intentional so the queue works end-to-end in CI.
 
-### Scan Optimization Pipeline (`pipeline.ts` + `jobs.ts`)
+### Scan Optimization Pipeline (`pipeline.ts`, dispatched as a WorldJob)
 
-Every uploaded `.glb` is processed by an in-process, persistent job queue
-(sequential worker — the box also runs VLM inference):
+Every uploaded `.glb` is queued as an `optimize-scan` **WorldJob** — the same
+single-flight, crash-recovering queue (`world_job_pump.ts`) that runs every
+other job type (sequential worker — the box also runs VLM inference). The
+standalone `JobQueue` that used to own this was retired by the 01-merge-jobs
+wave (`docs/adr/0003-merged-job-system.md`); `jobs.ts` survives only as the
+legacy `Job`/`JobStatus`/`OptimizeScanManifest` type shapes the `/jobs`
+back-compat shim still responds in:
 
 ```
-upload-scan ──▶ JobQueue('optimize-scan') ──▶ pipeline.ts (gltf-transform)
+upload-scan ──▶ WorldJob('optimize-scan') ──▶ pipeline.ts (gltf-transform)
                                                   │ dedup + prune
                                                   │ point-cloud LODs (voxel 0.12 m / 0.30 m)
                                                   │ KHR_mesh_quantization (no decoder needed)
@@ -396,7 +410,7 @@ gates that stage when textured reconstruction meshes arrive.
 Verify the pipeline standalone with `npm run smoke:pipeline` (plain Node, no
 model or AR hardware required).
 
-### Progressive Loading (World Scan Editor)
+### Progressive Loading (Companion Scan Spatial Editor)
 
 `loadScanIntoWorld` checks `/scans/:filename/manifest` first: when artifacts
 exist it renders the coarsest LOD within a few hundred ms, then streams the
@@ -480,7 +494,7 @@ is **not** auto-loaded. Values below come from `.env.example`:
 - `API_TARGET`: upstream the Vite proxy forwards to (defaults to `http://localhost:8000`).
 - `INFERENCE_MODE`: `ollama` (default), `onnx`, or `mock` (see section 4).
 - `OLLAMA_HOST`: address of the local Ollama daemon (defaults to `http://localhost:11434`).
-- `OLLAMA_MODEL`: vision model Ollama serves in `ollama` mode. **Defaults to `moondream:latest`.**
+- `OLLAMA_MODEL`: vision model Ollama serves in `ollama` mode. **Defaults to `qwen3-vl:4b`.**
 - `INFER_MAX_IMAGE_BYTES`: reject inbound inference images larger than this (defaults to `12000000`).
 - `WORLD_STRICT_AUTH`: set to `1` to enforce role-token auth on world routes (default: anonymous access allowed).
 - `LINGBOT_MAP_PYTHON` / `LINGBOT_MAP_MODEL_PATH`: wire the real LingBot-Map reconstruction worker.
@@ -636,7 +650,7 @@ in **[`roadmap.md`](roadmap.md)**, which is the single owner of status and
 timelines. In brief:
 
 - **Shipped:** AR SLAM capture, engine-agnostic inference (ollama / onnx / mock),
-  spatial resolver, IndexedDB + GLB export, the desktop world editor (ENU
+  spatial resolver, IndexedDB + GLB export, the Companion Scan Spatial Editor (ENU
   multi-scan model, layers, measure, transform, progressive LOD), the scan
   optimization pipeline (quantization / Draco / LODs), keyframe streaming, the
   WebRTC live-geometry channel, the async world job queue, the splat toolbox
@@ -662,7 +676,7 @@ The following matrix documents the architectural limitations of the current desi
 | **Silent Backend Failures** | Uncaught route crashes return a generic response or drop connection without logging details. | Register Hono's `app.onError` to log full stack traces, and add handler-entry logs (Done). | Integrate central logger service (Winston / Deno log streams). |
 | **Newest Scan Race Condition** | `/process-scan` processes wrong file if uploads fail or occur out of order. | Implement `sessionId` matching in companion JSON files to lookup scans (Done). | Require explicit `scanId` parameter in API request payloads. |
 | **SLAM Coordinate Drift** | Detections lose alignment over long scanning durations (>10 mins). | Advise user via HUD to return to the origin/loop closure points. | Integrate visual-inertial loop closure (ORB-SLAM / WebXR anchor APIs). |
-| **Completion Verdict Hidden on Phone** | The quality verdict (`ready` / `needs-review` / `needs-rescan`) is computed but only surfaced in the desktop viewer — the phone user cannot tell if they have captured enough. | Surface `qualityMonitor.summary()` as a status chip plus a Done/Finish affordance (planned; see `docs/UX_FLOW.md`). | Close the export loop with an in-app "View in 3D →" link back to the world. |
+| **Completion Verdict Hidden on Phone** | The quality verdict (`ready` / `needs-review` / `needs-rescan`) is computed but only surfaced in the Spatial Editor — the phone user cannot tell if they have captured enough. | Surface `qualityMonitor.summary()` as a status chip plus a Done/Finish affordance (planned; see `docs/UX_FLOW.md`). | Close the export loop with an in-app "Open Place in 3D" link. |
 | **Placeholder Reconstruction Jobs** | Some job runners emit plan/placeholder artifacts unless the real worker is wired via env vars; the distinction is invisible to the user. | Runners report a "hint" when a worker is unset. | Surface planned-vs-real status per job in the editor; ship default workers. |
 | **GLB File Size Overhead** | High point-cloud density leads to files exceeding 1 MB quickly. | Voxel downsample + KHR_mesh_quantization + guarded Draco in the optimization pipeline (Done). | KTX2 texture compression once textured reconstruction meshes arrive. |
 | **No Authentication (default)** | With `WORLD_STRICT_AUTH` unset, anyone on the LAN/Tailnet can view or delete stored scans and worlds. | Namespace uploads behind generated session identifiers; opt-in `WORLD_STRICT_AUTH=1` role tokens. | Implement JWT-based auth gate on all state-modifying endpoints. |

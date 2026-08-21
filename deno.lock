@@ -3,6 +3,8 @@
   "specifiers": {
     "jsr:@std/assert@1": "1.0.19",
     "jsr:@std/internal@^1.0.12": "1.0.14",
+    "jsr:@std/internal@^1.0.14": "1.0.14",
+    "jsr:@std/path@1": "1.1.6",
     "npm:@gltf-transform/core@^4.4.0": "4.4.0",
     "npm:@gltf-transform/extensions@^4.4.0": "4.4.0",
     "npm:@gltf-transform/functions@^4.4.0": "4.4.0",
@@ -21,6 +23,7 @@
     "npm:jimp@^1.6.0": "1.6.1",
     "npm:jimp@^1.6.1": "1.6.1",
     "npm:jose@^5.9.6": "5.10.0",
+    "npm:leaflet@1.9.4": "1.9.4",
     "npm:onnxruntime-node@^1.21.0": "1.21.0",
     "npm:qrcode-terminal@0.12": "0.12.0",
     "npm:three@0.184": "0.184.0",
@@ -32,11 +35,17 @@
     "@std/assert@1.0.19": {
       "integrity": "eaada96ee120cb980bc47e040f82814d786fe8162ecc53c91d8df60b8755991e",
       "dependencies": [
-        "jsr:@std/internal"
+        "jsr:@std/internal@^1.0.12"
       ]
     },
     "@std/internal@1.0.14": {
       "integrity": "291516b3d4c35024d6ffbc0a9df5bf4c64116e05b50012cf846710152d2ffdf7"
+    },
+    "@std/path@1.1.6": {
+      "integrity": "c68485c2a4dfbb5ae3cc74fae4e8c4e5d874cf8a8ed12927917235c758b46cbe",
+      "dependencies": [
+        "jsr:@std/internal@^1.0.14"
+      ]
     }
   },
   "npm": {
@@ -1029,6 +1038,9 @@
     "ktx-parse@1.1.0": {
       "integrity": "sha512-mKp3y+FaYgR7mXWAbyyzpa/r1zDWeaunH+INJO4fou3hb45XuNSwar+7llrRyvpMWafxSIi99RNFJ05MHedaJQ=="
     },
+    "leaflet@1.9.4": {
+      "integrity": "sha512-nxS1ynzJOmOlHp+iL3FyWqK89GtNL8U8rvlMOsQdTTssxZwCXh8N2NB3GDQOL+YR3XnWyZAxwQixURb+FA74PA=="
+    },
     "lightningcss-android-arm64@1.32.0": {
       "integrity": "sha512-YK7/ClTt4kAK0vo6w3X+Pnm0D2cf2vPHbhOXdoNti1Ga0al1P4TBZhwjATvjNwLEBCnKvjJc2jQgHXH0NEwlAg==",
       "os": ["android"],
@@ -1680,6 +1692,7 @@
   },
   "workspace": {
     "dependencies": [
+      "jsr:@std/path@1",
       "npm:@gltf-transform/core@^4.4.0",
       "npm:@gltf-transform/extensions@^4.4.0",
       "npm:@gltf-transform/functions@^4.4.0",
@@ -1706,6 +1719,7 @@
         "npm:draco3dgltf@^1.5.7",
         "npm:iwer@^2.2.1",
         "npm:jimp@^1.6.1",
+        "npm:leaflet@1.9.4",
         "npm:qrcode-terminal@0.12",
         "npm:three@0.184",
         "npm:typescript@^6.0.3",

@@ -20,6 +20,14 @@ interaction zones for WebXR").
   0 objects on sparse input
 - ⚠️ Boxes live in the **editor only**, not the AR scanner or the scan's semantic tags
 - ⚠️ Coordinate frame of `interactions.json` vs our world frame unvalidated on a real room
+- ℹ️ The **memory push does ship the boxes** — `memory_push.ts` sends each object's
+  extent (m + whole mm), rotation, peak score and vote count to CI-Server, because
+  `ci.inventory`'s `length_mm`/`width_mm`/`height_mm` columns have nothing else to
+  populate them from. Every push carries an `object_extents` block declaring
+  `frame: splat_local`, `world_frame_aligned: false`, `calibrated: false` and the
+  detector's parameters, so a consumer can tell an uncalibrated default-threshold
+  run from a calibrated one. **Re-push after Phase 1** — idempotency is on
+  (`companion-scan`, `scanId`), so a re-push updates the same event.
 
 ## Phase 1 — Calibrate on a real room  ⟵ **the gating work; needs real data**
 
@@ -78,6 +86,11 @@ This is what turns splat-detect from an editor overlay into room understanding y
 while scanning. Gated on Phase 1 because anchoring wrong/empty boxes into the AR view is
 worse than nothing. Requires resolving the coordinate-frame question (splat space →
 world ENU) — validate against a room where you know where the sofa is.
+
+Resolving that frame question is also what lets the memory push stop hedging: today it
+sends extents tagged `frame: splat_local` / `world_frame_aligned: false` (above). Once
+splat space → world ENU is known, the push can state the world frame instead of
+disclaiming it.
 
 ## Phase 4 — Detection-guided capture (optional)
 

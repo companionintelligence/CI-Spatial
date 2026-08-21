@@ -1,57 +1,49 @@
 /**
  * GeoMap — Leaflet-based map drawer for the 3D viewer.
  *
- * Shows a map panel (slide-in drawer) with:
+ * Shows a map panel (top-level overlay) with:
  *   - OpenStreetMap tile layer (no API key required)
- *   - A pin for every scan that has GPS metadata (from scan scene.userData)
- *   - Clicking a pin selects that scan in the sidebar list
- *   - Compass bearing indicator on each pin
+ *   - A pin for every saved project with a known location
+ *   - Clicking a pin switches the active project in the viewer
  *
- * Leaflet is loaded from CDN to avoid bundling it.
+ * Leaflet is bundled from npm and pulled in with a dynamic import, so the drawer
+ * costs nothing until it is opened. Tile imagery still comes from basemaps.cartocdn.com,
+ * so offline yields a dark canvas with correctly-placed pins rather than a full map.
  */
 
-export interface ScanLocationEntry {
-  filename: string
-  lat: number
-  lng: number
-  bearing: number | null
+export interface ProjectLocationEntry {
+  projectId: string
+  name: string
+  lat: number | null
+  lng: number | null
   address: string | null
   capturedAt: string | null
-  pointCount: number | null
-  detectionCount: number | null
-  scanName: string | null
+  scanCount: number
 }
 
-export type ScanSelectCallback = (filename: string) => void
+export type ProjectSelectCallback = (projectId: string) => void
 
-/** Dynamically load Leaflet CSS + JS from CDN */
+/**
+ * Load Leaflet from the bundle. Dynamic rather than static so the library lands in its
+ * own lazily-fetched chunk — the drawer is behind a click, and an eager import would put
+ * ~150 KB on the critical path of every page load.
+ *
+ * This replaced a CDN script-tag injector that resolved on the tag's *presence*
+ * (`document.querySelector('script[data-leaflet]')`) rather than its execution. A tag
+ * still in flight — or one that had already fired onerror — satisfied that selector, so
+ * the loader resolved immediately and returned `window.L`, which was `undefined`, hidden
+ * by an unchecked cast. Being same-origin now also makes it cacheable by the service
+ * worker's staleWhileRevalidate, which a cross-origin URL never could be.
+ */
 async function loadLeaflet(): Promise<typeof import('leaflet')> {
-  // Check if already loaded
-  if (typeof window !== 'undefined' && (window as unknown as Record<string, unknown>)['L']) {
-    return (window as unknown as Record<string, unknown>)['L'] as typeof import('leaflet')
-  }
-
-  // Inject CSS
-  if (!document.querySelector('link[data-leaflet]')) {
-    const link = document.createElement('link')
-    link.rel = 'stylesheet'
-    link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'
-    link.dataset['leaflet'] = '1'
-    document.head.appendChild(link)
-  }
-
-  // Inject JS
-  await new Promise<void>((resolve, reject) => {
-    if (document.querySelector('script[data-leaflet]')) { resolve(); return }
-    const script = document.createElement('script')
-    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
-    script.dataset['leaflet'] = '1'
-    script.onload  = () => resolve()
-    script.onerror = () => reject(new Error('Failed to load Leaflet'))
-    document.head.appendChild(script)
-  })
-
-  return (window as unknown as Record<string, unknown>)['L'] as typeof import('leaflet')
+  // The stylesheet is imported dynamically too, so it lands in the same lazy chunk
+  // rather than on the entry's eager CSS. It replaces the CDN <link> index.html used
+  // to carry, which is why deleting that tag does not leave the map unstyled.
+  const [lib] = await Promise.all([
+    import('leaflet'),
+    import('leaflet/dist/leaflet.css'),
+  ])
+  return lib
 }
 
 export class GeoMap {
@@ -60,12 +52,14 @@ export class GeoMap {
   private _map: unknown = null  // Leaflet map instance (typed loosely to avoid bundle)
   private _L: typeof import('leaflet') | null = null
   private _markers: unknown[] = []
-  private _locations: ScanLocationEntry[] = []
+  private _locations: ProjectLocationEntry[] = []
   private _emptyEl: HTMLElement | null = null
-  private _onSelect: ScanSelectCallback | null = null
+  private _onSelect: ProjectSelectCallback | null = null
   private _open = false
 
-  set onScanSelect(fn: ScanSelectCallback) { this._onSelect = fn }
+  get isOpen(): boolean { return this._open }
+
+  set onProjectSelect(fn: ProjectSelectCallback) { this._onSelect = fn }
 
   /** Mount the drawer into the DOM (inserting before the given parent element) */
   mount(parentEl: HTMLElement): void {
@@ -101,10 +95,10 @@ export class GeoMap {
   }
 
   /**
-   * Populate the map with scan location pins.
-   * Call this whenever the scan list or metadata changes.
+   * Populate the map with one pin per project. The active project gets a
+   * distinct marker so the map remains a reliable project switcher.
    */
-  async updatePins(locations: ScanLocationEntry[]): Promise<void> {
+  async updatePins(locations: ProjectLocationEntry[], activeProjectId: string | null): Promise<void> {
     if (!this._mapEl) return
 
     // Lazy-load Leaflet
@@ -118,13 +112,17 @@ export class GeoMap {
       }
     }
 
+    // `this._L` is only non-null when the import above resolved, so everything below
+    // that dereferences it is inside the same guarded path.
     const L = this._L
-    const validLocs = locations.filter(l => l.lat !== 0 || l.lng !== 0)
+    if (!L) { this._setEmptyState(true, 'Map unavailable'); return }
+    const validLocs = locations.filter((location) => location.lat !== null && location.lng !== null
+      && (location.lat !== 0 || location.lng !== 0))
     this._locations = validLocs
 
     if (!this._map) {
       const center: [number, number] = validLocs.length > 0
-        ? [validLocs[0]!.lat, validLocs[0]!.lng]
+        ? [validLocs[0]!.lat!, validLocs[0]!.lng!]
         : [51.505, -0.09]  // London fallback
 
       this._map = L.map(this._mapEl!, {
@@ -151,8 +149,7 @@ export class GeoMap {
     const bounds: [number, number][] = []
 
     for (const loc of validLocs) {
-      const bearingDeg = loc.bearing ?? 0
-      const html = buildPinHtml(loc, bearingDeg)
+      const html = buildPinHtml(loc, loc.projectId === activeProjectId)
 
       const icon = L.divIcon({
         html,
@@ -164,16 +161,16 @@ export class GeoMap {
 
       const popupContent = buildPopupHtml(loc)
 
-      const marker = L.marker([loc.lat, loc.lng], { icon })
+      const marker = L.marker([loc.lat!, loc.lng!], { icon })
         .bindPopup(popupContent, { maxWidth: 240, className: 'geomap-popup' })
         .addTo(this._map as import('leaflet').Map)
 
       marker.on('click', () => {
-        this._onSelect?.(loc.filename)
+        this._onSelect?.(loc.projectId)
       })
 
       this._markers.push(marker)
-      bounds.push([loc.lat, loc.lng])
+      bounds.push([loc.lat!, loc.lng!])
     }
 
     this._setEmptyState(bounds.length === 0)
@@ -193,7 +190,7 @@ export class GeoMap {
   private _fitToPins(): void {
     if (!this._map || this._locations.length === 0) return
     const map = this._map as import('leaflet').Map
-    const bounds = this._locations.map(loc => [loc.lat, loc.lng] as [number, number])
+    const bounds = this._locations.map(loc => [loc.lat!, loc.lng!] as [number, number])
     if (bounds.length === 1) {
       map.setView(bounds[0]!, 17)
     } else {
@@ -203,7 +200,7 @@ export class GeoMap {
 
   private _setEmptyState(empty: boolean, message = 'No geotagged scans yet'): void {
     const countEl = document.getElementById('geomap-count')
-    if (countEl) countEl.textContent = this._locations.length > 0 ? `${this._locations.length} mapped` : '0 mapped'
+    if (countEl) countEl.textContent = `${this._locations.length} project${this._locations.length === 1 ? '' : 's'}`
     if (!this._emptyEl) return
     this._emptyEl.style.display = empty ? 'flex' : 'none'
     const msg = this._emptyEl.querySelector<HTMLElement>('[data-empty-message]')
@@ -215,14 +212,14 @@ export class GeoMap {
     el.id = 'geomap-drawer'
     el.style.cssText = `
       position: absolute;
-      bottom: 0; left: 0; right: 0;
-      height: 320px;
+      top: 44px; right: 0; bottom: 0; left: 0;
+      height: auto;
       background: #0a222e;
       border-top: 1px solid rgba(255,255,255,0.12);
       display: none;
       flex-direction: column;
-      z-index: 100;
-      transform: translateY(100%);
+      z-index: 2000000;
+      transform: translateY(102%);
       transition: transform 0.3s cubic-bezier(0.4,0,0.2,1);
     `
 
@@ -244,6 +241,11 @@ export class GeoMap {
           font-size: 11px; font-weight: 700; color: #fff;
           box-shadow: 0 2px 8px rgba(0,0,0,0.5);
           position: relative;
+        }
+
+        .geomap-pin-active {
+          outline: 4px solid rgba(114,221,212,0.4);
+          outline-offset: 3px;
         }
 
         .geomap-bearing-arrow {
@@ -283,7 +285,7 @@ export class GeoMap {
     header.innerHTML = `
       <div style="display:flex;align-items:center;gap:8px;">
         <span style="font-size:14px;">🗺</span>
-        <span style="font-size:12px;font-weight:700;color:#fff;letter-spacing:0.03em;">Scan Locations</span>
+        <span style="font-size:12px;font-weight:700;color:#fff;letter-spacing:0.03em;">Projects</span>
         <span id="geomap-count" style="font-size:10px;color:rgba(255,255,255,0.35);"></span>
       </div>
       <button id="geomap-close" style="background:transparent;border:none;color:rgba(255,255,255,0.4);font-size:16px;cursor:pointer;padding:2px 8px;border-radius:4px;">✕</button>
@@ -304,8 +306,8 @@ export class GeoMap {
     `
     this._emptyEl.innerHTML = `
       <div style="width:42px;height:42px;border-radius:50%;border:1px solid rgba(114,221,212,0.36);display:flex;align-items:center;justify-content:center;color:#72ddd4;">Map</div>
-      <div data-empty-message>No geotagged scans yet</div>
-      <div style="font-size:10px;color:rgba(239,240,240,0.36);max-width:240px;line-height:1.5;">Capture with location enabled or import scans with GeoPose metadata.</div>
+      <div data-empty-message>No located projects yet</div>
+      <div style="font-size:10px;color:rgba(239,240,240,0.36);max-width:240px;line-height:1.5;">Save a project location in the scanner to make it available here.</div>
     `
 
     el.appendChild(header)
@@ -329,37 +331,33 @@ const PIN_COLORS = [
 ]
 
 let _pinColorIdx = 0
-const _filenameColorCache = new Map<string, string>()
+const _projectColorCache = new Map<string, string>()
 
-function pinColor(filename: string): string {
-  if (!_filenameColorCache.has(filename)) {
-    _filenameColorCache.set(filename, PIN_COLORS[_pinColorIdx++ % PIN_COLORS.length]!)
+function pinColor(projectId: string): string {
+  if (!_projectColorCache.has(projectId)) {
+    _projectColorCache.set(projectId, PIN_COLORS[_pinColorIdx++ % PIN_COLORS.length]!)
   }
-  return _filenameColorCache.get(filename)!
+  return _projectColorCache.get(projectId)!
 }
 
-function buildPinHtml(loc: ScanLocationEntry, bearingDeg: number): string {
-  const color = pinColor(loc.filename)
-  const label = (loc.scanName ?? loc.filename.replace(/^\d+_/, '').replace(/\.glb$/, '')).slice(0, 2).toUpperCase()
-  const rotStyle = loc.bearing !== null
-    ? `transform: rotate(${bearingDeg}deg); display: block;`
-    : 'display: none;'
+function buildPinHtml(loc: ProjectLocationEntry, active: boolean): string {
+  const color = pinColor(loc.projectId)
+  const label = loc.name.slice(0, 2).toUpperCase()
   return `
-    <div class="geomap-pin" style="background:${color};">
-      <div class="geomap-bearing-arrow" style="${rotStyle}"></div>
+    <div class="geomap-pin ${active ? 'geomap-pin-active' : ''}" style="background:${color};">
       <span style="transform:rotate(45deg);display:block;">${label}</span>
     </div>
   `
 }
 
-function buildPopupHtml(loc: ScanLocationEntry): string {
-  const color = pinColor(loc.filename)
-  const name = loc.scanName ?? loc.filename.replace(/^\d+_/, '').replace(/\.glb$/, '')
+function buildPopupHtml(loc: ProjectLocationEntry): string {
+  const color = pinColor(loc.projectId)
+  const name = loc.name
   const date = loc.capturedAt ? new Date(loc.capturedAt).toLocaleString(undefined, {
     month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
   }) : null
 
-  const mapUrl = `https://maps.google.com/maps?q=${loc.lat.toFixed(6)},${loc.lng.toFixed(6)}`
+  const mapUrl = `https://maps.google.com/maps?q=${loc.lat!.toFixed(6)},${loc.lng!.toFixed(6)}`
 
   return `
     <div style="padding:12px 14px;min-width:180px;">
@@ -369,11 +367,9 @@ function buildPopupHtml(loc: ScanLocationEntry): string {
       </div>
       ${loc.address ? `<div style="font-size:11px;color:rgba(255,255,255,0.55);margin-bottom:6px;line-height:1.4;">${escHtml(loc.address)}</div>` : ''}
       <div style="font-size:10px;color:rgba(255,255,255,0.35);line-height:1.7;font-family:monospace;">
-        ${loc.lat.toFixed(5)}°, ${loc.lng.toFixed(5)}°<br>
-        ${loc.bearing !== null ? `↗ ${Math.round(loc.bearing)}° bearing<br>` : ''}
+        ${loc.lat!.toFixed(5)}°, ${loc.lng!.toFixed(5)}°<br>
         ${date ? `📅 ${date}<br>` : ''}
-        ${loc.pointCount   ? `☁ ${loc.pointCount.toLocaleString()} pts<br>` : ''}
-        ${loc.detectionCount ? `📍 ${loc.detectionCount} objects` : ''}
+        ${loc.scanCount} scan${loc.scanCount === 1 ? '' : 's'}
       </div>
       <a href="${mapUrl}" target="_blank" rel="noopener noreferrer"
          style="display:inline-block;margin-top:8px;font-size:10px;color:rgba(114,221,212,0.8);text-decoration:none;">

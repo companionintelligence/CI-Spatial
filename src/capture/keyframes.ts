@@ -16,6 +16,7 @@
  *   - streaming pauses while the page is hidden (battery)
  */
 import type { ARProvider, Pose } from '../ar/provider'
+import { isQueuedOffline } from '../shared/offline-queue'
 
 export interface KeyframeStreamerOptions {
   /** Min time between keyframes (default 1200 ms) */
@@ -89,6 +90,24 @@ export class KeyframeStreamer {
 
   onStatus: ((s: StreamerStatus) => void) | null = null
 
+  /**
+   * Fires when the server session id changes — the id on `start()`, `null`
+   * when `stop()` closes one. The streamer used to hold this privately, which
+   * is how the client and the server ended up naming a capture session
+   * differently: the only id that names a real directory was never published
+   * to anything that writes it into a scan. `src/main.ts` wires this to
+   * `DetectionStore`.
+   *
+   * The `null` is a genuine "the session is closed" signal, not an instruction
+   * to forget it. `DetectionStore` deliberately keeps the id it adopted: the
+   * captures already in the store really did come from that session, whose
+   * directory exists on the server with its keyframes, and re-keying the
+   * record back to a local id would strand that association for nothing.
+   * `rotate()` is `stop()` + `start()`, so a rotation emits `null` and then
+   * the new id.
+   */
+  onSessionId: ((sessionId: string | null) => void) | null = null
+
   constructor(
     private readonly provider: ARProvider,
     opts: KeyframeStreamerOptions = {},
@@ -110,6 +129,14 @@ export class KeyframeStreamer {
       signal: AbortSignal.timeout(10_000),
     })
     if (!resp.ok) throw new Error(`POST /sessions → ${resp.status}`)
+    // Offline, the service worker queues this and answers 202 — which is ok,
+    // but carries no sessionId. Accepting it started a "session" whose every
+    // frame was encoded and then dropped by _pump's `if (!this._sessionId)`
+    // guard: battery burned, counter stuck at 0, no error anywhere. There is
+    // nothing to stream to until the server actually answers.
+    if (isQueuedOffline(resp)) {
+      throw new Error('Offline — keyframe streaming needs a live connection to the server')
+    }
     const { sessionId } = await resp.json() as { sessionId: string }
 
     this._sessionId = sessionId
@@ -122,6 +149,7 @@ export class KeyframeStreamer {
     this._active = true
     this._pollHandle = setInterval(() => void this._tick(), this._opts.pollIntervalMs)
     this._emit()
+    this.onSessionId?.(sessionId)
     console.log(`[keyframes] streaming to ${sessionId}`)
   }
 
@@ -150,6 +178,9 @@ export class KeyframeStreamer {
     this._sessionId = null
     this._emit()
     if (!sessionId) return
+    // Announced as soon as the id is cleared, before the finalize round-trip,
+    // so a listener's view of "is a session open" never lags the streamer's.
+    this.onSessionId?.(null)
 
     try {
       await fetch(`/sessions/${sessionId}/finalize`, {
@@ -293,6 +324,13 @@ export class KeyframeStreamer {
           body: form,
           signal: AbortSignal.timeout(20_000),
         })
+        // A queued-offline response is 2xx, so resp.ok alone counted this frame
+        // as sent — which suppressed _offlineUntil and left the phone encoding
+        // a full-res JPEG every 1.2s into a growing IndexedDB queue, precisely
+        // while the network was down. Report not-sent so the caller backs off;
+        // the queued request still replays on reconnect. Returning early also
+        // skips the retry loop: re-POSTing only queues another copy.
+        if (isQueuedOffline(resp)) return false
         if (resp.ok) return true
         if (resp.status >= 400 && resp.status < 500) return false // not retryable
       } catch { /* network error or timeout — retry */ }

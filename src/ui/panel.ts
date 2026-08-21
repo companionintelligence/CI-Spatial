@@ -6,7 +6,7 @@
  *   - Inline edit of label + description
  */
 import type { DetectionStore, StoredDetection } from '../scene/store'
-import type { InferMode } from '../inference/router'
+import { WEBGPU_INFERENCE_ENABLED, type InferMode } from '../inference/router'
 import { icon, iconLabel, type IconName } from './icons'
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -22,6 +22,36 @@ function categoryColor(label: string): string {
 }
 function fmtCoord(v: number): string { return v.toFixed(2) }
 
+/**
+ * What the Export button should say when the export settles.
+ *
+ * The button used to read "Exported" for every one of these. `onExport`
+ * returned `void` and its producer swallowed its own errors, so `await
+ * this.onExport()` never threw and the catch below was unreachable code — a
+ * failed export, a cancelled one, and a successful one were indistinguishable
+ * on screen. Reporting the outcome as a value rather than as the absence of an
+ * exception is what makes the difference visible.
+ */
+export type ExportOutcome =
+  /** Downloaded and the server has it. */
+  | 'exported'
+  /** Downloaded; the upload is queued offline and replays on reconnect. */
+  | 'queued'
+  /** Downloaded, but the server rejected it. The file is on the device. */
+  | 'local-only'
+  /** The user backed out (e.g. declined the low-quality confirm). */
+  | 'cancelled'
+  /** The export itself failed; there is no file. */
+  | 'failed'
+
+const EXPORT_LABELS: Record<ExportOutcome, string> = {
+  exported: 'Exported',
+  queued: 'Saved — will sync',
+  'local-only': 'Saved on device',
+  cancelled: 'Cancelled',
+  failed: 'Export failed',
+}
+
 export class SidePanel {
   private panel: HTMLElement
   private content: HTMLElement
@@ -36,7 +66,7 @@ export class SidePanel {
 
   constructor(
     private readonly store: DetectionStore,
-    private readonly onExport: () => void | Promise<void>,
+    private readonly onExport: () => ExportOutcome | Promise<ExportOutcome>,
     private readonly onSummary?: () => void,
     private readonly onProcess?: (action: string) => void,
     private readonly onInferMode?: (mode: InferMode) => void,
@@ -84,11 +114,15 @@ export class SidePanel {
       exportBtn.disabled = true
       exportBtn.textContent = 'Exporting...'
       try {
-        await this.onExport()
-        exportBtn.textContent = 'Exported'
-        setTimeout(() => { exportBtn.textContent = 'Export GLB' }, 1400)
+        const outcome = await this.onExport()
+        exportBtn.textContent = EXPORT_LABELS[outcome] ?? EXPORT_LABELS.exported
+        // Leave a bad outcome up longer — it is the one worth reading.
+        setTimeout(() => { exportBtn.textContent = 'Export GLB' },
+          outcome === 'exported' || outcome === 'cancelled' ? 1400 : 2400)
       } catch {
-        exportBtn.textContent = 'Export failed'
+        // onExport is expected to report failure as a value; a throw means
+        // something unhandled, which is still the user's failed export.
+        exportBtn.textContent = EXPORT_LABELS.failed
         setTimeout(() => { exportBtn.textContent = 'Export GLB' }, 1800)
       } finally {
         exportBtn.disabled = false
@@ -168,9 +202,14 @@ export class SidePanel {
       }
 
       this._aiServerBtn = mkToggle('monitor', 'Server', 'server')
-      this._aiWebGPUBtn = mkToggle('bolt', 'WebGPU', 'webgpu')
       aiRow.appendChild(this._aiServerBtn)
-      aiRow.appendChild(this._aiWebGPUBtn)
+      // The WebGPU control is not built while the path is gated off. Every
+      // consumer of _aiWebGPUBtn is already null-guarded, so leaving it null is
+      // enough — the button simply never exists. Wave 05 restores it.
+      if (WEBGPU_INFERENCE_ENABLED) {
+        this._aiWebGPUBtn = mkToggle('bolt', 'WebGPU', 'webgpu')
+        aiRow.appendChild(this._aiWebGPUBtn)
+      }
       aiWrap.appendChild(aiRow)
 
       const aiNote = document.createElement('div')
@@ -381,19 +420,24 @@ export class SidePanel {
     // Inline edit form
     const editForm = document.createElement('div')
     editForm.style.cssText = 'display:none;margin-top:8px;'
-    const safeLabel = det.label.replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    const safeDesc = det.description.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    // Structure only — the label/description are user- and VLM-authored text and
+    // are assigned as DOM properties below, never interpolated. Interpolating them
+    // into the value="" attribute truncated any label containing a double quote
+    // (a plausible one: `Samsung 27" monitor`), and reopening the form then saved
+    // the truncated string back over the real one.
     editForm.innerHTML = `
-      <input type="text" value="${safeLabel}" placeholder="Label"
+      <input type="text" placeholder="Label"
         class="ci-field"
         style="margin-bottom:5px;" />
       <textarea placeholder="Description" rows="2"
-        class="ci-field ci-textarea">${safeDesc}</textarea>
+        class="ci-field ci-textarea"></textarea>
       <div style="display:flex;gap:6px;margin-top:5px;">
         <button class="edit-save ci-inline-btn ci-inline-btn--primary" style="flex:1;">Save</button>
         <button class="edit-cancel ci-inline-btn ci-inline-btn--muted" style="flex:1;">Cancel</button>
       </div>
     `
+    editForm.querySelector<HTMLInputElement>('input')!.value = det.label
+    editForm.querySelector<HTMLTextAreaElement>('textarea')!.value = det.description
 
     editBtn.addEventListener('click', (e) => {
       e.stopPropagation()

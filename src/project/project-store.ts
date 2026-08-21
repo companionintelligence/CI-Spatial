@@ -13,55 +13,17 @@
 
 // ── Data types ─────────────────────────────────────────────────────────────────
 
-export type ScanStatus = 'draft' | 'ready' | 'archived'
+export type {
+  Floor,
+  Project,
+  ScanCalibration,
+  Room,
+  ScanEntry,
+  ScanEntryQualitySummary,
+  ScanStatus,
+} from '../world/types'
 
-export interface Room {
-  roomId: string
-  name: string
-  zone?: string
-}
-
-export interface Floor {
-  floorId: string
-  /** Display label, e.g. "Ground Floor" or "Level 2" */
-  name: string
-  /** Ordinal level number (0 = ground) */
-  level: number
-  rooms: Room[]
-}
-
-export interface Project {
-  projectId: string
-  name: string
-  address?: string
-  notes?: string
-  createdAt: number
-  updatedAt: number
-  floors: Floor[]
-}
-
-export interface ScanQualitySummary {
-  coverageScore: number    // 0–1
-  lowLightFrames: number
-  driftEvents: number
-  reflectiveWarnings: number
-  pointCount: number
-}
-
-export interface ScanEntry {
-  scanId: string
-  projectId: string
-  sessionId: string
-  /** Filename of the uploaded .glb on the server (if already uploaded) */
-  scanFilename?: string
-  floorId?: string
-  roomId?: string
-  name: string
-  status: ScanStatus
-  capturedAt: number
-  notes?: string
-  qualitySummary?: ScanQualitySummary
-}
+import type { Floor, Project, Room, ScanEntry } from '../world/types'
 
 // ── DB constants ───────────────────────────────────────────────────────────────
 
@@ -96,13 +58,14 @@ export class ProjectStore {
 
   // ── Project CRUD ─────────────────────────────────────────────────────────────
 
-  async createProject(name: string, address?: string, notes?: string): Promise<Project> {
+  async createProject(name: string, address?: string, notes?: string, geoPose?: Project['geoPose']): Promise<Project> {
     const now = Date.now()
     const project: Project = {
       projectId: `proj-${now}`,
       name,
       address,
       notes,
+      geoPose,
       createdAt: now,
       updatedAt: now,
       floors: [{
@@ -178,8 +141,17 @@ export class ProjectStore {
     return this._get<ScanEntry>(SCANS_STORE, scanId)
   }
 
-  async listScans(projectId: string): Promise<ScanEntry[]> {
+  async listScans(projectId: string | null): Promise<ScanEntry[]> {
     if (!this.db) return []
+    // `null` is not a valid IndexedDB key: a scan with projectId: null never
+    // gets an entry in the byProject index at all (the spec skips index entries
+    // for invalid key-path values), so it can never be found through it, and
+    // passing `null` as the index query is itself invalid. Unassigned scans
+    // therefore need a full-store scan, not the index.
+    if (projectId === null) {
+      const all = await this._getAll<ScanEntry>(SCANS_STORE)
+      return all.filter(scan => scan.projectId === null).sort((a, b) => b.capturedAt - a.capturedAt)
+    }
     return new Promise((resolve, reject) => {
       const tx = this.db!.transaction(SCANS_STORE, 'readonly')
       const req = tx.objectStore(SCANS_STORE).index('byProject').getAll(projectId)

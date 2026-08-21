@@ -35,6 +35,12 @@ export function geoToEnu(origin: GeoPose, pose: GeoPose): Vec3 {
   return { x: east, y: up, z: north }
 }
 
+export function distanceM(a: GeoPose, b: GeoPose): number | null {
+  if (!hasGeoPose(a) || !hasGeoPose(b)) return null
+  const delta = geoToEnu(a, b)
+  return Math.sqrt(delta.x ** 2 + delta.z ** 2)
+}
+
 export function enuToGeo(origin: GeoPose, local: Vec3): GeoPose {
   if (!hasGeoPose(origin)) {
     return { lat: null, lng: null, altitudeM: null, bearing: null, accuracyM: null }

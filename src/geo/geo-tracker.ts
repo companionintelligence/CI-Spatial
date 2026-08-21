@@ -14,6 +14,7 @@
  *   await geo.start()
  *   const fix = geo.snapshot()   // { lat, lng, accuracy, bearing, address, ... }
  */
+import { GEO_FIX_SESSION_KEY } from '../shared/storage-keys'
 
 export interface GeoFix {
   /** WGS-84 latitude */
@@ -48,7 +49,7 @@ export interface AddressComponents {
 }
 
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/reverse'
-const SESSION_KEY   = 'ci-xr-geo-fix'
+const SESSION_KEY   = GEO_FIX_SESSION_KEY
 
 export class GeoTracker {
   private _fix: GeoFix | null = null
@@ -193,7 +194,7 @@ export class GeoTracker {
       url.searchParams.set('addressdetails', '1')
 
       const resp = await fetch(url.toString(), {
-        headers: { 'Accept-Language': 'en', 'User-Agent': 'ci-xr-scan/1.0' },
+        headers: { 'Accept-Language': 'en', 'User-Agent': 'ci-spatial/1.0' },
         signal: AbortSignal.timeout(5000),
       })
       if (!resp.ok) return

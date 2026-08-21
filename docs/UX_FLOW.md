@@ -1,10 +1,17 @@
-# UX Flow & FTUE Spec — Companion Scan
+# UX Flow & FTUE Spec — CI-Spatial
 
 > Design doc for contributors and designers. Describes how the everyday-user experience *should* flow, grounded in what exists in the code today. IDs, labels, and copy quoted here are verified against the tree at HEAD. Where something is a recommendation rather than current behavior, it is marked **[proposed]**.
 
 **Related docs:** [README.md](../README.md) · [architecture.md](../architecture.md) (canonical system design) · [docs/UI_MANUAL.md](./UI_MANUAL.md) (exhaustive control catalog) · [roadmap.md](../roadmap.md) (timelines / shipped-vs-planned)
 
 This doc sits between architecture.md (the engineer's system sequence) and UI_MANUAL.md (the surface-by-surface control reference). It owns the *narrative*: the first-time journey, the mental model of the four capture pipelines, and the FTUE improvement backlog.
+
+> **Current product vocabulary:** the user starts with a **Place**, may choose
+> an **Area** such as a room or floor, then creates or uploads a **Scan**. The
+> desktop destination is the **Companion Scan Spatial Editor** at `/editor`.
+> See [PLACE_SCAN_DESIGN.md](PLACE_SCAN_DESIGN.md) for the canonical contract;
+> legacy `WorldProject` language in implementation details refers to the
+> compatible ENU scene record, not a separate user concept.
 
 **📸 Screenshot gallery:** [docs/ui-flow/](./ui-flow/) shows mobile + desktop screenshots of every flow below, generated automatically from the running app by [`tests/mock-ui-mobile.spec.ts`](../tests/mock-ui-mobile.spec.ts) and [`tests/mock-ui-desktop.spec.ts`](../tests/mock-ui-desktop.spec.ts). Representative shots are embedded per phase in §4.
 
@@ -26,13 +33,17 @@ Everything in this doc is measured against that persona. Jargon, hidden verdicts
 
 ### What a "4D map" is (one paragraph)
 
-A **4D map** in Companion Scan is a `WorldProject` (`src/world/types.ts`): an anchored spatial container living in a single `LocalFrame` of type `ENU_Y_UP` — units in **meters**, axes **x = east, y = up, z = north**, anchored at an `originGeoPose` (lat/lng/altitude/bearing). It holds one or more `ScanManifest`s, each carrying typed **layers** — `points`, `mesh`, `floor`, `detections`, `labels`, `cameraPath`, `cameraFrustums`, `rgbFrames`, `depth`, `splat`, `semanticMasks` — so geometry, semantics, and provenance are addressable separately instead of fused into one flat mesh (that is the *structured* part). The **4th dimension is time**: it does not live in a single mesh but in the per-frame observation stream (`FrameObservation.timestamp` + pose/intrinsics/frustum — the camera's path through the space over capture time), in each scan's `capturedAt`, and in the append-only `EditPatch[]` edit history (every patch stamped `createdAt`). Because of that time axis, one world can hold **multiple scans of the same place captured at different moments** and replay the camera trajectory — the map is a time-series of posed observations composed into one anchored frame, not a static snapshot.
+A **4D map** in CI-Spatial is a `WorldProject` (`src/world/types.ts`): an anchored spatial container living in a single `LocalFrame` of type `ENU_Y_UP` — units in **meters**, axes **x = east, y = up, z = north**, anchored at an `originGeoPose` (lat/lng/altitude/bearing). It holds one or more `ScanManifest`s, each carrying typed **layers** — `points`, `mesh`, `floor`, `detections`, `labels`, `cameraPath`, `cameraFrustums`, `rgbFrames`, `depth`, `splat`, `semanticMasks` — so geometry, semantics, and provenance are addressable separately instead of fused into one flat mesh (that is the *structured* part). The **4th dimension is time**: it does not live in a single mesh but in the per-frame observation stream (`FrameObservation.timestamp` + pose/intrinsics/frustum — the camera's path through the space over capture time), in each scan's `capturedAt`, and in the append-only `EditPatch[]` edit history (every patch stamped `createdAt`). Because of that time axis, one world can hold **multiple scans of the same place captured at different moments** and replay the camera trajectory — the map is a time-series of posed observations composed into one anchored frame, not a static snapshot.
 
 ---
 
 ## 2. End-to-end journey map
 
-Five phases. Phases 0–1 happen on the **phone** (scanner). Phases 2–4 happen in the **desktop world editor** (`viewer.html`) plus the async server job queue.
+Five phases. The first decision is always the **Place** (and, when useful, an
+**Area**). Phases 0–1 happen on the phone through **Scan a Place** or **Upload
+Content from a Place**. Phases 2–4 happen in the **Companion Scan Spatial
+Editor** (`/editor`, implemented by `viewer.html`) plus the async server job
+queue.
 
 ```mermaid
 flowchart TD
@@ -43,8 +54,9 @@ flowchart TD
     A1 --> A2 --> A3
   end
 
-  subgraph scan ["Phase 1 - Scan a room - phone"]
-    B1["Move slowly - tracking init"]
+  subgraph scan ["Phase 1 - Scan or upload content from a Place"]
+    B0["Choose/create Place -> optional Area -> calibrate"]
+    B1["Scan: move slowly - tracking init; Upload: select media"]
     B2{"Capture mode?"}
     B3["Manual - tap capture-btn"]
     B4["Auto-capture - snap while walking"]
@@ -62,16 +74,16 @@ flowchart TD
     B6 --> B7
   end
 
-  subgraph structure ["Phase 2 - Structure into 4D map - desktop editor"]
-    C1["Autosave + Export GLB into world"]
-    C2["Scan placed in ENU frame - GPS auto or manual grid"]
+  subgraph structure ["Phase 2 - Structure a Place - Spatial Editor"]
+    C1["Autosave + Export GLB into the selected Place"]
+    C2["Scan placed in ENU frame - GPS anchor plus repeatable local calibration"]
     C3["Inspect layers - toggle - measure"]
     C4["Edit tab - move / rotate / tag / notes -> EditPatch"]
     C1 --> C2 --> C3 --> C4
   end
 
-  subgraph process ["Phase 3 - Reconstruction / detection jobs - server queue"]
-    D1["Queue World job - async /jobs"]
+  subgraph process ["Phase 3 - Guided processing - server queue"]
+    D1["Prepare -> Understand -> Reconstruct -> Publish"]
     D2["lingbot-map-reconstruct -> point cloud + poses"]
     D3["splat-train -> splat.ply"]
     D4["splat-detect -> interactions.json boxes"]
@@ -82,10 +94,10 @@ flowchart TD
     D1 --> D5
   end
 
-  subgraph share ["Phase 4 - Export / share the world"]
-    E1["Share links - owner / editor / viewer / scanner"]
-    E2["export-world job - bundled world"]
-    E3["Recipient opens /worlds/slug read-only"]
+  subgraph share ["Phase 4 - Export / share the Place"]
+    E1["Share links - view / comment / edit / scanner / owner"]
+    E2["export-world job - bundled Place artifact"]
+    E3["Recipient opens the scoped Spatial Editor"]
     E1 --> E3
     E2 --> E3
   end
@@ -112,7 +124,7 @@ The three steps, quoted verbatim from `index.html`:
 |---|---|---|---|
 | 0 | 📸 | **Camera & Motion Access** | "Companion Scan needs your camera to see the room and motion sensors to track your position. You'll be prompted to allow both." |
 | 1 | 🔄 | **Scan Your Space** | "Move slowly and steadily around the room. Point at different surfaces — the app builds a 3D point cloud in real time. Tap the capture button to identify objects with AI." |
-| 2 | 💾 | **Export & View in 3D** | "When done, export your scan as a .glb file. Open the desktop viewer to explore, label, and compose multiple scans into a shared world." |
+| 2 | 💾 | **Export & Open Place** | "When done, export your scan as a .glb file. Open the Spatial Editor to explore, label, and compose scans in the same Place." |
 
 **Controls:** `#onboard-next-btn` (label flips to **`Get Started`** on the last step), three `.onboard-dot` progress dots, and `#onboard-skip` (**`Skip tutorial`**). On finish or skip, `finish()` writes `localStorage['companion-scan-onboarded'] = '1'` and hides the overlay.
 
@@ -120,14 +132,20 @@ The three steps, quoted verbatim from `index.html`:
 
 **Re-entry:** the `#help-btn` (`?`, top-right, revealed after onboarding resolves) re-plays the overlay from step 0.
 
-**Permission timing:** after onboarding resolves, the flow blocks on a `Start AR` click. Inside that click handler, *before any await*, it synchronously calls `DeviceOrientationEvent.requestPermission()` / `DeviceMotionEvent.requestPermission()` (the iOS 13+ motion prompt). The **camera** prompt fires slightly later, inside `provider.start(canvas)`.
+**Place step:** after the onboarding overlay resolves and before the scanner can open, `#place-sheet` identifies the current place from geolocation. It lists saved places within 100 m, one row per named place even when several share coordinates. `New place` lets the user accept the current fix or edit latitude/longitude and save a new project; selecting an existing row reuses that project. `Decide later` keeps the scan unassigned.
+
+**Permission timing:** after onboarding and place selection resolve, the flow blocks on a `Start AR` click. Inside that click handler, *before any await*, it synchronously calls `DeviceOrientationEvent.requestPermission()` / `DeviceMotionEvent.requestPermission()` (the iOS 13+ motion prompt). The **camera** prompt fires slightly later, inside `provider.start(canvas)`.
+
+**Readiness:** that permission call cannot be buffered and replayed later — it must sit in a real, await-free gesture handler — so the handler *is* the tap, and the only question is how early it can exist. It is attached at the top of `main()` (section 0), before the IndexedDB stores and the inference router's model load, none of which the button needs. A tap during boot is therefore honoured: it dismisses the start screen, requests motion permission inside the genuine gesture, and AR starts when section 5 is reached. `#start-ar-btn` still ships `disabled aria-busy="true"` with a `Preparing…` line in the static markup, and `setStartButtonState('ready')` clears it — that now covers only the ~50 ms until section 0 runs, plus the case where the bundle never loads at all, where staying disabled is the honest state. The same helper puts the card into a terminal `unavailable` state on the boot paths that give up (insecure context, no AR runtime, a crash in `main()`).
+
+Because an early tap removes the start screen, `showArHelp()` — whose `#ar-help` element lives inside it — falls back to `#permission-error-banner` (a sibling that survives) when the screen is already gone, so "no AR runtime" cannot end as a blank screen.
 
 ### 3.2 Prioritized FTUE improvements
 
 Ordered by value to the everyday user. Each is grounded in a specific, verified gap.
 
 1. **Surface the completion verdict + a Done/Finish affordance on the phone (highest value).**
-   The quality monitor already computes a verdict — `ScanQualitySummary.status` is `ready` / `needs-review` / `needs-rescan` plus a `recommendations[]` array (`quality-monitor.ts`). But it is **only written into the GLB and shown in the desktop viewer** — never rendered on the phone. The everyday user's core question ("do I have enough?") is answerable in code but invisible where it matters.
+   The quality monitor already computes a verdict — `ScanQualitySummary.status` is `ready` / `needs-review` / `needs-rescan` plus a `recommendations[]` array (`quality-monitor.ts`). But it is **only written into the GLB and shown in the Spatial Editor** — never rendered on the phone. The everyday user's core question ("do I have enough?") is answerable in code but invisible where it matters.
    → Render `qualityMonitor.summary(...)` as a status chip in the HUD (`✓ Ready to export` / `Review recommended` / `Keep scanning`) with the top recommendation, and add a **`Done / Finish scan`** control near `#capture-btn` that opens the panel scrolled to Export. Make "finished" a real, visible state.
 
 2. **Fix the help-button onboarding-key leak.**
@@ -143,7 +161,7 @@ Ordered by value to the everyday user. Each is grounded in a specific, verified 
    → Add a one-time labelled coach-mark sequence using outcome language ("Auto-snap as you walk", "Send frames for 3D/splat reconstruction"); give `#capture-btn` a shutter glyph and a distinct recording state when auto-capture is active; fold streaming into onboarding step 1's copy (today it mentions only "tap the capture button").
 
 5. **Group the action rail.**
-   `#scanner-action-rail` interleaves scan-tools (`📷` auto-capture, `☰` panel, `☁️` stream) with *navigate-away* controls (`🥽` runtime switch, `🖥` desktop viewer) in one undifferentiated emoji row. Tapping `🥽` or `🖥` performs a full navigation and silently abandons the live session.
+   `#scanner-action-rail` interleaves scan-tools (`📷` auto-capture, `☰` panel, `☁️` stream) with *navigate-away* controls (`🥽` runtime switch, `🖥` Spatial Editor) in one undifferentiated emoji row. Tapping `🥽` or `🖥` performs a full navigation and silently abandons the live session.
    → Split into a scan-tools cluster and a nav cluster; add short labels or first-use coach-marks; guard `🥽`/`🖥` with a "leave scan?" confirm when the session has unsaved points.
 
 6. **Close the loop after export.**
@@ -177,7 +195,7 @@ Rework the overlay to teach outcomes and set expectations for the four capture m
 - `#onboarding-overlay` — the 3 steps in §3.1.
 - Permission prompts — iOS motion (from the `Start AR` click), then camera (from `provider.start`).
 
-**Guidance signals:** `#status-text` walks `Press Start AR to begin` → `Move camera to initialise tracking…`. On first SLAM lock it flips once to `Tracking — tap to capture`.
+**Guidance signals:** `#status-text` walks `Press Start AR to begin` → `Move camera to initialise tracking…`. On first SLAM lock it flips once to `Tracking — tap to capture`. `#start-ar-btn` is enabled well *before* the status reaches `Press Start AR to begin` — it goes live at the top of the boot, and that status is only the prompt shown if the user hasn't already tapped. See **Readiness** in §3.1.
 
 **Gaps:**
 - Insecure-context bail shows developer copy + a dead greyed button; `main()` returns before onboarding ever runs.
@@ -220,7 +238,7 @@ The everyday user must understand there are **four distinct capture pipelines**,
 - WebGPU vs server inference is **opt-in** via `localStorage['infer-mode']` (the `AI Engine` toggle) — not auto-detected. Server-side is the default.
 - `needs-rescan` scans autosave and upload silently anyway; the user only learns the verdict later on desktop.
 
-**Note on inference (for accuracy):** default inference is `INFERENCE_MODE=ollama` with `OLLAMA_MODEL=moondream:latest`. `onnx` mode runs `LiquidAI/LFM2.5-VL-1.6B-ONNX`; `mock` mode is the deterministic colour-blob CV engine used in tests. See [architecture.md](../architecture.md) for the full inference explainer.
+**Note on inference (for accuracy):** default inference is `INFERENCE_MODE=ollama` with `OLLAMA_MODEL=qwen3-vl:4b`. `onnx` mode runs `LiquidAI/LFM2.5-VL-1.6B-ONNX`; `mock` mode is the deterministic colour-blob CV engine used in tests. See [architecture.md](../architecture.md) for the full inference explainer.
 
 **Recommended improvements:** items 1, 4, 5, 6 in §3.2; an animated sweep hint before first SLAM lock.
 
@@ -232,11 +250,11 @@ The everyday user must understand there are **four distinct capture pipelines**,
 
 **User goal:** open the world, see scans placed correctly, and organize/label/compose them.
 
-**Screens/controls today** (`viewer.html`, title "Companion Scan — World Editor", opened as `?world=<slug>&token=<token>`, default `world=default`):
+**Screens/controls today** (the **Companion Scan Spatial Editor** at `/editor?project=<id>`, implemented by `viewer.html`; legacy token/API paths remain compatible):
 - **Top toolbar** — render modes (one active): `◼ Solid` (`#mode-solid`), `☁ Points` (`#mode-points`), `⬡ Wire` (`#mode-wire`), `🏷 Semantic` (`#mode-semantic`); spatial tools `📏 Measure` (`#btn-measure`, two-click metric distance, real meters since the world is metric ENU), `🗺 Map` (`#btn-geomap`, Leaflet pins per GPS-tagged scan), `📡 Live` (`#btn-livefeed`, WebRTC PiP); nav `🥽 WebXR` (`#webxr-link`), `← AR App` (`#back-link`).
 - **Sidebar tabs** (`.sidebar-tab`): **Scans / World / Layers / Edit**.
   - **Scans** (`#scan-list`): `.scan-item` per scan with `.scan-visible` checkbox, name, `.scan-meta` (`<date> · accuracy N.Nm` or `manual align`), `.scan-status` (`<status> · NN% coverage`). Selecting a scan attaches the transform gizmo and jumps to Edit.
-  - **World** (`#world-panel-content`): stat tiles `#world-scan-count`, `#world-layer-count` (always 11), `#world-job-count`, `#world-origin-label` (`GPS` or `Local`); **Share Links** (`#share-links`, role rows owner/editor/viewer/scanner each with `Copy`); **Processing Queue** (`#job-type` select + `#btn-queue-job` "Queue Job" + `#job-list`).
+  - **Project**: Place details, Area hierarchy, scan/layer/job counts, GIS/local origin, and the time-range control live in the left drawer. **Share** is a top-bar menu with view/comment/edit/scanner/owner links. **Guided Processing** (Prepare, Understand, Reconstruct, Publish) and the advanced queue live in the right drawer.
   - **Layers** (`#layers-panel-content`): GLB+sidecar layers (`#layer-list` — Point cloud, Meshes, Floors, Detections, Labels, Camera path, Camera frustums, RGB frames, Depth, Semantic masks; `splat` excluded here; `.layer-meta` = `<count> · <source>` where source ∈ glb/sidecar/derived/future, count falls back to literal `planned`); LingBot-Map Reconstruction section (`#lingbot-map-status`, point/path toggles); Splat Toolbox (see Phase 3).
   - **Edit** (`#tab-edit`): empty-state `#edit-no-selection`; on selection — Selected Object (`#edit-obj-name`, `#edit-obj-meta`), Transform (`#transform-translate` "Move" / `#transform-rotate` "Rotate" / `#transform-scale` "Scale" + `#edit-save-transform` "Save Transform"), Semantic Tag (`#tag-grid`, 34 chips from `SEMANTIC_TAGS`), Notes (`#edit-notes` + `#edit-save-notes`), Visibility (`#edit-hide-object` "Hide Object (saved as patch)").
 - **Viewport HUD** — `⟳ Reset` (`#btn-reset-camera`), `☁ Cloud`, `🏷 Labels`, `⬡ Bounds`, `💾 Save Tags`; `#world-hud` compass, adaptive meter scale bar, ENU/geo coordinate readout; `#hud-info` counts; `#inspector-panel` on object click.
@@ -267,14 +285,14 @@ The everyday user must understand there are **four distinct capture pipelines**,
 
 **User goal:** turn raw scans into richer artifacts (dense point clouds, splats, detected objects) without understanding the pipeline.
 
-**Two queues exist — do not conflate them:**
-- The **World `/jobs` queue** (async, 10 `WorldJobType`s) — driven from the editor.
-- The `jobs.ts` **`optimize-scan`** queue — a separate server-side GLB optimizer that writes `.opt.glb` / `.lodN.glb` / `.manifest.json` and surfaces only as transient scan-status text ("Optimizing (quantize/draco/LODs)…"), not in the Processing Queue list. This is where **progressive LOD** comes from.
+**One queue, two UI surfaces — do not conflate them:**
+- The **Guided Processing** drawer shows the editor-driven stages — preparation, understanding, reconstruction, and publishing — with the advanced queue available for expert use.
+- **`optimize-scan`** — the GLB optimizer that writes `.opt.glb` / `.lodN.glb` / `.manifest.json` — runs through the *same* WorldJob queue since the 01-merge-jobs wave (`docs/adr/0003-merged-job-system.md`; it used to be a separate `jobs.ts` system), but deliberately keeps its original UI surface: transient scan-status text ("Optimization queued…" / "Optimizing (quantize/draco/LODs)…"), filtered *out* of the Processing Queue list so upload bursts can't crowd out the reconstruction jobs that panel exists to show. This is where **progressive LOD** comes from.
 
-**World job types (10):** `ingest`, `extract-layers`, `align-scan`, `merge-points`, `semantic-pass`, `depth-reconstruct`, `lingbot-map-reconstruct`, `splat-train`, `splat-detect`, `export-world`. The Queue-Job dropdown exposes 9 (omits `splat-detect`, fired from the Splat Toolbox). Keep these distinct from the **sync `/process-scan` actions** (`object-count`, `scene-description`, `floor-plan`) — a different route and pipeline, surfaced on the phone panel's `Server Processing` block.
+**World job types (13):** `ingest`, `extract-layers`, `align-scan`, `merge-points`, `semantic-pass`, `depth-reconstruct`, `lingbot-map-reconstruct`, `splat-train`, `splat-detect`, `splat-finish`, `memory-push`, `export-world`, `optimize-scan`. The Queue-Job dropdown exposes 10 of them (`#job-type` → `POST /worlds/:slug/jobs`); the other three are reached differently — `splat-detect` from the Splat Toolbox, `optimize-scan` automatically on upload (see above), and `memory-push` only via the API, with no UI entry point. Keep these distinct from the **sync `/process-scan` actions** (`object-count`, `scene-description`, `floor-plan`) — a different route and pipeline, surfaced on the phone panel's `Server Processing` block.
 
 **Screens/controls today:**
-- **Processing Queue** (World tab): `#job-type` select + `#btn-queue-job` "Queue Job" + `#job-list` (renders type + status + time only — no artifact links).
+- **Guided Processing** (right drawer): stage actions queue the relevant selected-scan jobs; **Advanced queue** retains `#job-type`, `#btn-queue-job`, and `#job-list` for expert use.
 - **Splat Toolbox** (Layers tab, `#splat-toolbox-section`): `#btn-splat-train` "Train splat"; `#splat-download-link` "Download .ply" (hidden until trained); `#splat-layer-toggle` "Show trained splat"; Detect objects — `#splat-detect-prompt` (placeholder `sofa, chair, table, tv, lamp`) + `#btn-splat-detect` "Detect" + `#splat-detect-toggle` "Show detected object boxes"; External splat `<details>` — `#splat-url-input` + `#btn-load-splat-url` "Load", `#splat-file-input` "Load from file…" (`.ply,.spz,.splat,.ksplat,.sog,.zip`).
 
 **What each job writes (✅ = real file when the worker is wired; ⚠ = plan/placeholder metadata only):**
@@ -290,12 +308,15 @@ The everyday user must understand there are **four distinct capture pipelines**,
 | `lingbot-map-reconstruct` | ✅ | `lingbot-map.manifest.json` + `.point-cloud.ply` + `.poses.json` + `.lingbot.glb`; **Layers → LingBot-Map Reconstruction** section |
 | `splat-train` | ✅ | `.splat.ply` (+ `.compressed.ply` + manifest); **Splat Toolbox** status "Trained splat ready — N gaussians", toggle, Download .ply |
 | `splat-detect` | ✅ | `.interactions.json` (+ manifest); **Splat Toolbox → Detect objects**; 3D boxes + labels in viewport |
+| `splat-finish` | ✅ | `.sog` + `.compressed.ply` (+ manifest); auto-chains after `splat-train` unless `SPLAT_FINISH_AUTO=0` |
+| `memory-push` | ✅ | `memory-event` (a `capture.scan` push to CI-Server); job list only — inert unless `CI_SERVER_URL` + token are set |
 | `export-world` | ⚠ | `world-export-plan` at `/worlds/<slug>`; job list only — **not yet a bundled download** |
+| `optimize-scan` | ✅ | `.opt.glb` + `.lodN.glb` + `.manifest.json`; surfaces as the per-scan status chip and progressive LOD loading — deliberately **not** in the job list (see above) |
 
 **Guidance signals:** on the `/events` WebSocket, a `world-job-update` with `status:completed` for the three real job types invalidates the scan's cached layer and re-runs the relevant panel refresh, so Layers updates without a manual reload. Failure reasons (`jobFailureReason`) are human-ish: `depth-reconstruct` / `lingbot-map-reconstruct` / `splat-train` fail fast without a `sessionId` ("requires RGB keyframe observations. Start keyframe streaming before export."); `align-scan` needs ≥2 scans; missing binaries (Brush, splat-analyzer, lingbot python) yield a **`skipped` manifest with a remediation hint** — the job still shows `completed`.
 
 **Gaps:**
-- **Planned-vs-real is invisible.** Six of ten job types write only plan/placeholder metadata yet report `completed` identically to the real ones. The distinction is only legible if the user reads status fine-print.
+- **Planned-vs-real is invisible.** Seven of thirteen job types write only plan/placeholder metadata yet report `completed` identically to the real ones. The distinction is only legible if the user reads status fine-print.
 - **When-to-run-which is undocumented in-UI.** `splat-detect` needs a trained `.splat.ply` (or lingbot cloud) first; `splat-train` needs a keyframe session; video-ingest scans silently need `lingbot-map-reconstruct` before training. The only feedback is a failure string *after* running.
 - **Job outputs aren't linked from where jobs launch.** `#job-list` shows type/status/time; results surface in a different tab (Layers) after re-selecting the scan. `#splat-download-link` is the sole download affordance.
 - Two queues both called "jobs" (`optimize-scan` LOD text vs the World queue) blur one mental model.
@@ -306,13 +327,13 @@ The everyday user must understand there are **four distinct capture pipelines**,
 
 ### Phase 4 — Export / share the world
 
-[![world tab share links](ui-flow/desktop/03-world-tab.png)](ui-flow/desktop/03-world-tab.png)
+[![project details and share controls](ui-flow/desktop/03-world-tab.png)](ui-flow/desktop/03-world-tab.png)
 
 **User goal:** hand a specific person a private, explorable copy — scoped to what they should see.
 
 **Screens/controls today:**
-- **Share Links** (World tab, `#share-links`): role rows **owner / editor / viewer / scanner**, each with a `Copy` button, sourced from `/worlds/<slug>/share`. Recipients open `/worlds/<shareSlug>` read-only (or with edit/scan rights per role).
-- **`export-world`** job (Queue-Job dropdown): writes a `world-export-plan` manifest today — **not yet a one-click bundled GLB/ZIP download**, and there is no dedicated "Export" button on the World tab (it's buried as a dropdown option).
+- **Share** (top bar, `#share-links`): copyable **view / comment / edit / scanner / owner** capability links sourced from `/worlds/<slug>/share`. Recipients open only the granted Place in the Spatial Editor.
+- **Publish** (right drawer): exports or syncs an approved Place; `export-world` remains the compatibility job name until the server API is renamed.
 
 **Guidance signals:** the World-tab stat tiles (scan/layer/job counts, origin label) give a sense of world completeness before sharing.
 
@@ -383,7 +404,7 @@ Building on the merged accessibility/onboarding work:
 4. **Verdict-gated export.** Once the verdict is on the phone, how hard should `needs-rescan` gate export — a soft confirm, or a stronger nudge? How do we avoid nagging users who legitimately want a partial scan?
 5. **Capture-mode defaults.** Should keyframe streaming be on by default (so reconstruction jobs "just work" later) or stay opt-in to save bandwidth? How do we teach the tradeoff without a wall of text?
 6. **Job prerequisites in-UI.** Should the editor auto-chain dependent jobs (e.g. auto-run `lingbot-map-reconstruct` before `splat-train` for video-ingest scans) or just surface the ordering as guidance?
-7. **Share confidence.** How do we communicate role capabilities (owner/editor/viewer/scanner) at the moment of sharing so an owner knows exactly what a recipient will and won't be able to do?
+7. **Share confidence.** How do we communicate view/comment/edit/scanner/owner capability boundaries at the moment of sharing so an owner knows exactly what a recipient will and will not be able to do?
 
 ---
 

@@ -1,0 +1,31 @@
+# .factory/config — Factory kit settings for this repo. Copy to `.factory/config`.
+# All values are optional; anything unset is derived from `gh`/`git` at runtime.
+# Uncomment and edit as needed.
+#
+# NOTE (this repo's policy, see CLAUDE.md / docs/FACTORY.md): tickets are drafted
+# locally under docs/factory/<wave-name>/ and are never created as GitHub issues.
+# FACTORY_PROJECT/LABEL/REPO/OWNER below only matter for the CLI's GitHub-issue
+# subcommands (create/start/finish/verify/question/decision/report), which this repo
+# does not use. Only FACTORY_ADR_DIR and FACTORY_OUT are currently relevant.
+
+# Project board title to add new tickets to. (unused under current policy)
+# FACTORY_PROJECT="Factory"
+
+# Label applied to every Factory ticket (and used by `report` to find them). (unused)
+# FACTORY_LABEL="factory"
+
+# owner/repo — only needed if `gh repo view` can't infer it. (unused)
+# FACTORY_REPO="acme/widget"
+
+# Project owner login (org or user) that owns the board. (unused)
+# FACTORY_OWNER="acme"
+
+# Where Architecture Decision Records live.
+# FACTORY_ADR_DIR="docs/adr"
+
+# Where `report` writes metrics.csv.
+# FACTORY_OUT=".factory"
+
+# Base branch for the files-changed count in the telemetry trailer.
+# Leave unset to auto-detect (origin/HEAD, then main/master).
+# FACTORY_DEFAULT_BRANCH="main"

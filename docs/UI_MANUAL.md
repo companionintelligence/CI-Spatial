@@ -1,9 +1,16 @@
-# Companion Scan — UI/UX Manual
+# CI-Spatial — UI/UX Manual
 
-A surface-by-surface guide to every screen and interactive control in Companion Scan:
+> **Current product model:** the scanner and uploader start with a Place
+> selection, optionally choose an Area, and open the Companion Scan Spatial
+> Editor at `/editor`. The top bar owns account, Place status, sharing, and
+> view visibility; the left drawer owns Place/Scan management; the right drawer
+> owns guided processing and review. See [PLACE_SCAN_DESIGN.md](PLACE_SCAN_DESIGN.md)
+> for the authoritative UX contract.
+
+A surface-by-surface guide to every screen and interactive control in CI-Spatial:
 the mobile AR scanner (`index.html` + `src/main.ts` + `src/ui/*`), the WebXR landing
 page (`webxr.html`), the phone smoke-test page (`public/smoke.html`), and the desktop
-World Scan Editor (`viewer.html` + `src/viewer/*`).
+Companion Scan Spatial Editor (`/editor`, implemented by `viewer.html` + `src/viewer/*`).
 
 All screenshots in `docs/ui-manual/` were captured from a live instance (Deno API in
 `INFERENCE_MODE=mock`, Vite dev server, seeded with the generated test-home corpus and
@@ -23,7 +30,7 @@ Contents:
 7. [History drawer — Scan Memory](#7-history-drawer--scan-memory)
 8. [WebXR landing page](#8-webxr-landing-page)
 9. [Smoke-test page](#9-smoke-test-page)
-10. [World Scan Editor](#10-world-scan-editor)
+10. [Companion Scan Spatial Editor](#10-companion-scan-spatial-editor)
 11. [Cross-cutting UX assessment](#11-cross-cutting-ux-assessment)
 
 ---
@@ -191,7 +198,7 @@ Top to bottom:
 |---|---|---|---|---|
 | `#xr-mode-link` | 🥽 | Switches AR runtime: 8th Wall → `/?ar=webxr` (native WebXR), or back to `/` when already in WebXR mode (then styled `.active`). | **Hidden entirely** when the browser can't run `immersive-ar` (why it's absent in these headless-capture screenshots). | `index.html:1196`, logic `src/main.ts:186-189,733-753` |
 | `#panel-toggle` | ☰ | Opens/closes the Review & Export side panel (§6). Shows a mint badge with the detection count (`data-count` attr → `::after`). | Badge empty until first detection. | `index.html:1197`, badge CSS `743-759`, wiring `src/ui/panel.ts:75,188-193,217-219` |
-| `#viewer-link` | 🖥 | Plain link to the desktop World Scan Editor (`/viewer.html`). | Always. | `index.html:1198` |
+| `#viewer-link` | 🖥 | Plain link to the Companion Scan Spatial Editor (`/editor`). | Always. | `index.html:1198` |
 | `#stream-btn` | ☁️ | Toggles **keyframe streaming**: pose-tagged JPEG frames uploaded to the server session store during the scan (the input LingBot-Map reconstructs from). Green `.active` state + sent-count badge; title flags "OFFLINE" when uploads stall. | Always; state via `.active`. | `index.html:1199-1202`, `src/main.ts:411-441` |
 | `#auto-capture-btn` | 📷 | Toggles **auto-capture**: fires `doCapture()` automatically on pose deltas ("move camera to scan"). Mint `.active` state + capture-count badge. | Always. | `index.html:1203-1206`, `src/main.ts:385-408` |
 | `#history-btn` | 🕒 | Opens the Scan Memory drawer (§7) and lazily initialises its Leaflet map. | Always. | `index.html:1207`, `src/ui/history.ts:24-27`, map init `src/main.ts:130-132` |
@@ -300,7 +307,7 @@ Empty state: "No objects yet. Tap the capture button to scan." (`panel.ts:221-22
 | **Export Summary** | Downloads a JSON session summary (counts, quality, geo fix). | `panel.ts:98-105`, `src/main.ts:115` |
 | **🗺 Generate Floor Plan / ✍ Scene Description / 📊 Object Report** | POST `/process-scan` with the action; result text is shown in the latest-scan dialog (title becomes "Server: \<action\>"). | `panel.ts:107-127`, `src/main.ts:804-841` |
 | **Clear session** (danger-tinted) | Wipes the current detection store. **No confirmation.** | `panel.ts:129-134` |
-| **📡 Start Live Stream** | Starts/stops the WebRTC broadcaster mirroring camera + points + detections to the desktop viewer's Live panel; label swaps to "📡 Stop Stream". | `panel.ts:136-141`, wiring `src/main.ts:489-499` |
+| **📡 Start Live Stream** | Starts/stops the WebRTC broadcaster mirroring camera + points + detections to the Spatial Editor's Live panel; label swaps to "📡 Stop Stream". | `panel.ts:136-141`, wiring `src/main.ts:489-499` |
 | **AI Engine: 🖥 Server / ⚡ WebGPU** | Switches the inference route at runtime; the note beneath flips between "Server uses all machine cores" and "On-device — no data leaves your phone". | `panel.ts:144-182,201-215`, `src/main.ts:117-121` |
 
 ### Design intent
@@ -344,7 +351,7 @@ re-scanning. Implemented in `src/ui/history.ts`; map in `src/main.ts:884-947`.
 | Element | Behaviour | Source |
 |---|---|---|
 | **✕ / backdrop / Escape** | Three ways to close. | `history.ts:26-36` |
-| **Geo map** | Lazy-initialised Leaflet map on first open — dark CARTO tiles, mint dot = current GPS fix, red dots = every server-side scan location (`/scan-locations`), with address popups. Placeholder "Acquiring location…" until then. | `src/main.ts:884-947`, markup `index.html:1225-1232` |
+| **Geo map** | Lazy-initialised Leaflet map on first open — dark CARTO tiles, mint dot = current GPS fix, red dots = every server-side scan location (`/scan-locations`), with address popups. Placeholder "Acquiring location…" until then. | `src/main.ts:1359-1437`, markup `index.html:1225-1232` |
 | **Session card** | "Today 07:54 AM · 4 objects · \<id suffix\>"; header click expands an inline detection list (animated max-height). | `history.ts:78-179` |
 | **↩ load** | Loads that session's detections into the live store and closes the drawer — pins reappear in AR. | `history.ts:117-126` |
 | **✕ delete** (red-tinted) | Fades the card out and deletes the session from IndexedDB. **No confirmation.** | `history.ts:128-141` |
@@ -459,30 +466,36 @@ results are also relayed to the box via `POST /client-logs` so a developer watch
 
 ---
 
-## 10. World Scan Editor
+## 10. Companion Scan Spatial Editor
 
 ![Viewer overview](ui-manual/viewer-overview.png)
 
-`/viewer.html?world=<slug>` — the desktop surface where uploaded scans become a
-persistent, editable world. Layout (`viewer.html:804-1024`): top toolbar, left sidebar
-with four tabs, and the Three.js viewport with floating HUD elements. Logic in
+`/editor?project=<id>` — the desktop surface where scans become a persistent,
+editable Place. The implementation remains `viewer.html`: the top bar owns account,
+Place status, sharing, and a unified Views menu; the left drawer owns Place/Scan
+management; the right drawer owns guided processing and review. The viewport
+retains the Three.js scene and floating HUD elements. Logic lives in
 `src/viewer/viewer.ts` (+ `measure.ts`, `geomap.ts`, `livefeed.ts`, `lingbot-map.ts`).
 
 The screenshot shows the seeded test-home world with "Media Room C" selected: fitted
 camera, per-object labels, transform gizmo, and the floating inspector (top-right).
 
-### 10.1 Top toolbar (`viewer.html:807-820`)
+### 10.1 Top bar
 
 | Control | What it does | Source |
 |---|---|---|
-| **◼ Solid / ☁ Points / ⬡ Wire / 🏷 Semantic** | Exclusive render modes; `.active` pill styling tracks the choice. Points mode hides meshes, wire swaps materials, semantic recolours by tag. | markup `viewer.html:810-813`, wiring `src/viewer/viewer.ts:1795-1802` |
+| **Companion Scan + account** | Compact two-line product mark followed by the signed-in Companion Intelligence account link. Portal OIDC identifies the user; it is separate from later Companion Memory publishing. | top bar |
+| **Place status** | Current Place name, scan count, layer count, and current/total processing jobs. | top bar |
+| **Share** | A compact dropdown for one Place with copyable **View**, **Comment**, **Edit**, **Scanner**, and **Owner** capability links. | `#share-menu`, `#share-links` |
+| **Views** | Independent on/off controls for GIS map, hit points, ground planes, scanned objects, camera trail, image frustums, scanned images, ground grid, and tags. Render style is a view setting, not a row of persistent toolbar buttons. | `#view-menu` |
 | **📏 Measure** | Toggles the two-click measurement tool (below). | `viewer.html:815`, `viewer.ts:1877-1883` |
 | **🗺 Map** | Toggles the geo-map drawer (Leaflet, scan pins). | `viewer.html:816`, `viewer.ts:1866-1870` |
 | **📡 Live** | Toggles the live-feed panel (WebRTC stream from a phone mid-scan; live frustum + points + detections). | `viewer.html:817`, `viewer.ts:1872-1875`, `livefeed.ts` |
 | **← AR App / 🥽 WebXR** | Navigation back to the phone scanner surfaces. | `viewer.html:818-819` |
 
-On ≤ 720 px the toolbar collapses: title, spacer, and back-link hide and mode pills
-scroll horizontally (`viewer.html:707-729`).
+On small screens the bar prioritises the current Place, Views, Share, and the
+drawer chevrons; information that does not fit moves into the relevant drawer
+rather than becoming a horizontal row of tiny buttons.
 
 #### Measurement tool
 
@@ -497,9 +510,12 @@ routing `viewer.ts:225` region). The world is metric ENU, so measurements are
 ground-truth against `expected.json` in tests. Exposed as `window.__measureTool`
 (`viewer.ts:96-98`).
 
-### 10.2 Sidebar — Scans tab (`viewer.html:837-841`)
+### 10.2 Left drawer — Place and Scan management
 
-- **Scan row** = visibility checkbox + name + meta (captured date, alignment/accuracy)
+- **Project** = current Place details, global/GIS anchor, Area structure, sharing
+  context, and time range.
+- **Scan row** = visibility checkbox + name + meta (captured date, alignment/accuracy,
+  Place/Area provenance)
   + status line. The checkbox toggles the scan's whole subtree without selecting it
   (`viewer.ts:444-457`); clicking the row selects the scan, attaches the transform
   gizmo, opens the inspector + Edit tab, and **fits the camera** to it
@@ -509,21 +525,26 @@ ground-truth against `expected.json` in tests. Exposed as `window.__measureTool`
   draco" (`viewer.ts:488-509`) — the coarsest LOD appears within a few hundred ms
   while the Draco full-quality GLB streams in behind it.
 
-### 10.3 Sidebar — World tab
+### 10.3 Left drawer — Project, Layers, Places, and Edit
 
-![World tab](ui-manual/viewer-world-tab.png)
+![Project view](ui-manual/viewer-world-tab.png)
 
 | Section | Contents | Source |
 |---|---|---|
-| **World stats** | Scans / Layers / Jobs counts + origin type (GPS/local). | `viewer.html:848-866` |
-| **Share links** | One row per role — owner / editor / viewer / scanner — each with a **Copy** button that writes a tokenised URL to the clipboard (button flashes "Copied"). | `viewer.html:868-873`, render + copy `viewer.ts:1244-1271` |
-| **Processing queue** | `#job-type` dropdown listing the server pipeline: Ingest, Extract layers, Align scan, Merge points, Semantic pass, Depth reconstruct, **LingBot-Map reconstruct**, Splat train, Export world; **Queue Job** POSTs it (scoped to the selected scan when one is selected) and flashes "Queued"; the job list below refreshes ~1 s later. | `viewer.html:875-891`, `viewer.ts:1278-1303` |
+| **Project details** | Scan/layer/job counts, GIS or local origin, and the Place/Area hierarchy. | left drawer |
+| **Layers** | Map quality and source layer visibility belong here, below navigation. Each layer remains independently toggleable. | left drawer |
+| **Places** | Create/rename Areas (building, floor, room, zone, outdoor) and assign scans without changing their capture provenance. | left drawer |
+| **Edit** | Adjust a selected scan/object transform, semantic tag, or notes. | left drawer |
 
-### 10.4 Sidebar — Layers tab
+### 10.4 Right drawer — guided processing and review
 
 ![Layers tab](ui-manual/viewer-layers-tab.png)
 
-- **GLB + sidecar layers**: one checkbox per layer type (point cloud, meshes, floors,
+- **Guided stages**: **Prepare** (metadata/layers/alignment), **Understand**
+  (semantic analysis and Things), **Reconstruct** (LingBot-Map and splats), and
+  **Publish** (Companion Memory/export). Each stage requires an explicit selected
+  scan where applicable and records its job history.
+- **Scene layers**: one checkbox per layer type (point cloud, meshes, floors,
   detections, labels, camera path, camera frustums, RGB frames, depth, semantic masks,
   Gaussian splat) with item counts and provenance ("glb" / "derived" / "future");
   toggles drive global layer visibility (`viewer.ts:1182-1215`, counts
@@ -546,7 +567,7 @@ ground-truth against `expected.json` in tests. Exposed as `window.__measureTool`
 ![Trained splat loaded in the viewer](splat-train/screenshots/viewer-real-splat-loaded.png)
 
 *Above: a real Brush-trained splat (334,681 gaussians, 15k iterations) rendering in
-the world editor next to the seeded test homes.*
+the Spatial Editor next to the seeded test homes.*
 
 **Improvement opportunities (splat layers)**
 - The generic layer list still shows a "Gaussian splat — planned · future" row even
@@ -558,7 +579,7 @@ the world editor next to the seeded test homes.*
 - Loading a 50 MB `.ply` gives no progress feedback — status flips from "Loading
   trained splat…" straight to ready; a byte-progress indicator would help on phones.
 
-### 10.5 Sidebar — Edit tab (`viewer.html:925-975`)
+### 10.5 Review and editing
 
 Empty-state copy: "Click a scan or object in the viewport to move it, label it, and
 assign semantic categories." With a selection:
@@ -566,7 +587,7 @@ assign semantic categories." With a selection:
 | Control | What it does | Source |
 |---|---|---|
 | **Move / Rotate / Scale** | Switches the viewport transform-gizmo mode. | `viewer.html:941-947`, `viewer.ts:1846-1848` |
-| **Save Transform** | Persists the gizmo transform as a world patch. | `viewer.ts:1842-1844` |
+| **Save Transform** | Persists the gizmo transform as a Place patch. | `viewer.ts:1842-1844` |
 | **Semantic tag grid** | One-active chip set (sofa/table/door/...); selection recolours in semantic mode and queues a tag write. | `viewer.ts:1766-1782` |
 | **Notes + Save Notes** | Free-text note stored on the object. | `viewer.ts:1784-1792` |
 | **Hide Object (saved as patch)** | Non-destructive hide persisted server-side. | `viewer.ts:1885-1891` |
@@ -635,7 +656,7 @@ assign semantic categories." With a selection:
 ### Information architecture
 
 The product splits cleanly into **capture** (phone scanner), **triage** (smoke page),
-and **curation** (world editor), and each surface's layout matches its job: the
+and **curation** (Spatial Editor), and each surface's layout matches its job: the
 scanner keeps chrome in the periphery of a camera view (status top-left, actions
 right, shutter bottom-centre, two opposite-edge drawers); the editor is a classic
 inspector-workbench. Cross-navigation is complete (rail 🖥 → viewer; viewer "← AR
@@ -683,7 +704,7 @@ Both would be fixed by the same primitive: a persistent, timestamped activity fe
    9 s timer (`src/main.ts:790-791`). This is the core loop; 20 s of dead air is
    currently the product's defining feel on real hardware.
 4. **Push job/scan status over `/events` into both surfaces** — live job progress in
-   the viewer's World tab and "keyframes → reconstruction ready" notifications on the
+   the Spatial Editor's guided processing drawer and "keyframes → reconstruction ready" notifications on the
    phone. Closes the loop that currently ends at "Queued".
 5. **Status-channel separation in the scanner HUD**: persistent state (tracking,
    coverage) vs transient toasts (warnings, results) so messages stop overwriting

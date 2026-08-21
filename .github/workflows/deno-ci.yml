@@ -1,0 +1,56 @@
+name: Deno CI
+
+# Type-checks and tests the Deno backend (main.ts + the server-side modules
+# it imports: inference/jobs/pipeline/portal_auth/memory_push/lingbot_map/
+# splat_*). The npm-based frontend (Vite/Playwright) is out of scope here —
+# see docker-publish.yml for the full-container smoke test that exercises
+# both together.
+#
+# lingbot_map_glb.test.ts is intentionally NOT run here: it covers the
+# PLY -> GLB sidecar path via @gltf-transform/functions, which depends on
+# the `sharp` native binary. That's an npm/Node-only path (Deno doesn't
+# permission arbitrary native postinstall binaries the same way), so it
+# stays on `node --experimental-strip-types --test` — see package.json's
+# test:lingbot:glb script and the comment at the top of that test file.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deno-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deno-test:
+    name: deno check + test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: "2.9.5"
+
+      - name: Cache Deno dir
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/deno
+            ~/.deno
+          key: deno-${{ runner.os }}-${{ hashFiles('deno.lock') }}
+          restore-keys: |
+            deno-${{ runner.os }}-
+
+      - name: "Install npm: dependencies (nodeModulesDir)"
+        run: deno install
+
+      - name: Type-check server entrypoint
+        run: deno task check
+
+      - name: Run Deno test suite
+        run: deno task test

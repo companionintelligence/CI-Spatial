@@ -16,10 +16,14 @@
  */
 import { defineConfig, devices } from '@playwright/test'
 
+// Same variable name/default as main.ts and vite.config.ts (see docs/foundation-updates/0002
+// for the hostname precedent this follows). Only this default-URL construction reads it —
+// individual specs derive their target from VITE_URL when set (the established override).
+const VITE_PORT = process.env['VITE_PORT'] ?? '5173'
 const BASE_URL = process.env['VITE_URL']
   ?? (process.env['TAILSCALE_HOSTNAME']
-    ? `https://${process.env['TAILSCALE_HOSTNAME']}:5173`
-    : 'https://liambook.capybara-ulmer.ts.net:5173')
+    ? `https://${process.env['TAILSCALE_HOSTNAME']}:${VITE_PORT}`
+    : `https://liambook.capybara-ulmer.ts.net:${VITE_PORT}`)
 
 // Escape hatch for hosts where `npx playwright install` is unsupported but a
 // compatible Chromium build already exists in the cache, e.g.
@@ -62,6 +66,14 @@ export default defineConfig({
           args: [
             '--use-fake-ui-for-media-stream',
             '--use-fake-device-for-media-stream',
+            // The dev server's cert is self-signed. `ignoreHTTPSErrors` covers
+            // page and fetch requests, but Chromium enforces a valid
+            // certificate for the service-worker script fetch separately — so
+            // registration failed with "An SSL certificate error occurred when
+            // fetching the script" and navigator.serviceWorker.controller
+            // stayed null forever. Every offline/PWA behaviour was therefore
+            // untestable: the worker was never installed to test against.
+            '--ignore-certificate-errors',
           ],
         },
       },

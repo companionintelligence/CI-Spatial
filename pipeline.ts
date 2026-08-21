@@ -17,9 +17,37 @@
  *
  * This module is runtime-agnostic (no Deno/Node globals) so the same code runs
  * in the Deno server and under Node for tests (`npm run smoke:pipeline`).
+ *
+ * ── Provenance invariant: extras live on NODES only ────────────────────────
+ *
+ * Per-node provenance (`src/shared/provenance.ts` — sessionId, scanId,
+ * capturedAt, captureIndex, sourceScanIds) must never be written to a Mesh,
+ * Primitive, Accessor, Material or Texture. Those five are exactly
+ * `DEDUP_DEFAULTS.propertyTypes` in @gltf-transform/functions@4.4.0, and
+ * `keepUniqueNames` defaults to false — so differing names do not prevent a
+ * merge. Two walkthroughs of one place plausibly contain byte-identical
+ * geometry (every detection box is a BoxGeometry built from the same bbox
+ * maths, every floor plane a PlaneGeometry), so anything hung off a mesh
+ * would be silently merged across sessions, attributing one session's
+ * geometry to the other. `NODE` is absent from that list, which is what makes
+ * node extras safe.
+ *
+ * Two consequences worth knowing before editing the transforms below:
+ *
+ *  - `prune()` is called with `keepExtras: true`. The default is false, and
+ *    `nodeTreeShake()` disposes a node when `isEmpty && !isUsed &&
+ *    !needsExtras` — so an extras-bearing node with no mesh and no children
+ *    is deleted outright. `Room_*`/`Floor_*` are exactly that shape for an
+ *    autosave taken early in a session.
+ *  - `quantize()` cannot put a dequantization transform on a node that has
+ *    both a mesh and children, so it hoists the mesh into a new unnamed child
+ *    with no extras. The labelled node keeps its own extras and stays the
+ *    ancestor, so provenance is still reachable — by walking UP from
+ *    geometry, never by assuming the mesh-bearing node carries it. That is
+ *    the rule `src/viewer/detections.ts` already implements for detections.
  */
 import { Document, NodeIO, Primitive, type Accessor } from '@gltf-transform/core'
-import { KHRDracoMeshCompression, KHRMeshQuantization } from '@gltf-transform/extensions'
+import { ALL_EXTENSIONS, KHRDracoMeshCompression, KHRMeshQuantization } from '@gltf-transform/extensions'
 import { cloneDocument, dedup, prune, quantize, draco } from '@gltf-transform/functions'
 // @ts-ignore — draco3dgltf ships no type declarations
 import draco3d from 'draco3dgltf'
@@ -63,6 +91,16 @@ export interface PipelineOptions {
   lodVoxelsM?: number[]
   /** Skip LOD generation when the cloud has fewer points than this. Default 5000. */
   lodMinPoints?: number
+  /**
+   * Server-side provenance stamped onto every node before the transforms run.
+   *
+   * `scanId` is the one provenance field the client cannot know — it is
+   * derived from the stored filename, which the server chooses, so the
+   * exporter writes `sessionId` + `capturedAt` and this fills the gap. Omit it
+   * for callers with no scan context (the smoke script, fixtures); nothing is
+   * stamped then, rather than `undefined` being written.
+   */
+  provenance?: { scanId: string }
 }
 
 const DEFAULT_LOD_VOXELS_M = [0.3, 0.12]
@@ -77,8 +115,16 @@ function getIO(): Promise<NodeIO> {
       draco3d.createEncoderModule({}),
       draco3d.createDecoderModule({}),
     ])
+    // ALL_EXTENSIONS, not just the two this pipeline writes: glTF-Transform
+    // discards any extension the IO has not registered, silently, at read time.
+    // Registering only Draco and mesh-quantization meant every other extension
+    // in a scan was dropped on the way through — KHR_materials_unlit sat on 10
+    // of 19 materials in a real capture (the floor plane and every detection
+    // wireframe) and was absent from the optimized file's extensionsUsed, so
+    // those surfaces silently switched from flat to lit shading. Draco and
+    // quantization are both in ALL_EXTENSIONS, so this is a superset.
     return new NodeIO()
-      .registerExtensions([KHRDracoMeshCompression, KHRMeshQuantization])
+      .registerExtensions(ALL_EXTENSIONS)
       .registerDependencies({ 'draco3d.encoder': encoder, 'draco3d.decoder': decoder })
   })()
   return ioPromise
@@ -96,9 +142,14 @@ export async function optimizeScan(
   const doc = await stage(stages, 'parse', () => io.readBinary(glb))
   const stats: PipelineStats = { ...collectStats(doc), sourceBytes: glb.byteLength }
 
+  // Stamped before any transform, not after the write, so it is subject to the
+  // same preservation guarantees as everything the exporter wrote — and so the
+  // tests exercise the real path rather than a post-write patch.
+  if (opts.provenance) stampScanId(doc, opts.provenance.scanId)
+
   // ── Clean-up passes (shared by all artifacts) ──────────────────────────────
   await stage(stages, 'dedup+prune', async () => {
-    await doc.transform(dedup(), prune())
+    await doc.transform(dedup(), prune({ keepExtras: true }))
   })
 
   // ── Point-cloud LODs — built BEFORE quantization while positions are still
@@ -110,7 +161,7 @@ export async function optimizeScan(
         const t0 = Date.now()
         const lodDoc = cloneDocument(doc)
         const remaining = downsamplePointPrimitives(lodDoc, voxelM)
-        await lodDoc.transform(prune(), quantize({ quantizePosition: 14, quantizeColor: 8 }))
+        await lodDoc.transform(prune({ keepExtras: true }), quantize({ quantizePosition: 14, quantizeColor: 8 }))
         const bytes = await io.writeBinary(lodDoc)
         lods.push({ bytes, points: remaining, voxelM, draco: false, quantized: true })
         stages.push({ name: `lod@${voxelM}m`, ok: true, ms: Date.now() - t0, note: `${remaining} pts` })
@@ -154,11 +205,40 @@ export async function optimizeScan(
     }
   }
 
+  // An extension the IO cannot round-trip disappears without raising anything,
+  // and the symptom (surfaces shading differently) never points back here. Say
+  // so instead — a vendor extension outside ALL_EXTENSIONS still drops.
+  const keptExtensions = declaredExtensions(optimizedBytes)
+  const lostExtensions = declaredExtensions(glb).filter((ext) => !keptExtensions.includes(ext))
+  if (lostExtensions.length > 0) {
+    stages.push({ name: 'extensions', ok: false, ms: 0, note: `dropped ${lostExtensions.join(', ')}` })
+    console.warn(`[pipeline] optimization dropped glTF extension(s): ${lostExtensions.join(', ')}`)
+  }
+
   return {
     optimized: { bytes: optimizedBytes, draco: usedDraco, quantized: true },
     lods,
     stats,
     stages,
+  }
+}
+
+/**
+ * `extensionsUsed` straight from a GLB's JSON chunk.
+ *
+ * Deliberately not a glTF parse: this has to report what the *file* declares,
+ * including extensions the IO would discard on read — which is the whole point.
+ * Returns nothing for a malformed file rather than throwing; this runs on the
+ * reporting path, and a parse problem will surface with better context above.
+ */
+function declaredExtensions(glb: Uint8Array): string[] {
+  try {
+    const view = new DataView(glb.buffer, glb.byteOffset, glb.byteLength)
+    const jsonLength = view.getUint32(12, true)
+    const json = JSON.parse(new TextDecoder().decode(glb.subarray(20, 20 + jsonLength)))
+    return Array.isArray(json.extensionsUsed) ? json.extensionsUsed : []
+  } catch {
+    return []
   }
 }
 
@@ -182,6 +262,39 @@ async function stage<T>(
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
+}
+
+/**
+ * Write `scanId` into the extras of every node that already carries
+ * provenance, merging rather than replacing.
+ *
+ * Nodes only — never a Mesh, Primitive, Accessor, Material or Texture; see the
+ * dedup invariant in this file's header. Existing extras are preserved: the
+ * exporter's `sessionId`/`capturedAt`/`captureIndex`/`sourceScanIds` are on
+ * these same nodes and must survive.
+ *
+ * Every provenance-bearing node is stamped, not only the labelled ones,
+ * because `quantize()` will hoist meshes into new unnamed children and a
+ * consumer resolving provenance by ancestor walk should find the same answer
+ * from anywhere in the tree.
+ *
+ * Gated on the node already having non-empty extras — i.e. exactly the nodes
+ * the exporter's `nodeProvenance` spread already touched. Two node kinds
+ * would otherwise be swept up by an unconditional stamp: the wireframe child
+ * of a detection mesh, which `src/export/gltf.ts` deliberately leaves bare so
+ * a traversal doesn't double-count it as a second logical object; and a
+ * genuinely empty structural node with no mesh and no children, which
+ * `prune({ keepExtras: true })` is supposed to be free to dispose. Giving
+ * either of those a `scanId` — the only key `stampScanId` ever writes — would
+ * hand them non-empty extras and made them permanently un-prunable, silently,
+ * for the rest of the document's life.
+ */
+function stampScanId(doc: Document, scanId: string): void {
+  for (const node of doc.getRoot().listNodes()) {
+    const extras = node.getExtras()
+    if (Object.keys(extras).length === 0) continue
+    node.setExtras({ ...extras, scanId })
+  }
 }
 
 function collectStats(doc: Document): Omit<PipelineStats, 'sourceBytes'> {

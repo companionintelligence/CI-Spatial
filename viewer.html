@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-    <title>Companion Scan — World Editor</title>
+    <title>Companion Scan Spatial Editor</title>
     <link rel="manifest" href="/manifest.json" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -146,33 +146,15 @@
         border-color: rgba(114,221,212,0.42);
         color: #72ddd4;
       }
+      #btn-livefeed[hidden] { display: none; }
 
       #toolbar-spacer { flex: 1; }
-
-      #back-link {
-        font-size: 12px;
-        color: rgba(255,255,255,0.7);
-        text-decoration: none;
-        min-height: 38px;
-        padding: 0 14px;
-        border-radius: 999px;
-        border: 1px solid var(--ci-line);
-        background: rgba(255,255,255,0.04);
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        transition: transform 0.15s ease-out, background 0.2s ease-out, border-color 0.2s ease-out, color 0.2s ease-out;
-      }
-      #back-link:hover {
-        color: #72ddd4;
-        border-color: rgba(114,221,212,0.26);
-        background: rgba(114,221,212,0.08);
-      }
 
       /* ── Main layout ── */
       #main-area {
         display: flex;
         flex: 1;
+        min-height: 0;
         overflow: hidden;
       }
 
@@ -180,7 +162,9 @@
       #sidebar {
         width: 260px;
         min-width: 200px;
-        height: 100%;
+        height: auto;
+        min-height: 0;
+        align-self: stretch;
         background: rgba(8,28,38,0.82);
         border-right: 1px solid var(--ci-line);
         display: flex;
@@ -203,6 +187,33 @@
       }
       #sidebar.collapsed #sidebar-collapse-btn { right: -32px; }
       #sidebar-collapse-btn:hover { color: #fff; background: rgba(8,28,38,0.95); }
+
+      /* Lives outside the clipped sidebar so a collapsed drawer always has a way back. */
+      #sidebar-reopen-tab {
+        position: fixed;
+        top: 56px;
+        left: 0;
+        z-index: 30;
+        display: none;
+        align-items: center;
+        gap: 5px;
+        height: 86px;
+        padding: 9px 7px 9px 5px;
+        border: 1px solid var(--ci-line);
+        border-left: 0;
+        border-radius: 0 8px 8px 0;
+        background: rgba(8,28,38,0.94);
+        color: var(--ci-paper);
+        cursor: pointer;
+        writing-mode: vertical-rl;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        box-shadow: 3px 4px 14px rgba(0,0,0,0.22);
+      }
+      #sidebar.collapsed + #sidebar-reopen-tab { display: flex; }
+      #sidebar-reopen-tab:hover { color: var(--ci-mint); border-color: rgba(114,221,212,0.55); }
 
       #sidebar-header {
         padding: 14px 14px 10px;
@@ -265,6 +276,7 @@
       }
       .scan-item:hover { background: rgba(255,255,255,0.05); }
       .scan-item.active { background: rgba(114,221,212,0.09); border-left: 2px solid #72ddd4; }
+      .scan-item.out-of-time { opacity: 0.45; }
 
       .scan-name {
         font-size: 12px;
@@ -300,6 +312,101 @@
         width: 16px;
         height: 16px;
         accent-color: #72ddd4;
+      }
+
+      .place-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 8px;
+      }
+
+      .place-name {
+        width: 100%;
+        min-height: 36px;
+        border: 1px solid var(--ci-line);
+        border-radius: 8px;
+        padding: 0 8px;
+        color: var(--ci-paper);
+        background: rgba(255,255,255,0.04);
+      }
+
+      #timeline-scrubber {
+        padding: 10px 14px;
+        border-bottom: 1px solid rgba(255,255,255,0.07);
+      }
+      #timeline-scrubber[hidden] { display: none; }
+      .timeline-range-label {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 5px;
+        color: rgba(255,255,255,0.46);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+      .timeline-range-control {
+        position: relative;
+        height: 28px;
+        margin-top: 2px;
+      }
+      .timeline-range-track,
+      .timeline-range-fill {
+        position: absolute;
+        top: 50%;
+        height: 5px;
+        border-radius: 999px;
+        transform: translateY(-50%);
+      }
+      .timeline-range-track {
+        left: 0;
+        right: 0;
+        background: rgba(255,255,255,0.2);
+      }
+      .timeline-range-fill {
+        left: 0;
+        width: 100%;
+        background: #72ddd4;
+      }
+      #timeline-scrubber input[type="range"] {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 28px;
+        margin: 0;
+        appearance: none;
+        -webkit-appearance: none;
+        background: transparent;
+        pointer-events: none;
+      }
+      #timeline-scrubber input[type="range"]::-webkit-slider-thumb {
+        width: 16px;
+        height: 16px;
+        appearance: none;
+        -webkit-appearance: none;
+        border: 2px solid var(--ci-deep);
+        border-radius: 50%;
+        background: #72ddd4;
+        box-shadow: 0 0 0 1px rgba(114,221,212,0.55);
+        cursor: grab;
+        pointer-events: auto;
+      }
+      #timeline-scrubber input[type="range"]::-moz-range-thumb {
+        width: 14px;
+        height: 14px;
+        border: 2px solid var(--ci-deep);
+        border-radius: 50%;
+        background: #72ddd4;
+        box-shadow: 0 0 0 1px rgba(114,221,212,0.55);
+        cursor: grab;
+        pointer-events: auto;
+      }
+      #timeline-scrubber input[type="range"]::-moz-range-track { background: transparent; }
+      #timeline-label {
+        margin-top: 4px;
+        font-size: 11px;
+        color: rgba(255,255,255,0.58);
       }
 
       .hud-btn,
@@ -340,7 +447,9 @@
       /* ── Edit panel ── */
       #edit-panel-content,
       #world-panel-content,
-      #layers-panel-content {
+      #layers-panel-content,
+      #items-panel-content,
+      #places-panel-content {
         flex: 1;
         overflow-y: auto;
         padding: 10px;
@@ -364,6 +473,93 @@
         letter-spacing: 0.06em;
         margin-bottom: 8px;
       }
+
+      /* The outliner mirrors the Place containment model, with scan Things
+         nested below their source scan instead of mixing provenance together. */
+      .items-intro { padding: 6px 4px 2px; }
+      .items-eyebrow { display:block; color:var(--ci-mint); font-size:9px; font-weight:800; letter-spacing:.1em; text-transform:uppercase; }
+      .items-intro h2 { margin:4px 0 3px; color:var(--ci-paper); font-size:16px; letter-spacing:-.02em; }
+      .items-intro p { margin:0; color:var(--ci-muted); font-size:11px; line-height:1.45; }
+      #items-list { display:flex; flex-direction:column; gap:7px; }
+      .scene-tree-group { margin:0; border-left:1px solid rgba(114,221,212,.15); }
+      .scene-tree-group > *:not(summary) { margin-left:12px; }
+      .scene-tree-group > summary { list-style:none; }
+      .scene-tree-group > summary::-webkit-details-marker { display:none; }
+      .scene-tree-row {
+        position:relative;
+        display:grid;
+        grid-template-columns:minmax(0, 1fr) auto;
+        gap:8px;
+        align-items:center;
+        min-height:34px;
+        padding:0 8px 0 26px;
+        border:1px solid transparent;
+        border-radius:7px;
+        color:var(--ci-paper);
+        cursor:pointer;
+      }
+      .scene-tree-row::before { position:absolute; left:8px; top:50%; content:'›'; color:var(--ci-mint); font-size:16px; line-height:1; transform:translateY(-50%) rotate(0deg); transition:transform .16s ease-out; }
+      .scene-tree-group[open] > .scene-tree-row::before { transform:translateY(-50%) rotate(90deg); }
+      .scene-tree-row:hover { border-color:rgba(114,221,212,.22); background:rgba(114,221,212,.055); }
+      .scene-tree-label { grid-column:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; font-weight:800; }
+      .scene-tree-meta { grid-column:2; color:var(--ci-muted); font-size:9px; font-weight:700; white-space:nowrap; }
+      .scene-tree-place { border-left:0; }
+      .scene-tree-place > .scene-tree-row { min-height:40px; padding:0 9px 0 27px; background:rgba(114,221,212,.09); border-color:rgba(114,221,212,.22); }
+      .scene-tree-place > .scene-tree-row .scene-tree-label { color:var(--ci-mint); }
+      .scene-tree-building > .scene-tree-row .scene-tree-label::before { content:'Building · '; color:var(--ci-muted); font-size:9px; letter-spacing:.06em; text-transform:uppercase; }
+      .scene-tree-floor > .scene-tree-row .scene-tree-label::before { content:'Floor · '; color:var(--ci-muted); font-size:9px; letter-spacing:.06em; text-transform:uppercase; }
+      .scene-tree-room > .scene-tree-row .scene-tree-label::before { content:'Room · '; color:var(--ci-muted); font-size:9px; letter-spacing:.06em; text-transform:uppercase; }
+      .scene-tree-things > .scene-tree-row .scene-tree-label::before { content:'Things · '; color:var(--ci-muted); font-size:9px; letter-spacing:.06em; text-transform:uppercase; }
+      .scene-tree-scan,
+      .scene-tree-thing {
+        display:grid;
+        width:calc(100% - 12px);
+        margin:3px 0 3px 12px;
+        border:1px solid rgba(255,255,255,.09);
+        border-radius:8px;
+        background:rgba(255,255,255,.025);
+        color:var(--ci-paper);
+        font:inherit;
+        text-align:left;
+        cursor:pointer;
+      }
+      .scene-tree-scan { grid-template-columns:minmax(0, 1fr) auto; gap:8px; align-items:center; min-height:42px; padding:7px 9px; }
+      .scene-tree-scan:hover,
+      .scene-tree-thing:hover { border-color:rgba(114,221,212,.3); background:rgba(114,221,212,.065); }
+      .scene-tree-scan.active { border-color:rgba(114,221,212,.55); background:rgba(114,221,212,.13); box-shadow:inset 3px 0 0 var(--ci-mint); }
+      .scene-tree-scan-name { min-width:0; overflow:hidden; color:var(--ci-paper); font-size:11px; font-weight:800; text-overflow:ellipsis; white-space:nowrap; }
+      .scene-tree-scan-meta { color:var(--ci-muted); font-size:9px; font-weight:700; white-space:nowrap; }
+      .scene-tree-thing { grid-template-columns:minmax(0, 1fr); gap:3px; padding:7px 8px; }
+      .scene-tree-thing span { min-width:0; overflow:hidden; color:var(--ci-paper); font-size:11px; font-weight:700; text-overflow:ellipsis; white-space:nowrap; }
+      .scene-tree-thing small { color:var(--ci-muted); font-size:9px; line-height:1.35; }
+      .inventory-empty { padding:24px 10px; border:1px dashed rgba(255,255,255,.14); border-radius:10px; color:var(--ci-muted); font-size:12px; line-height:1.5; text-align:center; }
+      .review-comments { margin-top:14px; padding-top:13px; border-top:1px solid rgba(255,255,255,.1); }
+      .review-comments-heading { display:flex; align-items:end; justify-content:space-between; gap:10px; }
+      .review-comments-heading h3 { margin:3px 0 0; color:var(--ci-paper); font-size:14px; }
+      .review-comments-list { display:flex; flex-direction:column; gap:7px; margin-top:9px; }
+      .review-comment { padding:9px 10px; border:1px solid rgba(255,255,255,.09); border-radius:9px; background:rgba(255,255,255,.025); }
+      .review-comment-body { color:var(--ci-paper); font-size:12px; line-height:1.45; white-space:pre-wrap; }
+      .review-comment-meta { margin-top:6px; color:var(--ci-muted); font-size:10px; }
+      .review-comment-composer { display:grid; gap:6px; margin-top:10px; color:var(--ci-muted); font-size:11px; font-weight:700; }
+      .review-comment-composer textarea { min-height:60px; resize:vertical; }
+      .review-comment-actions { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:8px; }
+      .review-comment-actions .job-btn { width:auto; min-height:34px; padding:0 12px; }
+
+      /* Layers is a workflow surface, not one long form. */
+      .layers-intro { padding: 6px 4px 2px; }
+      .layers-eyebrow { display:block; color:var(--ci-mint); font-size:9px; font-weight:800; letter-spacing:.1em; text-transform:uppercase; }
+      .layers-intro h2 { margin:4px 0 3px; color:var(--ci-paper); font-size:16px; letter-spacing:-.02em; }
+      .layers-intro p { margin:0; color:var(--ci-muted); font-size:11px; line-height:1.45; }
+      .layer-tool { border:1px solid rgba(255,255,255,.09); border-radius:10px; background:rgba(255,255,255,.035); overflow:hidden; }
+      .layer-tool[open] { border-color:rgba(114,221,212,.28); background:rgba(114,221,212,.045); }
+      .layer-tool > summary { min-height:54px; padding:9px 12px; display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:10px; cursor:pointer; list-style:none; }
+      .layer-tool > summary::-webkit-details-marker { display:none; }
+      .layer-tool > summary::after { content:'+'; width:26px; height:26px; display:grid; place-items:center; color:var(--ci-mint); border:1px solid rgba(114,221,212,.28); border-radius:50%; font-size:16px; line-height:1; }
+      .layer-tool[open] > summary::after { content:'−'; }
+      .layer-tool-name { display:block; color:var(--ci-paper); font-size:12px; font-weight:800; }
+      .layer-tool-hint { display:block; margin-top:2px; color:var(--ci-muted); font-size:10px; line-height:1.35; }
+      .layer-tool-body { padding:0 12px 12px; border-top:1px solid rgba(255,255,255,.07); }
+      #sensenova-section .job-btn { min-height:40px; font-size:11px; }
 
       /* Map-quality headline: tier stepper + processing line */
       .quality-section {
@@ -576,14 +772,41 @@
         line-height: 1.4;
       }
 
+      /* Shared native select treatment. `color-scheme` and option colors keep
+         Chromium's popup in the same dark CI palette as its closed control. */
+      .ci-select {
+        min-height: 38px;
+        padding: 0 34px 0 10px;
+        border: 1px solid rgba(114,221,212,0.32);
+        border-radius: 8px;
+        appearance: none;
+        -webkit-appearance: none;
+        color-scheme: dark;
+        color: var(--ci-paper);
+        background-color: rgba(8,28,38,0.92);
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none' stroke='%2372ddd4' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E");
+        background-position: right 10px center;
+        background-repeat: no-repeat;
+        background-size: 16px;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);
+        cursor: pointer;
+        font: inherit;
+        font-size: 11px;
+        font-weight: 700;
+      }
+      .ci-select:hover { border-color: rgba(114,221,212,0.56); background-color: rgba(114,221,212,0.1); }
+      .ci-select:focus-visible {
+        outline: none;
+        border-color: var(--ci-mint);
+        box-shadow: 0 0 0 3px rgba(114,221,212,0.18);
+      }
+      .ci-select option { color: var(--ci-paper); background: #082432; }
+      .ci-select option:checked { color: #061820; background: #72ddd4; }
+      .ci-select-block { width: 100%; }
+      .ci-select-spaced { margin-bottom: 6px; }
+
       #job-type {
         width: 100%;
-        background: rgba(255,255,255,0.06);
-        border: 1px solid rgba(255,255,255,0.1);
-        color: #fff;
-        border-radius: 6px;
-        padding: 7px;
-        font-size: 11px;
         margin-bottom: 7px;
       }
 
@@ -646,15 +869,11 @@
       }
       .hud-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
 
-      /* The sidebar's collapse chevron is parked at `right: -28px`, which puts it
-         inside the viewport across x = 0…26 px — directly on top of a readout
-         that started at 10 px, so the "W" of "World:" sat under the button in
-         every desktop capture. Give the chevron its own gutter. (On phones the
-         chevron is `display: none` and the mobile rule below reclaims the 8 px.) */
+      /* Keep the world summary aligned with the navigation aids below it. */
       #hud-info {
         position: absolute;
         top: 10px;
-        left: 44px;
+        left: 10px;
         background: rgba(0,0,0,0.6);
         backdrop-filter: blur(8px);
         border: 1px solid rgba(255,255,255,0.08);
@@ -676,6 +895,13 @@
         gap: 8px;
         z-index: 5;
         pointer-events: none;
+      }
+
+      .world-hud-row {
+        display: flex;
+        align-items: stretch;
+        gap: 8px;
+        pointer-events: auto;
       }
 
       #compass-widget {
@@ -711,7 +937,6 @@
 
       #scale-widget,
       #coord-readout {
-        width: 160px;
         background: rgba(0,0,0,0.55);
         border: 1px solid rgba(255,255,255,0.12);
         border-radius: 8px;
@@ -721,6 +946,13 @@
         color: rgba(255,255,255,0.65);
       }
 
+      #scale-widget {
+        width: max-content;
+        min-width: 0;
+      }
+
+      #coord-readout { width: 160px; }
+
       #scale-bar {
         width: 96px;
         height: 7px;
@@ -729,6 +961,28 @@
         border-bottom: 2px solid #fff;
         margin-bottom: 4px;
       }
+
+      .hud-icon-btn {
+        width: 40px;
+        min-width: 40px;
+        padding: 0;
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 8px;
+        background: rgba(0,0,0,0.55);
+        color: rgba(255,255,255,0.72);
+        backdrop-filter: blur(8px);
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .hud-icon-btn:hover,
+      .hud-icon-btn.active {
+        border-color: rgba(114,221,212,0.65);
+        background: rgba(114,221,212,0.14);
+        color: var(--ci-mint);
+      }
+      .hud-icon-btn svg { display: block; }
 
       /* ── Object inspector panel (floating, appears on click) ── */
       #inspector-panel {
@@ -823,6 +1077,21 @@
         white-space: nowrap;
         transform: translate(-50%, -100%) translateY(-6px);
         backdrop-filter: blur(4px);
+        /* Promote every chip to its own compositing layer, always.
+           Not a performance hint — a determinism one. A chip is the only text
+           in the app that sits ON TOP of the WebGL canvas, so without this the
+           compositor decides per process whether to promote it, and that
+           decision changes how its glyphs are rasterised: same box, same
+           metrics, text shifted about a fifth of a CSS pixel. That is invisible
+           on screen and fatal to the committed shots — it made the four
+           world-editor captures bistable, so a rerun on unchanged UI produced a
+           diff indistinguishable from a real UI change.
+           Measured on 2026-08-08, 5 fresh browsers per condition, one staged
+           world: chips hidden -> 1 distinct canvas; canvas hidden -> 1 distinct
+           overlay; both visible -> 3 distinct frames. Removing the backdrop
+           blur (3/5) and snapping each chip onto whole device pixels (3/5) both
+           failed; this fixes it (1/5) and leaves the chip looking identical. */
+        will-change: transform;
       }
 
       /* Pinned to a canvas edge by updateLabels(): align the chip AWAY from that
@@ -865,8 +1134,7 @@
         }
 
         #top-toolbar-title,
-        #toolbar-spacer,
-        #back-link {
+        #toolbar-spacer {
           display: none;
         }
 
@@ -954,10 +1222,7 @@
           transform-origin: 50% 17px;
         }
 
-        #scale-widget,
-        #coord-readout {
-          width: 148px;
-        }
+        #coord-readout { width: 148px; }
 
         #hud-controls {
           right: 8px;
@@ -970,46 +1235,1025 @@
           font-size: 10px;
         }
       }
+
+      /* ── Workspace ergonomics ────────────────────────────────────────── */
+      /* Keep controls on the 44 px touch-target rhythm used across CI. */
+      #top-toolbar {
+        height: 56px;
+        gap: 10px;
+        padding: 0 16px;
+        background: rgba(4, 22, 32, 0.92);
+      }
+
+      #top-toolbar-title {
+        display: grid;
+        min-width: 68px;
+        margin-right: 0;
+        color: var(--ci-paper);
+        font-size: 10px;
+        font-weight: 800;
+        line-height: 0.95;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+
+      #account-chip,
+      .toolbar-project,
+      .toolbar-metric,
+      #share-menu > summary,
+      #workspace-menu > summary,
+      #view-menu > summary {
+        min-height: 38px;
+        border: 1px solid var(--ci-line);
+        border-radius: 9px;
+        background: rgba(255,255,255,0.035);
+      }
+
+      #workspace-menu #account-chip {
+        display: inline-flex;
+        align-items: center;
+        min-height: 36px;
+        padding: 0 9px;
+        border: 1px solid rgba(255,255,255,.1);
+        border-radius: 8px;
+        overflow: hidden;
+        color: var(--ci-muted);
+        font-size: 10px;
+        font-weight: 700;
+        text-decoration: none;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #workspace-menu #account-chip::before { content: 'CI'; margin-right: 6px; color: var(--ci-mint); font-size: 9px; letter-spacing: .08em; }
+      #workspace-menu #account-chip:hover { color: var(--ci-paper); border-color: rgba(114,221,212,.4); background:rgba(114,221,212,.06); }
+
+      #toolbar-session-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex: 0 0 auto;
+      }
+
+      #share-menu { position: relative; z-index: 51; }
+      #workspace-menu { position: relative; z-index: 51; }
+      #share-menu > summary {
+        display: flex;
+        align-items: center;
+        min-height: 38px;
+        padding: 0 10px;
+        color: var(--ci-paper);
+        cursor: pointer;
+        font-size: 10px;
+        font-weight: 800;
+        list-style: none;
+      }
+      #share-menu > summary::-webkit-details-marker { display: none; }
+      #share-menu > summary::after { content: '⌄'; margin-left: 5px; color: var(--ci-mint); font-size: 13px; }
+      #share-menu[open] > summary { border-color: rgba(114,221,212,.42); background: rgba(114,221,212,.1); }
+      #workspace-menu > summary {
+        display: flex;
+        align-items: center;
+        min-height: 38px;
+        padding: 0 10px;
+        color: var(--ci-paper);
+        cursor: pointer;
+        font-size: 10px;
+        font-weight: 800;
+        list-style: none;
+      }
+      #workspace-menu > summary::-webkit-details-marker { display: none; }
+      #workspace-menu > summary::after { content: '⌄'; margin-left: 5px; color: var(--ci-mint); font-size: 13px; }
+      #workspace-menu[open] > summary { border-color: rgba(114,221,212,.42); background: rgba(114,221,212,.1); }
+      .share-menu-panel {
+        position: absolute;
+        top: calc(100% + 8px);
+        right: 0;
+        width: 220px;
+        padding: 10px;
+        border: 1px solid rgba(114,221,212,.26);
+        border-radius: 12px;
+        background: rgba(5,24,34,.98);
+        box-shadow: 0 16px 36px rgba(0,0,0,.34);
+      }
+      .workspace-menu-panel {
+        position:absolute;
+        top:calc(100% + 8px);
+        right:0;
+        display:grid;
+        gap:6px;
+        width:240px;
+        padding:10px;
+        border:1px solid rgba(114,221,212,.26);
+        border-radius:12px;
+        background:rgba(5,24,34,.98);
+        box-shadow:0 16px 36px rgba(0,0,0,.34);
+      }
+      .workspace-menu-heading { display:block; margin:1px 2px 5px; color:var(--ci-muted); font-size:9px; font-weight:800; letter-spacing:.1em; text-transform:uppercase; }
+      .workspace-menu-link {
+        display:grid;
+        gap:2px;
+        min-height:42px;
+        padding:8px 9px;
+        border:1px solid rgba(255,255,255,.1);
+        border-radius:8px;
+        color:var(--ci-paper);
+        background:rgba(255,255,255,.025);
+        font-size:11px;
+        font-weight:800;
+        text-decoration:none;
+      }
+      .workspace-menu-link small { color:var(--ci-muted); font-size:9px; font-weight:600; line-height:1.3; }
+      .workspace-menu-link:hover { border-color:rgba(114,221,212,.36); background:rgba(114,221,212,.08); color:var(--ci-mint); }
+      .workspace-menu-divider { height:1px; margin:2px 0; background:rgba(255,255,255,.1); }
+      .share-menu-heading { display:block; margin:1px 2px 7px; color:var(--ci-muted); font-size:9px; font-weight:800; letter-spacing:.1em; text-transform:uppercase; }
+
+      .toolbar-project {
+        display: flex;
+        align-items: center;
+        min-width: 0;
+        padding: 0 11px;
+      }
+      #toolbar-project-name {
+        max-width: 180px;
+        overflow: hidden;
+        color: var(--ci-paper);
+        font-size: 13px;
+        font-weight: 800;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .toolbar-metrics { display: flex; align-items: center; gap: 6px; }
+      .toolbar-metric {
+        display: flex;
+        min-width: 52px;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1px;
+        padding: 2px 8px;
+        color: var(--ci-muted);
+        font-size: 9px;
+        font-weight: 700;
+        line-height: 1;
+        text-transform: uppercase;
+      }
+      .toolbar-metric strong { color: var(--ci-paper); font-size: 12px; line-height: 1; }
+      .toolbar-metric.jobs strong { color: var(--ci-mint); }
+      .toolbar-metric.jobs.is-active { border-color: rgba(114,221,212,.44); background: rgba(114,221,212,.09); }
+
+      #view-menu { position: relative; z-index: 50; }
+      #view-menu > summary {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 11px;
+        color: var(--ci-paper);
+        cursor: pointer;
+        font-size: 11px;
+        font-weight: 800;
+        list-style: none;
+      }
+      #view-menu > summary::-webkit-details-marker { display: none; }
+      #view-menu > summary::after { content: '⌄'; color: var(--ci-mint); font-size: 14px; }
+      #view-menu[open] > summary { border-color: rgba(114,221,212,.42); background: rgba(114,221,212,.1); }
+      .view-menu-panel {
+        position: absolute;
+        top: calc(100% + 8px);
+        right: 0;
+        width: 230px;
+        padding: 10px;
+        border: 1px solid rgba(114,221,212,.26);
+        border-radius: 12px;
+        background: rgba(5,24,34,.98);
+        box-shadow: 0 16px 36px rgba(0,0,0,.34);
+      }
+      .view-menu-heading { display: block; margin: 1px 2px 7px; color: var(--ci-muted); font-size: 9px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+      .view-mode-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 4px 9px; border-bottom: 1px solid rgba(255,255,255,.08); color: var(--ci-muted); font-size: 10px; font-weight: 700; }
+      .view-toggle { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 34px; color: var(--ci-paper); font-size: 11px; cursor: pointer; }
+      .view-toggle input { width: 16px; height: 16px; accent-color: var(--ci-mint); }
+
+      .processing-flow { display: grid; gap: 8px; }
+      .processing-step {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+        align-items: center;
+        padding: 9px;
+        border: 1px solid rgba(255,255,255,.1);
+        border-radius: 9px;
+        background: rgba(255,255,255,.025);
+      }
+      .processing-step strong { display:block; color:var(--ci-paper); font-size:11px; }
+      .processing-step span { display:block; margin-top:2px; color:var(--ci-muted); font-size:10px; line-height:1.35; }
+      .processing-step button { min-height:32px; padding:0 9px; font-size:10px; }
+
+      .mode-btn,
+      .hud-btn,
+      .sidebar-tool,
+      .toggle-btn {
+        min-height: 44px;
+        border-radius: var(--radius);
+        font-weight: 700;
+      }
+
+      .mode-btn:focus-visible,
+      #workspace-menu > summary:focus-visible,
+      .sidebar-tab:focus-visible,
+      #sidebar-collapse-btn:focus-visible,
+      #sidebar-reopen-tab:focus-visible,
+      .hud-btn:focus-visible,
+      .sidebar-tool:focus-visible,
+      .toggle-btn:focus-visible {
+        outline: 2px solid var(--ci-mint);
+        outline-offset: 2px;
+      }
+
+      #sidebar {
+        width: 280px;
+        min-width: 280px;
+        max-width: 420px;
+        resize: horizontal;
+        overflow: hidden;
+        background: rgba(8, 28, 38, 0.96);
+        box-shadow: 10px 0 32px rgba(0, 0, 0, 0.13);
+      }
+
+      #sidebar-header {
+        position: relative;
+        min-height: 64px;
+        padding: 12px 18px;
+      }
+
+      #sidebar-header::before {
+        content: 'Current project';
+        display: block;
+        position: absolute;
+        top: 12px;
+        left: 18px;
+        color: var(--ci-muted);
+        font-size: 9px;
+        font-weight: 800;
+        letter-spacing: 0.11em;
+        text-transform: uppercase;
+      }
+
+      #sidebar-title {
+        padding-top: 9px;
+        font-size: 15px;
+        letter-spacing: 0.02em;
+      }
+
+      #sidebar-collapse-btn {
+        top: 12px;
+        right: -44px;
+        width: 40px;
+        height: 40px;
+        border-radius: 0 var(--radius) var(--radius) 0;
+        background: rgba(8, 28, 38, 0.98);
+        font-size: 15px;
+      }
+
+      #sidebar.collapsed #sidebar-collapse-btn { right: -44px; }
+
+      #sidebar-reopen-tab {
+        top: 72px;
+        height: auto;
+        min-height: 116px;
+        padding: 12px 9px 12px 7px;
+        border-radius: 0 var(--radius) var(--radius) 0;
+        background: rgba(8, 28, 38, 0.98);
+        font-size: 10px;
+      }
+
+      #sidebar-tabs {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 6px;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--ci-line);
+      }
+      #sidebar-tabs:has(#tab-btn-places[hidden]) {
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+      }
+
+      .sidebar-tab {
+        min-width: 0;
+        height: 38px;
+        min-height: 38px;
+        padding: 0;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        color: rgba(255, 255, 255, 0.68);
+        background: rgba(255, 255, 255, 0.025);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        letter-spacing: 0.05em;
+        text-align: center;
+      }
+      .sidebar-tab[hidden],
+      .sidebar-panel[hidden] { display: none !important; }
+
+      .sidebar-tab .sidebar-tab-icon {
+        width: 18px;
+        height: 18px;
+        flex: 0 0 18px;
+        color: var(--ci-muted);
+      }
+
+      .sidebar-tab:hover {
+        color: var(--ci-paper);
+        background: rgba(114, 221, 212, 0.08);
+        border-color: rgba(114, 221, 212, 0.18);
+      }
+
+      .sidebar-tab.active {
+        color: var(--ci-mint);
+        border: 1px solid rgba(114, 221, 212, 0.45);
+        margin-bottom: 0;
+        background: rgba(114, 221, 212, 0.13);
+        box-shadow: inset 0 0 0 1px rgba(114, 221, 212, 0.2);
+      }
+
+      .sidebar-tab.active .sidebar-tab-icon { color: var(--ci-mint); }
+
+      .sidebar-tab .sidebar-tab-label {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      #project-switcher {
+        display: grid;
+        gap: 6px;
+        margin: 10px 0;
+        padding: 0 12px;
+      }
+      #project-switcher[hidden] { display: none !important; }
+
+      #project-hierarchy-editor {
+        margin: 10px 0;
+        padding: 0 12px;
+      }
+      #project-hierarchy-editor[hidden] { display: none !important; }
+      .project-hierarchy-card {
+        display: grid;
+        gap: 9px;
+        padding: 10px;
+        border: 1px solid rgba(114, 221, 212, 0.22);
+        border-radius: 9px;
+        background: rgba(114, 221, 212, 0.045);
+      }
+      .project-hierarchy-heading {
+        display: grid;
+        gap: 3px;
+      }
+      .project-hierarchy-heading strong {
+        color: var(--ci-paper);
+        font-size: 11px;
+        letter-spacing: 0.055em;
+        text-transform: uppercase;
+      }
+      .project-hierarchy-heading span,
+      .project-hierarchy-preview,
+      .project-hierarchy-status {
+        color: var(--ci-muted);
+        font-size: 10px;
+        line-height: 1.4;
+      }
+      .project-hierarchy-field {
+        display: grid;
+        gap: 4px;
+        color: var(--ci-paper);
+        font-size: 10px;
+        font-weight: 700;
+      }
+      .project-hierarchy-field[hidden] { display: none !important; }
+      .project-hierarchy-field input,
+      .project-hierarchy-field .ci-select {
+        width: 100%;
+        min-height: 34px;
+        box-sizing: border-box;
+        padding: 7px 9px;
+        border: 1px solid rgba(255, 255, 255, 0.13);
+        border-radius: 7px;
+        background: rgba(0, 0, 0, 0.18);
+        color: var(--ci-paper);
+        font: inherit;
+      }
+      .project-hierarchy-field input:focus,
+      .project-hierarchy-field .ci-select:focus {
+        outline: none;
+        border-color: rgba(114, 221, 212, 0.7);
+        box-shadow: 0 0 0 2px rgba(114, 221, 212, 0.12);
+      }
+      .project-hierarchy-preview {
+        padding: 7px 8px;
+        border-radius: 6px;
+        background: rgba(0, 0, 0, 0.18);
+      }
+      .project-hierarchy-status:not(:empty) { color: var(--ci-mint); }
+
+      #things-panel-content {
+        display: grid;
+        gap: 8px;
+        padding: 10px 12px;
+      }
+      .things-panel-heading {
+        display: grid;
+        gap: 3px;
+      }
+      .things-panel-heading strong {
+        color: var(--ci-paper);
+        font-size: 11px;
+        letter-spacing: 0.055em;
+        text-transform: uppercase;
+      }
+      #things-panel-summary {
+        color: var(--ci-muted);
+        font-size: 10px;
+        line-height: 1.4;
+      }
+      #things-list { display: grid; gap: 6px; }
+      .things-list-item {
+        width: 100%;
+        min-height: 44px;
+        padding: 7px 8px;
+        border: 1px solid rgba(255, 255, 255, 0.09);
+        border-radius: 7px;
+        background: rgba(255, 255, 255, 0.025);
+        color: var(--ci-paper);
+        cursor: pointer;
+        display: grid;
+        gap: 2px;
+        text-align: left;
+      }
+      .things-list-item:hover {
+        border-color: rgba(114, 221, 212, 0.46);
+        background: rgba(114, 221, 212, 0.1);
+      }
+      .things-list-item strong { font-size: 12px; }
+      .things-list-item span { color: var(--ci-muted); font-size: 10px; }
+
+      .project-switcher-group {
+        overflow: hidden;
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 9px;
+        background: rgba(255,255,255,0.025);
+      }
+
+      .project-switcher-group > summary {
+        min-height: 38px;
+        padding: 0 9px;
+        color: var(--ci-paper);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.055em;
+        list-style: none;
+        text-transform: uppercase;
+      }
+      .project-switcher-group > summary::-webkit-details-marker { display: none; }
+      .project-switcher-group > summary::before {
+        content: '›';
+        color: var(--ci-mint);
+        font-size: 15px;
+        line-height: 1;
+        transform: rotate(0deg);
+        transition: transform 0.15s ease-out;
+      }
+      .project-switcher-group[open] > summary::before { transform: rotate(90deg); }
+      .project-switcher-group > summary > :first-child { margin-right: auto; }
+      .project-switcher-group > summary:hover { background: rgba(114,221,212,0.07); }
+
+      .project-switcher-count {
+        min-width: 20px;
+        padding: 2px 5px;
+        border-radius: 999px;
+        background: rgba(114,221,212,0.13);
+        color: var(--ci-mint);
+        font-size: 10px;
+        letter-spacing: 0;
+        text-align: center;
+      }
+
+      .project-switcher-list {
+        display: grid;
+        gap: 5px;
+        max-height: 218px;
+        overflow-y: auto;
+        padding: 7px;
+        border-top: 1px solid rgba(255,255,255,0.07);
+      }
+
+      .project-switcher-option {
+        width: 100%;
+        min-height: 44px;
+        padding: 7px 8px;
+        border: 1px solid rgba(255,255,255,0.09);
+        border-radius: 7px;
+        background: rgba(0,0,0,0.14);
+        color: var(--ci-paper);
+        cursor: pointer;
+        display: grid;
+        gap: 2px;
+        text-align: left;
+      }
+      .project-switcher-option:hover {
+        border-color: rgba(114,221,212,0.46);
+        background: rgba(114,221,212,0.1);
+      }
+      .project-switcher-name { font-size: 12px; font-weight: 700; }
+      .project-switcher-meta { color: var(--ci-muted); font-size: 10px; }
+      .project-switcher-empty {
+        margin: 0;
+        color: var(--ci-muted);
+        font-size: 10px;
+        line-height: 1.45;
+      }
+
+      .sidebar-panel {
+        background: linear-gradient(180deg, rgba(5, 24, 34, 0.36), transparent 100px);
+      }
+
+      /* The active scan's visual controls remain close to navigation. */
+      #sidebar-layer-info {
+        display: flex;
+        max-height: 320px;
+        flex-direction: column;
+        gap: 8px;
+        overflow-y: auto;
+        padding: 0 12px 10px;
+        border-bottom: 1px solid var(--ci-line);
+      }
+
+      #sidebar-layer-info:empty { display: none; }
+      #sidebar-layer-info[hidden] { display: none !important; }
+      #sidebar-layer-info .edit-section { margin: 0; }
+
+      /* The left drawer is navigation; longer-running tools and inspection
+         controls live in an independently resizable right-side drawer. */
+      #viewport { order: 1; min-width: 0; }
+
+      #details-drawer {
+        order: 2;
+        width: 340px;
+        min-width: 280px;
+        max-width: 520px;
+        height: auto;
+        min-height: 0;
+        align-self: stretch;
+        display: flex;
+        flex-direction: column;
+        flex: 0 0 auto;
+        resize: horizontal;
+        overflow: hidden;
+        background: rgba(8, 28, 38, 0.98);
+        border-left: 1px solid var(--ci-line);
+        box-shadow: -10px 0 32px rgba(0, 0, 0, 0.13);
+        transition: width 0.2s ease-out, min-width 0.2s ease-out;
+      }
+
+      #details-drawer.collapsed {
+        width: 0;
+        min-width: 0;
+        border-left: 0;
+        resize: none;
+      }
+
+      #details-drawer-header {
+        min-height: 62px;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--ci-line);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      #details-drawer-title {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        font-size: 15px;
+        font-weight: 800;
+        color: var(--ci-paper);
+      }
+
+      #details-drawer-title::before {
+        content: 'Details & settings';
+        color: var(--ci-muted);
+        font-size: 9px;
+        font-weight: 800;
+        letter-spacing: 0.11em;
+        text-transform: uppercase;
+      }
+
+      #details-collapse-btn {
+        flex: 0 0 40px;
+        width: 40px;
+        height: 40px;
+        border: 1px solid var(--ci-line);
+        border-radius: 8px;
+        color: var(--ci-paper);
+        background: rgba(255,255,255,0.04);
+        cursor: pointer;
+      }
+
+      #details-collapse-btn:hover { color: var(--ci-mint); border-color: rgba(114,221,212,0.45); }
+
+      #details-panel-host {
+        display: flex;
+        min-height: 0;
+        flex: 1;
+      }
+
+      .details-panel { display: none; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; }
+      .details-panel.active { display: flex; }
+
+      #details-reopen-tab {
+        position: fixed;
+        top: 72px;
+        right: 0;
+        z-index: 30;
+        display: none;
+        min-height: 116px;
+        padding: 12px 7px 12px 9px;
+        border: 1px solid var(--ci-line);
+        border-right: 0;
+        border-radius: var(--radius) 0 0 var(--radius);
+        background: rgba(8, 28, 38, 0.98);
+        color: var(--ci-paper);
+        cursor: pointer;
+        writing-mode: vertical-rl;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        box-shadow: -3px 4px 14px rgba(0,0,0,0.22);
+      }
+      #details-drawer.collapsed + #details-reopen-tab { display: flex; }
+      #details-reopen-tab:hover { color: var(--ci-mint); border-color: rgba(114,221,212,0.55); }
+
+      #viewport-view-control {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        z-index: 8;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 9px 7px 12px;
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 10px;
+        background: rgba(4, 18, 27, 0.82);
+        backdrop-filter: blur(10px);
+        color: var(--ci-muted);
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      #inspector-panel { top: 10px; right: 14px; }
+
+      .scan-item {
+        min-height: 64px;
+        padding: 12px 16px;
+      }
+
+      #timeline-scrubber { padding: 14px 16px; }
+
+      @media (max-width: 720px) {
+        #top-toolbar {
+          height: 56px;
+          padding: 0 10px;
+          gap: 6px;
+          scroll-padding-inline: 10px;
+        }
+
+        .mode-btn {
+          width: 44px;
+          min-width: 44px;
+          padding: 0;
+          justify-content: center;
+        }
+
+        #top-toolbar-title { min-width: 54px; font-size: 8px; }
+        .toolbar-project { max-width: 116px; padding: 0 7px; }
+        #toolbar-project-name { max-width: 102px; font-size: 11px; }
+        .toolbar-metrics { display: none; }
+        #view-menu > summary { min-width: 44px; width: 44px; padding: 0; justify-content: center; font-size: 0; }
+        #view-menu > summary::after { content: '◉'; font-size: 13px; }
+        #share-menu > summary { min-width: 44px; width:44px; justify-content:center; padding:0; font-size:0; }
+        #share-menu > summary::after { content:'↗'; margin:0; font-size:14px; }
+        #workspace-menu > summary { min-width:44px; width:44px; justify-content:center; padding:0; font-size:0; }
+        #workspace-menu > summary::after { content:'☰'; margin:0; font-size:14px; }
+        .view-menu-panel { position: fixed; top: 64px; right: 10px; width: min(270px, calc(100vw - 20px)); }
+        .share-menu-panel { position: fixed; top:64px; left:10px; width:min(260px, calc(100vw - 20px)); }
+        .workspace-menu-panel { position:fixed; top:64px; right:10px; width:min(260px, calc(100vw - 20px)); }
+
+        .mode-btn span {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          padding: 0;
+          margin: -1px;
+          overflow: hidden;
+          clip: rect(0, 0, 0, 0);
+          white-space: nowrap;
+          border: 0;
+        }
+
+        #main-area {
+          display: block;
+          position: relative;
+        }
+
+        #viewport { height: 100%; }
+
+        #sidebar {
+          position: absolute;
+          inset: auto 0 0;
+          z-index: 40;
+          width: 100%;
+          min-width: 0;
+          height: min(58vh, 500px);
+          border: 1px solid var(--ci-line);
+          border-bottom: 0;
+          border-radius: 18px 18px 0 0;
+          box-shadow: 0 -14px 36px rgba(0, 0, 0, 0.3);
+          transition: transform 0.22s ease-out, height 0.22s ease-out;
+          resize: none;
+        }
+
+        #sidebar.collapsed {
+          width: 100%;
+          min-width: 0;
+          height: 0;
+          overflow: hidden;
+          border: 0;
+          transform: translateY(100%);
+        }
+
+        #sidebar-header {
+          display: flex;
+          min-height: 52px;
+          padding: 9px 16px;
+          border-bottom: 0;
+        }
+
+        #sidebar-header::before {
+          top: 9px;
+          left: 16px;
+          font-size: 8px;
+        }
+
+        #sidebar-title {
+          padding-top: 8px;
+          font-size: 14px;
+        }
+
+        #sidebar-collapse-btn {
+          display: flex;
+          top: 8px;
+          right: 10px;
+          width: 40px;
+          height: 40px;
+          border-radius: 10px;
+        }
+
+        #sidebar.collapsed #sidebar-collapse-btn { right: 10px; }
+
+        #sidebar-tabs { grid-template-columns: repeat(6, minmax(0, 1fr)); padding: 8px 12px 10px; }
+        #sidebar-tabs:has(#tab-btn-places[hidden]) { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+
+        #sidebar-layer-info {
+          max-height: 210px;
+          padding: 0 12px 8px;
+        }
+
+        #project-switcher { margin: 8px 0; padding: 0 12px; }
+
+        .sidebar-tab {
+          min-width: 0;
+          height: 44px;
+          min-height: 44px;
+          padding: 0;
+        }
+
+        #project-hierarchy-editor { margin: 8px 0; padding: 0 12px; }
+
+        #sidebar-reopen-tab {
+          top: auto;
+          bottom: 16px;
+          left: 50%;
+          min-height: 44px;
+          height: 44px;
+          padding: 0 16px;
+          transform: translateX(-50%);
+          border: 1px solid rgba(114, 221, 212, 0.42);
+          border-radius: 999px;
+          background: rgba(8, 28, 38, 0.96);
+          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
+          writing-mode: horizontal-tb;
+        }
+
+        #details-drawer {
+          position: absolute;
+          inset: auto 0 0;
+          z-index: 41;
+          width: 100%;
+          max-width: none;
+          min-width: 0;
+          height: min(58vh, 500px);
+          border: 1px solid var(--ci-line);
+          border-bottom: 0;
+          border-radius: 18px 18px 0 0;
+          resize: none;
+          transform: translateY(0);
+          transition: transform 0.22s ease-out, height 0.22s ease-out;
+        }
+
+        #details-drawer.collapsed {
+          width: 100%;
+          min-width: 0;
+          height: 0;
+          transform: translateY(100%);
+        }
+
+        #details-reopen-tab {
+          top: auto;
+          right: 16px;
+          bottom: 16px;
+          min-height: 44px;
+          padding: 0 16px;
+          border: 1px solid rgba(114, 221, 212, 0.42);
+          border-radius: 999px;
+          writing-mode: horizontal-tb;
+        }
+
+        #viewport-view-control {
+          top: 8px;
+          right: 8px;
+        }
+
+        #inspector-panel { top: 8px; right: 8px; }
+
+        #hud-controls {
+          right: 10px;
+          bottom: 12px;
+          max-width: 190px;
+        }
+      }
     </style>
   </head>
   <body>
     <div id="app">
 
-      <!-- Top toolbar: view mode switcher -->
+      <!-- Top toolbar: primary workspace actions -->
       <div id="top-toolbar">
-        <span id="top-toolbar-title">Companion Scan</span>
-        <div class="toolbar-sep"></div>
-        <button class="mode-btn active" id="mode-solid"   data-mode="solid"><svg width="14px" height="14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 3 8 4.4v9.2L12 21l-8-4.4V7.4z"/><path d="M4 7.4 12 12l8-4.6M12 12v9"/></svg><span>Solid</span></button>
-        <button class="mode-btn"        id="mode-points"  data-mode="points"><svg width="14px" height="14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="6.2" cy="7.4" r="1.5"/><circle cx="12" cy="4.8" r="1.5"/><circle cx="17.8" cy="7.8" r="1.5"/><circle cx="4.9" cy="14.2" r="1.5"/><circle cx="10.6" cy="11.6" r="1.5"/><circle cx="16.6" cy="14" r="1.5"/><circle cx="8" cy="19.2" r="1.5"/><circle cx="14.4" cy="19.4" r="1.5"/></svg><span>Points</span></button>
-        <button class="mode-btn"        id="mode-wire"    data-mode="wireframe"><svg width="14px" height="14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 3 8 4.4v9.2L12 21l-8-4.4V7.4z"/><path d="M4 7.4 12 12l8-4.6M12 12v9M4 16.6 20 7.4M20 16.6 4 7.4"/></svg><span>Wire</span></button>
-        <button class="mode-btn"        id="mode-semantic" data-mode="semantic"><svg width="14px" height="14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M11.2 3.4H20v8.8l-8.8 8.8-8.8-8.8z"/><circle cx="16.2" cy="7.8" r="1.5"/></svg><span>Semantic</span></button>
+        <span id="top-toolbar-title" aria-label="Companion Scan"><span>Companion</span><span>Scan</span></span>
+        <div class="toolbar-project" title="Current project"><span id="toolbar-project-name">Loading project</span></div>
+        <div class="toolbar-metrics" aria-label="Project statistics">
+          <span class="toolbar-metric"><strong id="toolbar-scan-count">--</strong><span>scans</span></span>
+          <span class="toolbar-metric"><strong id="toolbar-layer-count">--</strong><span>layers</span></span>
+          <span class="toolbar-metric jobs" id="toolbar-jobs"><strong id="toolbar-job-count">--</strong><span>jobs</span></span>
+        </div>
+        <details id="view-menu">
+          <summary>Views</summary>
+          <div class="view-menu-panel">
+            <span class="view-menu-heading">Scene visibility</span>
+            <label class="view-mode-row"><span>Render mode</span><select class="ci-select" id="view-mode-select" aria-label="View type"><option value="solid">Solid</option><option value="points">Points</option><option value="wireframe">Wireframe</option><option value="semantic">Semantic</option></select></label>
+            <label class="view-toggle"><span>GIS map</span><input id="view-toggle-map" type="checkbox" /></label>
+            <label class="view-toggle"><span>Hit points</span><input id="view-toggle-points" type="checkbox" checked /></label>
+            <label class="view-toggle"><span>Ground planes</span><input id="view-toggle-floor" type="checkbox" checked /></label>
+            <label class="view-toggle"><span>Scanned objects</span><input id="view-toggle-mesh" type="checkbox" checked /></label>
+            <label class="view-toggle"><span>Camera trail</span><input id="view-toggle-path" type="checkbox" /></label>
+            <label class="view-toggle"><span>Image frustums</span><input id="view-toggle-frustums" type="checkbox" /></label>
+            <label class="view-toggle"><span>Scanned images</span><input id="view-toggle-images" type="checkbox" /></label>
+            <label class="view-toggle"><span>Ground grid</span><input id="view-toggle-grid" type="checkbox" checked /></label>
+            <label class="view-toggle"><span>Tags</span><input id="view-toggle-labels" type="checkbox" checked /></label>
+          </div>
+        </details>
         <div id="toolbar-spacer"></div>
-        <button class="mode-btn" id="btn-measure" title="Measure distance: click two points"><svg width="14px" height="14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="1.8" y="8.4" width="20.4" height="7.2" rx="1.2" transform="rotate(-45 12 12)"/><path d="m9.2 7.8 1.6 1.6M12 5l1.6 1.6M14.8 2.2l1.6 1.6M6.4 10.6 8 12.2"/></svg><span>Measure</span></button>
-        <button class="mode-btn" id="btn-geomap"><svg width="14px" height="14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m3.4 6.6 5.6-2.2v13l-5.6 2.2z"/><path d="M9 4.4l6 2.2v13L9 17.4z"/><path d="m15 6.6 5.6-2.2v13L15 19.6z"/></svg><span>Map</span></button>
-        <button class="mode-btn" id="btn-livefeed"><svg width="14px" height="14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="2.2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 16.2a6 6 0 0 0 0-8.4"/><path d="M4.8 4.8a10.2 10.2 0 0 0 0 14.4M19.2 19.2a10.2 10.2 0 0 0 0-14.4"/></svg><span>Live</span></button>
-        <a href="/" id="back-link">← AR App</a>
-        <a href="/webxr.html" id="webxr-link" class="mode-btn" title="WebXR scanner — use HelloXR on iOS"><svg width="14px" height="14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3.4 9.6A1.7 1.7 0 0 1 5.1 8h13.8a1.7 1.7 0 0 1 1.7 1.6v4.3a1.7 1.7 0 0 1-1.7 1.7h-3.2l-1.9-2.2h-3.6l-1.9 2.2H5.1a1.7 1.7 0 0 1-1.7-1.7z"/></svg><span>WebXR</span></a>
+        <button class="mode-btn" id="btn-livefeed" hidden><svg width="14px" height="14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="2.2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 16.2a6 6 0 0 0 0-8.4"/><path d="M4.8 4.8a10.2 10.2 0 0 0 0 14.4M19.2 19.2a10.2 10.2 0 0 0 0-14.4"/></svg><span>Live</span></button>
+        <div id="toolbar-session-actions">
+          <details id="workspace-menu">
+            <summary>Navigate</summary>
+            <div class="workspace-menu-panel">
+              <span class="workspace-menu-heading">Workspace destinations</span>
+              <a href="/" class="workspace-menu-link"><span>Scan a Place</span><small>Start a camera scan or upload media.</small></a>
+              <a href="/webxr.html" id="webxr-link" class="workspace-menu-link"><span>WebXR scanner</span><small>Open the browser-based WebXR scan view.</small></a>
+              <div class="workspace-menu-divider" aria-hidden="true"></div>
+              <a id="account-chip" href="/authenticate/oidc?redirect=/editor" title="Connect your Companion Intelligence Portal account">Connect account</a>
+            </div>
+          </details>
+          <details id="share-menu">
+            <summary>Share</summary>
+            <div class="share-menu-panel">
+              <span class="share-menu-heading">This place workspace</span>
+              <div id="share-links"><div class="layer-meta">Loading share links...</div></div>
+            </div>
+          </details>
+        </div>
       </div>
 
       <div id="main-area">
 
-        <!-- Sidebar with tabs: Scans | World | Layers | Edit -->
+        <!-- Workspace navigation keeps project tasks separate from 3D controls. -->
         <div id="sidebar">
           <button id="sidebar-collapse-btn" aria-label="Toggle sidebar" title="Collapse/expand sidebar">◀</button>
           <div id="sidebar-header">
             <span id="sidebar-title">Companion Scan</span>
           </div>
-          <div id="sidebar-tabs" role="tablist">
-            <button class="sidebar-tab active" data-tab="scans" role="tab" aria-selected="true" id="tab-btn-scans" aria-controls="tab-scans">Scans</button>
-            <button class="sidebar-tab"        data-tab="world" role="tab" aria-selected="false" id="tab-btn-world" aria-controls="tab-world">World</button>
-            <button class="sidebar-tab"        data-tab="layers" role="tab" aria-selected="false" id="tab-btn-layers" aria-controls="tab-layers">Layers</button>
-            <button class="sidebar-tab"        data-tab="edit" role="tab" aria-selected="false" id="tab-btn-edit" aria-controls="tab-edit">Edit</button>
+          <div id="sidebar-tabs" role="tablist" aria-label="Project navigation">
+            <button class="sidebar-tab" data-tab="world" role="tab" aria-selected="false" id="tab-btn-world" aria-controls="tab-world" title="Project" aria-label="Project"><svg class="sidebar-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M5 3h14v18H5z"/><path d="M8 7h8M8 11h8M8 15h5"/></svg><span class="sidebar-tab-label">Project</span></button>
+            <button class="sidebar-tab active" data-tab="scans" role="tab" aria-selected="true" id="tab-btn-scans" aria-controls="tab-scans" title="Scans" aria-label="Scans"><svg class="sidebar-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 7.5h3l1.4-2h7.2l1.4 2h3v11H4z"/><circle cx="12" cy="13" r="3.4"/></svg><span class="sidebar-tab-label">Scans</span></button>
+            <button class="sidebar-tab" data-tab="things" role="tab" aria-selected="false" id="tab-btn-things" aria-controls="tab-things" title="Things" aria-label="Things"><svg class="sidebar-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M6 11V5.8A1.8 1.8 0 0 1 7.8 4h4.4A1.8 1.8 0 0 1 14 5.8V11"/><path d="M5 11h11a2 2 0 0 1 2 2v3H7a2 2 0 0 1-2-2v-3Z"/><path d="M7 16v4M17 16v4M5 20h14"/></svg><span class="sidebar-tab-label">Things</span></button>
+            <button class="sidebar-tab" data-tab="layers" role="tab" aria-selected="false" id="tab-btn-layers" aria-controls="tab-layers" title="Layers" aria-label="Layers"><svg class="sidebar-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m12 3 8 4.3-8 4.4-8-4.4zM4 12.1l8 4.4 8-4.4M4 16.5l8 4.4 8-4.4"/></svg><span class="sidebar-tab-label">Layers</span></button>
+            <button class="sidebar-tab" data-tab="places" role="tab" aria-selected="false" id="tab-btn-places" aria-controls="tab-places" title="Places" aria-label="Places" hidden><svg class="sidebar-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M19 10c0 5-7 10-7 10S5 15 5 10a7 7 0 1 1 14 0z"/><circle cx="12" cy="10" r="2.3"/></svg><span class="sidebar-tab-label">Places</span></button>
+            <button class="sidebar-tab" data-tab="edit" role="tab" aria-selected="false" id="tab-btn-edit" aria-controls="tab-edit" title="Edit" aria-label="Edit"><svg class="sidebar-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m4 16.8-.8 4 4-.8L19 8.2a2.2 2.2 0 0 0-3.1-3.1z"/><path d="m14.6 4.1 5.3 5.3"/></svg><span class="sidebar-tab-label">Edit</span></button>
           </div>
+          <section id="project-hierarchy-editor" aria-label="Place hierarchy" hidden>
+            <div class="project-hierarchy-card">
+              <div class="project-hierarchy-heading">
+                <strong>Place hierarchy</strong>
+                <span>Set this project as a Building, Floor, or Room and connect it to an upper-level Place.</span>
+              </div>
+              <label class="project-hierarchy-field">This project is
+                <select class="ci-select" id="project-place-type" aria-label="Place type">
+                  <option value="">An unclassified Place</option>
+                  <option value="building">A Building</option>
+                  <option value="floor">A Floor</option>
+                  <option value="room">A Room</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label class="project-hierarchy-field"><span id="project-place-name-label">Place name</span>
+                <input id="project-place-name" type="text" autocomplete="off" maxlength="120">
+              </label>
+              <label class="project-hierarchy-field" id="project-floor-name-field" hidden>Floor name
+                <input id="project-floor-name" type="text" autocomplete="off" maxlength="120" list="project-floor-name-options">
+              </label>
+              <label class="project-hierarchy-field" id="project-building-name-field" hidden>Building name
+                <input id="project-building-name" type="text" autocomplete="off" maxlength="120" list="project-building-name-options">
+              </label>
+              <datalist id="project-floor-name-options"></datalist>
+              <datalist id="project-building-name-options"></datalist>
+              <div class="project-hierarchy-preview" id="project-hierarchy-preview"></div>
+              <button class="job-btn" id="project-hierarchy-save" type="button">Save Place structure</button>
+              <div class="project-hierarchy-status" id="project-hierarchy-status" role="status" aria-live="polite"></div>
+            </div>
+          </section>
+          <section id="project-switcher" aria-label="Project switcher" hidden>
+            <details class="project-switcher-group" id="nearby-projects-group" open>
+              <summary><span>Places at This Address</span><span class="project-switcher-count" id="nearby-project-count">0</span></summary>
+              <div class="project-switcher-list" id="nearby-projects-list"></div>
+            </details>
+            <details class="project-switcher-group" id="other-projects-group">
+              <summary><span>Other Places</span><span class="project-switcher-count" id="other-project-count">0</span></summary>
+              <div class="project-switcher-list" id="other-projects-list"></div>
+            </details>
+          </section>
+          <div id="sidebar-layer-info" aria-label="Layer controls" hidden></div>
 
           <!-- Scans panel -->
           <div class="sidebar-panel active" id="tab-scans" role="tabpanel" aria-labelledby="tab-btn-scans">
+            <div id="timeline-scrubber" hidden>
+              <div class="timeline-range-label"><span>Visible scan range</span><span>From / To</span></div>
+              <div class="timeline-range-control">
+                <div class="timeline-range-track" aria-hidden="true"></div>
+                <div class="timeline-range-fill" id="timeline-range-fill" aria-hidden="true"></div>
+                <input id="timeline-start" type="range" min="0" max="0" value="0" step="1" aria-label="Start of visible scan range" />
+                <input id="timeline-end" type="range" min="0" max="0" value="0" step="1" aria-label="End of visible scan range" />
+              </div>
+              <div id="timeline-label">All scans</div>
+            </div>
             <div id="scan-list">
               <div id="scan-list-empty">Loading scans…</div>
+            </div>
+          </div>
+
+          <!-- Things panel -->
+          <div class="sidebar-panel" id="tab-things" role="tabpanel" aria-labelledby="tab-btn-things">
+            <div id="things-panel-content">
+              <div class="things-panel-heading">
+                <strong>Things</strong>
+                <span id="things-panel-summary">Loading Things...</span>
+              </div>
+              <div id="things-list"></div>
             </div>
           </div>
 
@@ -1017,52 +2261,49 @@
           <div class="sidebar-panel" id="tab-world" role="tabpanel" aria-labelledby="tab-btn-world">
             <div id="world-panel-content">
               <div class="edit-section">
-                <div class="edit-section-title">World</div>
-                <div class="world-stat-grid">
-                  <div class="world-stat">
-                    <div class="world-stat-value" id="world-scan-count">--</div>
-                    <div class="world-stat-label">Scans</div>
-                  </div>
-                  <div class="world-stat">
-                    <div class="world-stat-value" id="world-layer-count">--</div>
-                    <div class="world-stat-label">Layers</div>
-                  </div>
-                  <div class="world-stat">
-                    <div class="world-stat-value" id="world-job-count">--</div>
-                    <div class="world-stat-label">Jobs</div>
-                  </div>
-                  <div class="world-stat">
-                    <div class="world-stat-value" id="world-origin-label">--</div>
-                    <div class="world-stat-label">Origin</div>
-                  </div>
+                <div class="edit-section-title">Guided Processing</div>
+                <div class="layer-meta" style="margin-bottom:8px;">Select a scan, then move through one clear outcome at a time. Source media and prior layers remain intact.</div>
+                <div class="processing-flow" id="processing-flow">
+                  <div class="processing-step"><div><strong>1. Prepare</strong><span>Index media, extract layers, and check alignment.</span></div><button class="job-btn" data-workflow="prepare">Prepare</button></div>
+                  <div class="processing-step"><div><strong>2. Understand</strong><span>Run semantic analysis and link durable Things.</span></div><button class="job-btn" data-workflow="understand">Understand</button></div>
+                  <div class="processing-step"><div><strong>3. Reconstruct</strong><span>Build a dense map or photoreal splat from keyframes.</span></div><button class="job-btn" data-workflow="reconstruct">Reconstruct</button></div>
+                  <div class="processing-step"><div><strong>4. Publish</strong><span>Sync Place and Thing context, then prepare an export.</span></div><button class="job-btn" data-workflow="publish">Publish</button></div>
                 </div>
               </div>
 
-              <div class="edit-section">
-                <div class="edit-section-title">Share Links</div>
-                <div id="share-links">
-                  <div class="layer-meta">Loading share links...</div>
-                </div>
-              </div>
-
-              <div class="edit-section">
-                <div class="edit-section-title">Processing Queue</div>
-                <select id="job-type" aria-label="Processing job">
+              <details class="layer-tool">
+                <summary><span><span class="layer-tool-name">Advanced queue</span><span class="layer-tool-hint">Run an individual job when you need a specific artifact.</span></span></summary>
+                <div class="layer-tool-body">
+                <select class="ci-select ci-select-block" id="job-type" aria-label="Processing job">
                   <option value="ingest">Ingest</option>
                   <option value="extract-layers">Extract layers</option>
                   <option value="align-scan">Align scan</option>
                   <option value="merge-points">Merge points</option>
                   <option value="semantic-pass">Semantic pass</option>
                   <option value="depth-reconstruct">Depth reconstruct</option>
+                  <option value="thing-correspondence">Thing correspondence</option>
                   <option value="lingbot-map-reconstruct">LingBot-Map reconstruct</option>
                   <option value="splat-train">Splat train</option>
+                  <option value="splat-detect">Splat detect</option>
                   <option value="splat-finish">Splat finish (compress)</option>
+                  <option value="sensenova-vision">SenseNova Vision</option>
                   <option value="export-world">Export world</option>
                 </select>
                 <button class="job-btn" id="btn-queue-job" style="width:100%;">Queue Job</button>
                 <div id="job-list" style="margin-top:8px;">
                   <div class="layer-meta">No jobs queued yet.</div>
                 </div>
+                </div>
+              </details>
+              </div>
+            </div>
+
+          <!-- Places panel -->
+          <div class="sidebar-panel" id="tab-places" role="tabpanel" aria-labelledby="tab-btn-places" hidden>
+            <div id="places-panel-content">
+              <div class="edit-section">
+                <div class="edit-section-title">Places</div>
+                <div id="places-list"><div class="layer-meta">Loading places...</div></div>
               </div>
             </div>
           </div>
@@ -1070,6 +2311,11 @@
           <!-- Layers panel -->
           <div class="sidebar-panel" id="tab-layers" role="tabpanel" aria-labelledby="tab-btn-layers">
             <div id="layers-panel-content">
+              <div class="layers-intro">
+                <span class="layers-eyebrow">Selected scan workspace</span>
+                <h2>Layers &amp; processing</h2>
+                <p>Inspect source data or run one enhancement workflow at a time.</p>
+              </div>
               <!-- Map-quality headline: one coherent per-scan state above the
                    scattered per-artifact sections below. -->
               <div class="edit-section quality-section" id="quality-section">
@@ -1083,16 +2329,17 @@
                 </div>
               </div>
 
-              <div class="edit-section">
-                <div class="edit-section-title">GLB + Sidecar Layers</div>
-                <div id="layer-list">
+              <details class="layer-tool" open>
+                <summary><span><span class="layer-tool-name">Scene layers</span><span class="layer-tool-hint">Show source geometry, points, tags, and sidecars.</span></span></summary>
+                <div class="layer-tool-body" id="layer-list">
                   <div class="layer-meta">Loading layers...</div>
                 </div>
-              </div>
+              </details>
 
-              <div class="edit-section" id="lingbot-map-section">
-                <div class="edit-section-title">LingBot-Map Reconstruction</div>
-                <div id="lingbot-map-status" class="layer-meta" style="margin-bottom:6px;">
+              <details class="layer-tool" id="lingbot-map-section">
+                <summary><span><span class="layer-tool-name">LingBot-Map</span><span class="layer-tool-hint">View a streamed reconstruction and camera path.</span></span></summary>
+                <div class="layer-tool-body">
+                <div id="lingbot-map-status" class="layer-meta" style="margin:12px 0 6px;">
                   Run the <code>lingbot-map-reconstruct</code> job to densify the selected scan.
                 </div>
                 <label class="layer-row" style="display:flex;align-items:center;gap:8px;">
@@ -1104,13 +2351,35 @@
                   <span>Show LingBot-Map camera path</span>
                 </label>
                 <div id="lingbot-map-stats" class="layer-meta" style="margin-top:6px;"></div>
-              </div>
+                </div>
+              </details>
+
+              <details class="layer-tool" id="sensenova-section" open>
+                <summary><span><span class="layer-tool-name">SenseNova Vision</span><span class="layer-tool-hint">Reconstruct or understand keyframed scan imagery.</span></span></summary>
+                <div class="layer-tool-body">
+                <div id="sensenova-status" class="layer-meta" style="margin:12px 0 8px;">
+                  Process keyframes with SenseNova depth, segmentation, detection, pose, or multi-view reconstruction.
+                </div>
+                <select class="ci-select ci-select-block ci-select-spaced" id="sensenova-task" aria-label="SenseNova task">
+                  <option value="recon3d">Multi-view reconstruction</option>
+                  <option value="camera_pose">Camera pose estimation</option>
+                  <option value="depth">Depth estimation</option>
+                  <option value="normal">Surface normals</option>
+                  <option value="bbox_detection">Object detection</option>
+                  <option value="pan_seg">Panoptic segmentation</option>
+                </select>
+                <input type="text" id="sensenova-query" placeholder="Optional labels, e.g. bed, chair, table"
+                  style="width:100%;box-sizing:border-box;margin-bottom:6px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:#fff;font-size:11px;padding:7px 8px;outline:none;" />
+                <button class="job-btn" id="btn-sensenova-run" style="width:100%;">Run SenseNova</button>
+                </div>
+              </details>
 
               <!-- Splat Toolbox — trained-splat status, train/detect actions,
                    3D object boxes, and the external splat loader in one place. -->
-              <div class="edit-section" id="splat-toolbox-section">
-                <div class="edit-section-title">Splat Toolbox</div>
-                <div id="splat-layer-status" class="layer-meta" style="margin-bottom:6px;">
+              <details class="layer-tool" id="splat-toolbox-section">
+                <summary><span><span class="layer-tool-name">Splat tools</span><span class="layer-tool-hint">Train, inspect, and detect objects in Gaussian splats.</span></span></summary>
+                <div class="layer-tool-body">
+                <div id="splat-layer-status" class="layer-meta" style="margin:12px 0 6px;">
                   Run the <code>splat-train</code> job to train a Gaussian splat for the selected scan.
                 </div>
                 <div id="splat-layer-stats" class="layer-meta" style="margin-bottom:8px;"></div>
@@ -1161,7 +2430,8 @@
                     <div class="layer-meta">No splats loaded.</div>
                   </div>
                 </details>
-              </div>
+                </div>
+              </details>
             </div>
           </div>
 
@@ -1219,6 +2489,44 @@
           </div>
         </div>
 
+        <button id="sidebar-reopen-tab" type="button" aria-label="Show left drawer" aria-expanded="false" title="Show left drawer">▶</button>
+
+        <aside id="details-drawer" aria-label="Details and settings">
+          <div id="details-drawer-header">
+            <span id="details-drawer-title">Items</span>
+            <button id="details-collapse-btn" type="button" aria-label="Close details and settings" aria-expanded="true" title="Close details and settings">▶</button>
+          </div>
+          <div id="details-panel-host">
+            <div class="details-panel active" id="details-items" role="tabpanel" aria-labelledby="tab-btn-scans">
+              <div id="items-panel-content">
+                <div class="items-intro">
+                  <span class="items-eyebrow">Identified Things</span>
+                </div>
+                <div id="items-list"><div class="inventory-empty">Loading identified items...</div></div>
+                <section class="review-comments" aria-labelledby="review-comments-title">
+                  <div class="review-comments-heading">
+                    <div>
+                      <span class="items-eyebrow">Review</span>
+                      <h3 id="review-comments-title">Place comments</h3>
+                    </div>
+                    <span id="review-comments-scope" class="layer-meta">Current Place</span>
+                  </div>
+                  <div id="review-comments-list" class="review-comments-list"><div class="inventory-empty">Loading comments...</div></div>
+                  <label class="review-comment-composer" for="review-comment-input">
+                    <span>Add a review note</span>
+                    <textarea id="review-comment-input" rows="3" maxlength="4000" placeholder="Leave a note for this Place or selected scan"></textarea>
+                  </label>
+                  <div class="review-comment-actions">
+                    <span id="review-comment-status" class="layer-meta" aria-live="polite"></span>
+                    <button id="review-comment-submit" class="job-btn" type="button">Add comment</button>
+                  </div>
+                </section>
+              </div>
+            </div>
+          </div>
+        </aside>
+        <button id="details-reopen-tab" type="button" aria-label="Show right drawer" aria-expanded="false" title="Show right drawer">◀</button>
+
         <!-- Viewport -->
         <div id="viewport">
           <canvas id="viewer-canvas"></canvas>
@@ -1236,9 +2544,12 @@
             <div id="compass-widget" aria-label="Compass">
               <div id="compass-arrow"></div>
             </div>
-            <div id="scale-widget">
-              <div id="scale-bar"></div>
-              <span id="scale-label">1 m</span>
+            <div class="world-hud-row">
+              <div id="scale-widget">
+                <div id="scale-bar"></div>
+                <span id="scale-label">1 m</span>
+              </div>
+              <button id="btn-measure" class="hud-icon-btn" type="button" title="Measure distance in the scene" aria-label="Measure distance in the scene"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="1.8" y="8.4" width="20.4" height="7.2" rx="1.2" transform="rotate(-45 12 12)"/><path d="m9.2 7.8 1.6 1.6M12 5l1.6 1.6M14.8 2.2l1.6 1.6M6.4 10.6 8 12.2"/></svg></button>
             </div>
             <div id="coord-readout">World: --</div>
           </div>
@@ -1255,7 +2566,7 @@
             <button class="hud-btn" id="btn-reset-camera">⟳ Reset</button>
             <button class="hud-btn" id="btn-toggle-cloud"><svg width="13px" height="13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M7.2 19a4.4 4.4 0 0 1-.3-8.8A5.6 5.6 0 0 1 17.6 11a4.2 4.2 0 0 1 .3 8z"/></svg><span>Cloud</span></button>
             <button class="hud-btn" id="btn-toggle-labels"><svg width="13px" height="13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M11.2 3.4H20v8.8l-8.8 8.8-8.8-8.8z"/><circle cx="16.2" cy="7.8" r="1.5"/></svg><span>Labels</span></button>
-            <button class="hud-btn" id="btn-toggle-bounds" style="opacity:0.7"><svg width="13px" height="13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 3 8 4.4v9.2L12 21l-8-4.4V7.4z"/><path d="M4 7.4 12 12l8-4.6M12 12v9M4 16.6 20 7.4M20 16.6 4 7.4"/></svg><span>Bounds</span></button>
+            <button class="hud-btn" id="btn-toggle-bounds" style="opacity:0.6" aria-pressed="false"><svg width="13px" height="13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 3 8 4.4v9.2L12 21l-8-4.4V7.4z"/><path d="M4 7.4 12 12l8-4.6M12 12v9M4 16.6 20 7.4M20 16.6 4 7.4"/></svg><span>Bounds</span></button>
             <button class="hud-btn" id="btn-flush-tags"><svg width="13px" height="13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4.4 5.8a1.4 1.4 0 0 1 1.4-1.4h10l4 4v9.8a1.4 1.4 0 0 1-1.4 1.4H5.8a1.4 1.4 0 0 1-1.4-1.4z"/><path d="M8 4.4v5h7v-5M8 19.6v-5.4h8v5.4"/></svg><span>Save Tags</span></button>
           </div>
 
@@ -1275,16 +2586,69 @@
         document.addEventListener(evt, (e) => e.preventDefault(), { passive: false })
       }
     </script>
+    <script>
+      // Keep the left rail focused on navigation. Existing panels move without
+      // recreating their controls, so event bindings and current tool state stay intact.
+      (() => {
+        const host = document.getElementById('details-panel-host');
+        if (!host) return;
+        for (const name of ['world', 'layers', 'edit']) {
+          const panel = document.getElementById(`tab-${name}`);
+          if (!panel) continue;
+          panel.classList.remove('sidebar-panel', 'active');
+          panel.classList.add('details-panel');
+          host.appendChild(panel);
+        }
+
+        const layerInfo = document.getElementById('sidebar-layer-info');
+        const layersPanel = document.getElementById('layers-panel-content');
+        if (layerInfo && layersPanel) {
+          // Put the active scan's read-most-used visual controls beside navigation.
+          const mapQuality = document.getElementById('quality-section');
+          const sceneLayers = layersPanel.querySelector(':scope > details.layer-tool');
+          if (mapQuality) layerInfo.appendChild(mapQuality);
+          if (sceneLayers) layerInfo.appendChild(sceneLayers);
+        }
+      })();
+    </script>
     <script type="module" src="/src/viewer/viewer.ts"></script>
     <script>
-      // Sidebar collapse toggle
-      document.getElementById('sidebar-collapse-btn')?.addEventListener('click', function() {
-        const sb = document.getElementById('sidebar');
-        if (!sb) return;
-        sb.classList.toggle('collapsed');
-        this.textContent = sb.classList.contains('collapsed') ? '▶' : '◀';
-        // Trigger Three.js resize after transition
+      // The reopen tab sits outside the clipped sidebar, so the drawer always
+      // remains recoverable after being collapsed.
+      const sidebar = document.getElementById('sidebar');
+      const collapseButton = document.getElementById('sidebar-collapse-btn');
+      const reopenTab = document.getElementById('sidebar-reopen-tab');
+      const setSidebarCollapsed = (collapsed) => {
+        if (!sidebar || !collapseButton || !reopenTab) return;
+        sidebar.classList.toggle('collapsed', collapsed);
+        collapseButton.textContent = collapsed ? '▶' : '◀';
+        collapseButton.setAttribute('aria-expanded', String(!collapsed));
+        reopenTab.setAttribute('aria-expanded', String(!collapsed));
+        // Trigger Three.js resize after the width transition completes.
         setTimeout(() => window.dispatchEvent(new Event('resize')), 250);
+      };
+      collapseButton?.addEventListener('click', () => setSidebarCollapsed(!sidebar?.classList.contains('collapsed')));
+      reopenTab?.addEventListener('click', () => setSidebarCollapsed(false));
+
+      const detailsDrawer = document.getElementById('details-drawer');
+      const detailsCollapseButton = document.getElementById('details-collapse-btn');
+      const detailsReopenTab = document.getElementById('details-reopen-tab');
+      const setDetailsCollapsed = (collapsed) => {
+        if (!detailsDrawer || !detailsCollapseButton || !detailsReopenTab) return;
+        detailsDrawer.classList.toggle('collapsed', collapsed);
+        detailsCollapseButton.textContent = collapsed ? '◀' : '▶';
+        detailsCollapseButton.setAttribute('aria-expanded', String(!collapsed));
+        detailsReopenTab.setAttribute('aria-expanded', String(!collapsed));
+        setTimeout(() => window.dispatchEvent(new Event('resize')), 250);
+      };
+      detailsCollapseButton?.addEventListener('click', () => setDetailsCollapsed(!detailsDrawer?.classList.contains('collapsed')));
+      detailsReopenTab?.addEventListener('click', () => setDetailsCollapsed(false));
+
+      const layerInfo = document.getElementById('sidebar-layer-info');
+      document.querySelectorAll('.sidebar-tab').forEach((button) => {
+        button.addEventListener('click', () => {
+          if (layerInfo) layerInfo.hidden = button.dataset.tab !== 'layers';
+        });
       });
     </script>
   </body>

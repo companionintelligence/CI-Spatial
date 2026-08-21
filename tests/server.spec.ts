@@ -2,7 +2,7 @@
  * Backend API tests — exercises the Deno/Hono server directly via the Vite proxy.
  *
  * All requests go through:
- *   Playwright → Vite dev server (port 5173) → Deno server (port 8000)
+ *   Playwright → Vite dev server (port 5173, or VITE_PORT if set) → Deno server (port 8000)
  *
  * Tests are project-agnostic (no browser) and run under the webkit-desktop
  * project so they execute once per CI run.
@@ -10,6 +10,8 @@
 import { test, expect } from '@playwright/test'
 import { createHash } from 'crypto'
 
+// 5173 here is just the last-resort default (matches VITE_PORT's own default in
+// main.ts/vite.config.ts). Set VITE_URL to point at a differently-ported instance.
 const BASE = process.env['VITE_URL'] ?? 'https://liambook.capybara-ulmer.ts.net:5173'
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -96,10 +98,12 @@ test.describe('/health', () => {
     expect(body['model'].length).toBeGreaterThan(0)
   })
 
-  test('includes model containing LFM2.5', async ({ request }) => {
+  test('reports a known inference engine', async ({ request }) => {
     const resp = await request.get(`${BASE}/health`)
     const body = await resp.json() as Record<string, string>
-    expect(body['model']).toMatch(/(LFM2\.5|Ollama|qwen|llava|moondream)/i)
+    // `mock` belongs here: INFERENCE_MODE=mock is the documented CI engine, and
+    // this gate previously made the whole desktop tier unpassable under it.
+    expect(body['model']).toMatch(/(LFM2\.5|Ollama|qwen|llava|moondream|mock)/i)
   })
 
   test('responds in under 2 seconds', async ({ request }) => {
@@ -570,6 +574,49 @@ test.describe('GET /rtc-signal (WebSocket)', () => {
     }, { base: BASE, room })
     expect(result.phoneReady).toBeTruthy()
     expect(result.viewerReady).toBeTruthy()
+  })
+
+  test('a phone reconnect does not wedge the room', async ({ page }) => {
+    // The phone drops and reconnects while the server still holds its half-open
+    // socket. The replacement must own the role, and the old socket's close must
+    // not evict it — otherwise every later message to the phone is dropped and
+    // neither side can recover without both reloading.
+    await page.goto(`${BASE}`, { waitUntil: 'domcontentloaded' })
+    const room = `pw-reconnect-${Date.now()}`
+    const result = await page.evaluate(async ({ base, room }: { base: string; room: string }) => {
+      const wsUrl = base.replace(/^https/, 'wss').replace(/^http/, 'ws')
+      const open = (role: string) => new Promise<WebSocket>((res) => {
+        const ws = new WebSocket(`${wsUrl}/rtc-signal?role=${role}&room=${room}`)
+        ws.onopen = () => res(ws)
+      })
+      const viewer = await open('viewer')
+      const phoneA = await open('phone')
+      const seenByViewer: string[] = []
+      viewer.onmessage = (e) => seenByViewer.push(String(e.data))
+
+      // Reconnect while A is still registered, then let A close.
+      const phoneB = await open('phone')
+      const seenByB: string[] = []
+      phoneB.onmessage = (e) => seenByB.push(String(e.data))
+      await new Promise((r) => setTimeout(r, 300))
+      phoneA.close()
+      await new Promise((r) => setTimeout(r, 600))
+
+      // The viewer answers; it must reach the live phone socket (B).
+      viewer.send(JSON.stringify({ type: 'answer', sdp: 'x' }))
+      await new Promise((r) => setTimeout(r, 800))
+      const out = {
+        answerReachedNewPhone: seenByB.some((m) => m.includes('"answer"')),
+        viewerToldPhoneLeft: seenByViewer.some((m) => m.includes('peer-left')),
+      }
+      viewer.close(); phoneB.close()
+      return out
+    }, { base: BASE, room })
+
+    expect(result.answerReachedNewPhone,
+      'viewer traffic must route to the reconnected phone').toBeTruthy()
+    expect(result.viewerToldPhoneLeft,
+      'the superseded socket closing must not report the phone as gone').toBeFalsy()
   })
 
   test('messages relay from phone to viewer', async ({ page }) => {

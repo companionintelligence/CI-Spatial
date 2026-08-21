@@ -79,7 +79,28 @@ export interface InspectorData {
   description?: string
   worldPos?: { x: number; y: number; z: number }
   dimensions?: { w: number; h: number; d: number }
-  sourceScan?: string
+  /**
+   * Plural, matching what the exporter has always written. This read used to
+   * be `ud['sourceScan']` (singular) while gltf.ts wrote `sourceScanIds`, so
+   * the field was unconditionally undefined — and nothing rendered it either,
+   * which is how the mismatch survived. See
+   * docs/factory/07-scan-identity/0003-node-level-glb-provenance.md.
+   */
+  sourceScanIds?: string[]
+  /**
+   * Per-node provenance (src/shared/provenance.ts).
+   *
+   * Nullable, not merely optional: `ScanProvenance.sessionId` is
+   * `string | null`, and the exporter writes an explicit `null` for a capture
+   * taken with no server keyframe session. Absent and "there was no session"
+   * are different facts, and typing this as a bare `string` would launder the
+   * second into the first.
+   */
+  sessionId?: string | null
+  /** Stamped server-side during the optimize pass, so absent on a raw upload. */
+  scanId?: string
+  capturedAt?: string
+  captureIndex?: number
   notes?: string
   roomName?: string
   floorName?: string
@@ -170,13 +191,25 @@ export class SceneEditor {
     if (hits.length === 0) { this._clearSelection(); return null }
 
     let obj: THREE.Object3D | null = hits[0].object
-    // Walk up the parent chain to find the node containing label metadata or LOD group
+    // Walk up the parent chain to the node an edit should be written against: the
+    // THREE.LOD for a semantic object, or the nearest labelled node otherwise.
+    //
+    // The LOD test MUST run before the label test, and the order is load-bearing.
+    // In upgradeSemanticMeshes() (viewer.ts) the medium and high proxies are assigned
+    // lod.userData *by reference*, and the far level is the original mesh, which keeps
+    // its own userData — carrying the label the GLB gave it. So a label can be found on
+    // a level whichever one the ray reaches. With the label test first, the walk stopped
+    // at that level, and the gizmo moved it while the saved patch was replayed onto the
+    // LOD — so the object came back displaced, and rescaled by the medium proxy's
+    // normalisation. Testing parent-is-LOD first resolves to the LOD from every shape.
+    // Labelled nodes outside an LOD (e.g. splat-detect boxes) still select as
+    // themselves, because their parent is not an LOD and the label test still decides.
     while (obj && obj !== this._scene) {
-      if (obj.userData && obj.userData['label']) {
-        break
-      }
       if (obj.parent && obj.parent instanceof THREE.LOD) {
         obj = obj.parent
+        break
+      }
+      if (obj.userData && obj.userData['label']) {
         break
       }
       obj = obj.parent
@@ -185,6 +218,23 @@ export class SceneEditor {
     if (!obj || obj === this._scene) { this._clearSelection(); return null }
     this._selectObject(obj)
     return obj
+  }
+
+  /**
+   * Select an object directly — e.g. re-attaching the gizmo to an object that
+   * survived a scene reload, or a test hook that resolves a selection through some
+   * other means — without going through a raycast pick(). Callers that already know
+   * which object should be selected must go through this (not reach into `_selected`)
+   * so the highlight tint and `selectedObject` stay in sync the same way a real
+   * pick() keeps them in sync.
+   */
+  selectObject(obj: THREE.Object3D): void {
+    this._selectObject(obj)
+  }
+
+  /** Clear the current selection — the public counterpart to selectObject(). */
+  clearSelection(): void {
+    this._clearSelection()
   }
 
   /** Assign a semantic tag to an object */
@@ -236,7 +286,11 @@ export class SceneEditor {
       description: ud['description'] as string | undefined,
       worldPos: { x: +wp.x.toFixed(3), y: +wp.y.toFixed(3), z: +wp.z.toFixed(3) },
       dimensions: { w: +dims.x.toFixed(2), h: +dims.y.toFixed(2), d: +dims.z.toFixed(2) },
-      sourceScan: ud['sourceScan'] as string | undefined,
+      sourceScanIds: Array.isArray(ud['sourceScanIds']) ? ud['sourceScanIds'] as string[] : undefined,
+      sessionId: ud['sessionId'] as string | null | undefined,
+      scanId: ud['scanId'] as string | undefined,
+      capturedAt: ud['capturedAt'] as string | undefined,
+      captureIndex: ud['captureIndex'] as number | undefined,
       notes: tagInfo?.notes ?? ud['notes'] as string | undefined,
       roomName: tagInfo?.roomName ?? ud['roomName'] as string | undefined,
       floorName: tagInfo?.floorName ?? ud['floorName'] as string | undefined,
@@ -260,11 +314,6 @@ export class SceneEditor {
     })
   }
 
-  /** Return all tags as a serialisable map */
-  exportTagMap(): Record<string, TagInfo> {
-    this.flushTags()
-    return Object.fromEntries(this._tags.entries())
-  }
 
   // ── Private helpers ───────────────────────────────────────────────────────────
 

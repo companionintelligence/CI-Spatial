@@ -7,6 +7,7 @@
  * 3. "mock"             — deterministic colour-blob detector for tests/CI; recognises the
  *                         shared CV palette colours (test-data/cv images, xr8-mock feed)
  */
+import { fromFileUrl } from '@std/path'
 import { SPATIAL_DETECTION_PROMPT, parseDetections } from './prompt.ts'
 import type { RawDetection } from './prompt.ts'
 import { classifyPixel, paletteColorNameFor } from './src/shared/cv-palette.ts'
@@ -18,16 +19,63 @@ export type { RawDetection }
 let ort: any = null
 let JimpClass: any = null
 
-const MODEL_DIR = new URL(
+// fromFileUrl, not `.pathname`: the latter yields "/C:/…" on Windows, which
+// onnxruntime/Jimp then fail to open.
+const MODEL_DIR = fromFileUrl(new URL(
   Deno.env.get('MODEL_DIR') ?? './public/models/LiquidAI/LFM2.5-VL-1.6B-ONNX/onnx/',
   import.meta.url,
-).pathname
-const TOKENIZER_DIR = new URL(
+))
+const TOKENIZER_DIR = fromFileUrl(new URL(
   Deno.env.get('TOKENIZER_DIR') ?? './public/models/LiquidAI/LFM2.5-VL-1.6B-ONNX/',
   import.meta.url,
-).pathname
+))
 
 const MAX_NEW_TOKENS = 256
+
+// Ollama otherwise uses the model's full context window (262144 for qwen3-vl:4b),
+// which reserves ~44 GB of KV cache, overflows a 24 GB GPU and forces a 50/50
+// CPU split — 100+ s per capture instead of ~20 s. Captures reach us downscaled
+// to a 1280 px long edge (~1.2k vision tokens), so this is ample headroom.
+const DEFAULT_NUM_CTX = 8192
+// Upper bound, because the low end was never the danger: this constant exists
+// to stop a 262144-token window reserving ~44 GB of KV cache, and 262144 is the
+// most natural wrong value to supply — it is what `ollama show` prints.
+const MAX_NUM_CTX = 131072
+const OLLAMA_NUM_CTX = (() => {
+  const raw = Deno.env.get('OLLAMA_NUM_CTX')
+  if (raw == null || raw.trim() === '') return DEFAULT_NUM_CTX
+  const n = Number(raw)
+  // Number('') is 0 and Number('abc') is NaN; JSON.stringify turns NaN into
+  // null, so an unvalidated value reaches Ollama as num_ctx: null or 0.
+  if (!Number.isInteger(n) || n <= 0) {
+    console.warn(`[engine] Ignoring invalid OLLAMA_NUM_CTX "${raw}" — using ${DEFAULT_NUM_CTX}`)
+    return DEFAULT_NUM_CTX
+  }
+  if (n > MAX_NUM_CTX) {
+    console.warn(
+      `[engine] OLLAMA_NUM_CTX ${n} exceeds the ${MAX_NUM_CTX} cap — clamping. ` +
+        'A window this large reserves tens of GB of KV cache and spills onto CPU.',
+    )
+    return MAX_NUM_CTX
+  }
+  return n
+})()
+
+function normalizeOllamaHost(rawHost: string | undefined): string {
+  const raw = rawHost?.trim() || 'http://localhost:11434'
+  const candidate = /^[a-z][a-z\d+.-]*:\/\//i.test(raw) ? raw : `http://${raw}`
+
+  try {
+    const url = new URL(candidate)
+    // 0.0.0.0 and :: are server bind addresses, not client destinations.
+    if (url.hostname === '0.0.0.0' || url.hostname === '[::]' || url.hostname === '::') {
+      url.hostname = '127.0.0.1'
+    }
+    return url.toString().replace(/\/$/, '')
+  } catch {
+    throw new Error(`OLLAMA_HOST must be a URL or host:port, received "${raw}"`)
+  }
+}
 const NUM_THREADS = (() => { try { return Math.max(1, navigator?.hardwareConcurrency ?? 4) } catch { return 4 } })()
 
 // ─── ONNX prompt token IDs ───────────────────────────────────────────────────
@@ -139,8 +187,8 @@ export class InferenceEngine {
   constructor() {
     const requested = Deno.env.get('INFERENCE_MODE')
     this._mode = requested === 'onnx' ? 'onnx' : requested === 'mock' ? 'mock' : 'ollama'
-    this.ollamaUrl = Deno.env.get('OLLAMA_HOST') ?? 'http://localhost:11434'
-    this.ollamaModel = Deno.env.get('OLLAMA_MODEL') ?? 'moondream:latest'
+    this.ollamaUrl = normalizeOllamaHost(Deno.env.get('OLLAMA_HOST'))
+    this.ollamaModel = Deno.env.get('OLLAMA_MODEL') ?? 'qwen3-vl:4b'
     this.modelId = this._mode === 'onnx' ? 'LiquidAI/LFM2.5-VL-1.6B-ONNX'
       : this._mode === 'mock' ? 'mock/color-blob-v1'
       : `Ollama/${this.ollamaModel}`
@@ -182,7 +230,7 @@ export class InferenceEngine {
         
         if (!hasModel) {
           // Fallback check to any pulled vision models
-          const visionModels = ['moondream:latest', 'llava:7b', 'qwen3-vl:4b', 'qwen3.5:4b', 'qwen3.5:2b']
+          const visionModels = ['qwen3-vl:4b', 'qwen3.5:4b', 'qwen3.5:2b', 'llava:7b', 'moondream:latest']
           let foundFallback = false
           for (const fallback of visionModels) {
             if (data.models.some(m => m.name === fallback || m.name.startsWith(fallback + ':'))) {
@@ -386,6 +434,7 @@ export class InferenceEngine {
       stream: false,
       options: {
         temperature: 0.1,
+        num_ctx: OLLAMA_NUM_CTX,
       }
     }
 

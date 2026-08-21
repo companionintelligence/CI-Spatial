@@ -5,13 +5,16 @@
 import { test, expect } from '@playwright/test'
 import { mergeDetections } from '../src/spatial/resolver'
 import { normalizeDetections, parseDetections } from '../prompt.ts'
+import { ONBOARDING_KEY } from '../src/shared/storage-keys'
 
+// 5173 here is just the last-resort default (matches VITE_PORT's own default in
+// main.ts/vite.config.ts). Set VITE_URL to point at a differently-ported instance.
 const BASE = process.env['VITE_URL'] ?? 'https://liambook.capybara-ulmer.ts.net:5173'
 
 test.beforeEach(async ({ context }) => {
-  await context.addInitScript(() => {
-    window.localStorage.setItem('companion-scan-onboarded', '1')
-  })
+  await context.addInitScript((key) => {
+    window.localStorage.setItem(key, '1')
+  }, ONBOARDING_KEY)
 })
 
 // Helper to build a minimal valid GLB buffer (~50 bytes)
@@ -49,10 +52,16 @@ test.describe('Tier 1: Feature Coverage', () => {
         image: { name: 'test.jpg', mimeType: 'image/jpeg', buffer: dummyJpeg }
       }
     })
-    expect([200, 503]).toContain(resp.status())
+    // The payload above is a 134-byte JPEG header with no scan data — no decoder
+    // can read it. A 400 (`bad-image`) is the correct classification; the point of
+    // this test is that /infer answers deliberately rather than throwing a 500.
+    expect([200, 400, 503]).toContain(resp.status())
     if (resp.status() === 200) {
       const list = await resp.json()
       expect(Array.isArray(list)).toBeTruthy()
+    }
+    if (resp.status() === 400) {
+      expect((await resp.json() as { code?: string }).code).toBe('bad-image')
     }
   })
 
@@ -880,26 +889,44 @@ test.describe('Tier 2: Boundary & Corner Cases', () => {
     expect(cameraPosChanged.z).toBeGreaterThan(0)
   })
 
-  test('Test 30: CDN Load Rejections for Leaflet', async ({ page }) => {
-    await page.goto(`${BASE}/viewer.html`, { waitUntil: 'domcontentloaded' })
-    const errorHandled = await page.evaluate(async () => {
-      const container = document.createElement('div')
-      container.id = 'geomap-drawer'
-      document.body.appendChild(container)
+  test('Test 30: the geo map never reaches a CDN for Leaflet', async ({ page }) => {
+    // Leaflet is bundled from npm (wave 03 / ticket 0006). This owns the *network*
+    // assertion only: that the map works with unpkg unreachable. The render assertion
+    // against the real UI belongs to ar-scan.spec.ts's geomap test and is not repeated
+    // here — asserting it in both is the duplication this wave exists to avoid.
+    //
+    // The previous version of this test asserted nothing: its `return threw || geoMap
+    // !== null` was tautological, so it passed whether or not the CDN was reachable.
+    const cdnHits: string[] = []
+    page.on('request', (req) => {
+      if (/unpkg\.com/.test(req.url())) cdnHits.push(req.url())
+    })
+    // Installed before goto, so a render-blocking tag in <head> could not slip past.
+    await page.route('**unpkg.com/**', (route) => route.abort())
 
+    await page.goto(`${BASE}/viewer.html`, { waitUntil: 'domcontentloaded' })
+
+    const mapBuilt = await page.evaluate(async () => {
+      // No stray #geomap-drawer div here: mount() builds its own element with that id
+      // (geomap.ts), so creating one first would leave a locator resolving to the empty
+      // outer div rather than the mounted map.
       const { GeoMap } = await import('/src/viewer/geomap.ts')
       const geoMap = new GeoMap()
       geoMap.mount(document.body)
-
-      let threw = false
-      try {
-        await geoMap.updatePins([])
-      } catch {
-        threw = true
-      }
-      return threw || geoMap !== null
+      // _buildDrawer() sets display:none and only open() flips it to flex, so the
+      // container is present-but-hidden until opened.
+      geoMap.open()
+      await geoMap.updatePins([
+        {
+          filename: 'a.glb', lat: 51.5, lng: -0.09, bearing: null, address: null,
+          capturedAt: null, pointCount: null, detectionCount: null, scanName: 'a',
+        },
+      ])
+      return document.querySelectorAll('.leaflet-container').length
     })
-    expect(errorHandled).toBeTruthy()
+
+    expect(mapBuilt, 'Leaflet built its container from the bundle').toBeGreaterThan(0)
+    expect(cdnHits, 'no request reached unpkg.com').toEqual([])
   })
 })
 
@@ -1080,12 +1107,16 @@ test.describe('Tier 4: Real-World Application Scenarios', () => {
 
     const responses = await Promise.all(promises)
     for (const resp of responses) {
-      expect([200, 503]).toContain(resp.status())
+      // Same undecodable payload as Test 2 — what matters under rapid fire is that
+      // every concurrent request is classified the same way and none 500s.
+      expect([200, 400, 503]).toContain(resp.status())
       if (resp.status() === 200) {
         const list = await resp.json()
         expect(Array.isArray(list)).toBeTruthy()
       }
     }
+    expect(new Set(responses.map(r => r.status())).size,
+      'concurrent identical requests must not diverge in status').toBe(1)
   })
 
   test('Test 37: Offline Scanning and Delayed Server Sync (F2 + F1)', async ({ page }) => {
@@ -1147,5 +1178,127 @@ test.describe('Tier 4: Real-World Application Scenarios', () => {
     }, { base: BASE, room })
 
     expect(testResult).toBeTruthy()
+  })
+
+  // ── Detection dedup: label canonicalization & nearest-match merge fixes ──
+  // Regression coverage for "every capture adds new pins instead of
+  // converging" — both same-frame dedup (normalizeDetections) and
+  // cross-capture merge (mergeDetections) used to require exact label string
+  // equality before ever checking position, so a VLM wording change alone
+  // (e.g. "office chair" vs "chair") defeated dedup outright.
+
+  test('Test 39: Label-variant duplicates collapse within one capture', () => {
+    const raw = [
+      { label: 'office chair', bbox: [0.23, 0.25, 0.5, 0.49], confidence: 0.55, description: 'black office chair' },
+      { label: 'chair', bbox: [0.231, 0.251, 0.501, 0.491], confidence: 0.71, description: 'same chair, higher confidence' },
+    ]
+    const results = normalizeDetections(raw)
+    expect(results).toHaveLength(1)
+    expect(results[0].label).toBe('chair')
+    expect(results[0].confidence).toBe(0.71)
+  })
+
+  test('Test 40: Label-variant duplicates merge across captures', () => {
+    // Capture 1: VLM says "office chair" — normalizeDetections canonicalizes it to "chair".
+    const cap1 = normalizeDetections([
+      { label: 'office chair', bbox: [0.1, 0.1, 0.2, 0.2], confidence: 0.7, description: 'First chair' },
+    ])
+    const existing = new Map()
+    existing.set(`${cap1[0].label}:0.0,0.0,-1.0`, {
+      ...cap1[0],
+      worldPos: { x: 0.0, y: 0.0, z: -1.0 },
+      worldRot: { x: 0, y: 0, z: 0, w: 1 },
+      captureTimestamp: 1000,
+    })
+
+    // Capture 2: same physical chair, VLM says "chair" this time.
+    const cap2 = normalizeDetections([
+      { label: 'chair', bbox: [0.12, 0.12, 0.22, 0.22], confidence: 0.9, description: 'Same chair, different wording' },
+    ])
+    const incoming = [{
+      ...cap2[0],
+      worldPos: { x: 0.05, y: 0.01, z: -0.98 },
+      worldRot: { x: 0, y: 0, z: 0, w: 1 },
+      captureTimestamp: 1100,
+    }]
+
+    const merged = mergeDetections(existing, incoming)
+    expect(merged.size).toBe(1)
+    expect(Array.from(merged.values())[0].label).toBe('chair')
+  })
+
+  test('Test 41: Different canonical labels at the same position stay separate', () => {
+    const existing = new Map()
+    existing.set('chair:0.0,0.0,-1.0', {
+      label: 'chair',
+      confidence: 0.8,
+      description: 'A chair',
+      bbox: [0.1, 0.1, 0.2, 0.2],
+      worldPos: { x: 0.0, y: 0.0, z: -1.0 },
+      worldRot: { x: 0, y: 0, z: 0, w: 1 },
+      captureTimestamp: 1000,
+    })
+
+    const incoming = [{
+      label: 'lamp',
+      confidence: 0.8,
+      description: 'A lamp near the chair',
+      bbox: [0.1, 0.1, 0.2, 0.2],
+      worldPos: { x: 0.01, y: 0.0, z: -1.0 },
+      worldRot: { x: 0, y: 0, z: 0, w: 1 },
+      captureTimestamp: 1100,
+    }]
+
+    const merged = mergeDetections(existing, incoming)
+    expect(merged.size).toBe(2)
+  })
+
+  test('Test 42: findNearbyKey merges into the nearer of two same-label candidates', () => {
+    const existing = new Map()
+    existing.set('chair:0.0,0.0,0.0', {
+      label: 'chair',
+      confidence: 0.6,
+      description: 'Chair A',
+      bbox: [0.1, 0.1, 0.2, 0.2],
+      worldPos: { x: 0.0, y: 0.0, z: 0.0 },
+      worldRot: { x: 0, y: 0, z: 0, w: 1 },
+      captureTimestamp: 1000,
+    })
+    existing.set('chair:0.3,0.0,0.0', {
+      label: 'chair',
+      confidence: 0.6,
+      description: 'Chair B',
+      bbox: [0.4, 0.1, 0.5, 0.2],
+      worldPos: { x: 0.3, y: 0.0, z: 0.0 },
+      worldRot: { x: 0, y: 0, z: 0, w: 1 },
+      captureTimestamp: 1000,
+    })
+
+    // 0.28 m from A, 0.02 m from B — both inside DEDUP_RADIUS_M, B is nearer.
+    const incoming = [{
+      label: 'chair',
+      confidence: 0.95,
+      description: 'Re-seen chair, closer to B',
+      bbox: [0.4, 0.1, 0.5, 0.2],
+      worldPos: { x: 0.28, y: 0.0, z: 0.0 },
+      worldRot: { x: 0, y: 0, z: 0, w: 1 },
+      captureTimestamp: 1100,
+    }]
+
+    const merged = mergeDetections(existing, incoming)
+    expect(merged.size).toBe(2)
+    expect(merged.get('chair:0.0,0.0,0.0')?.description).toBe('Chair A')
+    expect(merged.get('chair:0.3,0.0,0.0')?.description).toBe('Re-seen chair, closer to B')
+    expect(merged.get('chair:0.3,0.0,0.0')?.confidence).toBe(0.95)
+  })
+
+  test('Test 43: Low-confidence detections are dropped before reaching the store', () => {
+    const raw = [
+      { label: 'chair', bbox: [0.1, 0.1, 0.2, 0.2], confidence: 0.9, description: 'confident chair' },
+      { label: 'shadow', bbox: [0.5, 0.5, 0.6, 0.6], confidence: 0.15, description: 'spurious low-confidence blob' },
+    ]
+    const results = normalizeDetections(raw)
+    expect(results).toHaveLength(1)
+    expect(results[0].label).toBe('chair')
   })
 })

@@ -26,10 +26,19 @@
  *     PLY via $SPLAT_DETECT_DIR/pointcloud_to_gs.py first, then detect on that.
  */
 
+// The manifest type lives in src/world/manifests.ts, not here — see that
+// file's header (it's the canonical, Deno-API-free home so the browser
+// viewer can type-import it without dragging this file's `Deno.*` calls into
+// its DOM-lib type-check program). Re-exported below so
+// `import type { SplatDetectManifest } from './splat_detect.ts'` still works.
+import type { SplatDetectManifest } from './src/world/types.ts'
+import { isRunnable } from './exec_probe.ts'
+import { isServerSessionId } from './src/shared/session-id.ts'
+export type { SplatDetectManifest }
+
 const DEFAULT_DETECT_PYTHON = `${Deno.env.get('HOME') ?? '~'}/.venvs/splat-analyzer/bin/python`
 const DEFAULT_DETECT_DIR = `${Deno.env.get('HOME') ?? '~'}/splat_analyzer`
 const DEFAULT_DETECT_PROMPT = 'sofa, chair, table, tv, lamp, plant, bed, desk, shelf, door, window'
-const SESSION_ID_RE = /^(sess|session)-[a-z0-9-]+$/
 
 export interface SplatDetectRunOptions {
   /** Absolute path to the scan's trained splat, when present (<base>.splat.ply). */
@@ -65,37 +74,6 @@ export interface SplatDetectRunOptions {
 }
 
 export type SplatDetectStatus = 'ok' | 'skipped' | 'error'
-
-export interface SplatDetectManifest {
-  schemaVersion: number
-  tool: 'splat-analyzer'
-  status: SplatDetectStatus
-  createdAt: string
-  /** Basename of the landed interactions.json (relative to SCANS_DIR), when 'ok'. */
-  interactionsPath?: string
-  /** Number of detected interactive objects. */
-  objectCount?: number
-  /** The open-vocab prompt fed to the detector. */
-  prompt: string
-  params: {
-    python: string
-    detectDir: string
-    hipVisibleDevices: string
-    pointSplatSize: string
-    quality: string
-    renderer: string
-    scoreThreshold?: string
-    minVotes?: string
-    minPeakScore?: string
-  }
-  timing?: { elapsedMs: number }
-  skippedReason?: string
-  remediation?: string
-  error?: string
-  /** Provenance from the world job. */
-  sessionId?: string
-  scanId?: string
-}
 
 export interface SplatDetectResult {
   status: SplatDetectStatus
@@ -342,23 +320,22 @@ export function countInteractions(text: string): number | null {
   return null
 }
 
+/**
+ * Delegates to the shared `SESSION_ID_RE` (`src/shared/session-id.ts`) rather
+ * than a local copy — see lingbot_map.ts's `isValidSessionDir` doc comment
+ * for why this file used to carry its own, stale one. Unlike that file's,
+ * this one has no caller within `runSplatDetect()` today — kept exported and
+ * correct rather than deleted, since removing it would be an unrelated
+ * behavior change beyond this fix's scope.
+ */
 export function isValidSessionDir(sessionDir: string): boolean {
   const base = sessionDir.split('/').filter(Boolean).pop() ?? ''
-  return SESSION_ID_RE.test(base)
+  return isServerSessionId(base)
 }
 
-async function isRunnable(bin: string): Promise<boolean> {
-  try {
-    const info = await Deno.stat(bin)
-    if (!info.isFile) return false
-    if (typeof info.mode === 'number') {
-      return (info.mode & 0o111) !== 0
-    }
-    return true
-  } catch {
-    return false
-  }
-}
+// isRunnable now lives in ./exec_probe.ts — it was duplicated here and in
+// splat_train.ts, and both copies mis-detected every binary as non-runnable
+// on Windows (see that file's header for the mode-bit reason).
 
 async function exists(path: string): Promise<boolean> {
   try {

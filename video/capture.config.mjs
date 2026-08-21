@@ -238,6 +238,33 @@
  *     another process. Restart the stage (it wipes VIDEO_DATA_DIR on boot)
  *     before re-shooting anything after a test run.
  *
+ * 17. A SEMANTIC CHIP OVER THE CANVAS RASTERISES DIFFERENTLY PER BROWSER
+ *     PROCESS — this is hazard 15's sequel, and it survived hazard 15's fix.
+ *     The chips are the only text in the app that sits ON TOP of a WebGL
+ *     surface, so Chromium decides per process whether to promote each one to
+ *     its own compositing layer, and that decision changes how its glyphs are
+ *     rasterised. Same box, same border, same metrics — the text run alone
+ *     shifts about 0.6 device px, which is a ~4,000-pixel diff at deltas up to
+ *     250 and looks exactly like a real UI change.
+ *
+ *     It is invisible from inside one browser, which is what made it expensive:
+ *     six fresh page loads in ONE browser agree on every chip's style.left,
+ *     getBoundingClientRect() to 4dp and width, and 200 consecutive frames of
+ *     one load produce one framebuffer hash. Only a fresh process disagrees.
+ *     Reproduce it by re-running `ci-video capture` (a new browser each time) —
+ *     never by reloading a page.
+ *
+ *     Fixed at the source: `.label3d { will-change: transform }` in viewer.html
+ *     makes the promotion unconditional. Measured 2026-08-08, 5 fresh browsers
+ *     per condition against one staged world: unmodified 3 distinct frames;
+ *     chips hidden 1; canvas hidden 1; blur removed 3; every chip snapped onto
+ *     whole device pixels 3; will-change 1. Each half is byte-stable alone —
+ *     only the composite moved.
+ *
+ *     Do NOT reach for `mask` here. On `world-editor-semantic` the labels ARE
+ *     the shot, and mask paints solid #0A222E over whatever it covers. Nor for
+ *     a longer `settle`: nothing is still moving to settle.
+ *
  * 13. THE 3D VIEWPORT IS NOT BIT-REPRODUCIBLE, AND THAT IS THE FLOOR — both
  *     World Editor shots film `#viewer-canvas`, a WebGL surface. Two things used
  *     to move inside it and are now fixed at the source:
@@ -251,11 +278,18 @@
  *         loadScanIntoWorld and swaps the geometry mid-capture (viewer.ts:2495).
  *         Both shots now wait for all three rows to read "Ready - optimized",
  *         which is only set after the full-quality GLB is in the scene.
- *     What remains is GPU rasterisation noise: 4 consecutive runs on macOS agreed
- *     to within 7-35 pixels at a delta of 1-4 levels out of 8.3 M. That is not
- *     maskable — the canvas IS the shot — and it is expected to disappear on CI,
- *     which renders headless through SwiftShader. Treat a viewer-shot diff of
- *     that size in a drift PR as noise, and anything larger as a real UI change.
+ *     The heading is now too pessimistic, and believing it cost a week: with the
+ *     chips hidden, 5 fresh browsers rendered the canvas alone byte-identically
+ *     on macOS, and after hazard 17 three consecutive FULL captures agreed on
+ *     all 30 committed PNGs. The residual 7-35 pixels at a delta of 1-4 levels
+ *     recorded here was the chip drift of hazard 17 caught at its small end, not
+ *     a GPU floor.
+ *
+ *     So do not read a viewer-shot diff as noise by size. The expectation is
+ *     zero differing pixels; a diff of ANY size is a claim about the product
+ *     until someone re-runs the capture and shows it reproducing. If a genuine
+ *     rasterisation floor ever does appear on other hardware, record the numbers
+ *     here rather than widening this sentence.
  */
 export default {
   // HTTPS, not HTTP: vite.config.ts pins `server.https` on (Tailscale cert if

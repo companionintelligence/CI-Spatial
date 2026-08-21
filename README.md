@@ -1,6 +1,8 @@
 # Companion Scan
 
-An AR room-scanning application that uses 8th Wall SLAM for spatial mapping, an engine-agnostic vision-language inference layer for object detection, and Three.js for 3D visualisation. Inference defaults to a local Ollama server running `moondream:latest`; a bundled ONNX model (`LiquidAI/LFM2.5-VL-1.6B-ONNX`) and a deterministic mock CV engine are alternates selected via `INFERENCE_MODE`. Results are exported as `.glb` files and can be composed into shared world projects in the browser-based scan editor.
+Companion Scan turns AR captures and uploaded media into a private, structured record of a **Place**. It uses 8th Wall/WebXR for capture, an engine-agnostic vision layer for object detection, and Three.js for the **Companion Scan Spatial Editor** at `/editor`. Several scans combine in one Place, are assigned to Areas such as rooms or floors, and remain independently traceable through layers and Things. Inference defaults to local Ollama; bundled ONNX and deterministic mock CV engines are alternatives selected via `INFERENCE_MODE`.
+
+The current product contract is [Place-First Product Design](docs/PLACE_SCAN_DESIGN.md). `WorldProject` remains the internal ENU scene format during the compatibility migration; it is not the primary user-facing noun.
 
 ---
 
@@ -30,7 +32,7 @@ flowchart TB
 
     subgraph ServerBackend ["Deno Server Backend (:8000)"]
         HTTPGateway["Deno HTTP Server (main.ts)"]
-        JobRunner["Async Job Queue Coordinator (jobs.ts)"]
+        JobRunner["WorldJob Queue (single-flight pump - world_job_pump.ts)"]
         OptimizationPipeline["Scan Optimization (Draco/LODs - pipeline.ts)"]
     end
 
@@ -47,7 +49,7 @@ flowchart TB
 
     %% Wiring
     ScannerMobile --> ARProvider
-    ScannerMobile --> DoneBtn["Done button / Verdict UI"]
+    ScannerMobile --> MenuBtn["Menu button / Verdict UI"]
     ARProvider --> InferenceRouter
     ARProvider --> Broadcaster
     ARProvider --> PWA
@@ -66,6 +68,7 @@ flowchart TB
     HTTPGateway --> WorldsStore
     
     JobRunner --> HeavyWorkers
+    JobRunner -->|optimize-scan job| OptimizationPipeline
     HeavyWorkers --> ScansStore
     HeavyWorkers --> WorldsStore
     OptimizationPipeline --> ScansStore
@@ -123,19 +126,20 @@ graph TD
     end
 
     subgraph Server ["Deno Server Backend"]
-        Server_Infer -->|Forward JPEG| Ollama["Ollama Vision API (moondream)"]
+        Server_Infer -->|Forward JPEG| Ollama["Ollama Vision API (qwen3-vl)"]
         Server_Infer -->|Local ONNX| LFM["LiquidAI ONNX Runtime (LFM-2.5)"]
         Server_Storage -->|Write GLB & sidecars| ScansDir["/scans/ directory"]
         Server_Storage -->|World Manifests & Patches| WorldsDir["/worlds/ directory"]
-        Server_Storage -->|Trigger Job /jobs| JobQueue["Async Job Queue"]
-        JobQueue -->|Run Reconstruction| LingBot["LingBot-Map (PLY + poses)"]
-        JobQueue -->|Run Splat Training| Brush["Brush 3DGS (splat.ply)"]
-        JobQueue -->|Run 3D Object Detection| SplatDetect["Splat-Detect (boxes)"]
+        Server_Storage -->|Create WorldJob| WorldJobs["WorldJob Queue (single-flight)"]
+        WorldJobs -->|optimize-scan| Optimize["pipeline.ts (Draco/LODs)"]
+        WorldJobs -->|Run Reconstruction| LingBot["LingBot-Map (PLY + poses)"]
+        WorldJobs -->|Run Splat Training| Brush["Brush 3DGS (splat.ply)"]
+        WorldJobs -->|Run 3D Object Detection| SplatDetect["Splat-Detect (boxes)"]
     end
 
     Ollama & LFM -->|Bounding Box JSON| Server_Infer
     Server_Infer -->|RawDetections| Cap
-    WebRTC -->|Live Geometry & Detections| DesktopEditor["Desktop Viewer & Editor"]
+    WebRTC -->|Live Geometry & Detections| DesktopEditor["Companion Scan Spatial Editor"]
 ```
 
 ---
@@ -143,22 +147,22 @@ graph TD
 ## Features
 
 - **AR scanning** — 8th Wall OSS SLAM tracks the environment and accumulates a colourised point cloud in real time.
-- **Engine-agnostic inference** — object detection runs through a local Deno server whose engine is chosen by `INFERENCE_MODE`: `ollama` (default, runs whatever `OLLAMA_MODEL` names — `moondream:latest` by default; pick with `npm run bench:models`), `onnx` (bundled `LiquidAI/LFM2.5-VL-1.6B-ONNX` via `onnxruntime-node`), or `mock` (deterministic colour-blob CV engine for CI/tests). A WebGPU in-browser path is available opt-in via the `infer-mode` localStorage key.
+- **Engine-agnostic inference** — object detection runs through a local Deno server whose engine is chosen by `INFERENCE_MODE`: `ollama` (default, runs whatever `OLLAMA_MODEL` names — `qwen3-vl:4b` by default, with the context window pinned by `OLLAMA_NUM_CTX`), `onnx` (bundled `LiquidAI/LFM2.5-VL-1.6B-ONNX` via `onnxruntime-node`), or `mock` (deterministic colour-blob CV engine for CI/tests). An on-device WebGPU path exists in the tree but is **gated off and not offered in the UI** — it has never worked, and is being rebuilt in `docs/factory/05-on-device-inference/`. Note `npm run bench:models` cannot currently rank vision models: it scores them on a synthetic corpus that a working model and a fabricating one both fail identically (see `docs/factory/06-detection-ground-truth/`).
 - **3D object pins** — detected objects are placed at their SLAM-resolved world positions as live 3D labels tracking the scene.
 - **Onboarding Overlay** — 5-step interactive overlay guiding users through permission prompts, movement speeds, the 3 capture pipelines, real-time quality diagnostics, and desktop editing. Bypasses automatically on CI/mocks and replays on help button click.
 - **HUD Quality Verdict** — Real-time rendering of `qualityMonitor.summary()` status directly on the phone HUD as a colorized verdict chip (`✓ Ready`, `⚠ Review`, `❌ Sparse`) next to the status row.
-- **HUD Done button** — Primary affordance next to the capture button to quickly open the Side Panel and scroll to the export and synchronization settings.
+- **HUD Menu button** — Primary affordance to the right of the capture button, on its centre line, to quickly open the Side Panel and scroll to the export and synchronization settings.
 - **Accidental Leave Guards** — Intercepts navigation buttons and window unload requests if active point cloud data or poses are in memory to prevent accidental scan losses.
 - **Quality-gated export** — Gating manual exports behind a confirmation prompt when scan quality is poor (`needs-rescan`). Displays a "View in 3D →" quick redirect link in the HUD status line on successful export.
 - **Grouped Action Rail** — Vertically stacks and groups navigation links separate from live scanning tools with a visual divider line, while keeping direct DOM hierarchy for E2E testing compliance.
 - **Session persistence** — every scan is saved to IndexedDB; browse, reload, edit, or delete past sessions from the history drawer.
 - **GLTF export** — exports the full scan (point cloud + camera path + labelled boxes) as a `.glb` file, saved locally and uploaded to the server.
-- **Shareable scanner/viewer links** — editor/owner share links carry capability tokens; regular world manifests redact stored tokens, and strict role enforcement is available with `WORLD_STRICT_AUTH=1`.
+- **Role-scoped Place links** — view, comment, edit, scanner, and owner links carry capability tokens; regular project manifests redact stored tokens, and strict role enforcement is available with `WORLD_STRICT_AUTH=1`.
 - **Processing queue foundation** — world jobs cover ingest, layer extraction, alignment, point merging, semantic passes, depth reconstruction, splat training, and world export; the local coordinator validates inputs and records artifacts while heavier Open3D/CV/splat workers remain pluggable.
-- **Automatic scan optimization** — every upload runs through a persistent job queue: quantization + Draco + point-cloud LODs (`.opt.glb`, `.lodN.glb`, `.manifest.json`), roughly halving file size.
+- **Automatic scan optimization** — every upload is queued as an `optimize-scan` WorldJob (single-flight, crash-recovering): quantization + Draco + point-cloud LODs (`.opt.glb`, `.lodN.glb`, `.manifest.json`), roughly halving file size.
 - **Keyframe streaming** — ☁ button streams pose+intrinsics-tagged keyframes to the server while you walk: reconstruction-ready `FrameObservation` sidecars under `scans/sessions/`.
 - **Live geometry to desktop** — the WebRTC live stream also carries point-cloud deltas, detections, and camera pose; the desktop editor shows the scan growing in real time.
-- **Desktop world editor** — `/viewer` places scans in a shared ENU world with transform gizmos, semantic tagging, layer toggles, and progressive LOD-first loading (Draco-aware).
+- **Companion Scan Spatial Editor** — `/editor` places scans in a shared ENU Place frame with transform gizmos, semantic tagging, layer toggles, guided processing, and progressive LOD-first loading (Draco-aware).
 - **PWA** — installable on iOS/Android with app-shell caching and an offline write queue for uploads, keyframes, patches, jobs, summaries, and project writes.
 
 ---
@@ -167,7 +171,7 @@ graph TD
 
 | Tool | Version | Purpose |
 |------|---------|---------|
-| [Node.js](https://nodejs.org) | ≥ 20 | Vite dev server + build |
+| [Node.js](https://nodejs.org) | ≥ 22.18.0 | Vite dev server + build; type stripping for the `.mjs` scripts that import `.ts` |
 | [Deno](https://deno.land) | ≥ 2.0 | Inference server |
 | [Python 3](https://python.org) | ≥ 3.8 | Model downloader |
 | 8th Wall OSS binary | any | `public/xr.js` — SLAM engine |
@@ -181,14 +185,14 @@ An iOS or Android device with camera is required for AR scanning. The 3D viewer 
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/companionintelligence/CI-Web-XR-Scan.git
-cd CI-Web-XR-Scan
-npm install
+git clone https://github.com/companionintelligence/CI-Spatial.git
+cd CI-Spatial
+npm ci
 ```
 
 ### 2. (Optional) Download the ONNX model (~1.5 GB)
 
-The default `ollama` mode needs no bundled model — install [Ollama](https://ollama.com) and pull a vision model (`ollama pull moondream:latest`). Only run the downloader if you plan to use `INFERENCE_MODE=onnx`:
+The default `ollama` mode needs no bundled model — install [Ollama](https://ollama.com) and pull a vision model (`ollama pull qwen3-vl:4b`). Only run the downloader if you plan to use `INFERENCE_MODE=onnx`:
 
 ```bash
 python3 download_models.py
@@ -227,15 +231,15 @@ This uses `concurrently` to run:
 - **Deno inference server** on `:8000` (`npm run server`)
 - **Vite dev server** on `:5173` with HTTPS (`npm run dev`)
 
-Open `https://<tailscale-hostname>:5173` on your phone to scan, or on desktop to use the world editor at `https://<tailscale-hostname>:5173/viewer.html?world=default`.
+Open `https://<tailscale-hostname>:5173` on your phone to scan or upload content from a Place, or use the Spatial Editor on desktop at `https://<tailscale-hostname>:5173/editor?project=default`.
 
 Key routes (replace the hostname with your machine's):
 
-- Scanner: `https://<your-tailscale-hostname>:5173/scanner.html?world=default`
-- Viewer/editor: `https://<your-tailscale-hostname>:5173/viewer.html?world=default`
+- Scanner / uploader: `https://<your-tailscale-hostname>:5173/?project=default`
+- Spatial Editor: `https://<your-tailscale-hostname>:5173/editor?project=default`
 - WebXR scanner: `https://<your-tailscale-hostname>:5173/webxr.html`
 
-For persistent serving from a Linux box (systemd units, GPU inference, cert renewal) see [docs/DEPLOY.md](docs/DEPLOY.md); for the on-device test protocol see [docs/DEVICE_TESTING.md](docs/DEVICE_TESTING.md).
+For persistent serving from a Linux box (systemd units, GPU inference, cert renewal) see [docs/DEPLOY.md](docs/DEPLOY.md); for the on-device test protocol — including driving an Android device's UI directly through [android-remote-control-mcp](https://github.com/danielealbano/android-remote-control-mcp) as a Claude Code connector — see [docs/DEVICE_TESTING.md](docs/DEVICE_TESTING.md#remote-controlled-testing-android-remote-control-mcp).
 
 ### First-time use / everyday flow
 
@@ -256,7 +260,9 @@ In WebXR mode the point cloud accumulates from per-frame hit-test samples (WebXR
 ├── main.ts                  # Deno HTTP server (inference + scan storage)
 ├── inference.ts             # Engine-agnostic inference (ollama / onnx / mock)
 ├── prompt.ts                # VLM prompt builder + JSON parser (server)
-├── jobs.ts                  # Async world-job queue runner (server)
+├── jobs.ts                  # Legacy Job/OptimizeScanManifest shapes (queue retired — ADR 0003)
+├── world_job_pump.ts        # WorldJob single-flight pump, dedupe, recovery (server)
+├── migrate_jobs.ts          # One-shot jobs.json → WorldJob migration (server)
 ├── pipeline.ts              # Scan-optimization pipeline (server)
 ├── lingbot_map*.ts          # LingBot-Map reconstruction glue (server)
 ├── splat_train.ts           # Brush splat-training job (server)
@@ -312,14 +318,40 @@ In WebXR mode the point cloud accumulates from per-frame hit-test samples (WebXR
                              #   mocks, webxr-emulated, xr8-scan, project, server) + fixtures/
 ```
 
-Four `deno test` unit suites live at repo root alongside the server modules:
-`lingbot_map.test.ts`, `lingbot_map_glb.test.ts`, `splat_detect.test.ts`, `splat_train.test.ts`.
+`deno test` unit suites live at repo root alongside the server modules they cover:
+`inference_mock.test.ts`, `lingbot_map.test.ts`, `memory_push.test.ts`, `portal_auth.test.ts`,
+`splat_detect.test.ts`, `splat_finish.test.ts`, `splat_train.test.ts` — run them all with
+`deno task test` (see `deno.json`). Three root suites run under
+`node --experimental-strip-types --test` instead:
+
+| Suite | Script | Why not Deno |
+|-------|--------|--------------|
+| `lingbot_map_glb.test.ts` | `npm run test:lingbot:glb` | exercises `@gltf-transform/functions`, which pulls in the `sharp` native binary — not something Deno's npm compat layer permits today |
+| `pipeline_detection_graph.test.ts` | `npm run test:pipeline:graph` | same `@gltf-transform` dependency; runs the real `optimizeScan()` |
+| `editor_pick.test.ts` | `npm run test:editor:pick` | covers frontend viewer code (`src/viewer/editor.ts` + `three`), not a server module |
+
+`test:pipeline:graph` and `test:editor:pick` are wired into `npm run verify`;
+`test:lingbot:glb` is not, and is run on its own.
+
+CI runs `deno task check` (type-check) and `deno task test` on every push/PR via
+[`.github/workflows/deno-ci.yml`](.github/workflows/deno-ci.yml); the full containerized
+smoke test (Docker build + `/health` + static UI gate) is manual via
+[`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml).
 
 ---
 
 ## Development Scripts
 
 The repo defines ~30 npm scripts. The most common:
+
+> **Node ≥ 22.18.0 is required.** `scripts/generate-test-homes.mjs`, `scripts/generate-cv-images.mjs`
+> and `scripts/smoke-pipeline.mjs` import TypeScript directly, which only works once Node strips
+> types by default (22.18.0+). On an older Node they fail with a bare `ERR_UNKNOWN_FILE_EXTENSION`.
+> `.node-version` is read automatically by the version managers that support it (fnm, nodenv,
+> Volta); nvm and asdf read their own files (`.nvmrc`, `.tool-versions`), so on those you either
+> configure them to read `.node-version` or select 22.18.0 yourself. `engine-strict=true` in
+> `.npmrc` is the backstop either way — it makes `npm ci` refuse rather than warn. This stays on the same major line as the Dockerfile’s floating
+> `node:22-alpine` tag.
 
 | Script | Description |
 |--------|-------------|
@@ -339,8 +371,9 @@ The repo defines ~30 npm scripts. The most common:
 | `npm run ingest:video` | Ingest a walkthrough video into a session scan |
 | `npm run links:house` | Print the house-validation scanner/viewer links |
 | `npm run gen:test-data` / `seed:test-data` | Generate / seed test fixtures |
-| `npm run test:splat:unit` / `test:splat:make-fixture` | Playwright splat unit test + fixture builder |
-| `npm run test:lingbot:glb` / `test:lingbot:fetch-video` / `test:lingbot:make-fixture` | LingBot-Map test + fixture scripts |
+| `npm run test:splat:unit` / `test:splat:make-fixture` | `deno test` for splat_train/detect/finish + Playwright fixture builder |
+| `npm run test:mock:unit` | `deno test` for the mock inference engine |
+| `npm run test:lingbot:glb` / `test:lingbot:fetch-video` / `test:lingbot:make-fixture` | LingBot-Map GLB test (Node, needs `sharp`) + fixture scripts |
 | `npm run gen-icons` | Regenerate PWA icons |
 | `npm run qr` / `logs:watch` / `logs:iphone` | Dev QR link + log tailing helpers |
 
@@ -370,10 +403,10 @@ The full, canonical route table lives in [architecture.md](architecture.md); the
 | `GET` | `/scan-locations` | Returns geo-located scan positions |
 | `GET`/`POST` | `/worlds` | List / create world projects |
 | `GET` | `/worlds/:slug` | World manifest: scans, layers, members, jobs, patches (+ `.splat` sidecars) |
-| `GET` | `/worlds/:slug/share` | Returns owner/editor/viewer/scanner role links |
+| `GET` | `/worlds/:slug/share` | Compatibility endpoint returning view/comment/edit/scanner/owner links scoped to one Place |
 | `POST` | `/worlds/:slug/patches` | Persists transform, label, category, notes, visibility edit patches |
 | `GET`/`POST` | `/worlds/:slug/jobs` | List / queue async world jobs (`align-scan`, `semantic-pass`, `splat-train`, `lingbot-map-reconstruct`, …) |
-| `GET` | `/jobs` / `/jobs/:id` | Global async job queue + single-job status |
+| `GET` | `/jobs` / `/jobs/:id` | Legacy view of `optimize-scan` jobs (shimmed from WorldJob data, shape unchanged) |
 | `GET` | `/worlds/:slug/frames/:scanId` | Pose, intrinsics, RGB URL, frustum for streamed keyframes |
 | `POST` | `/rtc-signal` | WebRTC signalling for live geometry |
 | `GET` | `/events` | Server-Sent Events stream |
@@ -388,7 +421,7 @@ By default, world reads are open for local/Tailscale development and world membe
 
 Inference is engine-agnostic. The Deno server picks its engine from `INFERENCE_MODE`:
 
-- **`ollama`** (default) — POSTs a JPEG to a local [Ollama](https://ollama.com) server running whatever `OLLAMA_MODEL` names (`moondream:latest` by default). Use `npm run bench:models` to compare candidates.
+- **`ollama`** (default) — POSTs a JPEG to a local [Ollama](https://ollama.com) server running whatever `OLLAMA_MODEL` names (`qwen3-vl:4b` by default). Use `npm run bench:models` to compare candidates.
 - **`onnx`** — runs the bundled `LiquidAI/LFM2.5-VL-1.6B-ONNX` locally via `onnxruntime-node` (CPU/GPU). ~2–8s on Apple Silicon.
 - **`mock`** — a deterministic colour-blob CV engine for CI and tests; needs no model download.
 
@@ -434,6 +467,10 @@ All three are served read-only at `/sessions/<id>/<artifact>`. The desktop edito
 
 See [docs/lingbot-map.md](docs/lingbot-map.md) for the full architecture diagram, UI walkthrough with screenshots, test setup, and CC-BY clip provenance.
 
+### SenseNova Vision (optional, WSL)
+
+`sensenova_vision.ts` drives the upstream [SenseNova-Vision](https://github.com/OpenSenseNova/SenseNova-Vision) launcher for recon3d / camera-pose / depth / normal / bbox / pan-seg tasks against a session's keyframes, invoking it through WSL when `SENSENOVA_BASH` points at `wsl.exe`. Install the isolated Linux runtime with `scripts/setup-sensenova-wsl.sh` (run as root inside WSL), then set `SENSENOVA_DIR`, `SENSENOVA_MODEL_PATH`, and `SENSENOVA_BASH` — see `.env.example` for details. If unset or the runtime isn't installed, the worker returns a `skipped` result with a remediation hint instead of failing.
+
 For the splat tools (view / train / detect / ingest-video / compress) see [docs/splat-toolbox.md](docs/splat-toolbox.md).
 For the two-story-house field acceptance protocol see [docs/HOUSE_VALIDATION.md](docs/HOUSE_VALIDATION.md) (`npm run links:house`, `npm run test:house`).
 
@@ -442,6 +479,10 @@ For the two-story-house field acceptance protocol see [docs/HOUSE_VALIDATION.md]
 ## Testing
 
 ```bash
+# Fast, hermetic gate — server type-check + full Deno suite + frontend
+# type-check. No servers, browsers, or seeded corpus needed (~3s).
+npm run verify
+
 # Unit + E2E tests (desktop WebKit)
 npm test
 
@@ -450,9 +491,27 @@ npm run test:mobile
 
 # Real iPhone over USB (requires ios-webkit-debug-proxy)
 npm run test:iphone
+
+# Full isolated browser loop: boots its own Deno + Vite on scratch ports and
+# data dirs, seeds a corpus, runs the api + chromium-mock Playwright projects.
+npm run test:box
 ```
 
 See `playwright.config.ts` for project configurations.
+
+### Pre-push guard
+
+`.githooks/pre-push` runs `npm run verify` and refuses the push if it fails, so
+a red `main` can't leave your machine. It's opt-in per clone (git doesn't track
+`.git/hooks`):
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The hook covers only the hermetic gates — the Playwright suites need servers, a
+browser binary, and a seeded corpus, so they stay in `npm run test:box` rather
+than in front of every push. Emergency escape hatch: `git push --no-verify`.
 
 ### 8th Wall Simulator
 
@@ -466,4 +525,13 @@ The 8th Wall engine ships with a desktop simulator that replays pre-recorded SLA
 
 ## License
 
-MIT
+This repository is licensed under LifeScope INC's **Commercial Standard License**
+(`CI-Commercial-1.0`) — see [`LICENSE.md`](LICENSE.md) for the full text. This is a
+restrictive commercial license, **not MIT** (a prior version of this section incorrectly
+stated MIT).
+
+> **Open question:** whether the Commercial Standard License is the license this repo is
+> actually intended to carry (vs. MIT, as this section previously stated) has not been
+> confirmed by whoever owns licensing at LifeScope INC. Do not treat this repo as
+> MIT-licensed, and do not share it externally, until that's resolved. See
+> [docs/foundation-updates/0001-reconcile-license-contradiction.md](docs/foundation-updates/0001-reconcile-license-contradiction.md).

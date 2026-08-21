@@ -1,0 +1,10 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "companion-scan-web",
+      "url": "https://<your-host>.ts.net:5173",
+      "port": 5173
+    }
+  ]
+}

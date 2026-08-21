@@ -7,6 +7,12 @@ import path from 'node:path'
 
 const FALLBACK_HOSTNAME = 'liambook.capybara-ulmer.ts.net'
 
+// Vite dev/preview port. Same variable name and default as main.ts's read of
+// Deno.env.get('VITE_PORT') — deliberately parallel one-liners (see
+// docs/foundation-updates/0002 for the hostname precedent this follows), not a
+// shared module.
+const VITE_PORT = Number(process.env.VITE_PORT ?? 5173)
+
 /**
  * The HTTPS hostname phones use to reach this dev/preview server.
  * Resolution order (first hit wins):
@@ -87,9 +93,11 @@ const PROXIED_ROUTES = [
   '/projects',
   '/worlds',
   '/scan-locations',
+  '/project-locations',
   '/sessions',
   '/jobs',
   '/client-logs',
+  '/authenticate',
 ]
 
 const proxy: Record<string, object> = {}
@@ -115,8 +123,29 @@ for (const route of ['/rtc-signal', '/events']) {
   }
 }
 
+// main.ts's static handler rewrites `/editor` (the Spatial Editor's canonical
+// URL — see README.md, docs/UX_FLOW.md) to viewer.html; Vite's dev server has
+// no equivalent, so the same URL falls through to the SPA fallback (index.html,
+// the scanner start screen) instead. Mirror the rewrite here so `/editor` works
+// identically on `vite dev` and the production Deno static server.
+function rewriteEditorRoute() {
+  return {
+    name: 'rewrite-editor-route',
+    configureServer(server: { middlewares: { use: (fn: (req: { url?: string }, res: unknown, next: () => void) => void) => void } }) {
+      server.middlewares.use((req, _res, next) => {
+        if (req.url === '/editor' || req.url === '/editor/') {
+          req.url = '/viewer.html'
+        } else if (req.url?.startsWith('/editor?')) {
+          req.url = `/viewer.html?${req.url.slice('/editor?'.length)}`
+        }
+        next()
+      })
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: tsCert ? [] : [basicSsl()],
+  plugins: tsCert ? [rewriteEditorRoute()] : [basicSsl(), rewriteEditorRoute()],
   build: {
     rollupOptions: {
       input: {
@@ -124,18 +153,19 @@ export default defineConfig({
         scanner: path.resolve(process.cwd(), 'scanner.html'),
         viewer: path.resolve(process.cwd(), 'viewer.html'),
         webxr: path.resolve(process.cwd(), 'webxr.html'),
+        arHittestSphere: path.resolve(process.cwd(), 'ar-hittest-sphere.html'),
       },
     },
   },
   server: {
     host: '0.0.0.0',
-    port: 5173,
+    port: VITE_PORT,
     https: tsCert ?? true,
     allowedHosts: [HOSTNAME],
     // Tell HMR client to use the Tailscale hostname so iPhones can reach the
     // WebSocket. Without this, Vite falls back to localhost which is unreachable
     // on the device. Port is left unset so it tracks whatever port Vite starts on
-    // (5173, or the next free port if 5173 is busy).
+    // (VITE_PORT, or the next free port if that one is busy).
     hmr: { host: HOSTNAME },
     proxy,
     // These are runtime data stores written by the Deno API (uploaded scans,
@@ -154,9 +184,9 @@ export default defineConfig({
     },
   },
   // `vite preview` (production bundle) inherits server.https/proxy/host; pin the
-  // port so the systemd unit and phones always find it at :5173.
+  // port so the systemd unit and phones always find it at VITE_PORT.
   preview: {
-    port: 5173,
+    port: VITE_PORT,
     strictPort: true,
     allowedHosts: [HOSTNAME],
   },

@@ -196,20 +196,17 @@ export class SessionHistory {
     if (isActive) {
       this._renderDetectionRows(container, this.store.detections, sessionId, isActive)
     } else {
-      // Load temporarily just to read — a lightweight approach using IndexedDB directly
-      // We read the session via the store's loadSession to get detections, then render
-      const saved = new Map(this.store.detections)  // snapshot current
-      const ok = await this.store.loadSession(sessionId)
-      if (!ok) {
+      // Read-only: previewing a past session must not disturb the live one.
+      // This used to load into the store and put the old data back afterwards,
+      // which cleared the user's selection on every expand and let a capture
+      // landing mid-preview persist the previewed session's detections under
+      // the active session id.
+      const detections = await this.store.readSession(sessionId)
+      if (!detections) {
         container.innerHTML = `<p style="color:rgba(255,255,255,0.3);font-size:12px;padding:12px 24px;">Could not load session.</p>`
-        // restore
-        await this.store.loadSession(this.store.sessionId)
         return
       }
-      this._renderDetectionRows(container, new Map(this.store.detections), sessionId, false)
-      // Restore the original active session state (without triggering full reload)
-      this.store['_detections'] = saved
-      this.store['notify']()
+      this._renderDetectionRows(container, detections, sessionId, false)
     }
   }
 
@@ -297,15 +294,19 @@ export class SessionHistory {
 
       const editForm = document.createElement('div')
       editForm.style.cssText = 'display:none;position:absolute;inset-x:24px;background:rgba(8,28,38,0.98);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:10px;z-index:1;margin-top:4px;'
+      // Structure only — label/description are assigned as DOM properties below so
+      // a quote in the text cannot terminate the value="" attribute and truncate it.
       editForm.innerHTML = `
-        <input type="text" value="${det.label.replace(/</g, '&lt;')}"
+        <input type="text"
           class="ci-field" style="margin-bottom:5px;" />
-        <textarea rows="2" class="ci-field ci-textarea">${det.description.replace(/</g, '&lt;')}</textarea>
+        <textarea rows="2" class="ci-field ci-textarea"></textarea>
         <div style="display:flex;gap:6px;margin-top:6px;">
           <button class="ef-save ci-inline-btn ci-inline-btn--primary" style="flex:1;">Save</button>
           <button class="ef-cancel ci-inline-btn ci-inline-btn--muted" style="flex:1;">Cancel</button>
         </div>
       `
+      editForm.querySelector<HTMLInputElement>('input')!.value = det.label
+      editForm.querySelector<HTMLTextAreaElement>('textarea')!.value = det.description
       row.style.position = 'relative'
 
       editBtn.addEventListener('click', () => {

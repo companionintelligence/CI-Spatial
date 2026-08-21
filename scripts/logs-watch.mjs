@@ -16,7 +16,8 @@
 import fs from 'node:fs'
 import { WebSocket } from 'ws'
 
-const raw = process.argv[2] ?? process.env.VITE_URL ?? 'wss://localhost:5173/events'
+const VITE_PORT = process.env.VITE_PORT ?? 5173
+const raw = process.argv[2] ?? process.env.VITE_URL ?? `wss://localhost:${VITE_PORT}/events`
 const WS_URL = raw.replace(/^http/, 'ws').replace(/\/$/, '') + (raw.includes('/events') ? '' : '/events')
 const JSONL_PATH = 'scans/client-logs.jsonl'
 const COLORS = { warn: '\x1b[33m', error: '\x1b[31m', reset: '\x1b[0m' }
@@ -57,6 +58,9 @@ ws.on('open', () => console.log('Connected — waiting for client logs\n'))
 ws.on('message', (data) => {
   let msg
   try { msg = JSON.parse(data.toString()) } catch { return }
+  // 'client-log' is the wire value of EVENT.CLIENT_LOG in src/shared/events.ts —
+  // that file is the source of truth for all /events message types (this plain
+  // .mjs script isn't converted to import it, but keep this literal in sync).
   if (msg.type !== 'client-log') return
   // Server may broadcast one message per entry or a batch in `entries`.
   for (const entry of msg.entries ?? [msg]) printEntry({ ip: msg.ip, ...entry })

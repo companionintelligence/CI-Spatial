@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Factory — telemetry rollup</title>
+<script src="./vendor/chart.umd.min.js"></script>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 24px; max-width: 1100px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { opacity: .7; margin: 0 0 20px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap: 12px; margin-bottom: 24px; }
+  .card { border: 1px solid #8883; border-radius: 10px; padding: 14px 16px; }
+  .card .n { font-size: 26px; font-weight: 650; }
+  .card .l { opacity: .7; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .panel { border: 1px solid #8883; border-radius: 10px; padding: 14px 16px; margin-bottom: 20px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; opacity: .7; margin: 0 0 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #8882; white-space: nowrap; }
+  th { position: sticky; top: 0; }
+  .drop { border: 2px dashed #8886; border-radius: 10px; padding: 28px; text-align: center; opacity: .85; }
+  .drop.hover { border-color: #4a90d9; opacity: 1; }
+  code { background: #8881; padding: 1px 5px; border-radius: 4px; }
+  @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+  <h1>Factory — telemetry rollup</h1>
+  <p class="sub">Reads <code>.factory/metrics.csv</code> produced by <code>factory.sh report</code>.</p>
+
+  <div id="loader" class="panel">
+    <div id="drop" class="drop">
+      Couldn't auto-load <code>metrics.csv</code> (browsers block local file reads over <code>file://</code>).<br>
+      <strong>Drop <code>metrics.csv</code> here</strong>, or
+      <input type="file" id="file" accept=".csv" />
+    </div>
+  </div>
+
+  <div id="app" hidden>
+    <div class="cards" id="cards"></div>
+    <div class="panel"><h2>Tokens per ticket by type (avg)</h2><canvas id="tokChart" height="110"></canvas></div>
+    <div class="grid">
+      <div class="panel"><h2>CI first-pass rate by type</h2><canvas id="fpChart" height="150"></canvas></div>
+      <div class="panel"><h2>Rework &amp; clarifications over time</h2><canvas id="rwChart" height="150"></canvas></div>
+    </div>
+    <div class="panel"><h2>Tickets</h2><div style="overflow:auto; max-height:340px"><table id="tbl"></table></div></div>
+  </div>
+
+<script>
+const COLS = ["issue","type","model","tokens_in","tokens_out","tokens_total","wall_s","turns","files","first_pass","clarifications","reopens","state","created_at","closed_at","title"];
+
+function parseCSV(text){
+  const rows = [];
+  const lines = text.replace(/\r/g,"").split("\n").filter(l => l.length);
+  const header = lines.shift().split(",");
+  for(const line of lines){
+    // simple split: title is last column and may contain no commas (report replaces them)
+    const parts = line.split(",");
+    const rec = {};
+    header.forEach((h,i)=> rec[h] = (parts[i] ?? "").trim());
+    rows.push(rec);
+  }
+  return rows;
+}
+
+const num = v => { const n = parseFloat(v); return isNaN(n) ? null : n; };
+
+const escapeHtml = s => String(s ?? "").replace(/[&<>"']/g, c => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+}[c]));
+
+function render(rows){
+  document.getElementById("loader").hidden = true;
+  document.getElementById("app").hidden = false;
+
+  const withTel = rows.filter(r => r.model || r.tokens_total || r.first_pass && r.first_pass!=="na");
+  const fpDecided = rows.filter(r => r.first_pass==="yes" || r.first_pass==="no");
+  const fpYes = fpDecided.filter(r => r.first_pass==="yes").length;
+  const rework = rows.filter(r => num(r.reopens) > 0).length;
+  const walls = rows.map(r=>num(r.wall_s)).filter(v=>v!=null);
+  const avgWall = walls.length ? Math.round(walls.reduce((a,b)=>a+b,0)/walls.length) : null;
+
+  const cards = [
+    ["Tickets", rows.length],
+    ["With telemetry", withTel.length],
+    ["CI first-pass", fpDecided.length ? Math.round(fpYes*100/fpDecided.length)+"%" : "—"],
+    ["Rework rate", rows.length ? Math.round(rework*100/rows.length)+"%" : "—"],
+    ["Avg wall-clock", avgWall!=null ? avgWall+"s" : "—"],
+  ];
+  document.getElementById("cards").innerHTML = cards.map(([l,n])=>`<div class="card"><div class="n">${n}</div><div class="l">${l}</div></div>`).join("");
+
+  // group by type
+  const types = [...new Set(rows.map(r=>r.type||"(none)"))];
+  const avgTokByType = types.map(t=>{
+    const g = rows.filter(r=>(r.type||"(none)")===t).map(r=>num(r.tokens_total)).filter(v=>v!=null);
+    return g.length ? Math.round(g.reduce((a,b)=>a+b,0)/g.length) : 0;
+  });
+  const fpByType = types.map(t=>{
+    const g = rows.filter(r=>(r.type||"(none)")===t && (r.first_pass==="yes"||r.first_pass==="no"));
+    return g.length ? Math.round(g.filter(r=>r.first_pass==="yes").length*100/g.length) : 0;
+  });
+
+  new Chart(tokChart, {type:"bar", data:{labels:types, datasets:[{label:"avg total tokens", data:avgTokByType, backgroundColor:"#4a90d9"}]}, options:{plugins:{legend:{display:false}}}});
+  new Chart(fpChart, {type:"bar", data:{labels:types, datasets:[{label:"first-pass %", data:fpByType, backgroundColor:"#3fb27f"}]}, options:{scales:{y:{max:100}},plugins:{legend:{display:false}}}});
+
+  // over time by closed_at (fallback created_at)
+  const timed = rows.map(r=>({t:r.closed_at||r.created_at, reopens:num(r.reopens)||0, clar:num(r.clarifications)||0}))
+                    .filter(r=>r.t).sort((a,b)=>a.t.localeCompare(b.t));
+  new Chart(rwChart, {type:"line", data:{labels:timed.map(r=>r.t.slice(0,10)), datasets:[
+    {label:"reopens", data:timed.map(r=>r.reopens), borderColor:"#d9534f", tension:.25},
+    {label:"clarifications", data:timed.map(r=>r.clar), borderColor:"#f0ad4e", tension:.25},
+  ]}});
+
+  // table
+  const cols = ["issue","type","model","tokens_total","wall_s","turns","files","first_pass","clarifications","reopens","state","title"];
+  const head = "<tr>"+cols.map(c=>`<th>${escapeHtml(c)}</th>`).join("")+"</tr>";
+  const body = rows.map(r=>"<tr>"+cols.map(c=>`<td>${escapeHtml(r[c])}</td>`).join("")+"</tr>").join("");
+  document.getElementById("tbl").innerHTML = head+body;
+}
+
+function load(text){ try{ render(parseCSV(text)); } catch(e){ alert("Could not parse CSV: "+e.message); } }
+
+// try auto-fetch (works when served over http, e.g. `python3 -m http.server`)
+fetch("../../.factory/metrics.csv").then(r=>{ if(!r.ok) throw 0; return r.text(); })
+  .then(load).catch(()=>fetch("./metrics.csv").then(r=>{ if(!r.ok) throw 0; return r.text(); }).then(load).catch(()=>{}));
+
+// file picker + drag/drop fallback
+const drop = document.getElementById("drop");
+document.getElementById("file").addEventListener("change", e=>{ const f=e.target.files[0]; if(f) f.text().then(load); });
+["dragover","dragenter"].forEach(ev=>drop.addEventListener(ev, e=>{e.preventDefault(); drop.classList.add("hover");}));
+["dragleave","drop"].forEach(ev=>drop.addEventListener(ev, e=>{e.preventDefault(); drop.classList.remove("hover");}));
+drop.addEventListener("drop", e=>{ const f=e.dataTransfer.files[0]; if(f) f.text().then(load); });
+</script>
+</body>
+</html>

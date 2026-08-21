@@ -5,7 +5,9 @@ uses phase framing — **Shipped**, **Near-term**, **Later / Exploratory** — n
 calendar dates. For the system design, data model, and full API table see
 [architecture.md](architecture.md). For the everyday-user first-time journey see
 [docs/UX_FLOW.md](docs/UX_FLOW.md). For the field-acceptance protocol see
-[docs/HOUSE_VALIDATION.md](docs/HOUSE_VALIDATION.md).
+[docs/HOUSE_VALIDATION.md](docs/HOUSE_VALIDATION.md). The current Place-first
+product model and migration rules live in
+[docs/PLACE_SCAN_DESIGN.md](docs/PLACE_SCAN_DESIGN.md).
 
 ---
 
@@ -31,7 +33,7 @@ clean.
 ### Inference (engine-agnostic)
 
 - **Ollama (default)** — `INFERENCE_MODE=ollama`, `OLLAMA_MODEL` defaults to
-  `moondream:latest`; pick a model with `npm run bench:models`.
+  `qwen3-vl:4b`; pick a model with `npm run bench:models`.
 - **ONNX** — `INFERENCE_MODE=onnx` runs the bundled
   `LiquidAI/LFM2.5-VL-1.6B-ONNX` via `onnxruntime-node` (~1.5 GB download).
 - **Mock** — `INFERENCE_MODE=mock` is a deterministic colour-blob CV engine for
@@ -50,7 +52,7 @@ clean.
   plus server upload (`/upload-scan`), stored server-side and served from
   `/scans`.
 
-### Desktop world editor (`viewer.html`)
+### Companion Scan Spatial Editor (`/editor`, implemented by `viewer.html`)
 
 - **4D world model** — loads a `WorldProject` (`src/world/types.ts`): many scans
   placed in one anchored `ENU_Y_UP`, metric (`meters`) frame, geo-anchored at an
@@ -68,7 +70,7 @@ clean.
 ### Optimization pipeline
 
 - **Scan optimization** — quantization, Draco compression, and progressive LOD
-  generation on export; the viewer streams keyframes and loads coarse LODs
+  generation on export; the Spatial Editor streams keyframes and loads coarse LODs
   first.
 
 ### Realtime + reconstruction jobs
@@ -112,7 +114,7 @@ Realistic next steps that build directly on shipped surfaces.
   `qualityMonitor.summary()` as a status chip (`✓ Ready to export` / `Review
   recommended` / `Keep scanning`) plus the top recommendation, and add a
   `Done / Finish scan` affordance near the capture button. The verdict already
-  exists in code but only appears in the desktop viewer today. See the guided
+  exists in code but only appears in the Spatial Editor today. See the guided
   "finish your map" flow in [docs/UX_FLOW.md](docs/UX_FLOW.md).
 - **Close the export loop** — after Export GLB, add a `View in 3D →` link back
   into the world (reuse the video-upload open pattern); gate manual export
@@ -120,7 +122,7 @@ Realistic next steps that build directly on shipped surfaces.
 - **Auth / JWT** — optional token auth on the Deno server so scans and worlds
   can be namespaced per user (minimal email + magic-link UI). No auth today.
 - **Shared world links polish** — role-scoped links
-  (`/worlds/<shareSlug>`, viewer/scanner tokens) exist; add QR UI plus token
+  (`/worlds/<shareSlug>`, view/comment/edit/scanner/owner tokens) exist; add QR UI plus token
   revocation and expiry controls.
 - **Loop-closure / drift correction** — reduce SLAM drift on long walk-throughs
   via loop closure and origin-return recalibration in the `align-scan` /

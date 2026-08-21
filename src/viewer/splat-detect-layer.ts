@@ -20,26 +20,29 @@
  * positions + text so the caller can create them.
  */
 import * as THREE from 'three'
-import type { ScanManifest } from '../world/types'
+import type { ScanManifest, SplatDetectManifest as ServerSplatDetectManifest } from '../world/types'
+import { type DetectObject, parseDetectObjects } from '../world/detect-objects'
 import { scanArtifactBase } from './splat-layer'
 
-export interface SplatDetectManifest {
+// The interactions.json shape + parser moved to ../world/detect-objects.ts so
+// the Deno-side memory push can read the same sidecar without type-importing
+// this file (it imports `three`) — ADR 0001/0002. Re-exported here because
+// this module has been the import point for both since they were written.
+export { type DetectObject, type DetectObjectRecord, parseDetectObjects, parseDetectRecords } from '../world/detect-objects'
+
+/**
+ * Viewer-side read of a splat-detect manifest — the real server type
+ * (SplatDetectManifest, defined in src/world/manifests.ts as an extension of
+ * PipelineManifestBase and re-exported from src/world/types.ts), loosened
+ * for older on-disk manifests: `schemaVersion`/`tool` predate this ticket's
+ * shared envelope, `prompt` predates detect's open-vocab prompt support, and
+ * `timing.elapsedMs` predates timing being recorded at all.
+ */
+export type SplatDetectManifest = Omit<ServerSplatDetectManifest, 'schemaVersion' | 'tool' | 'prompt' | 'timing'> & {
   schemaVersion?: number
   tool?: string
-  status: 'ok' | 'skipped' | 'error'
-  objectCount?: number
   prompt?: string
-  interactionsPath?: string
-  skippedReason?: string
-  error?: string
   timing?: { elapsedMs?: number }
-}
-
-export interface DetectObject {
-  label: string
-  position: { x: number; y: number; z: number }
-  rotation?: { x: number; y: number; z: number; w: number }
-  scale: { x: number; y: number; z: number }
 }
 
 export interface DetectLabelMarker {
@@ -72,47 +75,6 @@ const BOX_MATERIAL = new THREE.LineBasicMaterial({
   transparent: true,
   opacity: 0.9,
 })
-
-/** Read the `objects` array out of a raw interactions.json payload. */
-export function parseDetectObjects(payload: unknown): DetectObject[] {
-  const list = Array.isArray(payload)
-    ? payload
-    : payload && typeof payload === 'object'
-      ? ((payload as Record<string, unknown>)['objects']
-        ?? (payload as Record<string, unknown>)['interactions'])
-      : null
-  if (!Array.isArray(list)) return []
-  const out: DetectObject[] = []
-  for (const raw of list) {
-    if (!raw || typeof raw !== 'object') continue
-    const o = raw as Record<string, unknown>
-    const position = _vec3(o['position'])
-    const scale = _vec3(o['scale'])
-    if (!position || !scale) continue
-    out.push({
-      label: typeof o['label'] === 'string' ? o['label'] : 'object',
-      position,
-      rotation: _quat(o['rotation']),
-      scale,
-    })
-  }
-  return out
-}
-
-function _vec3(v: unknown): { x: number; y: number; z: number } | null {
-  if (!v || typeof v !== 'object') return null
-  const r = v as Record<string, unknown>
-  if (typeof r['x'] !== 'number' || typeof r['y'] !== 'number' || typeof r['z'] !== 'number') return null
-  return { x: r['x'], y: r['y'], z: r['z'] }
-}
-
-function _quat(v: unknown): { x: number; y: number; z: number; w: number } | undefined {
-  if (!v || typeof v !== 'object') return undefined
-  const r = v as Record<string, unknown>
-  if (typeof r['x'] !== 'number' || typeof r['y'] !== 'number'
-    || typeof r['z'] !== 'number' || typeof r['w'] !== 'number') return undefined
-  return { x: r['x'], y: r['y'], z: r['z'], w: r['w'] }
-}
 
 /**
  * Build a wireframe-box group + label anchors from parsed detect objects.

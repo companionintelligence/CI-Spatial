@@ -27,8 +27,14 @@ export interface ScanFrame {
 
 export type ScanFrameCallback = (frame: ScanFrame) => void
 
-const DEFAULT_INTERVAL_MS = 750
-const DEFAULT_GRID_SIZE   = 6   // 6×6 = 36 hit-tests per tick
+/** Scanner drain cadence. Exported so providers can size buffers to one tick. */
+export const DEFAULT_INTERVAL_MS = 750
+/**
+ * 6×6 = 36 hit-tests per tick. Exported because providers must subscribe or
+ * probe at this density to satisfy the contract — see WebXRProvider, which
+ * builds a persistent grid of exactly this size.
+ */
+export const DEFAULT_GRID_SIZE = 6
 
 export class RoomScanner {
   private _handle: ReturnType<typeof setInterval> | null = null
