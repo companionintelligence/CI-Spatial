@@ -6,6 +6,35 @@ The current product contract is [Place-First Product Design](docs/PLACE_SCAN_DES
 
 ---
 
+## Quick setup
+
+The scanner web app on its own:
+
+```bash
+npm install
+npm start          # Deno API server (:8000) + Vite dev server (:5173, self-signed HTTPS), together
+```
+
+Then open `https://localhost:5173` (accept the self-signed cert warning, or run
+`tailscale cert <your-machine>.<tailnet>.ts.net` first and restart — see `vite.config.ts` for how
+it picks that up automatically). Point a phone at the same URL over Tailscale to scan for real;
+`npm run qr` prints a scannable link.
+
+**Plus the gimbal-driven capture subsystem** ([`subsystems/osmo-ble/`](subsystems/osmo-ble/),
+full details in [docs/GIMBAL_INTEGRATION.md](docs/GIMBAL_INTEGRATION.md)) — controls a DJI Osmo
+Mobile 6 over Bluetooth for automated pan/tilt capture sweeps:
+
+```bash
+cd subsystems/osmo-ble
+npm install
+npm run backend    # must run in a real terminal — macOS Bluetooth permission can't be scripted
+```
+
+The `osmo-gimbal` MCP server is already registered in this repo's [`.mcp.json`](.mcp.json) —
+Claude Code picks it up automatically once the backend above is running.
+
+---
+
 ## Architecture & Flows
 
 ### 1. System Architecture

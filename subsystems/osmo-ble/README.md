@@ -1,0 +1,222 @@
+# Osmo BLE Control
+
+A web app (Web Bluetooth) and an MCP server (Node/`noble`) for pairing with and sending basic
+test commands to a DJI Osmo Mobile 6 over Bluetooth LE — no DJI SDK, no DJI Mimo app.
+
+**There is no officially sanctioned way to do this.** DJI's current Mobile SDK (V5) has zero
+Osmo Mobile support (aircraft-only). The old V4 SDK briefly supported "Osmo Mobile" and "Osmo
+Mobile 2" over BLE but was never updated past 2020 and requires a developer account + signed
+App Key + one-time internet activation — more friction than a local test app should need. This
+project instead builds on community reverse-engineering of DJI's DUML protocol.
+
+**Important caveat:** none of the research below has been verified against an actual Osmo
+Mobile 6. It's synthesized from reverse-engineering of the Osmo Pocket 3 and Osmo Action
+3/4/5 Pro, which share DJI's Mimo app and (very likely) the same wire protocol — but the exact
+characteristic mapping and gimbal command set are unconfirmed for this specific device. See
+"Confidence levels" below. Pairing and the frame codec are the exception: verified bit-exact
+against a real captured frame (`protocol/duml.test.mjs`).
+
+## Quick start
+
+```bash
+npm install
+npm run test:protocol   # verifies the DUML codec against a real captured frame
+npm run web             # http://localhost:8787 — Web Bluetooth pairing/control UI
+npm run mcp             # MCP server over stdio, for use with Claude Code / Claude Desktop
+```
+
+**First run on macOS:** the first time `npm run mcp` accesses Bluetooth, macOS will show a
+permission prompt for Terminal/Node under *System Settings → Privacy & Security → Bluetooth*.
+Grant it, then re-run. If it hangs instead of prompting, it's very likely running without a
+window session to show that prompt in (this happened when testing headlessly during
+development) — run it from a normal interactive Terminal window, not a background/CI-style
+shell.
+
+**Web app requirement:** Web Bluetooth only works in Chrome/Edge (not Safari/Firefox), and only
+over a secure context — `http://localhost` counts, plain `file://` does not, hence the tiny
+static server in `web/server.mjs`.
+
+## Registering the MCP server
+
+For Claude Code / Claude Desktop, point an MCP config entry at:
+```json
+{
+  "mcpServers": {
+    "osmo-ble": { "command": "node", "args": ["/absolute/path/to/osmo-ble/server/mcp-server.mjs"] }
+  }
+}
+```
+
+### Remote access over Tailscale (HTTP transport)
+
+`server/mcp-server.mjs` defaults to stdio (above) but also supports Streamable HTTP, for
+registering it remotely the same way this project's other MCP servers (`android-tab-s8-ultra`
+etc.) are — useful if you want to drive the gimbal from a machine other than the one it's
+plugged into over BLE.
+
+Start it with `--http` (or `MCP_TRANSPORT=http`) instead of the bare `npm run mcp`:
+```bash
+OSMO_MCP_TOKEN=<a-long-random-secret> node server/mcp-server.mjs --http
+```
+
+It binds all interfaces (like `server/backend.mjs`), so it's reachable over Tailscale as soon as
+it's running. Env vars:
+
+| Var | Default | Purpose |
+|---|---|---|
+| `OSMO_MCP_HTTP_PORT` | `8789` | Port to listen on (`8787` is `web/server.mjs`, `8788` is `server/backend.mjs`) |
+| `OSMO_MCP_TOKEN` | *(required)* | Bearer token clients must send; the server refuses to start without one, since this port is reachable by anyone on the tailnet |
+
+Every request to `/mcp` is checked against `Authorization: Bearer <OSMO_MCP_TOKEN>` before it
+ever reaches the MCP transport — missing or wrong tokens get a `401` and nothing else.
+
+Register it remotely the same way as the `android-*` entries:
+```json
+{
+  "mcpServers": {
+    "osmo-gimbal": {
+      "type": "http",
+      "url": "http://<this-machine>.<tailnet>.ts.net:8789/mcp",
+      "headers": { "Authorization": "Bearer ${OSMO_MCP_TOKEN}" }
+    }
+  }
+}
+```
+
+The stdio registration (`"command": "node", "args": [...]`) and the HTTP one are independent —
+run whichever transport matches how you're registering it; both share the same BLE connection
+logic and tool set.
+
+Includes `gimbal_sweep` and `get_orientation` tools built for driving automated capture sweeps
+(step yaw across a range, dwelling at each step) — the intended use case is mounting a phone in
+the gimbal to drive an external scanning client through a room, without that client needing any
+awareness of the gimbal at all (see below).
+
+### As a subsystem for CI-Spatial
+
+This lives at `subsystems/osmo-ble/` inside the CI-Spatial repo as its gimbal-control
+subsystem — registered via the repo root's `.mcp.json`, with the integration contract documented
+in `../../docs/GIMBAL_INTEGRATION.md`. Key finding from that integration: CI-Spatial's scanner
+client auto-captures purely off the phone's own tracked movement (distance/rotation thresholds),
+so no signaling between this subsystem and the scanner client is needed for a basic sweep —
+physically moving the phone via `gimbal_sweep` is sufficient on its own. For an exact photo
+count instead, see `GIMBAL_INTEGRATION.md`'s grid-capture section (`plan_scan_grid` +
+`gimbal_move_to` + an explicit camera-capture call, feeding CI-Spatial's own `/ingest-photos`).
+
+## Layout
+
+```
+protocol/          shared codec — pure JS, runs unmodified in both Node and the browser
+  duml.mjs            DUML frame encode/decode, CRC8/CRC16, notify-stream reassembly
+  duml.test.mjs        validates the codec against a real captured frame — run this first
+  constants.mjs        BLE service/characteristic UUIDs, DUML component/cmdSet/cmdId constants
+  commands.mjs          command builders (pairing, gimbal recenter/mode/nudge, raw/RE escape hatch)
+server/
+  ble-transport.mjs      Node BLE transport (@stoprocent/noble): scan, connect, pair, write-char fallback
+  mcp-server.mjs          MCP server exposing it all as tools
+web/
+  index.html / app.mjs   Web Bluetooth client + control UI, sharing protocol/* directly
+  server.mjs               zero-dependency static file server (for the localhost requirement)
+```
+
+## Protocol notes
+
+### Framing (DUML) — high confidence, verified
+
+```
+offset  size  field       encoding    notes
+0       1     magic       —           always 0x55
+1       1     len_lo      —           low 8 bits of a 10-bit total length
+2       1     ver/len_hi  —           bits[0:1]=length hi bits, bits[2:7]=version(=1) — 0x04 for payload<243B
+3       1     hdr_crc8    —           CRC8 over bytes[0:3)
+4       1     sender      —           component id (App=0x02, Camera=0x01, WiFi=0x07, ...)
+5       1     receiver    —           component id
+6-7     2     msgId       BIG-ENDIAN  sequence/transaction id
+8       1     flags       —           0x00 notify, 0x40 request, 0x80 response, 0xC0 response-to-request
+9       1     cmdSet      —           command group
+10      1     cmdId       —           command within the group
+11..N   N     payload     —           N = totalLength - 13
+N+11    2     crc16       LITTLE-ENDIAN
+```
+
+- **CRC8** (header): `poly=0x31 init=0xEE xorout=0x00 refin=true refout=true`
+- **CRC16** (whole frame minus its own trailer): `poly=0x1021 init=0x496C xorout=0x0000 refin=true refout=true`
+  (this is *not* the standard CCITT-FALSE preset despite some libraries naming it that — the
+  nonstandard init value matters, don't substitute a generic library default)
+- **PackString** (PIN/identifier/SSID fields): `[1-byte length][utf8 bytes]`
+
+Cross-verified identically by three independent implementations in three languages
+(node-osmo/TS, lib-osmo-ble/JS, djictl/Go), and confirmed bit-exact against a real captured
+`SetPairingPIN` frame in `protocol/duml.test.mjs`.
+
+### BLE service/characteristics — write characteristic is unconfirmed for this device
+
+Service: `0xfff0`. Four characteristics may be present: `fff0`, `fff3`, `fff4`, `fff5`.
+
+| Role | Characteristic | Confidence |
+|---|---|---|
+| Notify (telemetry, acks) + pairing trigger | `fff4` | Consistent across sources |
+| Write (DUML commands) — primary | `fff5`, write-without-response | Wireshark-verified vs. real Mimo traffic, on Osmo Pocket 3 |
+| Write (DUML commands) — fallback | `fff3`, write-with-response | Older/other-model behavior; one source explicitly says fff3 "may work on Osmo Mobile" |
+
+The code tries `fff5` first and falls back to `fff3`, latching whichever the device actually
+responds on. This is the single biggest known unknown for Osmo Mobile 6 specifically — the two
+best sources disagree about which characteristic real hardware accepts, split exactly along
+product-line lines.
+
+### Pairing — no encryption, PIN-confirmation only
+
+1. Write `[0x01, 0x00]` to `fff4` to enter pairing mode.
+2. Wait ~1s.
+3. Send `SetPairingPIN` (sender=App, receiver=WiFi, cmdSet=0x07, cmdId=0x45), payload =
+   `packString(identifier) + packString(pin)`.
+4. **The PIN is shown on the device's own screen during pairing — it is not a fixed default.**
+   Every hardcoded PIN found in the source repos (`"love"`, `"5160"`) was a leftover
+   development default from someone else's device, not a real secret to reuse.
+5. Response payload byte: `0x01` = already paired, `0x02` = pairing required (wait for user
+   approval on the device).
+
+No AES, no signature, no key exchange anywhere in any of the four technical sources reviewed —
+confirmed by grepping all of them for encrypt/aes/signature/auth/nonce/token.
+
+### Commands implemented — and what's deliberately missing
+
+| Command | Confidence | Source |
+|---|---|---|
+| Pairing (`pair()` / Pair button) | High (byte-verified) | lib-osmo-ble, djictl, xaionaro capture |
+| Gimbal recenter (`gimbal_recenter`) | Medium — sets absolute angle (0,0,0), not a confirmed dedicated recenter opcode | lib-osmo-ble |
+| Gimbal mode lock/follow/fpv (`gimbal_set_mode`) | Medium | lib-osmo-ble |
+| Gimbal speed nudge (`gimbal_nudge`) | Medium | lib-osmo-ble |
+| Battery/telemetry (`get_recent_frames`) | Low-medium, passive only — no query command exists, sources disagree on exact cmdSet | node-osmo, lib-osmo-ble |
+| **Shutter / photo trigger** | **Not implemented** — zero byte-level data in any source | — |
+| **Record start/stop** | **Not implemented** — one unused constant exists (djictl), never wired to a payload | — |
+
+Osmo Mobile 6 has no onboard camera — it clamps a phone. The real Mimo app almost certainly
+relays the gimbal's physical shutter *button press* to the phone as a notification, rather than
+accepting a "take photo" command sent *to* the gimbal the way a Pocket 3 does. Guessing at that
+without a capture risks sending an unknown command to the device for no benefit, so it's left
+out. If you want it: capture your own Mimo↔OM6 BLE traffic (`adb bugreport bt-logs` while using
+Mimo on Android, pull `FS/data/misc/bluetooth/logs/btsnoop_hci.log`, open in Wireshark) and look
+for what fires when you press the physical shutter button — that's the fastest path to a real
+answer, much faster than guessing from a different product's opcodes.
+
+Also worth testing early: lib-osmo-ble's authors found gimbal-motion commands are accepted
+with no error but may not actually move the motors over BLE alone on a Pocket 3 — they suspect
+an active WiFi/streaming session is required. `gimbal_recenter` / the D-pad in the web UI is the
+fastest way to find out whether that's also true here.
+
+### Advanced / reverse-engineering escape hatch
+
+Both the MCP server (`send_raw_command`) and the web UI ("Raw command" panel) let you send an
+arbitrary `cmdSet`/`cmdId`/payload-hex frame and watch the response in the log — useful for
+probing anything not covered above. Use deliberately, one frame at a time, watching what comes
+back.
+
+## Sources
+
+- [datagutt/node-osmo](https://github.com/datagutt/node-osmo) — Osmo Action 3/4/5 Pro + Pocket 3, TS/noble. Low relevance (no gimbal commands) but confirmed the base frame shape.
+- [yigitkonur/lib-osmo-ble](https://github.com/yigitkonur/lib-osmo-ble) — Osmo Pocket 3, JS/noble. The strongest source: Wireshark-verified against real Mimo traffic, includes gimbal motion commands.
+- [xaionaro/reverse-engineering-dji](https://github.com/xaionaro/reverse-engineering-dji) — raw Wireshark captures + dissector plugin, Osmo Pocket 3. Ground truth for the frame shape.
+- [xaionaro-go/djictl](https://github.com/xaionaro-go/djictl) — Go, actively maintained, tested. Confirms CRC params and pairing flow independently.
+- [fvantienen/dji_rev](https://github.com/fvantienen/dji_rev) — firmware-image tooling, unrelated packet format. Not relevant to live BLE control.
+- DJI official Mobile SDK (iOS/Android V5, legacy V4) — confirmed no viable officially-sanctioned path for a modern Osmo Mobile gimbal.

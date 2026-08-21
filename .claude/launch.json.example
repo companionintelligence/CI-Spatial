@@ -5,6 +5,16 @@
       "name": "companion-scan-web",
       "url": "https://<your-host>.ts.net:5173",
       "port": 5173
+    },
+    {
+      "name": "osmo-gimbal-web",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["subsystems/osmo-ble/web/server.mjs"],
+      "port": 8787
+    },
+    {
+      "name": "osmo-gimbal-backend",
+      "url": "http://localhost:8788"
     }
   ]
 }
