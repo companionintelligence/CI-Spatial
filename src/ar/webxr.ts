@@ -93,7 +93,14 @@ export class WebXRProvider implements ARProvider {
     // first, and set up the companion camera stream after.
     this.session = await navigator.xr.requestSession('immersive-ar', {
       requiredFeatures: ['hit-test'],
-      optionalFeatures: ['dom-overlay'],
+      // local-floor isn't implicitly granted on every runtime (ARCore-backed
+      // Chrome in particular) — omitting it here made Three.js's own internal
+      // reference-space request in renderer.xr.setSession() below throw
+      // NotSupportedError even though this provider's own fallback logic
+      // (this.session.requestReferenceSpace, further down) never got a chance
+      // to run. Listing it as optional, not required, keeps runtimes that
+      // truly lack floor-relative tracking working via the 'local' fallback.
+      optionalFeatures: ['dom-overlay', 'local-floor'],
       // Without an explicit root the dom-overlay feature never activates and
       // the entire HTML UI is invisible inside the immersive session
       // (HelloXR on iOS, Quest browser).
@@ -125,7 +132,21 @@ export class WebXRProvider implements ARProvider {
     this.renderer = new THREE.WebGLRenderer({ context: gl, canvas })
     this.renderer.autoClear = false // never blank the camera passthrough
     this.renderer.xr.enabled = true
-    await this.renderer.xr.setSession(this.session)
+    // Three.js's WebXRManager requests its own reference space internally as
+    // part of setSession() — separately from this.refSpace below, which
+    // drives the decal camera pose. Its default type is 'local', which
+    // NotSupportedError's on runtimes that only granted 'local-floor' (or
+    // neither) as an optional feature above. Mirror the same
+    // local-floor-then-local fallback this provider already uses for
+    // this.refSpace so both requests agree on what the runtime actually
+    // supports.
+    this.renderer.xr.setReferenceSpaceType('local-floor')
+    try {
+      await this.renderer.xr.setSession(this.session)
+    } catch {
+      this.renderer.xr.setReferenceSpaceType('local')
+      await this.renderer.xr.setSession(this.session)
+    }
     this.scene = new THREE.Scene()
     this.decalCamera = new THREE.PerspectiveCamera()
 
@@ -156,6 +177,15 @@ export class WebXRProvider implements ARProvider {
     // was introduced.
     const self = this
     function onXRFrame(time: number, frame: XRFrame) {
+      // THREE.WebGLRenderer.setAnimationLoop() unconditionally restarts its
+      // own plain requestAnimationFrame loop (single `time` arg, no `frame`)
+      // every time it's called, even mid-session — it only stops that loop
+      // via the 'sessionstart' event, which has already fired and run by the
+      // time this provider calls setAnimationLoop() below (after setSession()
+      // has resolved). The real XR-driven loop (session.requestAnimationFrame,
+      // which does pass `frame`) runs alongside it, so every other tick here
+      // calls back with frame === undefined. Skip those rather than crash.
+      if (!frame) return
       // Update pose
       const viewerPose = frame.getViewerPose(self.refSpace!)
       if (viewerPose) {
