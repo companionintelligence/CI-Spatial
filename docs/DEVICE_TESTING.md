@@ -113,8 +113,8 @@ unattended `/smoke.html` checks, not as a full substitute for a walked run.
 ### The test fleet
 
 Every device runs its own server with its own bearer token, reachable on the
-tailnet at port 8080. There is no shared token — one per device, supplied
-via `.mcp.local.json` or the matching env var below.
+tailnet at port 8080. There is no shared token — one per device, supplied via
+the matching environment variable below.
 
 | Tailnet host | Tailscale IP | Device | `.mcp.json` server | Token env var |
 |---|---|---|---|---|
@@ -126,47 +126,22 @@ via `.mcp.local.json` or the matching env var below.
 ### Connecting Claude Code (tailnet — preferred)
 
 `.mcp.json` points each server at `http://<host>.capybara-ulmer.ts.net:8080/mcp`,
-with every token left as a `${...}` placeholder. Supply the real tokens one of
-two ways.
+with every token left as a `${...}` placeholder. Claude Code expands those
+placeholders from its process environment. On Windows, persist the four values
+for your user account:
 
-**Preferred — `.mcp.local.json` (persists across restarts).** Claude Code reads
-a machine-local override file at the repo root that takes precedence over
-`.mcp.json`. It is gitignored (`.gitignore`, "Claude Code MCP local
-overrides"), so the tokens never enter history, and unlike a shell export it
-survives closing and reopening the session:
-
-```bash
-cat > .mcp.local.json <<'JSON'
-{
-  "mcpServers": {
-    "android-tab-s8-ultra": {
-      "type": "http",
-      "url": "http://liams-tab-s8-ultra.capybara-ulmer.ts.net:8080/mcp",
-      "headers": { "Authorization": "Bearer <tab-s8 token>" }
-    },
-    "android-tab-s9-ultra": {
-      "type": "http",
-      "url": "http://galaxy-tab-s9-ultra.capybara-ulmer.ts.net:8080/mcp",
-      "headers": { "Authorization": "Bearer <tab-s9 token>" }
-    },
-    "android-beam-pro-1": {
-      "type": "http",
-      "url": "http://beam-pro-1.capybara-ulmer.ts.net:8080/mcp",
-      "headers": { "Authorization": "Bearer <beam-pro-1 token>" }
-    },
-    "android-beam-pro": {
-      "type": "http",
-      "url": "http://beam-pro.capybara-ulmer.ts.net:8080/mcp",
-      "headers": { "Authorization": "Bearer <beam-pro token>" }
-    }
-  }
-}
-JSON
+```powershell
+[Environment]::SetEnvironmentVariable("ANDROID_MCP_TOKEN_TAB_S8_ULTRA", "<tab-s8 token>", "User")
+[Environment]::SetEnvironmentVariable("ANDROID_MCP_TOKEN_TAB_S9_ULTRA", "<tab-s9 token>", "User")
+[Environment]::SetEnvironmentVariable("ANDROID_MCP_TOKEN_BEAM_PRO_1", "<beam-pro-1 token>", "User")
+[Environment]::SetEnvironmentVariable("ANDROID_MCP_TOKEN_BEAM_PRO", "<beam-pro token>", "User")
 ```
 
-**Alternative — shell export.** Same "shell export, not an auto-loaded `.env`
-file" convention as every other secret in this repo (see `.env.example`). One
-variable per device, and it must be re-done for every new session:
+Close and reopen the terminal after setting them. A `.mcp.local.json` file is
+ignored by this repository, but Claude Code does not automatically merge it
+with `.mcp.json`.
+
+For a temporary Bash session, export only the devices you need:
 
 ```bash
 export ANDROID_MCP_TOKEN_TAB_S8_ULTRA=<token from that device's Settings → Access>
@@ -182,6 +157,14 @@ Either way the tokens are read when the session starts, so a value supplied
 mid-session does not take effect until Claude Code is restarted. **Never
 hardcode them into `.mcp.json` itself** — that file is tracked, and a token
 granting tap and screen-read control of a device is permanent once committed.
+
+After creating `.mcp.local.json`, start Claude Code from the repository root and
+accept the workspace trust prompt. Approve the project MCP servers when Claude
+Code asks; otherwise `claude mcp list` can show them as pending or omit them
+from the active session even though the JSON is valid. If the choices are
+stale, run `claude mcp reset-project-choices`, restart Claude Code in this
+repository, and approve the servers again. `claude_desktop_config.json` is for
+Claude Desktop and does not replace this project-level Claude Code setup.
 
 **The server must be bound to `0.0.0.0`, not `127.0.0.1`, or the tailnet address
 refuses connections.** Set this in **Settings → General**. This is a deliberate
@@ -318,7 +301,7 @@ the URL; the bearer token is the only control. Prefer the tailnet.
 | Page loads over `http://` or "HTTPS required" banner | Opened via IP or wrong scheme | Use the `https://<host>.ts.net:5173` URL (npm run qr) |
 | "Server unreachable — is Tailscale connected?" HUD | VPN off on the phone, or cscan-server down | Tailscale app → VPN on; `systemctl --user status cscan-server` |
 | "Model warming up — retry in a few seconds" | First inference after idle loads weights into VRAM | Retry; check `journalctl -u ollama -f` |
-| Detections very slow (>30 s) or 504 | Model too large / running on CPU | `ollama ps` should show 100% GPU; re-pick model via `npm run bench:models`, set `OLLAMA_MODEL` in `~/.config/cscan/env` |
+| Detections very slow (>30 s) or 504 | Model too large / running on CPU | `ollama ps` should show 100% GPU; install/re-pick via `npm run setup:models` + `npm run bench:models`, set `OLLAMA_MODEL` in `~/.config/cscan/env` |
 | Camera prompt never appears | Not a secure context, or Start not triggered by a user tap | Check /smoke.html Secure Context row; don't script the tap |
 | HMR/live-reload dead on phone (dev mode) | `TAILSCALE_HOSTNAME` mismatch pins HMR to the wrong host | Export the right hostname before `npm start` (auto-detect usually handles it) |
 | 🥽 toggle missing on iPhone Safari | Correct behavior — Safari has no WebXR `immersive-ar` | Use HelloXR (App Store id6757726359) for the WebXR path on iOS |

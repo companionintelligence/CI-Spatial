@@ -5,7 +5,7 @@ into a private, structured, explorable **4D place record** — captured on phone
 or desktop, composed and reconstructed in the Companion Scan Spatial Editor,
 and shareable with scoped capabilities. Inference is
 **engine-agnostic**: `INFERENCE_MODE=ollama` (default) runs whatever
-`OLLAMA_MODEL` is set to (`moondream:latest` by default), `onnx` runs the bundled
+`OLLAMA_MODEL` is set to (`qwen3-vl:4b` by default — see `npm run setup:models`), `onnx` runs the bundled
 `LiquidAI/LFM2.5-VL-1.6B-ONNX`, and `mock` is a deterministic colour-blob CV
 engine for CI and tests.
 
