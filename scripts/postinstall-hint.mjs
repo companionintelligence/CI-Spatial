@@ -8,5 +8,5 @@
 import { formatSetupBanner } from '../src/shared/model-catalog.ts'
 
 console.log('')
-console.log(formatSetupBanner())
+console.log(formatSetupBanner(undefined, process.env.OLLAMA_MODEL || null))
 console.log('')

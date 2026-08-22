@@ -138,8 +138,9 @@ for your user account:
 ```
 
 Close and reopen the terminal after setting them. A `.mcp.local.json` file is
-ignored by this repository, but Claude Code does not automatically merge it
-with `.mcp.json`.
+git-ignored (safe to keep tokens in), but Claude Code does not automatically
+merge it with `.mcp.json` — the env-var placeholders above are the mechanism
+that actually works today.
 
 For a temporary Bash session, export only the devices you need:
 
@@ -158,10 +159,10 @@ mid-session does not take effect until Claude Code is restarted. **Never
 hardcode them into `.mcp.json` itself** — that file is tracked, and a token
 granting tap and screen-read control of a device is permanent once committed.
 
-After creating `.mcp.local.json`, start Claude Code from the repository root and
-accept the workspace trust prompt. Approve the project MCP servers when Claude
-Code asks; otherwise `claude mcp list` can show them as pending or omit them
-from the active session even though the JSON is valid. If the choices are
+With the environment variables set, start Claude Code from the repository root
+and accept the workspace trust prompt. Approve the project MCP servers when
+Claude Code asks; otherwise `claude mcp list` can show them as pending or omit
+them from the active session even though the JSON is valid. If the choices are
 stale, run `claude mcp reset-project-choices`, restart Claude Code in this
 repository, and approve the servers again. `claude_desktop_config.json` is for
 Claude Desktop and does not replace this project-level Claude Code setup.

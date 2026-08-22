@@ -51,3 +51,11 @@ Deno.test('formatCatalogTable / formatSetupBanner: do not throw against the real
   formatCatalogTable({ installed: new Set([DEFAULT_MODEL_TAG]) })
   formatSetupBanner()
 })
+
+Deno.test('formatSetupBanner: says "not set" only when configuredTag is actually null', () => {
+  assertEquals(formatSetupBanner().includes('No OLLAMA_MODEL set'), true)
+  assertEquals(formatSetupBanner(DEFAULT_MODEL_TAG, null).includes('No OLLAMA_MODEL set'), true)
+  const configured = formatSetupBanner(DEFAULT_MODEL_TAG, 'qwen3-vl:8b')
+  assertEquals(configured.includes('No OLLAMA_MODEL set'), false)
+  assertEquals(configured.includes('OLLAMA_MODEL is set to qwen3-vl:8b'), true)
+})

@@ -213,9 +213,11 @@ An iOS or Android device with camera is required for AR scanning. The 3D viewer 
 
 The four Android remote-control MCP servers are defined in the tracked
 `.mcp.json`. It uses `${ANDROID_MCP_TOKEN_*}` expansion, so keep bearer tokens
-out of `.mcp.json`, `README.md`, and source control. Claude Code does not
-automatically merge a `.mcp.local.json` file; on Windows, set the four user
-environment variables instead:
+out of `.mcp.json`, `README.md`, and source control — set persistent
+environment variables instead (a `.mcp.local.json` file is gitignored, but
+Claude Code does not automatically merge it with `.mcp.json`, so it is not a
+working alternative today). On Windows, set the four user environment
+variables:
 
 ```powershell
 [Environment]::SetEnvironmentVariable("ANDROID_MCP_TOKEN_TAB_S8_ULTRA", "<tab-s8 token>", "User")

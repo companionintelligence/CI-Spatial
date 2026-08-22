@@ -150,11 +150,18 @@ export function formatCatalogTable(opts: {
  * Short first-boot / postinstall banner body. Length follows the catalog
  * rather than a hardcoded count, so it can't itself go stale the way the
  * docs it replaces did.
+ *
+ * `configuredTag` is caller-supplied (a live env read) so this module itself
+ * never needs `Deno.env`/`process.env` access — same rule `formatCatalogTable`'s
+ * `installed` param already follows. Omitting it (or passing null) describes
+ * the unset case; passing the actual value avoids claiming OLLAMA_MODEL is
+ * unset when the caller already knows it isn't.
  */
-export function formatSetupBanner(defaultTag: string = DEFAULT_MODEL_TAG): string {
+export function formatSetupBanner(defaultTag: string = DEFAULT_MODEL_TAG, configuredTag: string | null = null): string {
   return [
-    '[setup] No OLLAMA_MODEL set — using the default vision model:',
-    `[setup]   ${defaultTag}`,
+    configuredTag
+      ? `[setup] OLLAMA_MODEL is set to ${configuredTag}.`
+      : `[setup] No OLLAMA_MODEL set — using the default vision model:\n[setup]   ${defaultTag}`,
     `[setup] ${MODEL_CATALOG.length} recommended models across ${TIER_ORDER.length} tiers ` +
       '(fast → flagship) are documented.',
     '[setup] Run `npm run setup:models` to see them and install the ones you want.',
