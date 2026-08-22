@@ -16,7 +16,7 @@ Companion Scan is a mobile-first, privacy-respecting Augmented Reality (AR) appl
 
 The following block diagram represents the modular structure of the Companion Scan system, showing the boundary between client-side components running in the mobile browser and server-side components running on the local host.
 
-Inference is **engine-agnostic**: the server exposes one `/infer` contract and `INFERENCE_MODE` selects the backend. The default is `ollama` (running whatever `OLLAMA_MODEL` is set to — `qwen3-vl:4b` out of the box); `onnx` runs the bundled `LiquidAI/LFM2.5-VL-1.6B-ONNX` via `onnxruntime-node`; `mock` is a deterministic colour-blob CV engine for CI and tests. There is no `llama.cpp` in the system.
+Inference is **engine-agnostic**: the server exposes one `/infer` contract and `INFERENCE_MODE` selects the backend. The default is `ollama` (running whatever `OLLAMA_MODEL` is set to — `qwen3-vl:4b` out of the box; see `npm run setup:models`); `onnx` runs the bundled `LiquidAI/LFM2.5-VL-1.6B-ONNX` via `onnxruntime-node`; `mock` is a deterministic colour-blob CV engine for CI and tests. There is no `llama.cpp` in the system.
 
 ```mermaid
 graph TB
@@ -304,7 +304,7 @@ The server exposes one `/infer` contract; `INFERENCE_MODE` picks the backend at 
 
 | Mode | Backend | Model | Purpose |
 |---|---|---|---|
-| `ollama` (**default**) | Local Ollama daemon over HTTP | `OLLAMA_MODEL`, defaults to **`qwen3-vl:4b`** (pick with `npm run bench:models`) | Production inference on the host GPU. |
+| `ollama` (**default**) | Local Ollama daemon over HTTP | `OLLAMA_MODEL`, defaults to **`qwen3-vl:4b`** (install candidates with `npm run setup:models`, pick with `npm run bench:models`) | Production inference on the host GPU. |
 | `onnx` | `onnxruntime-node`, in-process | Bundled **`LiquidAI/LFM2.5-VL-1.6B-ONNX`** (~1.5 GB via `download_models.py`) | Self-contained inference with no external daemon. |
 | `mock` | Deterministic colour-blob CV | none | CI, unit tests, and offline development. |
 

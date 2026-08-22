@@ -44,10 +44,13 @@ if ! loginctl show-user "$USER" 2>/dev/null | grep -q '^Linger=yes'; then
 fi
 
 # ── Seed env file ────────────────────────────────────────────────────────────
+# Default model mirrors src/shared/model-catalog.ts's DEFAULT_MODEL_TAG — bash
+# can't import it, so this literal is a deliberately parallel copy (same
+# pattern as vite.config.ts/main.ts's hostname resolution; see CLAUDE.md).
 mkdir -p "$ENV_DIR" "$UNIT_DST"
 if [ ! -f "$ENV_FILE" ]; then
   sed -e "s|__HOSTNAME__|$HOSTNAME_TS|g" \
-      -e "s|__OLLAMA_MODEL__|${OLLAMA_MODEL:-moondream:latest}|g" \
+      -e "s|__OLLAMA_MODEL__|${OLLAMA_MODEL:-qwen3-vl:4b}|g" \
       -e "s|__PATH__|$SERVICE_PATH|g" \
       "$REPO/deploy/cscan.env.example" > "$ENV_FILE"
   echo "[install-services] seeded $ENV_FILE"

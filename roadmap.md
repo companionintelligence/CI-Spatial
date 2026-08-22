@@ -33,7 +33,7 @@ clean.
 ### Inference (engine-agnostic)
 
 - **Ollama (default)** — `INFERENCE_MODE=ollama`, `OLLAMA_MODEL` defaults to
-  `qwen3-vl:4b`; pick a model with `npm run bench:models`.
+  `qwen3-vl:4b`; install candidates with `npm run setup:models`, pick with `npm run bench:models`.
 - **ONNX** — `INFERENCE_MODE=onnx` runs the bundled
   `LiquidAI/LFM2.5-VL-1.6B-ONNX` via `onnxruntime-node` (~1.5 GB download).
 - **Mock** — `INFERENCE_MODE=mock` is a deterministic colour-blob CV engine for

@@ -394,7 +394,7 @@
       <h2>Inference &amp; Jobs</h2>
       <p class="dek">Turning a captured frame into labelled objects, and a raw scan into a web-ready 3D asset.</p>
       <div class="fcards">
-        <div class="fcard accent"><h4>Ollama VLM detection (default)</h4><p>POSTs the JPEG to a local Ollama model (default <code class="v">moondream:latest</code>) with a strict-JSON detection prompt; salvages truncated model output rather than discarding it.</p><div class="files"><span class="chip">inference.ts</span><span class="chip">prompt.ts</span></div></div>
+        <div class="fcard accent"><h4>Ollama VLM detection (default)</h4><p>POSTs the JPEG to a local Ollama model (default <code class="v">qwen3-vl:4b</code>) with a strict-JSON detection prompt; salvages truncated model output rather than discarding it.</p><div class="files"><span class="chip">inference.ts</span><span class="chip">prompt.ts</span></div></div>
         <div class="fcard"><h4>ONNX local VLM</h4><p>A hand-rolled 3-stage (embed_tokens / embed_images / decoder) autoregressive pipeline for LFM2.5-VL-1.6B, with a manually managed KV-cache, run fully offline via onnxruntime-node.</p><div class="files"><span class="chip">inference.ts</span></div></div>
         <div class="fcard"><h4>Mock colour-blob detector</h4><p>A deterministic, model-free detector for CI/dev — grid-samples pixels against a shared palette and clusters them with union-find, so tests never need a GPU.</p><div class="files"><span class="chip">inference.ts</span><span class="chip">cv-palette.ts</span></div></div>
         <div class="fcard"><h4>On-device WebGPU inference</h4><p>A second, user-toggleable inference path that runs the same ONNX model directly in the browser via Transformers.js/WebGPU instead of hitting the server.</p><div class="files"><span class="chip">src/inference/router.ts</span><span class="chip">webgpu.worker.ts</span></div></div>
@@ -656,7 +656,7 @@
         <tbody>
           <tr><td class="name">INFERENCE_MODE</td><td class="def">ollama</td><td class="purpose">ollama | onnx | mock — anything unrecognized falls back to ollama</td></tr>
           <tr><td class="name">OLLAMA_HOST</td><td class="def">http://localhost:11434</td><td class="purpose">Must be a full URL — a bind address like <code class="v">0.0.0.0:11434</code> breaks the client fetch (hit this firsthand during setup)</td></tr>
-          <tr><td class="name">OLLAMA_MODEL</td><td class="def">moondream:latest</td><td class="purpose">Falls back to a known vision model, then the first available, if unpulled</td></tr>
+          <tr><td class="name">OLLAMA_MODEL</td><td class="def">qwen3-vl:4b</td><td class="purpose">Falls back to a known vision model, then the first available, if unpulled. Install candidates with <code class="v">npm run setup:models</code>.</td></tr>
           <tr><td class="name">MODEL_DIR / TOKENIZER_DIR</td><td class="def">./public/models/LiquidAI/…</td><td class="purpose">ONNX model + tokenizer location for onnx mode</td></tr>
           <tr><td class="name">INFER_MAX_IMAGE_BYTES</td><td class="def">12,000,000</td><td class="purpose">Upload cap enforced before /infer even loads the engine</td></tr>
         </tbody>

@@ -209,6 +209,56 @@ An iOS or Android device with camera is required for AR scanning. The 3D viewer 
 
 ---
 
+## Android MCP Testing (Claude Code)
+
+The four Android remote-control MCP servers are defined in the tracked
+`.mcp.json`. It uses `${ANDROID_MCP_TOKEN_*}` expansion, so keep bearer tokens
+out of `.mcp.json`, `README.md`, and source control — set persistent
+environment variables instead (a `.mcp.local.json` file is gitignored, but
+Claude Code does not automatically merge it with `.mcp.json`, so it is not a
+working alternative today). On Windows, set the four user environment
+variables:
+
+```powershell
+[Environment]::SetEnvironmentVariable("ANDROID_MCP_TOKEN_TAB_S8_ULTRA", "<tab-s8 token>", "User")
+[Environment]::SetEnvironmentVariable("ANDROID_MCP_TOKEN_TAB_S9_ULTRA", "<tab-s9 token>", "User")
+[Environment]::SetEnvironmentVariable("ANDROID_MCP_TOKEN_BEAM_PRO_1", "<beam-pro-1 token>", "User")
+[Environment]::SetEnvironmentVariable("ANDROID_MCP_TOKEN_BEAM_PRO", "<beam-pro token>", "User")
+```
+
+Close and reopen the terminal after setting them. The URLs must remain the
+plain HTTP endpoints ending in `/mcp`.
+
+Then start Claude Code from this repository, accept the workspace trust prompt,
+and approve the project MCP servers when prompted:
+
+```powershell
+cd C:\devel\ci\CI-Spatial
+claude
+```
+
+Verify the result in a second terminal:
+
+```powershell
+claude mcp list
+```
+
+An entry shown as `Pending approval` is configured but not enabled for this
+project. If the project choices are stale, run `claude mcp reset-project-choices`,
+restart Claude Code in the repository, and approve the servers again. MCP
+configuration is loaded when the Claude Code session starts.
+
+`C:\Users\<user>\AppData\Roaming\Claude\claude_desktop_config.json` is the
+Claude Desktop configuration and is not the project configuration used by
+Claude Code. Claude Code's user-level registry is `C:\Users\<user>\.claude.json`;
+the simplest portable setup for this project is the tracked `.mcp.json`, the
+four user environment variables, and one-time project approval.
+
+For the full device table, token-variable alternative, adb fallback, and server
+health troubleshooting, see [docs/DEVICE_TESTING.md](docs/DEVICE_TESTING.md).
+
+---
+
 ## Quick Start
 
 ### 1. Clone and install
@@ -221,7 +271,7 @@ npm ci
 
 ### 2. (Optional) Download the ONNX model (~1.5 GB)
 
-The default `ollama` mode needs no bundled model — install [Ollama](https://ollama.com) and pull a vision model (`ollama pull qwen3-vl:4b`). Only run the downloader if you plan to use `INFERENCE_MODE=onnx`:
+The default `ollama` mode needs no bundled model — install [Ollama](https://ollama.com), then run `npm run setup:models` to see the recommended vision models and pull the ones you want. Only run the downloader below if you plan to use `INFERENCE_MODE=onnx` instead:
 
 ```bash
 python3 download_models.py
@@ -395,6 +445,7 @@ The repo defines ~30 npm scripts. The most common:
 | `npm run test:box` | Bounding-box readiness check |
 | `npm run test:mock` / `test:api` | Mock-engine + API-only test tiers |
 | `npm run smoke:pipeline` | End-to-end scan-optimization pipeline smoke test |
+| `npm run setup:models` | Show the recommended Ollama vision-model catalog and install the ones you want |
 | `npm run bench:models` | Benchmark Ollama vision models to pick `OLLAMA_MODEL` |
 | `npm run eval:cv` | Evaluate the mock CV engine against fixtures |
 | `npm run ingest:video` | Ingest a walkthrough video into a session scan |
@@ -450,7 +501,7 @@ By default, world reads are open for local/Tailscale development and world membe
 
 Inference is engine-agnostic. The Deno server picks its engine from `INFERENCE_MODE`:
 
-- **`ollama`** (default) — POSTs a JPEG to a local [Ollama](https://ollama.com) server running whatever `OLLAMA_MODEL` names (`qwen3-vl:4b` by default). Use `npm run bench:models` to compare candidates.
+- **`ollama`** (default) — POSTs a JPEG to a local [Ollama](https://ollama.com) server running whatever `OLLAMA_MODEL` names (`qwen3-vl:4b` by default). Use `npm run setup:models` to see the recommended models and install the ones you want, and `npm run bench:models` to compare candidates.
 - **`onnx`** — runs the bundled `LiquidAI/LFM2.5-VL-1.6B-ONNX` locally via `onnxruntime-node` (CPU/GPU). ~2–8s on Apple Silicon.
 - **`mock`** — a deterministic colour-blob CV engine for CI and tests; needs no model download.
 
