@@ -64,6 +64,7 @@ import {
 import { composeYUpTransform, geoToEnu, hasGeoPose } from './src/world/geo.ts'
 import { defaultLayerIndex } from './src/world/layers.ts'
 import { EVENT } from './src/shared/events.ts'
+import { formatSetupBanner } from './src/shared/model-catalog.ts'
 import {
   ensureWorldProjectCollections,
   placeScanTransform,
@@ -252,6 +253,9 @@ const worldJobPump = new WorldJobPump((slug, jobId) => _dispatchWorldJob(slug, j
 let modelLoaded = false
 let engineLoadSettled = false
 const engine = new InferenceEngine()
+if (engine.mode === 'ollama' && Deno.env.get('OLLAMA_MODEL') === undefined) {
+  console.log(formatSetupBanner())
+}
 const engineLoadPromise = engine.load().then(() => {
   console.log('[server] Model sessions ready')
   modelLoaded = true
@@ -1485,6 +1489,11 @@ function scanManifestFromStored(
     accuracyM: geoPose.accuracyM,
     geoDistanceM: placement.geoDistanceM,
     ...(placement.geoOutlier ? { geoOutlier: true } : {}),
+    // Already written into the upload sidecar (src/export/gltf.ts); surfaced here so
+    // the editor can tell whether this scan's local origin is a real marked physical
+    // point worth rendering an anchor for, vs. just wherever AR tracking booted.
+    calibrationMethod: asString(scan.meta['calibrationMethod']) as ScanManifest['calibrationMethod'],
+    calibrationStatus: asString(scan.meta['calibrationStatus']) as ScanManifest['calibrationStatus'],
     capturedAt: asString(scan.meta['capturedAt']) ?? asString(scan.meta['exportedAt']) ?? scan.uploadedAt,
     pointCount: asNumber(scan.meta['pointCount']),
     detectionCount: asNumber(scan.meta['detectionCount']),

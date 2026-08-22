@@ -940,9 +940,11 @@ async function main() {
     const calibration = await runProjectCalibration({
       provider,
       project: selectedProject,
-      hitTest: async () => asyncHitTest
-        ? await asyncHitTest(0.5, 0.5)
-        : provider.hitTest(0.5, 0.5),
+      canvas,
+      hitTest: async (x, y) => asyncHitTest
+        ? await asyncHitTest(x, y)
+        : provider.hitTest(x, y),
+      bearing: () => geoTracker.snapshot()?.bearing ?? null,
     })
     if (calibration) {
       sessionCalibration = calibration.calibration
@@ -953,7 +955,7 @@ async function main() {
       }
       overlay.setStatus(
         calibration.calibration.status === 'verified'
-          ? `Project aligned within ${(calibration.calibration.residualM * 100).toFixed(0)} cm`
+          ? 'Project aligned to the existing anchor.'
           : 'Project frame established. Start scanning.',
       )
     } else {

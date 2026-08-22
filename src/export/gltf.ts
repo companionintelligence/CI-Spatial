@@ -426,8 +426,15 @@ async function uploadToServer(
       roomId: scanEntry?.roomId ?? null,
       projectTransform: scanEntry?.calibration?.sessionToProject ?? null,
       calibrationMethod: scanEntry?.calibration?.method ?? null,
-      calibrationResidualM: scanEntry?.calibration?.residualM ?? null,
-      calibrationToleranceM: scanEntry?.calibration?.toleranceM ?? null,
+      // residualM/toleranceM only exist on the old 3-point method — the new
+      // one-tap-plus-compass method has no second reference point to diff
+      // a residual against (see ScanCalibration in src/world/types.ts).
+      calibrationResidualM: scanEntry?.calibration?.method === 'raycast-reference-triangle'
+        ? scanEntry.calibration.residualM
+        : null,
+      calibrationToleranceM: scanEntry?.calibration?.method === 'raycast-reference-triangle'
+        ? scanEntry.calibration.toleranceM
+        : null,
       calibrationStatus: scanEntry?.calibration?.status ?? 'uncalibrated',
       calibration: scanEntry?.calibration ?? null,
       autoSaved,
