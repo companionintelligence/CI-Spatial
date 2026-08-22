@@ -11,6 +11,8 @@ import { fromFileUrl } from '@std/path'
 import { SPATIAL_DETECTION_PROMPT, parseDetections } from './prompt.ts'
 import type { RawDetection } from './prompt.ts'
 import { classifyPixel, paletteColorNameFor } from './src/shared/cv-palette.ts'
+import { DEFAULT_MODEL_TAG } from './src/shared/model-catalog.ts'
+import { normalizeOllamaHost } from './src/shared/ollama-host.ts'
 
 // Re-export shared types
 export type { RawDetection }
@@ -61,21 +63,6 @@ const OLLAMA_NUM_CTX = (() => {
   return n
 })()
 
-function normalizeOllamaHost(rawHost: string | undefined): string {
-  const raw = rawHost?.trim() || 'http://localhost:11434'
-  const candidate = /^[a-z][a-z\d+.-]*:\/\//i.test(raw) ? raw : `http://${raw}`
-
-  try {
-    const url = new URL(candidate)
-    // 0.0.0.0 and :: are server bind addresses, not client destinations.
-    if (url.hostname === '0.0.0.0' || url.hostname === '[::]' || url.hostname === '::') {
-      url.hostname = '127.0.0.1'
-    }
-    return url.toString().replace(/\/$/, '')
-  } catch {
-    throw new Error(`OLLAMA_HOST must be a URL or host:port, received "${raw}"`)
-  }
-}
 const NUM_THREADS = (() => { try { return Math.max(1, navigator?.hardwareConcurrency ?? 4) } catch { return 4 } })()
 
 // ─── ONNX prompt token IDs ───────────────────────────────────────────────────
@@ -188,7 +175,7 @@ export class InferenceEngine {
     const requested = Deno.env.get('INFERENCE_MODE')
     this._mode = requested === 'onnx' ? 'onnx' : requested === 'mock' ? 'mock' : 'ollama'
     this.ollamaUrl = normalizeOllamaHost(Deno.env.get('OLLAMA_HOST'))
-    this.ollamaModel = Deno.env.get('OLLAMA_MODEL') ?? 'qwen3-vl:4b'
+    this.ollamaModel = Deno.env.get('OLLAMA_MODEL') ?? DEFAULT_MODEL_TAG
     this.modelId = this._mode === 'onnx' ? 'LiquidAI/LFM2.5-VL-1.6B-ONNX'
       : this._mode === 'mock' ? 'mock/color-blob-v1'
       : `Ollama/${this.ollamaModel}`
@@ -230,7 +217,7 @@ export class InferenceEngine {
         
         if (!hasModel) {
           // Fallback check to any pulled vision models
-          const visionModels = ['qwen3-vl:4b', 'qwen3.5:4b', 'qwen3.5:2b', 'llava:7b', 'moondream:latest']
+          const visionModels = [DEFAULT_MODEL_TAG, 'qwen3.5:4b', 'qwen3.5:2b', 'llava:7b', 'moondream:latest']
           let foundFallback = false
           for (const fallback of visionModels) {
             if (data.models.some(m => m.name === fallback || m.name.startsWith(fallback + ':'))) {

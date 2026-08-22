@@ -59,7 +59,7 @@ All box-local config lives in `~/.config/cscan/env` (never in the repo):
 | `ALLOWED_ORIGIN_PREFIX` | Origin accepted by CORS + used in share links |
 | `PORT` | Deno API port (default 8000) |
 | `INFERENCE_MODE` | `ollama` \| `onnx` \| `mock` |
-| `OLLAMA_MODEL` | vision model tag (see `npm run bench:models`) |
+| `OLLAMA_MODEL` | vision model tag (install candidates with `npm run setup:models`, pick with `npm run bench:models`) |
 | `CSCAN_SKIP_BUILD` | `1` = skip `vite build` on cscan-web restart |
 | `LINGBOT_MAP_PYTHON` / `LINGBOT_MAP_MODEL_PATH` | reconstruction worker |
 | `HIP_VISIBLE_DEVICES` | GPU for the LingBot worker (`1`; Ollama is pinned to `0` via its own drop-in) |
@@ -98,9 +98,10 @@ The system Ollama unit is pinned to GPU0 via
 `/etc/systemd/system/ollama.service.d/zz-cscan-gpu.conf`
 (`HIP_VISIBLE_DEVICES=0`, `OLLAMA_CONTEXT_LENGTH=16384`, `OLLAMA_KEEP_ALIVE=1h`)
 — a ~19GB Q4 vision model + 16k KV cache fits in 24GB; 64k ctx would spill to
-CPU. GPU1 stays free for LingBot-Map reconstruction jobs. Pick the model with
-`npm run bench:models` (precision/recall/latency on the generated CV corpus)
-and set `OLLAMA_MODEL` accordingly.
+CPU. GPU1 stays free for LingBot-Map reconstruction jobs. Install candidates
+with `npm run setup:models`, pick one with `npm run bench:models`
+(precision/recall/latency on the generated CV corpus), and set `OLLAMA_MODEL`
+accordingly.
 
 ## Splat training (Brush)
 

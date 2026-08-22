@@ -28,13 +28,15 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSyn
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { firstPerTier } from '../src/shared/model-catalog.ts'
+import { normalizeOllamaHost } from '../src/shared/ollama-host.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const cvDir = join(root, 'test-data', 'cv')
 const PORT = Number(process.env.BENCH_PORT ?? 8095)
 const SERVER_URL = `http://localhost:${PORT}`
-const OLLAMA = (process.env.OLLAMA_HOST ?? 'http://localhost:11434').replace(/\/$/, '')
-const MODELS = (process.env.BENCH_MODELS ?? 'moondream:latest,gemma4:31b,qwen3-vl:8b,qwen3-vl:32b')
+const OLLAMA = normalizeOllamaHost(process.env.OLLAMA_HOST)
+const MODELS = (process.env.BENCH_MODELS ?? firstPerTier().join(','))
   .split(',').map((m) => m.trim()).filter(Boolean)
 const READY_TIMEOUT_MS = 120_000
 const WARMUP_MS = Number(process.env.BENCH_WARMUP_MS ?? 300_000)
