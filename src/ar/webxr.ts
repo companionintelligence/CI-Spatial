@@ -285,6 +285,12 @@ export class WebXRProvider implements ARProvider {
     for (const source of this.hitTestSources) source.cancel()
     this.session?.end()
     this.videoStream?.getTracks().forEach((t) => t.stop())
+    // start() creates a fresh WebGLRenderer against the same canvas/context
+    // on every call (getContext() returns the same WebGL2RenderingContext for
+    // a given canvas), so an undisposed renderer's compiled programs and
+    // buffers pile up in that shared context across repeated start()/stop()
+    // cycles in one page lifetime instead of being freed.
+    this.renderer?.dispose()
     this.session = null
     this.hitTestSources = []
     this.hitTestGridState = 'idle'

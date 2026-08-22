@@ -79,20 +79,14 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
     const close = (result: CalibrationResult | null) => {
       clearInterval(interval)
       options.canvas.removeEventListener('touchstart', onTouchStart)
+      options.canvas.removeEventListener('pointerdown', onPointerDown)
       overlay.remove()
       resolve(result)
     }
 
     skip.addEventListener('click', () => close(null))
 
-    // Matches the placeground reference's own guard: a two-finger touch is a
-    // recenter/pinch gesture elsewhere in this app, not a placement tap.
-    const onTouchStart = (e: TouchEvent) => {
-      if (tapInFlight || e.touches.length !== 1 || !options.provider.isTracking()) return
-      const touch = e.touches[0]!
-      const rect = options.canvas.getBoundingClientRect()
-      const x = (touch.clientX - rect.left) / rect.width
-      const y = (touch.clientY - rect.top) / rect.height
+    const placeAt = (x: number, y: number) => {
       if (x < 0 || x > 1 || y < 0 || y > 1) return
 
       tapInFlight = true
@@ -135,7 +129,30 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
         close({ calibration, spatialFrame })
       })()
     }
+
+    // Matches the placeground reference's own guard: a two-finger touch is a
+    // recenter/pinch gesture elsewhere in this app, not a placement tap.
+    const onTouchStart = (e: TouchEvent) => {
+      if (tapInFlight || e.touches.length !== 1 || !options.provider.isTracking()) return
+      const touch = e.touches[0]!
+      const rect = options.canvas.getBoundingClientRect()
+      placeAt((touch.clientX - rect.left) / rect.width, (touch.clientY - rect.top) / rect.height)
+    }
     options.canvas.addEventListener('touchstart', onTouchStart, { passive: true })
+
+    // WebXR's dom-overlay input model (Quest/other controller-driven
+    // runtimes) synthesizes pointer/click events from a controller ray +
+    // select, not touch events — there's no touchscreen to generate a
+    // TouchEvent at all. Real touchscreens fire both touchstart *and*
+    // pointerdown for the same tap, so this skips pointerType 'touch' to
+    // avoid placing two anchors from one tap; that case is already handled
+    // above.
+    const onPointerDown = (e: PointerEvent) => {
+      if (tapInFlight || e.pointerType === 'touch' || !options.provider.isTracking()) return
+      const rect = options.canvas.getBoundingClientRect()
+      placeAt((e.clientX - rect.left) / rect.width, (e.clientY - rect.top) / rect.height)
+    }
+    options.canvas.addEventListener('pointerdown', onPointerDown)
 
     update()
   })

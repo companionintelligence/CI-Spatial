@@ -1667,7 +1667,7 @@ function addAnchorMarker(
   scan: ScanManifest,
   layers: Map<LayerType, Set<THREE.Object3D>>,
 ): void {
-  if (!scan.calibrationStatus || scan.calibrationStatus === 'uncalibrated') return
+  if (scan.calibrationStatus !== 'verified' && scan.calibrationStatus !== 'provisional') return
   const marker = buildAnchorMarker()
   marker.userData['scanId'] = scan.scanId
   root.add(marker)

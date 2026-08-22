@@ -1296,6 +1296,14 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
 }
 
+function asCalibrationMethod(value: unknown): ScanManifest['calibrationMethod'] {
+  return value === 'ground-tap-compass' ? value : undefined
+}
+
+function asCalibrationStatus(value: unknown): ScanManifest['calibrationStatus'] {
+  return value === 'verified' || value === 'provisional' || value === 'uncalibrated' ? value : undefined
+}
+
 function matrixFromMeta(value: unknown): number[] | null {
   if (!Array.isArray(value) || value.length !== 16 || !value.every(item => typeof item === 'number' && Number.isFinite(item))) {
     return null
@@ -1492,8 +1500,8 @@ function scanManifestFromStored(
     // Already written into the upload sidecar (src/export/gltf.ts); surfaced here so
     // the editor can tell whether this scan's local origin is a real marked physical
     // point worth rendering an anchor for, vs. just wherever AR tracking booted.
-    calibrationMethod: asString(scan.meta['calibrationMethod']) as ScanManifest['calibrationMethod'],
-    calibrationStatus: asString(scan.meta['calibrationStatus']) as ScanManifest['calibrationStatus'],
+    calibrationMethod: asCalibrationMethod(scan.meta['calibrationMethod']),
+    calibrationStatus: asCalibrationStatus(scan.meta['calibrationStatus']),
     capturedAt: asString(scan.meta['capturedAt']) ?? asString(scan.meta['exportedAt']) ?? scan.uploadedAt,
     pointCount: asNumber(scan.meta['pointCount']),
     detectionCount: asNumber(scan.meta['detectionCount']),
