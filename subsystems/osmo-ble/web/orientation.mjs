@@ -4,26 +4,7 @@
 // Bluetooth) and server (backend WS) panels — only where the quaternion samples come from
 // differs, not how they're displayed.
 
-import { quaternionDelta } from '../protocol/telemetry.mjs';
-
-// Standard ZYX Tait-Bryan extraction. Labeled "approx" throughout because we haven't confirmed
-// which axis of the gimbal's own quaternion frame maps to which real-world pitch/yaw/roll —
-// treat this as a relative-change indicator, not a calibrated attitude readout.
-function quatToEulerDeg([x, y, z, w]) {
-  const sinrCosp = 2 * (w * x + y * z);
-  const cosrCosp = 1 - 2 * (x * x + y * y);
-  const roll = Math.atan2(sinrCosp, cosrCosp);
-
-  const sinp = 2 * (w * y - z * x);
-  const pitch = Math.abs(sinp) >= 1 ? Math.sign(sinp) * (Math.PI / 2) : Math.asin(sinp);
-
-  const sinyCosp = 2 * (w * z + x * y);
-  const cosyCosp = 1 - 2 * (y * y + z * z);
-  const yaw = Math.atan2(sinyCosp, cosyCosp);
-
-  const toDeg = (r) => (r * 180) / Math.PI;
-  return { roll: toDeg(roll), pitch: toDeg(pitch), yaw: toDeg(yaw) };
-}
+import { quaternionDelta, quatToEulerDeg } from '../protocol/telemetry.mjs';
 
 export function attachOrientationReadout(container) {
   const eulerEl = document.createElement('div');

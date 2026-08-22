@@ -173,13 +173,16 @@ function createMcpServer() {
     {
       title: 'Recenter gimbal',
       description:
-        'MEDIUM CONFIDENCE: ask the gimbal to move to angle (0,0,0), as a recenter proxy. Not a verified dedicated recenter opcode. Community research on a related Osmo model reports gimbal-motion commands may be silently ignored over BLE-only (possibly requiring an active WiFi/stream session) — treat this as the first thing to test to find out whether motion control works at all on this device.',
-      inputSchema: { durationSeconds: z.number().min(0.1).max(10).optional().describe('Move duration in seconds (default 1)') },
+        'Recenter via the same closed-loop positioning as gimbal_move_to (targets yaw=0, pitch=0 in the approximate Euler decomposition of the live quaternion) — the dedicated recenter/absolute-angle opcodes were both either unverified or, in the absolute-angle case, confirmed non-functional on this hardware (2026-08-21). Caveat: "0,0" here is wherever this device\'s quaternion frame reads as zero, which is not independently confirmed to be the true mechanical center.',
+      inputSchema: {
+        toleranceDeg: z.number().min(0.5).max(20).optional().describe('Convergence deadband in degrees (default 3)'),
+        speedDegPerSec: z.number().min(5).max(60).optional().describe('Correction speed while error exceeds tolerance (default 25)'),
+      },
     },
-    async ({ durationSeconds }) => {
+    async ({ toleranceDeg, speedDegPerSec }) => {
       try {
-        const result = await backendFetch('/api/command', { method: 'POST', body: { type: 'recenter', params: { durationSeconds: durationSeconds ?? 1 } } });
-        return textResult({ sent: true, ...result });
+        const result = await backendFetch('/api/move-to', { method: 'POST', body: { yawDeg: 0, pitchDeg: 0, toleranceDeg, speedDegPerSec } });
+        return textResult(result);
       } catch (err) {
         return errorResult(err);
       }
@@ -210,17 +213,16 @@ function createMcpServer() {
     {
       title: 'Sweep gimbal across a yaw range',
       description:
-        'MEDIUM CONFIDENCE, built on the same ABS_ANGLE primitive as gimbal_recenter: step the gimbal yaw from startYawDeg to endYawDeg in stepDeg increments, dwelling dwellMs at each step before moving on — intended for driving a phone mounted in the gimbal through a scan sweep (e.g. for CI-Spatial\'s room scanner, which auto-captures purely off the phone\'s own tracked movement/rotation, so no separate signal into the scanner client is needed beyond physically moving it). Set dwellMs comfortably above the scanner client\'s auto-capture interval (check its config; ~2.5s+ is a safe starting point) so each step actually registers as a new capture rather than motion blur. Capped at 60 steps per call — narrow the range or increase stepDeg for a coarser sweep, or issue multiple calls for a longer one. For interleaving a photo capture between steps yourself, use gimbal_move_to instead.',
+        'MEDIUM CONFIDENCE — step the gimbal yaw from startYawDeg to endYawDeg in stepDeg increments using the same closed-loop positioning as gimbal_move_to (the absolute-angle opcode this used to rely on is confirmed non-functional on this hardware), dwelling dwellMs at each step before moving on — intended for driving a phone mounted in the gimbal through a scan sweep (e.g. for CI-Spatial\'s room scanner, which auto-captures purely off the phone\'s own tracked movement/rotation). Set dwellMs comfortably above the scanner client\'s auto-capture interval (~2.5s+) so each step actually registers as a new capture rather than motion blur. Capped at 60 steps per call. For interleaving a photo capture between steps yourself, use gimbal_move_to instead.',
       inputSchema: {
         startYawDeg: z.number().min(-160).max(160),
         endYawDeg: z.number().min(-160).max(160),
         stepDeg: z.number().min(1).max(90).optional().describe('Degrees per step (default 15)'),
-        dwellMs: z.number().int().min(200).max(30000).optional().describe('Milliseconds to hold/settle at each step before capturing orientation and moving on (default 3000)'),
+        dwellMs: z.number().int().min(200).max(30000).optional().describe('Extra milliseconds to hold at each step after convergence, before moving on (default 3000)'),
         pitchDeg: z.number().min(-60).max(60).optional().describe('Constant pitch to hold throughout the sweep (default 0)'),
-        moveDurationSeconds: z.number().min(0.1).max(5).optional().describe('Commanded move duration per step, passed to the gimbal (default 1)'),
       },
     },
-    async ({ startYawDeg, endYawDeg, stepDeg, dwellMs, pitchDeg, moveDurationSeconds }) => {
+    async ({ startYawDeg, endYawDeg, stepDeg, dwellMs, pitchDeg }) => {
       try {
         const step = stepDeg ?? 15;
         const dwell = dwellMs ?? 3000;
@@ -233,15 +235,12 @@ function createMcpServer() {
         const results = [];
         for (let i = 0; i < count; i++) {
           const yawDeg = i === count - 1 ? endYawDeg : startYawDeg + direction * step * i;
-          const probe = await backendFetch('/api/test/command-probe', {
+          const moveResult = await backendFetch('/api/move-to', {
             method: 'POST',
-            body: {
-              type: 'absoluteAngle',
-              params: { yawDeg, pitchDeg: pitchDeg ?? 0, durationSeconds: moveDurationSeconds ?? 1 },
-              waitMs: dwell,
-            },
+            body: { yawDeg, pitchDeg: pitchDeg ?? 0 },
           });
-          results.push({ step: i, yawDeg, quaternionAfterDwell: probe.after });
+          await new Promise((resolve) => setTimeout(resolve, dwell));
+          results.push({ step: i, yawDeg, ...moveResult });
         }
         return textResult({ stepsSent: results.length, results });
       } catch (err) {
@@ -253,27 +252,24 @@ function createMcpServer() {
   server.registerTool(
     'gimbal_move_to',
     {
-      title: 'Move gimbal to an absolute angle and verify',
+      title: 'Move gimbal to an absolute angle (closed-loop)',
       description:
-        'Move to a single absolute (yawDeg, pitchDeg), dwell dwellMs to let motion settle, and report the orientation quaternion before/after plus a delta-based moved verdict — the single-step primitive behind gimbal_sweep, exposed on its own so a caller can interleave something else (e.g. a photo-capture tool call on a different MCP server) between steps of a multi-position scan (see plan_scan_grid for computing the target grid). Axis mapping was corrected and live-verified via the joystick on 2026-08-21 (see protocol/commands.mjs).',
+        'Move to a single absolute (yawDeg, pitchDeg) using closed-loop speed control driven by live quaternion feedback, not the absolute-angle opcode — that opcode (cmdId 0x14) was live-tested 2026-08-21 and confirmed to do nothing on this hardware, likely because our guessed payload struct never matched DJI\'s real (larger) angle-set structs. This is the single-step primitive behind gimbal_sweep, exposed on its own so a caller can interleave something else (e.g. a photo-capture tool call on a different MCP server) between steps of a multi-position scan (see plan_scan_grid). Returns {converged, timedOut, ticks, finalYaw, finalPitch, history} — check `converged` before assuming the position was actually reached; the yaw/pitch mapping used for feedback is an approximate Euler decomposition, not a calibrated attitude readout, so treat "close enough within toleranceDeg" as the real contract, not exact degrees.',
       inputSchema: {
         yawDeg: z.number().min(-160).max(160).optional().describe('Target yaw in degrees (default 0)'),
         pitchDeg: z.number().min(-60).max(60).optional().describe('Target pitch in degrees (default 0)'),
-        dwellMs: z.number().int().min(200).max(30000).optional().describe('Milliseconds to hold/settle before sampling orientation (default 2000)'),
-        moveDurationSeconds: z.number().min(0.1).max(5).optional().describe('Commanded move duration, passed to the gimbal (default 1)'),
+        toleranceDeg: z.number().min(0.5).max(20).optional().describe('Convergence deadband in degrees (default 3)'),
+        speedDegPerSec: z.number().min(5).max(60).optional().describe('Correction speed while error exceeds tolerance (default 25)'),
+        maxMs: z.number().int().min(1000).max(30000).optional().describe('Give up and report timedOut if not converged by then (default 8000)'),
       },
     },
-    async ({ yawDeg, pitchDeg, dwellMs, moveDurationSeconds }) => {
+    async ({ yawDeg, pitchDeg, toleranceDeg, speedDegPerSec, maxMs }) => {
       try {
-        const probe = await backendFetch('/api/test/command-probe', {
+        const result = await backendFetch('/api/move-to', {
           method: 'POST',
-          body: {
-            type: 'absoluteAngle',
-            params: { yawDeg: yawDeg ?? 0, pitchDeg: pitchDeg ?? 0, durationSeconds: moveDurationSeconds ?? 1 },
-            waitMs: dwellMs ?? 2000,
-          },
+          body: { yawDeg: yawDeg ?? 0, pitchDeg: pitchDeg ?? 0, toleranceDeg, speedDegPerSec, maxMs },
         });
-        return textResult({ yawDeg: yawDeg ?? 0, pitchDeg: pitchDeg ?? 0, ...probe });
+        return textResult(result);
       } catch (err) {
         return errorResult(err);
       }
