@@ -426,8 +426,6 @@ async function uploadToServer(
       roomId: scanEntry?.roomId ?? null,
       projectTransform: scanEntry?.calibration?.sessionToProject ?? null,
       calibrationMethod: scanEntry?.calibration?.method ?? null,
-      calibrationResidualM: scanEntry?.calibration?.residualM ?? null,
-      calibrationToleranceM: scanEntry?.calibration?.toleranceM ?? null,
       calibrationStatus: scanEntry?.calibration?.status ?? 'uncalibrated',
       calibration: scanEntry?.calibration ?? null,
       autoSaved,

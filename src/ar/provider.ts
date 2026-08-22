@@ -1,3 +1,5 @@
+import type * as THREE from 'three'
+
 /** 6-DoF camera pose from the AR runtime */
 export interface Pose {
   position: { x: number; y: number; z: number }
@@ -73,4 +75,13 @@ export interface ARProvider {
    * Viewport aspect ratio (width / height) at the time XR was started.
    */
   getCameraAspect(): number
+
+  /**
+   * A live, world-locked Three.js scene the caller can add/remove objects to
+   * (e.g. the calibration decal) — null until start() has set one up, and
+   * only implemented by providers that maintain a Three.js scene graph
+   * (both WebXRProvider and EighthWallProvider do; a provider without one
+   * simply omits this method).
+   */
+  getScene?(): THREE.Scene | null
 }

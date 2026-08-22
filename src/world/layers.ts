@@ -12,6 +12,7 @@ export const LAYER_ORDER: LayerType[] = [
   'depth',
   'semanticMasks',
   'splat',
+  'anchor',
 ]
 
 export const LAYER_LABELS: Record<LayerType, string> = {
@@ -26,6 +27,7 @@ export const LAYER_LABELS: Record<LayerType, string> = {
   depth: 'Depth',
   splat: 'Gaussian splat',
   semanticMasks: 'Semantic masks',
+  anchor: 'Calibration anchors',
 }
 
 export function defaultLayerIndex(meta: Record<string, unknown>): LayerManifest[] {
@@ -43,11 +45,14 @@ export function defaultLayerIndex(meta: Record<string, unknown>): LayerManifest[
       || type === 'cameraPath'
     const hasFrames = (type === 'rgbFrames' || type === 'cameraFrustums') && (keyframeCount ?? 0) > 0
     const future = !hasFrames && (type === 'rgbFrames' || type === 'depth' || type === 'splat' || type === 'semanticMasks')
+    // Anchors are a deliberate opt-in aid, not core scan geometry — default off so
+    // they don't clutter every scan view the way point clouds do.
+    const visibleByDefault = type === 'anchor' ? false : !future
     return {
       id: `layer-${type}`,
       type,
       label: LAYER_LABELS[type],
-      visibleByDefault: !future,
+      visibleByDefault,
       encodedInGlb,
       source: hasFrames ? 'sidecar' : future ? 'future' : encodedInGlb ? 'glb' : 'derived',
       count: layerCount(type, pointCount, detectionCount, poseCount, keyframeCount),
