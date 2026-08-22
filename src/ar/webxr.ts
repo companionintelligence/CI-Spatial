@@ -283,14 +283,20 @@ export class WebXRProvider implements ARProvider {
   stop(): void {
     this.renderer?.setAnimationLoop(null)
     for (const source of this.hitTestSources) source.cancel()
-    this.session?.end()
-    this.videoStream?.getTracks().forEach((t) => t.stop())
+    const renderer = this.renderer
     // start() creates a fresh WebGLRenderer against the same canvas/context
     // on every call (getContext() returns the same WebGL2RenderingContext for
     // a given canvas), so an undisposed renderer's compiled programs and
     // buffers pile up in that shared context across repeated start()/stop()
-    // cycles in one page lifetime instead of being freed.
-    this.renderer?.dispose()
+    // cycles in one page lifetime instead of being freed. Disposed once
+    // end() settles (not synchronously here) so the compositor has actually
+    // released the session before its GPU resources are torn down — end()'s
+    // rejection (e.g. a session already ending elsewhere) is swallowed since
+    // teardown should proceed regardless of how it settles.
+    const endPromise = this.session?.end().catch(() => {})
+    if (endPromise) void endPromise.then(() => renderer?.dispose())
+    else renderer?.dispose()
+    this.videoStream?.getTracks().forEach((t) => t.stop())
     this.session = null
     this.hitTestSources = []
     this.hitTestGridState = 'idle'

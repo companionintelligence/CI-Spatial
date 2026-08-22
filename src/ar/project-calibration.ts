@@ -87,7 +87,10 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
     skip.addEventListener('click', () => close(null))
 
     const placeAt = (x: number, y: number) => {
-      if (x < 0 || x > 1 || y < 0 || y > 1) return
+      // A zero-size canvas (rect.width/height === 0, e.g. mid-layout) turns
+      // the caller's division into NaN, which every comparison below would
+      // silently let through as "in range" — reject non-finite values first.
+      if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1) return
 
       tapInFlight = true
       status.textContent = 'Placing anchor…'
