@@ -10,6 +10,7 @@ export type LayerType =
   | 'depth'
   | 'splat'
   | 'semanticMasks'
+  | 'anchor'
 
 /**
  * Capabilities for a shared Place workspace. `commenter` can inspect a place
@@ -107,26 +108,51 @@ export interface Project {
 /** `Project` is the durable API/storage name; the product calls it a Place. */
 export type Place = Project
 
-export interface ProjectSpatialFrame {
-  version: 1
-  method: 'raycast-reference-triangle'
-  /** Pairwise distances origin→X, origin→plane, X→plane in metres. */
-  referenceDistancesM: [number, number, number]
-  referenceLabels: [string, string, string]
-  toleranceM: number
-  createdAt: string
-}
+/**
+ * A Place's durable reference for aligning every AR session to the same
+ * physical origin. Discriminated on `method` — `'raycast-reference-triangle'`
+ * is the original 3-point system (kept for backward compatibility with
+ * existing Places; old stored records already satisfy this variant as-is,
+ * no migration needed). `'ground-tap-compass'` is the one-tap replacement:
+ * a single hit-tested ground point plus a compass bearing sampled at tap
+ * time, with no second/third reference point to validate distances against.
+ */
+export type ProjectSpatialFrame =
+  | {
+      version: 1
+      method: 'raycast-reference-triangle'
+      /** Pairwise distances origin→X, origin→plane, X→plane in metres. */
+      referenceDistancesM: [number, number, number]
+      referenceLabels: [string, string, string]
+      toleranceM: number
+      createdAt: string
+    }
+  | {
+      version: 1
+      method: 'ground-tap-compass'
+      /** True-north bearing sampled at tap time, or null if the compass was unavailable. */
+      anchorBearingDeg: number | null
+      createdAt: string
+    }
 
-export interface ScanCalibration {
-  method: 'raycast-reference-triangle'
-  /** Matrix that maps the current AR session's local coordinates into project space. */
-  sessionToProject: number[]
-  referenceDistancesM: [number, number, number]
-  residualM: number
-  toleranceM: number
-  calibratedAt: string
-  status: 'verified' | 'provisional' | 'uncalibrated'
-}
+export type ScanCalibration =
+  | {
+      method: 'raycast-reference-triangle'
+      /** Matrix that maps the current AR session's local coordinates into project space. */
+      sessionToProject: number[]
+      referenceDistancesM: [number, number, number]
+      residualM: number
+      toleranceM: number
+      calibratedAt: string
+      status: 'verified' | 'provisional' | 'uncalibrated'
+    }
+  | {
+      method: 'ground-tap-compass'
+      sessionToProject: number[]
+      anchorBearingDeg: number | null
+      calibratedAt: string
+      status: 'verified' | 'provisional' | 'uncalibrated'
+    }
 
 export interface ScanEntryQualitySummary {
   coverageScore: number
@@ -284,6 +310,11 @@ export interface ScanManifest {
   accuracyM: number | null
   geoDistanceM: number | null
   geoOutlier?: boolean
+  /** Already written into the upload sidecar (src/export/gltf.ts) but not
+   *  previously surfaced back out — lets the editor know whether this scan's
+   *  local origin is a real marked physical point worth rendering an anchor for. */
+  calibrationMethod?: ScanCalibration['method']
+  calibrationStatus?: ScanCalibration['status']
   capturedAt: string | null
   pointCount: number | null
   detectionCount: number | null

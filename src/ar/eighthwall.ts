@@ -9,7 +9,16 @@
  *
  * The XR8 global is populated by the script above.  We listen for the
  * 'xrloaded' event before calling start().
+ *
+ * Also loads XR8.Threejs.pipelineModule() alongside the SLAM/camera-feed
+ * modules — not for scene rendering (GlTextureRenderer already draws the
+ * camera feed directly to canvas), but to get a live, world-locked
+ * THREE.Scene (via getScene()) that the calibration decal can be added to.
+ * This exact combination (GlTextureRenderer + Threejs together) is proven
+ * working in ar-hittest-sphere.html, the diagnostic this provider's
+ * hit-test path was originally cross-checked against.
  */
+import * as THREE from 'three'
 import type { ARProvider, HitResult, Pose, RawFrame } from './provider'
 
 type Point3 = { x: number; y: number; z: number }
@@ -25,6 +34,10 @@ declare const XR8: {
   stop(): void
   loadChunk(name: string): Promise<void>
   GlTextureRenderer: { pipelineModule(): object }
+  Threejs: {
+    pipelineModule(): object
+    xrScene(): { scene: THREE.Scene; camera: THREE.Camera; renderer: THREE.WebGLRenderer }
+  }
   XrController: {
     pipelineModule(): object
     hitTest(
@@ -163,6 +176,7 @@ export class EighthWallProvider implements ARProvider {
     rotation: { x: 0, y: 0, z: 0, w: 1 },
   }
   private _slamReady = false
+  private _scene: THREE.Scene | null = null
   private _latestWorldPoints: Array<{ x: number; y: number; z: number }> = []
   private _lastTrackingStatus = ''
   private _diagLogged = false
@@ -231,10 +245,19 @@ export class EighthWallProvider implements ARProvider {
 
     XR8.addCameraPipelineModules([
       XR8.GlTextureRenderer.pipelineModule(), // draws camera feed to canvas
+      XR8.Threejs.pipelineModule(), // world-locked scene for the calibration decal
       XR8.XrController.pipelineModule(), // enables SLAM 6-DoF tracking + pose
       XR8.CameraPixelArray.pipelineModule({ luminance: false }), // RGBA pixel array
       {
         name: 'ci-scan-capture',
+
+        // xrScene() is only available once the Threejs pipeline module's own
+        // onStart has run (it creates the scene/camera/renderer) — module
+        // onStart hooks fire in array order above, so Threejs's has already
+        // run by the time this one does.
+        onStart() {
+          self._scene = XR8.Threejs.xrScene().scene
+        },
 
         // onUpdate runs AFTER all module onProcessCpu hooks, so processCpuResult
         // is fully populated (XrController has written its reality pose into it).
@@ -304,6 +327,11 @@ export class EighthWallProvider implements ARProvider {
 
   stop(): void {
     XR8.stop()
+    this._scene = null
+  }
+
+  getScene(): THREE.Scene | null {
+    return this._scene
   }
 
   captureFrame(timeoutMs = 4000): Promise<RawFrame> {

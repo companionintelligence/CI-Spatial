@@ -33,6 +33,7 @@ import {
 } from './quality-tier'
 import { distanceM, enuToGeo, hasGeoPose, matrixTranslation } from '../world/geo'
 import { LAYER_LABELS, LAYER_ORDER } from '../world/layers'
+import { buildAnchorMarker } from '../world/anchor-marker'
 import { registerPWA } from '../pwa'
 import { iconLabel } from '../ui/icons'
 import { EVENT } from '../shared/events'
@@ -1321,6 +1322,7 @@ function integrateScanRoot(scan: ScanManifest, root: THREE.Group): void {
   const points = collectPoints(root)
   addDerivedCameraLayers(root, scan, layerNodes)
   buildDetectionBounds(root, scan.scanId, layerNodes)
+  addAnchorMarker(root, scan, layerNodes)
   createSemanticLabels(root, scan.scanId)
 
   worldGroup.add(root)
@@ -1634,6 +1636,34 @@ function createCameraFrustumMesh(size: number, depth: number): THREE.LineSegment
   const frustum = new THREE.LineSegments(geometry, cameraFrustumMaterial.clone())
   frustum.name = 'camera frustum'
   return frustum
+}
+
+/**
+ * Adds a calibration-anchor marker for scans with a real calibration — a
+ * GPS-only-placed scan's local origin is just wherever AR tracking booted,
+ * not a marked physical point, so rendering a decal there would mislead.
+ *
+ * The marker sits at local (0,0,0) — the invariant every calibration method
+ * (old 3-point, new one-tap) shares, since the calibrated reference always
+ * maps to project-space zero. Positioning comes for free from being a child
+ * of the scan root, which already carries scan.localToWorld.
+ *
+ * No bearing is passed here (unlike the live capture-side decal): the whole
+ * root's own rotation may come from either calibration method or a
+ * gizmo-drag override, so there's no single "true north" axis to derive
+ * from it after the fact — the ring+crosshair alone marks the anchor point;
+ * the north tick is a live-capture-only refinement.
+ */
+function addAnchorMarker(
+  root: THREE.Object3D,
+  scan: ScanManifest,
+  layers: Map<LayerType, Set<THREE.Object3D>>,
+): void {
+  if (!scan.calibrationStatus || scan.calibrationStatus === 'uncalibrated') return
+  const marker = buildAnchorMarker()
+  marker.userData['scanId'] = scan.scanId
+  root.add(marker)
+  addLayerNode(layers, 'anchor', marker)
 }
 
 function buildDetectionBounds(

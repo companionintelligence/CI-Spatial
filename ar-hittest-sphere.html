@@ -10,12 +10,15 @@
       Scan app. Purpose: confirm camera passthrough + XrController.hitTest()
       work on this device/build before trusting the full scanner.
 
-      Deliberately loads the CURRENT engine from the CDN rather than this repo's
-      vendored public/xr.js — that vendored file is missing XrController.hitTest
-      entirely (confirmed by byte search: no "hitTest" string anywhere in it),
-      even though src/ar/eighthwall.ts:276 already calls it. This page exists
-      partly to prove the CDN build works so the vendored-file staleness is
-      isolated as the cause, not something else.
+      Loads the same @8thwall/engine-binary@1 CDN build public/xr.js is
+      vendored from — a byte-for-byte md5 comparison confirmed the two are
+      identical, so this page is not compensating for a stale vendored file
+      (an earlier version of this comment claimed the vendored file was
+      missing XrController.hitTest entirely; that was wrong — a literal
+      "hitTest" string search doesn't work on a minified bundle in the first
+      place, for either copy). This page's real value is isolating the SLAM
+      engine from the rest of the app for on-device debugging, not chasing a
+      version mismatch.
     -->
     <script src="https://cdn.jsdelivr.net/npm/@8thwall/engine-binary@1/dist/xr.js" async crossorigin="anonymous" data-preload-chunks="slam"></script>
     <script src="https://cdn.jsdelivr.net/npm/@8thwall/xrextras@1/dist/xrextras.js" crossorigin="anonymous"></script>

@@ -5,7 +5,17 @@
  * Camera images are captured via a companion getUserMedia() video stream since
  * raw XR camera access (camera-access feature) isn't widely supported yet.
  * Hit-testing uses the WebXR hit-test API.
+ *
+ * A THREE.WebGLRenderer is bound to the session's own WebGL2 context so the
+ * calibration decal (and anything else world-locked) can render on top of
+ * the passthrough — via renderer.xr.setSession(), not hand-rolled framebuffer
+ * binding, so Three.js's own well-tested XR machinery owns the frame loop,
+ * viewport, and XRWebGLLayer wiring instead of us re-deriving it. This is
+ * the less-proven half of the calibration-decal work (the 8th Wall side has
+ * a working in-repo reference; this doesn't) — needs verification on a real
+ * WebXR device, not just review.
  */
+import * as THREE from 'three'
 import type { ARProvider, HitResult, Pose, RawFrame } from './provider'
 import { DEFAULT_GRID_SIZE, DEFAULT_INTERVAL_MS as SCAN_INTERVAL_MS } from './scanner'
 
@@ -53,7 +63,9 @@ export class WebXRProvider implements ARProvider {
     position: { x: 0, y: 0, z: 0 },
     rotation: { x: 0, y: 0, z: 0, w: 1 },
   }
-  private animFrameId: number | null = null
+  private renderer: THREE.WebGLRenderer | null = null
+  private scene: THREE.Scene | null = null
+  private decalCamera: THREE.PerspectiveCamera | null = null
   /**
    * Surface points sampled from the probe grid each frame, as a flat xyz ring
    * buffer. A plain array of {x,y,z} allocated up to 36 objects per frame
@@ -107,7 +119,15 @@ export class WebXRProvider implements ARProvider {
     }
 
     const gl = canvas.getContext('webgl2', { xrCompatible: true }) as WebGL2RenderingContext
-    await this.session.updateRenderState({ baseLayer: new XRWebGLLayer(this.session, gl) })
+
+    // renderer.xr.setSession() below creates and installs its own XRWebGLLayer
+    // via session.updateRenderState() internally — no separate call needed here.
+    this.renderer = new THREE.WebGLRenderer({ context: gl, canvas })
+    this.renderer.autoClear = false // never blank the camera passthrough
+    this.renderer.xr.enabled = true
+    await this.renderer.xr.setSession(this.session)
+    this.scene = new THREE.Scene()
+    this.decalCamera = new THREE.PerspectiveCamera()
 
     const [localFloor, viewer] = await Promise.all([
       this.session.requestReferenceSpace('local-floor').catch(() =>
@@ -128,11 +148,14 @@ export class WebXRProvider implements ARProvider {
       this.hitTestGridState = 'failed'
     }
 
-    // Main XR frame loop
+    // Main XR frame loop — driven by renderer.setAnimationLoop() below, not a
+    // self-recursing session.requestAnimationFrame() call: Three.js's
+    // WebXRManager owns re-invoking this every frame once it's registered,
+    // and still passes through the real (time, XRFrame) pair untouched, so
+    // everything below reads exactly as it did before the Three.js renderer
+    // was introduced.
     const self = this
     function onXRFrame(time: number, frame: XRFrame) {
-      self.animFrameId = self.session!.requestAnimationFrame(onXRFrame)
-
       // Update pose
       const viewerPose = frame.getViewerPose(self.refSpace!)
       if (viewerPose) {
@@ -207,16 +230,28 @@ export class WebXRProvider implements ARProvider {
           pending.resolve(frame_)
         })
       }
+
+      // Render the calibration decal (and anything else added to self.scene)
+      // on top of the passthrough. By the time Three's setAnimationLoop calls
+      // this callback, its WebXRManager has already bound the right XR
+      // framebuffer/viewport for this frame — camera pose/projection are set
+      // directly from the same per-view data above rather than going through
+      // renderer.xr.getCamera(), so this has no dependency on refSpace beyond
+      // what pose tracking already needed.
+      if (self.scene && self.renderer && self.decalCamera && viewerPose && viewerPose.views.length > 0) {
+        const view = viewerPose.views[0]!
+        self.decalCamera.matrix.fromArray(view.transform.matrix)
+        self.decalCamera.matrix.decompose(self.decalCamera.position, self.decalCamera.quaternion, self.decalCamera.scale)
+        self.decalCamera.projectionMatrix.fromArray(view.projectionMatrix)
+        self.renderer.render(self.scene, self.decalCamera)
+      }
     }
 
-    this.animFrameId = this.session.requestAnimationFrame(onXRFrame)
+    this.renderer.setAnimationLoop(onXRFrame)
   }
 
   stop(): void {
-    // XRSession frames are cancelled through the session, not window rAF —
-    // and before end(), which disposes it.
-    if (this.animFrameId != null) this.session?.cancelAnimationFrame(this.animFrameId)
-    this.animFrameId = null
+    this.renderer?.setAnimationLoop(null)
     for (const source of this.hitTestSources) source.cancel()
     this.session?.end()
     this.videoStream?.getTracks().forEach((t) => t.stop())
@@ -230,6 +265,13 @@ export class WebXRProvider implements ARProvider {
     this._hitCount = 0
     this.videoStream = null
     this.viewerSpace = null
+    this.renderer = null
+    this.scene = null
+    this.decalCamera = null
+  }
+
+  getScene(): THREE.Scene | null {
+    return this.scene
   }
 
   captureFrame(timeoutMs = 4000): Promise<RawFrame> {
