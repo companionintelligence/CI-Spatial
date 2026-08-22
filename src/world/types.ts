@@ -110,49 +110,28 @@ export type Place = Project
 
 /**
  * A Place's durable reference for aligning every AR session to the same
- * physical origin. Discriminated on `method` — `'raycast-reference-triangle'`
- * is the original 3-point system (kept for backward compatibility with
- * existing Places; old stored records already satisfy this variant as-is,
- * no migration needed). `'ground-tap-compass'` is the one-tap replacement:
- * a single hit-tested ground point plus a compass bearing sampled at tap
- * time, with no second/third reference point to validate distances against.
+ * physical origin: a single hit-tested ground point plus a compass bearing
+ * sampled at tap time. Replaced the original 3-point reference-triangle
+ * system (which had no live callers left in the app and no persisted data
+ * depending on it, so it was removed outright rather than kept as a second
+ * variant).
  */
-export type ProjectSpatialFrame =
-  | {
-      version: 1
-      method: 'raycast-reference-triangle'
-      /** Pairwise distances origin→X, origin→plane, X→plane in metres. */
-      referenceDistancesM: [number, number, number]
-      referenceLabels: [string, string, string]
-      toleranceM: number
-      createdAt: string
-    }
-  | {
-      version: 1
-      method: 'ground-tap-compass'
-      /** True-north bearing sampled at tap time, or null if the compass was unavailable. */
-      anchorBearingDeg: number | null
-      createdAt: string
-    }
+export interface ProjectSpatialFrame {
+  version: 1
+  method: 'ground-tap-compass'
+  /** True-north bearing sampled at tap time, or null if the compass was unavailable. */
+  anchorBearingDeg: number | null
+  createdAt: string
+}
 
-export type ScanCalibration =
-  | {
-      method: 'raycast-reference-triangle'
-      /** Matrix that maps the current AR session's local coordinates into project space. */
-      sessionToProject: number[]
-      referenceDistancesM: [number, number, number]
-      residualM: number
-      toleranceM: number
-      calibratedAt: string
-      status: 'verified' | 'provisional' | 'uncalibrated'
-    }
-  | {
-      method: 'ground-tap-compass'
-      sessionToProject: number[]
-      anchorBearingDeg: number | null
-      calibratedAt: string
-      status: 'verified' | 'provisional' | 'uncalibrated'
-    }
+export interface ScanCalibration {
+  method: 'ground-tap-compass'
+  /** Matrix that maps the current AR session's local coordinates into project space. */
+  sessionToProject: number[]
+  anchorBearingDeg: number | null
+  calibratedAt: string
+  status: 'verified' | 'provisional' | 'uncalibrated'
+}
 
 export interface ScanEntryQualitySummary {
   coverageScore: number
