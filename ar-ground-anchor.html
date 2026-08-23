@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+    <title>8th Wall diagnostic: ground anchor</title>
+
+    <!--
+      Minimal, standalone 8th Wall diagnostic — isolated from the full Companion
+      Scan app, same pattern as ar-hittest-sphere.html. Purpose: confirm ground/
+      floor detection and anchor placement work on this device/build before
+      trusting a full ground-anchoring feature.
+
+      Modeled on 8th Wall's official "placeground" example
+      (https://github.com/8thwall/web/tree/master/examples/threejs/placeground):
+      a shadow-catching ground plane, tap-to-place, and a pop-in scale animation.
+      One deliberate departure — placeground assumes the ground sits at a fixed
+      world Y=0; this page instead *discovers* the floor height from a downward-
+      biased grid of live XrController.hitTest() feature points, since proving
+      that discovery works is the actual point of this test.
+
+      Loads the CURRENT engine from the CDN rather than this repo's vendored
+      public/xr.js, matching ar-hittest-sphere.html's rationale (the vendored
+      build is missing XrController.hitTest entirely).
+    -->
+    <script src="https://cdn.jsdelivr.net/npm/@8thwall/engine-binary@1/dist/xr.js" async crossorigin="anonymous" data-preload-chunks="slam"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@8thwall/xrextras@1/dist/xrextras.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@8thwall/landing-page@1/dist/landing-page.js" crossorigin="anonymous"></script>
+
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+      #camerafeed { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
+      #hud {
+        position: absolute; top: 0; left: 0; right: 0; z-index: 10;
+        font: 12px/1.5 ui-monospace, monospace; color: #0f0;
+        background: rgba(0,0,0,.55); padding: 8px 10px; white-space: pre;
+        pointer-events: none;
+      }
+      #hint {
+        position: absolute; bottom: 24px; left: 0; right: 0; z-index: 10;
+        text-align: center; font: 14px/1.4 ui-monospace, monospace; color: #fff;
+        text-shadow: 0 1px 3px #000; pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="camerafeed"></canvas>
+    <div id="hud">booting…</div>
+    <div id="hint">tap the floor to place an anchor · 2-finger tap to recenter</div>
+
+    <script type="module">
+      import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.183.0/build/three.module.js'
+      window.THREE = THREE
+
+      // Shared across every placed anchor — a fresh geometry/material per tap
+      // leaks GPU/CPU memory over a long diagnostic session.
+      const RING_GEOMETRY = new THREE.TorusGeometry(0.09, 0.006, 8, 32)
+      const RING_MATERIAL = new THREE.MeshStandardMaterial({ color: 0x22c3e6, emissive: 0x0a4a55 })
+      const STEM_GEOMETRY = new THREE.CylinderGeometry(0.008, 0.008, 0.14, 8)
+      const STEM_MATERIAL = new THREE.MeshStandardMaterial({ color: 0xffffff })
+      const FLAG_GEOMETRY = new THREE.ConeGeometry(0.035, 0.07, 12)
+      const FLAG_MATERIAL = new THREE.MeshStandardMaterial({ color: 0xff5533, emissive: 0x551100 })
+
+      // Downward-biased so probes land on the floor when the phone is held
+      // normally, rather than straight ahead at the horizon.
+      const GROUND_PROBE_POINTS = [
+        [0.2, 0.6], [0.4, 0.6], [0.6, 0.6], [0.8, 0.6],
+        [0.2, 0.75], [0.4, 0.75], [0.6, 0.75], [0.8, 0.75],
+        [0.3, 0.9], [0.5, 0.9], [0.7, 0.9],
+      ]
+      const GROUND_SAMPLE_INTERVAL_MS = 350
+      const MAX_GROUND_SAMPLES = 40
+      const MIN_SAMPLES_FOR_ESTIMATE = 10
+      const GROUND_EMA_ALPHA = 0.25
+      const GROUND_LOCK_TOLERANCE_M = 0.03
+      const GROUND_UNLOCK_TOLERANCE_M = 0.15
+      const MAX_RECENT_CANDIDATES = 6
+
+      // Matches the finite-check src/ar/eighthwall.ts applies to hit-test
+      // results before trusting them (position can be missing/NaN/Infinity).
+      function isFiniteVec3(p) {
+        return !!p && Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z)
+      }
+
+      function lowPercentile(values, p) {
+        const sorted = [...values].sort((a, b) => a - b)
+        return sorted[Math.floor(p * (sorted.length - 1))]
+      }
+
+      function easeOutBack(t) {
+        const c1 = 1.70158
+        const c3 = c1 + 1
+        return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2)
+      }
+
+      // Debug state exposed for external polling (adb/CDP Runtime.evaluate,
+      // or a future ?debug=remote-style relay) — avoids relying on pixel
+      // comparison of a surface that may not screenshot reliably.
+      window.__arTestState = {
+        engineLoaded: false,
+        cameraRunning: false,
+        trackingStatus: 'UNKNOWN',
+        groundSampleCount: 0,
+        groundY: null,
+        groundLocked: false,
+        anchorCount: 0,
+        lastEvent: null,
+      }
+
+      const hud = document.getElementById('hud')
+      function renderHud() {
+        const s = window.__arTestState
+        hud.textContent =
+          `engine loaded: ${s.engineLoaded}\n` +
+          `camera running: ${s.cameraRunning}\n` +
+          `tracking: ${s.trackingStatus}\n` +
+          `ground samples: ${s.groundSampleCount}\n` +
+          `ground Y: ${s.groundY == null ? 'searching…' : s.groundY.toFixed(3) + 'm'}  locked: ${s.groundLocked}\n` +
+          `anchors placed: ${s.anchorCount}\n` +
+          `last: ${s.lastEvent ?? '—'}`
+      }
+      renderHud()
+
+      const initScenePipelineModule = () => {
+        const initXrScene = ({ scene, camera, renderer }) => {
+          renderer.shadowMap.enabled = true
+          renderer.shadowMap.type = THREE.PCFSoftShadowMap
+
+          const light = new THREE.DirectionalLight(0xffffff, 1.0)
+          light.position.set(2, 4, 1.5)
+          light.castShadow = true
+          light.shadow.mapSize.set(1024, 1024)
+          light.shadow.camera.near = 0.1
+          light.shadow.camera.far = 50
+          light.shadow.camera.left = -10
+          light.shadow.camera.right = 10
+          light.shadow.camera.top = 10
+          light.shadow.camera.bottom = -10
+          scene.add(light)
+          scene.add(new THREE.AmbientLight(0xffffff, 0.6))
+
+          camera.position.set(0, 1.6, 0)
+        }
+
+        // Created lazily on the first ground estimate rather than pinned at
+        // Y=0 from the start — showing a plane before we've actually found
+        // anything would misrepresent what this page is meant to prove.
+        let groundPlane = null
+        let groundGridHelper = null
+        function ensureGroundVisuals(scene, y) {
+          if (!groundPlane) {
+            groundPlane = new THREE.Mesh(
+              new THREE.PlaneGeometry(20, 20, 1, 1),
+              new THREE.ShadowMaterial({ opacity: 0.35 }),
+            )
+            groundPlane.rotation.x = -Math.PI / 2
+            groundPlane.receiveShadow = true
+            scene.add(groundPlane)
+
+            groundGridHelper = new THREE.GridHelper(20, 40, 0x22c3e6, 0x114455)
+            groundGridHelper.material.transparent = true
+            groundGridHelper.material.opacity = 0.35
+            scene.add(groundGridHelper)
+          }
+          groundPlane.position.y = y
+          groundGridHelper.position.y = y
+        }
+
+        const groundSamples = []
+        const recentCandidates = []
+
+        function sampleGround() {
+          for (const [x, y] of GROUND_PROBE_POINTS) {
+            let results
+            try {
+              results = XR8.XrController.hitTest(x, y, ['FEATURE_POINT'])
+            } catch {
+              continue // Intermittent WASM map miss — skip this probe
+            }
+            const hit = results && results[0]
+            if (hit && isFiniteVec3(hit.position)) {
+              groundSamples.push(hit.position.y)
+              if (groundSamples.length > MAX_GROUND_SAMPLES) groundSamples.shift()
+            }
+          }
+        }
+
+        // Floor height is estimated as a low percentile of recent probe
+        // samples (robust to the odd noisy outlier below the real floor),
+        // eased in, then frozen once it stops moving — "locked" is the
+        // page's pass signal that detection has converged.
+        function updateGroundEstimate(scene) {
+          if (groundSamples.length < MIN_SAMPLES_FOR_ESTIMATE) return
+
+          const candidate = lowPercentile(groundSamples, 0.1)
+          recentCandidates.push(candidate)
+          if (recentCandidates.length > MAX_RECENT_CANDIDATES) recentCandidates.shift()
+
+          const s = window.__arTestState
+          if (s.groundY == null) {
+            s.groundY = candidate
+          } else if (s.groundLocked) {
+            if (Math.abs(candidate - s.groundY) > GROUND_UNLOCK_TOLERANCE_M) {
+              s.groundLocked = false
+              s.groundY = candidate
+            }
+          } else {
+            s.groundY += (candidate - s.groundY) * GROUND_EMA_ALPHA
+            if (recentCandidates.length === MAX_RECENT_CANDIDATES) {
+              const spread = Math.max(...recentCandidates) - Math.min(...recentCandidates)
+              if (spread < GROUND_LOCK_TOLERANCE_M) s.groundLocked = true
+            }
+          }
+
+          s.groundSampleCount = groundSamples.length
+          ensureGroundVisuals(scene, s.groundY)
+          renderHud()
+        }
+
+        function placeAnchorAt(position) {
+          const { scene } = XR8.Threejs.xrScene()
+          const group = new THREE.Group()
+          const ring = new THREE.Mesh(RING_GEOMETRY, RING_MATERIAL)
+          ring.rotation.x = -Math.PI / 2
+          ring.position.y = 0.002
+          ring.receiveShadow = true
+          const stem = new THREE.Mesh(STEM_GEOMETRY, STEM_MATERIAL)
+          stem.position.y = 0.07
+          stem.castShadow = true
+          const flag = new THREE.Mesh(FLAG_GEOMETRY, FLAG_MATERIAL)
+          flag.position.y = 0.16
+          flag.castShadow = true
+          group.add(ring, stem, flag)
+
+          group.position.set(position.x, position.y, position.z)
+          group.rotation.y = Math.random() * Math.PI * 2
+          group.scale.setScalar(0.001)
+          scene.add(group)
+
+          const start = performance.now()
+          const durationMs = 650
+          function tick(now) {
+            const t = Math.min(1, (now - start) / durationMs)
+            group.scale.setScalar(Math.max(0.001, easeOutBack(t)))
+            if (t < 1) requestAnimationFrame(tick)
+          }
+          requestAnimationFrame(tick)
+
+          window.__arTestState.anchorCount++
+        }
+
+        // Grid probing needs a populated SLAM map or the WASM call can crash
+        // with an out-of-bounds memory access — same hazard src/ar/eighthwall.ts
+        // guards against in featurePoints(). Bail out until the first reality
+        // update arrives; the single tap hit-test below doesn't need this.
+        let slamReady = false
+        let lastGroundSampleAt = 0
+
+        return {
+          name: 'ground-anchor-scene',
+          onStart: ({ canvas }) => {
+            const { scene, camera, renderer } = XR8.Threejs.xrScene()
+            initXrScene({ scene, camera, renderer })
+
+            XR8.XrController.updateCameraProjectionMatrix({
+              origin: camera.position,
+              facing: camera.quaternion,
+            })
+
+            canvas.addEventListener('touchstart', (e) => {
+              e.preventDefault()
+              if (e.touches.length === 2) {
+                XR8.XrController.recenter()
+                window.__arTestState.lastEvent = 'recenter (2-finger tap)'
+                renderHud()
+                return
+              }
+              if (e.touches.length !== 1) return
+
+              const x = e.touches[0].clientX / window.innerWidth
+              const y = e.touches[0].clientY / window.innerHeight
+              const results = XR8.XrController.hitTest(x, y, ['FEATURE_POINT'])
+              const hit = results && results.length > 0 ? results[0] : null
+              const s = window.__arTestState
+              if (hit && isFiniteVec3(hit.position)) {
+                placeAnchorAt(hit.position)
+                const groundDelta = s.groundY == null ? null : Math.abs(hit.position.y - s.groundY)
+                s.lastEvent = `ANCHOR @ (${hit.position.x.toFixed(2)}, ${hit.position.y.toFixed(2)}, ${hit.position.z.toFixed(2)})` +
+                  (groundDelta == null ? '' : `  Δground=${groundDelta.toFixed(2)}m`)
+              } else {
+                s.lastEvent = `MISS @ (${x.toFixed(2)}, ${y.toFixed(2)})`
+              }
+              renderHud()
+            }, { passive: false })
+          },
+          onUpdate: ({ processCpuResult }) => {
+            const reality = processCpuResult && processCpuResult.reality
+            if (reality && reality.trackingStatus) {
+              slamReady = true
+              if (window.__arTestState.trackingStatus !== reality.trackingStatus) {
+                window.__arTestState.trackingStatus = reality.trackingStatus
+                renderHud()
+              }
+            }
+
+            if (!slamReady) return
+
+            const now = performance.now()
+            if (now - lastGroundSampleAt >= GROUND_SAMPLE_INTERVAL_MS) {
+              lastGroundSampleAt = now
+              sampleGround()
+              updateGroundEstimate(XR8.Threejs.xrScene().scene)
+            }
+          },
+        }
+      }
+
+      const onxrloaded = () => {
+        window.__arTestState.engineLoaded = true
+        renderHud()
+
+        XR8.addCameraPipelineModules([
+          XR8.GlTextureRenderer.pipelineModule(),
+          XR8.Threejs.pipelineModule(),
+          XR8.XrController.pipelineModule(),
+          LandingPage.pipelineModule(),
+          XRExtras.FullWindowCanvas.pipelineModule(),
+          XRExtras.Loading.pipelineModule(),
+          XRExtras.RuntimeError.pipelineModule(),
+          initScenePipelineModule(),
+        ])
+
+        const canvas = document.getElementById('camerafeed')
+        XR8.run({ canvas })
+        window.__arTestState.cameraRunning = true
+        renderHud()
+      }
+
+      window.XR8 ? onxrloaded() : window.addEventListener('xrloaded', onxrloaded)
+    </script>
+  </body>
+</html>
