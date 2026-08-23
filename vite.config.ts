@@ -154,6 +154,7 @@ export default defineConfig({
         viewer: path.resolve(process.cwd(), 'viewer.html'),
         webxr: path.resolve(process.cwd(), 'webxr.html'),
         arHittestSphere: path.resolve(process.cwd(), 'ar-hittest-sphere.html'),
+        arGroundAnchor: path.resolve(process.cwd(), 'ar-ground-anchor.html'),
       },
     },
   },
