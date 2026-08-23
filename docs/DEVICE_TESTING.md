@@ -82,6 +82,131 @@ Copy per test session:
 | PWA install | | | | | |
 | Offline queue + flush | | | | | |
 
+## Room-loop benchmark — SLAM drift and calibration repeatability
+
+A measurement protocol, not a pass/fail checklist. It exists because three
+tolerance constants in the calibration system
+(`GROUND_TAP_TOLERANCE_M`, `DEFAULT_SEPARATION_TOLERANCE_M`,
+`MIN_POINT_SEPARATION_M`) are all bounded by one quantity nothing measures:
+how repeatably this app places a point in a room. See
+`docs/factory/09-ground-anchor-calibration/0006-room-loop-drift-benchmark.md`.
+
+**Record every run, not a best or a mean.** Drift is stochastic — lighting,
+pace and feature density vary — so five runs showing 4/4/5/4/19 cm is a
+completely different finding from five showing 8/9/8/9/8 cm, and averaging
+both to ~7 cm hides it.
+
+### The instrument
+
+Load the scanner with **`?debug=pose`** to show a live readout under the status
+line:
+
+```
+pos 1.24 -0.03 -2.10
+Δ 6cm · 2.4° · x0.03 y-0.01 z0.05
+```
+
+`pos` is the raw camera position in session-local metres. `Δ` is displacement,
+yaw difference and per-axis offset **from the session's first tracked pose** —
+so walking back to where you started should read near zero, with no arithmetic
+in the field. The reference is taken from the first pose after tracking locks,
+not at t=0, since the pre-lock pose is meaningless.
+
+`?debug=` is a comma-separated list, so `?debug=pose,remote` shows the readout
+*and* mirrors the console to `npm run logs:watch` — useful for recording
+numbers without stopping to write them down.
+
+```bash
+npm run qr -- "?debug=pose,remote"
+```
+
+### Apparatus
+
+Tape a marker on the floor at **Point A** and note a fixed facing direction
+(a wall, a doorway). Tape a second marker at **Point B**, at least 1 m away.
+Pick three fixed objects as capture targets. Define a perimeter path
+A → B → C → D → A around the room.
+
+One piece of tape does three jobs: it is the loop test's return point, the
+calibration landmark, and the cross-session re-placement target.
+
+### Procedure 1 — within-session loop drift
+
+Repeat 5× per device. Note held-height and facing each run; both affect the
+result and neither is fixed by the tape.
+
+| Step | Action | Record |
+|---|---|---|
+| 1 | Stand on Point A, tap **Start AR** (`#start-ar-btn`) | Seconds from tap to tracking |
+| 2 | Walk the perimeter at **< 0.8 m/s** (the speed above which the app itself warns) | Point count at each waypoint |
+| 3 | Return to Point A, same facing | **`Δ` straight off the HUD** — distance and yaw |
+| 4 | Exercise capture (`#capture-btn`), auto-capture (`#auto-capture-btn`), keyframe streaming (`#stream-btn`), WebRTC (`#rtc-stream-btn`) | Keyframe upload latency; any dropped frames |
+| 5 | Capture one target object from two angles ≥ 60° apart | Did the two detections merge? (dedup radius is 0.4 m) |
+| 6 | Tap **Done** (`#finish-scan-btn`) → export | Quality verdict; upload success |
+
+**Targets, not thresholds.** < 10 cm translational and < 5° rotational is a
+reasonable expectation. If real drift is consistently worse, that is a finding
+about this app's tracking — record it and widen the calibration tolerances
+accordingly. Do not treat it as a broken device.
+
+**Point-accumulation rate is a baseline to measure, not a bar to clear.** The
+two providers differ by construction: WebXR samples a 6×6 probe grid every
+750 ms — a ceiling of 48 probes/sec before 5 cm voxel dedup discards repeats —
+while 8th Wall harvests per-frame SLAM world points and can go substantially
+higher. Record each separately; a number from one says nothing about the other.
+
+#### Results — Procedure 1
+
+| Run | Device | Held height | Facing | Time to track | Points @ A→B→C→D | Δ distance | Δ yaw | Notes |
+|---|---|---|---|---|---|---|---|---|
+| 1 | | | | | | | | |
+| 2 | | | | | | | | |
+| 3 | | | | | | | | |
+| 4 | | | | | | | | |
+| 5 | | | | | | | | |
+
+### Procedure 2 — cross-session calibration repeatability
+
+This is the one the calibration tolerances come from. Each run is a **separate
+session** — fully stop and restart AR between runs, so tracking re-initialises
+and the frame is genuinely rebuilt rather than carried over.
+
+| Step | Action | Record |
+|---|---|---|
+| 1 | Start AR; complete the environment-scan step | Seconds to ground lock |
+| 2 | Place the landmark on taped Point A | — |
+| 3 | Place the heading marker on taped Point B | Reported `separationM` |
+| 4 | Run 2 onward | Reported `residualM` against the stored frame |
+
+**The spread of `separationM` across five independent sessions is the answer.**
+Both markers sit on fixed tape, so the true distance never changes — every
+centimetre of variation is the system's own repeatability. Set
+`DEFAULT_SEPARATION_TOLERANCE_M` above the observed spread, or the check fires
+on correct calibrations.
+
+Run this **before reference photos exist** (wave 09 ticket 0007), so the spread
+is a clean no-aid baseline. 0007 re-runs it with photos and compares; that
+difference is the only honest measure of whether the photos help.
+
+#### Results — Procedure 2
+
+| Run | Device | Time to ground lock | `separationM` | `residualM` | Notes |
+|---|---|---|---|---|---|
+| 1 | | | | — (first) | |
+| 2 | | | | | |
+| 3 | | | | | |
+| 4 | | | | | |
+| 5 | | | | | |
+
+Spread (max − min `separationM`): ______ m → proposed `DEFAULT_SEPARATION_TOLERANCE_M`: ______ m
+
+### Devices
+
+At minimum one of each provider path — they share no tracking code:
+
+- **8th Wall SLAM**: `iphone182` or `liam-ipad-pro` (Safari)
+- **WebXR**: `galaxy-tab-s9-ultra` or `liams-tab-s8-ultra` (Chrome, needs ARCore)
+
 ## Remote-controlled testing (android-remote-control-mcp)
 
 For Android devices, [android-remote-control-mcp](https://github.com/danielealbano/android-remote-control-mcp)

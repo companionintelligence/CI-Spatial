@@ -3,7 +3,8 @@
  * exceptions to the dev server so phone sessions can be debugged
  * without a tethered console.
  *
- * Armed only when the page is loaded with ?debug=remote or when
+ * Armed only when the page is loaded with a ?debug= list containing
+ * `remote` (so ?debug=remote and ?debug=remote,pose both arm it) or when
  * localStorage['remote-log'] === '1' — otherwise installRemoteLog()
  * is a no-op. Entries buffer in memory (capped at 50, oldest dropped)
  * and POST to /client-logs every 3 s, plus a keepalive flush on
@@ -13,6 +14,7 @@
  */
 
 import { REMOTE_LOG_KEY } from '../shared/storage-keys'
+import { hasDebugFlag } from '../shared/debug-flags'
 
 type LogLevel = 'error' | 'warn'
 
@@ -33,7 +35,10 @@ let buffer: LogEntry[] = []
 
 function isArmed(): boolean {
   try {
-    if (new URLSearchParams(location.search).get('debug') === 'remote') return true
+    // `?debug=` is a comma-separated token list (src/shared/debug-flags.ts), so
+    // this arms on `?debug=remote` exactly as before and additionally on
+    // `?debug=remote,pose` — which an exact-equality check silently refused.
+    if (hasDebugFlag('remote')) return true
     return localStorage.getItem(REMOTE_LOG_KEY) === '1'
   } catch {
     // localStorage can throw (private mode / blocked storage) — stay disarmed.

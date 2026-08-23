@@ -41,6 +41,8 @@ import { registerPWA } from './pwa'
 import { installRemoteLog } from './debug/remote-log'
 import { iconLabel } from './ui/icons'
 import { ONBOARDING_KEY, PLACE_SELECTION_SESSION_KEY } from './shared/storage-keys'
+import { hasDebugFlag } from './shared/debug-flags'
+import { formatPoseDelta, poseDelta } from './capture/pose-delta'
 import * as THREE from 'three'
 
 const CAPTURE_FRAME_TIMEOUT_MS = 8000
@@ -202,6 +204,11 @@ async function main() {
   const pointCloud = new PointCloud(0.05)   // 5 cm voxel deduplication grid
   const poseHistory: Pose[] = []
   const scanner = new RoomScanner()
+  // Room-loop drift readout (wave 09/0006). Inert unless ?debug=pose; the
+  // reference pose is the first tracked pose of the session, which is what the
+  // benchmark's "walk back to the tape" step measures against.
+  const poseReadoutArmed = hasDebugFlag('pose')
+  let poseReference: Pose | null = null
   let captureCount = 0    // total captures this session, inferred or not
   let autoSaveTimer: ReturnType<typeof setTimeout> | null = null
   let autoSaveInFlight = false
@@ -1054,6 +1061,8 @@ async function main() {
       decimationNoticeShown = true
       overlay.setStatus('Point cloud thinned to save memory')
     }
+    updatePoseReadout(frame.pose, provider.isTracking())
+
     // Update quality overlay on every scanner tick
     const snap = qualityMonitor.tick(provider, pointCloud)
     updateQualityOverlay(snap)
@@ -1062,6 +1071,35 @@ async function main() {
     else if (snap.driftRisk === 'high') overlay.setStatus('⚠ Moving too fast — slow down')
   })
   console.log('[main] Room scanner started')
+
+  /**
+   * Live camera pose plus drift from the session's first tracked pose, for the
+   * room-loop benchmark in docs/DEVICE_TESTING.md.
+   *
+   * No-op unless armed with ?debug=pose, so ordinary sessions are untouched.
+   * The reference is captured from the first *tracked, finite* pose rather than
+   * whatever the provider reports at t=0 — before SLAM locks, the pose is
+   * typically origin-or-garbage, and anchoring the reference there would make
+   * every subsequent reading an offset from a fiction.
+   */
+  function updatePoseReadout(pose: Pose, tracking: boolean): void {
+    if (!poseReadoutArmed) return
+    const el = document.getElementById('pose-readout')
+    if (!el) return
+
+    if (!tracking || !poseIsFinite(pose)) {
+      el.style.display = 'block'
+      el.textContent = 'pose: waiting for tracking'
+      return
+    }
+    if (!poseReference) poseReference = { position: { ...pose.position }, rotation: { ...pose.rotation } }
+
+    const delta = poseDelta(poseReference, pose)
+    const { x, y, z } = pose.position
+    el.style.display = 'block'
+    el.textContent =
+      `pos ${x.toFixed(2)} ${y.toFixed(2)} ${z.toFixed(2)}\n${formatPoseDelta(delta)}`
+  }
 
   function currentQualitySummary() {
     return qualityMonitor.summary({
