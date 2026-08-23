@@ -960,10 +960,20 @@ async function main() {
         await projectStore.updateProject(selectedProject)
         await persistProjectSpatialFrame(selectedProject)
       }
+      // Branch on whether a frame was just created, not on `status` — status is
+      // now always 'provisional' (see project-calibration.ts). `spatialFrame` is
+      // returned only on a Place's first calibration, so its presence is the
+      // first-visit signal.
+      //
+      // The repeat-visit copy used to read "Project aligned to the existing
+      // anchor", which asserted an alignment nothing had checked. It now says
+      // what is actually true and what the user can act on: this Place already
+      // had an anchor, and only tapping the same physical spot keeps scans
+      // together.
       overlay.setStatus(
-        calibration.calibration.status === 'verified'
-          ? 'Project aligned to the existing anchor.'
-          : 'Project frame established. Start scanning.',
+        calibration.spatialFrame
+          ? 'Project frame established. Start scanning.'
+          : 'Anchor placed — scans align only if it is the same physical spot.',
       )
     } else {
       overlay.setStatus('Scanning without project alignment')

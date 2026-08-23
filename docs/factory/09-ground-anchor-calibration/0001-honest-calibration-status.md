@@ -103,6 +103,29 @@ and tap again.'`). Match it.
   to retroactively determine whether those anchors actually agreed. A migration would have to
   invent a fact. Left as-is and explained by the type comment. (Decided in this ticket.)
 
+- Q: (found during implementation) The Tests section asks for unit tests of
+  `runProjectCalibration()`'s status output — can they be written? — A: **Not in Deno, and
+  not worth faking.** `runProjectCalibration()` calls `document.createElement`, mounts an
+  overlay, and resolves only when a real touch/pointer event fires on the canvas. Deno has no
+  DOM and this repo has no DOM shim — the same constraint ticket 0005 reached independently
+  about `AROverlay`. Options weighed: (a) a shim, rejected as a large dependency for one
+  assertion; (b) extracting a pure `statusFor()` helper, rejected because after this ticket
+  the value is an unconditional constant, so the helper would assert `'provisional' ===
+  'provisional'` and test nothing; (c) Playwright, which is where behavioural coverage of
+  this flow belongs and where ticket 0004 already schedules it. Verification here is instead
+  the grep in Tests, which asserts the invariant that actually matters — that no code path
+  produces `'verified'`. Recorded rather than silently dropped. (Decided 2026-08-23.)
+- Q: What did the grep find? — A: Two matches for `'verified'` in `src/`/`main.ts`, both
+  **readers**, neither a producer: `src/viewer/viewer.ts:1670` (the anchor-marker gate, which
+  must keep accepting `'verified'` so scans persisted by the #141-era build still render) and
+  `main.ts:1304` (a type guard validating the stored value). Both are correct to keep — the
+  ticket's Non-goals require old data to deserialize unchanged. (Verified 2026-08-23.)
+- Q: `src/main.ts` branched on `status` to pick its message — what does it branch on now? —
+  A: `calibration.spatialFrame`, which is returned only on a Place's first calibration and is
+  therefore the first-visit signal. Branching on `status` would now always take one arm.
+  Note ticket 0004 changes this field's meaning from *first-ever* to *frame changed*, and
+  already flags that this branch must be re-read rather than assumed. (Decided 2026-08-23.)
+
 ## Files impacted
 
 Changed:
@@ -128,15 +151,15 @@ status: 'verified' | 'provisional' | 'uncalibrated'
 
 ## Definition of Done
 
-- [ ] `src/ar/project-calibration.ts` writes `status: 'provisional'` unconditionally, with a
+- [x] `src/ar/project-calibration.ts` writes `status: 'provisional'` unconditionally, with a
       comment explaining that a single-point anchor cannot self-verify
-- [ ] `src/main.ts`'s post-calibration message no longer claims alignment to an existing
+- [x] `src/main.ts`'s post-calibration message no longer claims alignment to an existing
       anchor on the repeat-visit path; both branches state what actually happened
-- [ ] The repeat-visit case still tells the user something useful and distinct from the
+- [x] The repeat-visit case still tells the user something useful and distinct from the
       first-visit case (that this Place already has an anchor, and that tapping the same
       physical spot is what keeps scans aligned) — the fix is honesty, not silence
-- [ ] `src/world/types.ts` carries the status-semantics comment above
-- [ ] `npx tsc --noEmit` and `deno task check` pass
+- [x] `src/world/types.ts` carries the status-semantics comment above
+- [x] `npx tsc --noEmit` and `deno task check` pass
 
 ## Tests
 
@@ -146,7 +169,7 @@ status: 'verified' | 'provisional' | 'uncalibrated'
       `status === 'provisional'`
 - [ ] Unit: a calibration run against a `Project` **without** a `spatialFrame` also produces
       `status === 'provisional'`, and still writes a new `spatialFrame`
-- [ ] Grep check: no remaining code path writes `status: 'verified'`
+- [x] Grep check: no remaining code path writes `status: 'verified'`
 
 ```bash
 npx tsc --noEmit
@@ -187,10 +210,10 @@ deno task test
 
 ## Subtasks
 
-1. [ ] Change the `status` assignment in `src/ar/project-calibration.ts` to `'provisional'`
+1. [x] Change the `status` assignment in `src/ar/project-calibration.ts` to `'provisional'`
        with an explanatory comment
-2. [ ] Rewrite both post-calibration status strings in `src/main.ts:954-958`
-3. [ ] Add the status-semantics comment to `ScanCalibration` in `src/world/types.ts`
-4. [ ] Add/extend the unit tests per Tests; register the test file in `deno.json` if new
-5. [ ] Grep for any other `'verified'` producer; confirm none remain
-6. [ ] `npx tsc --noEmit`, `deno task check`, `deno task test`
+2. [x] Rewrite both post-calibration status strings in `src/main.ts:954-958`
+3. [x] Add the status-semantics comment to `ScanCalibration` in `src/world/types.ts`
+4. [ ] ~~Add/extend the unit tests per Tests~~ — deferred, see Open questions & answers
+5. [x] Grep for any other `'verified'` producer; confirm none remain
+6. [x] `npx tsc --noEmit`, `deno task check`, `deno task test`

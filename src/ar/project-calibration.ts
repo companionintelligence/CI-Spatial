@@ -121,7 +121,16 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
           sessionToProject,
           anchorBearingDeg: bearingDeg,
           calibratedAt,
-          status: existingFrame ? 'verified' : 'provisional',
+          // Always 'provisional', including on a return visit. A single anchor
+          // maps to project-space (0,0,0) by construction, so it always agrees
+          // with itself — there is nothing here to compare against and no
+          // residual to compute. Reporting 'verified' because a spatialFrame
+          // record happened to exist claimed a check that never ran: a user
+          // tapping three metres from last visit's spot got a three-metre
+          // misalignment labelled verified. Wave 09 ticket 0004 restores a
+          // real producer by measuring a two-point separation against the
+          // stored one.
+          status: 'provisional',
         }
         const spatialFrame: ProjectSpatialFrame | undefined = existingFrame ? undefined : {
           version: 1,
