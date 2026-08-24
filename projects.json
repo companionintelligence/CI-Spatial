@@ -2847,5 +2847,46 @@
         "floorId": "floor-1787267329229"
       }
     ]
+  },
+  {
+    "projectId": "proj-1787596511909",
+    "name": "Test 24a",
+    "placeType": "room",
+    "parentProjectId": null,
+    "address": "30862 Calle Moraga, Laguna Niguel, California 92677",
+    "geoPose": {
+      "lat": 33.5148,
+      "lng": -117.72162,
+      "altitudeM": null,
+      "bearing": null,
+      "accuracyM": 5,
+      "fixedAt": null,
+      "address": "30862 Calle Moraga, Laguna Niguel, California 92677",
+      "displayAddress": "30862 Calle Moraga, Laguna Niguel, California 92677"
+    },
+    "createdAt": 1787596511909,
+    "updatedAt": 1787596522484,
+    "areas": [
+      {
+        "areaId": "area-1787596511909",
+        "name": "Test 24a",
+        "kind": "site",
+        "parentAreaId": null
+      },
+      {
+        "areaId": "area-test24a-room",
+        "name": "Test 24a",
+        "kind": "room",
+        "parentAreaId": "area-1787596511909"
+      }
+    ],
+    "floors": [
+      {
+        "floorId": "floor-1787596511909",
+        "name": "Ground Floor",
+        "level": 0,
+        "rooms": []
+      }
+    ]
   }
 ]
