@@ -2759,7 +2759,7 @@
       "displayAddress": "30872 Calle Moraga"
     },
     "createdAt": 1787266417546,
-    "updatedAt": 1787283995346,
+    "updatedAt": 1787598826962,
     "floors": [
       {
         "floorId": "floor-1787266417546",
@@ -2805,6 +2805,12 @@
         "kind": "floor",
         "parentAreaId": "area-proj-1787266417546",
         "floorId": "floor-1787266417546"
+      },
+      {
+        "areaId": "area-1787598826650-cs98",
+        "name": "Test origin",
+        "kind": "room",
+        "parentAreaId": "area-proj-1787266417546"
       }
     ]
   },
