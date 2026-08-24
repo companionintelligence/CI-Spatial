@@ -16,7 +16,7 @@ import { Document, NodeIO, Primitive } from '@gltf-transform/core'
 import { KHRMeshQuantization } from '@gltf-transform/extensions'
 import { prune, quantize } from '@gltf-transform/functions'
 
-import { parseLingBotMapPLY } from './lingbot_map_ply.ts'
+import { parseLingBotMapPLY } from '../../src/shared/lingbot_map_ply.ts'
 
 export interface LingBotMapGlbExtras {
   source: 'lingbot-map'

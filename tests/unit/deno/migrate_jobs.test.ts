@@ -6,7 +6,7 @@
 import { assert } from 'jsr:@std/assert@^1.0.0/assert'
 import { assertEquals } from 'jsr:@std/assert@^1.0.0/equals'
 
-import { migrateJobsToWorldJob, worldJobFromLegacyJob } from '../../../migrate_jobs.ts'
+import { migrateJobsToWorldJob, worldJobFromLegacyJob } from '../../../server/migrations/migrate_jobs.ts'
 import type { Job } from '../../../jobs.ts'
 import type { WorldProject } from '../../../src/world/types.ts'
 

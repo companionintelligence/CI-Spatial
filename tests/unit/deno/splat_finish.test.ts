@@ -15,7 +15,7 @@ import {
   buildSogArgs,
   resolveParams,
   runSplatFinish,
-} from '../../../splat_finish.ts'
+} from '../../../server/splat/splat_finish.ts'
 
 /** Minimal INRIA-style PLY header (42 gaussians) for the input fixture. */
 const INPUT_PLY = new TextEncoder().encode(

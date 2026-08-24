@@ -17,7 +17,7 @@
  *
  * Import extensions differ by runtime and are load-bearing:
  *   from `src/`      → `from '../shared/provenance'`      (no extension, Vite/tsc)
- *   from repo root   → `from './src/shared/provenance.ts'` (with extension, Deno/node)
+ *   from repo root   → `from './provenance.ts'` (with extension, Deno/node)
  */
 
 /**

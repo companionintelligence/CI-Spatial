@@ -20,7 +20,7 @@
  * main.ts's unconditional top-level side effects (hostname resolution, VLM
  * engine load, `Deno.serve`), which no existing test in this repo does.
  */
-import type { WorldJob, WorldJobType } from './src/world/types.ts'
+import type { WorldJob, WorldJobType } from '../../src/world/types.ts'
 
 // ── Single-flight pump (ADR 0003 "Single-flight execution") ──────────────────
 
