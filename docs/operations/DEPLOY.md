@@ -107,7 +107,7 @@ accordingly.
 
 The `splat-train` world job trains a Gaussian splat from a scan's keyframe
 session using [Brush](https://github.com/ArthurBrussee/brush). Full details in
-[docs/splat-train.md](splat-train.md); the deploy-relevant bits:
+[../pipelines/splat-train.md](../pipelines/splat-train.md); the deploy-relevant bits:
 
 - **Binary**: build Brush once and point `BRUSH_BIN` at the `brush-cli`
   release binary (default `~/brush/src/target/release/brush-cli`). If the

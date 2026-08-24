@@ -4,18 +4,18 @@ Status and timelines for Companion Scan live **here and only here**. This file
 uses phase framing — **Shipped**, **Near-term**, **Later / Exploratory** — not
 calendar dates. For the system design, data model, and full API table see
 [architecture.md](architecture.md). For the everyday-user first-time journey see
-[docs/UX_FLOW.md](docs/UX_FLOW.md). For the field-acceptance protocol see
-[docs/HOUSE_VALIDATION.md](docs/HOUSE_VALIDATION.md). The current Place-first
+[product/UX_FLOW.md](product/UX_FLOW.md). For the field-acceptance protocol see
+[testing/HOUSE_VALIDATION.md](testing/HOUSE_VALIDATION.md). The current Place-first
 product model and migration rules live in
-[docs/PLACE_SCAN_DESIGN.md](docs/PLACE_SCAN_DESIGN.md).
+[product/PLACE_SCAN_DESIGN.md](product/PLACE_SCAN_DESIGN.md).
 
 ---
 
 ## Shipped
 
-Everything below is implemented on `main` and exercised by the test suite (14
-specs in `tests/` + 4 root Deno unit tests). The TypeScript codebase compiles
-clean.
+Everything below is implemented on `main` and exercised by the test suite (31
+Playwright specs in `tests/` + 32 Deno unit tests at the repo root). The
+TypeScript codebase compiles clean.
 
 ### Capture (phone)
 
@@ -79,7 +79,7 @@ clean.
   stream live geometry; `/events` (SSE) for server push.
 - **Async job queue** — `/jobs` runs the `WorldJobType` set: `ingest`,
   `extract-layers`, `align-scan`, `merge-points`, `semantic-pass`,
-  `depth-reconstruct`, `lingbot-map-reconstruct`, `splat-train`, `splat-detect`,
+  `depth-reconstruct`, `lingbot-map-reconstruct`, `pipelines/splat-train`, `splat-detect`,
   `export-world` (status `queued | processing | completed | failed`). The
   editor's Queue-Job dropdown exposes 9; `splat-detect` fires from the Splat
   Toolbox.
@@ -102,7 +102,7 @@ clean.
 
 - **House validation kit** — the two-way (live AR + video) field-acceptance
   protocol and helper scripts (`npm run test:house`, `npm run links:house`); see
-  [docs/HOUSE_VALIDATION.md](docs/HOUSE_VALIDATION.md).
+  [testing/HOUSE_VALIDATION.md](testing/HOUSE_VALIDATION.md).
 
 ---
 
@@ -115,7 +115,7 @@ Realistic next steps that build directly on shipped surfaces.
   recommended` / `Keep scanning`) plus the top recommendation, and add a
   `Done / Finish scan` affordance near the capture button. The verdict already
   exists in code but only appears in the Spatial Editor today. See the guided
-  "finish your map" flow in [docs/UX_FLOW.md](docs/UX_FLOW.md).
+  "finish your map" flow in [product/UX_FLOW.md](product/UX_FLOW.md).
 - **Close the export loop** — after Export GLB, add a `View in 3D →` link back
   into the world (reuse the video-upload open pattern); gate manual export
   behind a confirm when status is `needs-rescan`.

@@ -2,9 +2,9 @@
 
 > Design doc for contributors and designers. Describes how the everyday-user experience *should* flow, grounded in what exists in the code today. IDs, labels, and copy quoted here are verified against the tree at HEAD. Where something is a recommendation rather than current behavior, it is marked **[proposed]**.
 
-**Related docs:** [README.md](../README.md) · [architecture.md](../architecture.md) (canonical system design) · [docs/UI_MANUAL.md](./UI_MANUAL.md) (exhaustive control catalog) · [roadmap.md](../roadmap.md) (timelines / shipped-vs-planned)
+**Related docs:** [README.md](../README.md) · [../architecture.md](../architecture.md) (canonical system design) · [UI_MANUAL.md](./UI_MANUAL.md) (exhaustive control catalog) · [../roadmap.md](../roadmap.md) (timelines / shipped-vs-planned)
 
-This doc sits between architecture.md (the engineer's system sequence) and UI_MANUAL.md (the surface-by-surface control reference). It owns the *narrative*: the first-time journey, the mental model of the four capture pipelines, and the FTUE improvement backlog.
+This doc sits between ../architecture.md (the engineer's system sequence) and UI_MANUAL.md (the surface-by-surface control reference). It owns the *narrative*: the first-time journey, the mental model of the four capture pipelines, and the FTUE improvement backlog.
 
 > **Current product vocabulary:** the user starts with a **Place**, may choose
 > an **Area** such as a room or floor, then creates or uploads a **Scan**. The
@@ -13,7 +13,7 @@ This doc sits between architecture.md (the engineer's system sequence) and UI_MA
 > legacy `WorldProject` language in implementation details refers to the
 > compatible ENU scene record, not a separate user concept.
 
-**📸 Screenshot gallery:** [docs/ui-flow/](./ui-flow/) shows mobile + desktop screenshots of every flow below, generated automatically from the running app by [`tests/mock-ui-mobile.spec.ts`](../tests/mock-ui-mobile.spec.ts) and [`tests/mock-ui-desktop.spec.ts`](../tests/mock-ui-desktop.spec.ts). Representative shots are embedded per phase in §4.
+**📸 Screenshot gallery:** [ui-flow/](./ui-flow/) shows mobile + desktop screenshots of every flow below, generated automatically from the running app by [`tests/mock-ui-mobile.spec.ts`](../../tests/mock-ui-mobile.spec.ts) and [`tests/mock-ui-desktop.spec.ts`](../../tests/mock-ui-desktop.spec.ts). Representative shots are embedded per phase in §4.
 
 ---
 
@@ -238,7 +238,7 @@ The everyday user must understand there are **four distinct capture pipelines**,
 - WebGPU vs server inference is **opt-in** via `localStorage['infer-mode']` (the `AI Engine` toggle) — not auto-detected. Server-side is the default.
 - `needs-rescan` scans autosave and upload silently anyway; the user only learns the verdict later on desktop.
 
-**Note on inference (for accuracy):** default inference is `INFERENCE_MODE=ollama` with `OLLAMA_MODEL=qwen3-vl:4b`. `onnx` mode runs `LiquidAI/LFM2.5-VL-1.6B-ONNX`; `mock` mode is the deterministic colour-blob CV engine used in tests. See [architecture.md](../architecture.md) for the full inference explainer.
+**Note on inference (for accuracy):** default inference is `INFERENCE_MODE=ollama` with `OLLAMA_MODEL=qwen3-vl:4b`. `onnx` mode runs `LiquidAI/LFM2.5-VL-1.6B-ONNX`; `mock` mode is the deterministic colour-blob CV engine used in tests. See [../architecture.md](../architecture.md) for the full inference explainer.
 
 **Recommended improvements:** items 1, 4, 5, 6 in §3.2; an animated sweep hint before first SLAM lock.
 
@@ -408,4 +408,4 @@ Building on the merged accessibility/onboarding work:
 
 ---
 
-*See also: [architecture.md](../architecture.md) · [README.md](../README.md) · [docs/UI_MANUAL.md](./UI_MANUAL.md) · [roadmap.md](../roadmap.md)*
+*See also: [../architecture.md](../architecture.md) · [README.md](../README.md) · [UI_MANUAL.md](./UI_MANUAL.md) · [../roadmap.md](../roadmap.md)*

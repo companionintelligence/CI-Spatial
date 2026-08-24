@@ -1,6 +1,6 @@
 # Gimbal-driven capture (DJI Osmo Mobile 6)
 
-[`subsystems/osmo-ble/`](../subsystems/osmo-ble/) controls a DJI Osmo Mobile 6 gimbal over
+[`subsystems/osmo-ble/`](../../subsystems/osmo-ble/) controls a DJI Osmo Mobile 6 gimbal over
 Bluetooth LE via reverse-engineered DUML commands, and exposes that control as an MCP server so
 Claude Code (or any MCP client) can drive automated capture sweeps. It's vendored into this repo
 (moved in from a standalone project on 2026-08-21) so a fresh clone gets the whole system in one
@@ -62,7 +62,7 @@ photo count instead of "however many the heuristics trigger," see the grid-captu
 
 1. Install `subsystems/osmo-ble`'s own dependencies: `cd subsystems/osmo-ble && npm install`.
 2. Register the MCP server — already done via the `osmo-gimbal` entry in
-   [`.mcp.json`](../.mcp.json) at the repo root (`{"command":"node","args":["subsystems/osmo-ble/server/mcp-server.mjs"]}`,
+   [`.mcp.json`](../../.mcp.json) at the repo root (`{"command":"node","args":["subsystems/osmo-ble/server/mcp-server.mjs"]}`,
    a repo-relative path so it works for any clone). Claude Code picks this up automatically.
 3. Start the backend yourself, in a real terminal (see the architecture note above for why this
    can't be automated): `cd subsystems/osmo-ble && npm run backend`. First run needs Bluetooth
@@ -148,7 +148,7 @@ devices — via `danielealbano/android-remote-control-mcp`, an accessibility-ser
 control app running on-device, exposed as an HTTP MCP server over Tailscale.
 
 **Registration** (already done for the known devices) — an entry per device in *both* this
-project's [`.mcp.json`](../.mcp.json) and the user's global `~/.claude.json` `mcpServers` (so any
+project's [`.mcp.json`](../../.mcp.json) and the user's global `~/.claude.json` `mcpServers` (so any
 project/session can reach it, not just this one):
 ```json
 "android-beam-pro-1": {

@@ -105,7 +105,7 @@ estimates the poses the video frames lack).
 
 The video arm now **auto-adapts the sample rate** to the clip length (short
 clips still yield ≥40 frames; omit `-F fps=…` to use it) **and drops blurry
-frames** (`droppedBlurry` in the session record — see docs/splat-toolbox.md).
+frames** (`droppedBlurry` in the session record — see ../pipelines/splat-toolbox.md).
 A photo-set arm exists too: `POST /ingest-photos` with `files=@…` fields.
 
 ---
@@ -167,10 +167,10 @@ Document which room and why in your run notes. Keep it outside the repo tree.
 | First infer slow / stalls | model warming | wait for `engineLoadState: ready` on `/health` before scanning |
 | **Keyframes = 0** | **cloud streaming off** | **turn ☁ STREAMING ON before sweeping — the #1 failure** |
 | Tracking lost on stairs | few features, fast motion | slow down, keep a stair edge + far wall in frame, sweep continuously |
-| Splat job `skipped` | `BRUSH_BIN` missing/unbuilt | build Brush, set `BRUSH_BIN` (see `docs/splat-train.md` — Setup) |
-| Detect `skipped` | splat-analyzer venv/dir missing | check `SPLAT_DETECT_PYTHON` / `SPLAT_DETECT_DIR` (see `docs/splat-toolbox.md`) |
+| Splat job `skipped` | `BRUSH_BIN` missing/unbuilt | build Brush, set `BRUSH_BIN` (see `../pipelines/splat-train.md` — Setup) |
+| Detect `skipped` | splat-analyzer venv/dir missing | check `SPLAT_DETECT_PYTHON` / `SPLAT_DETECT_DIR` (see `../pipelines/splat-toolbox.md`) |
 
 ---
 
-See also: `docs/splat-toolbox.md` (the tools), `docs/splat-train.md` (Brush
+See also: `../pipelines/splat-toolbox.md` (the tools), `../pipelines/splat-train.md` (Brush
 wiring), `scripts/house-links.mjs` (`npm run links:house`).

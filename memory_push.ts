@@ -189,7 +189,7 @@ function detectorProvenance(manifest: SplatDetectManifest | null) {
  * Frame of reference + provenance for the per-object geometry. This travels
  * with the numbers because the numbers are not measured truth: splat-detect has
  * never been validated on a furnished room, and the splat frame's alignment to
- * the world frame is unvalidated (docs/SPLAT_DETECT_ROADMAP.md, phases 1 and 3).
+ * the world frame is unvalidated (docs/pipelines/SPLAT_DETECT_ROADMAP.md, phases 1 and 3).
  * A consumer that reads an extent without reading this block would be treating
  * an uncalibrated detector's bounding box as a tape-measure reading.
  */
@@ -211,7 +211,7 @@ function extentProvenance(manifest: SplatDetectManifest | null) {
       'Detector output under the parameters below, not measured dimensions. The splat '
       + "frame's alignment to the world/ENU frame this event's `location` uses is "
       + 'unvalidated, and splat-detect has never been validated on a furnished room '
-      + '(docs/SPLAT_DETECT_ROADMAP.md, phases 1 and 3). An extent is a bounding volume, '
+      + '(docs/pipelines/SPLAT_DETECT_ROADMAP.md, phases 1 and 3). An extent is a bounding volume, '
       + "not the object's own volume.",
     detector: detectorProvenance(manifest),
   }

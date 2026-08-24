@@ -4,7 +4,7 @@
  * splat_train.test.ts / splat_detect.test.ts — cover only the TS side through
  * the `_spawn` seam: validation gates, CLI arg assembly, the skip/error
  * manifest contract, and output size accounting. The real CLI is exercised by
- * the box-side smoke (docs/splat-toolbox.md — Finish).
+ * the box-side smoke (docs/pipelines/splat-toolbox.md — Finish).
  */
 import { assertEquals } from 'jsr:@std/assert@^1.0.0/equals'
 import { assert } from 'jsr:@std/assert@^1.0.0/assert'

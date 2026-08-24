@@ -115,7 +115,7 @@ const translation = hasGeoPose(origin) && hasGeoPose(geoPose)
 lands at `x ≈ 500000` in the same ENU frame as the room next door, and the editor fits its
 camera to the bounding box of both.
 
-This is not hypothetical. `docs/UI_MANUAL.md:610-614` already files it as an **observed**
+This is not hypothetical. `../../product/UI_MANUAL.md:610-614` already files it as an **observed**
 failure:
 
 > "**Two disconnected geo clusters silently break the overview**: a world containing scans
@@ -130,14 +130,14 @@ failure:
   `_run*Job` (`docs/adr/0003-merged-job-system.md:198-209`); its only behaviour is the
   preflight at `main.ts:2714-2716` (`'align-scan needs at least two scans …'`), the status
   flip to `'aligned'` at `main.ts:2723`, and the honest placeholder result string at
-  `main.ts:2747-2748` (*"A GPU/Open3D worker can refine this…"*). `docs/UX_FLOW.md:253`
+  `main.ts:2747-2748` (*"A GPU/Open3D worker can refine this…"*). `../../product/UX_FLOW.md:253`
   says the same. Leave all of it exactly as it is.
 - **Do not** build a merged/consolidated GLB. That is deferred to a later wave that revives
   `export-world` (wave README, "Deferred").
 - **Do not** add a world-picker to the scanner. That is ticket 0003's place picker, and it
   picks a *Project*, not a world.
 - **Do not** touch `synthesizeWorld`'s fallback-grid placement for no-GPS scans
-  (`docs/UX_FLOW.md:251`) — the guard reuses it, it does not replace it.
+  (`../../product/UX_FLOW.md:251`) — the guard reuses it, it does not replace it.
 - **Do not** change the `'default'`-world parking decision for `optimize-scan` jobs
   (ADR 0003:93). Job scoping is out of scope; only `scans[]` membership changes.
 - **Do not** write `worlds/*.json` outside `updateWorld`/`mutateWorldFiles` (ADR 0004).
@@ -199,7 +199,7 @@ files explicitly** — a new test file that is not added to that list is never r
 - `src/project/project-store.ts:33-64` — `Project` and `ScanEntry { projectId, sessionId,
   scanFilename? }`, the browser-side membership 0002 wires up.
 - `world_prune.ts` and `world_prune.test.ts` — the module/test shape to copy.
-- `docs/UI_MANUAL.md:605-614` — the two observed failures this ticket half-fixes.
+- `../../product/UI_MANUAL.md:605-614` — the two observed failures this ticket half-fixes.
 - `docs/factory/08-places-and-things/README.md:44-51` — the measured GPS numbers the
   threshold has to clear.
 - ADR 0001, ADR 0002, ADR 0003:84-96, ADR 0004.
@@ -229,7 +229,7 @@ files explicitly** — a new test file that is not added to that list is never r
   A: **250 m, flagged not dropped.** See "The geo guard" for the justification and the
   exact behaviour. (decided by owner, 2026-08-19)
 - Q: Does removing the global sweep also remove the 24/12 caps? — A: **No.** The ceiling
-  stays at 24 for both membership modes — `docs/UI_MANUAL.md:602-603` credits progressive
+  stays at 24 for both membership modes — `../../product/UI_MANUAL.md:602-603` credits progressive
   LOD with keeping *a 24-scan world* interactive, and an uncapped place with 200 scans
   would regress that. What changes is that truncation stops being silent: see
   `scanCountTotal` under "Schema required". (decided by owner, 2026-08-19)
@@ -319,7 +319,7 @@ return { ...scan, ...next, localToWorld: scan.localToWorld, name: scan.name || n
 ```
 
 `refreshWorldScans` deliberately preserves a scan's `localToWorld` so a manually aligned
-scan (drag the gizmo → **Save Transform** → `EditPatch`, `docs/UX_FLOW.md:252`) is not
+scan (drag the gizmo → **Save Transform** → `EditPatch`, `../../product/UX_FLOW.md:252`) is not
 recomputed back to its geo placement on the next read. Keep that spread exactly as it is.
 The geo guard changes what `scanManifestFromStored` *computes*, never what
 `refreshWorldScans` *preserves* — so a user who manually placed a far-away scan keeps their
@@ -346,7 +346,7 @@ Justification, from measurements this repo already recorded rather than from a g
   hectares. That holds any house and garden, any apartment block, and most commercial
   buildings and campuses — the things a Project represents.
 - **It is orders of magnitude below the failure it stops.** The observed incident was scans
-  in *different cities* (`docs/UI_MANUAL.md:610-614`) — kilometres to hundreds of
+  in *different cities* (`../../product/UI_MANUAL.md:610-614`) — kilometres to hundreds of
   kilometres. There is no plausible value between 65 m of jitter and inter-city distance
   that this threshold could get wrong.
 
@@ -354,7 +354,7 @@ Justification, from measurements this repo already recorded rather than from a g
 (`main.ts:1378-1381`), compute `geoDistanceM` first; if it exceeds the threshold, take the
 **existing fallback-grid branch** (`{ x: (index % 6) * 3, y: 0, z: Math.floor(index / 6) *
 3 }`) instead of `geoToEnu`, and set `geoOutlier: true`. This reuses the placement that
-no-GPS and video-ingest scans already get (`docs/UX_FLOW.md:251`), so the scan stays
+no-GPS and video-ingest scans already get (`../../product/UX_FLOW.md:251`), so the scan stays
 visible, loadable, selectable, and manually alignable. Dropping it would be exactly the
 silent data loss the migration policy forbids.
 

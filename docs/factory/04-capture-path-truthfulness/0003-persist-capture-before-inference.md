@@ -242,7 +242,7 @@ npm run verify
   concern. — **Mitigation:** This is the first open question. Consider storing frames only
   until their detections land, then dropping the blob and keeping the record.
 - **Risk:** Writing to IndexedDB before inference adds latency to the shutter, which already
-  has no flash, haptic or sound (a known weakness in `docs/UI_MANUAL.md:169-176`). —
+  has no flash, haptic or sound (a known weakness in `../../product/UI_MANUAL.md:169-176`). —
   **Mitigation:** The write is off the critical path — fire it without awaiting before
   `router.infer()`, and reconcile on completion.
 - **Risk:** Touching `src/scene/store.ts` risks the IndexedDB name and the persisted shape,

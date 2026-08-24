@@ -21,7 +21,7 @@ about the system" with zero runtime risk:
    `MODEL_DIR`, `TOKENIZER_DIR`, `POINT_SPLAT_SIZE`, `SPLAT_FINISH_NODE`,
    `VITE_HOSTNAME` (the primary hostname fallback!), and test-only `BRUSH_E2E`.
 2. **Stale repo names.** `README.md:184-185` still says clone
-   `CI-Web-XR-Scan.git` / `cd CI-Web-XR-Scan`; `docs/CI.md:24,40` still passes
+   `CI-Web-XR-Scan.git` / `cd CI-Web-XR-Scan`; `../../operations/CI.md:24,40` still passes
    `--repo … CI-Web-XR-Scan`. The repo is `CI-Spatial`.
 3. **No "do not rename" registry.** Several identifiers *look* like stale legacy
    names but are actually load-bearing: renaming them breaks persisted user data or
@@ -77,7 +77,7 @@ about the system" with zero runtime risk:
 ## Files impacted
 
 - Changed: `.env.example`, `deploy/cscan.env.example` (add missing vars)
-- Changed: `README.md:184-185`, `docs/CI.md:24,40` (correct repo name)
+- Changed: `README.md:184-185`, `../../operations/CI.md:24,40` (correct repo name)
 - Changed: `CLAUDE.md` (do-not-rename registry table)
 
 ## Schema required

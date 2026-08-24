@@ -12,7 +12,7 @@ the mobile AR scanner (`index.html` + `src/main.ts` + `src/ui/*`), the WebXR lan
 page (`webxr.html`), the phone smoke-test page (`public/smoke.html`), and the desktop
 Companion Scan Spatial Editor (`/editor`, implemented by `viewer.html` + `src/viewer/*`).
 
-All screenshots in `docs/ui-manual/` were captured from a live instance (Deno API in
+All screenshots in `ui-manual/` were captured from a live instance (Deno API in
 `INFERENCE_MODE=mock`, Vite dev server, seeded with the generated test-home corpus and
 the LingBot-Map fixture session) driven by Playwright — iPhone 15 viewport (393×852)
 for the scanner pages, 1440×900 for the editor. Because the shots come from the
@@ -564,7 +564,7 @@ ground-truth against `expected.json` in tests. Exposed as `window.__measureTool`
   picker for viewing any external `.ply/.spz/.splat/.ksplat` asset alongside
   scans — independent of the per-scan trained-splat pipeline.
 
-![Trained splat loaded in the viewer](splat-train/screenshots/viewer-real-splat-loaded.png)
+![Trained splat loaded in the viewer](../pipelines/splat-train/screenshots/viewer-real-splat-loaded.png)
 
 *Above: a real Brush-trained splat (334,681 gaussians, 15k iterations) rendering in
 the Spatial Editor next to the seeded test homes.*

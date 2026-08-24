@@ -1,7 +1,7 @@
 # On-device testing over Tailscale
 
 Manual test protocol for real phones against a tailnet server (see
-[DEPLOY.md](DEPLOY.md) for standing the server up). Two device paths:
+[DEPLOY.md](../operations/DEPLOY.md) for standing the server up). Two device paths:
 **iPhone Safari** runs the 8th Wall SLAM scanner; **Android Chrome** runs the
 native WebXR scanner.
 

@@ -8,8 +8,8 @@ These illustrate the narrative in [../UX_FLOW.md](../UX_FLOW.md); the exact
 control catalog lives in [../UI_MANUAL.md](../UI_MANUAL.md); the system design is
 in [../../architecture.md](../../architecture.md).
 
-> **How these are generated.** [`tests/mock-ui-mobile.spec.ts`](../../tests/mock-ui-mobile.spec.ts)
-> and [`tests/mock-ui-desktop.spec.ts`](../../tests/mock-ui-desktop.spec.ts) drive
+> **How these are generated.** [`tests/mock-ui-mobile.spec.ts`](../../../tests/mock-ui-mobile.spec.ts)
+> and [`tests/mock-ui-desktop.spec.ts`](../../../tests/mock-ui-desktop.spec.ts) drive
 > the app through each state and write the PNGs here. Regenerate with:
 > ```bash
 > PORT=8100 INFERENCE_MODE=mock deno run --allow-net --allow-read --allow-write \

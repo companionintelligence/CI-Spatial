@@ -18,7 +18,7 @@
  * (~0.45 m).
  *
  * **A placeholder pending measurement.** The room-loop benchmark
- * (`docs/DEVICE_TESTING.md`) is what sets this. Note the margin to a chair
+ * (`../../docs/testing/DEVICE_TESTING.md`) is what sets this. Note the margin to a chair
  * seat is not large, so a worse-than-assumed hit-test noise figure narrows the
  * usable window quickly — which is why the caller offers an override rather
  * than treating a rejection as final.

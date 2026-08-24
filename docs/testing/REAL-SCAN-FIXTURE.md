@@ -76,14 +76,14 @@ still telling you to fetch it from 8th.io/xrjs.
   motion on a self-signed origin, so this is not optional.
 - **A Linux box with a GPU** for the inference half: Deno API on `:8000`, the web
   bundle on `:5173`, Ollama as a system service on GPU0, and the LingBot-Map
-  torch worker spawned per job on GPU1. `docs/DEPLOY.md` has the systemd setup;
+  torch worker spawned per job on GPU1. `../operations/DEPLOY.md` has the systemd setup;
   `scripts/install-services.sh` does it.
 - **A room.** Ordinary furniture, even lighting, no large mirrors or glass — the
   quality pass explicitly scores `lowLightFrames` and `reflectiveWarnings`.
 
 ### The capture
 
-`docs/DEVICE_TESTING.md` Checklist A is already the exact protocol, and it ends
+`DEVICE_TESTING.md` Checklist A is already the exact protocol, and it ends
 where a fixture would begin: choose the target **Place** and optional **Area**,
 calibrate, then *export GLB → file lands in `scans/` on the box*, and open
 `/editor?project=default` on desktop to verify the new scan appears in that

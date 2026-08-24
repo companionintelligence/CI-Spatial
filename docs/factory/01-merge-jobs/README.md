@@ -137,6 +137,6 @@ deployable — unlike foundation-updates' disjoint batches).
   `splat_detect.test.ts`/`splat_train.test.ts` failures from a Windows exec-bit
   detection gap in `isRunnable()`, reproducing identically with or without this
   wave's changes.
-- **Deferred, out of this wave's given scope:** `README.md`/`architecture.md` still
+- **Deferred, out of this wave's given scope:** `README.md`/`../../architecture.md` still
   describe `JobQueue` as live (only `CLAUDE.md`/ADR 0001/`events.ts` were in ticket
   0005's scope) — flagged as a follow-up.

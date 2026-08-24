@@ -80,11 +80,11 @@ export LINGBOT_MAP_MODEL_PATH=~/models/lingbot-map/checkpoint.pt
 3. In the right drawer, use **Reconstruct**. It queues the
    `LingBot-Map reconstruct` step for the selected scan.
 
-![Legacy advanced-queue screenshot](screenshots/viewer-job-dropdown.png)
+![Legacy advanced-queue screenshot](lingbot-map/screenshots/viewer-job-dropdown.png)
 
 4. Confirm the reconstruction action.
 
-![Job dropdown with LingBot-Map selected](screenshots/viewer-job-dropdown-selected.png)
+![Job dropdown with LingBot-Map selected](lingbot-map/screenshots/viewer-job-dropdown-selected.png)
 
 5. Watch the job pane — the local coordinator transitions
    `queued → processing → completed`. When `status === 'ok'`, the job
@@ -95,13 +95,13 @@ export LINGBOT_MAP_MODEL_PATH=~/models/lingbot-map/checkpoint.pt
 6. Switch to the **Layers** tab. The new `LingBot-Map Reconstruction`
    section starts empty until a reconstruction lands.
 
-![Layers panel — controls visible, awaiting a run](screenshots/viewer-lingbot-panel.png)
+![Layers panel — controls visible, awaiting a run](lingbot-map/screenshots/viewer-lingbot-panel.png)
 
 7. After the job completes the panel reports the point + pose counts and
    the toggles drive overlay visibility on the selected scan without a
    reload.
 
-![Layers panel — overlay loaded](screenshots/viewer-lingbot-panel-loaded.png)
+![Layers panel — overlay loaded](lingbot-map/screenshots/viewer-lingbot-panel-loaded.png)
 
 ## Triggering a reconstruction from curl
 

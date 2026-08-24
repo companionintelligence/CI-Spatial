@@ -233,4 +233,4 @@ provenance so CI-server can resolve them in memory and GIS views.
 - [UX and FTUE flow](UX_FLOW.md)
 - [UI manual](UI_MANUAL.md)
 - [Architecture](../architecture.md)
-- [Places and Things implementation wave](factory/08-places-and-things/README.md)
+- [Places and Things implementation wave](../factory/08-places-and-things/README.md)

@@ -53,7 +53,7 @@ alongside a warm model.
 - **curl:** `curl $BASE/scans/<base>.splat-train.manifest.json` to confirm a
   splat exists, then `GET /scans/<base>.splat.ply` for the geometry.
 
-See `docs/splat-train.md` for the full viewer wiring.
+See `splat-train.md` for the full viewer wiring.
 
 ---
 
@@ -81,7 +81,7 @@ video-ingest sessions). Give it a reconstructed session, get back a splat.
 
 **Env:** `BRUSH_BIN` (default `~/brush/src/target/release/brush-cli`). Missing
 binary → a `skipped` manifest with a remediation hint, never a crash. Full
-env/params table in `docs/splat-train.md`.
+env/params table in `splat-train.md`.
 
 Invariants preserved by the dataset converter: Nerfstudio `camera_model` is
 **PERSPECTIVE**, and poses are emitted as OpenGL camera-to-world with **no extra

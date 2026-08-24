@@ -48,12 +48,23 @@ renders/
 
 # Model files — large binaries, download separately via download_models.py
 public/models/
+
+# Stray copies of the same model metadata, if download_models.py is ever run
+# from the repo root instead of into public/models/.
+/config.json
+/generation_config.json
+/processor_config.json
+/chat_template.jinja
 onnx/
 tokenizer.json
 tokenizer_config.json
 *.onnx
 *.onnx_data
 test-results/
+# Project registry written by the server at runtime (PROJECTS_FILE). Same class
+# as scans/ and worlds/ below — loadProjects() seeds a default when it is absent,
+# so a fresh clone does not need it committed.
+/projects.json
 scans/
 summaries/
 worlds/
