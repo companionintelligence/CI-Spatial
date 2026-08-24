@@ -7,7 +7,7 @@
 import { assert } from 'jsr:@std/assert@^1.0.0/assert'
 import { assertEquals } from 'jsr:@std/assert@^1.0.0/equals'
 
-import { resolveSessionDir, sessionDirPath } from '../../../session_id.ts'
+import { resolveSessionDir, sessionDirPath } from '../../../server/session_id.ts'
 import {
   isServerSessionId,
   newLocalSessionId,

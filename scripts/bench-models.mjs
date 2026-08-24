@@ -137,7 +137,7 @@ async function benchModel(model) {
     return { ...row, failures: err.message }
   }
 
-  const server = spawn(denoBin, ['run', '--allow-net', '--allow-read', '--allow-write', '--allow-env', '--allow-ffi', 'main.ts'], {
+  const server = spawn(denoBin, ['run', '--allow-net', '--allow-read', '--allow-write', '--allow-env', '--allow-ffi', 'server/main.ts'], {
     cwd: root,
     env: {
       ...process.env,

@@ -1,4 +1,4 @@
-import type { EditPatch, Thing, ThingObservation } from './src/world/types.ts'
+import type { EditPatch, Thing, ThingObservation } from '../world/types.ts'
 
 export interface ResolvedThingTag {
   category?: string

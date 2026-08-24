@@ -171,7 +171,7 @@ for (const d of ['scans', 'worlds', 'summaries']) mkdirSync(join(DATA, d), { rec
 
 console.log(`[stage] starting API on ${api} (data: ${DATA})`)
 background('deno', [
-  'run', '--allow-net', '--allow-read', '--allow-write', '--allow-env', '--allow-ffi', '--allow-run', 'main.ts',
+  'run', '--allow-net', '--allow-read', '--allow-write', '--allow-env', '--allow-ffi', '--allow-run', 'server/main.ts',
 ], {
   // The colour-blob engine: no model download, no GPU, and it recognises the
   // same palette the xr8 camera mock paints, so /infer is deterministic.

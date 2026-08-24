@@ -7,7 +7,7 @@
  * listing, not once per scan.
  */
 import { assertEquals } from 'jsr:@std/assert@^1.0.0'
-import { loadSessionIndex, sessionForScan } from '../../../scan_index.ts'
+import { loadSessionIndex, sessionForScan } from '../../../server/scan_index.ts'
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: 'scan-index-' })

@@ -21,7 +21,7 @@ import { attachSparkRenderer, loadSplat, disposeSplat, type LoadedSplat } from '
 import { fetchScanSplatLayer, disposeScanSplatLayer, splatPlyUrl, splatManifestUrl, splatSogUrl, formatFinishStats, type ScanSplatLayer } from './splat-layer'
 import { fetchScanDetectLayer, type ScanDetectLayer } from './splat-detect-layer'
 import { buildTrainJobRequest, buildDetectJobRequest } from './splat-toolbox'
-import { buildThingObservationIndex, resolveThingTagsForScan } from '../../thing_tags'
+import { buildThingObservationIndex, resolveThingTagsForScan } from '../shared/thing_tags'
 import { PlacesPanel } from './places'
 import {
   computeQualityTier,

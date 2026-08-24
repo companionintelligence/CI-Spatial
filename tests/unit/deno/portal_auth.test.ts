@@ -16,7 +16,7 @@ import {
   signSession,
   verifySession,
   type PortalAuthConfig,
-} from '../../../portal_auth.ts'
+} from '../../../server/portal_auth.ts'
 
 function assert(cond: unknown, msg: string): asserts cond {
   if (!cond) throw new Error(`assertion failed: ${msg}`)

@@ -1,5 +1,5 @@
 import { assertEquals } from 'jsr:@std/assert@^1.0.0/equals'
-import { buildThingObservationIndex, resolveThingTagsForScan } from '../../../thing_tags.ts'
+import { buildThingObservationIndex, resolveThingTagsForScan } from '../../../src/shared/thing_tags.ts'
 import type { EditPatch, Thing, ThingObservation } from '../../../src/world/types.ts'
 
 const thing: Thing = {

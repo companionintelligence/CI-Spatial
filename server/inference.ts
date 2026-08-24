@@ -8,11 +8,12 @@
  *                         shared CV palette colours (test-data/cv images, xr8-mock feed)
  */
 import { fromFileUrl } from '@std/path'
+import { REPO_ROOT } from './repo-root.ts'
 import { SPATIAL_DETECTION_PROMPT, parseDetections } from './prompt.ts'
 import type { RawDetection } from './prompt.ts'
-import { classifyPixel, paletteColorNameFor } from './src/shared/cv-palette.ts'
-import { DEFAULT_MODEL_TAG } from './src/shared/model-catalog.ts'
-import { normalizeOllamaHost } from './src/shared/ollama-host.ts'
+import { classifyPixel, paletteColorNameFor } from '../src/shared/cv-palette.ts'
+import { DEFAULT_MODEL_TAG } from '../src/shared/model-catalog.ts'
+import { normalizeOllamaHost } from '../src/shared/ollama-host.ts'
 
 // Re-export shared types
 export type { RawDetection }
@@ -25,11 +26,11 @@ let JimpClass: any = null
 // onnxruntime/Jimp then fail to open.
 const MODEL_DIR = fromFileUrl(new URL(
   Deno.env.get('MODEL_DIR') ?? './public/models/LiquidAI/LFM2.5-VL-1.6B-ONNX/onnx/',
-  import.meta.url,
+  REPO_ROOT,
 ))
 const TOKENIZER_DIR = fromFileUrl(new URL(
   Deno.env.get('TOKENIZER_DIR') ?? './public/models/LiquidAI/LFM2.5-VL-1.6B-ONNX/',
-  import.meta.url,
+  REPO_ROOT,
 ))
 
 const MAX_NEW_TOKENS = 256

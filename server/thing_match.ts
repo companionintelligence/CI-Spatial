@@ -1,4 +1,4 @@
-import type { ScanManifest, Thing, ThingObservation, Vec3, WorldProject } from './src/world/types.ts'
+import type { ScanManifest, Thing, ThingObservation, Vec3, WorldProject } from '../src/world/types.ts'
 
 export const THING_MATCH_RADIUS_M = 0.75
 export const THING_MOVED_MIN_M = 0.15

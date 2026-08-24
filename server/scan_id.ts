@@ -11,7 +11,7 @@
  * Deno-API-free on purpose (ADR 0002), though nothing in `src/` should import
  * it: the server owns scan identity.
  */
-import type { ScanManifest } from './src/world/types.ts'
+import type { ScanManifest } from '../src/world/types.ts'
 
 /**
  * Lowercase `raw` into the `[a-z0-9_-]` alphabet, collapsing runs of the
