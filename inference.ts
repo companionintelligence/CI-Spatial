@@ -13,6 +13,7 @@ import type { RawDetection } from './prompt.ts'
 import { classifyPixel, paletteColorNameFor } from './src/shared/cv-palette.ts'
 import { DEFAULT_MODEL_TAG } from './src/shared/model-catalog.ts'
 import { normalizeOllamaHost } from './src/shared/ollama-host.ts'
+import { resolveOllamaModel } from './src/shared/ollama-model.ts'
 
 // Re-export shared types
 export type { RawDetection }
@@ -218,55 +219,41 @@ export class InferenceEngine {
 
     if (this._mode === 'ollama') {
       console.log(`[engine] Initializing Ollama engine (model: "${this.ollamaModel}" at ${this.ollamaUrl})…`)
+      // Only the reachability check belongs in this try. Anything thrown here
+      // is reported as "Ollama is unreachable", so a model-selection failure
+      // inside it would be misattributed to the network — the same defect this
+      // pass fixed in the AR start handler.
+      let installed: string[]
       try {
         const res = await fetch(`${this.ollamaUrl}/api/tags`)
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const data = await res.json() as { models: Array<{ name: string }> }
-        
-        // Is the requested model *actually* pulled?
-        //
-        // This has to be an exact tag comparison. It used to accept any model
-        // sharing the base name — `startsWith(requestedBase + ':')` — so a box
-        // with qwen3-vl:2b and qwen3-vl:8b pulled reported the *absent*
-        // qwen3-vl:4b as present, skipped every fallback below, and logged
-        // "Ollama connected. Target model: qwen3-vl:4b". /health then served
-        // modelReady:true while every inference 404'd with
-        // `model 'qwen3-vl:4b' not found`. The fallback machinery that exists
-        // for exactly this case was disabled by its own presence check.
-        //
-        // Ollama treats a bare name as ':latest', so normalise before comparing.
-        const withTag = (name: string) => (name.includes(':') ? name : `${name}:latest`)
-        const available = data.models.map(m => withTag(m.name))
-        const requested = withTag(this.ollamaModel)
-        const hasModel = available.includes(requested)
-
-        if (!hasModel) {
-          // Another tag of the same model is the closest substitute, and is
-          // what the old loose check was reaching for — but it has to *switch*
-          // to that tag and say so, not keep pointing at the missing one.
-          const requestedBase = requested.split(':')[0]
-          const sameBase = available.find(name => name.split(':')[0] === requestedBase)
-          const visionModels = [DEFAULT_MODEL_TAG, 'qwen3.5:4b', 'qwen3.5:2b', 'llava:7b', 'moondream:latest']
-          const knownVision = visionModels.map(withTag).find(name => available.includes(name))
-          const substitute = sameBase ?? knownVision ?? available[0]
-
-          if (!substitute) {
-            throw new Error(
-              `Ollama has no models pulled. Run: ollama pull ${this.ollamaModel}`,
-            )
-          }
-          console.warn(
-            `[engine] Model "${this.ollamaModel}" is not pulled. Using "${substitute}" instead — ` +
-            `run \`ollama pull ${this.ollamaModel}\` to use the requested one.`,
-          )
-          this.ollamaModel = substitute
-        }
-        console.log(`[engine] Ollama connected. Target model: ${this.ollamaModel}`)
+        installed = data.models.map(m => m.name)
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         console.error(`[engine] Failed to connect to Ollama:`, message)
         throw new Error(`Ollama is unreachable. Ensure Ollama is running at ${this.ollamaUrl}.`)
       }
+
+      // Which model will actually run? resolveOllamaModel() is a pure function
+      // in src/shared/ollama-model.ts so this decision is covered by
+      // ollama_model.test.ts — the loose base-name check it replaced was a
+      // one-line predicate no test could reach, and it made /health report
+      // ready for a model that 404'd on every capture.
+      const choice = resolveOllamaModel(this.ollamaModel, installed)
+      if (!choice) {
+        // Reachable but empty is a real, distinct state, and naming the pull
+        // command is the whole of the fix.
+        throw new Error(`Ollama is running but has no models pulled. Run: ollama pull ${this.ollamaModel}`)
+      }
+      if (choice.reason !== 'exact') {
+        console.warn(
+          `[engine] Model "${this.ollamaModel}" is not pulled. Using "${choice.model}" instead ` +
+          `(${choice.reason}) — run \`ollama pull ${this.ollamaModel}\` to use the requested one.`,
+        )
+      }
+      this.ollamaModel = choice.model
+      console.log(`[engine] Ollama connected. Target model: ${this.ollamaModel}`)
       return
     }
 
