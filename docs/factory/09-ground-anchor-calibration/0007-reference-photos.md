@@ -57,7 +57,7 @@ upload machinery all already exist (see Pinned conventions) — this ticket is m
 | `CaptureModule.captureThumbnail()` | `src/capture/capture.ts:79` | 256 px data-URL thumbnail for the local/offline preview |
 | multipart `image` + `meta` upload | `POST /sessions/:id/keyframes` (`main.ts:800-841`) | the exact request shape and validation pattern the new route copies |
 | `ProjectStore` / `ci-xr-projects` | `src/project/project-store.ts` | local persistence; **DB_VERSION must bump 1 → 2** for a new object store |
-| `projectStore.updateProject()` + `PUT /projects/:id` | `src/main.ts:949-953, 1543` | the existing Place write path for the frame's URL references |
+| `projectStore.updateProject()` + `PUT /projects/:id` | `src/main.ts`'s `projectStore.updateProject()` + `persistProjectSpatialFrame()` path | the existing Place write path for the frame's URL references |
 
 **New route naming** follows the existing per-resource sub-path convention
 (`/sessions/:id/keyframes`, `/projects/:id/merge`): `POST /projects/:id/reference-photos` and
@@ -91,8 +91,8 @@ store via a version bump is additive and safe; renaming the database is not.
   A: It does not, and this is the detail that makes the feature work or not. Store the tap's
   **normalised screen coordinates** alongside the image, and render a crosshair over the photo
   at those coordinates when showing it back. The tap coords are already computed in
-  `placeAt(x, y)` (`src/ar/project-calibration.ts:89`) and currently discarded after the
-  hit-test — capturing them costs nothing. Without this the feature is a vague hint; with it,
+  `runProjectCalibration()`'s `placeAt(x, y)` and currently discarded after the hit-test —
+  capturing them costs nothing. Without this the feature is a vague hint; with it,
   it points at the spot. (Decided in this ticket.)
 - Q: Local-only, or uploaded? — A: Both. Local IndexedDB makes it work offline and instantly;
   the server copy is what makes it work on a *different device*, which is the whole reason
@@ -109,11 +109,18 @@ store via a version bump is additive and safe; renaming the database is not.
   back to the same vantage; that is not built here, but the data costs nothing to keep and is
   unrecoverable later. (Decided in this ticket.)
 - Q: Does capturing a frame mid-calibration conflict with anything? — A: `captureFrame()`
-  rejects with "Capture already pending" if one is in flight (`src/ar/eighthwall.ts:310`), but
-  calibration runs before the scanner and auto-capture start (`src/main.ts:939-962` precedes
-  `scanner.start()`), so nothing else should be queued. Handle the rejection anyway — treat it
-  as a failed photo, not a failed calibration. (Decided in this ticket; verify the ordering
-  still holds after ticket 0004 restructures the flow.)
+  rejects with "Capture already pending" if one is in flight, so this needs an answer.
+  **Re-checked after ticket 0003 landed, because 0003 invalidated the original reasoning.**
+  This ticket first argued "calibration runs before the scanner starts, so nothing is
+  queued" — 0003 moved `scanner.start()` *ahead* of calibration (it had to; the ground gate
+  had no data otherwise), so that sentence is no longer true.
+  The conclusion survives on different grounds: `RoomScanner` only ever calls
+  `provider.featurePoints()`, never `captureFrame()`, so it does not touch the capture queue
+  at all; and `AutoCapture`, which does, is constructed before calibration but is opt-in and
+  cannot be toggled while the modal covers the screen. So the queue is still free during
+  calibration. Handle the rejection anyway — treat it as a failed photo, not a failed
+  calibration. (Decided in this ticket; **re-verified 2026-08-24** against the post-0003
+  ordering. Worth re-checking again after 0004 restructures the flow.)
 - Q: Should the photo be re-captured when a marker is re-placed during adjustment (0004's
   tap-near flow)? — A: Yes — the photo must match the committed position or it actively
   misleads on the next visit. Capture on commit, not on each provisional placement, so

@@ -9,7 +9,7 @@
  */
 import { assert, assertAlmostEquals, assertEquals } from 'jsr:@std/assert@^1.0.0'
 import { PointCloud } from './src/scene/pointcloud.ts'
-import { isTapOnGround } from './src/ar/ground-gate.ts'
+import { isSameHeightRetry, isTapOnGround, tapHeightAboveGroundCm } from './src/ar/ground-gate.ts'
 
 /** A controllable clock, so the recompute throttle is testable without sleeping. */
 function fakeClock(start = 0) {
@@ -172,4 +172,29 @@ Deno.test('isTapOnGround: works against a non-zero floor height', () => {
   // The estimate is in session-local metres, where the floor is rarely at 0.
   assertEquals(isTapOnGround(-1.5, -1.5), true)
   assertEquals(isTapOnGround(-0.75, -1.5), false)
+})
+
+Deno.test('tapHeightAboveGroundCm: is signed, so below-floor is not reported as above', () => {
+  // A hit can land below the estimate — a gap in the mesh, a reflective floor,
+  // or an over-high estimate. Reporting that as "above the floor" would send
+  // the user looking in the wrong direction.
+  assertEquals(tapHeightAboveGroundCm(0.75, 0), 75)
+  assertEquals(tapHeightAboveGroundCm(-0.4, 0), -40)
+  assertEquals(tapHeightAboveGroundCm(-1.1, -1.5), 40)
+  assertEquals(tapHeightAboveGroundCm(0, 0), 0)
+})
+
+Deno.test('isSameHeightRetry: only a retry at the rejected height confirms the override', () => {
+  // The copy asks the user to "tap the same height again". Honouring any
+  // second tap would let a rejected tabletop be confirmed by a tap on a shelf
+  // a metre higher — the copy would be claiming a constraint nothing applied.
+  assertEquals(isSameHeightRetry(0.75, 0.75), true, 'the same height confirms')
+  assertEquals(isSameHeightRetry(0.80, 0.75), true, 'aim wobble still confirms')
+  assertEquals(isSameHeightRetry(1.80, 0.75), false, 'a shelf a metre up does not')
+  assertEquals(isSameHeightRetry(0.0, 0.75), false, 'nor does the floor itself')
+})
+
+Deno.test('isSameHeightRetry: no pending rejection means nothing to confirm', () => {
+  assertEquals(isSameHeightRetry(0.75, null), false)
+  assertEquals(isSameHeightRetry(0.0, null), false)
 })

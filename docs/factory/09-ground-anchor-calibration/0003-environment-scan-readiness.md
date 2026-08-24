@@ -18,7 +18,7 @@ hit-test returns.
 ## The gap
 
 **No floor validation.** `runProjectCalibration()`'s copy says "Tap a spot on the ground" and
-"Aim at a textured floor and tap again" (`src/ar/project-calibration.ts:52, 102`), but the
+"Aim at a textured floor and tap again" (`src/ar/project-calibration.ts`'s overlay copy and its no-surface retry message), but the
 only rejection in the tap path is `if (!hit)`:
 
 ```ts
@@ -92,10 +92,10 @@ root-level flat `*.test.ts` importing from `./src/...`.
 
 - `src/scene/pointcloud.ts` (full file) — `estimateFloorY()` (68-74), `add()` (36-51),
   constructor/privates (12-21).
-- `src/ar/project-calibration.ts:63-75` (`update()`, the current tracking-only gate) and
+- `src/ar/project-calibration.ts`'s `update()` (`update()`, the current tracking-only gate) and
   `89-134` (`placeAt()`, where the floor gate goes).
-- `src/main.ts:939-946` — the call site; `pointCloud` is already in scope
-  (`src/main.ts:202`).
+- `src/main.ts`'s `runProjectCalibration()` call site — the call site; `pointCloud` is already in scope
+  (`src/main.ts`'s `new PointCloud(...)`).
 - `src/capture/quality-monitor.ts` — existing readiness/quality vocabulary.
 - `src/export/gltf.ts:138-139` — the `estimateFloorY()` caller that must not change.
 
@@ -113,7 +113,7 @@ root-level flat `*.test.ts` importing from `./src/...`.
 - Q: Does the readiness step block indefinitely if the floor never resolves? — A: No. After
   `GROUND_WAIT_TIMEOUT_MS = 20_000` without a locked estimate, offer "continue anyway" via
   the existing `-promoted` link treatment — the same escape hatch #141 already added for
-  stalled tracking (`src/ar/project-calibration.ts:65-69`). Proceeding this way skips the
+  stalled tracking (`update()`'s stalled-tracking branch). Proceeding this way skips the
   floor gate entirely and records nothing different in the frame; it is a UX affordance, not
   a data state. A feature-poor room must remain scannable. (Decided in this ticket.)
 - Q: Reject or warn when a tap misses the floor? — A: Reject with copy naming the discrepancy
@@ -142,7 +142,7 @@ root-level flat `*.test.ts` importing from `./src/...`.
 - Q: **(found during implementation, and it invalidated the ticket's premise) Does the point
   cloud have any data when the readiness gate runs?** — A: **No — none at all, so the gate as
   specified was inert.** This ticket's Risks section guessed the cloud would be "emptiest"
-  during calibration. It is in fact *empty*: `src/main.ts:1055` inside `scanner.start()`'s
+  during calibration. It is in fact *empty*: `src/main.ts`'s `scanner.start()` callback inside `scanner.start()`'s
   callback is the only caller of `pointCloud.add()` in the app, and `scanner.start()` ran at
   line 1054 — *after* `runProjectCalibration()` at 947. So `groundEstimate()` returned `null`
   for the whole of every calibration: the readiness step would have waited the full
@@ -207,7 +207,7 @@ readiness step gates on.
 New private state: `_groundHistory: number[]`, `_groundLocked: boolean`,
 `_lastGroundY: number | null`, `_lastGroundSampleAt: number`.
 
-New `CalibrationOptions` member (`src/ar/project-calibration.ts:13-26`), matching the existing
+New `CalibrationOptions` member (the `CalibrationOptions` interface in `src/ar/project-calibration.ts`), matching the existing
 `bearing: () => number | null` getter style so it is sampled fresh rather than captured when
 the modal opened:
 

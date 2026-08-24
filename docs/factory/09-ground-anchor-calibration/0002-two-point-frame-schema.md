@@ -106,7 +106,7 @@ shape. A `version` bump is for a genuinely breaking envelope change.
 - `src/world/types.ts:107-131` — the two types as #141 left them.
 - `src/world/geo.ts:60-98` — `composeYUpTransform` and `anchorToProjectTransform`, including
   the `bearingDeg ?? 0` line that motivates this ticket.
-- `src/ar/project-calibration.ts:118-131` — the only existing producer, which must keep
+- `src/ar/project-calibration.ts`'s `ScanCalibration`/`ProjectSpatialFrame` construction — the only existing producer, which must keep
   compiling.
 - `src/export/gltf.ts:427-432` — the sidecar keys that read `calibration.*` generically.
 - `docs/adr/0001-reuse-existing-domain-model.md`.
@@ -269,7 +269,7 @@ export type ScanCalibration = {
 
 - [ ] No behavioral test — type change; the type-check is the verification
 - [ ] `npx tsc --noEmit` fails *before* the existing producer
-      (`src/ar/project-calibration.ts:118-131`) is narrowed, and passes after — proving the
+      (`src/ar/project-calibration.ts`'s `ScanCalibration`/`ProjectSpatialFrame` construction) is narrowed, and passes after — proving the
       union actually forces narrowing rather than silently permitting field access
 - [ ] A `'two-point-ground'` literal with all required fields type-checks; one missing
       `separationM` does not

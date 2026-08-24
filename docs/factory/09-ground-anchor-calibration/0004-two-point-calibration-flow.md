@@ -95,7 +95,7 @@ for absolute orientation only, and a `'verified'` status must be backed by a mea
 
 **ADR 0001** — consumes ticket 0002's schema; adds no persisted type. The Place write path is
 the existing `projectStore.updateProject()` + `persistProjectSpatialFrame()`'s
-`PUT /projects/:id` (`src/main.ts:949-953, 1543`) — no new route or store.
+`PUT /projects/:id` (`src/main.ts`'s `projectStore.updateProject()` + `persistProjectSpatialFrame()` path) — no new route or store.
 
 **Reuse `buildAnchorMarker()`** (`src/world/anchor-marker.ts`) for both point decals — it is
 the shared "a calibration reference sits here" visual used by both the capture view and the
@@ -103,13 +103,13 @@ World Editor. Pass a bearing only for the committed frame's origin; pass `null` 
 using the dimmed state it already renders. Do not add a second decal geometry.
 
 **Reuse `provider.getScene()`** (`src/ar/provider.ts:79-87`) exactly as
-`src/ar/project-calibration.ts:111-116` already does. Every decal added during placement must
+`runProjectCalibration()`'s `provider.getScene()` decal block already does. Every decal added during placement must
 be removed on any exit path — #141 deliberately leaves the committed origin marker in the
 scene for the session; in-progress placement decals must not leak.
 
-**Reuse the existing input handlers.** `src/ar/project-calibration.ts:138-158` already
+**Reuse the existing input handlers.** `runProjectCalibration()`'s `onTouchStart`/`onPointerDown` handlers already
 handles `touchstart` + `pointerdown` with the `pointerType === 'touch'` double-fire skip and
-`placeAt()`'s non-finite/out-of-range coordinate rejection (`:93`). Extend that path; do not
+`placeAt()`'s non-finite/out-of-range coordinate rejection (in `placeAt()`). Extend that path; do not
 write a second input mechanism.
 
 **Reuse the existing overlay chrome.** `.project-calibration-card`,
@@ -124,11 +124,11 @@ which is a revert of a deletion rather than a new component.
 ## Before implementation
 
 - `src/ar/project-calibration.ts` (full file) — the flow being extended, especially
-  `placeAt()` (89-134) and the input handlers (138-158).
+  `placeAt()` and the `onTouchStart`/`onPointerDown` handlers.
 - `src/world/geo.ts:60-98` — `composeYUpTransform` and `anchorToProjectTransform`, whose
   translation arithmetic the new sibling must reuse rather than copy.
 - `src/world/anchor-marker.ts` — `buildAnchorMarker()`, `ANCHOR_RADIUS_M`.
-- `src/main.ts:939-962` — the call site and Place persistence.
+- `src/main.ts`'s `runProjectCalibration()` call site — the call site and Place persistence.
 - `index.html` — the calibration card styles as #142 left them.
 - Tickets 0002 (schema/constants) and 0003 (readiness gate).
 
@@ -182,7 +182,7 @@ Changed:
 
 None new — consumes ticket 0002's `'two-point-ground'` member.
 
-One behavioral note on an existing invariant: `src/main.ts:949` currently treats
+One behavioral note on an existing invariant: `src/main.ts`'s `if (calibration.spatialFrame)` branch currently treats
 `calibration.spatialFrame` as "this was the first calibration" (#141 returns it only then).
 A repeat visit that re-places points must also return an updated frame, so that branch's
 meaning changes from *first-ever* to *frame changed* and needs re-reading rather than
@@ -293,7 +293,7 @@ npx playwright test tests/ar-scan.spec.ts
   features. Genuine identity requires image targets or VPS anchors, out of scope for this
   wave and worth naming as the reason the cited reference calls two-point the method to use
   *when image targets are unavailable*.
-- **Risk:** Changing `src/main.ts:949`'s `spatialFrame` semantics from first-ever to
+- **Risk:** Changing `src/main.ts`'s `if (calibration.spatialFrame)` branch's `spatialFrame` semantics from first-ever to
   frame-changed could double-write or skip a write. — **Mitigation:** called out in Schema
   required and Definition of Done; that branch must be re-read, not assumed.
 - **Risk:** Re-placing a point after committing to project space mid-flow could mix
