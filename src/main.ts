@@ -1363,12 +1363,12 @@ function mountPlacePicker(
       <div class="place-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="place-title">
         <div class="place-sheet-title" id="place-title">Scanner location</div>
         <div id="place-location-status" class="place-location-status"></div>
-        <div class="place-selected-status">
+        <div class="place-selected-status${currentSelected ? '' : ' is-empty'}">
           <span class="place-selected-label">Selected project</span>
           <span class="place-selected-value${currentSelected ? '' : ' is-empty'}">${
             currentSelected
-              ? `${escapeHtml(currentSelected.name)}<small>${selectedAreaName ? escapeHtml(selectedAreaName) : 'Whole place'}</small>`
-              : 'None selected'
+              ? `${escapeHtml(currentSelected.name)}<small>Scanning ${selectedAreaName ? escapeHtml(selectedAreaName) : 'the whole place'}</small>`
+              : 'None yet — choose one below'
           }</span>
         </div>
         <div class="place-nav">
@@ -1388,7 +1388,6 @@ function mountPlacePicker(
             </span>
             <span class="place-nav-arrow" aria-hidden="true">&rsaquo;</span>
           </button>
-          <div id="place-suggestion"></div>
         </div>
         <details class="place-areas" id="place-areas"${currentSelected ? '' : ' aria-disabled="true"'}${areaSectionOpen && currentSelected ? ' open' : ''}>
           <summary>
@@ -1475,29 +1474,6 @@ function mountPlacePicker(
     // have closed by the time the message arrives.
     const setStatusMessage = (message: string) => {
       status.innerHTML = `<span class="place-location-address">${escapeHtml(message)}</span>`
-    }
-
-    // The single most likely place, inline. The arrow row above opens the
-    // rest — the common case should not cost a popup.
-    const suggestion = sheet.querySelector<HTMLElement>('#place-suggestion')!
-    const nearest = nearby[0]
-    if (nearest) {
-      const suggestionButton = document.createElement('button')
-      suggestionButton.type = 'button'
-      suggestionButton.className = 'place-nav-inline'
-      suggestionButton.innerHTML = `
-        <span class="place-nav-pin" aria-hidden="true">${PLACE_ICON_PIN}</span>
-        <span class="place-nav-inline-body">
-          <span class="place-nav-badge">Suggested</span>
-          <strong>${escapeHtml(nearest.project.name)}</strong>
-        </span>
-        <span class="place-nav-distance">${Math.round(nearest.distance ?? 0)} m away</span>`
-      suggestionButton.addEventListener('click', () => chooseProject(nearest.project))
-      suggestion.appendChild(suggestionButton)
-    } else {
-      suggestion.innerHTML = `<p class="place-nav-none">${
-        fix ? 'No saved places within 100 m.' : 'No location fix, so nothing can be suggested.'
-      }</p>`
     }
 
     // Popup list: places within 100 m, nearest first.
