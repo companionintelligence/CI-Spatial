@@ -16,7 +16,11 @@
  * THREE.Scene (via getScene()) that the calibration decal can be added to.
  * This exact combination (GlTextureRenderer + Threejs together) is proven
  * working in ar-hittest-sphere.html, the diagnostic this provider's
- * hit-test path was originally cross-checked against.
+ * hit-test path was originally cross-checked against — including that
+ * diagnostic's `window.THREE = THREE` assignment, which XR8.Threejs requires
+ * and which start() therefore makes before adding the modules. #141 ported
+ * the modules without it, and the omission stopped the 8th Wall scanner
+ * starting a session at all until 2026-08-23.
  */
 import * as THREE from 'three'
 import type { ARProvider, HitResult, Pose, RawFrame } from './provider'
@@ -242,6 +246,18 @@ export class EighthWallProvider implements ARProvider {
     await XR8.loadChunk('slam')
 
     const self = this
+
+    // XR8.Threejs reads Three off the *global* and throws
+    // "window.THREE does not exist but is required by the ThreeJS pipeline
+    // module" without it — which rejects start() and makes the 8th Wall
+    // scanner unable to begin a session at all.
+    //
+    // We import Three as an ES module, which never populates the global. The
+    // diagnostic this pipeline combination was ported from
+    // (ar-hittest-sphere.html) sets it explicitly; #141 brought the modules
+    // across and left that line behind. Assign before the modules are
+    // constructed below — XR8.Threejs.pipelineModule() reads it eagerly.
+    ;(window as unknown as { THREE: typeof THREE }).THREE = THREE
 
     XR8.addCameraPipelineModules([
       XR8.GlTextureRenderer.pipelineModule(), // draws camera feed to canvas
