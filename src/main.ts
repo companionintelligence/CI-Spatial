@@ -47,7 +47,9 @@ import * as THREE from 'three'
 
 const CAPTURE_FRAME_TIMEOUT_MS = 8000
 const TRACKING_WAIT_MS = 2500
-let requestPlaceSelection: ((afterSelection?: () => void) => void) | null = null
+let requestPlaceSelection:
+  | ((afterSelection?: () => void, purpose?: PlaceSelectionPurpose) => void)
+  | null = null
 // Upload selection is wired before IndexedDB and Place data finish loading, so
 // retain its current target in module state for the upload handler.
 let uploadPlaceTarget: { projectId: string | null; areaId: string | null } = { projectId: null, areaId: null }
@@ -161,7 +163,7 @@ async function main() {
       }
       // Every new capture starts by confirming its place, even when a project
       // was used previously. The selection defines this scan's shared frame.
-      requestPlaceSelection?.(() => { void beginArSession() })
+      requestPlaceSelection?.(() => { void beginArSession() }, 'scan')
       overlay.setStatus('Choose or create a project before calibrating the scan.')
     })
   })
@@ -1291,6 +1293,30 @@ async function resolveInitialProject(projectStore: ProjectStore): Promise<Projec
 }
 
 /**
+ * What the caller will do once a Place is confirmed.
+ *
+ * The picker is opened from two places with different consequences — starting
+ * an AR capture, and uploading existing media — and its copy was written for
+ * the first. "Scanner location" and a "Use selected place" button are wrong,
+ * or at best vague, on the upload path.
+ *
+ * A union rather than a free-form label string so a caller cannot invent a
+ * third wording that drifts from these two, and so adding a caller is a
+ * compile error here rather than a silently mislabelled dialog. Same reasoning
+ * as `DebugFlag` in src/shared/debug-flags.ts.
+ */
+export type PlaceSelectionPurpose = 'scan' | 'upload'
+
+const PLACE_MODAL_COPY: Record<PlaceSelectionPurpose, { title: string; confirm: string; verb: string }> = {
+  // `verb` completes the sentence "<verb> the whole place" / "<verb> Kitchen"
+  // in the selected-project field and the areas hint. Without it those read
+  // "Scanning…" on the upload path — the same wrong-caller wording as the
+  // button, one level down, where it is easier to miss.
+  scan: { title: 'Scanner location', confirm: 'Scan This Place', verb: 'Scanning' },
+  upload: { title: 'Upload location', confirm: 'Upload to This Place', verb: 'Uploading to' },
+}
+
+/**
  * Inline SVG for the picker's affordance rows. Inline rather than sprited or
  * fetched because index.html ships no icon system and the picker must render
  * with no network — it is the first thing shown on a capture that may be
@@ -1305,7 +1331,7 @@ function mountPlacePicker(
   geoTracker: GeoTracker,
   selected: Project | null,
   onSelect: (project: Project | null, areaId: string | null) => void,
-): { open: (afterSelection?: () => void) => void } {
+): { open: (afterSelection?: () => void, purpose?: PlaceSelectionPurpose) => void } {
   const startScreen = document.getElementById('start-screen')
   if (!startScreen) return { open: () => {} }
   let currentSelected = selected
@@ -1313,6 +1339,9 @@ function mountPlacePicker(
   let pendingSelectionAction: (() => void) | null = null
   // Survives render()'s full innerHTML rebuild, which every selection triggers.
   let areaSectionOpen = false
+  // Set by open(); defaults to 'scan' so a caller that forgets still gets the
+  // path this modal was originally written for rather than blank copy.
+  let currentPurpose: PlaceSelectionPurpose = 'scan'
 
   const sheet = document.createElement('div')
   sheet.id = 'place-sheet'
@@ -1352,22 +1381,23 @@ function mountPlacePicker(
       : nearby.length === 0
       ? 'Nothing within 100 m · opens the full list'
       : `${nearby.length} place${nearby.length === 1 ? '' : 's'} within 100 m · nearest first`
+    const copy = PLACE_MODAL_COPY[currentPurpose]
     const areaCount = currentSelected?.areas?.length ?? 0
     const areaHint = !currentSelected
       ? 'Pick a place first'
       : areaCount === 0
       ? 'No areas yet · tap to add one'
-      : `${areaCount} area${areaCount === 1 ? '' : 's'} · scanning ${selectedAreaName ?? 'the whole place'}`
+      : `${areaCount} area${areaCount === 1 ? '' : 's'} · ${copy.verb.toLowerCase()} ${selectedAreaName ?? 'the whole place'}`
 
     sheet.innerHTML = `
       <div class="place-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="place-title">
-        <div class="place-sheet-title" id="place-title">Scanner location</div>
+        <div class="place-sheet-title" id="place-title">${escapeHtml(copy.title)}</div>
         <div id="place-location-status" class="place-location-status"></div>
         <div class="place-selected-status${currentSelected ? '' : ' is-empty'}">
           <span class="place-selected-label">Selected project</span>
           <span class="place-selected-value${currentSelected ? '' : ' is-empty'}">${
             currentSelected
-              ? `${escapeHtml(currentSelected.name)}<small>Scanning ${selectedAreaName ? escapeHtml(selectedAreaName) : 'the whole place'}</small>`
+              ? `${escapeHtml(currentSelected.name)}<small>${copy.verb} ${selectedAreaName ? escapeHtml(selectedAreaName) : 'the whole place'}</small>`
               : 'None yet — choose one below'
           }</span>
         </div>
@@ -1412,7 +1442,7 @@ function mountPlacePicker(
           </div>
         </details>
         <div class="place-sheet-actions">
-          ${currentSelected ? '<button id="place-continue-btn" type="button">Use selected place</button>' : ''}
+          ${currentSelected ? `<button id="place-continue-btn" type="button" class="place-confirm">${escapeHtml(copy.confirm)}</button>` : ''}
           <button id="place-skip-btn" type="button">Cancel</button>
         </div>
       </div>
@@ -1696,8 +1726,9 @@ function mountPlacePicker(
     }
   }
 
-  const open = (afterSelection?: () => void) => {
+  const open = (afterSelection?: () => void, purpose: PlaceSelectionPurpose = 'scan') => {
     pendingSelectionAction = afterSelection ?? null
+    currentPurpose = purpose
     sheet.hidden = false
     void render()
   }
@@ -1858,7 +1889,7 @@ function wireContentUpload(): void {
   // picker directly (an unassigned upload) rather than a dead click with no
   // feedback — this is the same "no Place" path Cancel already allows.
   uploadCard?.addEventListener('click', () => {
-    if (requestPlaceSelection) requestPlaceSelection(() => input.click())
+    if (requestPlaceSelection) requestPlaceSelection(() => input.click(), 'upload')
     else input.click()
   })
 

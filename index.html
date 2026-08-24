@@ -1693,6 +1693,16 @@
       #place-area-save { min-height:36px; border:1px solid rgba(114,221,212,.55); border-radius:7px; color:var(--ci-mint); background:rgba(114,221,212,.1); font-weight:700; }
       .place-sheet-actions { display: flex; gap: 8px; margin-top: 10px; }
       .place-sheet-actions button { flex: 1; min-height: 40px; border: 1px solid var(--ci-line); border-radius: 7px; color: var(--ci-text); background: var(--ci-surface); }
+      /* The confirm button names what it will do ("Scan This Place" / "Upload
+         to This Place"), so it should also look like the thing you came here
+         to press — it sat visually identical to Cancel. */
+      .place-sheet-actions .place-confirm {
+        border-color: transparent;
+        background: #72ddd4;
+        color: #042226;
+        font-weight: 700;
+      }
+      .place-sheet-actions .place-confirm:hover { background: #8ce7df; }
 
       /* The status line exists only while the button can't be pressed. */
       #start-ar-btn .start-path-status {
