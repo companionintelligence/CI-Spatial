@@ -15,6 +15,26 @@ export const LAYER_ORDER: LayerType[] = [
   'anchor',
 ]
 
+/**
+ * Layer types that start hidden. Lives here, beside LAYER_ORDER, because two
+ * places decide this and they disagreed: `defaultLayerIndex` below wrote
+ * `visibleByDefault: false` for `anchor` (with a comment explaining why), while
+ * the editor's own runtime state derived visibility from a separate hardcoded
+ * list that omitted `anchor` — so calibration anchors rendered on every scan,
+ * which is the opposite of what the manifest recorded. One set, both readers
+ * (ADR 0001).
+ *
+ * `rgbFrames`/`depth`/`semanticMasks`/`splat` are heavy or usually absent;
+ * `anchor` is a deliberate alignment aid, not core scan geometry.
+ */
+export const LAYERS_HIDDEN_BY_DEFAULT: ReadonlySet<LayerType> = new Set<LayerType>([
+  'rgbFrames',
+  'depth',
+  'semanticMasks',
+  'splat',
+  'anchor',
+])
+
 export const LAYER_LABELS: Record<LayerType, string> = {
   points: 'Point cloud',
   mesh: 'Meshes',
@@ -45,9 +65,11 @@ export function defaultLayerIndex(meta: Record<string, unknown>): LayerManifest[
       || type === 'cameraPath'
     const hasFrames = (type === 'rgbFrames' || type === 'cameraFrustums') && (keyframeCount ?? 0) > 0
     const future = !hasFrames && (type === 'rgbFrames' || type === 'depth' || type === 'splat' || type === 'semanticMasks')
-    // Anchors are a deliberate opt-in aid, not core scan geometry — default off so
-    // they don't clutter every scan view the way point clouds do.
-    const visibleByDefault = type === 'anchor' ? false : !future
+    // `hasFrames` still decides `source` below (a scan with keyframes really does
+    // have an rgbFrames sidecar), but it no longer forces the layer visible: the
+    // editor has never shown RGB frames by default, so claiming otherwise here
+    // made the manifest describe a view the app does not render.
+    const visibleByDefault = !LAYERS_HIDDEN_BY_DEFAULT.has(type) && !future
     return {
       id: `layer-${type}`,
       type,
