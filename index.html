@@ -1218,6 +1218,14 @@
         inset: 0;
         z-index: 40;
         color: var(--ci-text);
+        /* The whole point of this overlay is that the user taps the ground
+           *through* it — the tap listeners live on the AR canvas underneath
+           (src/ar/project-calibration.ts). A full-screen fixed element with
+           the default `pointer-events: auto` is the hit target for every tap
+           in its area, so placement silently never fired. The backdrop below
+           being `none` is not enough: hit-testing then resolves to this
+           parent. Only the card takes pointer events. */
+        pointer-events: none;
       }
       .project-calibration-backdrop {
         position: absolute;
@@ -1226,6 +1234,7 @@
         background: linear-gradient(180deg, rgba(3,15,23,0.18), transparent 42%, rgba(3,15,23,0.62));
       }
       .project-calibration-card {
+        pointer-events: auto;
         position: absolute;
         right: max(16px, env(safe-area-inset-right));
         bottom: max(18px, env(safe-area-inset-bottom));
