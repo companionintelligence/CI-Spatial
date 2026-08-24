@@ -14,8 +14,8 @@ product model and migration rules live in
 ## Shipped
 
 Everything below is implemented on `main` and exercised by the test suite (31
-Playwright specs in `tests/` + 32 Deno unit tests at the repo root). The
-TypeScript codebase compiles clean.
+Playwright specs in `tests/`, 26 Deno unit tests in `tests/unit/deno/`, and 6
+Node unit tests in `tests/unit/node/`). The TypeScript codebase compiles clean.
 
 ### Capture (phone)
 

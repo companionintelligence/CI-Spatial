@@ -4,6 +4,30 @@ This guide details the test architecture, configuration, commands, and setups fo
 
 ---
 
+## 0. Where tests live
+
+Three suites, three runners. The directory is the runner — that separation used
+to live only in `deno.json`'s hand-maintained file list, where it was invisible
+and easy to break.
+
+| Path | Runner | Command | What belongs here |
+|---|---|---|---|
+| `tests/*.spec.ts` | Playwright | `npm test` | Browser and API end-to-end specs. |
+| `tests/unit/deno/` | Deno | `deno task test` | Unit tests for server-side modules. Directory glob — adding a file needs no config change. |
+| `tests/unit/node/` | `node --test` | the `npm run test:*` scripts | Unit tests for browser-side modules that need DOM lib types (IndexedDB, canvas, `document`). Deno's type-check rejects these, which is why they are a separate suite rather than a naming convention. |
+
+Two things to know before moving a test between them:
+
+- **Playwright's default `testMatch` includes `*.test.ts`**, so it would try to
+  run both unit directories. `playwright.config.ts` ignores `/unit\//` — at the
+  top level *and* in each browser project, because a project-level `testIgnore`
+  replaces the top-level value rather than merging with it.
+- **Resolve repo paths from the repo root, not from the test module.** Tests
+  that read source files or fixtures anchor on
+  `new URL('../../../', import.meta.url)`. Using `import.meta.url` directly
+  silently breaks on any move, and the failure reads as a missing fixture
+  rather than a wrong base path.
+
 ## 1. Commands
 
 ### Run Server and Dev Server
