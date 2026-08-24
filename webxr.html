@@ -129,13 +129,27 @@
       const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
         || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
 
+      // Carry this page's query string into the scanner. /webxr.html is the
+      // documented Android entry point (docs/DEVICE_TESTING.md Checklist B), so
+      // every param the scanner reads — debug, project, world, mock, onboarding
+      // — arrives here first. A hard-coded '/?ar=webxr' dropped all of them,
+      // which silently disarmed ?debug=pose on the one device path the room-loop
+      // benchmark needs it on. `ar` is set last so this entry always wins.
+      const startBtn = document.getElementById('btn-start')
+      function scannerUrl() {
+        const params = new URLSearchParams(location.search)
+        params.set('ar', 'webxr')
+        return '/?' + params.toString()
+      }
+      startBtn.href = scannerUrl()
+
       async function detect() {
         if (navigator.xr) {
           try {
             const supported = await navigator.xr.isSessionSupported('immersive-ar')
             if (supported) {
               statusEl.innerHTML = '<strong>WebXR AR is available.</strong> Opening scanner…'
-              location.replace('/?ar=webxr')
+              location.replace(scannerUrl())
               return
             }
           } catch { /* fall through to guidance */ }

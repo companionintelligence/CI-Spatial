@@ -101,7 +101,29 @@ useful second data point because its controller-driven input hits the
 
 | Device | Android | Chrome | ARCore | 1 decal | 2 world-locked | 3 no flicker | 4 north | 5 scan ok | 6 restart | Notes |
 |---|---|---|---|---|---|---|---|---|---|---|
-| | | | | | | | | | | |
+| liams-tab-s8-ultra | 16 | 151.0.7922.169 | 1.55.261550593 | — | — | — | — | — | — | 2026-08-23, driven over MCP. Session reached, decal not: see below. |
+
+**Partial run, 2026-08-23 — what a remote MCP session can and cannot reach.**
+Driven from a desk, device stationary. Established:
+
+- `/webxr.html` loads over the Tailscale cert, the `immersive-ar` support probe
+  passes, and it forwards into the scanner — **Checklist B step 1 ✅**.
+- An `immersive-ar` session starts and the dom-overlay HUD composites over it:
+  `#status-text`, the coverage chip and the capture button are all live in the
+  accessibility tree while the session runs — **Checklist B step 2 ✅**.
+- HUD read *"Tracking lost — move slowly"* throughout, which is correct for a
+  device that never moved.
+
+**Steps 1–6 of B2 remain unverified, and cannot be reached this way.** Every one
+of them is downstream of a calibration tap; a tap needs a hit-test, a hit-test
+needs tracking, and tracking needs the device carried through a textured room.
+That is a hard boundary, not a tooling gap — B2 needs a person holding the
+tablet.
+
+One further remote-only caveat: `#pose-readout` is `aria-hidden="true"` by
+design (it changes every tick and would flood a screen reader), so it never
+appears in the accessibility tree and its content cannot be read over MCP at
+all. Confirm the readout visually on the device.
 
 ```bash
 npm run qr -- "webxr.html"
@@ -157,8 +179,16 @@ not at t=0, since the pre-lock pose is meaningless.
 numbers without stopping to write them down.
 
 ```bash
-npm run qr -- "?debug=pose,remote"
+npm run qr -- "?debug=pose,remote"                 # 8th Wall path
+npm run qr -- "webxr.html?debug=pose,remote"       # WebXR path (Android)
 ```
+
+The WebXR form only started working on 2026-08-23. `/webxr.html` forwarded with
+a hard-coded `location.replace('/?ar=webxr')`, which dropped the entire query
+string — so the documented Android entry point silently disarmed the very
+readout this benchmark is built on, and `?project=` / `?world=` with it. It now
+carries the incoming params through. If you are testing an older build, reach
+the scanner as `/?ar=webxr&debug=pose,remote` directly.
 
 ### Apparatus
 

@@ -207,6 +207,26 @@ tapping a table and a chair seat characterises the gate directly. That matters �
 constant's own comment claims it "comfortably rejects … a chair seat (~0.45 m)", which is a
 20 cm margin *if the ground estimate is exact*. Nobody has measured how exact it is.
 
+**The instrument was disarmed on the WebXR device, and no test could have caught it.**
+Found 2026-08-23 while loading the benchmark URL onto the Galaxy Tab S8 Ultra over MCP.
+
+`webxr.html` — the documented Android entry point — forwarded into the scanner with a
+hard-coded `location.replace('/?ar=webxr')`. That drops the whole query string, so
+`?debug=pose` never reached `hasDebugFlag()` and the pose readout stayed inert on the one
+device path the benchmark needs it on. `?project=`, `?world=`, `?mock=` and `?onboarding=`
+were lost the same way. `#btn-start`'s static href had the identical bug.
+
+Fixed by building the forward URL from `location.search` with `ar=webxr` set last, verified
+on device: the URL bar now reads `/?debug=pose%2Cremote&ar=webxr`.
+
+Worth noting how this hid. `debug_flags.test.ts` covers `parseDebugFlags`/`hasDebugFlag` and
+passes; the readout was verified in-browser at `/index.html`, which is the *8th Wall* entry
+and reads its own query directly. Both checks were correct and neither could see the
+problem, because the defect was in a third file that sits between the QR code and the code
+under test. Same shape as this wave's ground-gate finding: the logic was right and the data
+never arrived. **Check the entry point the operator is actually told to use, not the one the
+test uses.**
+
 **Procedure 1 is unaffected and runnable as written.**
 
 ## Files impacted
