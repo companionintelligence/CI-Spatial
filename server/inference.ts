@@ -14,6 +14,7 @@ import type { RawDetection } from './prompt.ts'
 import { classifyPixel, paletteColorNameFor } from '../src/shared/cv-palette.ts'
 import { DEFAULT_MODEL_TAG } from '../src/shared/model-catalog.ts'
 import { normalizeOllamaHost } from '../src/shared/ollama-host.ts'
+import { resolveOllamaModel } from '../src/shared/ollama-model.ts'
 
 // Re-export shared types
 export type { RawDetection }
@@ -156,7 +157,22 @@ export function describeMockBlob(
 }
 
 export class InferenceEngine {
-  readonly modelId: string
+  /**
+   * Which model is actually in use, for /health and logs.
+   *
+   * A getter, not a constructor-assigned field: in ollama mode init() may
+   * substitute a different tag when the requested one is not pulled, and a
+   * field captured before init() would leave /health naming a model nothing
+   * is running. Reporting the requested name as though it were the live one
+   * is the same defect the presence check above had.
+   */
+  get modelId(): string {
+    return this._mode === 'onnx'
+      ? 'LiquidAI/LFM2.5-VL-1.6B-ONNX'
+      : this._mode === 'mock'
+      ? 'mock/color-blob-v1'
+      : `Ollama/${this.ollamaModel}`
+  }
   private _mode: 'ollama' | 'onnx' | 'mock'
   private _lastInferMs: number | null = null
   private _lastInferAt: number | null = null
@@ -177,9 +193,6 @@ export class InferenceEngine {
     this._mode = requested === 'onnx' ? 'onnx' : requested === 'mock' ? 'mock' : 'ollama'
     this.ollamaUrl = normalizeOllamaHost(Deno.env.get('OLLAMA_HOST'))
     this.ollamaModel = Deno.env.get('OLLAMA_MODEL') ?? DEFAULT_MODEL_TAG
-    this.modelId = this._mode === 'onnx' ? 'LiquidAI/LFM2.5-VL-1.6B-ONNX'
-      : this._mode === 'mock' ? 'mock/color-blob-v1'
-      : `Ollama/${this.ollamaModel}`
   }
 
   /** Resolved inference mode (INFERENCE_MODE env). */
@@ -207,38 +220,41 @@ export class InferenceEngine {
 
     if (this._mode === 'ollama') {
       console.log(`[engine] Initializing Ollama engine (model: "${this.ollamaModel}" at ${this.ollamaUrl})…`)
+      // Only the reachability check belongs in this try. Anything thrown here
+      // is reported as "Ollama is unreachable", so a model-selection failure
+      // inside it would be misattributed to the network — the same defect this
+      // pass fixed in the AR start handler.
+      let installed: string[]
       try {
         const res = await fetch(`${this.ollamaUrl}/api/tags`)
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const data = await res.json() as { models: Array<{ name: string }> }
-        
-        // Find if requested model is in active list
-        const requestedBase = this.ollamaModel.split(':')[0]
-        const hasModel = data.models.some(m => m.name === this.ollamaModel || m.name.startsWith(requestedBase + ':'))
-        
-        if (!hasModel) {
-          // Fallback check to any pulled vision models
-          const visionModels = [DEFAULT_MODEL_TAG, 'qwen3.5:4b', 'qwen3.5:2b', 'llava:7b', 'moondream:latest']
-          let foundFallback = false
-          for (const fallback of visionModels) {
-            if (data.models.some(m => m.name === fallback || m.name.startsWith(fallback + ':'))) {
-              console.warn(`[engine] Model "${this.ollamaModel}" not found in Ollama. Falling back to available model "${fallback}"`)
-              this.ollamaModel = fallback
-              foundFallback = true
-              break
-            }
-          }
-          if (!foundFallback && data.models.length > 0) {
-            console.warn(`[engine] Model "${this.ollamaModel}" not found. Trying first available model: "${data.models[0].name}"`)
-            this.ollamaModel = data.models[0].name
-          }
-        }
-        console.log(`[engine] Ollama connected. Target model: ${this.ollamaModel}`)
+        installed = data.models.map(m => m.name)
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         console.error(`[engine] Failed to connect to Ollama:`, message)
         throw new Error(`Ollama is unreachable. Ensure Ollama is running at ${this.ollamaUrl}.`)
       }
+
+      // Which model will actually run? resolveOllamaModel() is a pure function
+      // in src/shared/ollama-model.ts so this decision is covered by
+      // ollama_model.test.ts — the loose base-name check it replaced was a
+      // one-line predicate no test could reach, and it made /health report
+      // ready for a model that 404'd on every capture.
+      const choice = resolveOllamaModel(this.ollamaModel, installed)
+      if (!choice) {
+        // Reachable but empty is a real, distinct state, and naming the pull
+        // command is the whole of the fix.
+        throw new Error(`Ollama is running but has no models pulled. Run: ollama pull ${this.ollamaModel}`)
+      }
+      if (choice.reason !== 'exact') {
+        console.warn(
+          `[engine] Model "${this.ollamaModel}" is not pulled. Using "${choice.model}" instead ` +
+          `(${choice.reason}) — run \`ollama pull ${this.ollamaModel}\` to use the requested one.`,
+        )
+      }
+      this.ollamaModel = choice.model
+      console.log(`[engine] Ollama connected. Target model: ${this.ollamaModel}`)
       return
     }
 

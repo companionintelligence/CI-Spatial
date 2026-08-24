@@ -176,6 +176,59 @@ in-app warning agree.
   while the wave tunes another would produce numbers that look plausible and mean nothing.
   (Decided 2026-08-23.)
 
+**Procedure 2 cannot be run on the build this ticket landed in, and the wave's stated
+order is circular.** Found while trying to schedule the measurement, after #145/#147 merged.
+
+Procedure 2 steps 3 and 4 record `separationM` and `residualM`. Neither exists: today's
+calibration is a single ground tap, `ProjectSpatialFrame.method` has exactly one member
+(`'ground-tap-compass'`), and no code anywhere computes a separation between two markers.
+Those numbers arrive with ticket 0004 — which depends on 0002 — whose
+`DEFAULT_SEPARATION_TOLERANCE_M` this procedure is supposed to supply. So the README's
+`0006 → 0002 → 0004` order cannot be walked as written.
+
+Not a reason to guess the constant anyway. The quantity Procedure 2 is after — how
+repeatably the system reproduces a fixed physical distance across independent sessions —
+is measurable on today's build, because `?debug=pose` already reports `Δ` against the
+session's first tracked pose. Anchor that first pose to taped Point A by standing on it at
+AR start, walk to taped Point B, and the spread of `Δ` across five sessions is the same
+repeatability floor, measured through pose rather than through hit-test.
+
+Written up as **Procedure 2a** in `../../testing/DEVICE_TESTING.md`, with Procedure 2 retained and
+explicitly marked as the post-0004 confirmation run. 2a is a conservative proxy: it carries
+operator standing-position noise that aiming at a taped cross does not, so it should
+over-estimate the spread rather than under-estimate it — the safe direction, since a
+tolerance set below the true floor is what makes correct repeat visits report false
+mismatches.
+
+Procedure 2a also picks up a measurement nothing had asked for and which is available
+today: `GROUND_TAP_TOLERANCE_M = 0.25` is already live on `main`, and 0003's rejection copy
+reports the measured height in centimetres ("That looked about N cm above the floor"), so
+tapping a table and a chair seat characterises the gate directly. That matters — the
+constant's own comment claims it "comfortably rejects … a chair seat (~0.45 m)", which is a
+20 cm margin *if the ground estimate is exact*. Nobody has measured how exact it is.
+
+**The instrument was disarmed on the WebXR device, and no test could have caught it.**
+Found 2026-08-23 while loading the benchmark URL onto the Galaxy Tab S8 Ultra over MCP.
+
+`webxr.html` — the documented Android entry point — forwarded into the scanner with a
+hard-coded `location.replace('/?ar=webxr')`. That drops the whole query string, so
+`?debug=pose` never reached `hasDebugFlag()` and the pose readout stayed inert on the one
+device path the benchmark needs it on. `?project=`, `?world=`, `?mock=` and `?onboarding=`
+were lost the same way. `#btn-start`'s static href had the identical bug.
+
+Fixed by building the forward URL from `location.search` with `ar=webxr` set last, verified
+on device: the URL bar now reads `/?debug=pose%2Cremote&ar=webxr`.
+
+Worth noting how this hid. `debug_flags.test.ts` covers `parseDebugFlags`/`hasDebugFlag` and
+passes; the readout was verified in-browser at `/index.html`, which is the *8th Wall* entry
+and reads its own query directly. Both checks were correct and neither could see the
+problem, because the defect was in a third file that sits between the QR code and the code
+under test. Same shape as this wave's ground-gate finding: the logic was right and the data
+never arrived. **Check the entry point the operator is actually told to use, not the one the
+test uses.**
+
+**Procedure 1 is unaffected and runnable as written.**
+
 ## Files impacted
 
 New:

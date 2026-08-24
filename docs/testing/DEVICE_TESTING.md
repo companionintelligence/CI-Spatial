@@ -101,7 +101,29 @@ useful second data point because its controller-driven input hits the
 
 | Device | Android | Chrome | ARCore | 1 decal | 2 world-locked | 3 no flicker | 4 north | 5 scan ok | 6 restart | Notes |
 |---|---|---|---|---|---|---|---|---|---|---|
-| | | | | | | | | | | |
+| liams-tab-s8-ultra | 16 | 151.0.7922.169 | 1.55.261550593 | — | — | — | — | — | — | 2026-08-23, driven over MCP. Session reached, decal not: see below. |
+
+**Partial run, 2026-08-23 — what a remote MCP session can and cannot reach.**
+Driven from a desk, device stationary. Established:
+
+- `/webxr.html` loads over the Tailscale cert, the `immersive-ar` support probe
+  passes, and it forwards into the scanner — **Checklist B step 1 ✅**.
+- An `immersive-ar` session starts and the dom-overlay HUD composites over it:
+  `#status-text`, the coverage chip and the capture button are all live in the
+  accessibility tree while the session runs — **Checklist B step 2 ✅**.
+- HUD read *"Tracking lost — move slowly"* throughout, which is correct for a
+  device that never moved.
+
+**Steps 1–6 of B2 remain unverified, and cannot be reached this way.** Every one
+of them is downstream of a calibration tap; a tap needs a hit-test, a hit-test
+needs tracking, and tracking needs the device carried through a textured room.
+That is a hard boundary, not a tooling gap — B2 needs a person holding the
+tablet.
+
+One further remote-only caveat: `#pose-readout` is `aria-hidden="true"` by
+design (it changes every tick and would flood a screen reader), so it never
+appears in the accessibility tree and its content cannot be read over MCP at
+all. Confirm the readout visually on the device.
 
 ```bash
 npm run qr -- "webxr.html"
@@ -157,8 +179,16 @@ not at t=0, since the pre-lock pose is meaningless.
 numbers without stopping to write them down.
 
 ```bash
-npm run qr -- "?debug=pose,remote"
+npm run qr -- "?debug=pose,remote"                 # 8th Wall path
+npm run qr -- "webxr.html?debug=pose,remote"       # WebXR path (Android)
 ```
+
+The WebXR form only started working on 2026-08-23. `/webxr.html` forwarded with
+a hard-coded `location.replace('/?ar=webxr')`, which dropped the entire query
+string — so the documented Android entry point silently disarmed the very
+readout this benchmark is built on, and `?project=` / `?world=` with it. It now
+carries the incoming params through. If you are testing an older build, reach
+the scanner as `/?ar=webxr&debug=pose,remote` directly.
 
 ### Apparatus
 
@@ -207,6 +237,16 @@ higher. Record each separately; a number from one says nothing about the other.
 
 ### Procedure 2 — cross-session calibration repeatability
 
+> **Not runnable yet — it needs ticket 0004.** Steps 3 and 4 read `separationM`
+> and `residualM` off the two-point flow, and that flow does not exist: today's
+> calibration is a single ground tap, `ProjectSpatialFrame.method` has one
+> member (`'ground-tap-compass'`), and nothing anywhere computes a separation.
+> Since 0004 depends on 0002, whose `DEFAULT_SEPARATION_TOLERANCE_M` this
+> procedure is supposed to supply, the wave's stated order is circular. **Run
+> Procedure 2a below instead** — it measures the same underlying quantity with
+> what has shipped, and it is what 0002 should cite. Procedure 2 stays here as
+> the confirmation run for after 0004 lands.
+
 This is the one the calibration tolerances come from. Each run is a **separate
 session** — fully stop and restart AR between runs, so tracking re-initialises
 and the frame is genuinely rebuilt rather than carried over.
@@ -239,6 +279,71 @@ difference is the only honest measure of whether the photos help.
 | 5 | | | | | |
 
 Spread (max − min `separationM`): ______ m → proposed `DEFAULT_SEPARATION_TOLERANCE_M`: ______ m
+
+### Procedure 2a — repeatability and floor-gate characterisation, on today's build
+
+Everything Procedure 2 wants to know, measured with the one-point flow that has
+actually shipped. Two independent measurements share one set of runs.
+
+Each run is a **separate session** — fully stop and restart AR between runs.
+
+**Where the numbers come from.** `pos` is session-local, so it means nothing
+across sessions; `Δ` is anchored to the session's *first tracked pose*, so it is
+comparable across sessions only if that first pose is on a fixed physical spot.
+**Stand on taped Point A when you tap Start AR, and do not move until the HUD
+shows a pose.** That is what makes run 3 comparable to run 1.
+
+| Step | Action | Record |
+|---|---|---|
+| 1 | Stand on taped Point A. Tap **Start AR** (`#start-ar-btn`) and hold still until the readout appears | Seconds to tracking |
+| 2 | Sweep the floor until calibration says *"Floor found"* | **Seconds to ground lock** |
+| 3 | Aim at a table or counter (~0.75 m) and tap it | The **cm figure in the rejection message** — and that it *was* rejected |
+| 4 | Aim at a chair seat (~0.45 m) and tap it | Same — this is the tight end of the margin |
+| 5 | Tap taped Point A on the floor | Whether a correct floor tap is ever falsely rejected |
+| 6 | Walk the perimeter loop, return to Point A, same facing | `Δ` distance and yaw (this is Procedure 1's number, for free) |
+| 7 | Walk to taped Point B, stand on it, same facing every run | **`Δ` distance** — the measured A→B baseline |
+
+**Step 7 is the repeatability figure.** The tape does not move, so the true A→B
+distance is identical in all five runs; every centimetre of spread in `Δ` is the
+system's own. Set `DEFAULT_SEPARATION_TOLERANCE_M` above that spread.
+
+Read it as a **conservative proxy, not the real thing**: it measures pose
+repeatability at a fixed physical offset, where 0004 will measure hit-test
+repeatability against a visible mark. It carries operator noise (where exactly
+you stand, how you hold the device) that aiming at a taped cross does not, so it
+should if anything over-estimate the spread. That direction is the safe one — a
+tolerance set too tight is what makes correct repeat visits report false
+mismatches. Confirm it with the real Procedure 2 once 0004 ships.
+
+**Steps 3–5 are the floor gate.** `GROUND_TAP_TOLERANCE_M = 0.25` is live on
+`main` as a guess, and the rejection message already reports the measured height
+in centimetres, so the gate characterises itself. What matters:
+
+- A chair seat (~0.45 m) must report comfortably more than 25 cm. If it reports
+  30 cm the margin is 5 cm, not the 20 cm the constant's comment assumes.
+- A real floor tap must never be rejected. One false rejection in five runs is a
+  finding, not noise — the gate is on the path to every scan.
+
+#### Results — Procedure 2a
+
+| Run | Device | Time to track | Time to ground lock | Table tap (cm) | Chair tap (cm) | Floor tap rejected? | Loop `Δ` (dist / yaw) | A→B `Δ` distance |
+|---|---|---|---|---|---|---|---|---|
+| 1 | | | | | | | | |
+| 2 | | | | | | | | |
+| 3 | | | | | | | | |
+| 4 | | | | | | | | |
+| 5 | | | | | | | | |
+
+Tape-measured true A→B distance: ______ m (for reference; the spread is what matters, not the absolute error)
+
+Spread (max − min A→B `Δ`): ______ m → proposed `DEFAULT_SEPARATION_TOLERANCE_M`: ______ m
+
+Smallest reported chair-tap height: ______ cm → margin to `GROUND_TAP_TOLERANCE_M` (25 cm): ______ cm
+
+`MIN_POINT_SEPARATION_M` follows from the spread rather than being measured
+directly: two markers must be far enough apart that the spread is small relative
+to the baseline, or the heading derived from them is noisy. The proposed 1.0 m
+holds only if the spread is well under ~10 cm.
 
 ### Devices
 

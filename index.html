@@ -1406,7 +1406,11 @@
         z-index: 80;
         display: grid;
         align-items: center;
-        background: rgba(0, 0, 0, 0.38);
+        /* Darker than the 0.38 this used to be. The start screen behind is
+           bright, and the panel token is only 96% opaque, so its headings read
+           straight through the dialog — over the sub-labels this modal now
+           relies on to explain what each row opens. */
+        background: rgba(0, 0, 0, 0.66);
       }
 
       .place-sheet[hidden] {
@@ -1419,7 +1423,7 @@
         padding: 14px;
         border: 1px solid var(--ci-line);
         border-radius: 12px;
-        background: var(--ci-bg-elevated-strong);
+        background: #05141c;
         box-shadow: var(--ci-shadow);
       }
 
@@ -1431,8 +1435,6 @@
         text-transform: uppercase;
       }
 
-      .place-sheet-copy,
-      .place-location-status,
       .place-empty {
         margin: 0 0 10px;
         color: var(--ci-muted);
@@ -1440,44 +1442,194 @@
         line-height: 1.45;
       }
 
-      .place-selected-status {
-        margin-bottom: 10px;
-        color: var(--ci-text);
-        font-size: 12px;
-      }
-
+      /* Current location, directly under the title: coordinates first, because
+         they are the one part of the fix that is unambiguous. Accuracy sits on
+         the same line so "where am I" and "how sure" are read together. */
       .place-location-status {
-        padding: 8px 10px;
+        display: grid;
+        gap: 3px;
+        margin: 0 0 10px;
+        padding: 9px 10px;
         border-radius: 8px;
         background: rgba(114, 221, 212, 0.08);
         color: var(--ci-text);
+        font-size: 12px;
       }
-
-      #place-list,
-      #place-suggestion,
-      #place-list-other {
-        display: grid;
+      .place-location-coords {
+        display: flex;
         gap: 8px;
+        align-items: baseline;
+        justify-content: space-between;
       }
+      .place-location-coords b {
+        min-width: 0;
+        overflow-wrap: anywhere;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .place-location-accuracy { color: var(--ci-muted); font-size: 11px; white-space: nowrap; }
+      .place-location-address { color: var(--ci-muted); font-size: 11px; line-height: 1.35; }
 
-      #place-list-other { max-height: 180px; overflow: auto; }
+      /* Selected project, updated as the user picks. Always present — "None
+         selected" is information, not an empty state to hide. */
+      /* The modal's primary status: what you are about to scan. Given an accent
+         rule and a tinted field so it reads as the answer the other controls
+         are feeding, not a caption between them.
 
-      #place-list-other-heading {
-        margin: 12px 0 8px;
+         Stacked, not a label/value row: place names here are long — an address
+         plus a room name is routine — and side-by-side clipped both the name
+         and the area off the right edge at the panel's 520px cap. */
+      .place-selected-status {
+        display: grid;
+        gap: 3px;
+        margin-bottom: 12px;
+        padding: 10px 12px;
+        border: 1px solid rgba(114, 221, 212, 0.4);
+        border-left: 3px solid var(--ci-accent);
+        border-radius: 8px;
+        background: rgba(114, 221, 212, 0.09);
+        color: var(--ci-text);
+      }
+      .place-selected-label {
+        color: var(--ci-accent);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .place-selected-value { font-size: 15px; font-weight: 700; line-height: 1.3; overflow-wrap: anywhere; }
+      .place-selected-value small {
+        display: block;
+        margin-top: 2px;
         color: var(--ci-muted);
         font-size: 11px;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
+        font-weight: 500;
       }
-      #place-list-other-heading[hidden] { display: none; }
+      /* Empty reads as a prompt, not as a filled field with nothing in it. */
+      .place-selected-status.is-empty {
+        border: 1px dashed var(--ci-line);
+        border-left: 3px solid var(--ci-line);
+        background: transparent;
+      }
+      .place-selected-status.is-empty .place-selected-label { color: var(--ci-muted); }
+      .place-selected-value.is-empty { color: var(--ci-muted); font-size: 13px; font-weight: 500; }
 
-      #place-suggestion { margin-bottom: 8px; }
-      .place-suggestion-option { border-color: rgba(114, 221, 212, 0.5) !important; }
+      /* Rows that open a popup.
+         A chevron alone does not tell you that something opens, or what — so
+         each row carries a leading icon, a label, and a sub-label naming what
+         is behind it and how much. The chevron is the confirmation, not the
+         whole signal. */
+      .place-nav { display: grid; gap: 8px; }
+      .place-nav-row {
+        display: grid;
+        grid-template-columns: 28px 1fr auto;
+        gap: 10px;
+        align-items: center;
+        width: 100%;
+        min-height: 54px;
+        padding: 9px 12px;
+        border: 1px solid var(--ci-line);
+        border-radius: 8px;
+        color: var(--ci-text);
+        background: var(--ci-surface);
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+      }
+      .place-nav-row:hover,
+      .place-nav-row:focus-visible {
+        border-color: rgba(114, 221, 212, 0.55);
+        background: rgba(114, 221, 212, 0.08);
+        outline: none;
+      }
+      .place-nav-row:hover .place-nav-arrow { transform: translateX(2px); }
+      .place-nav-icon {
+        display: grid;
+        place-items: center;
+        width: 28px;
+        height: 28px;
+        border: 1px solid rgba(114, 221, 212, 0.35);
+        border-radius: 7px;
+        background: rgba(114, 221, 212, 0.1);
+        color: var(--ci-accent);
+      }
+      .place-nav-icon svg { width: 15px; height: 15px; }
+      .place-nav-label { display: grid; gap: 2px; min-width: 0; }
+      .place-nav-label b { font-size: 13px; font-weight: 600; }
+      .place-nav-label span { color: var(--ci-muted); font-size: 11px; line-height: 1.3; }
+      .place-nav-arrow {
+        flex: none;
+        color: var(--ci-accent);
+        font-size: 19px;
+        line-height: 1;
+        transition: transform 0.12s ease;
+      }
 
-      #place-list button,
-      #place-suggestion button,
-      #place-list-other button {
+      /* Nested popup. Same overlay shape as the sheet it sits on rather than a
+         second dialog language. */
+      .place-popup { position: fixed; inset: 0; z-index: 90; display: grid; align-items: center; background: rgba(0, 0, 0, 0.5); }
+      .place-popup[hidden] { display: none; }
+      .place-popup-panel {
+        width: min(460px, calc(100vw - 24px));
+        max-height: min(70vh, 560px);
+        margin: 0 auto;
+        padding: 14px;
+        overflow: auto;
+        border: 1px solid var(--ci-line);
+        border-radius: 12px;
+        background: #05141c;
+        box-shadow: var(--ci-shadow);
+      }
+      .place-popup-head {
+        display: flex;
+        gap: 8px;
+        align-items: baseline;
+        justify-content: space-between;
+        margin-bottom: 10px;
+      }
+      .place-popup-title { color: var(--ci-muted); font-size: 13px; font-weight: 700; text-transform: uppercase; }
+      .place-popup-close { border: 0; background: transparent; color: var(--ci-accent); font-size: 12px; font-weight: 700; }
+      .place-popup-scroll { display: grid; gap: 8px; max-height: 46vh; overflow: auto; }
+
+      /* Areas for the selected place. <details> so the open/closed state is the
+         browser's, not another render()-managed flag. */
+      .place-areas { margin-top: 10px; border: 1px solid var(--ci-line); border-radius: 8px; background: rgba(255, 255, 255, 0.025); }
+      /* Collapsed, a bare title says nothing about what expanding gets you.
+         The summary carries the same icon + label + sub-label shape as the
+         popup rows, and the sub-label reports what is inside — how many areas
+         exist and which is chosen — so the section is worth opening or
+         provably is not. */
+      .place-areas > summary {
+        display: grid;
+        grid-template-columns: 28px 1fr auto;
+        gap: 10px;
+        align-items: center;
+        min-height: 54px;
+        padding: 9px 12px;
+        color: var(--ci-text);
+        list-style: none;
+        cursor: pointer;
+      }
+      .place-areas > summary::-webkit-details-marker { display: none; }
+      .place-areas > summary:hover { background: rgba(114, 221, 212, 0.05); border-radius: 8px; }
+      .place-areas-chevron {
+        flex: none;
+        color: var(--ci-accent);
+        font-size: 15px;
+        line-height: 1;
+        transition: transform 0.14s ease;
+      }
+      .place-areas[open] .place-areas-chevron { transform: rotate(90deg); }
+      .place-areas[aria-disabled='true'] > summary { color: var(--ci-muted); cursor: not-allowed; }
+      .place-areas[aria-disabled='true'] .place-nav-icon { border-color: var(--ci-line); background: transparent; color: var(--ci-muted); }
+      .place-areas[aria-disabled='true'] .place-areas-chevron { color: var(--ci-muted); }
+      .place-areas-body { display: grid; gap: 7px; padding: 0 12px 12px; }
+
+      #place-nearby-list { display: grid; gap: 8px; }
+
+      #place-nearby-list button {
         min-height: 42px;
         border: 1px solid var(--ci-line);
         border-radius: 8px;
@@ -1485,28 +1637,18 @@
         background: var(--ci-surface);
       }
 
-      #place-list .place-option,
-      #place-suggestion .place-option,
-      #place-list-other .place-option {
+      #place-nearby-list .place-option {
         display: grid;
         gap: 3px;
         padding: 10px 12px;
         text-align: left;
       }
+      #place-nearby-list .place-option-selected { border-color: rgba(114, 221, 212, 0.72); background: rgba(114, 221, 212, 0.1); }
 
       .place-option strong { font-size: 14px; }
       .place-option span { color: var(--ci-muted); font-size: 11px; }
 
-      #place-new-form {
-        display: grid;
-        gap: 8px;
-        margin-top: 10px;
-        padding: 10px;
-        border: 1px solid var(--ci-line);
-        border-radius: 8px;
-      }
-
-      #place-new-form[hidden] { display: none; }
+      #place-new-form { display: grid; gap: 8px; }
       #place-new-form label { display: grid; gap: 4px; color: var(--ci-muted); font-size: 11px; }
       #place-new-form input {
         min-height: 36px;
@@ -1519,9 +1661,6 @@
       .place-coordinate-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
       .place-new-name-preview { min-height: 14px; color: var(--ci-muted); font-size: 11px; }
       #place-new-save { min-height: 40px; border: 0; border-radius: 7px; color: #042226; background: #72ddd4; font-weight: 700; }
-      .place-area-picker { display:grid; gap:7px; margin-top:10px; padding:10px; border:1px solid var(--ci-line); border-radius:8px; background:rgba(255,255,255,.025); }
-      .place-area-heading { color:var(--ci-text); font-size:12px; font-weight:700; }
-      .place-area-heading span { color:var(--ci-muted); font-weight:400; }
       #place-area-list { display:grid; gap:5px; max-height:160px; overflow:auto; }
       #place-area-list .place-option { display:grid; gap:3px; padding:8px 9px; text-align:left; border:1px solid var(--ci-line); border-radius:7px; color:var(--ci-text); background:var(--ci-surface); }
       #place-area-list .place-option-selected { border-color:rgba(114,221,212,.72); background:rgba(114,221,212,.1); }
@@ -1554,6 +1693,16 @@
       #place-area-save { min-height:36px; border:1px solid rgba(114,221,212,.55); border-radius:7px; color:var(--ci-mint); background:rgba(114,221,212,.1); font-weight:700; }
       .place-sheet-actions { display: flex; gap: 8px; margin-top: 10px; }
       .place-sheet-actions button { flex: 1; min-height: 40px; border: 1px solid var(--ci-line); border-radius: 7px; color: var(--ci-text); background: var(--ci-surface); }
+      /* The confirm button names what it will do ("Scan This Place" / "Upload
+         to This Place"), so it should also look like the thing you came here
+         to press — it sat visually identical to Cancel. */
+      .place-sheet-actions .place-confirm {
+        border-color: transparent;
+        background: #72ddd4;
+        color: #042226;
+        font-weight: 700;
+      }
+      .place-sheet-actions .place-confirm:hover { background: #8ce7df; }
 
       /* The status line exists only while the button can't be pressed. */
       #start-ar-btn .start-path-status {
