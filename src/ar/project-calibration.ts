@@ -2,7 +2,7 @@ import type { ARProvider, HitResult } from './provider'
 import type { Project, ProjectSpatialFrame, ScanCalibration } from '../world/types'
 import { anchorToProjectTransform } from '../world/geo'
 import { buildAnchorMarker } from '../world/anchor-marker'
-import { isTapOnGround, tapHeightAboveGroundCm } from './ground-gate'
+import { isSameHeightRetry, isTapOnGround, tapHeightAboveGroundCm } from './ground-gate'
 
 const TRACKING_TIMEOUT_MS = 10_000
 /**
@@ -60,8 +60,12 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
   let groundWaitStartedAt = Date.now()
   /** Set when the user chooses to place without a settled floor estimate. */
   let groundWaitOverridden = false
-  /** A tap rejected as off-floor arms a one-shot override on the next attempt. */
-  let offGroundTapPending = false
+  /**
+   * Height of the most recent tap rejected as off-floor, or null. A retry at
+   * this height is the confirmation the override asks for; a tap anywhere else
+   * is a fresh attempt and is gated normally.
+   */
+  let offGroundTapY: number | null = null
 
   const overlay = document.createElement('section')
   overlay.id = 'project-calibration'
@@ -164,20 +168,28 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
         // silently became a project origin ~0.75 m above the floor, and every
         // scan aligned through that frame inherited the offset.
         //
-        // Rejected on the first attempt, accepted on an immediate retry: a hard
-        // reject would trap a user whose floor estimate is itself wrong (thick
-        // carpet, a mezzanine, a sunken room), and a bare warning would be
-        // ignored. Two steps keeps the default safe and the override explicit.
+        // Rejected on the first attempt, accepted on a retry at the same
+        // height: a hard reject would trap a user whose floor estimate is
+        // itself wrong (thick carpet, a mezzanine, a sunken room), and a bare
+        // warning would be ignored. Two steps keeps the default safe and the
+        // override explicit.
+        //
+        // The retry must match the rejected height, not merely be the next tap.
+        // Honouring any second tap would let a rejected tabletop be confirmed
+        // by a tap on a shelf a metre higher — not what the user was asked to
+        // confirm, and the copy would be claiming a constraint nothing applied.
         const groundY = options.ground()?.y ?? null
-        if (!offGroundTapPending && !isTapOnGround(hit.position.y, groundY)) {
-          offGroundTapPending = true
+        const confirmingRejectedHeight = isSameHeightRetry(hit.position.y, offGroundTapY)
+        if (!confirmingRejectedHeight && !isTapOnGround(hit.position.y, groundY)) {
+          offGroundTapY = hit.position.y
           tapInFlight = false
-          const deltaCm = Math.abs(tapHeightAboveGroundCm(hit.position.y, groundY as number))
+          const delta = tapHeightAboveGroundCm(hit.position.y, groundY as number)
+          const side = delta >= 0 ? 'above' : 'below'
           status.textContent =
-            `That looked about ${deltaCm} cm above the floor. Tap the floor, or tap the same spot again to use it anyway.`
+            `That looked about ${Math.abs(delta)} cm ${side} the floor. Aim at the floor, or tap the same height again to use it anyway.`
           return
         }
-        offGroundTapPending = false
+        offGroundTapY = null
 
         const bearingDeg = options.bearing()
         const sessionToProject = anchorToProjectTransform(hit.position, bearingDeg)

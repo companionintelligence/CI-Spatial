@@ -38,7 +38,31 @@ export function isTapOnGround(tapY: number, groundY: number | null): boolean {
   return Math.abs(tapY - groundY) <= GROUND_TAP_TOLERANCE_M
 }
 
-/** Height above (positive) or below the floor estimate, in centimetres, for UI copy. */
+/**
+ * Signed height relative to the floor estimate, in centimetres, for UI copy.
+ * Positive is above the floor, negative below — a below-floor hit is real
+ * (a gap in the mesh, a reflective surface, or an over-high estimate) and
+ * reporting it as "above" would send the user looking in the wrong direction.
+ */
 export function tapHeightAboveGroundCm(tapY: number, groundY: number): number {
   return Math.round((tapY - groundY) * 100)
+}
+
+/**
+ * Whether a retry is at the same height as the tap that was just rejected —
+ * the confirmation the off-floor override actually asks for.
+ *
+ * The override exists so a user whose floor estimate is wrong (thick carpet, a
+ * mezzanine, a sunken room) can insist on a height. Honouring *any* second tap
+ * would let a rejected tabletop tap be confirmed by a tap on a shelf a metre
+ * higher, which is not what the user was asked to confirm and not what they
+ * would think they had done.
+ *
+ * Reuses GROUND_TAP_TOLERANCE_M: "the same height" and "close enough to the
+ * floor" are the same order of judgement, and a second constant here would be
+ * one more thing to retune with no independent meaning.
+ */
+export function isSameHeightRetry(tapY: number, rejectedTapY: number | null): boolean {
+  if (rejectedTapY === null) return false
+  return Math.abs(tapY - rejectedTapY) <= GROUND_TAP_TOLERANCE_M
 }

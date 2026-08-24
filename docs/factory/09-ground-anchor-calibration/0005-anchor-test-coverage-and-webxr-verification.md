@@ -113,7 +113,7 @@ rather than inventing a parallel document. Note #141/#142 already edited that fi
   until measured). (Decided in this ticket.)
 - Q: Which device? — A: Per `docs/DEVICE_TESTING.md`'s fleet, an ARCore-backed Android is
   required — the Galaxy Tab S9 Ultra or S8 Ultra. Quest browser is a useful second data point
-  because it exercises the controller-driven `pointerdown` path (`project-calibration.ts:153`)
+  because it exercises the controller-driven `pointerdown` path (`runProjectCalibration()`'s `onPointerDown` handler)
   that a touchscreen never hits, but is not required. iPhone/Safari does **not** exercise this
   code at all (no `immersive-ar`; it runs the 8th Wall provider). (Decided in this ticket.)
 

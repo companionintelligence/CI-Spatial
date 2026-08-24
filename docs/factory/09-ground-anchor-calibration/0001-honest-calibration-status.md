@@ -9,7 +9,7 @@
 
 Stop `ScanCalibration.status` reporting `'verified'` for a calibration that was never
 verified against anything. As of #141, `status` is set from `existingFrame ? 'verified' :
-'provisional'` (`src/ar/project-calibration.ts:124`) — it reports whether a
+'provisional'` (`src/ar/project-calibration.ts`'s `ScanCalibration` construction) — it reports whether a
 `spatialFrame` *record existed*, not whether this session's anchor agrees with it.
 
 ## The defect, precisely
@@ -29,7 +29,7 @@ residual against) but kept the word. Today:
 - If the user taps a spot 3 m from where they tapped last visit, the two scans are
   misaligned by 3 m — and the second one is labelled `'verified'`.
 
-The user-facing string is the sharper end of it: `src/main.ts:957` prints **"Project aligned
+The user-facing string is the sharper end of it: `src/main.ts`'s post-calibration status message prints **"Project aligned
 to the existing anchor."** on exactly this path. Nothing aligned it to the existing anchor.
 
 This is the same class of defect as the `04-capture-path-truthfulness` wave: a claim the
@@ -61,7 +61,7 @@ for absolute orientation only, and a `'verified'` status must be backed by a mea
 **ADR 0001** — touches schema (`ScanCalibration.status` semantics, `src/world/types.ts:127`).
 This ticket extends no type and adds no field; it changes which existing union member is
 written and the copy describing it. Searched for other producers of
-`ScanCalibration.status` before scoping: `src/ar/project-calibration.ts:124` is the only
+`ScanCalibration.status` before scoping: `src/ar/project-calibration.ts`'s `ScanCalibration` construction is the only
 write site repo-wide (`src/export/gltf.ts` reads it through to the sidecar;
 `src/viewer/viewer.ts` reads `ScanManifest.calibrationStatus`). No parallel status concept
 exists to reconcile with.
@@ -76,9 +76,9 @@ and tap again.'`). Match it.
 
 ## Before implementation
 
-- `src/ar/project-calibration.ts:38-44, 118-132` — `existingFrame`/`isFirstCalibration` and
+- `src/ar/project-calibration.ts` — `runProjectCalibration()`'s `existingFrame`/`isFirstCalibration` and its `ScanCalibration` construction — `existingFrame`/`isFirstCalibration` and
   the `ScanCalibration` construction that sets `status`.
-- `src/main.ts:947-962` — the call site and the two status strings it prints.
+- `src/main.ts`'s `runProjectCalibration()` call site — the call site and the two status strings it prints.
 - `src/world/types.ts:111-131` — `ProjectSpatialFrame`/`ScanCalibration` as #141 left them.
 - `src/viewer/viewer.ts` `addAnchorMarker()` — the one consumer that branches on
   `calibrationStatus`, to confirm this change doesn't alter viewer behavior.
@@ -212,7 +212,7 @@ deno task test
 
 1. [x] Change the `status` assignment in `src/ar/project-calibration.ts` to `'provisional'`
        with an explanatory comment
-2. [x] Rewrite both post-calibration status strings in `src/main.ts:954-958`
+2. [x] Rewrite both post-calibration status strings in `src/main.ts`'s post-calibration `overlay.setStatus()` branch
 3. [x] Add the status-semantics comment to `ScanCalibration` in `src/world/types.ts`
 4. [ ] ~~Add/extend the unit tests per Tests~~ — deferred, see Open questions & answers
 5. [x] Grep for any other `'verified'` producer; confirm none remain
