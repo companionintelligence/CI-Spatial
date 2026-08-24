@@ -21,7 +21,7 @@ import { attachSparkRenderer, loadSplat, disposeSplat, type LoadedSplat } from '
 import { fetchScanSplatLayer, disposeScanSplatLayer, splatPlyUrl, splatManifestUrl, splatSogUrl, formatFinishStats, type ScanSplatLayer } from './splat-layer'
 import { fetchScanDetectLayer, type ScanDetectLayer } from './splat-detect-layer'
 import { buildTrainJobRequest, buildDetectJobRequest } from './splat-toolbox'
-import { buildThingObservationIndex, resolveThingTagsForScan } from '../../thing_tags'
+import { buildThingObservationIndex, resolveThingTagsForScan } from '../shared/thing_tags'
 import { PlacesPanel } from './places'
 import {
   computeQualityTier,
@@ -32,7 +32,7 @@ import {
   type QualityTier,
 } from './quality-tier'
 import { distanceM, enuToGeo, hasGeoPose, matrixTranslation } from '../world/geo'
-import { LAYER_LABELS, LAYER_ORDER } from '../world/layers'
+import { LAYER_LABELS, LAYER_ORDER, LAYERS_HIDDEN_BY_DEFAULT } from '../world/layers'
 import { buildAnchorMarker } from '../world/anchor-marker'
 import { registerPWA } from '../pwa'
 import { iconLabel } from '../ui/icons'
@@ -170,7 +170,7 @@ let currentProject: Project | null = null
 // later also finishes later, so its status always wins.
 const scanLoadChains = new Map<string, Promise<void>>()
 const globalLayerVisible = LAYER_ORDER.reduce((acc, type) => {
-  acc[type] = type !== 'rgbFrames' && type !== 'depth' && type !== 'semanticMasks' && type !== 'splat'
+  acc[type] = !LAYERS_HIDDEN_BY_DEFAULT.has(type)
   return acc
 }, {} as Record<LayerType, boolean>)
 
@@ -3052,6 +3052,7 @@ function syncViewMenu(): void {
   setChecked('view-toggle-images', globalLayerVisible.rgbFrames)
   setChecked('view-toggle-grid', groundGrid?.visible ?? true)
   setChecked('view-toggle-labels', labelsVisible && globalLayerVisible.labels)
+  setChecked('view-toggle-anchors', globalLayerVisible.anchor)
 }
 
 function renderToolbarSummary(queueJobs: WorldJob[]): void {
@@ -3813,6 +3814,12 @@ viewToggle('view-toggle-grid')?.addEventListener('change', (event) => {
 viewToggle('view-toggle-labels')?.addEventListener('change', (event) => {
   labelsVisible = (event.target as HTMLInputElement).checked
   globalLayerVisible.labels = labelsVisible
+  renderLayerPanel()
+  applyLayerVisibility()
+})
+
+viewToggle('view-toggle-anchors')?.addEventListener('change', (event) => {
+  globalLayerVisible.anchor = (event.target as HTMLInputElement).checked
   renderLayerPanel()
   applyLayerVisibility()
 })

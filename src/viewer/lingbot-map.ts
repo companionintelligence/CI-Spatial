@@ -15,7 +15,7 @@
  */
 import * as THREE from 'three'
 import type { ScanManifest, PipelineManifestBase } from '../world/types'
-import { parseLingBotMapPLY } from '../../lingbot_map_ply.ts'
+import { parseLingBotMapPLY } from '../shared/lingbot_map_ply.ts'
 
 /**
  * lingbot-map.manifest.json is written by a Python worker

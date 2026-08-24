@@ -7,7 +7,7 @@
  * resolved values were awaited and discarded, so a user who tapped
  * "Don't Allow" got no banner and landed in a session that never tracks,
  * staring at "Move camera to initialise tracking…" with nothing to explain it.
- * `docs/UX_FLOW.md` §3.2 item 3 was written to kill exactly this path; the
+ * `../docs/product/UX_FLOW.md` §3.2 item 3 was written to kill exactly this path; the
  * banner and its copy were already correct, only the trigger was wrong.
  *
  * Headless Chromium has `DeviceOrientationEvent` but not `requestPermission`

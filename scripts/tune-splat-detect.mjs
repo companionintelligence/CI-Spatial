@@ -10,7 +10,7 @@
  * fixtures are furniture-free). This runs the sweep, writes one interactions
  * JSON per parameter set, and prints a comparison table so you can eyeball the
  * winner and set it as the SPLAT_DETECT_* env defaults (see
- * docs/SPLAT_DETECT_ROADMAP.md, Phase 1).
+ * ../docs/pipelines/SPLAT_DETECT_ROADMAP.md, Phase 1).
  *
  *   node scripts/tune-splat-detect.mjs <trained-splat.ply> [--prompt "sofa, bed, tv"]
  *     [--out <dir>] [--quality medium] [--grid votes=2,4,8;score=0.08,0.12;peak=0.3,0.4]

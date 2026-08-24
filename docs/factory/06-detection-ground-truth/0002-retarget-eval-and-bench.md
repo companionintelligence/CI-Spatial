@@ -73,7 +73,7 @@ No new type, no new config format.
 - `scripts/eval-cv.mjs` in full — it is short, and `:23`'s env pattern is the model to copy
 - `scripts/bench-models.mjs:1-30` — how candidates are scored and what the mock baseline is
 - `README.md:148, 423` — the two places the harness's purpose is described
-- `docs/README.md:8`, `docs/UX_FLOW.md:227` — other places the inference modes are explained
+- `docs/README.md:8`, `../../product/UX_FLOW.md:227` — other places the inference modes are explained
 - 0001's corpus layout and any `acceptableLabels` addition
 
 ## Open questions & answers
@@ -97,7 +97,7 @@ Changed:
 - `scripts/eval-cv.mjs` — corpus selection
 - `scripts/bench-models.mjs` — target the discriminating corpus
 - `README.md:148, 423` — stop claiming the synthetic corpus ranks models
-- `docs/README.md`, `docs/UX_FLOW.md` — same claim, other locations
+- `docs/README.md`, `../../product/UX_FLOW.md` — same claim, other locations
 - `package.json` — script wiring if a second npm entry point is warranted
 
 ## Schema required

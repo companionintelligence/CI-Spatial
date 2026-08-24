@@ -124,7 +124,7 @@ for (const route of ['/rtc-signal', '/events']) {
 }
 
 // main.ts's static handler rewrites `/editor` (the Spatial Editor's canonical
-// URL — see README.md, docs/UX_FLOW.md) to viewer.html; Vite's dev server has
+// URL — see README.md, docs/product/UX_FLOW.md) to viewer.html; Vite's dev server has
 // no equivalent, so the same URL falls through to the SPA fallback (index.html,
 // the scanner start screen) instead. Mirror the rewrite here so `/editor` works
 // identically on `vite dev` and the production Deno static server.

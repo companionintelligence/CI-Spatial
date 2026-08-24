@@ -4,6 +4,45 @@ const EARTH_RADIUS_M = 6_378_137
 const DEG_TO_RAD = Math.PI / 180
 const RAD_TO_DEG = 180 / Math.PI
 
+/**
+ * Spatial-frame capture parameters for the `'two-point-ground'` calibration
+ * tier. They live here rather than in `src/world/types.ts` because that file is
+ * types-only (zero runtime exports) and this module already owns the frame math
+ * these values parameterise — `anchorToProjectTransform` below.
+ *
+ * Both are **placeholders pending measurement by wave 09 ticket 0006**, pinned
+ * here so ticket 0004's capture flow does not invent its own.
+ */
+
+/**
+ * Max acceptable deviation, in metres, between a stored landmark→marker
+ * separation and the one a later session re-measures.
+ *
+ * Tighter than the retired 3-point method's one-foot (0.3048 m) default,
+ * because a single distance between two deliberately-chosen features is a
+ * cleaner measurement than three interdependent ones. But it is a guess: the
+ * only empirical spatial-repeatability figure in this repo is
+ * `DEDUP_RADIUS_M = 0.4` (`src/spatial/resolver.ts`), widened from 0.3 because
+ * same-object captures land 0.3–0.4 m apart. That measures detection placement
+ * rather than a direct floor tap, so it is an upper bound rather than a
+ * refutation — but it is more than twice this value, so if the real spread
+ * exceeds this tolerance the check will fire on correct calibrations.
+ */
+export const DEFAULT_SEPARATION_TOLERANCE_M = 0.15
+
+/**
+ * Minimum landmark→marker baseline, in metres. Enforced by the capture flow
+ * (ticket 0004), not by the type.
+ *
+ * Heading error is roughly hit-test noise divided by separation, so short
+ * baselines amplify angular error: two points 20 cm apart with ~3 cm noise give
+ * ~8° of heading uncertainty — worse than a decent compass, which defeats the
+ * point of the tier. One metre keeps it near 2°. The ~3 cm noise figure is
+ * itself assumed; if ticket 0006 measures materially worse hit-test
+ * repeatability, this must rise proportionally to hold the same angular error.
+ */
+export const MIN_POINT_SEPARATION_M = 1.0
+
 export function identityMatrix(): number[] {
   return [
     1, 0, 0, 0,

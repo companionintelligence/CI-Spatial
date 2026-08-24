@@ -96,7 +96,7 @@ awareness of the gimbal at all (see below).
 
 This lives at `subsystems/osmo-ble/` inside the CI-Spatial repo as its gimbal-control
 subsystem — registered via the repo root's `.mcp.json`, with the integration contract documented
-in `../../docs/GIMBAL_INTEGRATION.md`. Key finding from that integration: CI-Spatial's scanner
+in `../../docs/operations/GIMBAL_INTEGRATION.md`. Key finding from that integration: CI-Spatial's scanner
 client auto-captures purely off the phone's own tracked movement (distance/rotation thresholds),
 so no signaling between this subsystem and the scanner client is needed for a basic sweep —
 physically moving the phone via `gimbal_sweep` is sufficient on its own. For an exact photo
