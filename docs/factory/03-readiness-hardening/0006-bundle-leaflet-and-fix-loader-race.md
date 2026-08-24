@@ -99,7 +99,7 @@ roughly double the phone capture app's critical path for a feature behind a draw
   Verify once at runtime anyway — the acceptance criteria require the map to actually
   render. (decided during drafting, 2026-08-17)
 - Q: New spec file for the offline case? — A: **No.** `e2e-suite` Test 30 already owns this
-  by name and is cited in `TEST_INFRA.md:78`; it simply asserts nothing today (its
+  by name and is cited in `../../testing/TEST_INFRA.md:78`; it simply asserts nothing today (its
   `return threw || geoMap !== null` is tautological). Extend it. A third file would be the
   test-suite version of this repo's duplicate-`ScanManifest` mistake. (decided during
   drafting, 2026-08-17)
@@ -123,9 +123,9 @@ roughly double the phone capture app's critical path for a feature behind a draw
   hand-rolled `LeafletMap`/`LeafletMarker` types (`:1266-1270`) in favour of
   `import('leaflet').Map` / `.Marker`.
 - **Changed:** `tests/e2e-suite.spec.ts` — rewrite Test 30 (`:892-912`).
-- **Changed:** `TEST_INFRA.md:78` — the line claims "CDN Leaflet library load failure
+- **Changed:** `../../testing/TEST_INFRA.md:78` — the line claims "CDN Leaflet library load failure
   recovery", which is false twice over (nothing was asserted, and there is no longer a CDN).
-- **Changed:** `docs/UI_MANUAL.md` — `:347` cites `src/main.ts:884-947` for
+- **Changed:** `../../product/UI_MANUAL.md` — `:347` cites `src/main.ts:884-947` for
   `initDrawerGeoMap`, which now lives at `1264-1345`; fix the citation while editing it.
 - **Changed:** `docs/factory/atlas.html` — see the wave README.
 
@@ -173,7 +173,7 @@ already-vendored `@types/leaflet` declarations.
          assertion, or the two should be folded together. Asserting the render in both is
          the duplication this wave is supposed to avoid.
 - [ ] `tests/ar-scan.spec.ts:649-658` — must keep passing, now without network reliance.
-- [ ] `tests/mock-ui-desktop.spec.ts:107-113` → `docs/ui-flow/desktop/10-geomap.png` — the
+- [ ] `tests/mock-ui-desktop.spec.ts:107-113` → `../../product/ui-flow/desktop/10-geomap.png` — the
       visual check for the CSS load-order change.
 - [ ] Type-level: `tsc --noEmit` clean after deleting the hand-rolled types.
 
@@ -244,5 +244,5 @@ VITE_URL=https://localhost:5173 npx playwright test --project=chromium-mock test
 7. [ ] Rewrite Test 30 with the route-abort and the `cdnHits` assertion; confirm it **fails**
        against the pre-fix code.
 8. [ ] Run the three browser legs; refresh `10-geomap.png` only if the diff is explainable.
-9. [ ] Fix `TEST_INFRA.md:78` and the stale `docs/UI_MANUAL.md:347` citation.
+9. [ ] Fix `../../testing/TEST_INFRA.md:78` and the stale `../../product/UI_MANUAL.md:347` citation.
 10. [ ] Flip this ticket's atlas diff to `is-done` with the merged PR number.

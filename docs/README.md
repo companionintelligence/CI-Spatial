@@ -9,51 +9,83 @@ and shareable with scoped capabilities. Inference is
 `LiquidAI/LFM2.5-VL-1.6B-ONNX`, and `mock` is a deterministic colour-blob CV
 engine for CI and tests.
 
-This index lists every doc, grouped by purpose. Each doc owns exactly one thing —
-see the group headers for where to look.
+Docs are grouped by directory, and each doc owns exactly one thing. The
+directory is the grouping — if you are adding a doc, put it in the folder whose
+description it fits rather than at this level.
 
-## Getting started
+| Folder | Owns |
+|---|---|
+| *(this level)* | The two cross-cutting authorities — system design and status — plus the Factory workflow. |
+| [`product/`](product/) | What the product is and how it behaves: vocabulary, user journeys, UI reference. |
+| [`operations/`](operations/) | Running it: deploy, CI, and hardware subsystems. |
+| [`testing/`](testing/) | How it is verified: test architecture, on-device QA, fixture banks. |
+| [`pipelines/`](pipelines/) | The reconstruction processors and their integrations. |
+| [`adr/`](adr/) | Architecture Decision Records — decisions that outlive a single ticket. |
+| [`factory/`](factory/) | Ticket waves. Local-only; never pushed to an issue board. |
+
+## Top level
+
 | Doc | What it covers |
 |---|---|
 | [../README.md](../README.md) | Front door: what CI-Spatial is, quick start, the engine-agnostic inference explainer, and pointers into every other doc. |
-| [PLACE_SCAN_DESIGN.md](PLACE_SCAN_DESIGN.md) | **Current product contract** — Place/Area/Scan/Layer/Thing vocabulary, capture and upload flows, alignment, processing, sharing, GIS, and migration rules. |
+| [architecture.md](architecture.md) | **Canonical system-design authority** — architecture diagrams, the 4D world data model, the complete API + world-job tables, deployment topology, Design Decisions, and Implementation Notes. |
+| [roadmap.md](roadmap.md) | The **only** owner of timelines and status — what has shipped vs. what is planned. |
+| [FACTORY.md](FACTORY.md) | The Factory ticket workflow, the atlas, and how a wave justifies itself. |
 
-## Architecture
+## product/ — what it is and how it behaves
+
 | Doc | What it covers |
 |---|---|
-| [../architecture.md](../architecture.md) | **Canonical system-design authority** — architecture diagrams, the 4D world data model, the complete API + world-job tables, deployment topology, Design Decisions, and Implementation Notes. |
-| [../roadmap.md](../roadmap.md) | The **only** owner of timelines and status — what has shipped vs. what is planned. |
+| [product/PLACE_SCAN_DESIGN.md](product/PLACE_SCAN_DESIGN.md) | **Current product contract** — Place/Area/Scan/Layer/Thing vocabulary, capture and upload flows, alignment, processing, sharing, GIS, and migration rules. |
+| [product/UX_FLOW.md](product/UX_FLOW.md) | The everyday-user first-time journey (FTUE) — the happy path from place selection through capture or upload, calibration, structure, reconstruct, and share. |
+| [product/UI_MANUAL.md](product/UI_MANUAL.md) | Surface-by-surface UI reference — the exhaustive control catalog for the AR HUD, start screen, and desktop editor. |
+| [product/ui-flow/](product/ui-flow/) | **Screenshot gallery** — mobile + desktop captures of every UI/UX flow, generated automatically from the running app. |
+| [product/ui-manual/](product/ui-manual/) | Screenshots backing the UI manual. |
 
-## UX & flows
+## operations/ — running it
+
 | Doc | What it covers |
 |---|---|
-| [UX_FLOW.md](UX_FLOW.md) | The everyday-user first-time journey (FTUE) — the happy-path story from place selection through capture or upload, calibration, structure, reconstruct, and share. |
-| [ui-flow/](ui-flow/) | **Screenshot gallery** — mobile + desktop screenshots of every UI/UX flow, generated automatically from the running app. |
-| [UI_MANUAL.md](UI_MANUAL.md) | Surface-by-surface UI reference — the exhaustive control catalog for the AR HUD, start screen, and desktop editor. |
+| [operations/DEPLOY.md](operations/DEPLOY.md) | Self-hosting and deployment — Deno server, Vite proxy, Ollama, and Tailscale/HTTPS setup. |
+| [operations/CI.md](operations/CI.md) | What CI runs, and what it deliberately does not. |
+| [operations/GIMBAL_INTEGRATION.md](operations/GIMBAL_INTEGRATION.md) | DJI Osmo Mobile 6 gimbal control over BLE, the `osmo-gimbal` MCP server, and automated grid capture into the ingest pipeline. |
 
-## Operations & deploy
+## testing/ — how it is verified
+
 | Doc | What it covers |
 |---|---|
-| [DEPLOY.md](DEPLOY.md) | Self-hosting and deployment — Deno server, Vite proxy, Ollama, and Tailscale/HTTPS setup. |
-| [DEVICE_TESTING.md](DEVICE_TESTING.md) | On-device QA — running against a real iPhone/Android over the Tailnet, plus remote-controlled Android testing via an MCP connector. |
-| [REAL_CAMERA_FIXTURE_BANK.md](REAL_CAMERA_FIXTURE_BANK.md) | Privacy-safe local bank of validated Android camera evidence. |
-| [HOUSE_VALIDATION.md](HOUSE_VALIDATION.md) | Field-acceptance / whole-house validation procedure. |
+| [testing/TEST_INFRA.md](testing/TEST_INFRA.md) | Test architecture — tiers, mocks, the mock CV engine, and the npm test commands. |
+| [testing/DEVICE_TESTING.md](testing/DEVICE_TESTING.md) | On-device QA over the tailnet, the Android MCP device fleet, and the room-loop drift benchmark. |
+| [testing/HOUSE_VALIDATION.md](testing/HOUSE_VALIDATION.md) | Field-acceptance / whole-house validation procedure. |
+| [testing/user-test-suite.md](testing/user-test-suite.md) | Scripted user-facing test scenarios. |
+| [testing/REAL_CAMERA_FIXTURE_BANK.md](testing/REAL_CAMERA_FIXTURE_BANK.md) | Privacy-safe local bank of validated Android camera evidence. |
+| [testing/REAL-SCAN-FIXTURE.md](testing/REAL-SCAN-FIXTURE.md) | The real-scan fixture used by the pipeline tests. |
 
-## Reconstruction pipeline
+## pipelines/ — reconstruction processors
+
 | Doc | What it covers |
 |---|---|
-| [lingbot-map.md](lingbot-map.md) | LingBot-Map reconstruction integration — point cloud + poses from a session. |
-| [splat-toolbox.md](splat-toolbox.md) | Splat tools index — the desktop editor's Splat Toolbox (train, download `.ply`, splat-detect). |
-| [splat-train.md](splat-train.md) | Brush 3DGS deep-dive — GPU-pinned splat training from captured sessions. |
+| [pipelines/lingbot-map.md](pipelines/lingbot-map.md) | LingBot-Map reconstruction integration — point cloud + poses from a session. |
+| [pipelines/splat-toolbox.md](pipelines/splat-toolbox.md) | Splat tools index — the desktop editor's Splat Toolbox (train, download `.ply`, splat-detect). |
+| [pipelines/splat-train.md](pipelines/splat-train.md) | Brush 3DGS deep-dive — GPU-pinned splat training from captured sessions. |
+| [pipelines/SPLAT_DETECT_ROADMAP.md](pipelines/SPLAT_DETECT_ROADMAP.md) | Where splat-based detection is heading. |
 
-## Testing & validation
-| Doc | What it covers |
-|---|---|
-| [../TEST_INFRA.md](../TEST_INFRA.md) | Test architecture — tiers, mocks, the mock CV engine, the 14 `tests/` specs + 4 root Deno unit tests, and the npm test commands. |
+## adr/ — decisions
+
+Start at [adr/README.md](adr/README.md) for the index. ADR 0001 (reuse the
+existing domain model) is the one most likely to apply to a change you are
+about to make.
+
+## factory/ — ticket waves
+
+Waves live in numbered folders with a `README.md` each; see
+[FACTORY.md](FACTORY.md) for the workflow and
+[factory/TICKET_TEMPLATE.md](factory/TICKET_TEMPLATE.md) for the shape of a
+ticket. `factory/atlas.html` is the living picture of the system.
 
 ---
 
 _Provenance: the original project request is frozen at
 [../history/ORIGINAL_REQUEST.md](../history/ORIGINAL_REQUEST.md). Timelines live
-only in [../roadmap.md](../roadmap.md); system design lives only in
-[../architecture.md](../architecture.md)._
+only in [roadmap.md](roadmap.md); system design lives only in
+[architecture.md](architecture.md)._

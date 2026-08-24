@@ -3,7 +3,7 @@
 > **Historical implementation wave:** this folder records the starting state
 > and decisions for the place/thing migration. Its "today" language describes
 > the state when the tickets were written, not necessarily the current build.
-> The current product contract is [PLACE_SCAN_DESIGN.md](../../PLACE_SCAN_DESIGN.md):
+> The current product contract is [PLACE_SCAN_DESIGN.md](../../product/PLACE_SCAN_DESIGN.md):
 > **Place → Area → Scan session/segment → Scan → Layer → Thing/Observation**.
 > `WorldProject` remains the compatible internal ENU composition for a Place.
 
@@ -21,7 +21,7 @@ declares `Project { projectId, name, address?, notes?, floors: Floor[] }`,
 `Floor { floorId, name, level, rooms: Room[] }`, `Room { roomId, name, zone? }`, and
 `ScanEntry { scanId, projectId, sessionId, … }` — a many-to-one foreign key from scans to
 places, with an IndexedDB `byProject` index, a `listScans(projectId)` query, and a server
-CRUD mirror at `/projects` backed by `PROJECTS_FILE`. `architecture.md` diagrams it as the
+CRUD mirror at `/projects` backed by `PROJECTS_FILE`. `../../architecture.md` diagrams it as the
 top of the ER model.
 
 `projectStore` is constructed at `src/main.ts:163` and never referenced again. Nothing
@@ -35,11 +35,11 @@ slug: it takes a global `readDir` of every scan on disk and keeps the first 24.
 `refreshWorldScans` then pushes every new scan into every world. Creating a second world
 gives you a second view of the same global bucket. ADR 0003 already conceded this in
 writing — *"no `WorldProject` association today"* — and parked everything under `'default'`.
-There is also no distance guard: `docs/UI_MANUAL.md:610` records a real incident where a
+There is also no distance guard: `../../product/UI_MANUAL.md:610` records a real incident where a
 phone scan in one location and test homes in another landed in one ENU frame and broke the
 overview.
 
-**No time axis.** `docs/UX_FLOW.md:260` states it plainly: *"Time is stored but not
+**No time axis.** `../../product/UX_FLOW.md:260` states it plainly: *"Time is stored but not
 scrubbable."* `capturedAt` is rendered as a string and nothing sorts, groups, or ranges by
 it. `sessionId` is read by the viewer only to build splat sidecar URLs.
 

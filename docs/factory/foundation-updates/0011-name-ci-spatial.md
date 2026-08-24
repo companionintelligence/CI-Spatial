@@ -18,7 +18,7 @@
 internally — `package.json`'s name (`companion-scan-web`), the glTF `generator` tag
 (`src/export/gltf.ts:110`, `'ci-xr-scan'`), the geo-tracker's User-Agent string
 (`src/geo/geo-tracker.ts:197` — shifted from `:196` since 0008 added an import above
-it; re-grep, `'ci-xr-scan/1.0'`), plus prose across `TEST_INFRA.md` and
+it; re-grep, `'ci-xr-scan/1.0'`), plus prose across `../../testing/TEST_INFRA.md` and
 `video/storyboard.json` (see the corrected file list below — the original audit's
 `scripts/generate-test-homes.mjs` and `history/ORIGINAL_REQUEST.md` hits do not
 actually hold up on re-verification, 2026-08-16). **This ticket does not decide the
@@ -97,7 +97,7 @@ Non-goals for what changed and why):
   implementation, since both tickets' implementers were told to skip this file to
   avoid a two-line merge conflict (0010 needed the port-number prose on the same
   two lines).
-- `TEST_INFRA.md` — two independent things, don't conflate them: line 1's title
+- `../../testing/TEST_INFRA.md` — two independent things, don't conflate them: line 1's title
   ("Companion Scan") is the naming-decision-dependent rename this ticket handles;
   line 3's `**CI-Web-XR-Scan**` is the *separate*, already-known-stale repo-name
   issue 0009 explicitly declined to fix here (out of its scope, not this ticket's
@@ -107,7 +107,7 @@ Non-goals for what changed and why):
 - `video/storyboard.json` — narrowly, its `"name": "Companion Scan"` (line 5) and
   `"title": "Companion Scan"` (line 103) fields only. Its `"repo":
   "companionintelligence/CI-Web-XR-Scan"` field (line 6) is the same separate
-  stale-repo-name category as `TEST_INFRA.md` above, not this ticket's core scope.
+  stale-repo-name category as `../../testing/TEST_INFRA.md` above, not this ticket's core scope.
   Do NOT touch the `_focusNote` prose (see Non-goals) or the
   `companion-scan-living-room-server-acme.ci.computer` placeholder hostname
   strings (used repeatedly as example video-staging data, not a real identifier —
@@ -115,8 +115,8 @@ Non-goals for what changed and why):
 - Any remaining prose hits in `docs/*.md` (re-grep; don't trust this list blindly —
   it has already been wrong once, see above). Fresh grep at implementation time
   turned up four more hits not in the original list: `docs/README.md` (title, intro
-  sentence, one table cell), `docs/UI_MANUAL.md` (title, intro sentence),
-  `docs/DEPLOY.md` (title), `docs/UX_FLOW.md` (title, one prose sentence — verbatim
+  sentence, one table cell), `../../product/UI_MANUAL.md` (title, intro sentence),
+  `../../operations/DEPLOY.md` (title), `../../product/UX_FLOW.md` (title, one prose sentence — verbatim
   UI-copy quotes elsewhere in that same file were correctly left alone, see Risks).
   `docs/factory/**` (ticket/wave archives) was scoped out as historical/process
   records, same category as `history/ORIGINAL_REQUEST.md`.
@@ -178,7 +178,7 @@ npm run build
   an afterthought.
 - **Risk:** scope creep into a full UI-copy rebrand. — **Mitigation:** Non-goals
   explicitly excludes UI copy unless the decision says otherwise. **Realized and
-  handled:** `docs/UX_FLOW.md` contains several verbatim quotes of actual on-screen
+  handled:** `../../product/UX_FLOW.md` contains several verbatim quotes of actual on-screen
   copy (the `#start-screen` title, `viewer.html`'s page title, the
   `companion-scan-onboarded` key name) alongside its own prose — the implementer
   verified each quoted string is literally present in `index.html`/`viewer.html`

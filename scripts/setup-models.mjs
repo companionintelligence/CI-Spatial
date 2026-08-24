@@ -104,7 +104,7 @@ async function main() {
   console.log(`  export OLLAMA_MODEL=<tag>   # e.g. export OLLAMA_MODEL=${nowAvailable[0] ?? DEFAULT_MODEL_TAG}`)
   console.log('')
   console.log("This repo doesn't auto-load .env — persist it in your shell profile, or for a")
-  console.log('deployed box, in ~/.config/cscan/env (see docs/DEPLOY.md).')
+  console.log('deployed box, in ~/.config/cscan/env (see ../docs/operations/DEPLOY.md).')
 }
 
 await main()

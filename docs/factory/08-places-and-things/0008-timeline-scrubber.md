@@ -33,7 +33,7 @@ the source:
   "this scan has no streamed keyframes" guards. It is **never** used for grouping or
   filtering. `sessionId` appears nowhere at all in `viewer.html`.
 
-`docs/UX_FLOW.md:260` already concedes this in writing:
+`../../product/UX_FLOW.md:260` already concedes this in writing:
 
 > **Time is stored but not scrubbable.** `capturedAt`, per-frame timestamps, and the
 > ordered `EditPatch[]` history all exist, but there is no timeline / scrubber /
@@ -208,7 +208,7 @@ decides what, among the available, is shown.**
   and `sessionId: string | null`
 - `main.ts:1359-1363` (`scanIdFor`) and `main.ts:1393` (the `capturedAt` fallback
   chain) — why wave 07 is the dependency, and why nulls are rare
-- `docs/UX_FLOW.md:260` — the sentence this ticket makes false
+- `../../product/UX_FLOW.md:260` — the sentence this ticket makes false
 - `src/world/layers.ts:37-52` — enough to see why layers are not the axis
 - Wave 07 ticket 0001, once drafted
 
@@ -257,7 +257,7 @@ Changed:
   `effectiveCapturedAt` / `sessionGroups` / `scanRendered` / `applyTimeCursor` helpers
 - `viewer.html` — the scrubber markup above `#scan-list` (`:1026`) and its styles near
   `:254`
-- `docs/UX_FLOW.md:260` — rewrite the "Time is stored but not scrubbable" bullet; it
+- `../../product/UX_FLOW.md:260` — rewrite the "Time is stored but not scrubbable" bullet; it
   becomes false the moment this lands
 - `docs/factory/atlas.html` — the "Multi-scan World Editor" fcard (`~:442`) gains a
   before/after diff line: per-scan checkboxes only → a session timeline
@@ -288,7 +288,7 @@ viewer-local runtime record that is never serialised.
       window
 - [ ] On load the cursor sits at the rightmost stop, so the default view is byte-for-byte
       today's behaviour
-- [ ] `docs/UX_FLOW.md:260` no longer claims time is not scrubbable
+- [ ] `../../product/UX_FLOW.md:260` no longer claims time is not scrubbable
 - [ ] `npm run build` and `npm run verify` pass
 
 ## Tests
@@ -400,5 +400,5 @@ API_URL=http://localhost:8000 VITE_URL=http://localhost:5173 \
 7. [ ] Re-derive the axis in `refreshWorldScans` (`:2699-2722`) when new scans arrive
 8. [ ] Hide the control for worlds with fewer than two sessions
 9. [ ] Write `tests/mock-timeline-scrubber.spec.ts` covering every case in Tests
-10. [ ] Rewrite `docs/UX_FLOW.md:260` and update the atlas's World Editor entry
+10. [ ] Rewrite `../../product/UX_FLOW.md:260` and update the atlas's World Editor entry
 11. [ ] Run `npm run build` and `npm run verify`

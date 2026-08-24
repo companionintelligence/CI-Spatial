@@ -10,7 +10,17 @@ WORKDIR /web
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund --ignore-scripts
 COPY tsconfig.json vite.config.ts ./
-COPY index.html scanner.html viewer.html webxr.html ./
+# Root .ts is now only vite.config.ts/playwright.config.ts (thing_tags moved to
+# src/shared/, which COPY src/ already covers). Kept as a glob rather than
+# deleted: it costs nothing and it is what stops the next browser-imported root
+# module from silently failing the bundle, which is how this line was earned.
+COPY *.ts ./
+# Every root HTML file. Also a glob: vite.config.ts's `input` map grew
+# ar-hittest-sphere.html (#115) and ar-ground-anchor.html (wave 09) after this
+# line was written, and Vite fails the build with UNRESOLVED_ENTRY when an
+# entry it names is missing from the context. Same failure mode as the server
+# module list below, one stage earlier.
+COPY *.html ./
 COPY src/ ./src/
 COPY public/ ./public/
 COPY scripts/copy-draco.mjs ./scripts/copy-draco.mjs
@@ -27,11 +37,16 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends nodejs ffmpeg \
   && rm -rf /var/lib/apt/lists/*
 
-# Server modules (splat_* / lingbot_map power the world-job queue)
-COPY main.ts inference.ts prompt.ts jobs.ts pipeline.ts portal_auth.ts memory_push.ts \
-     lingbot_map.ts lingbot_map_glb.ts lingbot_map_ply.ts \
-     splat_train.ts splat_train_dataset.ts splat_detect.ts splat_finish.ts \
-     deno.json deno.lock ./
+# Server modules. A glob, deliberately, not a hand-maintained list: the previous
+# explicit list was last updated 2026-08-05 and main.ts had since grown static
+# imports of nine modules it never named (world_job_pump/lock/membership/prune,
+# scan_id, scan_index, sensenova_vision, session_id, thing_match). `deno cache
+# main.ts` below fails on the first of them, so the image has not built since
+# 2026-08-16 — and nothing noticed, because publishing is workflow_dispatch-only
+# and the CI-Marketplace manifest pins the :latest built before the break.
+# The list was the bug; enumerating it correctly would only reset the clock.
+COPY *.ts deno.json deno.lock ./
+COPY server/ ./server/
 COPY src/world/ ./src/world/
 COPY src/shared/ ./src/shared/
 
@@ -56,7 +71,7 @@ COPY --from=web /web/dist ./dist
 #
 # Persist scans (uploads + optimized artifacts + keyframe sessions) and worlds:
 #   docker run -v scans:/app/scans -v worlds:/app/worlds ...
-RUN deno cache main.ts
+RUN deno cache server/main.ts
 
 EXPOSE 8000
 
@@ -69,4 +84,4 @@ CMD ["deno", "run", \
      "--allow-env", \
      "--allow-ffi", \
      "--allow-run", \
-     "main.ts"]
+     "server/main.ts"]
