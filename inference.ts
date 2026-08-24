@@ -155,7 +155,22 @@ export function describeMockBlob(
 }
 
 export class InferenceEngine {
-  readonly modelId: string
+  /**
+   * Which model is actually in use, for /health and logs.
+   *
+   * A getter, not a constructor-assigned field: in ollama mode init() may
+   * substitute a different tag when the requested one is not pulled, and a
+   * field captured before init() would leave /health naming a model nothing
+   * is running. Reporting the requested name as though it were the live one
+   * is the same defect the presence check above had.
+   */
+  get modelId(): string {
+    return this._mode === 'onnx'
+      ? 'LiquidAI/LFM2.5-VL-1.6B-ONNX'
+      : this._mode === 'mock'
+      ? 'mock/color-blob-v1'
+      : `Ollama/${this.ollamaModel}`
+  }
   private _mode: 'ollama' | 'onnx' | 'mock'
   private _lastInferMs: number | null = null
   private _lastInferAt: number | null = null
@@ -176,9 +191,6 @@ export class InferenceEngine {
     this._mode = requested === 'onnx' ? 'onnx' : requested === 'mock' ? 'mock' : 'ollama'
     this.ollamaUrl = normalizeOllamaHost(Deno.env.get('OLLAMA_HOST'))
     this.ollamaModel = Deno.env.get('OLLAMA_MODEL') ?? DEFAULT_MODEL_TAG
-    this.modelId = this._mode === 'onnx' ? 'LiquidAI/LFM2.5-VL-1.6B-ONNX'
-      : this._mode === 'mock' ? 'mock/color-blob-v1'
-      : `Ollama/${this.ollamaModel}`
   }
 
   /** Resolved inference mode (INFERENCE_MODE env). */
@@ -211,26 +223,43 @@ export class InferenceEngine {
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const data = await res.json() as { models: Array<{ name: string }> }
         
-        // Find if requested model is in active list
-        const requestedBase = this.ollamaModel.split(':')[0]
-        const hasModel = data.models.some(m => m.name === this.ollamaModel || m.name.startsWith(requestedBase + ':'))
-        
+        // Is the requested model *actually* pulled?
+        //
+        // This has to be an exact tag comparison. It used to accept any model
+        // sharing the base name — `startsWith(requestedBase + ':')` — so a box
+        // with qwen3-vl:2b and qwen3-vl:8b pulled reported the *absent*
+        // qwen3-vl:4b as present, skipped every fallback below, and logged
+        // "Ollama connected. Target model: qwen3-vl:4b". /health then served
+        // modelReady:true while every inference 404'd with
+        // `model 'qwen3-vl:4b' not found`. The fallback machinery that exists
+        // for exactly this case was disabled by its own presence check.
+        //
+        // Ollama treats a bare name as ':latest', so normalise before comparing.
+        const withTag = (name: string) => (name.includes(':') ? name : `${name}:latest`)
+        const available = data.models.map(m => withTag(m.name))
+        const requested = withTag(this.ollamaModel)
+        const hasModel = available.includes(requested)
+
         if (!hasModel) {
-          // Fallback check to any pulled vision models
+          // Another tag of the same model is the closest substitute, and is
+          // what the old loose check was reaching for — but it has to *switch*
+          // to that tag and say so, not keep pointing at the missing one.
+          const requestedBase = requested.split(':')[0]
+          const sameBase = available.find(name => name.split(':')[0] === requestedBase)
           const visionModels = [DEFAULT_MODEL_TAG, 'qwen3.5:4b', 'qwen3.5:2b', 'llava:7b', 'moondream:latest']
-          let foundFallback = false
-          for (const fallback of visionModels) {
-            if (data.models.some(m => m.name === fallback || m.name.startsWith(fallback + ':'))) {
-              console.warn(`[engine] Model "${this.ollamaModel}" not found in Ollama. Falling back to available model "${fallback}"`)
-              this.ollamaModel = fallback
-              foundFallback = true
-              break
-            }
+          const knownVision = visionModels.map(withTag).find(name => available.includes(name))
+          const substitute = sameBase ?? knownVision ?? available[0]
+
+          if (!substitute) {
+            throw new Error(
+              `Ollama has no models pulled. Run: ollama pull ${this.ollamaModel}`,
+            )
           }
-          if (!foundFallback && data.models.length > 0) {
-            console.warn(`[engine] Model "${this.ollamaModel}" not found. Trying first available model: "${data.models[0].name}"`)
-            this.ollamaModel = data.models[0].name
-          }
+          console.warn(
+            `[engine] Model "${this.ollamaModel}" is not pulled. Using "${substitute}" instead — ` +
+            `run \`ollama pull ${this.ollamaModel}\` to use the requested one.`,
+          )
+          this.ollamaModel = substitute
         }
         console.log(`[engine] Ollama connected. Target model: ${this.ollamaModel}`)
       } catch (err) {
