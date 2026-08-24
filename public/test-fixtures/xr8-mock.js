@@ -88,6 +88,8 @@
   var runCanvas = null
   var tickHandle = null
   var tickCount = 0
+  /** Lazily built once so repeated xrScene() calls return the same scene. */
+  var xrSceneCache = null
   var feedCanvas = null
   var feedCtx = null
   // When true the session keeps emitting frames but tickCount stops advancing,
@@ -389,6 +391,38 @@
 
     GlTextureRenderer: {
       pipelineModule: function () { return { name: 'mock-gltexturerenderer' } },
+    },
+
+    /**
+     * The real engine's Three.js integration. Absent from this mock until now,
+     * which broke every mock-xr8 spec outright rather than subtly: eighthwall.ts
+     * calls XR8.Threejs.pipelineModule() unconditionally in start(), so the
+     * missing key threw "Cannot read properties of undefined (reading
+     * 'pipelineModule')", start() rejected, and the AR loop never began — no
+     * pose stream, no points, no calibration overlay. The specs reported it as
+     * "#scan-stats never fills", several layers downstream of the cause.
+     *
+     * `window.THREE` is assigned by eighthwall.ts immediately before the
+     * pipeline modules are constructed (the real XR8.Threejs requires the same
+     * global), so it is guaranteed to be present by the time xrScene() runs.
+     *
+     * The renderer is null: the provider only ever reads `.scene` off this, and
+     * standing up a real WebGLRenderer headlessly buys nothing but flakiness.
+     */
+    Threejs: {
+      pipelineModule: function () { return { name: 'mock-threejs' } },
+      xrScene: function () {
+        if (!xrSceneCache) {
+          var T = window.THREE
+          if (!T) throw new Error('[xr8-mock] window.THREE is not set — xrScene() needs it')
+          xrSceneCache = {
+            scene: new T.Scene(),
+            camera: new T.PerspectiveCamera(60, 1, 0.01, 100),
+            renderer: null,
+          }
+        }
+        return xrSceneCache
+      },
     },
 
     CameraPixelArray: {
