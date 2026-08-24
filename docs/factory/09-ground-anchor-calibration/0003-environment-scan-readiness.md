@@ -139,17 +139,59 @@ root-level flat `*.test.ts` importing from `./src/...`.
   tracking wait already does, `GROUND_HISTORY_SIZE`/`MIN_POINTS_FOR_GROUND_ESTIMATE` are the
   knobs. (Decided in this ticket; measure before tuning.)
 
+- Q: **(found during implementation, and it invalidated the ticket's premise) Does the point
+  cloud have any data when the readiness gate runs?** — A: **No — none at all, so the gate as
+  specified was inert.** This ticket's Risks section guessed the cloud would be "emptiest"
+  during calibration. It is in fact *empty*: `src/main.ts:1055` inside `scanner.start()`'s
+  callback is the only caller of `pointCloud.add()` in the app, and `scanner.start()` ran at
+  line 1054 — *after* `runProjectCalibration()` at 947. So `groundEstimate()` returned `null`
+  for the whole of every calibration: the readiness step would have waited the full
+  `GROUND_WAIT_TIMEOUT_MS` and offered the override every single time, and the tap gate would
+  have passed everything (`groundY === null` → no opinion). A green test suite would have
+  hidden this completely, because every unit test feeds `PointCloud` directly.
+  **Fix: `scanner.start()` now runs before calibration**, so the environment-scan step is
+  backed by the scanner actually scanning. Verified safe — the callback's dependencies are
+  either declared earlier (`qualityMonitor`, `rtc`, which is optional-chained anyway) or
+  hoisted `function` declarations (`updateVerdictUI`, `updateQualityOverlay`). The points it
+  collects during the sweep are real room geometry in the same AR session frame, so they
+  belong in the scan regardless. Note this is adjacent to ticket 0004's non-goal about not
+  moving calibration in the boot sequence — calibration has *not* moved; the scanner start
+  moved earlier, ahead of it. (Discovered and fixed 2026-08-23.)
+- Q: Where does the floor-gate predicate live? — A: `src/ar/ground-gate.ts`, not a private
+  helper in `project-calibration.ts`. That file references `TouchEvent`, `PointerEvent` and
+  `HTMLCanvasElement`, so importing it into a Deno test drags in DOM lib types and fails
+  type-checking — the same ADR 0002 hazard ticket 0006 hit with `Pose`. A pure module keeps
+  the threshold testable, which matters most for the constant most likely to be retuned.
+  (Decided 2026-08-23.)
+- Q: How does the "continue anyway" escape hatch appear? — A: As a **separate** promoted
+  action ("Place anchor without floor check"), not by retargeting the existing "Continue
+  uncalibrated" link. Overloading one control would mean a user who wants to abandon
+  calibration entirely silently gets a different outcome. Both use the existing
+  `.project-calibration-link` / `-promoted` styles, so no new visual language and no
+  `index.html` change was needed. (Decided 2026-08-23.)
+- Q: What value does the estimate settle on when it locks? — A: The mean of the
+  `GROUND_HISTORY_SIZE` window that earned the lock, rather than whichever candidate arrived
+  last — the consensus, not one arbitrary member of it. While unlocked it tracks the latest
+  candidate; once locked it is held steady until a candidate exceeds
+  `GROUND_UNLOCK_TOLERANCE_M`, at which point it is abandoned outright rather than drifted
+  toward, since half-following a step would describe neither floor. (Decided 2026-08-23.)
+
 ## Files impacted
 
 New:
+- `src/ar/ground-gate.ts` (the pure floor-gate predicate + its tolerance — see Open questions)
 - `pointcloud.test.ts` (repo root)
 
 Changed:
 - `src/scene/pointcloud.ts`
 - `src/ar/project-calibration.ts` (readiness step + tap gate + new `CalibrationOptions` member)
-- `src/main.ts` (pass the ground accessor)
-- `index.html` (readiness-step copy; reuse existing card styles)
+- `src/main.ts` (pass the ground accessor; **move `scanner.start()` ahead of calibration** —
+  see Open questions)
 - `deno.json` (register the new test file)
+
+Not changed after all:
+- `index.html` — the readiness copy lives in the overlay's own markup, and the escape hatch
+  reuses the existing `.project-calibration-link-promoted` style, so no CSS was needed.
 
 ## Schema required
 
@@ -182,35 +224,35 @@ not go looking for an API that deliberately does not exist.
 
 ## Definition of Done
 
-- [ ] `PointCloud.groundEstimate()` implemented per the signature above
-- [ ] Recompute throttled inside `add()`, only when points were inserted
-- [ ] `estimateFloorY()`, `boundingBox()`, `add()`'s return, `clear()`, `count`,
+- [x] `PointCloud.groundEstimate()` implemented per the signature above
+- [x] Recompute throttled inside `add()`, only when points were inserted
+- [x] `estimateFloorY()`, `boundingBox()`, `add()`'s return, `count`,
       `decimations` all unchanged
-- [ ] `CalibrationOptions.ground` added and passed from `src/main.ts`
-- [ ] A readiness step gates **all** marker placement on tracking **and** a locked ground
+- [x] `CalibrationOptions.ground` added and passed from `src/main.ts`
+- [x] A readiness step gates **all** marker placement on tracking **and** a locked ground
       estimate, showing live progress and ground-facing guidance — the landmark cannot be
       placed against an unestablished plane
-- [ ] `GROUND_WAIT_TIMEOUT_MS` offers "continue anyway" via the existing `-promoted` treatment
-- [ ] `placeAt()` applies the two-step floor gate, skipped entirely when `ground()` is `null`
+- [x] `GROUND_WAIT_TIMEOUT_MS` offers "continue anyway" via the existing `-promoted` treatment
+- [x] `placeAt()` applies the two-step floor gate, skipped entirely when `ground()` is `null`
       (including after a "continue anyway")
-- [ ] Status copy distinguishes: waiting for floor, floor unknown/overridden, tap rejected as
+- [x] Status copy distinguishes: waiting for floor, floor unknown/overridden, tap rejected as
       off-floor, tap accepted
-- [ ] `pointcloud.test.ts` created **and appended to `deno.json`'s `"test"` task string**
-- [ ] `npx tsc --noEmit`, `deno task check`, `deno task test` pass
+- [x] `pointcloud.test.ts` created **and appended to `deno.json`'s `"test"` task string**
+- [x] `npx tsc --noEmit`, `deno task check`, `deno task test` pass
 
 ## Tests
 
-- [ ] Empty cloud → `groundEstimate()` returns `null`
-- [ ] Below `MIN_POINTS_FOR_GROUND_ESTIMATE` → `null`
-- [ ] A floor-height cluster plus high-Y outliers (walls, furniture) → estimate converges near
+- [x] Empty cloud → `groundEstimate()` returns `null`
+- [x] Below `MIN_POINTS_FOR_GROUND_ESTIMATE` → `null`
+- [x] A floor-height cluster plus high-Y outliers (walls, furniture) → estimate converges near
       the cluster, not dragged upward
-- [ ] `GROUND_HISTORY_SIZE` consecutive stable batches → `locked === true`
-- [ ] After locking, a batch beyond `GROUND_UNLOCK_TOLERANCE_M` → `locked === false` and the
+- [x] `GROUND_HISTORY_SIZE` consecutive stable batches → `locked === true`
+- [x] After locking, a batch beyond `GROUND_UNLOCK_TOLERANCE_M` → `locked === false` and the
       estimate moves toward the new level
-- [ ] Two `add()` calls inside `GROUND_RECOMPUTE_INTERVAL_MS` recompute once (injected clock
+- [x] Two `add()` calls inside `GROUND_RECOMPUTE_INTERVAL_MS` recompute once (injected clock
       or `sampleCount`; state which in the PR)
-- [ ] `estimateFloorY()`/`boundingBox()` unchanged for a fixed input set (regression guard)
-- [ ] Gate as a pure function: within tolerance → accept; beyond → reject first, accept on
+- [x] `estimateFloorY()`/`boundingBox()` unchanged for a fixed input set (regression guard)
+- [x] Gate as a pure function: within tolerance → accept; beyond → reject first, accept on
       immediate retry; `null` ground → accept
 
 ```bash
@@ -255,15 +297,15 @@ npx tsc --noEmit && deno task check && deno task test
 
 ## Subtasks
 
-1. [ ] Add constants and private state to `src/scene/pointcloud.ts`
-2. [ ] Implement `groundEstimate()` and the throttled recompute in `add()`
-3. [ ] Write `pointcloud.test.ts`; append it to `deno.json`'s `"test"` task string
-4. [ ] Add `ground` to `CalibrationOptions`; pass it from `src/main.ts`
-5. [ ] Add the readiness step to the calibration overlay with live progress, ground-facing
+1. [x] Add constants and private state to `src/scene/pointcloud.ts`
+2. [x] Implement `groundEstimate()` and the throttled recompute in `add()`
+3. [x] Write `pointcloud.test.ts`; append it to `deno.json`'s `"test"` task string
+4. [x] Add `ground` to `CalibrationOptions`; pass it from `src/main.ts`
+5. [x] Add the readiness step to the calibration overlay with live progress, ground-facing
        guidance, and the timeout escape hatch
-6. [ ] Implement the two-step floor gate in `placeAt()` as a testable pure function plus a
+6. [x] Implement the two-step floor gate in `placeAt()` as a testable pure function plus a
        thin call site
-7. [ ] Write the gate's unit tests
-8. [ ] `npx tsc --noEmit`, `deno task check`, `deno task test`
+7. [x] Write the gate's unit tests
+8. [x] `npx tsc --noEmit`, `deno task check`, `deno task test`
 9. [ ] On-device: time how long lock takes in a normal room; verify a floor tap passes first
        try and a tabletop tap is caught; retune constants if not

@@ -941,6 +941,52 @@ async function main() {
     showPermissionBanner('Camera access denied. Please check your browser or OS permission settings and allow camera access.')
     return
   }
+  // ── 6. Continuous SLAM point-cloud accumulation ──────────────────────────────
+  // Started BEFORE calibration, not after. The calibration flow's
+  // environment-scan step gates anchor placement on a settled ground-plane
+  // estimate, and that estimate is derived from the points this loop feeds into
+  // PointCloud — the only caller of pointCloud.add() in the app. With the
+  // scanner starting afterwards, groundEstimate() was null for the whole of
+  // calibration and the gate could never fire. Sweeping the floor during the
+  // readiness step is real scanning, in the same AR session frame, so the
+  // points it collects belong in the scan anyway.
+  scanner.start(provider, (frame) => {
+    const inserted = pointCloud.add(frame.points)
+    const added = inserted.length
+    if (provider.isTracking() && poseIsFinite(frame.pose)) poseHistory.push(frame.pose)
+
+    // Live geometry is available only when the experimental flag is enabled.
+    rtc?.sendPoints(inserted)
+    rtc?.sendJson({
+      t: 'pose',
+      p: [frame.pose.position.x, frame.pose.position.y, frame.pose.position.z],
+      q: [frame.pose.rotation.x, frame.pose.rotation.y, frame.pose.rotation.z, frame.pose.rotation.w],
+    })
+
+    if (added > 0) {
+      const statsEl = document.getElementById('scan-stats')
+      if (statsEl) statsEl.textContent = `${pointCloud.count} pts`
+      // First points arriving means SLAM has locked — update status once
+      if (pointCloud.count === added) {
+        overlay.setStatus('Tracking — tap to capture')
+      }
+    }
+    // One-time notice when the voxel grid starts dropping points to cap memory
+    if (!decimationNoticeShown && pointCloud.decimations > 0) {
+      decimationNoticeShown = true
+      overlay.setStatus('Point cloud thinned to save memory')
+    }
+    updatePoseReadout(frame.pose, provider.isTracking())
+
+    // Update quality overlay on every scanner tick
+    const snap = qualityMonitor.tick(provider, pointCloud)
+    updateQualityOverlay(snap)
+    updateVerdictUI()
+    if (snap.trackingLost) overlay.setStatus('Tracking lost — move slowly')
+    else if (snap.driftRisk === 'high') overlay.setStatus('⚠ Moving too fast — slow down')
+  })
+  console.log('[main] Room scanner started')
+
   overlay.setStatus('Calibrate the project frame…')
 
   if (selectedProject) {
@@ -952,6 +998,12 @@ async function main() {
         ? await asyncHitTest(x, y)
         : provider.hitTest(x, y),
       bearing: () => geoTracker.snapshot()?.bearing ?? null,
+      // Read fresh each poll — the scanner is accumulating points concurrently,
+      // so this is exactly the value that changes while the modal is open.
+      ground: () => {
+        const estimate = pointCloud.groundEstimate()
+        return estimate ? { y: estimate.y, locked: estimate.locked } : null
+      },
     })
     if (calibration) {
       sessionCalibration = calibration.calibration
@@ -1044,43 +1096,6 @@ async function main() {
 
   overlay.setProgress(null)
 
-  // ── 6. Continuous SLAM point-cloud accumulation ──────────────────────────────
-  scanner.start(provider, (frame) => {
-    const inserted = pointCloud.add(frame.points)
-    const added = inserted.length
-    if (provider.isTracking() && poseIsFinite(frame.pose)) poseHistory.push(frame.pose)
-
-    // Live geometry is available only when the experimental flag is enabled.
-    rtc?.sendPoints(inserted)
-    rtc?.sendJson({
-      t: 'pose',
-      p: [frame.pose.position.x, frame.pose.position.y, frame.pose.position.z],
-      q: [frame.pose.rotation.x, frame.pose.rotation.y, frame.pose.rotation.z, frame.pose.rotation.w],
-    })
-
-    if (added > 0) {
-      const statsEl = document.getElementById('scan-stats')
-      if (statsEl) statsEl.textContent = `${pointCloud.count} pts`
-      // First points arriving means SLAM has locked — update status once
-      if (pointCloud.count === added) {
-        overlay.setStatus('Tracking — tap to capture')
-      }
-    }
-    // One-time notice when the voxel grid starts dropping points to cap memory
-    if (!decimationNoticeShown && pointCloud.decimations > 0) {
-      decimationNoticeShown = true
-      overlay.setStatus('Point cloud thinned to save memory')
-    }
-    updatePoseReadout(frame.pose, provider.isTracking())
-
-    // Update quality overlay on every scanner tick
-    const snap = qualityMonitor.tick(provider, pointCloud)
-    updateQualityOverlay(snap)
-    updateVerdictUI()
-    if (snap.trackingLost) overlay.setStatus('Tracking lost — move slowly')
-    else if (snap.driftRisk === 'high') overlay.setStatus('⚠ Moving too fast — slow down')
-  })
-  console.log('[main] Room scanner started')
 
   /**
    * Live camera pose plus drift from the session's first tracked pose, for the
