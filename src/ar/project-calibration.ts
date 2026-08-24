@@ -1,7 +1,14 @@
+import * as THREE from 'three'
 import type { ARProvider, HitResult } from './provider'
-import type { Project, ProjectSpatialFrame, ScanCalibration } from '../world/types'
-import { anchorToProjectTransform } from '../world/geo'
-import { buildAnchorMarker } from '../world/anchor-marker'
+import type { Project, ProjectSpatialFrame, ScanCalibration, Vec3 } from '../world/types'
+import {
+  anchorToProjectTransform,
+  twoPointToProjectTransform,
+  twoPointSeparationM,
+  MIN_POINT_SEPARATION_M,
+  DEFAULT_SEPARATION_TOLERANCE_M,
+} from '../world/geo'
+import { buildAnchorMarker, ANCHOR_RADIUS_M } from '../world/anchor-marker'
 import { isSameHeightRetry, isTapOnGround, tapHeightAboveGroundCm } from './ground-gate'
 
 const TRACKING_TIMEOUT_MS = 10_000
@@ -15,6 +22,16 @@ const GROUND_WAIT_TIMEOUT_MS = 20_000
 
 export interface CalibrationResult {
   calibration: ScanCalibration
+  /**
+   * Returned whenever the Place's durable frame **changed** and should be
+   * persisted — a first calibration, an upgrade from the one-point fallback
+   * tier, or a deliberate override that re-establishes the reference.
+   *
+   * Deliberately absent when a stored two-point frame was merely *verified*:
+   * that frame is the reference the measurement was taken against, and
+   * rewriting it on every visit would let it drift session by session, which
+   * is exactly the failure the separation check exists to catch.
+   */
   spatialFrame?: ProjectSpatialFrame
 }
 
@@ -29,6 +46,9 @@ interface CalibrationOptions {
    * True-north bearing in degrees, sampled fresh at tap time via a getter
    * rather than a snapshot — it can change between when this modal opens and
    * when the user actually taps. Null when the compass has no fix yet.
+   *
+   * On the two-point tier this is **metadata only** (ADR 0005): it records
+   * which way north was, and contributes nothing to the frame's heading.
    */
   bearing: () => number | null
   /**
@@ -40,19 +60,33 @@ interface CalibrationOptions {
   ground: () => { y: number; locked: boolean } | null
 }
 
+type Stage = 'ground' | 'landmark' | 'heading' | 'review' | 'mismatch'
+type MarkerId = 'landmark' | 'heading'
+
+const MARKER_IDS: MarkerId[] = ['landmark', 'heading']
+
 /**
- * Drops a single world-anchored compass+crosshair decal at a tapped ground
- * point — this project's calibration origin. Replaces the old 3-point
- * reference-triangle sequence: no minimum-spacing/degenerate-triangle
- * checks, and no capture-time residual/tolerance reject-and-retry gate — a
- * single point has no second point left to diff a residual against.
- * Precision assurance moves to the World Editor's anchor layer and, for
- * repeat visits, a live "previous anchors" overlay (both visual aids to
- * align against, not an automated gate) rather than being enforced here.
+ * Staged two-point ground calibration (wave 09 ticket 0004).
+ *
+ * Ground plane established -> landmark placed and confirmed -> heading marker
+ * placed -> adjust -> commit. The frame's origin is the landmark and its
+ * heading comes from the landmark->marker geometry, so a scan no longer
+ * inherits the AR session's arbitrary startup yaw and no longer depends on an
+ * indoor compass reading (ADR 0005).
+ *
+ * Both markers stay in **session-local** coordinates for the whole placement
+ * phase and are converted to project space exactly once, at commit — mixing
+ * the two frames incrementally is the subtle bug this ordering forecloses.
+ *
+ * #141's single tap survives as the explicitly-labelled lower-accuracy
+ * fallback tier for rooms where a second point is impractical.
  */
 export function runProjectCalibration(options: CalibrationOptions): Promise<CalibrationResult | null> {
   const existingFrame = options.project.spatialFrame
   const isFirstCalibration = !existingFrame
+  /** The stored reference this session can actually be measured against. */
+  const storedTwoPoint = existingFrame?.method === 'two-point-ground' ? existingFrame : null
+
   const trackingWaitStartedAt = Date.now()
   let trackingEverEstablished = false
   let tapInFlight = false
@@ -67,33 +101,283 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
    */
   let offGroundTapY: number | null = null
 
+  let stage: Stage = 'ground'
+  const points: Record<MarkerId, Vec3 | null> = { landmark: null, heading: null }
+  let selected: MarkerId | null = null
+  /** Residual that triggered the mismatch stage, in metres. */
+  let mismatchResidualM = 0
+  /**
+   * A message that must survive the 200 ms render poll — a hit-test failure, a
+   * floor-gate rejection, a selection acknowledgement. `renderStage()` runs on
+   * an interval and rewrites the status line every tick, so without somewhere
+   * to park these they are erased within a fifth of a second: the user taps,
+   * something goes wrong, and the copy silently reverts to "Tap the ground" as
+   * though nothing had happened. Cleared when the next tap begins or the stage
+   * changes, so it can never outlive the situation that set it.
+   */
+  let transientStatus: string | null = null
+
   const overlay = document.createElement('section')
   overlay.id = 'project-calibration'
   overlay.innerHTML = `
     <div class="project-calibration-backdrop"></div>
     <div class="project-calibration-card" role="dialog" aria-modal="true" aria-labelledby="project-calibration-title">
       <div class="project-calibration-eyebrow">Project alignment</div>
-      <h2 id="project-calibration-title">${isFirstCalibration ? 'Set this project\'s world frame' : 'Align this scan to the project'}</h2>
-      <p id="project-calibration-copy">Tap a spot on the ground to mark this project's origin.</p>
+      <ol id="project-calibration-steps" class="project-calibration-steps">
+        <li data-step="ground">Ground</li>
+        <li data-step="landmark">Landmark</li>
+        <li data-step="heading">Heading</li>
+      </ol>
+      <h2 id="project-calibration-title">${isFirstCalibration ? 'Set this project&apos;s world frame' : 'Align this scan to the project'}</h2>
+      <p id="project-calibration-copy">Tap a spot on the ground to mark this project&apos;s origin.</p>
       <div id="project-calibration-status" class="project-calibration-status">Waiting for AR tracking...</div>
+      <div id="project-calibration-separation" class="project-calibration-separation" hidden></div>
       <div class="project-calibration-actions">
-        <button id="project-calibration-skip-ground" type="button" class="project-calibration-link project-calibration-link-promoted" style="display:none;">Place anchor without floor check</button>
+        <button id="project-calibration-confirm" type="button" class="project-calibration-link project-calibration-link-promoted" hidden>Confirm landmark</button>
+        <button id="project-calibration-commit" type="button" class="project-calibration-link project-calibration-link-promoted" hidden>Use this alignment</button>
+        <button id="project-calibration-replace" type="button" class="project-calibration-link" hidden>Re-place points</button>
+        <button id="project-calibration-override" type="button" class="project-calibration-link" hidden>Use anyway</button>
+        <button id="project-calibration-skip-ground" type="button" class="project-calibration-link project-calibration-link-promoted" hidden>Place anchor without floor check</button>
+        <button id="project-calibration-fallback" type="button" class="project-calibration-link" hidden>Use one point instead (less accurate)</button>
         <button id="project-calibration-skip" type="button" class="project-calibration-link">Continue uncalibrated</button>
       </div>
     </div>`
   document.body.appendChild(overlay)
 
-  const status = overlay.querySelector<HTMLElement>('#project-calibration-status')!
-  const skip = overlay.querySelector<HTMLButtonElement>('#project-calibration-skip')!
-  const skipGround = overlay.querySelector<HTMLButtonElement>('#project-calibration-skip-ground')!
+  const pick = <T extends HTMLElement>(id: string) => overlay.querySelector<T>(`#${id}`)!
+  const steps = pick<HTMLElement>('project-calibration-steps')
+  const title = pick<HTMLElement>('project-calibration-title')
+  const copy = pick<HTMLElement>('project-calibration-copy')
+  const status = pick<HTMLElement>('project-calibration-status')
+  const separationEl = pick<HTMLElement>('project-calibration-separation')
+  const confirmBtn = pick<HTMLButtonElement>('project-calibration-confirm')
+  const commitBtn = pick<HTMLButtonElement>('project-calibration-commit')
+  const replaceBtn = pick<HTMLButtonElement>('project-calibration-replace')
+  const overrideBtn = pick<HTMLButtonElement>('project-calibration-override')
+  const skipGround = pick<HTMLButtonElement>('project-calibration-skip-ground')
+  const fallbackBtn = pick<HTMLButtonElement>('project-calibration-fallback')
+  const skip = pick<HTMLButtonElement>('project-calibration-skip')
+
+  // ── Scene decals ────────────────────────────────────────────────────────
+  // Everything placed while the flow is running lives under `placement`, which
+  // is torn down on every exit path. The committed origin marker is added to
+  // the scene directly so it survives for the rest of the session, matching
+  // what #141 already did.
+  const scene = options.provider.getScene?.() ?? null
+  const placement = new THREE.Group()
+  placement.name = 'calibration placement'
+  if (scene) scene.add(placement)
+  const decals: Record<MarkerId, THREE.Group | null> = { landmark: null, heading: null }
+  let baseline: THREE.Line | null = null
+
+  function disposeObject(root: THREE.Object3D): void {
+    root.traverse((child) => {
+      const drawable = child as Partial<THREE.Mesh>
+      drawable.geometry?.dispose()
+      const material = drawable.material
+      if (Array.isArray(material)) material.forEach((m) => m.dispose())
+      else material?.dispose()
+    })
+  }
+
+  function detach(object: THREE.Object3D | null): void {
+    if (!object) return
+    placement.remove(object)
+    disposeObject(object)
+  }
+
+  function clearPlacement(): void {
+    MARKER_IDS.forEach((id) => {
+      detach(decals[id])
+      decals[id] = null
+    })
+    detach(baseline)
+    baseline = null
+    if (scene) scene.remove(placement)
+  }
+
+  function refreshSelectionVisuals(): void {
+    for (const id of MARKER_IDS) {
+      const decal = decals[id]
+      if (!decal) continue
+      const isSelected = selected === id
+      decal.scale.setScalar(isSelected ? 1.25 : 1)
+      decal.traverse((child) => {
+        const material = (child as Partial<THREE.LineSegments>).material
+        if (material && !Array.isArray(material)) material.opacity = isSelected ? 1 : 0.55
+      })
+    }
+  }
+
+  function refreshBaseline(): void {
+    detach(baseline)
+    baseline = null
+    const a = points.landmark
+    const b = points.heading
+    if (!scene || !a || !b) return
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute([a.x, a.y, a.z, b.x, b.y, b.z], 3))
+    baseline = new THREE.Line(
+      geometry,
+      new THREE.LineBasicMaterial({ color: 0x72ddd4, transparent: true, opacity: 0.7 }),
+    )
+    baseline.name = 'calibration baseline'
+    placement.add(baseline)
+  }
+
+  function setMarker(id: MarkerId, position: Vec3): void {
+    points[id] = position
+    if (scene) {
+      detach(decals[id])
+      // `null` bearing renders the dimmed "not a committed frame yet" state the
+      // shared decal already provides — no second geometry for in-progress points.
+      const decal = buildAnchorMarker(null)
+      decal.position.set(position.x, position.y, position.z)
+      decals[id] = decal
+      placement.add(decal)
+    }
+    refreshSelectionVisuals()
+    refreshBaseline()
+  }
+
+  function dropCommittedOrigin(position: Vec3, bearingDeg: number | null): void {
+    if (!scene) return
+    const marker = buildAnchorMarker(bearingDeg)
+    marker.position.set(position.x, position.y, position.z)
+    scene.add(marker)
+  }
+
+  // ── Geometry helpers ────────────────────────────────────────────────────
+
+  /**
+   * The `y` both markers are snapped to. Prefer the established ground plane;
+   * failing that (the user overrode the floor check in a room too feature-poor
+   * to map one) fall back to the landmark's own `y`, which still guarantees a
+   * horizontal baseline — the property the frame math actually depends on.
+   */
+  function projectionY(rawHitY: number): number {
+    const ground = options.ground()
+    if (ground) return ground.y
+    return points.landmark ? points.landmark.y : rawHitY
+  }
+
+  function separation(): number | null {
+    const a = points.landmark
+    const b = points.heading
+    return a && b ? twoPointSeparationM(a, b) : null
+  }
+
+  function nearestMarker(position: Vec3): MarkerId | null {
+    let best: MarkerId | null = null
+    let bestDistance = ANCHOR_RADIUS_M
+    for (const id of MARKER_IDS) {
+      const point = points[id]
+      if (!point) continue
+      const distance = Math.hypot(position.x - point.x, position.z - point.z)
+      if (distance <= bestDistance) {
+        bestDistance = distance
+        best = id
+      }
+    }
+    return best
+  }
+
+  // ── Rendering ───────────────────────────────────────────────────────────
+
+  function show(el: HTMLElement, visible: boolean): void {
+    el.hidden = !visible
+  }
+
+  function renderSteps(): void {
+    const active: string = stage === 'ground' ? 'ground' : stage === 'landmark' ? 'landmark' : 'heading'
+    steps.querySelectorAll<HTMLElement>('li').forEach((li) => {
+      const step = li.dataset.step
+      li.dataset.state = step === active
+        ? 'active'
+        : (step === 'ground' && active !== 'ground') || (step === 'landmark' && active === 'heading')
+          ? 'done'
+          : 'todo'
+    })
+  }
+
+  function renderSeparation(): void {
+    const sep = separation()
+    if (sep === null) {
+      show(separationEl, false)
+      return
+    }
+    const enough = sep >= MIN_POINT_SEPARATION_M
+    separationEl.dataset.state = enough ? 'ok' : 'short'
+    separationEl.textContent = enough
+      ? `${sep.toFixed(2)} m apart — a longer baseline is more accurate still.`
+      : `${sep.toFixed(2)} m apart — need at least ${MIN_POINT_SEPARATION_M.toFixed(1)} m. Walk further and tap again.`
+    show(separationEl, true)
+  }
+
+  function renderStage(): void {
+    renderSteps()
+    renderSeparation()
+    const sep = separation()
+    const farEnough = sep !== null && sep >= MIN_POINT_SEPARATION_M
+
+    show(confirmBtn, stage === 'landmark' && !!points.landmark)
+    show(commitBtn, stage === 'review')
+    show(replaceBtn, stage === 'review' || stage === 'mismatch')
+    show(overrideBtn, stage === 'mismatch')
+    show(
+      skipGround,
+      stage === 'ground'
+        && !groundWaitOverridden
+        && !options.ground()?.locked
+        && trackingEverEstablished
+        && Date.now() - groundWaitStartedAt > GROUND_WAIT_TIMEOUT_MS,
+    )
+    show(fallbackBtn, stage !== 'ground' && stage !== 'mismatch' && !!points.landmark)
+    commitBtn.disabled = !farEnough
+
+    let defaultStatus = ''
+    if (stage === 'landmark') {
+      title.textContent = isFirstCalibration ? "Set this project's world frame" : 'Align this scan to the project'
+      copy.textContent = "Step 1 of 2 — tap the ground at a permanent feature you will recognise next visit, such as a door frame or a wall corner. This becomes the project's origin."
+      defaultStatus = points.landmark
+        ? 'Landmark placed. Tap it to move it, or confirm to place the heading marker.'
+        : 'Tap the ground to place the landmark.'
+    } else if (stage === 'heading') {
+      title.textContent = 'Place the heading marker'
+      copy.textContent = `Step 2 of 2 — walk at least ${MIN_POINT_SEPARATION_M.toFixed(1)} m from the landmark and tap a second ground feature. The direction between them sets the frame's heading, so the compass is not used.`
+      defaultStatus = 'Tap the ground to place the heading marker.'
+    } else if (stage === 'review') {
+      title.textContent = 'Check the alignment'
+      copy.textContent = 'Tap either marker to select it, then tap where it should go. Commit when both sit on features you will find again.'
+      defaultStatus = farEnough
+        ? 'Ready to commit.'
+        : 'The markers are too close together to fix a reliable heading.'
+    } else if (stage === 'mismatch') {
+      title.textContent = 'These markers do not match the stored pair'
+      const off = Math.abs(mismatchResidualM * 100).toFixed(0)
+      const direction = mismatchResidualM > 0 ? 'further apart' : 'closer together'
+      copy.textContent = `Measured ${off} cm ${direction} than this Place's recorded pair. That usually means one marker is on a different feature. Re-place them, or use this pair anyway and record it as unverified.`
+      defaultStatus = 'Not committed yet.'
+    }
+    // The ground stage's copy is owned by update(), which computes it from the
+    // tracking/floor timers and writes it before calling here — so this must
+    // not clobber it with an empty default. Placement stages are owned here.
+    if (stage !== 'ground') status.textContent = transientStatus ?? defaultStatus
+  }
 
   const update = () => {
+    if (stage !== 'ground') {
+      renderStage()
+      return
+    }
+
     if (!options.provider.isTracking()) {
       const stalled = !trackingEverEstablished && Date.now() - trackingWaitStartedAt > TRACKING_TIMEOUT_MS
       status.textContent = stalled
         ? "Still not tracking — check the camera isn't covered, or Continue uncalibrated."
         : 'Waiting for stable AR tracking. Slowly look around the floor.'
       skip.classList.toggle('project-calibration-link-promoted', stalled)
+      renderStage()
       return
     }
     if (!trackingEverEstablished) {
@@ -103,31 +387,23 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
       groundWaitStartedAt = Date.now()
     }
 
-    // Environment-scan step: tracking being alive is not the same as the floor
-    // being mapped. Without this the tap can be taken in the first second of a
-    // session — exactly when the point cloud is emptiest and the gate below has
-    // nothing to check against.
+    // Environment-scan step (ticket 0003): tracking being alive is not the same
+    // as the floor being mapped, and the ground plane is the reference both
+    // markers get projected onto — so it must exist before either is placed.
     if (!groundWaitOverridden && !options.ground()?.locked) {
       const waited = Date.now() - groundWaitStartedAt > GROUND_WAIT_TIMEOUT_MS
       status.textContent = waited
         ? 'Still mapping the floor. Keep sweeping, or place the anchor without the floor check.'
         : 'Scanning the environment. Point the device at the floor and move slowly.'
-      // A distinct action rather than retargeting the skip link: "give up on
-      // the floor check" and "give up on calibration" are different decisions,
-      // and a user who wants the second must not have it silently become the
-      // first.
-      skipGround.style.display = waited ? '' : 'none'
       skip.classList.remove('project-calibration-link-promoted')
+      renderStage()
       return
     }
 
-    skipGround.style.display = 'none'
     skip.classList.remove('project-calibration-link-promoted')
-    if (!tapInFlight) {
-      status.textContent = options.ground()
-        ? 'Floor found. Tap the ground to place the anchor.'
-        : 'Tracking ready. Tap the ground to place the anchor (floor not confirmed).'
-    }
+    stage = 'landmark'
+    transientStatus = null
+    renderStage()
   }
 
   return new Promise((resolve) => {
@@ -136,8 +412,183 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
       clearInterval(interval)
       options.canvas.removeEventListener('touchstart', onTouchStart)
       options.canvas.removeEventListener('pointerdown', onPointerDown)
+      clearPlacement()
       overlay.remove()
       resolve(result)
+    }
+
+    /**
+     * Commits the two-point frame. `override` records the pair despite a
+     * separation mismatch, which costs the 'verified' status by definition.
+     */
+    function commitTwoPoint(override: boolean): void {
+      const landmark = points.landmark
+      const headingMarker = points.heading
+      if (!landmark || !headingMarker) return
+      const separationM = twoPointSeparationM(landmark, headingMarker)
+      if (separationM < MIN_POINT_SEPARATION_M) {
+        renderStage()
+        return
+      }
+
+      const toleranceM = storedTwoPoint?.toleranceM ?? DEFAULT_SEPARATION_TOLERANCE_M
+      const residualM = storedTwoPoint ? separationM - storedTwoPoint.separationM : 0
+      if (storedTwoPoint && !override && Math.abs(residualM) > toleranceM) {
+        mismatchResidualM = residualM
+        stage = 'mismatch'
+        renderStage()
+        return
+      }
+
+      // Metadata only on this tier: recorded so absolute orientation is
+      // available for GPS placement, never read to build the frame (ADR 0005).
+      const bearingDeg = options.bearing()
+      const calibratedAt = new Date().toISOString()
+      const calibration: ScanCalibration = {
+        method: 'two-point-ground',
+        sessionToProject: twoPointToProjectTransform(landmark, headingMarker),
+        separationM,
+        residualM,
+        toleranceM,
+        anchorBearingDeg: bearingDeg,
+        calibratedAt,
+        // 'verified' is a measurement here, not a label: it requires a stored
+        // reference that this session's re-measured separation actually matched.
+        status: storedTwoPoint && !override ? 'verified' : 'provisional',
+      }
+
+      const frameChanged = !storedTwoPoint || override
+      const spatialFrame: ProjectSpatialFrame | undefined = frameChanged
+        ? {
+            version: 1,
+            createdAt: calibratedAt,
+            method: 'two-point-ground',
+            // Project-space by construction: the transform above sends the
+            // landmark to the origin and the heading marker onto +Z at
+            // `separationM`. Stored explicitly so the record is self-describing.
+            landmark: { x: 0, y: 0, z: 0 },
+            headingMarker: { x: 0, y: 0, z: separationM },
+            separationM,
+            toleranceM,
+            anchorBearingDeg: bearingDeg,
+          }
+        : undefined
+
+      dropCommittedOrigin(landmark, bearingDeg)
+      close({ calibration, spatialFrame })
+    }
+
+    /** #141's single-tap tier, kept for rooms where a second point is impractical. */
+    function commitSinglePoint(): void {
+      const landmark = points.landmark
+      if (!landmark) return
+      const bearingDeg = options.bearing()
+      const calibratedAt = new Date().toISOString()
+      const calibration: ScanCalibration = {
+        method: 'ground-tap-compass',
+        sessionToProject: anchorToProjectTransform(landmark, bearingDeg),
+        anchorBearingDeg: bearingDeg,
+        calibratedAt,
+        // A single anchor is project-space (0,0,0) by construction, so it always
+        // agrees with itself — there is nothing here to verify against.
+        status: 'provisional',
+      }
+      // Never downgrade a stored frame to this tier: a Place that already has a
+      // reference keeps it, and this session simply aligns provisionally.
+      const spatialFrame: ProjectSpatialFrame | undefined = existingFrame
+        ? undefined
+        : {
+            version: 1,
+            createdAt: calibratedAt,
+            method: 'ground-tap-compass',
+            anchorBearingDeg: bearingDeg,
+          }
+      dropCommittedOrigin(landmark, bearingDeg)
+      close({ calibration, spatialFrame })
+    }
+
+    function applyTap(position: Vec3): void {
+      // Select-then-retap, per ticket 0004: a selected marker moves to the next
+      // tap wherever it lands; otherwise a tap within ANCHOR_RADIUS_M of an
+      // existing marker selects it rather than placing something new.
+      if (selected) {
+        setMarker(selected, position)
+        selected = null
+        refreshSelectionVisuals()
+        return
+      }
+      const near = nearestMarker(position)
+      if (near) {
+        selected = near
+        refreshSelectionVisuals()
+        transientStatus = `${near === 'landmark' ? 'Landmark' : 'Heading marker'} selected — tap where it should go.`
+        return
+      }
+      if (stage === 'landmark') {
+        setMarker('landmark', position)
+      } else if (stage === 'heading') {
+        setMarker('heading', position)
+        stage = 'review'
+      } else {
+        transientStatus = 'Tap a marker to select it, then tap where it should go.'
+      }
+    }
+
+    const placeAt = (x: number, y: number) => {
+      // A zero-size canvas (rect.width/height === 0, e.g. mid-layout) turns
+      // the caller's division into NaN, which every comparison below would
+      // silently let through as "in range" — reject non-finite values first.
+      if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1) return
+      // Stages are strictly ordered: nothing is placed against an
+      // unestablished ground plane, and a mismatch must be resolved by an
+      // explicit choice rather than by another stray tap.
+      if (stage === 'ground' || stage === 'mismatch') return
+
+      tapInFlight = true
+      transientStatus = 'Reading the surface…'
+      renderStage()
+
+      void (async () => {
+        try {
+          const hit = await options.hitTest(x, y).catch(() => null)
+          if (!hit) {
+            transientStatus = 'No stable surface there. Aim at a textured floor and tap again.'
+            return
+          }
+
+          // Floor gate. Rejected on the first attempt, accepted on a retry at
+          // the same height: a hard reject would trap a user whose floor
+          // estimate is itself wrong (thick carpet, a mezzanine, a sunken
+          // room), and a bare warning would be ignored.
+          //
+          // The retry must match the rejected height, not merely be the next
+          // tap — otherwise a rejected tabletop could be confirmed by a tap on
+          // a shelf a metre higher, which is not what the user was asked to
+          // confirm.
+          const groundY = options.ground()?.y ?? null
+          const confirmingRejectedHeight = isSameHeightRetry(hit.position.y, offGroundTapY)
+          if (!confirmingRejectedHeight && !isTapOnGround(hit.position.y, groundY)) {
+            offGroundTapY = hit.position.y
+            const delta = tapHeightAboveGroundCm(hit.position.y, groundY as number)
+            const side = delta >= 0 ? 'above' : 'below'
+            transientStatus =
+              `That looked about ${Math.abs(delta)} cm ${side} the floor. Aim at the floor, or tap the same height again to use it anyway.`
+            return
+          }
+          offGroundTapY = null
+
+          // Snap onto the established plane before anything reads the point.
+          // Hit-test results carry centimetres of `y` noise, and an unprojected
+          // pair yields a baseline with a spurious vertical component — which
+          // tilts the frame, so the room's floor stops being level in project
+          // space.
+          transientStatus = null
+          applyTap({ x: hit.position.x, y: projectionY(hit.position.y), z: hit.position.z })
+        } finally {
+          tapInFlight = false
+          renderStage()
+        }
+      })()
     }
 
     skip.addEventListener('click', () => close(null))
@@ -145,90 +596,29 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
       groundWaitOverridden = true
       update()
     })
-
-    const placeAt = (x: number, y: number) => {
-      // A zero-size canvas (rect.width/height === 0, e.g. mid-layout) turns
-      // the caller's division into NaN, which every comparison below would
-      // silently let through as "in range" — reject non-finite values first.
-      if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1) return
-
-      tapInFlight = true
-      status.textContent = 'Placing anchor…'
-
-      void (async () => {
-        const hit = await options.hitTest(x, y).catch(() => null)
-        if (!hit) {
-          tapInFlight = false
-          status.textContent = 'No stable surface there. Aim at a textured floor and tap again.'
-          return
-        }
-
-        // Floor gate. The copy has always told the user to tap the ground
-        // ("Aim at a textured floor"), but nothing enforced it — a tabletop tap
-        // silently became a project origin ~0.75 m above the floor, and every
-        // scan aligned through that frame inherited the offset.
-        //
-        // Rejected on the first attempt, accepted on a retry at the same
-        // height: a hard reject would trap a user whose floor estimate is
-        // itself wrong (thick carpet, a mezzanine, a sunken room), and a bare
-        // warning would be ignored. Two steps keeps the default safe and the
-        // override explicit.
-        //
-        // The retry must match the rejected height, not merely be the next tap.
-        // Honouring any second tap would let a rejected tabletop be confirmed
-        // by a tap on a shelf a metre higher — not what the user was asked to
-        // confirm, and the copy would be claiming a constraint nothing applied.
-        const groundY = options.ground()?.y ?? null
-        const confirmingRejectedHeight = isSameHeightRetry(hit.position.y, offGroundTapY)
-        if (!confirmingRejectedHeight && !isTapOnGround(hit.position.y, groundY)) {
-          offGroundTapY = hit.position.y
-          tapInFlight = false
-          const delta = tapHeightAboveGroundCm(hit.position.y, groundY as number)
-          const side = delta >= 0 ? 'above' : 'below'
-          status.textContent =
-            `That looked about ${Math.abs(delta)} cm ${side} the floor. Aim at the floor, or tap the same height again to use it anyway.`
-          return
-        }
-        offGroundTapY = null
-
-        const bearingDeg = options.bearing()
-        const sessionToProject = anchorToProjectTransform(hit.position, bearingDeg)
-
-        // Drop the decal into the live AR scene, if this provider has one, so
-        // the user sees where the anchor landed for the rest of the session.
-        const scene = options.provider.getScene?.()
-        if (scene) {
-          const marker = buildAnchorMarker(bearingDeg)
-          marker.position.set(hit.position.x, hit.position.y, hit.position.z)
-          scene.add(marker)
-        }
-
-        const calibratedAt = new Date().toISOString()
-        const calibration: ScanCalibration = {
-          method: 'ground-tap-compass',
-          sessionToProject,
-          anchorBearingDeg: bearingDeg,
-          calibratedAt,
-          // Always 'provisional', including on a return visit. A single anchor
-          // maps to project-space (0,0,0) by construction, so it always agrees
-          // with itself — there is nothing here to compare against and no
-          // residual to compute. Reporting 'verified' because a spatialFrame
-          // record happened to exist claimed a check that never ran: a user
-          // tapping three metres from last visit's spot got a three-metre
-          // misalignment labelled verified. Wave 09 ticket 0004 restores a
-          // real producer by measuring a two-point separation against the
-          // stored one.
-          status: 'provisional',
-        }
-        const spatialFrame: ProjectSpatialFrame | undefined = existingFrame ? undefined : {
-          version: 1,
-          method: 'ground-tap-compass',
-          anchorBearingDeg: bearingDeg,
-          createdAt: calibratedAt,
-        }
-        close({ calibration, spatialFrame })
-      })()
-    }
+    confirmBtn.addEventListener('click', () => {
+      if (!points.landmark) return
+      selected = null
+      transientStatus = null
+      refreshSelectionVisuals()
+      stage = 'heading'
+      renderStage()
+    })
+    replaceBtn.addEventListener('click', () => {
+      MARKER_IDS.forEach((id) => {
+        detach(decals[id])
+        decals[id] = null
+        points[id] = null
+      })
+      refreshBaseline()
+      selected = null
+      transientStatus = null
+      stage = 'landmark'
+      renderStage()
+    })
+    commitBtn.addEventListener('click', () => commitTwoPoint(false))
+    overrideBtn.addEventListener('click', () => commitTwoPoint(true))
+    fallbackBtn.addEventListener('click', () => commitSinglePoint())
 
     // Matches the placeground reference's own guard: a two-finger touch is a
     // recenter/pinch gesture elsewhere in this app, not a placement tap.

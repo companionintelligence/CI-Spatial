@@ -16,6 +16,9 @@ import {
   anchorToProjectTransform,
   composeYUpTransform,
   identityMatrix,
+  twoPointToProjectTransform,
+  twoPointHeadingDeg,
+  twoPointSeparationM,
   DEFAULT_SEPARATION_TOLERANCE_M,
   MIN_POINT_SEPARATION_M,
 } from '../../../src/world/geo.ts'
@@ -361,4 +364,146 @@ Deno.test('ScanCalibration mirrors the same two tiers', () => {
   // @ts-expect-error — nothing on the one-point tier can be verified.
   const _r: number = provisional.residualM
   assertEquals(provisional.status, 'provisional')
+})
+
+// ── twoPointToProjectTransform (wave 09 ticket 0004) ──────────────────────
+//
+// The defining property of this tier is that the frame comes from the
+// landmark→marker pair and from nothing else. Several of the tests below are
+// really one claim stated from different angles: the AR session's arbitrary
+// startup yaw must not reach the result.
+
+/** Rotate about the vertical axis, the transform a differently-oriented session applies. */
+function yawPoint(p: Vec3, degrees: number): Vec3 {
+  const t = (degrees * Math.PI) / 180
+  const c = Math.cos(t)
+  const s = Math.sin(t)
+  return { x: c * p.x + s * p.z, y: p.y, z: -s * p.x + c * p.z }
+}
+
+const LANDMARK: Vec3 = { x: 1.5, y: -1.2, z: -0.4 }
+const HEADING_MARKER: Vec3 = { x: 3.1, y: -1.2, z: 1.9 }
+
+Deno.test('twoPointToProjectTransform: the landmark maps to project-space origin', () => {
+  const m = twoPointToProjectTransform(LANDMARK, HEADING_MARKER)
+  const origin = applyMatrix(m, LANDMARK)
+  assertAlmostEquals(origin.x, 0, F32_EPSILON)
+  assertAlmostEquals(origin.y, 0, F32_EPSILON)
+  assertAlmostEquals(origin.z, 0, F32_EPSILON)
+})
+
+Deno.test('twoPointToProjectTransform: the heading marker lands on +Z at the recorded separation', () => {
+  const m = twoPointToProjectTransform(LANDMARK, HEADING_MARKER)
+  const mapped = applyMatrix(m, HEADING_MARKER)
+  const separation = twoPointSeparationM(LANDMARK, HEADING_MARKER)
+  // Forward axis: no lateral or vertical component, and the full distance on +Z.
+  assertAlmostEquals(mapped.x, 0, F32_EPSILON)
+  assertAlmostEquals(mapped.y, 0, F32_EPSILON)
+  assertAlmostEquals(mapped.z, separation, F32_EPSILON)
+  assert(separation > 0)
+})
+
+Deno.test('twoPointToProjectTransform: yawing the whole pair changes nothing in project space', () => {
+  // This is the regression the tier exists for: two sessions of the same room
+  // started facing different directions must produce the same frame. #141's
+  // compass-derived heading cannot pass this when the bearing is null.
+  const base = twoPointToProjectTransform(LANDMARK, HEADING_MARKER)
+  for (const yaw of [17, 90, 180, 270, 359]) {
+    const a = yawPoint(LANDMARK, yaw)
+    const b = yawPoint(HEADING_MARKER, yaw)
+    const rotated = twoPointToProjectTransform(a, b)
+    for (const [p, q] of [[LANDMARK, a], [HEADING_MARKER, b]] as const) {
+      const expected = applyMatrix(base, p)
+      const actual = applyMatrix(rotated, q)
+      assertAlmostEquals(actual.x, expected.x, 1e-5, `x at yaw ${yaw}`)
+      assertAlmostEquals(actual.y, expected.y, 1e-5, `y at yaw ${yaw}`)
+      assertAlmostEquals(actual.z, expected.z, 1e-5, `z at yaw ${yaw}`)
+    }
+  }
+})
+
+Deno.test('twoPointToProjectTransform: the transform is rigid — no scale or skew', () => {
+  const m = twoPointToProjectTransform(LANDMARK, HEADING_MARKER)
+  const probes: Vec3[] = [
+    { x: 0, y: 0, z: 0 },
+    { x: 2.4, y: 0.8, z: -3.1 },
+    { x: -1.1, y: -2.2, z: 0.6 },
+  ]
+  for (let i = 0; i < probes.length; i++) {
+    for (let j = i + 1; j < probes.length; j++) {
+      const before = distance(probes[i]!, probes[j]!)
+      const after = distance(applyMatrix(m, probes[i]!), applyMatrix(m, probes[j]!))
+      assertAlmostEquals(after, before, 1e-5)
+    }
+  }
+})
+
+Deno.test('twoPointToProjectTransform: only x and z steer the heading, so y noise cannot tilt the frame', () => {
+  // The flow projects both hits onto the established ground plane before
+  // calling this. Even if that projection were skipped, a stray y must not
+  // reach the heading — otherwise the room's floor stops being level.
+  const noisy: Vec3 = { ...HEADING_MARKER, y: HEADING_MARKER.y + 0.07 }
+  assertAlmostEquals(
+    twoPointHeadingDeg(LANDMARK, noisy),
+    twoPointHeadingDeg(LANDMARK, HEADING_MARKER),
+    F32_EPSILON,
+  )
+  assertAlmostEquals(
+    twoPointSeparationM(LANDMARK, noisy),
+    twoPointSeparationM(LANDMARK, HEADING_MARKER),
+    F32_EPSILON,
+  )
+})
+
+Deno.test('twoPointToProjectTransform: coplanar markers give a horizontal baseline and a floor at y = 0', () => {
+  const groundY = -1.2
+  const landmark: Vec3 = { x: 1.5, y: groundY, z: -0.4 }
+  const marker: Vec3 = { x: 3.1, y: groundY, z: 1.9 }
+  const m = twoPointToProjectTransform(landmark, marker)
+
+  // Baseline horizontal: both ends at the same project-space height.
+  assertAlmostEquals(applyMatrix(m, landmark).y, applyMatrix(m, marker).y, F32_EPSILON)
+
+  // A third point anywhere on the same floor also maps to y = 0 — project-space
+  // y = 0 IS the ground plane, not an arbitrary offset through one tap.
+  const elsewhereOnFloor: Vec3 = { x: -4.2, y: groundY, z: 6.7 }
+  assertAlmostEquals(applyMatrix(m, elsewhereOnFloor).y, 0, F32_EPSILON)
+})
+
+Deno.test('twoPointSeparationM: measured in the ground plane, ignoring any vertical component', () => {
+  const a: Vec3 = { x: 0, y: 0, z: 0 }
+  const b: Vec3 = { x: 3, y: 99, z: 4 }
+  // 3-4-5 in the plane; the y is deliberately absurd to prove it is discarded.
+  assertAlmostEquals(twoPointSeparationM(a, b), 5, F32_EPSILON)
+})
+
+Deno.test('twoPointHeadingDeg: follows the 0deg = +Z north convention buildAnchorMarker uses', () => {
+  const origin: Vec3 = { x: 0, y: 0, z: 0 }
+  assertAlmostEquals(twoPointHeadingDeg(origin, { x: 0, y: 0, z: 1 }), 0, F32_EPSILON)
+  assertAlmostEquals(twoPointHeadingDeg(origin, { x: 1, y: 0, z: 0 }), 90, F32_EPSILON)
+  assertAlmostEquals(twoPointHeadingDeg(origin, { x: 0, y: 0, z: -1 }), 180, F32_EPSILON)
+  assertAlmostEquals(twoPointHeadingDeg(origin, { x: -1, y: 0, z: 0 }), -90, F32_EPSILON)
+})
+
+Deno.test('MIN_POINT_SEPARATION_M: the commit gate rejects a baseline shorter than the minimum', () => {
+  const origin: Vec3 = { x: 0, y: 0, z: 0 }
+  const tooClose: Vec3 = { x: 0.2, y: 0, z: 0.2 }
+  const farEnough: Vec3 = { x: 0, y: 0, z: MIN_POINT_SEPARATION_M + 0.01 }
+  assert(twoPointSeparationM(origin, tooClose) < MIN_POINT_SEPARATION_M)
+  assert(twoPointSeparationM(origin, farEnough) >= MIN_POINT_SEPARATION_M)
+})
+
+Deno.test('residual: a re-measured pair is within tolerance; a different pair is not', () => {
+  const stored = twoPointSeparationM(LANDMARK, HEADING_MARKER)
+
+  // Same two features, re-tapped with a couple of centimetres of hit-test noise.
+  const remeasured = twoPointSeparationM(
+    { ...LANDMARK, x: LANDMARK.x + 0.01 },
+    { ...HEADING_MARKER, z: HEADING_MARKER.z + 0.01 },
+  )
+  assert(Math.abs(remeasured - stored) <= DEFAULT_SEPARATION_TOLERANCE_M)
+
+  // A deliberately different second feature, half a metre off.
+  const wrongPair = twoPointSeparationM(LANDMARK, { ...HEADING_MARKER, z: HEADING_MARKER.z + 0.5 })
+  assert(Math.abs(wrongPair - stored) > DEFAULT_SEPARATION_TOLERANCE_M)
 })

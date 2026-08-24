@@ -1258,7 +1258,44 @@
       .project-calibration-card h2 { margin: 5px 0 8px; font-family: var(--ci-font-display); font-size: 25px; font-weight: 500; }
       .project-calibration-card p { margin: 0 0 12px; color: var(--ci-muted); font-size: 13px; line-height: 1.45; }
       .project-calibration-status { color: #eff0f0; font-size: 12px; font-weight: 700; }
-      .project-calibration-actions { display: flex; justify-content: center; margin-top: 15px; }
+      /* Two-step flow (ticket 0004): restores the progress dots #141 removed,
+         rather than introducing a new component. */
+      .project-calibration-steps {
+        display: flex;
+        gap: 6px;
+        margin: 8px 0 0;
+        padding: 0;
+        list-style: none;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .project-calibration-steps li {
+        flex: 1;
+        padding: 4px 0 0;
+        border-top: 2px solid rgba(114,221,212,0.22);
+        color: var(--ci-muted);
+      }
+      .project-calibration-steps li[data-state='active'] { border-top-color: #72ddd4; color: #72ddd4; }
+      .project-calibration-steps li[data-state='done'] { border-top-color: rgba(114,221,212,0.7); color: #eff0f0; }
+      /* Live landmark→marker distance. Colour carries the MIN_POINT_SEPARATION_M
+         verdict so the accuracy tradeoff is visible while walking, not at commit. */
+      .project-calibration-separation {
+        margin-top: 8px;
+        padding: 7px 10px;
+        border-radius: 9px;
+        background: rgba(114,221,212,0.10);
+        color: #72ddd4;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .project-calibration-separation[data-state='short'] {
+        background: rgba(255,107,107,0.12);
+        color: #ff9b9b;
+      }
+      .project-calibration-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 15px; }
+      .project-calibration-link[disabled] { opacity: 0.45; cursor: not-allowed; }
       .project-calibration-link { border: 0; background: transparent; color: var(--ci-muted); font-size: 11px; cursor: pointer; text-decoration: underline; }
       .project-calibration-link-promoted {
         border: 1px solid rgba(114,221,212,0.62);
