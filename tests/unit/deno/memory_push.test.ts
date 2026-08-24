@@ -13,7 +13,7 @@ import {
   pushScanToMemory,
   registerMemoryPush,
   type MemoryPushConfig,
-} from '../../../memory_push.ts'
+} from '../../../server/memory_push.ts'
 import type { ScanManifest } from '../../../src/world/types.ts'
 
 function assert(cond: unknown, msg: string): asserts cond {

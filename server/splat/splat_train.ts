@@ -22,7 +22,7 @@
  */
 
 import { buildBrushDataset } from './splat_train_dataset.ts'
-import { isRunnable } from '../../exec_probe.ts'
+import { isRunnable } from '../exec_probe.ts'
 import { isServerSessionId } from '../../src/shared/session-id.ts'
 // The manifest type lives in src/world/manifests.ts, not here — see that
 // file's header (it's the canonical, Deno-API-free home so the browser

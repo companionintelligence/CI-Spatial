@@ -32,7 +32,7 @@
 // its DOM-lib type-check program). Re-exported below so
 // `import type { SplatDetectManifest } from './splat_detect.ts'` still works.
 import type { SplatDetectManifest } from '../../src/world/types.ts'
-import { isRunnable } from '../../exec_probe.ts'
+import { isRunnable } from '../exec_probe.ts'
 import { isServerSessionId } from '../../src/shared/session-id.ts'
 export type { SplatDetectManifest }
 

@@ -38,8 +38,8 @@
  * both halves are mandatory.
  */
 import type { Context, Hono } from 'hono'
-import type { GeoPose, ScanManifest, SplatDetectManifest, Vec3 } from './src/world/types.ts'
-import { type DetectObjectRecord, parseDetectRecords } from './src/world/detect-objects.ts'
+import type { GeoPose, ScanManifest, SplatDetectManifest, Vec3 } from '../src/world/types.ts'
+import { type DetectObjectRecord, parseDetectRecords } from '../src/world/detect-objects.ts'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 

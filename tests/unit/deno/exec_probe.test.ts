@@ -15,7 +15,7 @@
  */
 import { assertEquals } from 'jsr:@std/assert@^1.0.0/equals'
 
-import { isRunnable } from '../../../exec_probe.ts'
+import { isRunnable } from '../../../server/exec_probe.ts'
 
 async function withTempFile(
   contents: string,

@@ -22,9 +22,9 @@
  *
  * See docs/factory/07-scan-identity/0002-one-session-identity.md.
  */
-import { SESSION_ID_RE } from './src/shared/session-id.ts'
+import { SESSION_ID_RE } from '../src/shared/session-id.ts'
 
-export { isServerSessionId, newServerSessionId, SESSION_ID_RE } from './src/shared/session-id.ts'
+export { isServerSessionId, newServerSessionId, SESSION_ID_RE } from '../src/shared/session-id.ts'
 
 /**
  * The directory `id` would name under `sessionsDir`, or `null` when `id` is not

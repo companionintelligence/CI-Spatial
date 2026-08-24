@@ -8,7 +8,7 @@
  *   deno test --allow-read inference_mock.test.ts
  */
 import { assertAlmostEquals, assertEquals } from 'jsr:@std/assert@1'
-import { blobConfidence, describeMockBlob } from '../../../inference.ts'
+import { blobConfidence, describeMockBlob } from '../../../server/inference.ts'
 
 Deno.test('blobConfidence: a solidly filled box scores near the ceiling', () => {
   // 4x4 cells, all 16 matched → fill 1.0

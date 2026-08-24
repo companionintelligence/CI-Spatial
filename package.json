@@ -15,7 +15,7 @@
     "test:provenance": "node --experimental-strip-types --no-warnings --test tests/unit/node/glb_provenance.test.ts",
     "test:resolver": "node --experimental-strip-types --no-warnings --test tests/unit/node/resolver.test.ts",
     "preview": "vite preview --host",
-    "server": "deno run --watch --allow-net --allow-read --allow-write --allow-env --allow-ffi --allow-run main.ts",
+    "server": "deno run --watch --allow-net --allow-read --allow-write --allow-env --allow-ffi --allow-run server/main.ts",
     "start": "concurrently --raw --names \"infer,vite\" -c \"cyan,green\" \"npm run server\" \"npm run dev\"",
     "gen-icons": "node scripts/generate-icons.mjs",
     "postinstall": "node scripts/copy-draco.mjs && node scripts/postinstall-hint.mjs",

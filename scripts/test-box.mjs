@@ -150,7 +150,7 @@ if (!existsSync(join(root, 'test-data', 'cv', 'expected.json'))) {
 }
 
 // 2. Servers
-launch('deno', denoBin, ['run', '--allow-net', '--allow-read', '--allow-write', '--allow-env', '--allow-ffi', '--allow-run', 'main.ts'], {
+launch('deno', denoBin, ['run', '--allow-net', '--allow-read', '--allow-write', '--allow-env', '--allow-ffi', '--allow-run', 'server/main.ts'], {
   INFERENCE_MODE: 'mock',
   PORT: String(API_PORT),
   SCANS_DIR: join(RUN_DIR, 'scans'),

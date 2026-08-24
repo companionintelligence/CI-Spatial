@@ -197,7 +197,7 @@ Deno.test('isQueuedOffline: a real server response is not mistaken for a queued 
 Deno.test('prompt.ts: root and src/inference/ copies match past their header comments', async () => {
   const stripHeader = (src: string) => src.replace(/^\/\*\*[\s\S]*?\*\/\s*/, '')
 
-  const root = await readRepoFile('./prompt.ts')
+  const root = await readRepoFile('./server/prompt.ts')
   const inference = await readRepoFile('./src/inference/prompt.ts')
 
   assertEquals(
