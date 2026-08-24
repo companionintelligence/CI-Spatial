@@ -9,7 +9,7 @@ import { assertRejects } from 'jsr:@std/assert@^1.0.0/rejects'
 import { assertThrows } from 'jsr:@std/assert@^1.0.0/throws'
 
 import { migrateScanIds, migrateWorldScanIds } from '../../../server/migrations/migrate_scan_ids.ts'
-import { scanIdFor } from '../../../scan_id.ts'
+import { scanIdFor } from '../../../server/scan_id.ts'
 import type { EditPatch, ScanManifest, WorldJob, WorldProject } from '../../../src/world/types.ts'
 
 // Repo-root anchored (see sync.test.ts) — the fixture lives at

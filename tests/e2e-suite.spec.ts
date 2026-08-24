@@ -4,7 +4,7 @@
  */
 import { test, expect } from '@playwright/test'
 import { mergeDetections } from '../src/spatial/resolver'
-import { normalizeDetections, parseDetections } from '../prompt.ts'
+import { normalizeDetections, parseDetections } from '../server/prompt.ts'
 import { ONBOARDING_KEY } from '../src/shared/storage-keys'
 
 // 5173 here is just the last-resort default (matches VITE_PORT's own default in

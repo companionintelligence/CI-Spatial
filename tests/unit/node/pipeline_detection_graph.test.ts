@@ -25,7 +25,7 @@ import assert from 'node:assert/strict'
 import * as THREE from 'three'
 import { Document, NodeIO } from '@gltf-transform/core'
 import { ALL_EXTENSIONS, KHRDracoMeshCompression, KHRMaterialsUnlit, KHRMeshQuantization } from '@gltf-transform/extensions'
-import { optimizeScan } from '../../../pipeline.ts'
+import { optimizeScan } from '../../../server/pipeline.ts'
 import { collectDetections, resolveDetectionMesh } from '../../../src/viewer/detections.ts'
 
 /** A cube, as 8 indexed corners — enough geometry to survive the pipeline. */

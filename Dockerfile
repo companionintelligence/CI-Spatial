@@ -10,9 +10,10 @@ WORKDIR /web
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund --ignore-scripts
 COPY tsconfig.json vite.config.ts ./
-# Root .ts modules too: src/viewer/viewer.ts imports ../../thing_tags, so the
-# browser bundle does not build without them. A third stale-context bug of the
-# same family as the two below — stage 1 only ever copied src/ and public/.
+# Root .ts is now only vite.config.ts/playwright.config.ts (thing_tags moved to
+# src/shared/, which COPY src/ already covers). Kept as a glob rather than
+# deleted: it costs nothing and it is what stops the next browser-imported root
+# module from silently failing the bundle, which is how this line was earned.
 COPY *.ts ./
 # Every root HTML file. Also a glob: vite.config.ts's `input` map grew
 # ar-hittest-sphere.html (#115) and ar-ground-anchor.html (wave 09) after this
@@ -70,7 +71,7 @@ COPY --from=web /web/dist ./dist
 #
 # Persist scans (uploads + optimized artifacts + keyframe sessions) and worlds:
 #   docker run -v scans:/app/scans -v worlds:/app/worlds ...
-RUN deno cache main.ts
+RUN deno cache server/main.ts
 
 EXPOSE 8000
 
@@ -83,4 +84,4 @@ CMD ["deno", "run", \
      "--allow-env", \
      "--allow-ffi", \
      "--allow-run", \
-     "main.ts"]
+     "server/main.ts"]

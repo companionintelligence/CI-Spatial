@@ -35,6 +35,7 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
 import { fromFileUrl } from '@std/path'
+import { REPO_ROOT } from './repo-root.ts'
 import { InferenceEngine } from './inference.ts'
 import type { Job, JobStatus, OptimizeScanManifest } from './jobs.ts'
 import { optimizeScan } from './pipeline.ts'
@@ -44,16 +45,16 @@ import {
   trimWorldJobHistory,
   worldJobTarget,
   WorldJobPump,
-} from './server/world/world_job_pump.ts'
-import { withWorldLock } from './server/world/world_lock.ts'
+} from './world/world_job_pump.ts'
+import { withWorldLock } from './world/world_lock.ts'
 import { legacyScanId, safeSlug, scanIdFor } from './scan_id.ts'
 import { newServerSessionId, resolveSessionDir, sessionDirPath } from './session_id.ts'
 import { loadSessionIndex, sessionForScan, type SessionIndex } from './scan_index.ts'
-import { pruneScansMissingFromDisk } from './server/world/world_prune.ts'
-import { runLingBotMapReconstruction } from './server/lingbot-map/lingbot_map.ts'
-import { runSplatTrain } from './server/splat/splat_train.ts'
-import { runSplatDetect } from './server/splat/splat_detect.ts'
-import { runSplatFinish } from './server/splat/splat_finish.ts'
+import { pruneScansMissingFromDisk } from './world/world_prune.ts'
+import { runLingBotMapReconstruction } from './lingbot-map/lingbot_map.ts'
+import { runSplatTrain } from './splat/splat_train.ts'
+import { runSplatDetect } from './splat/splat_detect.ts'
+import { runSplatFinish } from './splat/splat_finish.ts'
 import { runSenseNovaVision, senseNovaTask } from './sensenova_vision.ts'
 import { configFromEnv as portalAuthConfig, registerPortalAuth } from './portal_auth.ts'
 import {
@@ -61,16 +62,16 @@ import {
   pushScanToMemory,
   registerMemoryPush,
 } from './memory_push.ts'
-import { composeYUpTransform, geoToEnu, hasGeoPose } from './src/world/geo.ts'
-import { defaultLayerIndex } from './src/world/layers.ts'
-import { EVENT } from './src/shared/events.ts'
-import { formatSetupBanner } from './src/shared/model-catalog.ts'
+import { composeYUpTransform, geoToEnu, hasGeoPose } from '../src/world/geo.ts'
+import { defaultLayerIndex } from '../src/world/layers.ts'
+import { EVENT } from '../src/shared/events.ts'
+import { formatSetupBanner } from '../src/shared/model-catalog.ts'
 import {
   ensureWorldProjectCollections,
   placeScanTransform,
   scanProjectId,
   shouldIncludeStoredScanInWorld,
-} from './server/world/world_membership.ts'
+} from './world/world_membership.ts'
 import { runThingCorrespondence, type DetectionLike } from './thing_match.ts'
 import type {
   EditPatch,
@@ -91,7 +92,7 @@ import type {
   WorldMember,
   WorldProject,
   ReviewComment,
-} from './src/world/types.ts'
+} from '../src/world/types.ts'
 
 // An unguarded async callback anywhere below (there is no lint/type check that
 // catches this) throws an unhandled rejection, and Deno's default is to
@@ -178,7 +179,7 @@ const ENGINE_LOAD_WAIT_MS = 15_000 // max time /infer waits for the model to fin
 const INFER_TIMEOUT_MS = 60_000    // hard cap on a single engine.infer() call
 
 /**
- * Path to a script shipped next to this file, as a native OS path.
+ * Path to a repo script (scripts/…), as a native OS path.
  *
  * `new URL(rel, import.meta.url).pathname` is *not* that: on Windows it yields
  * `/C:/devel/…`, which `Deno.Command` then resolves against the drive root as
@@ -186,7 +187,7 @@ const INFER_TIMEOUT_MS = 60_000    // hard cap on a single engine.infer() call
  * `fromFileUrl` is the conversion that respects the platform.
  */
 function localScriptPath(relative: string): string {
-  return fromFileUrl(new URL(relative, import.meta.url))
+  return fromFileUrl(new URL(relative, REPO_ROOT))
 }
 
 const LINGBOT_MAP_SCRIPT = Deno.env.get('LINGBOT_MAP_SCRIPT') ??

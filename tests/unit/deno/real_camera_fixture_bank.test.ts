@@ -1,5 +1,5 @@
 import { assertEquals } from 'jsr:@std/assert@^1.0.0/equals'
-import { validateRealCameraFixtureManifest } from '../../../real_camera_fixture_bank.ts'
+import { validateRealCameraFixtureManifest } from '../../support/real_camera_fixture_bank.ts'
 
 const MANIFEST_PATH = './test-data/real-camera/manifest.json'
 

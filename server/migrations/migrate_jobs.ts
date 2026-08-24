@@ -41,7 +41,7 @@
  * resolution: logged and skipped, not migrated as an orphaned record —
  * adopted verbatim here.
  */
-import type { Job, JobStatus } from '../../jobs.ts'
+import type { Job, JobStatus } from '../jobs.ts'
 import type { WorldJob, WorldJobStatus, WorldProject } from '../../src/world/types.ts'
 import { trimWorldJobHistory } from '../world/world_job_pump.ts'
 

@@ -1,6 +1,6 @@
 import { assertEquals } from 'jsr:@std/assert@^1.0.0/equals'
 import { assertThrows } from 'jsr:@std/assert@^1.0.0/throws'
-import { MAX_THINGS_PER_WORLD, normalizeThingLabel, runThingCorrespondence } from '../../../thing_match.ts'
+import { MAX_THINGS_PER_WORLD, normalizeThingLabel, runThingCorrespondence } from '../../../server/thing_match.ts'
 import type { Thing, ThingObservation } from '../../../src/world/types.ts'
 
 Deno.test('normalizes common object synonyms', () => {
