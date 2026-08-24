@@ -64,7 +64,7 @@ So the benchmark cannot be executed as written. This ticket adds the readout.
   `MIN_POINT_SEPARATION_M` in this ticket. Measure, record, and hand the numbers to 0002/0003;
   changing constants and measuring them in the same commit makes neither reviewable.
 - Do not build an in-app benchmark runner or scoring UI. The protocol is a documented manual
-  procedure, matching how `docs/DEVICE_TESTING.md` already works.
+  procedure, matching how `../../testing/DEVICE_TESTING.md` already works.
 
 ## Pinned conventions
 
@@ -78,7 +78,7 @@ So the benchmark cannot be executed as written. This ticket adds the readout.
 each interval) as the update cadence. Do not add a timer.
 
 **Debug gating**: reuse the existing `?debug=` query-param convention
-(`?debug=remote` is already used for console mirroring, per `docs/DEVICE_TESTING.md`). Add
+(`?debug=remote` is already used for console mirroring, per `../../testing/DEVICE_TESTING.md`). Add
 the readout under a `?debug=pose` (or extend the existing param) rather than inventing a
 second gating mechanism — confirm which by reading how `debug` is parsed in `src/main.ts`
 before implementing, and state the choice in the PR.
@@ -86,7 +86,7 @@ before implementing, and state the choice in the PR.
 **HUD markup**: extend the existing `#status-bar` / `#scan-stats` region in `index.html`
 rather than adding a floating panel.
 
-**Protocol docs**: extend `docs/DEVICE_TESTING.md`, which already holds Checklist A
+**Protocol docs**: extend `../../testing/DEVICE_TESTING.md`, which already holds Checklist A
 (iPhone/8th Wall) and Checklist B (Android/WebXR) plus a results matrix. Add the benchmark as
 a new section with its own results table; do not create a parallel document.
 
@@ -101,7 +101,7 @@ in-app warning agree.
 - `src/capture/quality-monitor.ts:70-215` — existing drift metrics, to sit alongside not
   duplicate.
 - `src/spatial/resolver.ts:20-27` — `DEDUP_RADIUS_M` and its empirical comment.
-- `docs/DEVICE_TESTING.md` — Checklists A/B and the results matrix, as #141/#142 left them.
+- `../../testing/DEVICE_TESTING.md` — Checklists A/B and the results matrix, as #141/#142 left them.
 
 ## Open questions & answers
 
@@ -136,7 +136,7 @@ in-app warning agree.
   systematic bias from one bad pass. Five gives a usable spread without becoming an
   afternoon's work per device. Record all five, not just the best or the mean. (Decided in
   this ticket.)
-- Q: Which devices? — A: Per `docs/DEVICE_TESTING.md`'s fleet, at minimum one 8th Wall path
+- Q: Which devices? — A: Per `../../testing/DEVICE_TESTING.md`'s fleet, at minimum one 8th Wall path
   (iPhone/iPad Safari) and one WebXR path (Galaxy Tab S9 Ultra or S8 Ultra). The two providers
   accumulate points by entirely different mechanisms (per-frame SLAM `worldPoints` vs a 36-ray
   probe grid), so a number measured on one says nothing about the other. (Decided in this
@@ -188,13 +188,13 @@ Changed:
 - `src/main.ts` (populate the readout from the scanner tick's pose; debug gating)
 - `src/debug/remote-log.ts` (arm via `hasDebugFlag('remote')` instead of exact equality)
 - `deno.json` (register the two new test files)
-- `docs/DEVICE_TESTING.md` (the benchmark protocol + results tables)
+- `../../testing/DEVICE_TESTING.md` (the benchmark protocol + results tables)
 
 ## Schema required
 
 None.
 
-## The benchmark (to be written into `docs/DEVICE_TESTING.md`)
+## The benchmark (to be written into `../../testing/DEVICE_TESTING.md`)
 
 **Apparatus.** Tape a marker on the floor at **Point A**, noting a fixed facing direction.
 Choose three fixed target objects. Define a perimeter path A → B → C → D → A.
@@ -243,7 +243,7 @@ recorded as a baseline**, not asserted (see Open questions).
 - [x] The readout shows delta-from-session-start as well as absolute position, so step 3 needs
       no arithmetic in the field
 - [x] No change to `quality-monitor.ts` behavior
-- [x] `docs/DEVICE_TESTING.md` carries both procedures, the corrected element ids, and empty
+- [x] `../../testing/DEVICE_TESTING.md` carries both procedures, the corrected element ids, and empty
       results tables
 - [x] The corrected element ids are used throughout (`#capture-btn`, `#auto-capture-btn`,
       `#stream-btn`, `#rtc-stream-btn`, `#finish-scan-btn`, `#start-ar-btn`)
@@ -273,7 +273,7 @@ npm run qr -- "?debug=pose"
       delta-from-start, updating at the scanner tick rate
 - [ ] Given a completed loop back to the taped marker, Then the reported delta is readable
       directly off the HUD with no manual arithmetic
-- [x] Given `docs/DEVICE_TESTING.md`, Then every element id it names resolves to a real
+- [x] Given `../../testing/DEVICE_TESTING.md`, Then every element id it names resolves to a real
       element in `index.html` (all six verified by grep against `index.html`)
 - [ ] Given five cross-session runs, Then the `separationM` spread is recorded and cited as
       the basis for `DEFAULT_SEPARATION_TOLERANCE_M` in ticket 0002
@@ -308,7 +308,7 @@ npm run qr -- "?debug=pose"
 3. [x] Populate it from `provider.getPose()` in the existing scanner tick, including
        delta-from-session-start
 4. [x] Extract the delta computation as a pure function and unit-test it
-5. [x] Write both procedures into `docs/DEVICE_TESTING.md` with corrected element ids and
+5. [x] Write both procedures into `../../testing/DEVICE_TESTING.md` with corrected element ids and
        empty results tables
 6. [x] `npx tsc --noEmit`
 7. [ ] Run Procedure 1 (5×) on an 8th Wall device and a WebXR device; record results here

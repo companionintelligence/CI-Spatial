@@ -13,7 +13,7 @@
  * SPATIAL_E2E follow-up (out of scope here): the *full* GPU chain —
  * ingest → lingbot-map-reconstruct (pose estimation) → splat-train (Brush) →
  * splat-detect (OWLv2) — needs both GPUs and minutes per room; drive it from the
- * house protocol (docs/HOUSE_VALIDATION.md Phase 3), not this fast gate.
+ * house protocol (../docs/testing/HOUSE_VALIDATION.md Phase 3), not this fast gate.
  */
 import { test, expect } from '@playwright/test'
 import { execFileSync } from 'node:child_process'

@@ -11,7 +11,7 @@ const MAX_POINTS = 250_000 // hard memory cap — decimate instead of growing pa
 
 // ── Ground-plane estimate (wave 09 ticket 0003) ─────────────────────────────
 // Every threshold here is a starting value, expected to be retuned against the
-// room-loop benchmark in docs/DEVICE_TESTING.md rather than argued about.
+// room-loop benchmark in ../../docs/testing/DEVICE_TESTING.md rather than argued about.
 
 /** Below this many points an estimate is noise, so none is offered at all. */
 const MIN_POINTS_FOR_GROUND_ESTIMATE = 50

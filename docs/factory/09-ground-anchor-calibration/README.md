@@ -60,13 +60,13 @@ Less than the dependency graph suggests, and the reason is shared files rather t
 | `src/world/types.ts` | 0001, 0002, 0004, 0007 |
 | `src/main.ts` | 0001, 0003, 0004, 0006, 0007 |
 | `deno.json` (the hand-maintained `"test"` list) | 0003, 0005, 0007 |
-| `docs/DEVICE_TESTING.md` | 0005, 0006 |
+| `../../testing/DEVICE_TESTING.md` | 0005, 0006 |
 
 Genuinely conflict-free in parallel:
 
 - **0003's `src/scene/pointcloud.ts` half** — nothing else in the wave touches it.
 - **0005** — almost entirely a new root-level test file; its only shared touchpoints are one
-  line in `deno.json` and a `docs/DEVICE_TESTING.md` section.
+  line in `deno.json` and a `../../testing/DEVICE_TESTING.md` section.
 - **0002** — confined to `src/world/types.ts` plus a one-line narrowing fix.
 
 Everything else serialises on `project-calibration.ts` or `index.html`. Two tickets can be

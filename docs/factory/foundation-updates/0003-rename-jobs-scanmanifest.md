@@ -50,7 +50,7 @@ and 171).
 ## Files impacted
 
 - Changed: `jobs.ts` (3 lines: definition + 2 usages)
-- Changed: `architecture.md` / any doc line that refers to "jobs.ts's ScanManifest"
+- Changed: `../../architecture.md` / any doc line that refers to "jobs.ts's ScanManifest"
   disambiguation (grep docs for it; update wording to the new name)
 
 ## Schema required
@@ -89,8 +89,8 @@ npm run smoke:pipeline
 ## Subtasks
 
 1. [x] Rename the interface and its two usages in `jobs.ts`.
-2. [x] Update doc mentions (`architecture.md`, `CLAUDE.md` if it names the collision
-       as current fact — reword to past tense there). `architecture.md` had no line
+2. [x] Update doc mentions (`../../architecture.md`, `CLAUDE.md` if it names the collision
+       as current fact — reword to past tense there). `../../architecture.md` had no line
        asserting the collision as current fact (only generic `ScanManifest` mentions
        referring to the canonical type), so only `CLAUDE.md`'s bullet needed rewording.
 3. [x] Run the verification commands.

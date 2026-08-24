@@ -152,7 +152,7 @@ export async function runSplatTrain(opts: SplatTrainRunOptions): Promise<SplatTr
       ...baseManifest,
       status: 'skipped',
       skippedReason: `Brush binary not found or not executable: ${params.brushBin}`,
-      remediation: 'Build Brush and set BRUSH_BIN (see docs/splat-train.md — Setup).',
+      remediation: 'Build Brush and set BRUSH_BIN (see docs/pipelines/splat-train.md — Setup).',
     }, 0, `brush binary missing: ${params.brushBin}`)
   }
 

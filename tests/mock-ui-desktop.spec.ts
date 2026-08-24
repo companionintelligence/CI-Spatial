@@ -2,8 +2,8 @@
  * Desktop world-editor UI/UX flow screenshots (viewer.html).
  *
  * Drives the desktop editor through every structuring/processing surface and
- * writes documentation screenshots into docs/ui-flow/desktop/. These illustrate
- * docs/UX_FLOW.md Phases 2-4 (Structure / Process / Export-Share).
+ * writes documentation screenshots into ../docs/product/ui-flow/desktop/. These illustrate
+ * ../docs/product/UX_FLOW.md Phases 2-4 (Structure / Process / Export-Share).
  *
  * Runs under the chromium-mock project. Needs Vite + mock-Deno up with a seeded
  * default world (npm run gen:test-data && SERVER_URL=<api> npm run seed:test-data):
