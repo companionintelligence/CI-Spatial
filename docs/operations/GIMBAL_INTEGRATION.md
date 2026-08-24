@@ -43,6 +43,44 @@ refused new connections (`Error: Peripheral already connected`) even after a cle
 button, and trigger together for about a second. If a backend restart + rescan doesn't recover a
 connection, try this before assuming it's a code or macOS-side problem.
 
+**Known gotcha — motor commands stop working after the first one per connection, and neither
+reconnecting nor waiting recovers them.** Discovered 2026-08-24, live-tested against a real OM6.
+Sequence, all against a healthy connection with live telemetry flowing throughout (`connected:
+true`, quaternion updating every read):
+
+1. Forgot the device in macOS Bluetooth settings (it had gone stale after the 2026-08-23 wedge
+   above), rediscovered it fresh via `POST /api/scan`, connected.
+2. First `speed` command after that connect: **moved** (delta 0.105, `moved: true`).
+3. Every command after that first one — `speed` at every tick duration tried (250ms/500ms/600ms/
+   700ms/900ms), every settle gap tried (0s/1s/2s/4s/8s between attempts), and `recenter` (a
+   completely different command type) — **did not move it**. Not degraded: delta stayed under
+   0.0002 (pure sensor noise) across every one of these, versus 0.02+ for anything that actually
+   moved. `moveToClosedLoop`'s own 15/23-tick runs showed yaw flat within ±1.3° of its start for
+   the full 8–15 second call.
+4. A plain `disconnect()` + `connect()` on the same already-known device id did **not** restore
+   it — the post-reconnect first command also failed to move. Only the original post-*forget*
+   connection ever got the one working command.
+
+Ruled out as the cause: `moveToClosedLoop`'s own logic (the failure reproduces with raw
+`speed`+stop calls made directly, outside the loop); tick/settle timing (tested across a 30×
+range); `MsgIdSequence` wraparound (a simple `(n+1) & 0xffff` counter — nowhere near wrapping
+after 2–4 commands); and stale write-characteristic caching (`ble-transport.mjs`'s `disconnect`
+path does correctly null `_writeChar` via the peripheral's own `'disconnect'` event).
+
+**Working theory, not yet confirmed:** this backend never does real BLE pairing.
+`ble-transport.mjs`'s own comment says so —
+`this._paired = true // latch write channel regardless; treat any response as forward
+progress` — that flag is a heuristic about *our* state, not the gimbal's. The pattern (exactly
+one motor command honoured per connection, any type, then silent ignore regardless of gap)
+matches a device that grants a single grace command to an unpaired central and then requires a
+real `SetPairingPin` exchange — which needs the PIN shown on the gimbal's own screen — before
+honouring anything further. **Untested**: the gimbal's screen showed no PIN when this was found,
+so `POST /api/pair` with a real PIN has never been tried against this specific symptom. That is
+the next thing to try, and it would confirm or rule out the theory in one step.
+
+Until that test happens, **do not trust `gimbal_move_to`/`gimbal_sweep` for more than the first
+motor command of a session** — see the correction in "Closed-loop positioning" below.
+
 ## Why no signaling is needed for a passive sweep
 
 The scanner client (`index.html` + `src/capture/*`, `src/ar/*`) never needs to be told a scan is
@@ -91,6 +129,15 @@ assume a call that returned without erroring actually reached the target. `gimba
 several of these together across a yaw range; `gimbal_recenter` targets `(0, 0)` (caveat: "0,0" is
 wherever this device's quaternion frame reads as zero, not independently confirmed to be true
 mechanical center).
+
+**Correction (2026-08-24): `converged: false` from a real hardware run can mean "the gimbal never
+moved at all," not just "didn't quite reach the target."** See the "motor commands stop working
+after the first one" gotcha above — a session that already spent its one working command will
+report `timedOut: true` with a flat, unmoving `history` on every `gimbal_move_to` call after that,
+indistinguishable at the API level from a slow-but-progressing move unless you read the `history`
+array yourself and check whether `yaw`/`pitch` are actually changing between ticks, not just
+whether the call returned. `gimbal_sweep`'s later steps are the most exposed to this, since only
+its first step gets the one working command.
 
 **Movement-only rehearsal, live-tested 2026-08-21** (no photo capture — `android-beam-pro-1` was
 unreachable at the time): before the closed-loop version existed, the 9-position grid from
