@@ -176,6 +176,39 @@ in-app warning agree.
   while the wave tunes another would produce numbers that look plausible and mean nothing.
   (Decided 2026-08-23.)
 
+**Procedure 2 cannot be run on the build this ticket landed in, and the wave's stated
+order is circular.** Found while trying to schedule the measurement, after #145/#147 merged.
+
+Procedure 2 steps 3 and 4 record `separationM` and `residualM`. Neither exists: today's
+calibration is a single ground tap, `ProjectSpatialFrame.method` has exactly one member
+(`'ground-tap-compass'`), and no code anywhere computes a separation between two markers.
+Those numbers arrive with ticket 0004 — which depends on 0002 — whose
+`DEFAULT_SEPARATION_TOLERANCE_M` this procedure is supposed to supply. So the README's
+`0006 → 0002 → 0004` order cannot be walked as written.
+
+Not a reason to guess the constant anyway. The quantity Procedure 2 is after — how
+repeatably the system reproduces a fixed physical distance across independent sessions —
+is measurable on today's build, because `?debug=pose` already reports `Δ` against the
+session's first tracked pose. Anchor that first pose to taped Point A by standing on it at
+AR start, walk to taped Point B, and the spread of `Δ` across five sessions is the same
+repeatability floor, measured through pose rather than through hit-test.
+
+Written up as **Procedure 2a** in `docs/DEVICE_TESTING.md`, with Procedure 2 retained and
+explicitly marked as the post-0004 confirmation run. 2a is a conservative proxy: it carries
+operator standing-position noise that aiming at a taped cross does not, so it should
+over-estimate the spread rather than under-estimate it — the safe direction, since a
+tolerance set below the true floor is what makes correct repeat visits report false
+mismatches.
+
+Procedure 2a also picks up a measurement nothing had asked for and which is available
+today: `GROUND_TAP_TOLERANCE_M = 0.25` is already live on `main`, and 0003's rejection copy
+reports the measured height in centimetres ("That looked about N cm above the floor"), so
+tapping a table and a chair seat characterises the gate directly. That matters — the
+constant's own comment claims it "comfortably rejects … a chair seat (~0.45 m)", which is a
+20 cm margin *if the ground estimate is exact*. Nobody has measured how exact it is.
+
+**Procedure 1 is unaffected and runnable as written.**
+
 ## Files impacted
 
 New:

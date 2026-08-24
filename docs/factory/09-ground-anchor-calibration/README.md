@@ -39,9 +39,21 @@ not a small risk.
 0006 also has a sequencing constraint of its own: **run its Procedure 2 before 0007 exists**, so
 the recorded spread is a clean no-aid baseline that 0007 can be measured against.
 
+**Correction, logged after 0006 landed: the order above is circular as written, and the fix
+is Procedure 2a.** 0006's Procedure 2 reads `separationM` and `residualM` off the two-point
+flow, which 0004 builds and 0002 types — so it cannot supply the constant 0002 needs. The
+underlying quantity is still measurable on the shipped one-point build, via the `?debug=pose`
+delta against a session-start pose anchored to taped Point A; that is written up as
+**Procedure 2a** in `docs/DEVICE_TESTING.md` and is what 0002 should cite. Procedure 2 stays
+as the confirmation run after 0004 lands. Procedure 1 was always runnable and is unaffected.
+The "before 0007 exists" constraint now applies to 2a.
+
 ```
 0006 ──▶ 0001 ──▶ 0002 ──┐
-                  0003 ──┴─▶ 0004 ──▶ 0007
+  │               0003 ──┴─▶ 0004 ──▶ 0007
+  │                          │
+  │  Procedure 2a ───────────┘  (2a measures on the one-point build; Procedure 2
+  │                              is the confirmation run once 0004 exists)
          0005 (any time)
 ```
 

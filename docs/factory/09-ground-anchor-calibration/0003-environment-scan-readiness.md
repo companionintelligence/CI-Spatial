@@ -176,6 +176,28 @@ root-level flat `*.test.ts` importing from `./src/...`.
   `GROUND_UNLOCK_TOLERANCE_M`, at which point it is abandoned outright rather than drifted
   toward, since half-following a step would describe neither floor. (Decided 2026-08-23.)
 
+**`GROUND_TAP_TOLERANCE_M = 0.25` is measurable now, and the measurement is written down.**
+Logged after #145/#147 merged, while scheduling ticket 0006's benchmark.
+
+This ticket shipped the constant as an explicit placeholder pending 0006, and 0006's
+Procedure 2 turned out not to be runnable until 0004 exists (see that ticket's Open
+questions). The floor gate, though, characterises itself on the current build: the
+rejection message this ticket added already reports the measured height in centimetres, so
+tapping surfaces of known height reads the ground estimate's accuracy straight off the
+screen.
+
+Added to `docs/DEVICE_TESTING.md` as steps 3–5 of **Procedure 2a**: tap a table (~0.75 m),
+tap a chair seat (~0.45 m), tap the floor. Two things to watch, both of which would change
+this constant:
+
+- The chair seat is the tight end. `GROUND_TAP_TOLERANCE_M`'s own comment claims it
+  "comfortably rejects" a ~0.45 m seat, which is a 20 cm margin **only if the ground
+  estimate is exact**. If a seat reports 30 cm the real margin is 5 cm, and the value needs
+  to come down — or the estimate needs to improve before it can.
+- A correct floor tap must never be rejected. One false rejection across five runs is a
+  finding, not noise: this gate sits on the path to every scan, and a false rejection there
+  is the exact failure mode ADR 0005 rule 5 warns about, one level down.
+
 ## Files impacted
 
 New:
