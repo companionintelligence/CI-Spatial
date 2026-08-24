@@ -229,6 +229,12 @@
     border-radius: var(--radius-md); padding: 10px 12px; font-size: 12px; line-height: 1.5;
   }
 
+  .reset-tip {
+    margin: 10px 0 0; padding: 8px 10px; font-size: 11.5px; line-height: 1.5; color: var(--dim);
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-md);
+  }
+  .reset-tip strong { color: var(--text); }
+
   .step-label {
     font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--dimmer);
     margin: 12px 0 5px;
@@ -312,6 +318,11 @@
               <input type="text" id="pin" placeholder="e.g. 5160" size="8" />
               <button id="btn-trigger-pair" disabled>Pair</button>
             </div>
+            <p class="reset-tip">
+              Won't connect, or errors with "already connected"? The gimbal's own Bluetooth can get
+              stuck after heavy reconnect churn. Hold <strong>Shutter + Switch + Trigger</strong>
+              together for ~1s to hardware-reset it, then Scan &amp; Connect again.
+            </p>
           </div>
         </details>
 
@@ -407,6 +418,11 @@
               <input type="text" id="be-pin" placeholder="e.g. 5160" size="8" />
               <button id="be-btn-pair" disabled>Pair</button>
             </div>
+            <p class="reset-tip">
+              Won't connect, or errors with "already connected"? The gimbal's own Bluetooth can get
+              stuck after heavy reconnect churn. Hold <strong>Shutter + Switch + Trigger</strong>
+              together for ~1s to hardware-reset it, then Scan again.
+            </p>
           </div>
         </details>
 
