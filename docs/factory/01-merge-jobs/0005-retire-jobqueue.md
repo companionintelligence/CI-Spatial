@@ -213,7 +213,7 @@ npm run test:box
       provenance for the code that replaced it (e.g. "ported near-verbatim from
       jobs.ts's JobQueue._runOptimize()"), not a live reference — no code anywhere
       constructs, calls, or type-references the `JobQueue` class itself. **Note:**
-      `README.md`/`architecture.md` still describe `jobs.ts` as "Async Job Queue
+      `README.md`/`../../architecture.md` still describe `jobs.ts` as "Async Job Queue
       Coordinator"/draw `JobQueue` as a live Mermaid node in present tense — these
       were never in this ticket's (or the wave's) Files-impacted list and are out
       of the explicit scope given for this pass; flagged as follow-up doc debt in

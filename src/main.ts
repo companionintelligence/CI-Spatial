@@ -401,7 +401,7 @@ async function main() {
       pendingCaptureId = store.captureIdFor(captureIndex)
       // Not awaited: the write stays off the shutter's critical path, which
       // already has no flash, haptic or sound to cover latency
-      // (docs/UI_MANUAL.md:169-176). It is reconciled before the detections land.
+      // (../docs/product/UI_MANUAL.md:169-176). It is reconciled before the detections land.
       const capturePersisted = store.putCapture({ captureIndex, timestamp, pose, blob })
 
       overlay.setStatus('Analysing…')
@@ -1099,7 +1099,7 @@ async function main() {
 
   /**
    * Live camera pose plus drift from the session's first tracked pose, for the
-   * room-loop benchmark in docs/DEVICE_TESTING.md.
+   * room-loop benchmark in ../docs/testing/DEVICE_TESTING.md.
    *
    * No-op unless armed with ?debug=pose, so ordinary sessions are untouched.
    * The reference is captured from the first *tracked, finite* pose rather than

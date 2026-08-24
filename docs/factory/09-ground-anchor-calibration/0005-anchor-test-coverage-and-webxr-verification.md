@@ -76,7 +76,7 @@ not glob, so an unregistered file silently never runs. Follow the existing style
 must state which convention they assume, so a future reader can tell a convention change from
 a math bug.
 
-**On-device checklist convention**: `docs/DEVICE_TESTING.md` holds this repo's manual device
+**On-device checklist convention**: `../../testing/DEVICE_TESTING.md` holds this repo's manual device
 protocol (Checklist A: iPhone/8th Wall; Checklist B: Android/WebXR). Extend Checklist B
 rather than inventing a parallel document. Note #141/#142 already edited that file (68 lines)
 — read it as it now stands before adding.
@@ -88,7 +88,7 @@ rather than inventing a parallel document. Note #141/#142 already edited that fi
 - `src/world/anchor-marker.ts` — the bearing→`group.rotation.y` claim.
 - `src/ar/webxr.ts` — the renderer/session/frame-loop changes and their justifying comments.
 - `world_membership.test.ts` — the closest existing example of a pure-module Deno test.
-- `docs/DEVICE_TESTING.md` — Checklist B and the results matrix.
+- `../../testing/DEVICE_TESTING.md` — Checklist B and the results matrix.
 - `deno.json` — the `"test"` task string.
 
 ## Open questions & answers
@@ -111,7 +111,7 @@ rather than inventing a parallel document. Note #141/#142 already edited that fi
   unchecked box until a real Android/WebXR device runs it. That is the same pattern
   `04-capture-path-truthfulness/0002` used (implementation merged, on-device box unchecked
   until measured). (Decided in this ticket.)
-- Q: Which device? — A: Per `docs/DEVICE_TESTING.md`'s fleet, an ARCore-backed Android is
+- Q: Which device? — A: Per `../../testing/DEVICE_TESTING.md`'s fleet, an ARCore-backed Android is
   required — the Galaxy Tab S9 Ultra or S8 Ultra. Quest browser is a useful second data point
   because it exercises the controller-driven `pointerdown` path (`runProjectCalibration()`'s `onPointerDown` handler)
   that a touchscreen never hits, but is not required. iPhone/Safari does **not** exercise this
@@ -157,7 +157,7 @@ New:
 
 Changed:
 - `deno.json` (register the new test file)
-- `docs/DEVICE_TESTING.md` (new "B2 — calibration anchor decal" checklist + results table)
+- `../../testing/DEVICE_TESTING.md` (new "B2 — calibration anchor decal" checklist + results table)
 
 ## Schema required
 
@@ -172,7 +172,7 @@ None.
 - [x] `buildAnchorMarker()` covered: north tick present with a bearing / absent without,
       dimmed material state when `bearingDeg == null`, and `rotation.y` matching the bearing
       in radians
-- [x] `docs/DEVICE_TESTING.md` Checklist B extended with the anchor-decal steps below
+- [x] `../../testing/DEVICE_TESTING.md` Checklist B extended with the anchor-decal steps below
 - [x] `deno task test` passes with the new file included
 - [ ] **On-device (Android/WebXR)**: the checklist below completed and its result recorded in
       this ticket
@@ -263,7 +263,7 @@ npm run qr -- "webxr.html"    # get the URL onto the device
 3. [x] Append the filename to `deno.json`'s `"test"` task string
 4. [x] Run `deno task test`; if any assertion fails, stop and record it as a finding rather
        than adjusting the assertion to match
-5. [x] Extend `docs/DEVICE_TESTING.md` Checklist B and its results matrix with the
+5. [x] Extend `../../testing/DEVICE_TESTING.md` Checklist B and its results matrix with the
        anchor-decal rows
 6. [ ] Run the on-device checklist on an ARCore Android device; record versions and results
        in this ticket's Open questions & answers

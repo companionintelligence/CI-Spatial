@@ -34,6 +34,14 @@ const chromiumExecutable = process.env['CHROMIUM_EXECUTABLE_PATH']
 
 export default defineConfig({
   testDir: './tests',
+  // tests/unit/ holds Deno unit tests (`deno task test`), not Playwright specs.
+  // Playwright's default testMatch is **/*.@(spec|test).[jt]s, which matches
+  // *.test.ts, so without an explicit ignore the runner tries to import all 32
+  // and dies on `jsr:` specifiers. Note this top-level value is only a default:
+  // a project that sets its own testIgnore REPLACES it rather than merging, so
+  // the three browser projects below repeat /unit\// in their own arrays. Both
+  // are needed.
+  testIgnore: '**/unit/**',
   timeout: 60_000,
   retries: 1,
 
@@ -82,7 +90,7 @@ export default defineConfig({
     // ── Desktop Safari simulation (default, no device needed) ──────────────
     {
       name: 'webkit-desktop',
-      testIgnore: [/api-.*\.spec\.ts/, /mock-.*\.spec\.ts/],
+      testIgnore: [/api-.*\.spec\.ts/, /mock-.*\.spec\.ts/, /unit\//],
       use: {
         ...devices['Desktop Safari'],
         baseURL: BASE_URL,
@@ -93,7 +101,7 @@ export default defineConfig({
     // ── Mobile Safari simulation (no real device needed) ────────────────────
     {
       name: 'webkit-iphone15',
-      testIgnore: [/api-.*\.spec\.ts/, /mock-.*\.spec\.ts/],
+      testIgnore: [/api-.*\.spec\.ts/, /mock-.*\.spec\.ts/, /unit\//],
       use: {
         ...devices['iPhone 15'],
         baseURL: BASE_URL,
@@ -106,7 +114,7 @@ export default defineConfig({
     // Requires Vite + Deno servers running. No USB connection needed here.
     {
       name: 'iphone-usb',
-      testIgnore: [/api-.*\.spec\.ts/, /mock-.*\.spec\.ts/],
+      testIgnore: [/api-.*\.spec\.ts/, /mock-.*\.spec\.ts/, /unit\//],
       use: {
         ...devices['iPhone 15'],
         baseURL: BASE_URL,

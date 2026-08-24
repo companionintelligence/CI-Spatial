@@ -3,7 +3,7 @@
  *
  * Drives the phone scanner through every everyday-user state in the mock 8th
  * Wall runtime (?mock=xr8, INFERENCE_MODE=mock) and writes documentation
- * screenshots into docs/ui-flow/mobile/. These illustrate docs/UX_FLOW.md
+ * screenshots into ../docs/product/ui-flow/mobile/. These illustrate ../docs/product/UX_FLOW.md
  * Phases 0-1 (Install/FTUE + Scan a room).
  *
  * Runs under the chromium-mock project (matches /mock-.*\.spec\.ts/). Needs the

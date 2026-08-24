@@ -81,7 +81,7 @@ rather than reinvented:
 | Existing | Where | How used |
 | --- | --- | --- |
 | `CHROMIUM_EXECUTABLE_PATH` env var | `playwright.config.ts:30-33` | already the documented hatch for "install unsupported but a compatible build exists"; the script points it at a cached build rather than adding a new variable |
-| `TEST_INFRA.md` | repo root | the existing home for how to run the tiers; the host-setup section goes here, not in a new doc |
+| `../../testing/TEST_INFRA.md` | repo root | the existing home for how to run the tiers; the host-setup section goes here, not in a new doc |
 
 Shell conventions, matched from `scripts/install-services.sh`: `#!/usr/bin/env bash`,
 then a header comment block giving usage on one line and behaviour as `-` bullets.
@@ -126,7 +126,7 @@ Verified facts at `6217e0b`, from a session that got both tiers to 176 passing:
 1. `playwright.config.ts:22-40` — `VITE_PORT`/`VITE_URL` resolution and the
    `chromiumExecutable` hatch, so the script's output matches what the config expects.
 2. `scripts/install-services.sh:1-20` — the header/usage/bullet convention to match.
-3. `TEST_INFRA.md:20-45` and its tier table around `:157` — where host setup belongs.
+3. `../../testing/TEST_INFRA.md:20-45` and its tier table around `:157` — where host setup belongs.
 4. `.github/workflows/deno-ci.yml` — confirm no browser install happens in CI.
 5. `package.json` — the `test`, `test:mobile`, `test:mock` script definitions.
 
@@ -169,10 +169,10 @@ Verified facts at `6217e0b`, from a session that got both tiers to 176 passing:
 ## Files impacted
 
 - **New:** `scripts/install-browsers.sh` — the bootstrap.
-- **Changed:** `TEST_INFRA.md` — a host-setup section explaining when the script is needed,
+- **Changed:** `../../testing/TEST_INFRA.md` — a host-setup section explaining when the script is needed,
   what it does, and the `CHROMIUM_EXECUTABLE_PATH` export the tiers then need.
 - **Changed:** `README.md` — one pointer from the testing section to that section, only if
-  the README does not already defer to `TEST_INFRA.md` there.
+  the README does not already defer to `../../testing/TEST_INFRA.md` there.
 
 No source or workflow changes.
 
@@ -197,7 +197,7 @@ None.
       `sudo`.
 - [ ] It prints the `CHROMIUM_EXECUTABLE_PATH` export the caller needs for the mock tier,
       or sets nothing and says so explicitly.
-- [ ] `TEST_INFRA.md` documents when this is needed and what it does not do.
+- [ ] `../../testing/TEST_INFRA.md` documents when this is needed and what it does not do.
 - [ ] After running it, `npm test` and `npm run test:mobile` both execute their full suites.
 
 ## Tests
@@ -239,7 +239,7 @@ VITE_URL=https://localhost:5173 npm run test:mobile  # expect a full suite, ~176
 - **Risk:** The script encodes a workaround for a specific upstream gap; a future
   Playwright may support 26.04 and make it dead weight. — **Mitigation:** The
   supported-host branch means it degrades to a thin wrapper rather than breaking; note in
-  `TEST_INFRA.md` that it can be deleted once upstream supports the host.
+  `../../testing/TEST_INFRA.md` that it can be deleted once upstream supports the host.
 - **Risk:** `archive.ubuntu.com` URLs and package versions drift. — **Mitigation:** Resolve
   the `.deb` filename from the pool directory listing rather than hardcoding a version, and
   fail loudly if no match is found.
@@ -265,5 +265,5 @@ VITE_URL=https://localhost:5173 npm run test:mobile  # expect a full suite, ~176
 6. [ ] Clear `~/.cache/ms-playwright/webkit-*` and verify from scratch, then verify the
        no-op second run.
 7. [ ] Run both WebKit tiers and record the test counts in the PR.
-8. [ ] Write the `TEST_INFRA.md` section; add the README pointer only if needed.
+8. [ ] Write the `../../testing/TEST_INFRA.md` section; add the README pointer only if needed.
 9. [ ] Flip this ticket's atlas diff to `is-done` with the merged PR number.

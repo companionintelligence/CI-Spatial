@@ -2,7 +2,7 @@
 
 Companion Scan turns AR captures and uploaded media into a private, structured record of a **Place**. It uses 8th Wall/WebXR for capture, an engine-agnostic vision layer for object detection, and Three.js for the **Companion Scan Spatial Editor** at `/editor`. Several scans combine in one Place, are assigned to Areas such as rooms or floors, and remain independently traceable through layers and Things. Inference defaults to local Ollama; bundled ONNX and deterministic mock CV engines are alternatives selected via `INFERENCE_MODE`.
 
-The current product contract is [Place-First Product Design](docs/PLACE_SCAN_DESIGN.md). `WorldProject` remains the internal ENU scene format during the compatibility migration; it is not the primary user-facing noun.
+The current product contract is [Place-First Product Design](docs/product/PLACE_SCAN_DESIGN.md). `WorldProject` remains the internal ENU scene format during the compatibility migration; it is not the primary user-facing noun.
 
 ---
 
@@ -21,7 +21,7 @@ it picks that up automatically). Point a phone at the same URL over Tailscale to
 `npm run qr` prints a scannable link.
 
 **Plus the gimbal-driven capture subsystem** ([`subsystems/osmo-ble/`](subsystems/osmo-ble/),
-full details in [docs/GIMBAL_INTEGRATION.md](docs/GIMBAL_INTEGRATION.md)) — controls a DJI Osmo
+full details in [docs/operations/GIMBAL_INTEGRATION.md](docs/operations/GIMBAL_INTEGRATION.md)) — controls a DJI Osmo
 Mobile 6 over Bluetooth for automated pan/tilt capture sweeps:
 
 ```bash
@@ -255,7 +255,7 @@ the simplest portable setup for this project is the tracked `.mcp.json`, the
 four user environment variables, and one-time project approval.
 
 For the full device table, token-variable alternative, adb fallback, and server
-health troubleshooting, see [docs/DEVICE_TESTING.md](docs/DEVICE_TESTING.md).
+health troubleshooting, see [docs/testing/DEVICE_TESTING.md](docs/testing/DEVICE_TESTING.md).
 
 ---
 
@@ -318,11 +318,11 @@ Key routes (replace the hostname with your machine's):
 - Spatial Editor: `https://<your-tailscale-hostname>:5173/editor?project=default`
 - WebXR scanner: `https://<your-tailscale-hostname>:5173/webxr.html`
 
-For persistent serving from a Linux box (systemd units, GPU inference, cert renewal) see [docs/DEPLOY.md](docs/DEPLOY.md); for the on-device test protocol — including driving an Android device's UI directly through [android-remote-control-mcp](https://github.com/danielealbano/android-remote-control-mcp) as a Claude Code connector — see [docs/DEVICE_TESTING.md](docs/DEVICE_TESTING.md#remote-controlled-testing-android-remote-control-mcp).
+For persistent serving from a Linux box (systemd units, GPU inference, cert renewal) see [docs/operations/DEPLOY.md](docs/operations/DEPLOY.md); for the on-device test protocol — including driving an Android device's UI directly through [android-remote-control-mcp](https://github.com/danielealbano/android-remote-control-mcp) as a Claude Code connector — see [docs/testing/DEVICE_TESTING.md](docs/testing/DEVICE_TESTING.md#remote-controlled-testing-android-remote-control-mcp).
 
 ### First-time use / everyday flow
 
-New here? [docs/UX_FLOW.md](docs/UX_FLOW.md) walks the whole happy path as a user story — install and onboarding on the phone, scanning a room, structuring scans into the 4D world in the desktop editor, queuing reconstruction jobs, and sharing a world — plus the mental model for the four capture modes (manual tap, auto-capture, keyframe streaming, and WebRTC live). For the full documentation index see [docs/README.md](docs/README.md).
+New here? [docs/product/UX_FLOW.md](docs/product/UX_FLOW.md) walks the whole happy path as a user story — install and onboarding on the phone, scanning a room, structuring scans into the 4D world in the desktop editor, queuing reconstruction jobs, and sharing a world — plus the mental model for the four capture modes (manual tap, auto-capture, keyframe streaming, and WebRTC live). For the full documentation index see [docs/README.md](docs/README.md).
 
 ### WebXR mode (HelloXR on iOS)
 
@@ -465,7 +465,7 @@ Root Deno unit suites run with `deno test` (e.g. `deno test splat_train.test.ts`
 
 All endpoints are served by the Deno server on `:8000` and proxied through Vite on `:5173`.
 
-The full, canonical route table lives in [architecture.md](architecture.md); the most-used endpoints:
+The full, canonical route table lives in [docs/architecture.md](docs/architecture.md); the most-used endpoints:
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -545,14 +545,14 @@ The job invokes `scripts/lingbot_map_worker.py` as a subprocess and writes three
 
 All three are served read-only at `/sessions/<id>/<artifact>`. The desktop editor consumes them via the world-job artifact metadata. If LingBot-Map / torch is not installed, or the checkpoint is missing, the worker writes a `skipped` manifest with a `remediation` hint and the world job completes with that message rather than failing — so the UI explains *why* no reconstruction was produced.
 
-See [docs/lingbot-map.md](docs/lingbot-map.md) for the full architecture diagram, UI walkthrough with screenshots, test setup, and CC-BY clip provenance.
+See [docs/pipelines/lingbot-map.md](docs/pipelines/lingbot-map.md) for the full architecture diagram, UI walkthrough with screenshots, test setup, and CC-BY clip provenance.
 
 ### SenseNova Vision (optional, WSL)
 
 `sensenova_vision.ts` drives the upstream [SenseNova-Vision](https://github.com/OpenSenseNova/SenseNova-Vision) launcher for recon3d / camera-pose / depth / normal / bbox / pan-seg tasks against a session's keyframes, invoking it through WSL when `SENSENOVA_BASH` points at `wsl.exe`. Install the isolated Linux runtime with `scripts/setup-sensenova-wsl.sh` (run as root inside WSL), then set `SENSENOVA_DIR`, `SENSENOVA_MODEL_PATH`, and `SENSENOVA_BASH` — see `.env.example` for details. If unset or the runtime isn't installed, the worker returns a `skipped` result with a remediation hint instead of failing.
 
-For the splat tools (view / train / detect / ingest-video / compress) see [docs/splat-toolbox.md](docs/splat-toolbox.md).
-For the two-story-house field acceptance protocol see [docs/HOUSE_VALIDATION.md](docs/HOUSE_VALIDATION.md) (`npm run links:house`, `npm run test:house`).
+For the splat tools (view / train / detect / ingest-video / compress) see [docs/pipelines/splat-toolbox.md](docs/pipelines/splat-toolbox.md).
+For the two-story-house field acceptance protocol see [docs/testing/HOUSE_VALIDATION.md](docs/testing/HOUSE_VALIDATION.md) (`npm run links:house`, `npm run test:house`).
 
 ---
 
@@ -614,4 +614,4 @@ stated MIT).
 > actually intended to carry (vs. MIT, as this section previously stated) has not been
 > confirmed by whoever owns licensing at LifeScope INC. Do not treat this repo as
 > MIT-licensed, and do not share it externally, until that's resolved. See
-> [docs/foundation-updates/0001-reconcile-license-contradiction.md](docs/foundation-updates/0001-reconcile-license-contradiction.md).
+> [docs/factory/foundation-updates/0001-reconcile-license-contradiction.md](docs/factory/foundation-updates/0001-reconcile-license-contradiction.md).

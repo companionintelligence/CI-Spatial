@@ -111,7 +111,7 @@ records the precedent verbatim:
 > active. Awaiting `getUserMedia()`'s permission prompt first burns through that window, so
 > `requestSession()` then rejects with "SecurityError: … requires user activation".
 
-`docs/DEVICE_TESTING.md:153` states the operational form of the same rule: *"Camera prompt
+`../../testing/DEVICE_TESTING.md:153` states the operational form of the same rule: *"Camera prompt
 never appears — Not a secure context, or Start not triggered by a user tap — don't script
 the tap."*
 
@@ -145,7 +145,7 @@ Read these, in this order:
   `_geocode()`.
 - `src/world/geo.ts` — whole file (73 lines); `distanceM()` goes next to `geoToEnu`.
 - `src/shared/storage-keys.ts` — whole file, especially the header's freeze rule.
-- `docs/DEVICE_TESTING.md:54-68` (Checklist B) and `:144-158` (triage table).
+- `../../testing/DEVICE_TESTING.md:54-68` (Checklist B) and `:144-158` (triage table).
 - `tests/mock-ftue.spec.ts` and `tests/mock-motion-permission.spec.ts` — the two spec
   patterns this ticket's test combines.
 
@@ -317,7 +317,7 @@ npx playwright test --project=chromium-mock mock-place-picker
 npm run verify
 ```
 
-On-device verification follows `docs/DEVICE_TESTING.md` **Checklist B** (Android Chrome /
+On-device verification follows `../../testing/DEVICE_TESTING.md` **Checklist B** (Android Chrome /
 WebXR, suggested devices `hanzlas-z-fold7`, `tab-s8-ultra`) — steps 1-2 in particular, since
 step 2 is exactly the "tap Start AR → grant camera → native `immersive-ar` session starts"
 path this ticket must not break. Record the result in the Results matrix row "A2/B2
@@ -404,5 +404,5 @@ permissions from tap".
         guard
 13. [ ] `npm run build`, `npm run verify`
 14. [ ] Update the wave-08 atlas entry
-15. [ ] On-device: `docs/DEVICE_TESTING.md` Checklist B steps 1-2 on `tab-s8-ultra`; record
+15. [ ] On-device: `../../testing/DEVICE_TESTING.md` Checklist B steps 1-2 on `tab-s8-ultra`; record
         the Results matrix row

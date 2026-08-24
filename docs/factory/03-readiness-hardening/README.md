@@ -80,7 +80,7 @@ branching:
 |---|---|---|
 | `package.json` | 0001 (`engines`), 0006 (`dependencies` + lockfile) | Land 0001 first; 0006 regenerates `package-lock.json`, so rebasing it over 0001 is cheaper than the reverse. |
 | `README.md` | 0001 (Node requirement), 0002 (`npm ci`) | Adjacent edits in the same setup prose — land 0001 then 0002, or expect a trivial conflict. |
-| `TEST_INFRA.md` | 0003 (host-setup section), 0006 (`:78` false claim) | Different sections; conflict is unlikely but land 0003 first since it adds structure 0006's line sits near. |
+| `../../testing/TEST_INFRA.md` | 0003 (host-setup section), 0006 (`:78` false claim) | Different sections; conflict is unlikely but land 0003 first since it adds structure 0006's line sits near. |
 | `docs/factory/atlas.html` | **every ticket** | Each flips its own diff block to `is-done`. Expect textual conflicts if two land the same day; they are one-line resolutions. |
 | `tests/e2e-suite.spec.ts` | 0006 (Test 30) | Only 0006 touches it in this wave. |
 
