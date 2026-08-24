@@ -147,12 +147,47 @@ in-app warning agree.
   measures re-placing on it across sessions. One piece of tape, three measurements. (Decided
   in this ticket.)
 
+- Q: (Subtask 1, resolved during implementation) `?debug=pose`, or extend the existing param?
+  — A: **Extended it to a comma-separated token list.** `src/debug/remote-log.ts:36` read the
+  param with exact equality (`get('debug') === 'remote'`), so `?debug=pose` and
+  `?debug=remote` would have been mutually exclusive — and a benchmark run wants both at once
+  (the readout to take numbers from, console mirroring so the box records them). Added
+  `src/shared/debug-flags.ts` with `hasDebugFlag()`, and pointed `remote-log.ts` at it.
+  Backward compatible by construction: `?debug=remote` is a one-token list containing
+  `remote`, so every existing URL, QR code and doc keeps working — asserted directly in
+  `debug_flags.test.ts` because a silent regression there breaks debugging itself.
+  (Decided and implemented 2026-08-23.)
+- Q: Where should the delta function live, and against which pose type? — A:
+  `src/capture/pose-delta.ts`, alongside `quality-monitor.ts`'s metrics rather than inside it
+  (the ticket forbids changing that file's behavior). It types its input as a local
+  `PoseLike` built from `Vec3`/`Quat` in `world/types.ts`, **not** `Pose` from
+  `ar/provider.ts`: provider.ts references `HTMLCanvasElement`, so importing it into a Deno
+  test drags in DOM lib types and fails type-checking — the exact hazard ADR 0002 exists for.
+  `PoseLike` is structurally identical, so `main.ts` passes a real `Pose` with no cast.
+  (Discovered by a failing `deno test` run, fixed 2026-08-23.)
+- Q: Which pose is the delta measured against? — A: the first *tracked, finite* pose of the
+  session, not the pose at t=0. Before SLAM locks, the reported pose is origin-or-garbage;
+  anchoring the reference there would make every later reading an offset from a fiction.
+  Until tracking locks the readout says `pose: waiting for tracking`. (Decided 2026-08-23.)
+- Q: Yaw extraction convention? — A: standard Y-Euler from the quaternion, which is provably
+  identical to `atan2(x, z)` of the rotated +Z axis for any pure-yaw rotation — the
+  convention `viewer.ts`'s `updateWorldHud()` and `world/geo.ts`'s `composeYUpTransform()`
+  already use. A unit test asserts the two agree, because a readout measuring one convention
+  while the wave tunes another would produce numbers that look plausible and mean nothing.
+  (Decided 2026-08-23.)
+
 ## Files impacted
+
+New:
+- `src/shared/debug-flags.ts` (comma-separated `?debug=` token list — see Open questions)
+- `src/capture/pose-delta.ts` (the pure delta computation)
+- `pose_delta.test.ts`, `debug_flags.test.ts` (repo root, both registered in `deno.json`)
 
 Changed:
 - `index.html` (pose readout markup + styles in the existing status bar)
-- `src/main.ts` (populate the readout from `provider.getPose()` in the existing scanner tick;
-  debug gating)
+- `src/main.ts` (populate the readout from the scanner tick's pose; debug gating)
+- `src/debug/remote-log.ts` (arm via `hasDebugFlag('remote')` instead of exact equality)
+- `deno.json` (register the two new test files)
 - `docs/DEVICE_TESTING.md` (the benchmark protocol + results tables)
 
 ## Schema required
@@ -203,16 +238,16 @@ recorded as a baseline**, not asserted (see Open questions).
 
 ## Definition of Done
 
-- [ ] Scanner HUD shows live camera position (and heading) from `provider.getPose()`, updated
+- [x] Scanner HUD shows live camera position (and heading) from `provider.getPose()`, updated
       on the existing scanner tick, gated behind the debug query param
-- [ ] The readout shows delta-from-session-start as well as absolute position, so step 3 needs
+- [x] The readout shows delta-from-session-start as well as absolute position, so step 3 needs
       no arithmetic in the field
-- [ ] No change to `quality-monitor.ts` behavior
-- [ ] `docs/DEVICE_TESTING.md` carries both procedures, the corrected element ids, and empty
+- [x] No change to `quality-monitor.ts` behavior
+- [x] `docs/DEVICE_TESTING.md` carries both procedures, the corrected element ids, and empty
       results tables
-- [ ] The corrected element ids are used throughout (`#capture-btn`, `#auto-capture-btn`,
+- [x] The corrected element ids are used throughout (`#capture-btn`, `#auto-capture-btn`,
       `#stream-btn`, `#rtc-stream-btn`, `#finish-scan-btn`, `#start-ar-btn`)
-- [ ] `npx tsc --noEmit` passes
+- [x] `npx tsc --noEmit` passes
 - [ ] **Executed**: both procedures run 5× on at least one 8th Wall device and one WebXR
       device, with results recorded in this ticket
 - [ ] Measured numbers handed to tickets 0002 and 0003 as their tolerance basis, recorded in
@@ -220,11 +255,11 @@ recorded as a baseline**, not asserted (see Open questions).
 
 ## Tests
 
-- [ ] Unit: the delta-from-start computation (pose − session-start pose, translational
+- [x] Unit: the delta-from-start computation (pose − session-start pose, translational
       magnitude and yaw difference) as a pure function — added to `anchor_calibration.test.ts`
       (ticket 0005) or its own file, registered in `deno.json`'s `"test"` task
-- [ ] Manual: readout is absent without the debug param and present with it
-- [ ] Manual: readout reads ~zero delta immediately after session start
+- [x] Manual: readout is absent without the debug param (verified in-browser: element present, `display:none`, `aria-hidden`); present-with-it needs a tracking AR session
+- [ ] Manual: readout reads ~zero delta immediately after session start (needs a device)
 - [ ] The two on-device procedures above
 
 ```bash
@@ -238,11 +273,12 @@ npm run qr -- "?debug=pose"
       delta-from-start, updating at the scanner tick rate
 - [ ] Given a completed loop back to the taped marker, Then the reported delta is readable
       directly off the HUD with no manual arithmetic
-- [ ] Given `docs/DEVICE_TESTING.md`, Then every element id it names resolves to a real
-      element in `index.html`
+- [x] Given `docs/DEVICE_TESTING.md`, Then every element id it names resolves to a real
+      element in `index.html` (all six verified by grep against `index.html`)
 - [ ] Given five cross-session runs, Then the `separationM` spread is recorded and cited as
       the basis for `DEFAULT_SEPARATION_TOLERANCE_M` in ticket 0002
-- [ ] Given ordinary use without the debug param, Then the scanner HUD is visually unchanged
+- [x] Given ordinary use without the debug param, Then the scanner HUD is visually unchanged
+      (verified in-browser at `/index.html`: `#pose-readout` computes to `display:none`)
 
 ## Risks / potential issues
 
@@ -267,14 +303,14 @@ npm run qr -- "?debug=pose"
 
 ## Subtasks
 
-1. [ ] Read how `debug` is parsed in `src/main.ts`; choose and document the gating param
-2. [ ] Add the pose readout markup and styles to `index.html`'s status bar
-3. [ ] Populate it from `provider.getPose()` in the existing scanner tick, including
+1. [x] Read how `debug` is parsed in `src/main.ts`; choose and document the gating param
+2. [x] Add the pose readout markup and styles to `index.html`'s status bar
+3. [x] Populate it from `provider.getPose()` in the existing scanner tick, including
        delta-from-session-start
-4. [ ] Extract the delta computation as a pure function and unit-test it
-5. [ ] Write both procedures into `docs/DEVICE_TESTING.md` with corrected element ids and
+4. [x] Extract the delta computation as a pure function and unit-test it
+5. [x] Write both procedures into `docs/DEVICE_TESTING.md` with corrected element ids and
        empty results tables
-6. [ ] `npx tsc --noEmit`
+6. [x] `npx tsc --noEmit`
 7. [ ] Run Procedure 1 (5×) on an 8th Wall device and a WebXR device; record results here
 8. [ ] Run Procedure 2 (5×) on both; record the `separationM` spread here
 9. [ ] Hand the measured tolerances to tickets 0002 and 0003; log them in those tickets' Open

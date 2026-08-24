@@ -130,6 +130,19 @@ export interface ScanCalibration {
   sessionToProject: number[]
   anchorBearingDeg: number | null
   calibratedAt: string
+  /**
+   * - `'provisional'` — a frame is established, but its agreement with any
+   *   previously recorded frame for this Place is unconfirmed. **Every
+   *   calibration the app currently produces is this**, because a single
+   *   ground anchor is project-space (0,0,0) by construction and so cannot be
+   *   checked against itself.
+   * - `'verified'` — **no current producer.** Values found in stored data were
+   *   written by the #141-era build, where the label did not imply an actual
+   *   check. Wave 09 ticket 0004 restores a real producer by measuring a
+   *   two-point separation against the stored reference.
+   * - `'uncalibrated'` — written by `src/export/gltf.ts`'s `?? 'uncalibrated'`
+   *   fallback when a scan has no calibration at all.
+   */
   status: 'verified' | 'provisional' | 'uncalibrated'
 }
 

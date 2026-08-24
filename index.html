@@ -672,6 +672,20 @@
         flex-shrink: 0;
       }
 
+      /* Drift readout for the room-loop benchmark (docs/DEVICE_TESTING.md).
+         Hidden unless armed with ?debug=pose — main.ts flips the display.
+         Monospace so digits don't reflow as the numbers change, which makes it
+         readable while walking. */
+      #pose-readout {
+        display: none;
+        margin-top: 3px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 10px;
+        line-height: 1.35;
+        color: #72ddd4;
+        white-space: pre;
+      }
+
       #progress-bar-wrap {
         height: 3px;
         background: rgba(255, 255, 255, 0.15);
@@ -1808,6 +1822,11 @@
                    erased every transient message within one tick. -->
               <div id="verdict-hint" aria-live="polite"
                 style="display:none; font-size:11px; line-height:1.4; color:#ffb74d; margin-top:2px; max-width:34ch;"></div>
+              <!-- Camera pose + drift-from-session-start. Diagnostic only:
+                   stays display:none unless ?debug=pose is set. Not aria-live —
+                   it changes every scanner tick and would flood a screen
+                   reader with numbers no one asked to hear. -->
+              <div id="pose-readout" aria-hidden="true"></div>
               <div id="geo-chip">
                 <div id="geo-text">
                   <span id="geo-address">Locating…</span>

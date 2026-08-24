@@ -117,14 +117,47 @@ rather than inventing a parallel document. Note #141/#142 already edited that fi
   that a touchscreen never hits, but is not required. iPhone/Safari does **not** exercise this
   code at all (no `immersive-ar`; it runs the 8th Wall provider). (Decided in this ticket.)
 
+- Q: (Subtask 2, resolved on first run) Does Three.js import cleanly under Deno? — A: **Yes**,
+  no fallback needed. `buildAnchorMarker()` touches only `BufferGeometry`, `LineSegments`,
+  `Group` and `MathUtils` — no DOM, canvas or WebGL context — and resolves fine through
+  `nodeModulesDir: "auto"`. The `THREE.Matrix4`/`Vector3` round-trip assertion works too, which
+  is what lets the suite check its own matrix-layout assumption against Three.js rather than
+  just asserting it. (Verified 2026-08-23.)
+- Q: **One assertion failed on first run. Was it an implementation contradiction?** — A: **No —
+  the defect was in the test's tolerance, and the distinction matters given this ticket's rule
+  about not adjusting assertions to match.** The tick-geometry test asserted
+  `pos.getZ(i) >= ANCHOR_RADIUS_M - 1e-9`. Geometry is stored in a `Float32BufferAttribute`, so
+  `0.35` reads back as `0.3499999940395355` — about 6e-9 low, which is float32's own precision,
+  confirmed directly (`Math.fround(0.35) - 0.35 === -5.96e-9`) before changing anything. The
+  *claim* (the tick lies on +Z, at or beyond the ring radius) was never weakened; only the
+  numeric tolerance was widened to `F32_EPSILON = 1e-6`, still four orders of magnitude tighter
+  than any real geometry error, and named with the reason so the next reader does not tighten
+  it back. Adjusting a tolerance to the storage type's precision is not the failure mode the
+  rule guards against; adjusting a claim to a wrong implementation would be. (Diagnosed and
+  fixed 2026-08-23.)
+- Q: Did the suite find anything wrong with what #141 shipped? — A: **No.** All 17 assertions
+  pass against the documented contracts: the tapped point maps to project-space origin for
+  every tap/bearing pair including a null bearing; the transform is rigid (no scale or skew
+  crept into the hand-indexed column-major arithmetic); its rotation block is bit-identical to
+  `composeYUpTransform`'s, so the yaw convention has not drifted as its doc comment promises;
+  and the marker's `0°=north/90°=east` claim holds, checked both in the raw tick geometry and
+  through Three.js's own world matrix. That is a real result — the math was correct, it was
+  simply unverified. What remains unverified is the WebXR *renderer*, which no unit test
+  reaches. (Recorded 2026-08-23.)
+- Q: What does the null-bearing test assert, given ticket 0002 calls that path degraded? — A:
+  It characterises the actual behaviour — an unrotated frame, indistinguishable from an
+  explicit bearing of 0 — with a comment naming it as the `bearingDeg ?? 0` limitation that
+  motivates two-point calibration. A characterisation test, explicitly not an endorsement, per
+  this ticket's own Risks entry. (Decided 2026-08-23.)
+
 ## Files impacted
 
 New:
-- `anchor_calibration.test.ts` (repo root)
+- `anchor_calibration.test.ts` (repo root, 17 tests)
 
 Changed:
 - `deno.json` (register the new test file)
-- `docs/DEVICE_TESTING.md` (extend Checklist B + results matrix with the anchor-decal rows)
+- `docs/DEVICE_TESTING.md` (new "B2 — calibration anchor decal" checklist + results table)
 
 ## Schema required
 
@@ -132,15 +165,15 @@ None.
 
 ## Definition of Done
 
-- [ ] `anchor_calibration.test.ts` exists, is registered in `deno.json`'s `"test"` task, and
+- [x] `anchor_calibration.test.ts` exists, is registered in `deno.json`'s `"test"` task, and
       passes
-- [ ] `anchorToProjectTransform()` covered: origin-maps-to-zero invariant, `null` bearing,
+- [x] `anchorToProjectTransform()` covered: origin-maps-to-zero invariant, `null` bearing,
       a non-zero bearing, and a tap at a non-zero Y
-- [ ] `buildAnchorMarker()` covered: north tick present with a bearing / absent without,
+- [x] `buildAnchorMarker()` covered: north tick present with a bearing / absent without,
       dimmed material state when `bearingDeg == null`, and `rotation.y` matching the bearing
       in radians
-- [ ] `docs/DEVICE_TESTING.md` Checklist B extended with the anchor-decal steps below
-- [ ] `deno task test` passes with the new file included
+- [x] `docs/DEVICE_TESTING.md` Checklist B extended with the anchor-decal steps below
+- [x] `deno task test` passes with the new file included
 - [ ] **On-device (Android/WebXR)**: the checklist below completed and its result recorded in
       this ticket
 
@@ -148,19 +181,19 @@ None.
 
 Automated:
 
-- [ ] For several `(tapPos, bearingDeg)` pairs including `bearingDeg: null`, applying the
+- [x] For several `(tapPos, bearingDeg)` pairs including `bearingDeg: null`, applying the
       returned matrix to `tapPos` yields `(0,0,0)` within floating-point tolerance
-- [ ] A point offset from `tapPos` by a known vector maps to a project-space position at the
+- [x] A point offset from `tapPos` by a known vector maps to a project-space position at the
       same distance from the origin (proves the transform is rigid — no scale or skew crept
       into the hand-indexed arithmetic)
-- [ ] `bearingDeg: 0` and `bearingDeg: 90` produce different, non-degenerate rotations, and a
+- [x] `bearingDeg: 0` and `bearingDeg: 90` produce different, non-degenerate rotations, and a
       point due north of the tap maps consistently with the 0°=north/90°=east convention the
       code claims
-- [ ] The returned array has length 16 and its last row/column is `[…, 1]` as a well-formed
+- [x] The returned array has length 16 and its last row/column is `[…, 1]` as a well-formed
       affine matrix
-- [ ] `buildAnchorMarker(45)` has a north-tick child; `buildAnchorMarker(null)` does not, and
+- [x] `buildAnchorMarker(45)` has a north-tick child; `buildAnchorMarker(null)` does not, and
       its ring/crosshair use the dimmed opacities
-- [ ] `buildAnchorMarker(90).rotation.y ≈ Math.PI / 2`
+- [x] `buildAnchorMarker(90).rotation.y ≈ Math.PI / 2`
 
 On-device (Android/WebXR, Checklist B addition — not automatable):
 
@@ -185,11 +218,11 @@ npm run qr -- "webxr.html"    # get the URL onto the device
 
 ## Acceptance Criteria
 
-- [ ] Given any `(tapPos, bearing)`, When `anchorToProjectTransform()` runs, Then the tapped
+- [x] Given any `(tapPos, bearing)`, When `anchorToProjectTransform()` runs, Then the tapped
       point maps to project-space origin — the invariant its own doc comment claims
-- [ ] Given a transposed or mis-indexed change to that function's arithmetic, When the suite
+- [x] Given a transposed or mis-indexed change to that function's arithmetic, When the suite
       runs, Then at least one test fails (the coverage is load-bearing, not decorative)
-- [ ] Given `buildAnchorMarker(null)`, Then no north tick is produced and the dimmed
+- [x] Given `buildAnchorMarker(null)`, Then no north tick is produced and the dimmed
       no-compass state renders
 - [ ] Given a real Android WebXR device, Then the on-device checklist passes and its result is
       recorded here, satisfying the verification `src/ar/webxr.ts`'s header asks for
@@ -224,13 +257,13 @@ npm run qr -- "webxr.html"    # get the URL onto the device
 
 ## Subtasks
 
-1. [ ] Create `anchor_calibration.test.ts` with the `anchorToProjectTransform()` cases
-2. [ ] Add the `buildAnchorMarker()` cases; if Three.js will not import under Deno, apply the
+1. [x] Create `anchor_calibration.test.ts` with the `anchorToProjectTransform()` cases
+2. [x] Add the `buildAnchorMarker()` cases; if Three.js will not import under Deno, apply the
        Open-questions fallback and record it there
-3. [ ] Append the filename to `deno.json`'s `"test"` task string
-4. [ ] Run `deno task test`; if any assertion fails, stop and record it as a finding rather
+3. [x] Append the filename to `deno.json`'s `"test"` task string
+4. [x] Run `deno task test`; if any assertion fails, stop and record it as a finding rather
        than adjusting the assertion to match
-5. [ ] Extend `docs/DEVICE_TESTING.md` Checklist B and its results matrix with the
+5. [x] Extend `docs/DEVICE_TESTING.md` Checklist B and its results matrix with the
        anchor-decal rows
 6. [ ] Run the on-device checklist on an ARCore Android device; record versions and results
        in this ticket's Open questions & answers
