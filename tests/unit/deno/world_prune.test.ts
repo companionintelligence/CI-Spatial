@@ -7,7 +7,7 @@
  * is that incident, at its real scale.
  */
 import { assertEquals } from 'jsr:@std/assert@^1.0.0/equals'
-import { pruneScansMissingFromDisk } from '../../../world_prune.ts'
+import { pruneScansMissingFromDisk } from '../../../server/world/world_prune.ts'
 
 type Entry = { filename?: string; name?: string }
 

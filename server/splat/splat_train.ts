@@ -22,14 +22,14 @@
  */
 
 import { buildBrushDataset } from './splat_train_dataset.ts'
-import { isRunnable } from './exec_probe.ts'
-import { isServerSessionId } from './src/shared/session-id.ts'
+import { isRunnable } from '../../exec_probe.ts'
+import { isServerSessionId } from '../../src/shared/session-id.ts'
 // The manifest type lives in src/world/manifests.ts, not here — see that
 // file's header (it's the canonical, Deno-API-free home so the browser
 // viewer can type-import it without dragging this file's `Deno.*` calls into
 // its DOM-lib type-check program). Re-exported below so
 // `import type { SplatTrainManifest } from './splat_train.ts'` still works.
-import type { SplatTrainManifest } from './src/world/types.ts'
+import type { SplatTrainManifest } from '../../src/world/types.ts'
 export type { SplatTrainManifest }
 
 export interface SplatTrainRunOptions {

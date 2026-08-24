@@ -16,7 +16,7 @@ import {
   buildWorkerArgs,
   isValidSessionDir,
   runLingBotMapReconstruction,
-} from '../../../lingbot_map.ts'
+} from '../../../server/lingbot-map/lingbot_map.ts'
 
 Deno.test('isValidSessionDir accepts canonical session ids', () => {
   assert(isValidSessionDir('/tmp/scans/sessions/sess-12345-abcde'))

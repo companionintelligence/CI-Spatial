@@ -14,12 +14,12 @@ import {
   isValidSessionDir,
   resolveParams,
   runSplatTrain,
-} from '../../../splat_train.ts'
+} from '../../../server/splat/splat_train.ts'
 import {
   deriveIntrinsics,
   poseToMatrix,
   readJpegDimensions,
-} from '../../../splat_train_dataset.ts'
+} from '../../../server/splat/splat_train_dataset.ts'
 
 Deno.test('isValidSessionDir accepts canonical session ids', () => {
   assert(isValidSessionDir('/tmp/scans/sessions/sess-12345-abcde'))
@@ -205,7 +205,7 @@ Deno.test('runSplatTrain lands the PLY + writes an ok manifest via an injected s
 
 // ─── Converter regression + edge cases ────────────────────────────────────────
 
-import { buildBrushDataset } from '../../../splat_train_dataset.ts'
+import { buildBrushDataset } from '../../../server/splat/splat_train_dataset.ts'
 import { assertRejects } from 'jsr:@std/assert@^1.0.0/rejects'
 import { assertStringIncludes } from 'jsr:@std/assert@^1.0.0/string-includes'
 

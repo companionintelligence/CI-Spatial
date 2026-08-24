@@ -1,5 +1,5 @@
 import { assertEquals } from 'jsr:@std/assert@^1.0.0/equals'
-import { belongsToWorldProject, scanProjectId, shouldIncludeStoredScanInWorld } from '../../../world_membership.ts'
+import { belongsToWorldProject, scanProjectId, shouldIncludeStoredScanInWorld } from '../../../server/world/world_membership.ts'
 
 Deno.test('project world includes only scans for that project', () => {
   assertEquals(belongsToWorldProject('proj-a', 'proj-a'), true)

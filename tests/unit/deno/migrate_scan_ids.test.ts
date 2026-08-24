@@ -8,7 +8,7 @@ import { assertEquals } from 'jsr:@std/assert@^1.0.0/equals'
 import { assertRejects } from 'jsr:@std/assert@^1.0.0/rejects'
 import { assertThrows } from 'jsr:@std/assert@^1.0.0/throws'
 
-import { migrateScanIds, migrateWorldScanIds } from '../../../migrate_scan_ids.ts'
+import { migrateScanIds, migrateWorldScanIds } from '../../../server/migrations/migrate_scan_ids.ts'
 import { scanIdFor } from '../../../scan_id.ts'
 import type { EditPatch, ScanManifest, WorldJob, WorldProject } from '../../../src/world/types.ts'
 
