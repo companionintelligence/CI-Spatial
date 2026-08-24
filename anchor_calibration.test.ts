@@ -12,9 +12,15 @@
  */
 import { assert, assertAlmostEquals, assertEquals } from 'jsr:@std/assert@^1.0.0'
 import * as THREE from 'three'
-import { anchorToProjectTransform, composeYUpTransform } from './src/world/geo.ts'
+import {
+  anchorToProjectTransform,
+  composeYUpTransform,
+  identityMatrix,
+  DEFAULT_SEPARATION_TOLERANCE_M,
+  MIN_POINT_SEPARATION_M,
+} from './src/world/geo.ts'
 import { buildAnchorMarker, ANCHOR_RADIUS_M } from './src/world/anchor-marker.ts'
-import type { Vec3 } from './src/world/types.ts'
+import type { ProjectSpatialFrame, ScanCalibration, Vec3 } from './src/world/types.ts'
 
 /**
  * Apply a column-major 4x4 (the layout `composeYUpTransform` returns and
@@ -274,4 +280,85 @@ Deno.test('buildAnchorMarker: each call gets its own materials', () => {
   const b = buildAnchorMarker(45)
   assertAlmostEquals(materialOpacity(a, 'anchor crosshair'), 0.35, 1e-9)
   assertAlmostEquals(materialOpacity(b, 'anchor crosshair'), 0.9, 1e-9)
+})
+
+// ─── Ticket 0002: the two-tier frame schema ─────────────────────────────────
+// Type-level assertions. They carry no runtime assertion on purpose — the
+// verification is that this file type-checks, which `deno task test` enforces
+// (it checks every test file before running it).
+//
+// Note on ticket 0002's stated test "tsc --noEmit fails before the existing
+// producer is narrowed": it does not, and cannot. The producer in
+// src/ar/project-calibration.ts *constructs* a complete 'ground-tap-compass'
+// literal, and a discriminated-union write with the discriminant present needs
+// no narrowing — only a read of a member-specific field does. The property the
+// ticket wanted proven is the read side, asserted below.
+
+Deno.test('two-point frames carry the verification fields; one-point frames cannot', () => {
+  const twoPoint: ProjectSpatialFrame = {
+    version: 1,
+    createdAt: new Date(0).toISOString(),
+    method: 'two-point-ground',
+    landmark: { x: 0, y: 0, z: 0 },
+    headingMarker: { x: 1.4, y: 0, z: 0 },
+    separationM: 1.4,
+    toleranceM: DEFAULT_SEPARATION_TOLERANCE_M,
+    anchorBearingDeg: 41,
+  }
+  // `landmark` is (0,0,0) by construction — ticket 0002's stated invariant.
+  assertEquals(twoPoint.method === 'two-point-ground' && twoPoint.landmark, { x: 0, y: 0, z: 0 })
+  assert(twoPoint.method === 'two-point-ground' && twoPoint.separationM >= MIN_POINT_SEPARATION_M)
+
+  // A #141-era frame still type-checks unchanged, and deserializes as the
+  // fallback member with no migration.
+  const onePoint: ProjectSpatialFrame = {
+    version: 1,
+    createdAt: new Date(0).toISOString(),
+    method: 'ground-tap-compass',
+    anchorBearingDeg: null,
+  }
+  assertEquals(onePoint.method, 'ground-tap-compass')
+
+  // @ts-expect-error — separationM is unreachable without narrowing on `method`.
+  const _unnarrowed: number = (twoPoint as ProjectSpatialFrame).separationM
+  // @ts-expect-error — the one-point tier has no verification field at all.
+  const _noVerify: number = onePoint.separationM
+})
+
+Deno.test('a two-point frame missing a required field is a type error', () => {
+  // @ts-expect-error — separationM is required on the 'two-point-ground' member.
+  const _incomplete: ProjectSpatialFrame = {
+    version: 1,
+    createdAt: new Date(0).toISOString(),
+    method: 'two-point-ground',
+    landmark: { x: 0, y: 0, z: 0 },
+    headingMarker: { x: 1.2, y: 0, z: 0 },
+    toleranceM: DEFAULT_SEPARATION_TOLERANCE_M,
+    anchorBearingDeg: null,
+  }
+})
+
+Deno.test('ScanCalibration mirrors the same two tiers', () => {
+  const verified: ScanCalibration = {
+    sessionToProject: identityMatrix(),
+    calibratedAt: new Date(0).toISOString(),
+    status: 'verified',
+    method: 'two-point-ground',
+    separationM: 1.4,
+    residualM: 0.02,
+    toleranceM: DEFAULT_SEPARATION_TOLERANCE_M,
+    anchorBearingDeg: 41,
+  }
+  assert(verified.method === 'two-point-ground' && verified.residualM < verified.toleranceM)
+
+  const provisional: ScanCalibration = {
+    sessionToProject: identityMatrix(),
+    calibratedAt: new Date(0).toISOString(),
+    status: 'provisional',
+    method: 'ground-tap-compass',
+    anchorBearingDeg: null,
+  }
+  // @ts-expect-error — nothing on the one-point tier can be verified.
+  const _r: number = provisional.residualM
+  assertEquals(provisional.status, 'provisional')
 })

@@ -109,42 +109,95 @@ export interface Project {
 export type Place = Project
 
 /**
- * A Place's durable reference for aligning every AR session to the same
- * physical origin: a single hit-tested ground point plus a compass bearing
- * sampled at tap time. Replaced the original 3-point reference-triangle
- * system (which had no live callers left in the app and no persisted data
- * depending on it, so it was removed outright rather than kept as a second
- * variant).
+ * A Place's durable alignment reference.
+ *
+ * `'two-point-ground'` is the preferred, higher-accuracy tier. An established
+ * ground plane fixes the floor (project-space y = 0), a landmark on it fixes
+ * the origin, and a second marker on the same plane fixes the heading
+ * geometrically — so orientation does not depend on an indoor magnetometer
+ * reading, and the recorded separation gives later sessions something real to
+ * verify against.
+ *
+ * `'ground-tap-compass'` (from #141) is the single-point fallback for when a
+ * second marker is impractical. Its heading is only as good as the compass fix,
+ * a null fix leaves the frame at the AR session's arbitrary startup yaw, and
+ * its y = 0 plane is wherever the single tap landed rather than the floor — so
+ * frames of this method cannot be verified across sessions.
  */
-export interface ProjectSpatialFrame {
+export type ProjectSpatialFrame = {
   version: 1
-  method: 'ground-tap-compass'
-  /** True-north bearing sampled at tap time, or null if the compass was unavailable. */
-  anchorBearingDeg: number | null
   createdAt: string
-}
+} & (
+  | {
+      method: 'two-point-ground'
+      /**
+       * The origin — the permanent spot in the room, placed on the established
+       * ground plane. (0,0,0) in project space by construction; stored
+       * explicitly so the record is self-describing.
+       */
+      landmark: Vec3
+      /**
+       * The second marker, on the same ground plane, whose direction from the
+       * landmark fixes the frame's heading. Its y equals the landmark's, so the
+       * baseline is horizontal by construction.
+       */
+      headingMarker: Vec3
+      /** landmark→headingMarker distance in metres — the room-intrinsic invariant a later session must reproduce. */
+      separationM: number
+      /** Max acceptable deviation from separationM on a later visit. Default `DEFAULT_SEPARATION_TOLERANCE_M`. */
+      toleranceM: number
+      /**
+       * Compass bearing at capture. Records which way project-space north is,
+       * for GPS/world placement only — NOT used to build the frame (that comes
+       * from the landmark→marker geometry). Null when unavailable, which costs
+       * absolute orientation but leaves the frame fully determined.
+       */
+      anchorBearingDeg: number | null
+      /** Optional human descriptions of the two physical features, e.g. "north door frame". */
+      pointLabels?: [string, string]
+    }
+  | {
+      method: 'ground-tap-compass'
+      /** Load-bearing for this method: the frame's entire heading. Null means the frame sits at the session's arbitrary yaw. */
+      anchorBearingDeg: number | null
+    }
+)
 
-export interface ScanCalibration {
-  method: 'ground-tap-compass'
-  /** Matrix that maps the current AR session's local coordinates into project space. */
+/**
+ * One AR session's alignment onto a Place's {@link ProjectSpatialFrame}.
+ *
+ * `status` means:
+ * - `'provisional'` — a frame is established, but its agreement with any
+ *   previously recorded frame for this Place is unconfirmed. Every
+ *   `'ground-tap-compass'` calibration is necessarily this, because a single
+ *   ground anchor is project-space (0,0,0) by construction and so cannot be
+ *   checked against itself.
+ * - `'verified'` — reachable only on the `'two-point-ground'` tier, and only by
+ *   re-measuring the landmark→marker separation against the stored reference
+ *   within `toleranceM`. Values on older stored records were written by the
+ *   #141-era build, where the label did not imply an actual check.
+ * - `'uncalibrated'` — written by `src/export/gltf.ts`'s `?? 'uncalibrated'`
+ *   fallback when a scan has no calibration at all.
+ */
+export type ScanCalibration = {
+  /** Maps this AR session's local coordinates into project space. */
   sessionToProject: number[]
-  anchorBearingDeg: number | null
   calibratedAt: string
-  /**
-   * - `'provisional'` — a frame is established, but its agreement with any
-   *   previously recorded frame for this Place is unconfirmed. **Every
-   *   calibration the app currently produces is this**, because a single
-   *   ground anchor is project-space (0,0,0) by construction and so cannot be
-   *   checked against itself.
-   * - `'verified'` — **no current producer.** Values found in stored data were
-   *   written by the #141-era build, where the label did not imply an actual
-   *   check. Wave 09 ticket 0004 restores a real producer by measuring a
-   *   two-point separation against the stored reference.
-   * - `'uncalibrated'` — written by `src/export/gltf.ts`'s `?? 'uncalibrated'`
-   *   fallback when a scan has no calibration at all.
-   */
   status: 'verified' | 'provisional' | 'uncalibrated'
-}
+} & (
+  | {
+      method: 'two-point-ground'
+      separationM: number
+      /** The re-measured separation − stored `separationM`, in metres. 0 on the first calibration. */
+      residualM: number
+      toleranceM: number
+      anchorBearingDeg: number | null
+    }
+  | {
+      method: 'ground-tap-compass'
+      anchorBearingDeg: number | null
+    }
+)
 
 export interface ScanEntryQualitySummary {
   coverageScore: number
