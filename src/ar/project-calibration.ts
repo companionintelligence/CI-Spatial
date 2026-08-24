@@ -66,6 +66,22 @@ type MarkerId = 'landmark' | 'heading'
 const MARKER_IDS: MarkerId[] = ['landmark', 'heading']
 
 /**
+ * How far the heading marker's own measured height may sit from the
+ * landmark's before the pair is called into question, in metres.
+ *
+ * Both markers are floor taps, so their raw heights should agree to within
+ * hit-test noise. A larger disagreement is real evidence that one of them
+ * landed on something that is not the floor — a step, a rug edge, a chair
+ * rail — which the frame would otherwise absorb silently.
+ *
+ * A placeholder pending ticket 0006's measurement, like
+ * GROUND_TAP_TOLERANCE_M, and deliberately tighter than it: that gate asks
+ * "is this roughly floor height?", this one asks "are these two the same
+ * floor?".
+ */
+const MARKER_HEIGHT_DISAGREEMENT_M = 0.15
+
+/**
  * Staged two-point ground calibration (wave 09 ticket 0004).
  *
  * Ground plane established -> landmark placed and confirmed -> heading marker
@@ -248,18 +264,6 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
   }
 
   // ── Geometry helpers ────────────────────────────────────────────────────
-
-  /**
-   * The `y` both markers are snapped to. Prefer the established ground plane;
-   * failing that (the user overrode the floor check in a room too feature-poor
-   * to map one) fall back to the landmark's own `y`, which still guarantees a
-   * horizontal baseline — the property the frame math actually depends on.
-   */
-  function projectionY(rawHitY: number): number {
-    const ground = options.ground()
-    if (ground) return ground.y
-    return points.landmark ? points.landmark.y : rawHitY
-  }
 
   function separation(): number | null {
     const a = points.landmark
@@ -507,30 +511,71 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
       close({ calibration, spatialFrame })
     }
 
+    /**
+     * Routes a raw floor hit to whichever marker it belongs to, and decides its
+     * height.
+     *
+     * **The landmark's own measured `y` is the frame's floor.** Ticket 0004
+     * originally specified snapping both markers to `groundEstimate().y`, and
+     * following that literally made the estimator a single point of failure for
+     * every scan's vertical placement: `estimateFloorY()` is an 8th-percentile
+     * of the point cloud's Y values, not a plane fit, and on a real capture it
+     * returned +0.84 m while the lowest detected object sat at -0.05 m. Since
+     * project y = session y - landmark.y, that put the whole scan 0.89 m below
+     * the floor.
+     *
+     * Using the tapped point instead satisfies the ticket's actual intent
+     * ("project-space y = 0 is the floor") more robustly, because the floor
+     * gate already ensures the landmark tap is on the floor — and it keeps the
+     * baseline horizontal, which is the property the frame math depends on,
+     * by snapping the heading marker to the landmark's height rather than to a
+     * statistic. The estimator keeps its proper job: sanity-checking taps in
+     * `isTapOnGround()`, where being roughly right is enough.
+     */
     function applyTap(position: Vec3): void {
       // Select-then-retap, per ticket 0004: a selected marker moves to the next
       // tap wherever it lands; otherwise a tap within ANCHOR_RADIUS_M of an
       // existing marker selects it rather than placing something new.
+      let target: MarkerId
       if (selected) {
-        setMarker(selected, position)
+        target = selected
+      } else {
+        const near = nearestMarker(position)
+        if (near) {
+          selected = near
+          refreshSelectionVisuals()
+          transientStatus = `${near === 'landmark' ? 'Landmark' : 'Heading marker'} selected — tap where it should go.`
+          return
+        }
+        if (stage === 'landmark') target = 'landmark'
+        else if (stage === 'heading') target = 'heading'
+        else {
+          transientStatus = 'Tap a marker to select it, then tap where it should go.'
+          return
+        }
+      }
+
+      if (target === 'landmark') {
+        setMarker('landmark', position)
+        // Re-placing the landmark redefines the floor, so the heading marker
+        // follows it. Leaving it at the old height would tilt the baseline.
+        const marker = points.heading
+        if (marker) setMarker('heading', { x: marker.x, y: position.y, z: marker.z })
+      } else {
+        const floorY = points.landmark ? points.landmark.y : position.y
+        const disagreement = position.y - floorY
+        setMarker('heading', { x: position.x, y: floorY, z: position.z })
+        if (stage === 'heading') stage = 'review'
+        if (Math.abs(disagreement) > MARKER_HEIGHT_DISAGREEMENT_M) {
+          const cm = Math.abs(Math.round(disagreement * 100))
+          transientStatus =
+            `That point measured ${cm} cm ${disagreement > 0 ? 'above' : 'below'} the landmark — one of the two is probably not on the floor.`
+        }
+      }
+
+      if (selected) {
         selected = null
         refreshSelectionVisuals()
-        return
-      }
-      const near = nearestMarker(position)
-      if (near) {
-        selected = near
-        refreshSelectionVisuals()
-        transientStatus = `${near === 'landmark' ? 'Landmark' : 'Heading marker'} selected — tap where it should go.`
-        return
-      }
-      if (stage === 'landmark') {
-        setMarker('landmark', position)
-      } else if (stage === 'heading') {
-        setMarker('heading', position)
-        stage = 'review'
-      } else {
-        transientStatus = 'Tap a marker to select it, then tap where it should go.'
       }
     }
 
@@ -577,13 +622,11 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
           }
           offGroundTapY = null
 
-          // Snap onto the established plane before anything reads the point.
-          // Hit-test results carry centimetres of `y` noise, and an unprojected
-          // pair yields a baseline with a spurious vertical component — which
-          // tilts the frame, so the room's floor stops being level in project
-          // space.
+          // Pass the raw hit through. applyTap() decides the height, because
+          // only it knows which marker this tap is for — and the landmark's own
+          // measured height is what defines the floor.
           transientStatus = null
-          applyTap({ x: hit.position.x, y: projectionY(hit.position.y), z: hit.position.z })
+          applyTap({ x: hit.position.x, y: hit.position.y, z: hit.position.z })
         } finally {
           tapInFlight = false
           renderStage()

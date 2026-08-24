@@ -353,3 +353,39 @@ box stays open until one exists:
   second, separate reason: it never dismisses the Wave 09 Scanner Location sheet, so AR never
   begins. Not fixed here — it is not this ticket's test.
 - On-device checks below are **not yet run**, including the compass-independence one.
+
+### Deviation: the frame's floor is the landmark's tap, not the ground estimate
+
+This ticket's Math section specifies snapping both markers to `groundY`:
+
+```
+landmark    = { x: hitA.x, y: groundY, z: hitA.z }
+headingMark = { x: hitB.x, y: groundY, z: hitB.z }
+```
+
+Implemented literally, that shipped a defect. `groundY` comes from
+`estimateFloorY()`, which is an **8th-percentile of the point cloud's Y values**, not a plane
+fit — so it is a statistic, and it became the single point of failure for every scan's vertical
+placement. On a real capture it returned **+0.84 m** while the lowest detected object sat at
+**-0.05 m**; since project `y = session y - landmark.y`, the entire scan landed 0.89 m below the
+floor. The failure also compounds: bad detection depths inflate the cloud's Y distribution,
+which raises the percentile, which sinks the scan further.
+
+The code now uses the **landmark's own measured hit `y`** as the frame's floor, and snaps the
+heading marker to that same height. This satisfies the stated intent — "project-space `y = 0` is
+the floor" — more robustly than the literal instruction, because the floor gate already ensures
+the landmark tap is on the floor, and it preserves the horizontal baseline the frame math
+actually depends on. `groundEstimate()` keeps its proper job: sanity-checking taps in
+`isTapOnGround()`, where being roughly right is sufficient.
+
+The two markers' raw heights are no longer discarded either. They are compared, and a
+disagreement beyond `MARKER_HEIGHT_DISAGREEMENT_M` (0.15 m, a placeholder pending 0006) is
+reported — real evidence that one of the two is not on the floor. **Not covered by an automated
+test**: the xr8 mock derives height from screen `y`, so provoking a disagreement without
+tripping the floor gate first is not reliably reproducible there.
+
+Related, fixed alongside: `src/spatial/resolver.ts` accepted hit-test results with a floor
+(`dist >= 0.3`) and **no ceiling**, making the primary path more permissive than its own
+fallback (`raycastPointCloud()` bounds depth to 5.0 m). That is what produced the 18-26 m
+detections corrupting the cloud above. Now bounded by `MAX_HIT_DISTANCE_M = 5.0`, matched to
+that fallback; rejection falls through to the next strategy rather than failing.
