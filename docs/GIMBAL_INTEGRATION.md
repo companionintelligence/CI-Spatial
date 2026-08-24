@@ -34,6 +34,15 @@ restart — Node doesn't hot-reload modules. `server/backend.mjs` now runs under
 (`npm run backend`, restarts itself on save) but the `osmo-gimbal` MCP server subprocess still
 needs an explicit `/mcp` reconnect (or a session restart) to pick up code changes or new tools.
 
+**Known gotcha — the gimbal itself can get into a stuck BLE state.** Observed 2026-08-23: after
+heavy scan/connect/disconnect churn plus a `bluetoothd` restart on the Mac side, the gimbal started
+advertising as two separate peripherals at once (`OM6-E06YAM-1`/`-2`, same manufacturer data) and
+refused new connections (`Error: Peripheral already connected`) even after a clean
+`disconnect()`/rescan from our side — i.e. this was the *gimbal's* BLE stack wedged, not just ours.
+**Fix: a hardware Bluetooth reset on the gimbal itself** — hold the shutter button, mode/switch
+button, and trigger together for about a second. If a backend restart + rescan doesn't recover a
+connection, try this before assuming it's a code or macOS-side problem.
+
 ## Why no signaling is needed for a passive sweep
 
 The scanner client (`index.html` + `src/capture/*`, `src/ar/*`) never needs to be told a scan is
