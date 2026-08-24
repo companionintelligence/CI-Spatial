@@ -10,7 +10,7 @@
  * child, and surfaces a structured result for the world-job coordinator to
  * persist. All model-specific logic lives in the Python worker.
  */
-import { isServerSessionId } from './src/shared/session-id.ts'
+import { isServerSessionId } from '../../src/shared/session-id.ts'
 
 // Lazy-imported inside runLingBotMapReconstruction so the Deno-only unit
 // test (lingbot_map.test.ts) doesn't pull in @gltf-transform/functions,

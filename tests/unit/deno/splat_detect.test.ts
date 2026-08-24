@@ -15,7 +15,7 @@ import {
   isValidSessionDir,
   resolveParams,
   runSplatDetect,
-} from '../../../splat_detect.ts'
+} from '../../../server/splat/splat_detect.ts'
 
 Deno.test('isValidSessionDir accepts canonical session ids, rejects traversal', () => {
   assert(isValidSessionDir('/tmp/scans/sessions/sess-12345-abcde'))

@@ -36,7 +36,7 @@ import { countPlyVertices } from './splat_train.ts'
 // viewer can type-import it without dragging this file's `Deno.*` calls into
 // its DOM-lib type-check program). Re-exported below so
 // `import type { SplatFinishManifest } from './splat_finish.ts'` still works.
-import type { SplatFinishManifest, SplatFinishSizes } from './src/world/types.ts'
+import type { SplatFinishManifest, SplatFinishSizes } from '../../src/world/types.ts'
 export type { SplatFinishManifest, SplatFinishSizes }
 
 // fromFileUrl, not `.pathname`: the latter yields "/C:/…" on Windows, which

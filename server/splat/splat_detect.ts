@@ -31,9 +31,9 @@
 // viewer can type-import it without dragging this file's `Deno.*` calls into
 // its DOM-lib type-check program). Re-exported below so
 // `import type { SplatDetectManifest } from './splat_detect.ts'` still works.
-import type { SplatDetectManifest } from './src/world/types.ts'
-import { isRunnable } from './exec_probe.ts'
-import { isServerSessionId } from './src/shared/session-id.ts'
+import type { SplatDetectManifest } from '../../src/world/types.ts'
+import { isRunnable } from '../../exec_probe.ts'
+import { isServerSessionId } from '../../src/shared/session-id.ts'
 export type { SplatDetectManifest }
 
 const DEFAULT_DETECT_PYTHON = `${Deno.env.get('HOME') ?? '~'}/.venvs/splat-analyzer/bin/python`

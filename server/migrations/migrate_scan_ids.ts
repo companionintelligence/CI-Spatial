@@ -43,9 +43,9 @@
  * Env (same names/defaults as main.ts's own knobs):
  *   WORLDS_DIR  default ./worlds  — where <slug>.json world files live
  */
-import type { ScanManifest, WorldProject } from './src/world/types.ts'
-import { withWorldLock } from './world_lock.ts'
-import { legacyScanId, safeSlug, scanIdFor } from './scan_id.ts'
+import type { ScanManifest, WorldProject } from '../../src/world/types.ts'
+import { withWorldLock } from '../world/world_lock.ts'
+import { legacyScanId, safeSlug, scanIdFor } from '../../scan_id.ts'
 
 /** One patch/job reference that named an id shared by more than one scan. */
 export interface AmbiguousRemap {

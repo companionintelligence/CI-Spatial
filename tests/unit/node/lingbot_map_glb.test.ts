@@ -14,8 +14,8 @@ import assert from 'node:assert/strict'
 import { NodeIO, Primitive } from '@gltf-transform/core'
 import { KHRMeshQuantization } from '@gltf-transform/extensions'
 
-import { buildLingBotMapGlb } from '../../../lingbot_map_glb.ts'
-import { parseLingBotMapPLY } from '../../../lingbot_map_ply.ts'
+import { buildLingBotMapGlb } from '../../../server/lingbot-map/lingbot_map_glb.ts'
+import { parseLingBotMapPLY } from '../../../src/shared/lingbot_map_ply.ts'
 
 function syntheticPly(count: number, withRgb: boolean): Uint8Array {
   const header = [

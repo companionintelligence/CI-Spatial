@@ -17,7 +17,7 @@ import {
   recoverStuckWorldJobs,
   trimWorldJobHistory,
   WorldJobPump,
-} from '../../../world_job_pump.ts'
+} from '../../../server/world/world_job_pump.ts'
 import type { WorldJob } from '../../../src/world/types.ts'
 
 function makeJob(overrides: Partial<WorldJob> = {}): WorldJob {

@@ -17,7 +17,7 @@
  */
 import { assertEquals } from 'jsr:@std/assert@^1.0.0/equals'
 import { assertRejects } from 'jsr:@std/assert@^1.0.0/rejects'
-import { heldWorldLocks, withWorldLock } from '../../../world_lock.ts'
+import { heldWorldLocks, withWorldLock } from '../../../server/world/world_lock.ts'
 
 type Doc = Record<string, string>
 

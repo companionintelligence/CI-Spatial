@@ -103,7 +103,7 @@ test.describe('LingBot-Map server processing + viewer overlay', () => {
     const ply = await request.get(apiPath(`/sessions/${SESSION_ID}/lingbot-map.point-cloud.ply`))
     expect(ply.ok()).toBeTruthy()
     const bytes = new Uint8Array(await ply.body())
-    const { parseLingBotMapPLY } = await import('../lingbot_map_ply.ts')
+    const { parseLingBotMapPLY } = await import('../src/shared/lingbot_map_ply.ts')
     const parsed = parseLingBotMapPLY(bytes)
     expect(parsed.count).toBeGreaterThan(1000)
     expect(parsed.xyz.length).toBe(parsed.count * 3)

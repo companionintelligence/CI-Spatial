@@ -44,16 +44,16 @@ import {
   trimWorldJobHistory,
   worldJobTarget,
   WorldJobPump,
-} from './world_job_pump.ts'
-import { withWorldLock } from './world_lock.ts'
+} from './server/world/world_job_pump.ts'
+import { withWorldLock } from './server/world/world_lock.ts'
 import { legacyScanId, safeSlug, scanIdFor } from './scan_id.ts'
 import { newServerSessionId, resolveSessionDir, sessionDirPath } from './session_id.ts'
 import { loadSessionIndex, sessionForScan, type SessionIndex } from './scan_index.ts'
-import { pruneScansMissingFromDisk } from './world_prune.ts'
-import { runLingBotMapReconstruction } from './lingbot_map.ts'
-import { runSplatTrain } from './splat_train.ts'
-import { runSplatDetect } from './splat_detect.ts'
-import { runSplatFinish } from './splat_finish.ts'
+import { pruneScansMissingFromDisk } from './server/world/world_prune.ts'
+import { runLingBotMapReconstruction } from './server/lingbot-map/lingbot_map.ts'
+import { runSplatTrain } from './server/splat/splat_train.ts'
+import { runSplatDetect } from './server/splat/splat_detect.ts'
+import { runSplatFinish } from './server/splat/splat_finish.ts'
 import { runSenseNovaVision, senseNovaTask } from './sensenova_vision.ts'
 import { configFromEnv as portalAuthConfig, registerPortalAuth } from './portal_auth.ts'
 import {
@@ -70,7 +70,7 @@ import {
   placeScanTransform,
   scanProjectId,
   shouldIncludeStoredScanInWorld,
-} from './world_membership.ts'
+} from './server/world/world_membership.ts'
 import { runThingCorrespondence, type DetectionLike } from './thing_match.ts'
 import type {
   EditPatch,

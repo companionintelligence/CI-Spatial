@@ -41,9 +41,9 @@
  * resolution: logged and skipped, not migrated as an orphaned record —
  * adopted verbatim here.
  */
-import type { Job, JobStatus } from './jobs.ts'
-import type { WorldJob, WorldJobStatus, WorldProject } from './src/world/types.ts'
-import { trimWorldJobHistory } from './world_job_pump.ts'
+import type { Job, JobStatus } from '../../jobs.ts'
+import type { WorldJob, WorldJobStatus, WorldProject } from '../../src/world/types.ts'
+import { trimWorldJobHistory } from '../world/world_job_pump.ts'
 
 /** Reverse of main.ts's WORLD_JOB_STATUS_TO_LEGACY — ADR 0003's status-vocabulary table. */
 export const LEGACY_STATUS_TO_WORLD: Record<JobStatus, WorldJobStatus> = {
