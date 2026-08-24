@@ -22,6 +22,20 @@ function poseAt(x: number, y: number, z: number, yawDeg = 0): PoseLike {
   return { position: { x, y, z }, rotation: yawQuat(yawDeg) }
 }
 
+/**
+ * Quaternion for a yaw about +Y followed by a pitch about the body X axis,
+ * i.e. `qYaw * qPitch`. Positive pitch tips the camera DOWN (a rotation about
+ * +X sends body +Z to (0, -sin, cos)) — how a phone is held while scanning a
+ * floor.
+ */
+function yawPitchQuat(yawDeg: number, pitchDeg: number): PoseLike['rotation'] {
+  const cy = Math.cos((yawDeg * Math.PI) / 180 / 2)
+  const sy = Math.sin((yawDeg * Math.PI) / 180 / 2)
+  const cp = Math.cos((pitchDeg * Math.PI) / 180 / 2)
+  const sp = Math.sin((pitchDeg * Math.PI) / 180 / 2)
+  return { x: cy * sp, y: sy * cp, z: -sy * sp, w: cy * cp }
+}
+
 const IDENTITY: PoseLike['rotation'] = { x: 0, y: 0, z: 0, w: 1 }
 
 Deno.test('yawDegFromQuat: identity rotation is zero', () => {
@@ -46,6 +60,49 @@ Deno.test('yawDegFromQuat: matches atan2(x, z) of the rotated +Z axis', () => {
     const viaForwardAxis = (Math.atan2(fx, fz) * 180) / Math.PI
     assertAlmostEquals(yawDegFromQuat(yawQuat(deg)), viaForwardAxis, 1e-9, `yaw ${deg}`)
   }
+})
+
+Deno.test('yawDegFromQuat: heading survives the device being pitched at the floor', () => {
+  // THE CASE THAT ACTUALLY OCCURS, and the one the original implementation got
+  // wrong. The benchmark protocol tells the operator to point the device at the
+  // floor, so the pose always carries pitch. A Y-Euler extraction reports a
+  // heading that shrinks as pitch grows — at 50 degrees down it read 20.4 for a
+  // true 30, against a benchmark whose rotational target is 5 degrees.
+  //
+  // The earlier tests all used pure-yaw quaternions, so they confirmed the
+  // convention exactly where it was guaranteed and never where it mattered.
+  for (const yaw of [-120, -30, 0, 30, 120]) {
+    for (const pitch of [0, 20, 50, 70]) {
+      assertAlmostEquals(
+        yawDegFromQuat(yawPitchQuat(yaw, pitch)),
+        yaw,
+        1e-6,
+        `yaw ${yaw} at pitch ${pitch} must still read ${yaw}`,
+      )
+    }
+  }
+})
+
+Deno.test('yawDegFromQuat: stays well-conditioned pointing straight down', () => {
+  // At vertical pitch the forward axis has no horizontal component at all, so
+  // its projected direction is pure noise. The up axis is exactly horizontal
+  // there and carries the same heading, which is why the implementation picks
+  // whichever projection is longer.
+  for (const yaw of [-90, 0, 45]) {
+    assertAlmostEquals(yawDegFromQuat(yawPitchQuat(yaw, 90)), yaw, 1e-6, `straight down at yaw ${yaw}`)
+    // ...and does not jump as the device tips through the crossover.
+    assertAlmostEquals(yawDegFromQuat(yawPitchQuat(yaw, 44)), yaw, 1e-6, `just before crossover, yaw ${yaw}`)
+    assertAlmostEquals(yawDegFromQuat(yawPitchQuat(yaw, 46)), yaw, 1e-6, `just after crossover, yaw ${yaw}`)
+  }
+})
+
+Deno.test('poseDelta: a pitched loop reports the real heading change', () => {
+  // End to end: the drift number the operator writes down must be the heading
+  // change, not an artefact of how they were holding the phone. Same 10-degree
+  // turn, but the return pose is pitched further down than the start.
+  const start = { position: { x: 0, y: 0, z: 0 }, rotation: yawPitchQuat(0, 30) }
+  const returned = { position: { x: 0, y: 0, z: 0 }, rotation: yawPitchQuat(10, 55) }
+  assertAlmostEquals(poseDelta(start, returned).yawDeg, 10, 1e-6)
 })
 
 Deno.test('wrapDeg: wraps into (-180, 180]', () => {
