@@ -67,6 +67,46 @@ below.
 | 4 | Capture, auto-capture, ☁ streaming, export | Same expectations as Checklist A steps 5–9 |
 | 5 | Note the 🥽 runtime toggle | In WebXR mode it links back to the 8th Wall scanner; in the 8th Wall scanner it only appears when `immersive-ar` is genuinely supported |
 
+### B2 — calibration anchor decal (WebXR renderer verification)
+
+**Why this exists as its own checklist.** PR #141 gave `WebXRProvider` a
+`THREE.WebGLRenderer` bound to the session's GL context so the calibration decal
+can draw over the passthrough. `src/ar/webxr.ts`'s own header says that half
+"needs verification on a real WebXR device, not just review" — it replaced the
+hand-rolled `session.requestAnimationFrame` loop with
+`renderer.xr.setSession()` + `setAnimationLoop()`, added a `local-floor`/`local`
+reference-space fallback on two independent request paths, added a guard for
+Three's non-XR rAF firing with `frame === undefined`, and reordered renderer
+disposal to follow `session.end()`. None of that is reachable from a unit test;
+the automated coverage in `anchor_calibration.test.ts` deliberately does not
+touch the renderer at all.
+
+Needs an **ARCore-backed Android** (`galaxy-tab-s9-ultra` or
+`liams-tab-s8-ultra`). iPhone/Safari does *not* exercise this code — no
+`immersive-ar`, so it runs the 8th Wall provider instead. Quest browser is a
+useful second data point because its controller-driven input hits the
+`pointerdown` path a touchscreen never does, but is not required.
+
+| # | Step | Expected result | Checks |
+|---|---|---|---|
+| 1 | Open `/webxr.html`, start AR, complete calibration | Anchor decal (ring + crosshair, red north tick) appears on the ground at the tapped point | the renderer draws at all |
+| 2 | Walk around the decal | Stays on the same physical spot; does not slide with the camera | world-locking via the per-view pose/projection |
+| 3 | Watch the camera feed during step 1–2 | No blanking, flicker or black frames | `renderer.autoClear = false` and the `frame === undefined` skip |
+| 4 | Compare the north tick against a phone compass app | Tick points at true north | the 0°=north/90°=east claim, end to end through a real magnetometer |
+| 5 | Continue scanning after calibration | Point count grows; capture still works | the `setAnimationLoop` swap did not disturb the frame loop's other work |
+| 6 | Stop AR and start a second session **in the same page load** | Second session tracks and renders normally | renderer disposal ordering in `stop()` |
+| 7 | Record runtime versions | Android / Chrome / ARCore versions noted below | — |
+
+#### Results — B2
+
+| Device | Android | Chrome | ARCore | 1 decal | 2 world-locked | 3 no flicker | 4 north | 5 scan ok | 6 restart | Notes |
+|---|---|---|---|---|---|---|---|---|---|---|
+| | | | | | | | | | | |
+
+```bash
+npm run qr -- "webxr.html"
+```
+
 ## Results matrix
 
 Copy per test session:
