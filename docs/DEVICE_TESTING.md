@@ -307,6 +307,33 @@ git-ignored (safe to keep tokens in), but Claude Code does not automatically
 merge it with `.mcp.json` — the env-var placeholders above are the mechanism
 that actually works today.
 
+### The scripted path
+
+`scripts/android-mcp.sh` does all of the below, and diagnoses it when it does
+not work:
+
+```bash
+scripts/android-mcp.sh check     # probe every device: token, tailnet, MCP handshake
+scripts/android-mcp.sh persist   # write the tokens into your shell profile, idempotently
+scripts/android-mcp.sh launch    # or: exec `claude` with them loaded, without persisting
+```
+
+It reads tokens from the environment first, falling back to a gitignored `.env`
+(the variable names are in `.env.example`). Two behaviours worth knowing:
+
+- **`check` prefers the environment; `persist`/`launch`/`env` prefer `.env`.**
+  `check` reports what Claude Code is *actually* using, while the other three
+  build a new environment from the file you just edited. Preferring the shell
+  there would re-persist a stale token over the corrected one.
+- **`check` flags the case where they disagree.** A rotated token written to
+  `.env` while the old value is still exported looks fine from either source
+  alone — the shell silently wins, and the device keeps returning 401. That
+  comparison is the only thing that reveals it.
+
+`check` reads a 503 as a pass: the app caps concurrent MCP sessions, so
+"Too many active sessions" means the token was accepted and the server is
+healthy — usually your own Claude Code session already holding the connection.
+
 For a temporary Bash session, export only the devices you need:
 
 ```bash
