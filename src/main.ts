@@ -938,7 +938,22 @@ async function main() {
     await provider.start(canvas)
   } catch (e) {
     console.error('[main] AR provider start failed:', e)
-    showPermissionBanner('Camera access denied. Please check your browser or OS permission settings and allow camera access.')
+    // Report what actually failed. This used to blame camera permission for
+    // *every* start() rejection, which sent users to check settings that were
+    // already correct — a `window.THREE does not exist` regression in the 8th
+    // Wall provider was reported for weeks as "Camera access denied", and the
+    // real error was only visible in the console. A permission claim has to be
+    // backed by a permission error (ADR 0005 rule 3, applied to failure copy).
+    const name = e instanceof Error ? e.name : ''
+    const message = e instanceof Error ? e.message : String(e)
+    const isPermission = name === 'NotAllowedError'
+      || name === 'SecurityError'
+      || /permission|denied|NotAllowedError/i.test(message)
+    showPermissionBanner(
+      isPermission
+        ? 'Camera access denied. Please check your browser or OS permission settings and allow camera access.'
+        : `AR failed to start: ${message}`,
+    )
     return
   }
   // ── 6. Continuous SLAM point-cloud accumulation ──────────────────────────────
