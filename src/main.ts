@@ -1290,6 +1290,16 @@ async function resolveInitialProject(projectStore: ProjectStore): Promise<Projec
   return null
 }
 
+/**
+ * Inline SVG for the picker's affordance rows. Inline rather than sprited or
+ * fetched because index.html ships no icon system and the picker must render
+ * with no network — it is the first thing shown on a capture that may be
+ * offline.
+ */
+const PLACE_ICON_PLUS = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg>'
+const PLACE_ICON_PIN = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 14.5s5-4.2 5-8a5 5 0 0 0-10 0c0 3.8 5 8 5 8Z"/><circle cx="8" cy="6.4" r="1.9"/></svg>'
+const PLACE_ICON_AREA = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M2.5 5.5 8 2.5l5.5 3v5L8 13.5l-5.5-3z"/><path d="M8 8.5v5M2.5 5.5 8 8.5l5.5-3"/></svg>'
+
 function mountPlacePicker(
   projectStore: ProjectStore,
   geoTracker: GeoTracker,
@@ -1301,6 +1311,8 @@ function mountPlacePicker(
   let currentSelected = selected
   let currentAreaId: string | null = null
   let pendingSelectionAction: (() => void) | null = null
+  // Survives render()'s full innerHTML rebuild, which every selection triggers.
+  let areaSectionOpen = false
 
   const sheet = document.createElement('div')
   sheet.id = 'place-sheet'
@@ -1326,108 +1338,242 @@ function mountPlacePicker(
       .filter(item => !nearbyIds.has(item.project.projectId))
       .sort((a, b) => a.project.name.localeCompare(b.project.name))
 
+    // The selected Area's name, for the "Selected project" row. `null` means
+    // the whole place, which is a real choice and is labelled as one.
+    const selectedAreaName = currentSelected && currentAreaId
+      ? currentSelected.areas?.find(area => area.areaId === currentAreaId)?.name ?? null
+      : null
+
+    // Sub-labels for the two rows that open something. They say what is behind
+    // the row *and how much of it*, so the user can tell an empty list from a
+    // full one without opening it — a chevron alone reports neither.
+    const nearbyHint = !fix
+      ? 'No location fix — distances unknown'
+      : nearby.length === 0
+      ? 'Nothing within 100 m · opens the full list'
+      : `${nearby.length} place${nearby.length === 1 ? '' : 's'} within 100 m · nearest first`
+    const areaCount = currentSelected?.areas?.length ?? 0
+    const areaHint = !currentSelected
+      ? 'Pick a place first'
+      : areaCount === 0
+      ? 'No areas yet · tap to add one'
+      : `${areaCount} area${areaCount === 1 ? '' : 's'} · scanning ${selectedAreaName ?? 'the whole place'}`
+
     sheet.innerHTML = `
       <div class="place-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="place-title">
         <div class="place-sheet-title" id="place-title">Scanner location</div>
-        <p class="place-sheet-copy">Choose the project for this scan. Places within 100 m are suggested first; every saved place is listed below.</p>
-        <div class="place-selected-status">Selected: <strong>${currentSelected ? escapeHtml(currentSelected.name) : 'none yet'}</strong></div>
         <div id="place-location-status" class="place-location-status"></div>
-        <div id="place-suggestion" hidden></div>
-        <div id="place-list"></div>
-        <div id="place-list-other-heading" class="place-list-other-heading" hidden>All places</div>
-        <div id="place-list-other"></div>
-        ${currentSelected ? `
-          <div class="place-area-picker">
-            <div class="place-area-heading">Area <span>(optional)</span></div>
-            <div id="place-area-list"></div>
-            <button id="place-area-new-btn" type="button" class="place-area-new">Add an area</button>
-            <div id="place-area-new-form" hidden>
-              <label>Area name<input id="place-area-name" type="text" maxlength="80" placeholder="e.g. Living room" /></label>
-              <label>Area type
-                <select id="place-area-kind" class="ci-select"><option value="room">Room</option><option value="floor">Floor</option><option value="zone">Zone</option><option value="building">Building</option><option value="outdoor">Outdoor</option></select>
-              </label>
-              <button id="place-area-save" type="button">Save area</button>
-            </div>
-          </div>` : ''}
-        <div id="place-new-form" hidden>
-          <label>Address<input id="place-new-address" type="text" maxlength="160" placeholder="Detected from device location" /></label>
-          <div class="place-coordinate-grid">
-            <label>Latitude<input id="place-new-lat" type="number" step="any" /></label>
-            <label>Longitude<input id="place-new-lng" type="number" step="any" /></label>
-          </div>
-          <label>Project type
-            <select id="place-new-type" class="ci-select">
-              <option value="building">Building</option>
-              <option value="floor">Floor</option>
-              <option value="room" selected>Room</option>
-              <option value="other">Other</option>
-            </select>
-          </label>
-          <label>Project name<input id="place-new-name" type="text" maxlength="80" placeholder="e.g. Living room" /></label>
-          <div id="place-new-name-preview" class="place-new-name-preview"></div>
-          <button id="place-new-save" type="button">Save new place</button>
+        <div class="place-selected-status">
+          <span class="place-selected-label">Selected project</span>
+          <span class="place-selected-value${currentSelected ? '' : ' is-empty'}">${
+            currentSelected
+              ? `${escapeHtml(currentSelected.name)}<small>${selectedAreaName ? escapeHtml(selectedAreaName) : 'Whole place'}</small>`
+              : 'None selected'
+          }</span>
         </div>
+        <div class="place-nav">
+          <button id="place-new-btn" type="button" class="place-nav-row">
+            <span class="place-nav-icon" aria-hidden="true">${PLACE_ICON_PLUS}</span>
+            <span class="place-nav-label">
+              <b>Create New Place Project</b>
+              <span>Opens a form — name, type and this location's coordinates</span>
+            </span>
+            <span class="place-nav-arrow" aria-hidden="true">&rsaquo;</span>
+          </button>
+          <button id="place-nearby-btn" type="button" class="place-nav-row">
+            <span class="place-nav-icon" aria-hidden="true">${PLACE_ICON_PIN}</span>
+            <span class="place-nav-label">
+              <b>Suggested Places Nearby</b>
+              <span>${nearbyHint}</span>
+            </span>
+            <span class="place-nav-arrow" aria-hidden="true">&rsaquo;</span>
+          </button>
+          <div id="place-suggestion"></div>
+        </div>
+        <details class="place-areas" id="place-areas"${currentSelected ? '' : ' aria-disabled="true"'}${areaSectionOpen && currentSelected ? ' open' : ''}>
+          <summary>
+            <span class="place-nav-icon" aria-hidden="true">${PLACE_ICON_AREA}</span>
+            <span class="place-nav-label">
+              <b>Add New Area to Selected Place</b>
+              <span>${areaHint}</span>
+            </span>
+            <span class="place-areas-chevron" aria-hidden="true">&rsaquo;</span>
+          </summary>
+          <div class="place-areas-body">
+            ${currentSelected ? `
+              <div id="place-area-list"></div>
+              <button id="place-area-new-btn" type="button" class="place-area-new">Add an area</button>
+              <div id="place-area-new-form" hidden>
+                <label>Area name<input id="place-area-name" type="text" maxlength="80" placeholder="e.g. Living room" /></label>
+                <label>Area type
+                  <select id="place-area-kind" class="ci-select"><option value="room">Room</option><option value="floor">Floor</option><option value="zone">Zone</option><option value="building">Building</option><option value="outdoor">Outdoor</option></select>
+                </label>
+                <button id="place-area-save" type="button">Save area</button>
+              </div>` : '<p class="place-empty">Select a place first.</p>'}
+          </div>
+        </details>
         <div class="place-sheet-actions">
-          <button id="place-new-btn" type="button">New place</button>
           ${currentSelected ? '<button id="place-continue-btn" type="button">Use selected place</button>' : ''}
           <button id="place-skip-btn" type="button">Cancel</button>
+        </div>
+      </div>
+      <div id="place-nearby-popup" class="place-popup" hidden>
+        <div class="place-popup-panel" role="dialog" aria-modal="true" aria-labelledby="place-nearby-title">
+          <div class="place-popup-head">
+            <span class="place-popup-title" id="place-nearby-title">Places nearby</span>
+            <button id="place-nearby-close" type="button" class="place-popup-close">Close</button>
+          </div>
+          <div id="place-nearby-list" class="place-popup-scroll"></div>
+        </div>
+      </div>
+      <div id="place-new-popup" class="place-popup" hidden>
+        <div class="place-popup-panel" role="dialog" aria-modal="true" aria-labelledby="place-new-title">
+          <div class="place-popup-head">
+            <span class="place-popup-title" id="place-new-title">New place project</span>
+            <button id="place-new-close" type="button" class="place-popup-close">Close</button>
+          </div>
+          <div id="place-new-form">
+            <label>Address<input id="place-new-address" type="text" maxlength="160" placeholder="Detected from device location" /></label>
+            <div class="place-coordinate-grid">
+              <label>Latitude<input id="place-new-lat" type="number" step="any" /></label>
+              <label>Longitude<input id="place-new-lng" type="number" step="any" /></label>
+            </div>
+            <label>Project type
+              <select id="place-new-type" class="ci-select">
+                <option value="building">Building</option>
+                <option value="floor">Floor</option>
+                <option value="room" selected>Room</option>
+                <option value="other">Other</option>
+              </select>
+            </label>
+            <label>Project name<input id="place-new-name" type="text" maxlength="80" placeholder="e.g. Living room" /></label>
+            <div id="place-new-name-preview" class="place-new-name-preview"></div>
+            <button id="place-new-save" type="button">Save new place</button>
+          </div>
         </div>
       </div>`
 
     const status = sheet.querySelector<HTMLElement>('#place-location-status')!
+    // Coordinates are the part of a fix that is never ambiguous, so they lead;
+    // 5 decimal places is ~1 m, finer than any accuracy figure this ever
+    // carries. Accuracy rides the same line because a position without it
+    // invites more confidence than it has earned.
     if (fix) {
-      status.textContent = `Current location ±${Math.round(fix.accuracy)} m${fix.address ? ` · ${fix.address}` : ''}`
+      status.innerHTML = `
+        <span class="place-location-coords">
+          <b>${fix.lat.toFixed(5)}, ${fix.lng.toFixed(5)}</b>
+          <span class="place-location-accuracy">±${Math.round(fix.accuracy)} m</span>
+        </span>
+        ${fix.address ? `<span class="place-location-address">${escapeHtml(fix.address)}</span>` : ''}`
     } else {
-      status.textContent = 'Location unavailable. You can still create a place by entering coordinates.'
+      status.innerHTML = '<span class="place-location-address">Location unavailable. You can still create a place by entering coordinates.</span>'
     }
 
+    // Status messages from the popups (save failures, validation) have to land
+    // somewhere the user is looking. The location card is the only always-
+    // visible block, so route them there rather than into a popup that may
+    // have closed by the time the message arrives.
+    const setStatusMessage = (message: string) => {
+      status.innerHTML = `<span class="place-location-address">${escapeHtml(message)}</span>`
+    }
+
+    // The single most likely place, inline. The arrow row above opens the
+    // rest — the common case should not cost a popup.
     const suggestion = sheet.querySelector<HTMLElement>('#place-suggestion')!
-    const list = sheet.querySelector<HTMLElement>('#place-list')!
     const nearest = nearby[0]
     if (nearest) {
-      suggestion.hidden = false
       const suggestionButton = document.createElement('button')
       suggestionButton.type = 'button'
-      suggestionButton.className = 'place-option place-suggestion-option'
-      suggestionButton.innerHTML = `<strong>Suggested: ${escapeHtml(nearest.project.name)}</strong><span>${Math.round(nearest.distance ?? 0)} m away · location accuracy ±${Math.round(fix?.accuracy ?? 0)} m</span>`
+      suggestionButton.className = 'place-nav-inline'
+      suggestionButton.innerHTML = `
+        <span class="place-nav-pin" aria-hidden="true">${PLACE_ICON_PIN}</span>
+        <span class="place-nav-inline-body">
+          <span class="place-nav-badge">Suggested</span>
+          <strong>${escapeHtml(nearest.project.name)}</strong>
+        </span>
+        <span class="place-nav-distance">${Math.round(nearest.distance ?? 0)} m away</span>`
       suggestionButton.addEventListener('click', () => chooseProject(nearest.project))
       suggestion.appendChild(suggestionButton)
+    } else {
+      suggestion.innerHTML = `<p class="place-nav-none">${
+        fix ? 'No saved places within 100 m.' : 'No location fix, so nothing can be suggested.'
+      }</p>`
+    }
+
+    // Popup list: places within 100 m, nearest first.
+    //
+    // Scoped to 100 m by request. That cutoff has a failure mode worth keeping
+    // visible rather than designing around: with no GPS fix, or standing away
+    // from every saved place, it is empty — and a user who cannot reach an
+    // existing place creates a duplicate instead. So the empty state says why
+    // it is empty and offers the remaining places behind an explicit control,
+    // rather than being a blank list that reads as "you have no places".
+    const nearbyList = sheet.querySelector<HTMLElement>('#place-nearby-list')!
+    const appendOption = (
+      target: HTMLElement,
+      project: Project,
+      detail: string,
+    ) => {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = `place-option${currentSelected?.projectId === project.projectId ? ' place-option-selected' : ''}`
+      btn.innerHTML = `<strong>${escapeHtml(project.name)}</strong><span>${escapeHtml(detail)}</span>`
+      btn.addEventListener('click', () => chooseProject(project))
+      target.appendChild(btn)
+    }
+
+    for (const item of nearby) {
+      appendOption(
+        nearbyList,
+        item.project,
+        `${Math.round(item.distance ?? 0)} m away${item.project.address ? ` · ${item.project.address}` : ''}`,
+      )
     }
     if (nearby.length === 0) {
-      list.innerHTML = fix
-        ? '<p class="place-empty">No saved places within 100 m.</p>'
-        : ''
-    } else {
-      for (const item of nearby) {
-        const btn = document.createElement('button')
-        btn.type = 'button'
-        btn.className = 'place-option'
-        btn.innerHTML = `<strong>${escapeHtml(item.project.name)}</strong><span>${Math.round(item.distance ?? 0)} m away${item.project.address ? ` · ${escapeHtml(item.project.address)}` : ''}</span>`
-        btn.addEventListener('click', () => chooseProject(item.project))
-        list.appendChild(btn)
+      const empty = document.createElement('p')
+      empty.className = 'place-empty'
+      empty.textContent = fix
+        ? 'No saved places within 100 m of this fix.'
+        : 'No location fix, so distance to your saved places is unknown.'
+      nearbyList.appendChild(empty)
+      if (others.length > 0) {
+        const showAll = document.createElement('button')
+        showAll.type = 'button'
+        showAll.className = 'place-area-new'
+        showAll.textContent = `Show all ${others.length} saved place${others.length === 1 ? '' : 's'}`
+        showAll.addEventListener('click', () => {
+          showAll.remove()
+          for (const item of others) {
+            appendOption(nearbyList, item.project, item.project.address || 'No location saved')
+          }
+        })
+        nearbyList.appendChild(showAll)
       }
     }
 
-    const otherHeading = sheet.querySelector<HTMLElement>('#place-list-other-heading')!
-    const otherList = sheet.querySelector<HTMLElement>('#place-list-other')!
-    otherHeading.hidden = others.length === 0
-    if (others.length === 0) {
-      otherList.innerHTML = nearby.length === 0
-        ? '<p class="place-empty">No saved places yet — create one below.</p>'
-        : ''
-    } else {
-      for (const item of others) {
-        const btn = document.createElement('button')
-        btn.type = 'button'
-        btn.className = 'place-option'
-        btn.innerHTML = `<strong>${escapeHtml(item.project.name)}</strong><span>${item.project.address ? escapeHtml(item.project.address) : 'No location saved'}</span>`
-        btn.addEventListener('click', () => chooseProject(item.project))
-        otherList.appendChild(btn)
-      }
+    // Popups. Opening one is a view change, not a selection change, so they
+    // toggle `hidden` directly instead of going through render().
+    const nearbyPopup = sheet.querySelector<HTMLElement>('#place-nearby-popup')!
+    const newPopup = sheet.querySelector<HTMLElement>('#place-new-popup')!
+    const bindPopup = (popup: HTMLElement, openBtnId: string, closeBtnId: string, onOpen?: () => void) => {
+      sheet.querySelector<HTMLButtonElement>(openBtnId)?.addEventListener('click', () => {
+        popup.hidden = false
+        onOpen?.()
+      })
+      sheet.querySelector<HTMLButtonElement>(closeBtnId)?.addEventListener('click', () => { popup.hidden = true })
+      popup.addEventListener('click', (event) => {
+        if (event.target === popup) popup.hidden = true
+      })
     }
+    bindPopup(nearbyPopup, '#place-nearby-btn', '#place-nearby-close')
 
-    const newForm = sheet.querySelector<HTMLElement>('#place-new-form')!
-    const newBtn = sheet.querySelector<HTMLButtonElement>('#place-new-btn')!
+    // Remember whether the areas section was open, so choosing an area — which
+    // re-renders the whole sheet — does not collapse the section the user is
+    // working in.
+    sheet.querySelector<HTMLDetailsElement>('#place-areas')?.addEventListener('toggle', (event) => {
+      areaSectionOpen = (event.currentTarget as HTMLDetailsElement).open
+    })
+
     const lat = sheet.querySelector<HTMLInputElement>('#place-new-lat')!
     const lng = sheet.querySelector<HTMLInputElement>('#place-new-lng')!
     const newAddress = sheet.querySelector<HTMLInputElement>('#place-new-address')!
@@ -1445,10 +1591,7 @@ function mountPlacePicker(
     newAddress.addEventListener('input', updateNamePreview)
     newName.addEventListener('input', updateNamePreview)
     updateNamePreview()
-    newBtn.addEventListener('click', () => {
-      newForm.hidden = !newForm.hidden
-      if (!newForm.hidden) newName.focus()
-    })
+    bindPopup(newPopup, '#place-new-btn', '#place-new-close', () => newName.focus())
     sheet.querySelector<HTMLButtonElement>('#place-new-save')?.addEventListener('click', () => {
       void createPlace()
     })
@@ -1480,7 +1623,7 @@ function mountPlacePicker(
       const longitude = Number(lng.value)
       const name = composeProjectName(address, projectName)
       if (!name || !placeType || !Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
-        status.textContent = 'Enter a project name and valid latitude/longitude.'
+        setStatusMessage('Enter a project name and valid latitude/longitude.')
         return
       }
       const geoPose = { ...fixToGeoPose(fix), lat: latitude, lng: longitude, address: address || fix?.address || null, displayAddress: address || fix?.displayAddress || null }
@@ -1490,11 +1633,12 @@ function mountPlacePicker(
         body: JSON.stringify({ name, placeType, address, geoPose }),
       })
       if (!response.ok) {
-        status.textContent = 'Could not save this place. Try again.'
+        setStatusMessage('Could not save this place. Try again.')
         return
       }
       const project = await response.json() as Project
       await projectStore.updateProject(project).catch(() => {})
+      newPopup.hidden = true
       chooseProject(project)
     }
 
@@ -1520,7 +1664,11 @@ function mountPlacePicker(
       }
       makeAreaButton('Whole place', null, 'No Area assignment')
       for (const area of areas) {
-        makeAreaButton(area.name, area.areaId, area.kind)
+        // The server seeds every new project with a 'site' area named after
+        // the place itself (main.ts's POST /projects). Listing it verbatim put
+        // the place name in the list twice, once as "Whole place" and once as
+        // itself, meaning two different things. Label it for what it is.
+        makeAreaButton(area.name, area.areaId, area.kind === 'site' ? 'Whole site' : area.kind)
       }
       const newAreaForm = sheet.querySelector<HTMLElement>('#place-area-new-form')!
       sheet.querySelector<HTMLButtonElement>('#place-area-new-btn')?.addEventListener('click', () => {
@@ -1537,7 +1685,7 @@ function mountPlacePicker(
       const name = sheet.querySelector<HTMLInputElement>('#place-area-name')?.value.trim() ?? ''
       const kind = sheet.querySelector<HTMLSelectElement>('#place-area-kind')?.value as AreaKind | undefined
       if (!name || !kind) {
-        status.textContent = 'Enter an Area name and type.'
+        setStatusMessage('Enter an Area name and type.')
         return
       }
       const area: PlaceArea = {
@@ -1551,7 +1699,7 @@ function mountPlacePicker(
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(update),
       })
       if (!response.ok) {
-        status.textContent = 'Could not save the Area. Try again.'
+        setStatusMessage('Could not save the Area. Try again.')
         return
       }
       currentSelected = await response.json() as Project
