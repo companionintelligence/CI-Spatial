@@ -172,6 +172,14 @@ speed move + auto-stop, no positioning), `get_recent_frames` (raw telemetry), `p
 happens, and is what you want when driving it from an MCP client, but you no longer have to
 orchestrate it by hand:
 
+> **Verified end to end on real hardware, 2026-08-24.** One `npm run cli -- grid --ingest …`
+> invocation: 9/9 positions converged (2–27 ticks each), 9 photos captured on the phone in the
+> cradle, all 9 byte-distinct, `droppedBlurry: 0`, ingest job completed and the scan registered
+> in the world as `status: ready`. The reconstruction itself reported its usual honest
+> `skipped: No module named 'lingbot_map'` — that worker is not installed on this box. The CLI
+> released the phone's MCP session on exit, confirmed by a fresh client being able to connect
+> immediately afterwards.
+
 ```bash
 npm run cli -- grid --dry-run                       # print the plan, touch nothing
 npm run cli -- grid                                 # move -> photo at all 9 positions

@@ -88,6 +88,7 @@ test.describe('Splat Toolbox consolidated panel + detect overlay', () => {
     const [request] = await Promise.all([
       page.waitForRequest((r) => r.url().includes('/jobs') && r.method() === 'POST'),
       page.evaluate(async (scanBase) => {
+        // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
         const mod = await import('/src/viewer/splat-toolbox.ts') as typeof import('../src/viewer/splat-toolbox')
         const body = JSON.stringify(mod.buildTrainJobRequest(`scan-${scanBase}`))
         await fetch('/worlds/default/jobs', {
@@ -110,6 +111,7 @@ test.describe('Splat Toolbox consolidated panel + detect overlay', () => {
     const [request] = await Promise.all([
       page.waitForRequest((r) => r.url().includes('/jobs') && r.method() === 'POST'),
       page.evaluate(async ({ scanBase, prompt }) => {
+        // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
         const mod = await import('/src/viewer/splat-toolbox.ts') as typeof import('../src/viewer/splat-toolbox')
         const body = JSON.stringify(mod.buildDetectJobRequest(`scan-${scanBase}`, prompt))
         await fetch('/worlds/default/jobs', {
@@ -133,6 +135,7 @@ test.describe('Splat Toolbox consolidated panel + detect overlay', () => {
     await page.click('.sidebar-tab[data-tab="layers"]')
 
     const result = await page.evaluate(async (scanBase) => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const mod = await import('/src/viewer/splat-detect-layer.ts') as typeof import('../src/viewer/splat-detect-layer')
       const stubScan = {
         scanId: `scan-${scanBase}`,
@@ -179,6 +182,7 @@ test.describe('Splat Toolbox consolidated panel + detect overlay', () => {
     // Drive the detect panel refresh through the same public entrypoint the
     // viewer uses on scan-selection, then assert the status text updated.
     const detected = await page.evaluate(async (scanBase) => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const mod = await import('/src/viewer/splat-detect-layer.ts') as typeof import('../src/viewer/splat-detect-layer')
       const stubScan = {
         scanId: `scan-${scanBase}`,

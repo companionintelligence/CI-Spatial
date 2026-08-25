@@ -122,6 +122,12 @@ export interface ExportResult {
   size: number
   uploadedFilename?: string
   upload: UploadOutcome
+  /**
+   * Whether a local download was attempted under conditions that permit one.
+   * False both when `download: false` and when user activation had expired —
+   * either way the device has no copy, so callers must not say "saved locally".
+   */
+  savedLocally: boolean
 }
 
 export async function exportToGLB(data: ExportData, options: ExportOptions = {}): Promise<ExportResult> {
@@ -362,7 +368,7 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
 
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
   const filename = `${filenamePrefix}-${ts}.glb`
-  if (download) triggerDownload(buffer, filename)
+  const savedLocally = download ? triggerDownload(buffer, filename) : false
   console.log(
     `[export] GLB: ${(buffer.byteLength / 1024).toFixed(0)} KB,`,
     `${pointCloud.count} pts, ${poseHistory.length} poses, ${store.detections.size} objects`,
@@ -375,7 +381,7 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
     uploadedFilename = result.filename
     uploadOutcome = result.outcome
   }
-  return { filename, size: buffer.byteLength, uploadedFilename, upload: uploadOutcome }
+  return { filename, size: buffer.byteLength, uploadedFilename, upload: uploadOutcome, savedLocally }
 }
 
 /**
@@ -475,12 +481,38 @@ async function uploadToServer(
   return { outcome: 'failed' }
 }
 
-function triggerDownload(buffer: ArrayBuffer, filename: string): void {
+/**
+ * Save the GLB to the device via a synthetic anchor click.
+ *
+ * Returns whether the browser was still in a state where that can work, which
+ * is *not* the same as "the click happened" — no API reports a completed
+ * download. Getting here always costs several awaits (GLTFExporter's binary
+ * path goes through FileReader), so by this point the user activation from the
+ * tap that started the export has usually expired. Desktop Chrome allows the
+ * download anyway; mobile Chrome drops it silently. Callers must therefore
+ * treat `false` as "the device has no copy" and point the user at the server
+ * copy instead of claiming a local save that never happened.
+ */
+function triggerDownload(buffer: ArrayBuffer, filename: string): boolean {
+  // `navigator.userActivation` is absent on Safari; treat unknown as allowed
+  // rather than suppressing a download that would in fact have worked.
+  const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation
+  const likelyAllowed = activation ? activation.isActive : true
+
   const blob = new Blob([buffer], { type: 'model/gltf-binary' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
   a.download = filename
+  // Firefox ignores clicks on anchors that are not in the document.
+  a.style.display = 'none'
+  document.body.appendChild(a)
   a.click()
+  a.remove()
   setTimeout(() => URL.revokeObjectURL(url), 10_000)
+
+  if (!likelyAllowed) {
+    console.warn('[export] Local download had no user activation — mobile browsers drop this silently; use the server copy.')
+  }
+  return likelyAllowed
 }
