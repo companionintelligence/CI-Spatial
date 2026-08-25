@@ -73,7 +73,7 @@ import {
 } from './memory_push.ts'
 import { composeYUpTransform, geoToEnu, hasGeoPose } from '../src/world/geo.ts'
 import { defaultLayerIndex } from '../src/world/layers.ts'
-import { EVENT } from '../src/shared/events.ts'
+import { EVENT, type EventPayload } from '../src/shared/events.ts'
 import { formatSetupBanner } from '../src/shared/model-catalog.ts'
 import {
   ensureWorldProjectCollections,
@@ -225,7 +225,7 @@ for (const dir of [SCANS_DIR, SUMMARIES_DIR, SESSIONS_DIR, WORLDS_DIR]) {
 // ── Event broadcast hub (/events WebSocket) ───────────────────────────────────
 const eventSockets = new Set<WebSocket>()
 
-function broadcast(event: Record<string, unknown>): void {
+function broadcast(event: EventPayload): void {
   const msg = JSON.stringify({ ...event, at: Date.now() })
   for (const ws of eventSockets) {
     try {
@@ -937,7 +937,10 @@ app.post('/sessions/:id/finalize', async (c) => {
       }
     } catch { /* glb not uploaded yet — upload-scan enqueues on arrival */ }
   }
-  broadcast({ type: EVENT.SESSION_FINALIZED, sessionId: record['sessionId'], keyframeCount, glbFilename })
+  // `record` is `Record<string, unknown>` (read back from session.json), but
+  // `sessionId` is always the string minted by `POST /sessions` — narrowing
+  // cast per src/shared/events.ts's EventPayload doc comment, not a type change.
+  broadcast({ type: EVENT.SESSION_FINALIZED, sessionId: record['sessionId'] as string, keyframeCount, glbFilename })
   return c.json(record)
 })
 
