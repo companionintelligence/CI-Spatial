@@ -15,6 +15,7 @@ import { OsmoBleTransport } from './ble-transport.mjs';
 import { buildGimbalRecenter, buildGimbalAbsoluteAngle, buildGimbalSetMode, buildGimbalSpeedControl, buildGimbalStickControlEnable, buildGimbalResetAndCenter, buildRawCommand } from '../protocol/commands.mjs';
 import { GIMBAL_MODE } from '../protocol/constants.mjs';
 import { quaternionDelta, quatToGimbalControlDeg } from '../protocol/telemetry.mjs';
+import { AndroidMcpClient, capturePhoto, planGrid } from './android-capture.mjs';
 
 const PORT = Number(process.env.BACKEND_PORT) || 8788;
 const transport = new OsmoBleTransport();
@@ -188,7 +189,7 @@ const routes = {
     {
       ok: true,
       message: 'Osmo BLE backend is running.',
-      routes: ['GET /api/status', 'POST /api/scan', 'POST /api/connect', 'POST /api/pair-trigger', 'POST /api/pair', 'POST /api/disconnect', 'POST /api/command', 'POST /api/move-to', 'GET /api/frames', 'POST /api/test/recenter-probe', 'POST /api/test/command-probe', 'WS /ws'],
+      routes: ['GET /api/status', 'POST /api/scan', 'POST /api/connect', 'POST /api/pair-trigger', 'POST /api/pair', 'POST /api/disconnect', 'POST /api/command', 'POST /api/move-to', 'POST /api/grid-capture', 'GET /api/frames', 'POST /api/test/recenter-probe', 'POST /api/test/command-probe', 'WS /ws'],
     },
   ],
   'GET /api/status': async () => [200, statusPayload()],
@@ -241,6 +242,70 @@ const routes = {
     const { yawDeg, pitchDeg, toleranceDeg, speedDegPerSec, tickMs, settleMs, maxMs } = await readJsonBody(req);
     const result = await moveToClosedLoop({ yawDeg, pitchDeg, toleranceDeg, speedDegPerSec, tickMs, settleMs, maxMs });
     return [200, result];
+  },
+
+  // Drive a full grid capture: move -> photo -> move -> photo, for every position. Lives here
+  // rather than in the CLI or the web UI so both get the same implementation and, more
+  // importantly, so exactly one process ever holds an MCP session to the phone — the device
+  // caps concurrent sessions (see android-capture.mjs). Progress is broadcast over the existing
+  // WS as it goes, because a 9-position run takes minutes and a silent HTTP request that long
+  // is indistinguishable from a hang.
+  'POST /api/grid-capture': async (req) => {
+    const body = await readJsonBody(req);
+    const pans = body.pans ?? [120, 145, 170];
+    const tilts = body.tilts ?? [-10, 0, 10];
+    const deviceUrl = body.deviceUrl ?? process.env.ANDROID_MCP_URL;
+    const deviceToken = body.deviceToken ?? process.env.ANDROID_MCP_TOKEN;
+    if (!deviceUrl) return [400, { error: 'deviceUrl is required (or set ANDROID_MCP_URL)' }];
+    if (!deviceToken) return [400, { error: 'deviceToken is required (or set ANDROID_MCP_TOKEN) — see .env.example' }];
+    if (!transport.connected) return [400, { error: 'not connected to a gimbal — scan + connect first' }];
+
+    const grid = planGrid({ pans, tilts });
+    const prefix = body.prefix ?? `grid-${Date.now()}`;
+    const client = new AndroidMcpClient({ url: deviceUrl, token: deviceToken });
+    const results = [];
+
+    broadcast({ type: 'grid-progress', phase: 'start', total: grid.length });
+    try {
+      await client.open();
+      for (const [i, target] of grid.entries()) {
+        const position = i + 1;
+        broadcast({ type: 'grid-progress', phase: 'moving', position, total: grid.length, target });
+
+        const move = await moveToClosedLoop({
+          yawDeg: target.pan,
+          pitchDeg: target.tilt,
+          toleranceDeg: body.toleranceDeg ?? 5,
+          maxMs: body.maxMs ?? 15000,
+        });
+
+        // A non-converged move is recorded, not fatal: a photo from a position that is merely
+        // close is still usable, and aborting the whole run would throw away the frames already
+        // captured. The caller decides what to do with `converged: false`.
+        broadcast({ type: 'grid-progress', phase: 'capturing', position, total: grid.length, converged: move.converged });
+        const photoUrl = await capturePhoto(client, {
+          path: `${prefix}/pos-${String(position).padStart(2, '0')}.jpg`,
+          cameraId: body.cameraId ?? '0',
+          resolution: body.resolution ?? '1280x720',
+          quality: body.quality ?? 85,
+        });
+
+        const entry = { position, target, converged: move.converged, ticks: move.ticks, pan: move.finalYaw, tilt: move.finalPitch, photoUrl };
+        results.push(entry);
+        broadcast({ type: 'grid-progress', phase: 'captured', ...entry, total: grid.length });
+      }
+    } catch (err) {
+      broadcast({ type: 'grid-progress', phase: 'error', error: String(err.message || err), captured: results.length });
+      // Partial results are returned alongside the error — the frames already on the phone are
+      // real and the caller may still want them.
+      return [500, { error: String(err.message || err), captured: results.length, results }];
+    } finally {
+      await client.close();
+    }
+
+    const converged = results.filter((r) => r.converged).length;
+    broadcast({ type: 'grid-progress', phase: 'done', total: grid.length, converged });
+    return [200, { prefix, total: grid.length, converged, results }];
   },
 
   'GET /api/frames': async (req, url) => {

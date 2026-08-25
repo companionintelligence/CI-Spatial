@@ -15,7 +15,8 @@
 // System Settings → Bluetooth → (device) → Forget, the same manual step already documented in
 // GIMBAL_INTEGRATION.md for recovering a wedged gimbal-side BLE state.
 
-import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const BACKEND_URL = process.env.OSMO_BACKEND_URL || 'http://localhost:8788';
@@ -103,10 +104,23 @@ Motion / commands:
                                           Send one command, report before/after moved:true/false
   recenter-probe [--duration seconds]    Shorthand for: probe recenter --stop-type none
 
+Automated capture:
+  grid [--pans 120,145,170] [--tilts -10,0,10]
+       [--device-url URL] [--device-token TOK]   (default: ANDROID_MCP_URL / ANDROID_MCP_TOKEN)
+       [--out DIR]                        Download the photos here (default: ./grid-<timestamp>)
+       [--ingest URL]                     POST them to a CI-Spatial /ingest-photos when done
+       [--tolerance deg] [--max ms] [--resolution WxH] [--quality N] [--dry-run]
+                                          Move -> photo at every grid position, in serpentine
+                                          order. --dry-run prints the plan and exits.
+
 Telemetry:
   frames [--limit N]                     Recent raw DUML frames (default 50)
 
   help                                   This text
+
+Note: the phone caps concurrent MCP sessions. If \`grid\` reports "Too many active sessions",
+something else is attached to it — a Claude Code session with that device's MCP server
+connected is the usual cause. Detach it and retry.
 `;
 
 function jsonFlag(flags, key) {
@@ -224,6 +238,75 @@ async function main() {
         durationSeconds: flags.duration ? Number(flags.duration) : undefined,
       }));
       return;
+
+    case 'grid': {
+      const nums = (v, fallback) => (v === undefined ? fallback : String(v).split(',').map(Number));
+      const pans = nums(flags.pans, [120, 145, 170]);
+      const tilts = nums(flags.tilts, [-10, 0, 10]);
+
+      if (flags['dry-run']) {
+        // planGrid is the backend's own function, imported rather than reimplemented, so a
+        // dry run can never disagree with what a real run would do.
+        const { planGrid } = await import('./android-capture.mjs');
+        const grid = planGrid({ pans, tilts });
+        print(grid.map((g, i) => `  ${i + 1}: pan=${g.pan} tilt=${g.tilt}`).join('\n'));
+        console.error(`\n(${grid.length} positions, serpentine. Drop --dry-run to run it.)`);
+        return;
+      }
+
+      const outDir = flags.out || `grid-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+      console.error(`Running ${pans.length * tilts.length} positions — this takes a few minutes.`);
+      console.error('(Live progress is broadcast on the backend WS; the web UI shows it as it goes.)\n');
+
+      const run = await api('POST', '/api/grid-capture', {
+        pans,
+        tilts,
+        deviceUrl: flags['device-url'],
+        deviceToken: flags['device-token'],
+        toleranceDeg: flags.tolerance ? Number(flags.tolerance) : undefined,
+        maxMs: flags.max ? Number(flags.max) : undefined,
+        resolution: flags.resolution,
+        quality: flags.quality ? Number(flags.quality) : undefined,
+      });
+
+      for (const r of run.results) {
+        console.error(`  ${String(r.position).padStart(2)}: pan=${(r.pan ?? 0).toFixed(1)} tilt=${(r.tilt ?? 0).toFixed(1)}  ${r.converged ? 'converged' : 'NOT converged'} (${r.ticks} ticks)`);
+      }
+      console.error(`\n  ${run.converged}/${run.total} converged`);
+
+      mkdirSync(outDir, { recursive: true });
+      const files = [];
+      for (const r of run.results) {
+        const dest = `${outDir}/pos-${String(r.position).padStart(2, '0')}.jpg`;
+        const res = await fetch(r.photoUrl);
+        if (!res.ok) throw new Error(`downloading position ${r.position}: HTTP ${res.status}`);
+        writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
+        files.push(dest);
+      }
+      console.error(`  downloaded ${files.length} photo(s) to ${outDir}/`);
+
+      // Distinct-bytes check, not a formality: a stalled camera returning the same frame over
+      // and over is a real failure mode this project has hit before (wave 04, six byte-identical
+      // JPEGs across 47 minutes), and it is invisible unless something compares them.
+      const hashes = new Set(files.map((f) => createHash('md5').update(readFileSync(f)).digest('hex')));
+      if (hashes.size !== files.length) {
+        console.error(`  WARNING: only ${hashes.size} distinct image(s) among ${files.length} — the camera may be returning a stale frame.`);
+      } else {
+        console.error(`  all ${files.length} frames are byte-distinct`);
+      }
+
+      if (flags.ingest) {
+        const form = new FormData();
+        for (const f of files) form.append('files', new Blob([readFileSync(f)], { type: 'image/jpeg' }), f.split('/').pop());
+        form.append('name', outDir.split('/').pop());
+        const res = await fetch(flags.ingest, { method: 'POST', body: form });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(`ingest failed: HTTP ${res.status} ${JSON.stringify(json)}`);
+        console.error('');
+        print(json);
+      }
+      return;
+    }
 
     case 'frames':
       print((await api('GET', `/api/frames${flags.limit ? `?limit=${Number(flags.limit)}` : ''}`)).frames);

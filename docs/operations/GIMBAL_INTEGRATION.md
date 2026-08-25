@@ -168,6 +168,46 @@ speed move + auto-stop, no positioning), `get_recent_frames` (raw telemetry), `p
 
 ## Automated N-shot grid capture → Companion Scan's real ingest pipeline
 
+**The whole run is one command now.** The manual tool-by-tool sequence below still describes what
+happens, and is what you want when driving it from an MCP client, but you no longer have to
+orchestrate it by hand:
+
+```bash
+npm run cli -- grid --dry-run                       # print the plan, touch nothing
+npm run cli -- grid                                 # move -> photo at all 9 positions
+npm run cli -- grid --ingest http://localhost:8000/ingest-photos
+npm run cli -- grid --pans 100,130,160 --tilts -15,0,15 --out ./myscan
+```
+
+or press **Run grid capture** in the web UI (`npm run web`), which shows per-position progress
+live. Both call `POST /api/grid-capture` on the backend, which is where the orchestration
+actually lives — deliberately, so exactly one process ever holds an MCP session to the phone.
+
+**Prerequisite — the phone's MCP URL and token:** set `ANDROID_MCP_URL` and `ANDROID_MCP_TOKEN`
+in the *backend's* environment (the CLI can also pass `--device-url` / `--device-token`). The
+per-device token variables in `.env.example` are the same values; see
+[DEVICE_TESTING.md](../testing/DEVICE_TESTING.md) for the fleet table.
+
+> **The phone caps concurrent MCP sessions, and a Claude Code session counts.** Verified
+> 2026-08-24: with Claude Code attached to `android-beam-pro-1`, every backend `initialize`
+> returned `503 {"error":"Too many active sessions"}`. There is no way around it — probing the
+> device with a valid token showed that apart from `/mcp`, `/health` and the `/s/<hash>` share
+> URLs, every path 404s, so MCP is the only control interface and there is no REST fallback.
+> The backend therefore opens a session, runs the grid, and `DELETE`s it, holding the slot only
+> for the duration of a capture — but it still cannot run while another client is attached.
+> **Detach the phone's MCP server in Claude Code before running a grid capture from the CLI or
+> web UI.**
+
+A non-converged position is recorded, not fatal — the photo is still taken and the result
+carries `converged: false`. Aborting would throw away the frames already captured, and a frame
+from a position that is merely close is usually still usable; the caller decides.
+
+The CLI also checks that the downloaded frames are byte-distinct and warns if they are not.
+That is not a formality: wave 04 hit a stalled camera returning six byte-identical JPEGs across
+47 minutes, and nothing notices unless something compares them.
+
+### The underlying sequence
+
 For an *exact* photo count (e.g. "9 photos") rather than relying on auto-capture heuristics,
 drive an explicit camera-capture tool instead — verified against this repo's actual capture→3D
 pipeline, not invented:
