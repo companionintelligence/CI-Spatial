@@ -25,6 +25,8 @@
  * GET  /projects/:id       → Project
  * PUT  /projects/:id       JSON (Project) → Project
  * DELETE /projects/:id     → { ok: true }
+ * POST /projects/:id/reference-photos        multipart { image, meta } → { ok, role, url }
+ * GET  /projects/:id/reference-photos/:file  → image/jpeg
  * GET  /rtc-signal         WebSocket upgrade — WebRTC signaling relay
  * GET  /events             WebSocket upgrade — server event broadcast (scans/jobs)
  *
@@ -49,6 +51,13 @@ import {
 import { withWorldLock } from './world/world_lock.ts'
 import { legacyScanId, safeSlug, scanIdFor } from './scan_id.ts'
 import { newServerSessionId, resolveSessionDir, sessionDirPath } from './session_id.ts'
+import {
+  parseReferencePhotoMeta,
+  projectMediaDirPath,
+  referencePhotoFileName,
+  referencePhotoUrl,
+  roleForReferencePhotoFile,
+} from './project_media.ts'
 import { loadSessionIndex, sessionForScan, type SessionIndex } from './scan_index.ts'
 import { pruneScansMissingFromDisk } from './world/world_prune.ts'
 import { runLingBotMapReconstruction } from './lingbot-map/lingbot_map.ts'
@@ -4082,6 +4091,89 @@ app.put('/projects/:id', async (c) => {
   if (updated.error) return c.json({ error: updated.error }, 400)
   if (!updated.project) return c.json({ error: 'Not found' }, 404)
   return c.json(updated.project)
+})
+
+/**
+ * A Place's calibration reference photos (wave 09 ticket 0007).
+ *
+ * Bytes live on disk beside the scans rather than inside the Place record:
+ * `PUT /projects/:id` round-trips the whole record, so base64 photos would
+ * bloat every project read and write. The record keeps only the URL.
+ *
+ * Multipart shape and validation order are copied from
+ * `POST /sessions/:id/keyframes` deliberately — same request shape, same
+ * failure vocabulary. Path safety follows `sessionDir()`: shape-check the id
+ * first, and derive the filename from the validated role rather than trusting
+ * anything in the request.
+ */
+const PROJECT_MEDIA_DIR = Deno.env.get('PROJECT_MEDIA_DIR') ?? `${SCANS_DIR}/projects`
+
+app.post('/projects/:id/reference-photos', async (c) => {
+  const projectId = c.req.param('id')
+  const dir = projectMediaDirPath(PROJECT_MEDIA_DIR, projectId)
+  if (!dir) return c.json({ error: 'Invalid project id' }, 400)
+
+  const projects = await loadProjects()
+  if (!projects.some(p => p.projectId === projectId)) return c.json({ error: 'Project not found' }, 404)
+
+  const form = await c.req.formData()
+  const image = form.get('image')
+  if (!image || !(image instanceof File)) return c.json({ error: 'Missing image field' }, 400)
+
+  const parsed = parseReferencePhotoMeta(form.get('meta'))
+  if ('error' in parsed) return c.json({ error: parsed.error }, 400)
+  const meta = parsed.meta
+
+  try {
+    const bytes = new Uint8Array(await image.arrayBuffer())
+    await Deno.mkdir(dir, { recursive: true })
+    const name = referencePhotoFileName(meta.role)
+    // One filename per role, so re-calibrating a Place replaces its photos
+    // rather than accumulating superseded ones nothing references.
+    await Deno.writeFile(`${dir}/${name}`, bytes)
+    await Deno.writeTextFile(
+      `${dir}/reference-photos.json`,
+      JSON.stringify(
+        {
+          ...(await readReferencePhotoIndex(dir)),
+          [meta.role]: { ...meta, file: name, bytes: bytes.byteLength, receivedAt: Date.now() },
+        },
+        null,
+        2,
+      ),
+    )
+    return c.json({ ok: true, role: meta.role, url: referencePhotoUrl(projectId, meta.role) })
+  } catch (err) {
+    console.error('[project reference-photo error]', err)
+    return c.json({ error: String(err) }, 500)
+  }
+})
+
+async function readReferencePhotoIndex(dir: string): Promise<Record<string, unknown>> {
+  try {
+    return JSON.parse(await Deno.readTextFile(`${dir}/reference-photos.json`)) as Record<string, unknown>
+  } catch {
+    return {}
+  }
+}
+
+app.get('/projects/:id/reference-photos/:file', async (c) => {
+  const dir = projectMediaDirPath(PROJECT_MEDIA_DIR, c.req.param('id'))
+  // An allowlist, not a sanitiser: only the two names the POST route can have
+  // written resolve at all, so traversal fails by not being on the list.
+  const role = roleForReferencePhotoFile(c.req.param('file'))
+  if (!dir || !role) return c.json({ error: 'Invalid reference photo path' }, 400)
+  try {
+    const data = await Deno.readFile(`${dir}/${referencePhotoFileName(role)}`)
+    return new Response(data, {
+      headers: {
+        'Content-Type': 'image/jpeg',
+        'Cache-Control': 'private, max-age=3600',
+      },
+    })
+  } catch {
+    return c.json({ error: 'Reference photo not found' }, 404)
+  }
 })
 
 app.delete('/projects/:id', async (c) => {

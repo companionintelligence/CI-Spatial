@@ -1,7 +1,7 @@
 # Handoff — wave 09 ground-anchor calibration
 
-Written 2026-08-25, after PR #166 landed. Read this before touching calibration, the
-spatial resolver, or the on-device test harness.
+Written 2026-08-25 after PR #166 landed; updated when ticket 0007 landed. Read this
+before touching calibration, the spatial resolver, or the on-device test harness.
 
 ## Start here
 
@@ -43,7 +43,7 @@ killing someone else's server.
 | 0004 staged two-point flow | landed (PR #166) |
 | 0005 anchor tests + WebXR verification | code landed, **on-device checklist unrun** |
 | 0006 room-loop drift benchmark | **closed unrun** — instrument shipped, measurement never taken |
-| 0007 reference photos | specced and revised, **not implemented** |
+| 0007 reference photos | landed — code complete; its **two-device on-device measurement is unrun**, and blocked on 0006's missing baseline |
 
 ## Settled: two taps stay the default
 
@@ -112,7 +112,16 @@ reports `'verified'`.
 
 Ticket 0004 warned that separation proves "the right distance apart, not the same two
 points." This is sharper: reversal is a *guaranteed* 180° error that verification actively
-blesses. Ticket 0007's photos and `pointLabels` are the mitigation; neither is implemented.
+blesses.
+
+**Ticket 0007 has since landed both mitigations** — a reference photo per marker, crosshaired
+at the recorded tap, and the `pointLabels` description beside it, shown per stage on a return
+visit. Read what that does and does not buy you honestly: the residual still cannot detect a
+reversed pair, and nothing in the code can. Only the user can, and only if the panel gives
+them something to recognise — which is why the two photos are labelled "Point A" and "Point B"
+rather than by role. **Whether it actually reduces re-acquisition error is unmeasured**: the
+two-device `separationM` spread would say, and it cannot be run until 0006's Procedure 2
+baseline exists to compare against. Do not report the failure as solved.
 
 ## Other findings worth knowing
 
@@ -174,7 +183,23 @@ fixing it is a small change to that spec (select a Place, or click `#place-skip-
 - Pairs closer than `ANCHOR_RADIUS_M` (0.35 m) *select* rather than place — intended tap-near
   behaviour, not a failure. The mock maps screen x to world x as `(x − 0.5) * 4.0`.
 - The mock's pose drifts between taps. Use `XR8.freezeAt(n)` when a test needs a deterministic
-  separation.
+  separation. Two runs frozen at the *same* tick with the same tap coordinates reproduce the
+  same `separationM` exactly, which is what lets a test reach the `'verified'` path at all.
+
+Three more, from 0007:
+
+- **`page.route()` cannot intercept an upload to `/projects`.** It is a queueable write prefix
+  in `public/sw.js`, so the request is made from the service worker and page-level routing
+  never sees it — a route-abort passes straight through to the server and the test fails
+  claiming the upload succeeded. Use `context.setOffline(true)`, which is also the more honest
+  test: it exercises the worker's 202-with-no-URL reply, the exact response `isQueuedOffline`
+  exists to stop callers reading as delivered.
+- **Going offline has to start *after* the Place is selected.** The Scanner Location sheet
+  needs the network; the calibration that follows does not.
+- **An author-sheet `display` beats the UA sheet's `[hidden] { display: none }`.** Any element
+  the calibration card shows and hides with `el.hidden` needs its own `[hidden]` rule if it
+  also sets `display`, or it silently stays on screen — and a Playwright `fill()` on a field
+  that should have been hidden will happily succeed.
 
 ## Driving the Android tablets
 
@@ -194,16 +219,22 @@ tapping, and fall back to coordinate taps read off a screenshot when a node id g
 
 ## Suggested order of work
 
-1. **Implement 0007** (reference photos + `pointLabels`) — the current priority. With two
-   taps confirmed as the default, re-acquiring the *same* two features every visit is the
-   whole ballgame, and 0007 is the only mitigation for the reversed-pair 180°. Dependencies
-   are landed and the ticket was revised for this on 2026-08-25.
-2. **Run 0006's benchmark** if the constants are ever doubted — closed unrun, revisit triggers
-   are recorded at each constant's definition.
-3. **Persist both committed markers.** `dropCommittedOrigin()` handles the landmark only;
-   `clearPlacement()` tears the heading marker's decal down at commit. Required by 0007 and
-   already in its DoD.
-4. **Upgrade `estimateFloorY()` to a plane fit.**
-5. **Fix the −Z/+Z compass bug** if older scans need to overlay new ones.
-6. **Run the on-device checks** — 0005's WebXR checklist and 0004's compass-independence
-   check, which is the clearest single demonstration this wave was worth doing.
+1. **Run 0006's benchmark.** It has been promoted to the top for a reason that is no longer
+   about doubting the constants: 0006's Procedure 2 baseline is now the *blocker* on the only
+   measurement that can say whether 0007's photos actually reduced re-acquisition error. A
+   no-aid spread taken now is still valid — the photos only appear on a *return* visit to a
+   Place calibrated with them, so a first calibration of a fresh Place is unaided either way.
+2. **Run the two-device 0007 check** once that baseline exists. Calibrate a Place with photos
+   on the S9, return on a second device, and record the `separationM` spread against the
+   baseline. If it does not improve, the honest outcome is to say so rather than keep a
+   feature that only feels helpful — the ticket says this in its own risk section.
+3. **Upgrade `estimateFloorY()` to a plane fit.** Still the highest-value improvement available
+   that costs the user nothing.
+4. **Fix the −Z/+Z compass bug** if older scans need to overlay new ones.
+5. **Run the remaining on-device checks** — 0005's WebXR checklist and 0004's
+   compass-independence check, which is the clearest single demonstration this wave was worth
+   doing.
+
+Done and no longer on this list: implementing 0007, and persisting both committed markers
+(`dropCommittedPair()` now adds both to the scene directly, so `clearPlacement()` cannot tear
+the heading marker down).

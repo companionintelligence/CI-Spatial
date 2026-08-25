@@ -1,14 +1,21 @@
 /**
- * ProjectStore — projects, floors, rooms, and scan assignments.
+ * ProjectStore — projects, floors, rooms, scan assignments, and calibration
+ * reference photos.
  *
- * Stored in its own IndexedDB database ('ci-xr-projects', v1) so it does not
+ * Stored in its own IndexedDB database ('ci-xr-projects', v2) so it does not
  * conflict with the per-session detection store schema.
  *
  * Schema:
- *   objectStore 'projects'  keyPath: 'projectId'
- *   objectStore 'scans'     keyPath: 'scanId'
- *                           index 'byProject' on 'projectId'
- *                           index 'bySession' on 'sessionId'
+ *   objectStore 'projects'        keyPath: 'projectId'
+ *   objectStore 'scans'           keyPath: 'scanId'
+ *                                 index 'byProject' on 'projectId'
+ *                                 index 'bySession' on 'sessionId'
+ *   objectStore 'referencePhotos' keyPath: 'localKey'        (v2, ticket 0007)
+ *                                 index 'byProject' on 'projectId'
+ *
+ * The database name is on CLAUDE.md's protected-identifier list: renaming it
+ * orphans every existing user's Places. Adding a store behind a version bump
+ * is additive and safe; renaming is not.
  */
 
 // ── Data types ─────────────────────────────────────────────────────────────────
@@ -25,12 +32,53 @@ export type {
 
 import type { Floor, Project, Room, ScanEntry } from '../world/types'
 
+/**
+ * A reference photo's bytes, held locally so the aid works offline and on the
+ * capturing device even when the upload never lands.
+ *
+ * The blob rather than a data URL, following `DetectionStore`'s `captures`
+ * store (src/scene/store.ts) — the established choice for image bytes in this
+ * app. `thumbDataUrl` is the small inline preview, cheap enough to render
+ * without reading the full blob back.
+ */
+export interface ReferencePhotoRecord {
+  localKey: string
+  projectId: string
+  role: ReferencePhotoRole
+  blob: Blob
+  thumbDataUrl: string
+  capturedAt: string
+}
+
+export type ReferencePhotoRole = 'landmark' | 'headingMarker'
+
+/**
+ * The local key for a Place's photo of one marker.
+ *
+ * Deliberately deterministic rather than unique-per-capture: re-calibrating a
+ * Place must *replace* its two photos, not accumulate a history of them
+ * (ticket 0007 — "two photos per Place, replaced on re-calibration"). A
+ * timestamped key would leave every superseded photo behind with nothing
+ * referencing it.
+ */
+export function referencePhotoKey(projectId: string, role: ReferencePhotoRole): string {
+  return `${projectId}:${role}`
+}
+
 // ── DB constants ───────────────────────────────────────────────────────────────
 
 const DB_NAME = 'ci-xr-projects'
-const DB_VERSION = 1
+/**
+ * v2 adds the `referencePhotos` store (wave 09 ticket 0007). This is the
+ * first upgrade this database has had, and it holds the Place records
+ * themselves rather than regenerable session data — so `onupgradeneeded`
+ * below only ever *creates* what is missing and never touches the two
+ * existing stores.
+ */
+const DB_VERSION = 2
 const PROJECTS_STORE = 'projects'
 const SCANS_STORE = 'scans'
+const REFERENCE_PHOTOS_STORE = 'referencePhotos'
 
 // ── Store class ────────────────────────────────────────────────────────────────
 
@@ -49,6 +97,12 @@ export class ProjectStore {
           const s = db.createObjectStore(SCANS_STORE, { keyPath: 'scanId' })
           s.createIndex('byProject', 'projectId', { unique: false })
           s.createIndex('bySession', 'sessionId', { unique: false })
+        }
+        // v1 → v2. Purely additive: a v1 database arrives here with its two
+        // stores already populated and leaves with them untouched.
+        if (!db.objectStoreNames.contains(REFERENCE_PHOTOS_STORE)) {
+          const s = db.createObjectStore(REFERENCE_PHOTOS_STORE, { keyPath: 'localKey' })
+          s.createIndex('byProject', 'projectId', { unique: false })
         }
       }
       req.onsuccess = () => resolve(req.result)
@@ -172,6 +226,36 @@ export class ProjectStore {
 
   async deleteScan(scanId: string): Promise<void> {
     await this._delete(SCANS_STORE, scanId)
+  }
+
+  // ── Calibration reference photos (ticket 0007) ────────────────────────────────
+
+  /**
+   * Store one marker's reference photo. Keyed by `localKey`, so re-calibrating
+   * a Place with the same key **replaces** rather than appends — which is what
+   * the ticket requires, and why {@link referencePhotoKey} derives the key from
+   * the Place and the marker's role rather than from a timestamp.
+   */
+  async putReferencePhoto(record: ReferencePhotoRecord): Promise<void> {
+    await this._put(REFERENCE_PHOTOS_STORE, record)
+  }
+
+  async getReferencePhoto(localKey: string): Promise<ReferencePhotoRecord | null> {
+    return this._get<ReferencePhotoRecord>(REFERENCE_PHOTOS_STORE, localKey)
+  }
+
+  async listReferencePhotos(projectId: string): Promise<ReferencePhotoRecord[]> {
+    if (!this.db) return []
+    return new Promise((resolve, reject) => {
+      const tx = this.db!.transaction(REFERENCE_PHOTOS_STORE, 'readonly')
+      const req = tx.objectStore(REFERENCE_PHOTOS_STORE).index('byProject').getAll(projectId)
+      req.onsuccess = () => resolve(req.result as ReferencePhotoRecord[])
+      req.onerror  = () => reject(req.error)
+    })
+  }
+
+  async deleteReferencePhoto(localKey: string): Promise<void> {
+    await this._delete(REFERENCE_PHOTOS_STORE, localKey)
   }
 
   // ── Private IDB helpers ────────────────────────────────────────────────────────

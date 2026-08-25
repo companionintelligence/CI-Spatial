@@ -1294,6 +1294,110 @@
         background: rgba(255,107,107,0.12);
         color: #ff9b9b;
       }
+      /* Reference photo of the marker being placed, from the last calibration
+         (ticket 0007). Shown *before* the tap, because a photo needs no
+         transform to be recognisable — the stored points themselves cannot be
+         drawn until the alignment they are meant to help produce exists. */
+      .project-calibration-reference {
+        margin-top: 10px;
+        padding: 9px 10px;
+        border: 1px solid rgba(114,221,212,0.24);
+        border-radius: 10px;
+        background: rgba(114,221,212,0.06);
+      }
+      .project-calibration-reference-head {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: baseline;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: #72ddd4;
+      }
+      /* The typed pointLabels description. Not uppercased — it is the user's
+         own words, and it is what disambiguates two photos of similar floor. */
+      .project-calibration-reference-label {
+        color: var(--ci-muted);
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0;
+        text-transform: none;
+      }
+      /* `display` here beats the UA sheet's `[hidden] { display: none }` — same
+         specificity, author sheet wins — so the element stayed on screen after
+         `el.hidden = true`. Every explicit `display` in this panel needs its
+         own [hidden] rule for the same reason. */
+      .project-calibration-reference-figure[hidden],
+      .project-calibration-label-field[hidden] { display: none; }
+      .project-calibration-reference-figure {
+        position: relative;
+        display: block;
+        margin: 8px 0 0;
+        border-radius: 8px;
+        overflow: hidden;
+        line-height: 0;
+      }
+      .project-calibration-reference-figure img {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+      /* The crosshair is what makes the photo precise rather than suggestive:
+         matching a wide shot by eye is worth tens of centimetres, matching a
+         marked spot is not. Positioned in pixels from the recorded normalised
+         tap by referenceCrosshairPixels() (src/ar/reference-photo.ts). */
+      .project-calibration-crosshair {
+        position: absolute;
+        width: 22px;
+        height: 22px;
+        margin: -11px 0 0 -11px;
+        border: 2px solid #ff6b6b;
+        border-radius: 50%;
+        box-shadow: 0 0 0 1px rgba(3,15,23,0.75), 0 0 8px rgba(255,107,107,0.5);
+        pointer-events: none;
+      }
+      .project-calibration-crosshair::before,
+      .project-calibration-crosshair::after {
+        content: '';
+        position: absolute;
+        background: #ff6b6b;
+      }
+      .project-calibration-crosshair::before { left: 50%; top: -7px; width: 2px; height: 7px; margin-left: -1px; }
+      .project-calibration-crosshair::after  { top: 50%; left: -7px; height: 2px; width: 7px; margin-top: -1px; }
+      /* Missing, pending, or unreachable photos say which. An empty panel reads
+         as "there is nothing to match", which on a Place whose upload merely
+         failed is a lie that costs the user the re-acquisition they came for. */
+      .project-calibration-reference-note {
+        margin: 8px 0 0;
+        color: var(--ci-muted);
+        font-size: 11px;
+        line-height: 1.45;
+      }
+      /* pointLabels capture. Optional by design — a label must never be a gate
+         on finishing an alignment. */
+      .project-calibration-label-field { display: block; margin-top: 10px; }
+      .project-calibration-label-field span {
+        display: block;
+        margin-bottom: 4px;
+        color: var(--ci-muted);
+        font-size: 11px;
+      }
+      .project-calibration-label-field input {
+        width: 100%;
+        padding: 8px 10px;
+        border: 1px solid rgba(114,221,212,0.3);
+        border-radius: 8px;
+        background: rgba(3,15,23,0.6);
+        color: var(--ci-text);
+        font: inherit;
+        font-size: 13px;
+      }
+      .project-calibration-label-field input:focus {
+        outline: none;
+        border-color: rgba(114,221,212,0.75);
+      }
       .project-calibration-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 15px; }
       .project-calibration-link[disabled] { opacity: 0.45; cursor: not-allowed; }
       .project-calibration-link { border: 0; background: transparent; color: var(--ci-muted); font-size: 11px; cursor: pointer; text-decoration: underline; }
