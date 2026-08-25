@@ -345,6 +345,23 @@
       var freeze = new URLSearchParams(location.search).get('mockFreeze')
       if (freeze !== null) window.XR8.freezeAt(freeze)
 
+      // Fire each registered module's onStart once, as the real engine does.
+      // Without this the mock never ran onStart at all, so eighthwall.ts's
+      // `self._scene = XR8.Threejs.xrScene().scene` never executed and
+      // provider.getScene() returned null — meaning no calibration decal,
+      // anchor marker or floor grid was ever created under the mock, and any
+      // test asserting on them silently passed against an empty scene.
+      for (var i = 0; i < modules.length; i++) {
+        var startMod = modules[i]
+        if (startMod && typeof startMod.onStart === 'function') {
+          try {
+            startMod.onStart({ canvas: runCanvas, GLctx: null, isWebXR: false })
+          } catch (err) {
+            console.warn('[xr8-mock] onStart threw for module', startMod.name, err)
+          }
+        }
+      }
+
       tickHandle = setInterval(tick, TICK_MS)
       console.log(
         '[xr8-mock] running — scripted SLAM session at ' + Math.round(1000 / TICK_MS) + ' fps' +

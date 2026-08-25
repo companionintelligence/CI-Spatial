@@ -120,6 +120,18 @@ async function tapCanvas(page: Page, nx: number, ny: number): Promise<void> {
   await page.waitForTimeout(800)
 }
 
+/** Names of every object in the mock's live AR scene. */
+async function sceneObjectNames(page: Page): Promise<string[]> {
+  return page.evaluate(() => {
+    const xr8 = (window as unknown as Record<string, { Threejs?: { xrScene?: () => { scene?: unknown } } }>)['XR8']
+    const scene = xr8?.Threejs?.xrScene?.()?.scene as { traverse?: (cb: (o: { name?: string }) => void) => void } | undefined
+    if (!scene?.traverse) return []
+    const names: string[] = []
+    scene.traverse((o) => { if (o.name) names.push(o.name) })
+    return names
+  })
+}
+
 test.describe('two-point calibration', () => {
   test.setTimeout(180_000)
 
@@ -240,6 +252,30 @@ test.describe('two-point calibration', () => {
       await expect(separation).toHaveAttribute('data-state', 'short')
       await expect(separation).toContainText(/need at least/i)
       await expect(page.locator('#project-calibration-commit')).toBeDisabled()
+    } finally {
+      await deletePlace(request, place.id)
+    }
+  })
+
+  test('shows a floor-plane overlay and removes it on exit', async ({ page, request }) => {
+    const place = await createPlace(request, 'grid')
+    try {
+      await startArWithPlace(page, place.name)
+
+      // The overlay makes the app's floor estimate visible. It was invisible
+      // before, which is how a capture reached the point of rejecting genuine
+      // floor taps while its idea of the floor sat ~2 m off.
+      await expect(async () => {
+        expect(await sceneObjectNames(page)).toContain('calibration floor plane')
+      }).toPass({ timeout: 30_000 })
+
+      await page.locator('#project-calibration-skip').click()
+      await expect(page.locator(CALIB)).toHaveCount(0)
+
+      // Every exit path clears the placement group, the grid included.
+      const after = await sceneObjectNames(page)
+      expect(after).not.toContain('calibration floor plane')
+      expect(after).not.toContain('calibration placement')
     } finally {
       await deletePlace(request, place.id)
     }

@@ -82,6 +82,17 @@ const MARKER_IDS: MarkerId[] = ['landmark', 'heading']
 const MARKER_HEIGHT_DISAGREEMENT_M = 0.15
 
 /**
+ * Floor-plane overlay extent, in metres, and its subdivision count.
+ *
+ * 10 m at 20 divisions gives 0.5 m cells, which is deliberate on two counts:
+ * the grid stays legible at room scale, and the cells double as a distance
+ * gauge — two cells is `MIN_POINT_SEPARATION_M`, so a user can see whether
+ * they have walked far enough for the heading marker without reading a number.
+ */
+const FLOOR_GRID_SIZE_M = 10
+const FLOOR_GRID_DIVISIONS = 20
+
+/**
  * Staged two-point ground calibration (wave 09 ticket 0004).
  *
  * Ground plane established -> landmark placed and confirmed -> heading marker
@@ -185,6 +196,9 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
   if (scene) scene.add(placement)
   const decals: Record<MarkerId, THREE.Group | null> = { landmark: null, heading: null }
   let baseline: THREE.Line | null = null
+  let floorGrid: THREE.GridHelper | null = null
+  /** Last height the grid was drawn at, so it is only moved when it changes. */
+  let floorGridY: number | null = null
 
   function disposeObject(root: THREE.Object3D): void {
     root.traverse((child) => {
@@ -209,6 +223,9 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
     })
     detach(baseline)
     baseline = null
+    detach(floorGrid)
+    floorGrid = null
+    floorGridY = null
     if (scene) scene.remove(placement)
   }
 
@@ -239,6 +256,61 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
     )
     baseline.name = 'calibration baseline'
     placement.add(baseline)
+  }
+
+  /**
+   * Draws the plane the app currently believes is the floor.
+   *
+   * This exists because that belief was previously invisible and could be
+   * badly wrong — `estimateFloorY()` is an 8th-percentile of the point cloud,
+   * and a capture was observed where it sat 0.84 m up while the real floor was
+   * roughly two metres lower. The only symptom a user got was the floor gate
+   * rejecting genuine floor taps as "cm above the floor", with no way to see
+   * that the app's floor and the real floor had diverged. Now they can.
+   *
+   * Which height is shown deliberately changes with the stage:
+   *  - before a landmark exists, the **estimate**, because that is what
+   *    `isTapOnGround()` will judge the next tap against;
+   *  - after one, the **landmark's own tap**, because that is the committed
+   *    floor the frame is actually built on.
+   *
+   * Dimmed while the estimate is unsettled and solid once locked, so the
+   * readiness gate reads as a visible state rather than an unexplained wait.
+   */
+  function refreshFloorGrid(): void {
+    if (!scene) return
+    const ground = options.ground()
+    const landmark = points.landmark
+    const height = landmark ? landmark.y : (ground ? ground.y : null)
+    if (height === null) {
+      detach(floorGrid)
+      floorGrid = null
+      floorGridY = null
+      return
+    }
+
+    if (!floorGrid) {
+      // THREE's own helper rather than hand-rolled geometry — same line-based
+      // visual language as the anchor decals, no new mark to maintain.
+      floorGrid = new THREE.GridHelper(FLOOR_GRID_SIZE_M, FLOOR_GRID_DIVISIONS, 0x72ddd4, 0x72ddd4)
+      floorGrid.name = 'calibration floor plane'
+      const material = floorGrid.material as THREE.Material
+      material.transparent = true
+      material.depthWrite = false
+      placement.add(floorGrid)
+    }
+
+    const settled = landmark !== null || ground?.locked === true
+    ;(floorGrid.material as THREE.Material).opacity = settled ? 0.4 : 0.15
+
+    // Centre on the landmark once placed so the grid frames the frame's own
+    // origin; before that leave it at the session origin, where the user is.
+    const centreX = landmark ? landmark.x : 0
+    const centreZ = landmark ? landmark.z : 0
+    if (floorGridY !== height || floorGrid.position.x !== centreX || floorGrid.position.z !== centreZ) {
+      floorGrid.position.set(centreX, height, centreZ)
+      floorGridY = height
+    }
   }
 
   function setMarker(id: MarkerId, position: Vec3): void {
@@ -321,6 +393,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
   function renderStage(): void {
     renderSteps()
     renderSeparation()
+    refreshFloorGrid()
     const sep = separation()
     const farEnough = sep !== null && sep >= MIN_POINT_SEPARATION_M
 
@@ -340,7 +413,12 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
     commitBtn.disabled = !farEnough
 
     let defaultStatus = ''
-    if (stage === 'landmark') {
+    if (stage === 'ground') {
+      // Without this the ground stage inherited the landmark stage's copy and
+      // told the user to tap the ground before tapping was possible.
+      title.textContent = isFirstCalibration ? "Set this project's world frame" : 'Align this scan to the project'
+      copy.textContent = 'The grid shows where the floor is being estimated. Sweep the floor slowly until it settles onto the real floor — placement unlocks once it does.'
+    } else if (stage === 'landmark') {
       title.textContent = isFirstCalibration ? "Set this project's world frame" : 'Align this scan to the project'
       copy.textContent = "Step 1 of 2 — tap the ground at a permanent feature you will recognise next visit, such as a door frame or a wall corner. This becomes the project's origin."
       defaultStatus = points.landmark
