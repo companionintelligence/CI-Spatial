@@ -124,7 +124,8 @@ root-level flat `*.test.ts` importing from `./src/...`.
 - Q: Gate tolerance? — A: `GROUND_TAP_TOLERANCE_M = 0.25` as a **placeholder pending
   measurement** — chosen to pass a real floor tap including carpet and hit-test noise while
   rejecting a tabletop (~0.75 m) or chair seat (~0.45 m). Distinct from the lock tolerances
-  below. **Ticket 0006 measures the actual vertical spread of floor hit-tests** and sets this;
+  below. This ticket expected **ticket 0006 to measure the actual vertical spread of floor
+  hit-tests** and set it — see the correction below, which records that this never happened;
   the gap between 0.25 and a chair seat at 0.45 is not large, so a worse-than-assumed noise
   figure narrows the usable window quickly. (Decided in this ticket; value pending 0006.)
 - Q: Lock/unlock thresholds? — A: Lock once `GROUND_HISTORY_SIZE = 6` consecutive candidates
@@ -178,6 +179,14 @@ root-level flat `*.test.ts` importing from `./src/...`.
 
 **`GROUND_TAP_TOLERANCE_M = 0.25` is measurable now, and the measurement is written down.**
 Logged after #145/#147 merged, while scheduling ticket 0006's benchmark.
+
+**Correction, logged 2026-08-25 when 0006 was closed:** 0006 was closed *without* its
+benchmark ever being run, so `GROUND_TAP_TOLERANCE_M = 0.25` is now an **adopted default, not
+a pending placeholder** — nothing is scheduled to measure it. The constant's own definition in
+`src/ar/ground-gate.ts` records the revisit trigger. Note the definition also flags that the
+likelier cause of a mis-rejected floor tap is `estimateFloorY()` (an 8th-percentile, observed
+~2 m out) rather than this tolerance; the floor overlay added in #166 makes that checkable.
+The original scheduling note follows, kept as the record of what was believed at the time.
 
 This ticket shipped the constant as an explicit placeholder pending 0006, and 0006's
 Procedure 2 turned out not to be runnable until 0004 exists (see that ticket's Open

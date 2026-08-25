@@ -379,7 +379,8 @@ actually depends on. `groundEstimate()` keeps its proper job: sanity-checking ta
 `isTapOnGround()`, where being roughly right is sufficient.
 
 The two markers' raw heights are no longer discarded either. They are compared, and a
-disagreement beyond `MARKER_HEIGHT_DISAGREEMENT_M` (0.15 m, a placeholder pending 0006) is
+disagreement beyond `MARKER_HEIGHT_DISAGREEMENT_M` (0.15 m, an adopted default — 0006 was
+closed without running its benchmark) is
 reported — real evidence that one of the two is not on the floor. **Not covered by an automated
 test**: the xr8 mock derives height from screen `y`, so provoking a disagreement without
 tripping the floor gate first is not reliably reproducible there.
