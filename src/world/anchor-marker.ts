@@ -78,3 +78,72 @@ export function buildAnchorMarker(northYawDeg: number | null = null): THREE.Grou
 
   return group
 }
+
+/** Height of an anchor pin's stem, in metres. */
+export const ANCHOR_PIN_HEIGHT_M = 0.45
+/** Radius of the small ring marking a pin's exact ground point. */
+const ANCHOR_PIN_BASE_RADIUS_M = 0.06
+const ANCHOR_PIN_HEAD_M = 0.07
+const ANCHOR_PIN_BASE_SEGMENTS = 24
+
+/**
+ * A vertical pin marking one calibration point in **project space**.
+ *
+ * Distinct from {@link buildAnchorMarker}, which is the flat ring-and-crosshair
+ * decal the live capture view lays on the floor. A flat decal is right there —
+ * it sits on the surface the user just tapped. It is wrong in the World Editor,
+ * where the camera orbits at room scale and a floor-flat ring is edge-on and
+ * invisible from most angles. A pin reads from anywhere and its base still
+ * marks the exact point.
+ *
+ * Colour carries the meaning and is the caller's to choose: the editor draws a
+ * Place's **stored** pair and each scan's **actual** pair in different colours,
+ * so the gap between them is the calibration residual made visible at room
+ * scale rather than read off a number.
+ */
+export function buildAnchorPin(color: number, name: string): THREE.Group {
+  const group = new THREE.Group()
+  group.name = name
+
+  const material = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.95 })
+
+  const baseVerts: number[] = []
+  for (let i = 0; i < ANCHOR_PIN_BASE_SEGMENTS; i++) {
+    const a0 = (i / ANCHOR_PIN_BASE_SEGMENTS) * Math.PI * 2
+    const a1 = ((i + 1) / ANCHOR_PIN_BASE_SEGMENTS) * Math.PI * 2
+    baseVerts.push(
+      Math.cos(a0) * ANCHOR_PIN_BASE_RADIUS_M, 0, Math.sin(a0) * ANCHOR_PIN_BASE_RADIUS_M,
+      Math.cos(a1) * ANCHOR_PIN_BASE_RADIUS_M, 0, Math.sin(a1) * ANCHOR_PIN_BASE_RADIUS_M,
+    )
+  }
+  const baseGeometry = new THREE.BufferGeometry()
+  baseGeometry.setAttribute('position', new THREE.Float32BufferAttribute(baseVerts, 3))
+  const base = new THREE.LineSegments(baseGeometry, material.clone())
+  base.name = 'anchor pin base'
+  group.add(base)
+
+  const stemGeometry = new THREE.BufferGeometry()
+  stemGeometry.setAttribute(
+    'position',
+    new THREE.Float32BufferAttribute([0, 0, 0, 0, ANCHOR_PIN_HEIGHT_M, 0], 3),
+  )
+  const stem = new THREE.LineSegments(stemGeometry, material.clone())
+  stem.name = 'anchor pin stem'
+  group.add(stem)
+
+  // A diamond outline at the top — readable against both the point cloud and
+  // the mesh, and unambiguous about which end is the measured point.
+  const y = ANCHOR_PIN_HEIGHT_M
+  const h = ANCHOR_PIN_HEAD_M
+  const headVerts = [
+    0, y + h, 0, h, y, 0, h, y, 0, 0, y - h, 0, 0, y - h, 0, -h, y, 0, -h, y, 0, 0, y + h, 0,
+    0, y + h, 0, 0, y, h, 0, y, h, 0, y - h, 0, 0, y - h, 0, 0, y, -h, 0, y, -h, 0, y + h, 0,
+  ]
+  const headGeometry = new THREE.BufferGeometry()
+  headGeometry.setAttribute('position', new THREE.Float32BufferAttribute(headVerts, 3))
+  const head = new THREE.LineSegments(headGeometry, material.clone())
+  head.name = 'anchor pin head'
+  group.add(head)
+
+  return group
+}

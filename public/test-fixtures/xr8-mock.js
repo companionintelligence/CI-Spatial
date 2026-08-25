@@ -96,6 +96,8 @@
   // so every emitted frame is identical.  See freezeAt() below.
   var frozen = false
   var frozenPoints = null
+  var startFired = false
+  var pendingStartTicks = 0
 
   function currentPose() {
     // Slow sinusoidal walk along X at eye height, looking down -Z
@@ -280,7 +282,27 @@
     }
   }
 
+  /** Dispatch every module's onStart exactly once. */
+  function fireOnStart() {
+    if (startFired) return
+    startFired = true
+    for (var i = 0; i < modules.length; i++) {
+      var startMod = modules[i]
+      if (startMod && typeof startMod.onStart === 'function') {
+        try {
+          startMod.onStart({ canvas: runCanvas, GLctx: null, isWebXR: false })
+        } catch (err) {
+          console.warn('[xr8-mock] onStart threw for module', startMod.name, err)
+        }
+      }
+    }
+  }
+
   function tick() {
+    if (!startFired) {
+      if (pendingStartTicks > 0) { pendingStartTicks--; return }
+      fireOnStart()
+    }
     if (!frozen) tickCount++
 
     var processGpuResult = {}
@@ -351,16 +373,17 @@
       // provider.getScene() returned null — meaning no calibration decal,
       // anchor marker or floor grid was ever created under the mock, and any
       // test asserting on them silently passed against an empty scene.
-      for (var i = 0; i < modules.length; i++) {
-        var startMod = modules[i]
-        if (startMod && typeof startMod.onStart === 'function') {
-          try {
-            startMod.onStart({ canvas: runCanvas, GLctx: null, isWebXR: false })
-          } catch (err) {
-            console.warn('[xr8-mock] onStart threw for module', startMod.name, err)
-          }
-        }
-      }
+      //
+      // `?mockSceneDelay=<ticks>` defers them, which is the *real* engine's
+      // timing and not an artificial hazard: `provider.start()` resolves as
+      // soon as it has called XR8.run(), while 8th Wall creates its Three.js
+      // scene on the first frame. Firing onStart synchronously here made the
+      // mock strictly more forgiving than the device, and hid a bug where
+      // calibration captured a null scene once and then silently rendered
+      // nothing — no floor grid, no markers — for the whole session.
+      var delay = new URLSearchParams(location.search).get('mockSceneDelay')
+      pendingStartTicks = delay === null ? 0 : Math.max(0, Number(delay) || 0)
+      if (pendingStartTicks === 0) fireOnStart()
 
       tickHandle = setInterval(tick, TICK_MS)
       console.log(

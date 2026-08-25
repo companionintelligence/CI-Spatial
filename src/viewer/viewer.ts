@@ -43,7 +43,7 @@ import {
 import { fetchReconstructionQuality, formatReconstructionVerdict } from './reconstruction-quality'
 import { distanceM, enuToGeo, hasGeoPose, matrixTranslation } from '../world/geo'
 import { LAYER_LABELS, LAYER_ORDER, LAYERS_HIDDEN_BY_DEFAULT } from '../world/layers'
-import { buildAnchorMarker } from '../world/anchor-marker'
+import { buildAnchorMarker, buildAnchorPin } from '../world/anchor-marker'
 import { registerPWA } from '../pwa'
 import { iconLabel } from '../ui/icons'
 import { qrCodeSvg } from '../ui/qr-code'
@@ -691,6 +691,7 @@ async function loadWorldProject(): Promise<void> {
     const scopedWorld = scopeWorldToActiveProject(loadedWorld)
     world = scopedWorld
     currentProject = projects.find(project => project.projectId === activeProjectId) ?? null
+    refreshExpectedAnchorPins()
     document.title = `${scopedWorld.name} - Companion Scan Spatial Editor`
     setText('sidebar-title', scopedWorld.name)
     document.getElementById('viewer-placeholder')!.style.display = scopedWorld.scans.length ? 'none' : 'flex'
@@ -1792,6 +1793,62 @@ function addAnchorMarker(
   marker.userData['scanId'] = scan.scanId
   root.add(marker)
   addLayerNode(layers, 'anchor', marker)
+
+  // The pair this scan actually placed. Both points are expressed in the
+  // scan's own project frame, so they ride the root's localToWorld exactly as
+  // the marker above does: the landmark is project-space zero by construction,
+  // and the heading marker sits on +Z at the separation this session measured.
+  //
+  // Red against the stored frame's white: where a red pin sits away from its
+  // white counterpart, that gap is the residual, at room scale.
+  const separation = scan.calibrationSeparationM
+  if (scan.calibrationMethod !== 'two-point-ground' || !separation) return
+  for (const [name, z] of [['landmark', 0], ['heading marker', separation]] as const) {
+    const pin = buildAnchorPin(ANCHOR_ACTUAL_COLOR, `actual ${name} — ${scan.name || scan.scanId}`)
+    pin.position.set(0, 0, z)
+    pin.userData['scanId'] = scan.scanId
+    root.add(pin)
+    addLayerNode(layers, 'anchor', pin)
+  }
+}
+
+/** Red — where a scan's calibration actually put its two points. */
+const ANCHOR_ACTUAL_COLOR = 0xff5c5c
+/** White — where the Place's stored frame says those two points are. */
+const ANCHOR_EXPECTED_COLOR = 0xffffff
+const EXPECTED_PINS_NAME = 'expected calibration pins'
+
+/**
+ * Draw the Place's **stored** two-point frame as white pins.
+ *
+ * Added to `worldGroup` rather than to a scan root, because these belong to the
+ * Place and not to any one scan — every scan root maps its own session onto the
+ * same project space, so drawing them per scan would stack identical pins on
+ * one spot.
+ *
+ * The positions are the stored frame's own: the landmark at project zero and
+ * the heading marker on +Z at `separationM`. Those coordinates are tautological
+ * in isolation — that is precisely why ticket 0007 uses photos as the
+ * re-acquisition aid — but they are not tautological *against a scan*, which is
+ * the whole point of drawing both here.
+ */
+function refreshExpectedAnchorPins(): void {
+  if (!worldGroup) return
+  for (const previous of worldGroup.children.filter((child) => child.name === EXPECTED_PINS_NAME)) {
+    worldGroup.remove(previous)
+  }
+
+  const frame = currentProject?.spatialFrame
+  if (frame?.method !== 'two-point-ground') return
+
+  const group = new THREE.Group()
+  group.name = EXPECTED_PINS_NAME
+  for (const [name, point] of [['landmark', frame.landmark], ['heading marker', frame.headingMarker]] as const) {
+    const pin = buildAnchorPin(ANCHOR_EXPECTED_COLOR, `expected ${name}`)
+    pin.position.set(point.x, point.y, point.z)
+    group.add(pin)
+  }
+  worldGroup.add(group)
 }
 
 function buildDetectionBounds(

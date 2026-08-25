@@ -2208,6 +2208,12 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
 }
 
+/** The measured separation on a stored `ScanCalibration`, when it has one. */
+function asCalibrationSeparationM(value: unknown): number | null {
+  const separation = (value as { separationM?: unknown } | null | undefined)?.separationM
+  return typeof separation === 'number' && Number.isFinite(separation) ? separation : null
+}
+
 function asCalibrationMethod(value: unknown): ScanManifest['calibrationMethod'] {
   return value === 'ground-tap-compass' ? value : undefined
 }
@@ -2422,6 +2428,11 @@ function scanManifestFromStored(
     // the editor can tell whether this scan's local origin is a real marked physical
     // point worth rendering an anchor for, vs. just wherever AR tracking booted.
     calibrationMethod: asCalibrationMethod(scan.meta['calibrationMethod']),
+    // Read from the nested calibration record rather than a new top-level key:
+    // `src/export/gltf.ts` has always written the whole ScanCalibration into the
+    // sidecar, so this works for scans already on disk instead of only for ones
+    // uploaded after this change.
+    calibrationSeparationM: asCalibrationSeparationM(scan.meta['calibration']),
     calibrationStatus: asCalibrationStatus(scan.meta['calibrationStatus']),
     capturedAt: asString(scan.meta['capturedAt']) ?? asString(scan.meta['exportedAt']) ?? scan.uploadedAt,
     pointCount: asNumber(scan.meta['pointCount']),
