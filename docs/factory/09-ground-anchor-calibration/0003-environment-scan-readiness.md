@@ -127,7 +127,8 @@ root-level flat `*.test.ts` importing from `./src/...`.
   below. This ticket expected **ticket 0006 to measure the actual vertical spread of floor
   hit-tests** and set it — see the correction below, which records that this never happened;
   the gap between 0.25 and a chair seat at 0.45 is not large, so a worse-than-assumed noise
-  figure narrows the usable window quickly. (Decided in this ticket; value pending 0006.)
+  figure narrows the usable window quickly. (Decided in this ticket. The value is no longer
+  pending: 0006 closed unrun on 2026-08-25 and 0.25 stands as an adopted default.)
 - Q: Lock/unlock thresholds? — A: Lock once `GROUND_HISTORY_SIZE = 6` consecutive candidates
   agree within `GROUND_LOCK_TOLERANCE_M = 0.03`; unlock immediately if a candidate deviates
   by more than `GROUND_UNLOCK_TOLERANCE_M = 0.15` (a real level change — a step, a mezzanine —
