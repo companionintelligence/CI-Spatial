@@ -1,47 +1,29 @@
 /**
- * WebGPU inference worker — UNREFERENCED. Nothing spawns this today.
+ * WebGPU inference worker.
  *
- * Gated off behind WEBGPU_INFERENCE_ENABLED (src/inference/router.ts) because it
- * cannot work as written, for two independent reasons:
+ * Runs LFM2.5-VL-1.6B-ONNX entirely on-device via the runtime-agnostic
+ * driver (./lfm-driver.ts, wave 05 ticket 0001) against onnxruntime-web's
+ * WebGPU execution provider (./lfm-driver-web.ts, wave 05 ticket 0003 —
+ * docs/factory/05-on-device-inference/0003-webgpu-driver-runtime.md).
  *
- *   1. It calls pipeline('image-text-to-text', ...), which is not a registered
- *      Transformers.js pipeline task in ANY released version. Verified against
- *      3.8.1 (50 tasks) and 4.2.0 (23 tasks) — the string appears only in JSDoc.
- *      Upgrading the dependency does not fix this; the pipeline() API has never
- *      been able to express this model.
- *   2. env.localModelPath points at /models/, which download_models.py populates
- *      and which is documented as an optional step — so the weights are usually
- *      absent anyway.
+ * Replaces the previous `pipeline('image-text-to-text', ...)` call, which
+ * could never work: that string was never a registered Transformers.js
+ * pipeline task in any released version (verified against 3.8.1 and
+ * 4.2.0), and the pipeline() API has never been able to express this model
+ * — see ticket 0003's "What this replaces". The env configuration, progress
+ * protocol, message handler and parseDetections wiring that survive from
+ * that version are unchanged; only model construction and generation
+ * changed.
  *
- * Deliberately KEPT rather than deleted: the env configuration, progress
- * protocol, message handler, dtype choices and parseDetections wiring below are
- * all correct and are what wave 05 builds on. Only the model construction is
- * wrong. See docs/factory/05-on-device-inference/ — ticket 0003 replaces the
- * pipeline() call with the hand-rolled LFM2.5-VL driver on onnxruntime-web, and
- * ticket 0004 lifts the gate.
+ * Still gated off behind WEBGPU_INFERENCE_ENABLED
+ * (src/inference/router.ts) — this worker now genuinely runs, but the
+ * toggle to offer it in the UI, and any fallback policy, is wave 05 ticket
+ * 0004, deliberately kept separate.
  *
- * Original intent follows.
- *
- * Runs LFM2.5-VL-1.6B-ONNX entirely on-device.
- *
- * Uses @huggingface/transformers (Transformers.js v3) which handles:
- *   - Tokenisation
- *   - Image pre-processing (resize, normalise, patch extraction)
- *   - ONNX session lifecycle with WebGPU execution provider
- *   - KV-cache management during greedy decoding
- *
- * Model files must be present at:
- *   public/models/LiquidAI/LFM2.5-VL-1.6B-ONNX/
- *     config.json
- *     tokenizer.json
- *     tokenizer_config.json
- *     preprocessor_config.json
- *     onnx/
- *       embed_tokens.onnx
- *       embed_images.onnx
- *       decoder_model.onnx  (+ optional .onnx_data shards)
- *
- * Download from: https://huggingface.co/LiquidAI/LFM2.5-VL-1.6B-ONNX
+ * Assumes ticket 0002's model-provisioning cache
+ * (src/inference/model-provisioning.ts) is already fully populated; if it
+ * isn't, ./lfm-driver-web.ts throws a clear error rather than silently
+ * fetching from the network — see that file's header.
  *
  * Message protocol (main → worker):
  *   { type: 'infer', id: string, imageDataUrl: string }
@@ -50,63 +32,48 @@
  *   { type: 'result', id: string, detections: RawDetection[] }
  *   { type: 'error',  id: string, message: string }
  *   { type: 'progress', stage: string, pct: number }   (during model load)
+ *
+ * Unchanged from before ticket 0003 — src/inference/router.ts:134-166 reads
+ * these same three shapes.
  */
-
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore — transformers@3 re-exports from .js files with no companion .d.ts
-import { env, pipeline, RawImage } from '@huggingface/transformers'
-import { SPATIAL_DETECTION_PROMPT, parseDetections } from './prompt'
+import { loadLfmDriver, runLfmDriver } from './lfm-driver'
+import type { LfmDriverHandle } from './lfm-driver'
+import { createWebGpuPort } from './lfm-driver-web'
 import type { RawDetection } from './prompt'
 
-// ─── Transformers.js configuration ──────────────────────────────────────────
-// All model files are served from the Vite dev server / build output.
-// Set allowRemoteModels = false so no HuggingFace Hub requests are made at
-// runtime — everything must already be in public/models/.
+// One port instance for the worker's lifetime — stateless beyond the
+// module-scope `ort.env` configuration lfm-driver-web.ts sets, so reused
+// across both loadLfmDriver (session/tokenizer setup) and every
+// runLfmDriver call (patchify's decodeImage + Tensor construction).
+const webGpuPort = createWebGpuPort()
 
-env.allowLocalModels = true
-env.localModelPath = '/models/'
-env.allowRemoteModels = false
+// executionProviders: WebGPU only. The CPU/WASM path already exists as the
+// server's inference path (src/inference/server.ts → the Deno API); the
+// entire point of this worker is running on the phone's own GPU instead.
+const SESSION_OPTS = {
+  executionProviders: ['webgpu'],
+  graphOptimizationLevel: 'all',
+} as const
 
-// Already inside a Worker — don't proxy ONNX WASM back to main thread.
-if (env.backends?.onnx?.wasm) {
-  env.backends.onnx.wasm.proxy = false
-}
+// ─── Driver loading (lazy, once) ────────────────────────────────────────────
+let driverPromise: Promise<LfmDriverHandle> | null = null
 
-// ─── Model loading (lazy, once) ─────────────────────────────────────────────
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyPipeline = any
-let pipelinePromise: Promise<AnyPipeline> | null = null
-
-function getOrLoadPipeline(): Promise<AnyPipeline> {
-  if (!pipelinePromise) {
+function getOrLoadDriver(): Promise<LfmDriverHandle> {
+  if (!driverPromise) {
     self.postMessage({ type: 'progress', stage: 'Loading model…', pct: 0 })
-
-    const pipelineOpts = {
-      device: 'webgpu',
-      // Quantised weights: FP16 vision encoder + INT4 language decoder ≈ 1.5 GB
-      dtype: {
-        embed_tokens: 'fp16',
-        embed_images: 'fp16',
-        // LFM2.5-VL uses 'decoder' as the component key (not decoder_model_merged)
-        decoder: 'q4',
-      },
-      progress_callback: (info: { status: string; progress?: number; file?: string }) => {
-        if (info.status === 'progress' && info.progress != null) {
-          self.postMessage({
-            type: 'progress',
-            stage: `Loading ${info.file ?? '…'}`,
-            pct: info.progress / 100,
-          })
-        }
-        if (info.status === 'ready') {
-          self.postMessage({ type: 'progress', stage: 'Model ready', pct: 1 })
-        }
-      },
-    }
-    const call = pipeline as (task: string, model: string, opts: unknown) => Promise<AnyPipeline>
-    pipelinePromise = call('image-text-to-text', 'LiquidAI/LFM2.5-VL-1.6B-ONNX', pipelineOpts)
+    driverPromise = loadLfmDriver(webGpuPort, SESSION_OPTS)
+      .then((handle) => {
+        self.postMessage({ type: 'progress', stage: 'Model ready', pct: 1 })
+        return handle
+      })
+      .catch((err: unknown) => {
+        // Don't cache a permanent failure — a later 'infer' (e.g. after the
+        // user finishes provisioning) gets a fresh attempt.
+        driverPromise = null
+        throw err
+      })
   }
-  return pipelinePromise
+  return driverPromise
 }
 
 // ─── Message handler ─────────────────────────────────────────────────────────
@@ -115,20 +82,14 @@ self.addEventListener('message', async (evt: MessageEvent<{ type: string; id: st
   if (type !== 'infer') return
 
   try {
-    const pipe = await getOrLoadPipeline()
+    const handle = await getOrLoadDriver()
 
-    // Convert data URL → RawImage for Transformers.js
-    const image = await RawImage.fromURL(imageDataUrl)
+    // data: URL → bytes. fetch() supports the data: scheme directly, so this
+    // never touches the network (same contract the old RawImage.fromURL
+    // conversion had — worker input stays local).
+    const imageBytes = new Uint8Array(await (await fetch(imageDataUrl)).arrayBuffer())
 
-    // Run the model.  The pipeline returns an array of generation results.
-    const outputs = (await pipe(image, {
-      text: SPATIAL_DETECTION_PROMPT,
-      max_new_tokens: 512,
-      do_sample: false, // greedy — deterministic, faster
-    })) as Array<{ generated_text: string }>
-
-    const generatedText = outputs[0]?.generated_text ?? ''
-    const detections: RawDetection[] = parseDetections(generatedText)
+    const detections: RawDetection[] = await runLfmDriver(webGpuPort, handle, imageBytes)
 
     self.postMessage({ type: 'result', id, detections })
   } catch (err) {

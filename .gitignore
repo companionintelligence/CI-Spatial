@@ -80,6 +80,10 @@ worlds/
 # Draco decoder — copied from node_modules by scripts/copy-draco.mjs (postinstall)
 public/draco/
 
+# onnxruntime-web WASM/JSEP runtime — copied from node_modules by
+# scripts/copy-ort-wasm.mjs (postinstall)
+public/ort/
+
 .agents/*
 
 # Generated test fixtures — npm run gen:test-data
