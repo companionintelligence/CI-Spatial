@@ -125,13 +125,24 @@ baseline exists to compare against. Do not report the failure as solved.
 
 ## Other findings worth knowing
 
-**`estimateFloorY()` is an 8th-percentile, not a plane fit.** It has been observed ~2 m out
-on a real capture (returned +0.84 m while the lowest detected object sat at −0.05 m). The
-frame no longer depends on it — PR #166 anchors the floor to the landmark's measured tap —
-but `isTapOnGround()` still does, so a bad estimate makes the gate reject genuine floor taps
-as "cm above the floor". The floor overlay added in #166 makes this visible; check it against
-the real floor before blaming the tolerance. Upgrading this to a RANSAC plane fit over the
-existing point cloud is the highest-value improvement available and costs the user nothing.
+**`estimateFloorY()` was an 8th-percentile, not a plane fit — fixed by ticket 0008.** It had
+been observed ~0.8 m out on a real capture (returned +0.84 m while the lowest detected object
+sat at −0.05 m). It now fits the lowest well-supported horizontal band instead, and a
+constructed regression reproducing the failure at +0.79 m is pinned in
+`tests/unit/deno/pointcloud.test.ts`.
+
+Two things to carry forward rather than assume solved:
+
+- **It is a one-parameter fit, not a plane fit, and deliberately so.** The session frame is
+  gravity-aligned, so a floor is a plane of constant y; an unconstrained 3-DOF fit can satisfy
+  itself on a *wall*. If the gravity estimate is off the floor is not level in the session
+  frame, and no horizontal fit can correct that — `groundEstimate().residualM` is the readout
+  that makes it visible. Acting on it is a follow-on ticket, to be written only if that number
+  says so.
+- **`fallback: false` is not proof a floor was found on a sparse cloud.** Structure-vs-scatter
+  is a statistical test and it is only reliable above ~1000 points (measured: at 400, 2 of 3
+  seeds produced a false positive). `MIN_POINTS_FOR_GROUND_ESTIMATE` is 50. Read `inlierCount`
+  and `residualM` for confidence there.
 
 **Detections can still be badly placed.** #166 bounded hit-test acceptance at
 `MAX_HIT_DISTANCE_M = 5.0` (it previously had no upper bound at all, making the primary path
@@ -228,13 +239,11 @@ tapping, and fall back to coordinate taps read off a screenshot when a node id g
    on the S9, return on a second device, and record the `separationM` spread against the
    baseline. If it does not improve, the honest outcome is to say so rather than keep a
    feature that only feels helpful — the ticket says this in its own risk section.
-3. **Upgrade `estimateFloorY()` to a plane fit.** Still the highest-value improvement available
-   that costs the user nothing.
-4. **Fix the −Z/+Z compass bug** if older scans need to overlay new ones.
-5. **Run the remaining on-device checks** — 0005's WebXR checklist and 0004's
+3. **Fix the −Z/+Z compass bug** if older scans need to overlay new ones.
+4. **Run the remaining on-device checks** — 0005's WebXR checklist and 0004's
    compass-independence check, which is the clearest single demonstration this wave was worth
    doing.
 
-Done and no longer on this list: implementing 0007, and persisting both committed markers
+Done and no longer on this list: implementing 0007; persisting both committed markers
 (`dropCommittedPair()` now adds both to the scene directly, so `clearPlacement()` cannot tear
-the heading marker down).
+the heading marker down); and the `estimateFloorY()` upgrade, which landed as ticket 0008.

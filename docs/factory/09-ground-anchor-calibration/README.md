@@ -26,6 +26,7 @@ what makes cross-session verification possible at all — see
 | [0005](0005-anchor-test-coverage-and-webxr-verification.md) | Test coverage for #141's untested math; the WebXR device verification it asks for | Test | none |
 | [0006](0006-room-loop-drift-benchmark.md) | Pose readout + room-loop drift benchmark — supplies the tolerance constants | Frontend + Docs | none |
 | [0007](0007-reference-photos.md) | Reference photos of both marker setups, to cut re-acquisition error | Frontend + Backend | 0002, 0004 |
+| [0008](0008-floor-plane-fit.md) | Fit the floor to the densest supported horizontal band instead of an 8th percentile | Frontend | 0003 |
 
 ## Execution order
 

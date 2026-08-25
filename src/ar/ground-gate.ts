@@ -27,10 +27,18 @@
  * override must stay.
  *
  * **Revisit when:** users are told a genuine floor tap is "cm above the
- * floor". Note that symptom has two possible causes and this constant is the
- * less likely one: `estimateFloorY()` is an 8th-percentile of the point cloud
- * rather than a plane fit, and has been observed ~2 m out. Check the floor
- * overlay against the real floor before widening this.
+ * floor".
+ *
+ * That symptom used to have a likelier cause than this constant:
+ * `estimateFloorY()` was an 8th-percentile of the point cloud and had been
+ * observed ~0.8 m out on a real capture. Wave 09 ticket 0008 replaced it with a
+ * supported fit, so a false rejection now points here more directly than it
+ * did — but check first anyway, because the estimator can still be wrong in two
+ * ways it now reports rather than hides: read
+ * `groundEstimate().residualM` (a tilted floor, from a bad gravity estimate,
+ * which no horizontal fit can correct) and `inlierCount` (a floor barely seen
+ * at all). The floor overlay added in #166 shows the same thing visually. Only
+ * widen this once those say the estimate is sound.
  */
 export const GROUND_TAP_TOLERANCE_M = 0.25
 

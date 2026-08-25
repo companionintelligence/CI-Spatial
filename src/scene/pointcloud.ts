@@ -32,6 +32,68 @@ const GROUND_LOCK_TOLERANCE_M = 0.03
  */
 const GROUND_UNLOCK_TOLERANCE_M = 0.15
 
+/**
+ * Height resolution of the floor-fit histogram, in metres.
+ *
+ * Matched to the default voxel size because the cloud is already deduplicated
+ * at that resolution — a narrower band cannot resolve detail the data does not
+ * contain, and a wider one blurs a floor into a low step.
+ *
+ * Declared separately rather than read from `_voxelSize` deliberately: a caller
+ * that constructs a `PointCloud` with a coarser voxel size should not silently
+ * retune the estimator as a side effect.
+ *
+ * **Adopted by decision, not by measurement.** Ticket 0006 closed unrun.
+ *
+ * **Revisit when:** real hit-test noise is shown to exceed ~5 cm vertically, at
+ * which point a genuine floor's points straddle bands and its support splits.
+ */
+const FLOOR_BAND_M = 0.05
+
+/**
+ * Share of the whole cloud a band must hold to count as a real surface rather
+ * than scatter.
+ *
+ * A **fraction of the total, not of the best-supported band.** That distinction
+ * is the whole fix and it is easy to get backwards: the failure being repaired
+ * is an *under-sampled floor*, so measuring the floor against the best-sampled
+ * surface in the room is exactly the comparison that discards it. A room swept
+ * at eye level can leave the floor with a sixth of the wall's point count and
+ * still have a perfectly good floor.
+ *
+ * Sized against the degenerate case instead: a cloud with no planar structure
+ * spreads evenly, so over a ~3 m height range at {@link FLOOR_BAND_M} each band
+ * holds roughly 1/60th (~1.7 %) of the points. 4 % sits clear of that while
+ * staying far below any real surface's share.
+ *
+ * **Known limit, measured.** This test only separates structure from scatter
+ * once the cloud is reasonably populated. Below ~1000 points, Poisson noise in
+ * a genuinely structureless cloud produces a chance band above the share (2 of
+ * 3 seeds at 400 points did); at 1000 and above it was stable across every seed
+ * tried. `MIN_POINTS_FOR_GROUND_ESTIMATE` is 50, far below that — so on a
+ * sparse cloud `fallback: false` does **not** mean a floor was really found.
+ * Read {@link GroundEstimate.inlierCount} and
+ * {@link GroundEstimate.residualM} for that; a chance band shows few inliers
+ * and a residual near the band width, where a real floor shows many and a
+ * residual near hit-test noise.
+ *
+ * **Adopted by decision, not by measurement.** Ticket 0006 closed unrun.
+ *
+ * **Revisit when:** the estimate latches onto a low step, a sunken area, or
+ * stray sub-floor points from a reflective surface — all of which mean the
+ * lowest *qualifying* band is not the floor, and the share is too permissive.
+ */
+const FLOOR_MIN_BAND_SHARE = 0.04
+
+/**
+ * The session's current floor estimate.
+ *
+ * Note the optional diagnostic fields describe the most recent **candidate**
+ * fit. Once `locked` is true, `y` is the mean of the window that earned the
+ * lock, so `y` and the diagnostics are not from the same computation — the
+ * diagnostics say how well the latest data supports a floor, not how the
+ * locked value was derived.
+ */
 export interface GroundEstimate {
   /** Floor height in the AR session's local frame, metres. */
   y: number
@@ -39,6 +101,36 @@ export interface GroundEstimate {
   locked: boolean
   /** Points accumulated at the last recompute — for diagnostics/HUD. */
   sampleCount: number
+  /**
+   * Points supporting the fitted floor band. Low support means a poorly-seen
+   * floor — the estimate is the best available, not necessarily a good one.
+   */
+  inlierCount?: number
+  /**
+   * RMS distance of those points from `y`, in metres.
+   *
+   * The tilt readout. This module fits a **horizontal** band because the
+   * session frame is gravity-aligned and a floor in such a frame is a plane of
+   * constant y. When SLAM's gravity estimate is off, that assumption fails and
+   * the floor is not level in the session frame — a 3° error across a 4 m room
+   * is ~20 cm of height variation. No horizontal fit can correct that, but it
+   * shows up here: a level floor sits near hit-test noise, a tilted one spreads
+   * far past {@link FLOOR_BAND_M}.
+   */
+  residualM?: number
+  /**
+   * True when no band met {@link FLOOR_MIN_BAND_SHARE} and the legacy
+   * percentile was used instead — a cloud with no horizontal structure to fit.
+   */
+  fallback?: boolean
+}
+
+/** One floor fit: the height, and how well the data actually supported it. */
+interface FloorFit {
+  y: number
+  inlierCount: number
+  residualM: number
+  fallback: boolean
 }
 
 export class PointCloud {
@@ -53,6 +145,7 @@ export class PointCloud {
   private _lastGroundY: number | null = null
   private _lastGroundSampleAt = Number.NEGATIVE_INFINITY
   private _groundSampleCount = 0
+  private _groundFit: FloorFit | null = null
 
   /**
    * `now` is injectable purely so the recompute throttle is testable without
@@ -107,6 +200,7 @@ export class PointCloud {
     this._occupied.clear()
     this._groundHistory = []
     this._groundLocked = false
+    this._groundFit = null
     this._lastGroundY = null
     this._lastGroundSampleAt = Number.NEGATIVE_INFINITY
     this._groundSampleCount = 0
@@ -124,7 +218,15 @@ export class PointCloud {
    */
   groundEstimate(): GroundEstimate | null {
     if (this._lastGroundY === null) return null
-    return { y: this._lastGroundY, locked: this._groundLocked, sampleCount: this._groundSampleCount }
+    const fit = this._groundFit
+    return {
+      y: this._lastGroundY,
+      locked: this._groundLocked,
+      sampleCount: this._groundSampleCount,
+      ...(fit
+        ? { inlierCount: fit.inlierCount, residualM: fit.residualM, fallback: fit.fallback }
+        : {}),
+    }
   }
 
   private _maybeRecomputeGround(): void {
@@ -133,7 +235,9 @@ export class PointCloud {
     this._lastGroundSampleAt = now
     if (this._count < MIN_POINTS_FOR_GROUND_ESTIMATE) return
 
-    const candidate = this.estimateFloorY()
+    const fit = this._fitFloor()
+    const candidate = fit.y
+    this._groundFit = fit
     this._groundSampleCount = this._count
 
     if (this._groundLocked) {
@@ -165,15 +269,108 @@ export class PointCloud {
   }
 
   /**
-   * Estimate the floor Y-coordinate as the 8th-percentile Y value.
-   * Feature points near the floor cluster at the bottom of the Y range.
+   * Estimate the floor Y-coordinate: the mean height of the lowest horizontal
+   * band of points with real support.
+   *
+   * **Replaces an 8th-percentile of the sorted Y values** (wave 09 ticket
+   * 0008). A percentile is a position in the *ordering*, not a property of the
+   * room, and it is only correct while the floor supplies at least ~8 % of all
+   * points. A user sweeping a room at eye level — which is what the capture
+   * flow encourages, since the scanner wants wall and furniture features —
+   * leaves the floor under-sampled, index `0.08 × n` lands above the floor
+   * cluster entirely, and the estimate jumps to whatever surface is there. On a
+   * real capture that returned +0.84 m while the lowest detected object sat at
+   * −0.05 m, and the constructed regression in `pointcloud.test.ts` reproduces
+   * it at +0.79 m. The failure is silent and self-consistent: the wrong value
+   * is stable, so it locks, and `groundEstimate().locked` reports a confidently
+   * wrong floor.
+   *
+   * Fitting the densest band instead maximises *support* rather than trusting a
+   * quantile — the same robust-estimation idea as RANSAC, reduced to the one
+   * degree of freedom this problem has. It is `O(n)` where the sort was
+   * `O(n log n)`.
+   *
+   * **Why one degree of freedom and not a general plane fit.** The session
+   * frame is gravity-aligned — this codebase depends on that everywhere, and
+   * returning a scalar at all already assumes it — so a floor is a plane of
+   * constant y. An unconstrained 3-DOF fit would add two parameters the
+   * geometry does not have, and can satisfy itself on a **wall**, which is the
+   * largest planar surface in most rooms and the one thing that must never be
+   * returned. See `GroundEstimate.residualM` for what happens when the
+   * gravity-alignment assumption fails.
+   *
+   * **Lowest qualifying band, not the densest.** A well-sampled tabletop can
+   * out-vote a sparsely-seen floor, and "lowest well-supported horizontal
+   * layer" is a description of a floor where "densest" is not.
    */
   estimateFloorY(): number {
-    if (this._count === 0) return 0
+    return this._fitFloor().y
+  }
+
+  /** {@link estimateFloorY} plus how well the data supported it. */
+  private _fitFloor(): FloorFit {
+    if (this._count === 0) return { y: 0, inlierCount: 0, residualM: 0, fallback: true }
+
+    let minY = Infinity
+    let maxY = -Infinity
+    for (let i = 0; i < this._count; i++) {
+      const y = this._data[i * 3 + 1]
+      if (y < minY) minY = y
+      if (y > maxY) maxY = y
+    }
+
+    const bandCount = Math.max(1, Math.ceil((maxY - minY) / FLOOR_BAND_M) + 1)
+    const counts = new Uint32Array(bandCount)
+    for (let i = 0; i < this._count; i++) {
+      const band = Math.floor((this._data[i * 3 + 1] - minY) / FLOOR_BAND_M)
+      counts[band < 0 ? 0 : band >= bandCount ? bandCount - 1 : band]++
+    }
+
+    // A share of the whole cloud, never of the best band — see
+    // FLOOR_MIN_BAND_SHARE for why that distinction is the fix.
+    const required = this._count * FLOOR_MIN_BAND_SHARE
+    let chosen = -1
+    for (let b = 0; b < bandCount; b++) {
+      if (counts[b] >= required) { chosen = b; break }
+    }
+    if (chosen === -1) {
+      // No horizontal structure at all. Rather than invent a floor, fall back
+      // to the old behaviour and say so: a cloud this sparse is what
+      // MIN_POINTS_FOR_GROUND_ESTIMATE and `locked` already exist to report.
+      return { y: this._legacyPercentileFloorY(), inlierCount: 0, residualM: 0, fallback: true }
+    }
+
+    // The band is a search grid, not the answer. Returning its centre would
+    // quantise every estimate to FLOOR_BAND_M and show up as a floor of that
+    // size on residualM, so refine to the mean of the points around it.
+    const centre = minY + (chosen + 0.5) * FLOOR_BAND_M
+    let sum = 0
+    let inliers = 0
+    for (let i = 0; i < this._count; i++) {
+      const y = this._data[i * 3 + 1]
+      if (Math.abs(y - centre) <= FLOOR_BAND_M) { sum += y; inliers++ }
+    }
+    if (inliers === 0) return { y: centre, inlierCount: 0, residualM: 0, fallback: false }
+    const y = sum / inliers
+
+    let squared = 0
+    for (let i = 0; i < this._count; i++) {
+      const py = this._data[i * 3 + 1]
+      if (Math.abs(py - centre) <= FLOOR_BAND_M) squared += (py - y) * (py - y)
+    }
+    return { y, inlierCount: inliers, residualM: Math.sqrt(squared / inliers), fallback: false }
+  }
+
+  /**
+   * The pre-0008 estimator, kept only as the no-structure fallback above.
+   * Not a second opinion — it is what this ticket replaced, and it is reached
+   * only where there is nothing to fit.
+   */
+  private _legacyPercentileFloorY(): number {
     const ys: number[] = []
     for (let i = 0; i < this._count; i++) ys.push(this._data[i * 3 + 1])
     ys.sort((a, b) => a - b)
-    return ys[Math.floor(ys.length * 0.08)] ?? ys[0]
+    return ys[Math.floor(ys.length * 0.08)] ?? ys[0] ?? 0
   }
 
   /**
