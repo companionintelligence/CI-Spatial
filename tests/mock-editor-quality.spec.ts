@@ -82,6 +82,7 @@ test.describe('map-quality headline', () => {
   test('computeQualityTier maps artifacts to the right tier', async ({ page }) => {
     await page.goto('/viewer.html?world=default')
     const result = await page.evaluate(async () => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const mod = await import('/src/viewer/quality-tier.ts') as
         typeof import('../src/viewer/quality-tier')
       return {

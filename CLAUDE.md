@@ -18,10 +18,18 @@ and CORS are all built around `*.ts.net`.
 ```bash
 npm start                    # Deno API (:8000) + Vite HTTPS dev server (:5173)
 deno task check              # type-check server/main.ts (do this after any server/main.ts change)
+npm run typecheck:tests      # type-check tests/*.spec.ts — `tsc --noEmit` does NOT
 deno task test                # Deno unit tests
 npm run qr -- "/scanner.html?world=default"   # QR code for on-device testing
 npm run logs:watch           # stream a phone's console over the wire (?debug=remote)
 ```
+
+**`npx tsc --noEmit` covers `src/` only** — `tsconfig.json`'s `include` is `["src"]`, and
+Playwright transpiles specs without type-checking them. A type error in a spec is invisible to
+it, to `npm run build`, and to CI. `npm run typecheck:tests` is the one that covers
+`tests/*.spec.ts`; `npm run verify` runs both, so the pre-push hook does too. Deno unit tests
+under `tests/unit/deno/` stay out of it deliberately — `deno task check` and `deno task test`
+already own those.
 
 `OLLAMA_HOST` may be a full URL (`http://localhost:11434`) or a host:port bind
 address such as `0.0.0.0:11434`; the inference engine normalizes the latter to an
@@ -56,6 +64,14 @@ already does the job.** This codebase has two cautionary examples of not doing t
   the on-disk manifest format still use. (Both files — and every other server-side
   Deno module — were later grouped from the repo root into `server/`, in a separate,
   unrelated repo-tidy pass.)
+
+A third reconstruction path was added by wave 10: a **person** capture (a clip of a
+person, not a walkthrough of a room) is reconstructed as an animated splat sequence.
+Its GPU-class stage runs **off-box** in `subsystems/4d-capture/` because 4DAnyone needs
+~44 GiB on one CUDA device and no host on the fleet has that — so `person-4d-reconstruct`
+is the one `WorldJob` type that delegates rather than computing. Unconfigured, it reports
+`skipped` with a hint, like every other optional GPU tool. See ADR 0006 and
+`docs/pipelines/4d-person.md`.
 
 New background job types extend `WorldJob`, not a new parallel queue. New "thing" data
 extends `WorldDetection`/`DetectObject`. New "place" data extends `ScanManifest`/

@@ -9,6 +9,12 @@ export type LayerType =
   | 'rgbFrames'
   | 'depth'
   | 'splat'
+  /**
+   * A time-varying splat: one trained Gaussian splat per timestep, played back
+   * on a clock. The app's first animated asset — produced by a person capture,
+   * not by a room scan.
+   */
+  | 'splat4d'
   | 'semanticMasks'
   | 'anchor'
 
@@ -30,6 +36,16 @@ export type WorldJobType =
   | 'splat-train'
   | 'splat-detect'
   | 'splat-finish'
+  /**
+   * Reconstruct a 4D person from a take.
+   *
+   * The first job type that *delegates* rather than computing: it hands the
+   * take to an off-box subsystem, polls, and ingests the returned sequence.
+   * That is not a stylistic choice — the pump is globally single-flight, and
+   * training one splat per timestep on the appliance would block every
+   * upload's optimize-scan for the better part of an hour.
+   */
+  | 'person-4d-reconstruct'
   | 'sensenova-vision'
   | 'memory-push'
   | 'export-world'
@@ -176,10 +192,23 @@ export type ProjectSpatialFrame = {
       /** Max acceptable deviation from separationM on a later visit. Default `DEFAULT_SEPARATION_TOLERANCE_M`. */
       toleranceM: number
       /**
-       * Compass bearing at capture. Records which way project-space north is,
-       * for GPS/world placement only — NOT used to build the frame (that comes
-       * from the landmark→marker geometry). Null when unavailable, which costs
-       * absolute orientation but leaves the frame fully determined.
+       * True-north bearing of the **session frame's +Z axis** at capture.
+       * Records which way project-space north is, for GPS/world placement only
+       * — NOT used to build the frame (that comes from the landmark→marker
+       * geometry). Null when unavailable, which costs absolute orientation but
+       * leaves the frame fully determined.
+       *
+       * **The frame's bearing, not the device's** (wave 09 ticket 0009). A
+       * compass reports where the phone points; `composeYUpTransform` needs
+       * where the session's axes point, and the two differ by however the
+       * camera was held — by exactly 180° at the session's starting
+       * orientation. Produced by `sessionFrameBearingDeg()`.
+       *
+       * **Records written before ticket 0009 carry the old meaning and cannot
+       * be migrated:** correcting one needs the camera pose at the instant it
+       * was sampled, which was never stored. They are wrong by an unknown
+       * amount. Nothing in the app reads this field yet, which is the only
+       * reason that is survivable.
        */
       anchorBearingDeg: number | null
       /**
@@ -207,10 +236,93 @@ export type ProjectSpatialFrame = {
     }
   | {
       method: 'ground-tap-compass'
-      /** Load-bearing for this method: the frame's entire heading. Null means the frame sits at the session's arbitrary yaw. */
+      /**
+       * Load-bearing for this method: the frame's entire heading. Null means
+       * the frame sits at the session's arbitrary yaw.
+       *
+       * The **session frame's** bearing, not the device's — see the
+       * `'two-point-ground'` member's note. The correction matters far more
+       * here, because on this tier a 180° error is the frame's orientation
+       * rather than unread metadata.
+       */
       anchorBearingDeg: number | null
     }
 )
+
+/**
+ * How well the members of a take agree on the time.
+ *
+ * A **take** is N simultaneous captures of one subject. Per-timestep
+ * reconstruction slices every clip at the same instant and trains one splat
+ * from that slice, so if two phones are 100ms apart and the subject is moving
+ * at 1m/s, the frames they contribute to one timestep are 10cm apart in the
+ * world — two different poses fed to the trainer as if they were one. Nothing
+ * downstream can detect that; it shows up as a smeared reconstruction with no
+ * error anywhere. So the residual is an input to whether a take is usable, not
+ * diagnostics.
+ *
+ * A discriminated union for the same reason {@link ProjectSpatialFrame} is one
+ * (ADR 0005 rule 3): `'measured'` is the only member that may be treated as
+ * synchronised, and it is the only member carrying a residual — so a claim of
+ * sync is *unstateable* without the measurement backing it, rather than merely
+ * undocumented.
+ *
+ * `'unsynced'` is not a failure. A solo take has nothing to synchronise, and
+ * the single-clip densify path never reads this field.
+ */
+export type TakeSync = {
+  version: 1
+  measuredAt: string
+} & (
+  | {
+      method: 'measured'
+      /**
+       * This client's offset from server time, in ms. Applied when slicing
+       * frames; never used to mutate a device clock.
+       */
+      offsetMs: number
+      /**
+       * Load-bearing: half-width of the offset-corrected disagreement across
+       * this take's members, in ms.
+       *
+       * Computed server-side, where every member's estimate is visible — a
+       * single client cannot compute it, which is exactly why a solo take is
+       * `'unsynced'` rather than a fabricated zero.
+       */
+      residualMs: number
+      /**
+       * Max residual at which members may be sliced as simultaneous.
+       * Default `DEFAULT_SYNC_TOLERANCE_MS`, which is **adopted, not
+       * measured** — see its definition.
+       */
+      toleranceMs: number
+      /** Round-trip samples behind the estimate, so a thin estimate reads as thin. */
+      sampleCount: number
+    }
+  | {
+      method: 'unsynced'
+      /** Why no measurement exists. None of these are errors on the solo path. */
+      reason: 'solo-take' | 'insufficient-peers' | 'exchange-failed'
+    }
+)
+
+/**
+ * Max inter-member residual at which a take's clips may be sliced as
+ * simultaneous.
+ *
+ * **Adopted, not measured** (ADR 0005 rule 5). Nobody has yet recorded the real
+ * spread across two phones on a tailnet, and a network round-trip's accuracy
+ * floor is set by path asymmetry, which is unknown here. 50ms is roughly one
+ * frame at 20fps — tight enough to be meaningful, loose enough not to reject
+ * every take on a Wi-Fi link.
+ *
+ * **Revisit trigger:** the Checklist C sync procedure in
+ * `docs/testing/DEVICE_TESTING.md`. If the measured spread across ≥10 runs
+ * exceeds this, the honest response is to raise it and record the measurement —
+ * not to keep a tolerance below the real floor, which makes every good take
+ * report a false mismatch and is worse than no check at all.
+ */
+export const DEFAULT_SYNC_TOLERANCE_MS = 50
 
 /**
  * One AR session's alignment onto a Place's {@link ProjectSpatialFrame}.
@@ -543,6 +655,7 @@ export interface WorldProject {
 // because src/world/types.ts is the established cross-runtime import point
 // (main.ts and all src/viewer/* already import from it).
 export type {
+  Person4DManifest,
   PipelineManifestBase,
   SplatTrainManifest,
   SplatDetectManifest,

@@ -10,7 +10,7 @@
  *   VITE_URL=https://localhost:5174 API_URL=http://localhost:8100 \
  *     npx playwright test --project=chromium-mock mock-ui-desktop
  */
-import { test, expect } from '@playwright/test'
+import { test } from '@playwright/test'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 

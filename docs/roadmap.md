@@ -87,6 +87,12 @@ Node unit tests in `tests/unit/node/`). The TypeScript codebase compiles clean.
   view, and compress Gaussian splats (`viewer/splat-*.ts`).
 - **Video ingest** — `/ingest-video` turns an uploaded walkthrough video into a
   session scan (no `.glb` on disk).
+- **4D person capture** — record a person, get an animated splat sequence. The
+  capture, storage and playback halves run here; the GPU-class view
+  densification runs off-box in `subsystems/4d-capture/` and reports `skipped`
+  with a hint when no host is configured, which is the current default (no host
+  on the fleet meets its ~44 GiB CUDA requirement). See
+  `docs/pipelines/4d-person.md` and ADR 0006.
 - **LingBot-Map reconstruction** — `lingbot-map-reconstruct` produces point
   cloud + poses sidecars keyed off `sessionId`.
 

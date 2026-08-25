@@ -210,7 +210,25 @@ async function main() {
     selectedAreaId = areaId
     uploadPlaceTarget = { projectId: project?.projectId ?? null, areaId }
     sessionScanEntry = null
+    pointEditorLinksAtPlace(project?.projectId ?? null)
   })
+
+  /**
+   * Point every "open the editor / viewer" link at the Place being scanned.
+   *
+   * Without this they go to a bare `/editor`, which loads the `default` world — and that
+   * world admits only scans with no projectId, so a scan captured into a Place is invisible
+   * there by construction. The user finishes a scan, taps through, and sees an empty editor
+   * with their work apparently gone. It is not gone; it is in `project-<id>`.
+   */
+  function pointEditorLinksAtPlace(projectId: string | null): void {
+    const suffix = projectId ? `?project=${encodeURIComponent(projectId)}` : ''
+    for (const [id, base] of [['start-editor-card', '/editor'], ['viewer-link', '/viewer.html']] as const) {
+      const link = document.getElementById(id)
+      if (link instanceof HTMLAnchorElement) link.href = `${base}${suffix}`
+    }
+  }
+  pointEditorLinksAtPlace(selectedProject?.projectId ?? null)
   requestPlaceSelection = placePicker.open
   const pointCloud = new PointCloud(0.05)   // 5 cm voxel deduplication grid
   const poseHistory: Pose[] = []
@@ -554,6 +572,14 @@ async function main() {
           // Keep the recovery instruction from the frame-validity guard visible;
           // this is a camera lifecycle problem, not an inference failure.
           overlay.setStatus('Camera feed unavailable — close Chrome, reopen the app, then retry')
+        } else if (message.includes('Camera stream stalled')) {
+          // WebXRProvider detected the companion getUserMedia stream had frozen
+          // (see docs/factory/04-capture-path-truthfulness/0005) and refused to
+          // return the stale frame it would otherwise have re-encoded forever.
+          // A background re-acquire may already have fixed it by the time this
+          // renders — if so the next capture just works — but this message
+          // must stay honest for the case where it didn't.
+          overlay.setStatus('Camera feed frozen — restart the scan to continue')
         } else if (message.includes('Timed out')) {
           // Check if the timeout is actually due to denied camera permission
           let denied = false
@@ -627,6 +653,7 @@ async function main() {
         if (link) {
           link.style.display = 'inline-block'
         }
+        revealDownloadLink(result.uploadedFilename)
         return { outcome: 'exported', uploadedFilename: result.uploadedFilename }
       }
 
@@ -639,9 +666,15 @@ async function main() {
         return { outcome: 'queued' }
       }
 
-      // Downloaded, but the server refused it. The file is on the device.
-      overlay.setStatus('Scan saved locally — server sync failed')
-      setAutosaveStatus('Scan saved locally — server sync failed')
+      // The server refused it. Whether the device kept a copy depends on
+      // whether the local download could still run — on a phone it usually
+      // could not, and telling someone their scan is "saved locally" when no
+      // file exists is worse than telling them it failed.
+      const msg = result.savedLocally
+        ? 'Scan saved locally — server sync failed'
+        : 'Export failed — server rejected it and no local copy was saved'
+      overlay.setStatus(msg)
+      setAutosaveStatus(msg)
       return { outcome: 'local-only' }
     } catch (error) {
       overlay.setStatus('Export failed — try again')
@@ -697,6 +730,9 @@ async function main() {
         }
         lastUploadedFilename = result.uploadedFilename
         currentSessionGlbFilename = result.uploadedFilename
+        // Autosaves never trigger a local download, so the server copy is the
+        // only copy the user can get at — surface it as soon as one exists.
+        revealDownloadLink(result.uploadedFilename)
         if (keyframes?.active) {
           await keyframes.rotate({
             glbFilename: result.uploadedFilename,
@@ -742,6 +778,98 @@ async function main() {
     } else {
       overlay.setStatus(`Auto-capture OFF · ${autoCapture.captureCount} auto captures`)
     }
+  })
+
+  // ── Person capture — record a clip of a person for 4D reconstruction ──────
+  //
+  // A capture *mode*, so it lives on the action rail beside the other toggles
+  // rather than in the side panel where server-job triggers live.
+  //
+  // Deliberately records a raw camera stream rather than the AR canvas: the
+  // canvas has the HUD composited into it and is unusable as a reconstruction
+  // input. The AR session contributes pose only. See src/capture/clip-recorder.ts.
+  let clipRecorder: import('./capture/clip-recorder').ClipRecorder | null = null
+
+  const setPersonCaptureUI = (recording: boolean, label: string) => {
+    const btn = document.getElementById('person-capture-btn') as HTMLButtonElement | null
+    if (btn) {
+      btn.classList.toggle('active', recording)
+      btn.title = recording ? `Recording a person · ${label}` : 'Record a person (4D capture)'
+    }
+    const countEl = document.getElementById('person-capture-count')
+    if (countEl) countEl.textContent = recording ? label : ''
+  }
+
+  const stopPersonCapture = async () => {
+    if (!clipRecorder) return
+    const recorder = clipRecorder
+    clipRecorder = null
+    const clip = await recorder.stop()
+    setPersonCaptureUI(false, '')
+    if (!clip) {
+      overlay.setStatus('That recording came out empty. Try again.')
+      return
+    }
+
+    const { validateClip } = await import('./capture/clip-validation')
+    const { medianSpeedMps } = await import('./capture/pose-track')
+    const speed = medianSpeedMps(recorder.poseSamples)
+    const verdict = validateClip({
+      width: clip.width,
+      height: clip.height,
+      durationMs: clip.durationMs,
+      fps: clip.nominalFps,
+      hasArSession: clip.poseTrack.hasArSession,
+    }, speed === null ? undefined : { medianSpeedMps: speed })
+
+    if (!verdict.ok) {
+      // Say what is actually wrong with this clip, not what the rule is.
+      overlay.setStatus(verdict.problems[0].message)
+      return
+    }
+
+    overlay.setStatus(`Uploading clip · ${(clip.blob.size / 1_000_000).toFixed(1)} MB…`)
+    try {
+      const { uploadPersonClip } = await import('./capture/clip-upload')
+      const result = await uploadPersonClip(clip, {
+        projectId: selectedProject?.projectId ?? null,
+        areaId: selectedAreaId,
+        onProgress: pct => overlay.setStatus(`Uploading clip · ${pct}%`),
+      })
+      const advisory = verdict.advisories[0]
+      overlay.setStatus(
+        `Person clip uploaded${result.jobId ? ' — reconstruction queued' : ''}` +
+        (advisory ? ` · ${advisory.message}` : ''),
+      )
+    } catch (err) {
+      overlay.setStatus(`Clip upload failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  document.getElementById('person-capture-btn')?.addEventListener('click', () => {
+    if (clipRecorder) {
+      void stopPersonCapture()
+      return
+    }
+    void (async () => {
+      const { ClipRecorder } = await import('./capture/clip-recorder')
+      const recorder = new ClipRecorder(provider)
+      recorder.onStatus = (status) => {
+        if (status.state === 'recording') {
+          setPersonCaptureUI(true, `${Math.round((status.elapsedMs ?? 0) / 1000)}s`)
+        } else if (status.state === 'error') {
+          setPersonCaptureUI(false, '')
+          overlay.setStatus(status.message)
+        }
+      }
+      const started = await recorder.start()
+      if (!started) {
+        clipRecorder = null
+        return
+      }
+      clipRecorder = recorder
+      overlay.setStatus('Recording a person — keep the phone upright and move gently')
+    })()
   })
 
   // ── Keyframe streaming — pose-tagged frames to the server during the scan ──
@@ -1318,6 +1446,25 @@ function setupStatusOverlay() {
 function setAutosaveStatus(text: string): void {
   const el = document.getElementById('autosave-status')
   if (el) el.textContent = text
+}
+
+/**
+ * Point the "Download .glb" link at the server's saved copy and reveal it.
+ *
+ * Called only once a scan is genuinely on the server, because that URL is what
+ * makes the link work: `/scans/:filename` serves the GLB with
+ * `Content-Disposition: attachment`, so tapping it saves the file even where
+ * the in-page blob download cannot run (see `triggerDownload` in
+ * `src/export/gltf.ts` — mobile Chrome drops downloads that have lost user
+ * activation, which the exporter's awaits guarantee).
+ */
+function revealDownloadLink(uploadedFilename: string): void {
+  const link = document.getElementById('export-download-link') as HTMLAnchorElement | null
+  if (!link) return
+  link.href = `/scans/${encodeURIComponent(uploadedFilename)}`
+  // Hint the save-as name; same-origin, so the browser honours it.
+  link.download = uploadedFilename
+  link.style.display = 'inline-block'
 }
 
 async function resolveInitialProject(projectStore: ProjectStore): Promise<Project | null> {

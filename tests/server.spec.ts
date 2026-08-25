@@ -7,7 +7,7 @@
  * Tests are project-agnostic (no browser) and run under the webkit-desktop
  * project so they execute once per CI run.
  */
-import { test, expect } from '@playwright/test'
+import { test, expect, type APIRequestContext } from '@playwright/test'
 import { createHash } from 'crypto'
 
 // 5173 here is just the last-resort default (matches VITE_PORT's own default in
@@ -33,9 +33,9 @@ function makeMinimalGlb(): Buffer {
 }
 
 /** Upload a GLB and return the stored filename */
-async function uploadGlb(request: Parameters<typeof test>[1] extends { request: infer R } ? R : never, label = 'test') {
+async function uploadGlb(request: APIRequestContext, label = 'test') {
   const buf = makeMinimalGlb()
-  const resp = await (request as any).post(`${BASE}/upload-scan`, {
+  const resp = await request.post(`${BASE}/upload-scan`, {
     multipart: {
       file: { name: `${label}.glb`, mimeType: 'model/gltf-binary', buffer: buf },
       metadata: JSON.stringify({ detectionCount: 1, labels: [label], exportedAt: new Date().toISOString() }),
@@ -44,7 +44,7 @@ async function uploadGlb(request: Parameters<typeof test>[1] extends { request: 
   return { resp, buf }
 }
 
-async function uploadQualityGlb(request: Parameters<typeof test>[1] extends { request: infer R } ? R : never, label = 'quality') {
+async function uploadQualityGlb(request: APIRequestContext, label = 'quality') {
   const buf = makeMinimalGlb()
   const metadata = {
     detectionCount: 2,
@@ -72,7 +72,7 @@ async function uploadQualityGlb(request: Parameters<typeof test>[1] extends { re
       capturedAt: new Date().toISOString(),
     },
   }
-  const resp = await (request as any).post(`${BASE}/upload-scan`, {
+  const resp = await request.post(`${BASE}/upload-scan`, {
     multipart: {
       file: { name: `${label}.glb`, mimeType: 'model/gltf-binary', buffer: buf },
       metadata: JSON.stringify(metadata),
@@ -129,7 +129,7 @@ test.describe('GET /scans', () => {
 
   test('each entry has filename, size, uploadedAt', async ({ request }) => {
     // Upload one so the list is non-empty
-    const { resp: upResp } = await uploadGlb(request as any, 'list-test')
+    const { resp: upResp } = await uploadGlb(request, 'list-test')
     expect(upResp.status()).toBe(200)
 
     const resp = await request.get(`${BASE}/scans`)
@@ -144,10 +144,10 @@ test.describe('GET /scans', () => {
 
   test('newest entry is first', async ({ request }) => {
     // Upload two with a small gap
-    const { resp: r1 } = await uploadGlb(request as any, 'order-a')
+    const { resp: r1 } = await uploadGlb(request, 'order-a')
     expect(r1.status()).toBe(200)
     await new Promise(r => setTimeout(r, 50))
-    const { resp: r2 } = await uploadGlb(request as any, 'order-b')
+    const { resp: r2 } = await uploadGlb(request, 'order-b')
     expect(r2.status()).toBe(200)
 
     const list = await (await request.get(`${BASE}/scans`)).json() as Array<{ uploadedAt: string }>
@@ -171,7 +171,7 @@ test.describe('GET /scans', () => {
 
 test.describe('POST /upload-scan', () => {
   test('returns 200 with filename and size', async ({ request }) => {
-    const { resp } = await uploadGlb(request as any, 'upload-basic')
+    const { resp } = await uploadGlb(request, 'upload-basic')
     expect(resp.status()).toBe(200)
     const body = await resp.json() as { filename: string; size: number }
     expect(body.filename.endsWith('.glb')).toBeTruthy()
@@ -179,7 +179,7 @@ test.describe('POST /upload-scan', () => {
   })
 
   test('stored filename appears in /scans list', async ({ request }) => {
-    const { resp: upResp } = await uploadGlb(request as any, 'upload-appears')
+    const { resp: upResp } = await uploadGlb(request, 'upload-appears')
     expect(upResp.status()).toBe(200)
     const { filename } = await upResp.json() as { filename: string }
 
@@ -223,8 +223,8 @@ test.describe('POST /upload-scan', () => {
 
   test('duplicate uploads both succeed with unique filenames', async ({ request }) => {
     const [{ resp: r1 }, { resp: r2 }] = await Promise.all([
-      uploadGlb(request as any, 'dup'),
-      uploadGlb(request as any, 'dup'),
+      uploadGlb(request, 'dup'),
+      uploadGlb(request, 'dup'),
     ])
     const b1 = await r1.json() as { filename: string }
     const b2 = await r2.json() as { filename: string }
@@ -236,7 +236,7 @@ test.describe('POST /upload-scan', () => {
 
 test.describe('GET /scans/:filename', () => {
   test('returns 200 and correct content-type for a stored file', async ({ request }) => {
-    const { resp: upResp } = await uploadGlb(request as any, 'dl-basic')
+    const { resp: upResp } = await uploadGlb(request, 'dl-basic')
     expect(upResp.status()).toBe(200)
     const { filename } = await upResp.json() as { filename: string }
 
@@ -281,7 +281,7 @@ test.describe('GET /scans/:filename', () => {
   })
 
   test('sets cache-control header', async ({ request }) => {
-    const { resp: upResp } = await uploadGlb(request as any, 'cache-check')
+    const { resp: upResp } = await uploadGlb(request, 'cache-check')
     const { filename } = await upResp.json() as { filename: string }
 
     const dlResp = await request.get(`${BASE}/scans/${encodeURIComponent(filename)}`)
@@ -290,7 +290,7 @@ test.describe('GET /scans/:filename', () => {
   })
 
   test('includes CORS allow-origin header', async ({ request }) => {
-    const { resp: upResp } = await uploadGlb(request as any, 'cors-check')
+    const { resp: upResp } = await uploadGlb(request, 'cors-check')
     const { filename } = await upResp.json() as { filename: string }
 
     const dlResp = await request.get(`${BASE}/scans/${encodeURIComponent(filename)}`)
@@ -303,7 +303,7 @@ test.describe('GET /scans/:filename', () => {
 
 test.describe('DELETE /scans/:filename', () => {
   test('deletes a stored GLB and metadata sidecar', async ({ request }) => {
-    const { resp: upResp } = await uploadGlb(request as any, 'delete-api')
+    const { resp: upResp } = await uploadGlb(request, 'delete-api')
     expect(upResp.status()).toBe(200)
     const { filename } = await upResp.json() as { filename: string }
 
@@ -396,7 +396,7 @@ test.describe('GET /scan-locations', () => {
 
 test.describe('POST /process-scan', () => {
   test('object-count returns count string', async ({ request }) => {
-    const { resp: upResp } = await uploadGlb(request as any, 'proc-count')
+    const { resp: upResp } = await uploadGlb(request, 'proc-count')
     const { filename } = await upResp.json() as { filename: string }
     const resp = await request.post(`${BASE}/process-scan`, { data: { filename, action: 'object-count' } })
     expect(resp.status()).toBe(200)
@@ -407,7 +407,7 @@ test.describe('POST /process-scan', () => {
   })
 
   test('scene-description returns description string', async ({ request }) => {
-    const { resp: upResp } = await uploadGlb(request as any, 'proc-desc')
+    const { resp: upResp } = await uploadGlb(request, 'proc-desc')
     const { filename } = await upResp.json() as { filename: string }
     const resp = await request.post(`${BASE}/process-scan`, { data: { filename, action: 'scene-description' } })
     const body = await resp.json() as { action: string; result: string }
@@ -417,7 +417,7 @@ test.describe('POST /process-scan', () => {
   })
 
   test('floor-plan returns a string response', async ({ request }) => {
-    const { resp: upResp } = await uploadGlb(request as any, 'proc-floor')
+    const { resp: upResp } = await uploadGlb(request, 'proc-floor')
     const { filename } = await upResp.json() as { filename: string }
     const resp = await request.post(`${BASE}/process-scan`, { data: { filename, action: 'floor-plan' } })
     const body = await resp.json() as { action: string; result: string }
@@ -473,7 +473,7 @@ test.describe('World scan manifests', () => {
 
   test('persists quality summary into world scan manifest', async ({ request }) => {
     const label = `quality-${Date.now()}`
-    const { resp: upResp } = await uploadQualityGlb(request as any, label)
+    const { resp: upResp } = await uploadQualityGlb(request, label)
     expect(upResp.status()).toBe(200)
     const { filename } = await upResp.json() as { filename: string }
 
