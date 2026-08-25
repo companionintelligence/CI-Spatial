@@ -128,20 +128,34 @@ export class OsmoBleTransport extends EventEmitter {
   }
 
   /**
+   * Send just the pairing-trigger byte pair, without following it with a SetPairingPIN — the
+   * device is expected to enter pairing mode and show a PIN on its own screen, which is a
+   * precondition for the caller to be able to supply one to pair() at all. Split out from
+   * pair() (which still calls this internally, unchanged) so a caller who does not yet have a
+   * PIN can make the device show one without guessing at pair()'s required `pin` argument —
+   * guessing risks tripping a real device-side lockout on repeated bad attempts, which would
+   * make the eventual real pairing attempt harder, not easier.
+   *
+   * Goes through the same fff5-then-fff3 candidate probe as every other write (see sendRaw)
+   * rather than a hardcoded fff4 — fff4 was fff4 "PairingRequestor" per research on a different
+   * Osmo model, but on real hardware tested here its GATT properties are notify-only (no
+   * write/writeWithoutResponse at all), so a hardcoded fff4 write always fails with a GATT-level
+   * "Write Not Permitted" before ever reaching the device.
+   */
+  async triggerPairing() {
+    if (!this._peripheral) throw new Error('triggerPairing(): not connected');
+    await this.sendRaw(PAIRING_TRIGGER_BYTES);
+  }
+
+  /**
    * Run the pairing handshake: trigger + SetPairingPIN, probing fff5-then-fff3 for whichever
    * one the device actually accepts writes on. `pin` must be read off the device's own screen —
    * see protocol/commands.mjs for why a hardcoded default is unsafe to assume.
-   *
-   * The trigger write goes through the same fff5-then-fff3 candidate probe as every other
-   * write (see sendRaw) rather than a hardcoded fff4 — fff4 was fff4 "PairingRequestor" per
-   * research on a different Osmo model, but on real hardware tested here its GATT properties
-   * are notify-only (no write/writeWithoutResponse at all), so a hardcoded fff4 write always
-   * fails with a GATT-level "Write Not Permitted" before ever reaching the device.
    */
   async pair(pin, { identifier, timeoutMs = 4000 } = {}) {
     if (!this._peripheral) throw new Error('pair(): not connected');
 
-    await this.sendRaw(PAIRING_TRIGGER_BYTES);
+    await this.triggerPairing();
     await sleep(1000);
 
     const msgId = this._msgIds.next();

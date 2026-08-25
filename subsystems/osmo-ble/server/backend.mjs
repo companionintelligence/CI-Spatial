@@ -14,7 +14,7 @@ import { WebSocketServer } from 'ws';
 import { OsmoBleTransport } from './ble-transport.mjs';
 import { buildGimbalRecenter, buildGimbalAbsoluteAngle, buildGimbalSetMode, buildGimbalSpeedControl, buildGimbalStickControlEnable, buildGimbalResetAndCenter, buildRawCommand } from '../protocol/commands.mjs';
 import { GIMBAL_MODE } from '../protocol/constants.mjs';
-import { quaternionDelta, quatToEulerDeg } from '../protocol/telemetry.mjs';
+import { quaternionDelta, quatToGimbalControlDeg } from '../protocol/telemetry.mjs';
 
 const PORT = Number(process.env.BACKEND_PORT) || 8788;
 const transport = new OsmoBleTransport();
@@ -115,18 +115,25 @@ function wrapDeg(d) {
  * (cmdId 0x14 — live-tested 2026-08-21 and confirmed to do nothing on this hardware; the real
  * angle-set commands per disassembly are larger structs our guess never matched). Uses the
  * CONFIRMED-working speed-control command instead, driven by live quaternion feedback via
- * quatToEulerDeg's approximate Euler decomposition.
+ * quatToGimbalControlDeg's pan/tilt.
  *
- * Two known sources of imprecision, both handled defensively rather than assumed away:
- *   1. Euler angles from a tilted device mix axes together (gimbal-lock-adjacent coupling) —
- *      this is a relative-change indicator, not a calibrated attitude readout, so treat
- *      convergence as "close enough," not exact.
- *   2. We don't have an independently-verified mapping between quatToEulerDeg's yaw/pitch sign
- *      and which physical direction a positive commanded speed drives each axis. Rather than
- *      assume a correspondence and risk silently correcting in the wrong direction forever, each
- *      axis adaptively flips its sign the first time a nonzero-speed tick makes that axis's
- *      error worse instead of better — self-correcting regardless of which way the mapping
- *      actually runs.
+ * Feedback axis (fixed 2026-08-24): steer on pan/tilt, never the raw `yaw` channel. This used
+ * to read quatToEulerDeg().yaw, which on a real mounted OM6 is pinned at -90 while physical pan
+ * lands in `roll` — so the error never changed, the sign-flip below never had a gradient, and
+ * every call ran to maxMs with a flat history. That looked exactly like "the gimbal ignored the
+ * command," and was misdiagnosed as such twice before the channels were measured directly. See
+ * quatToGimbalControlDeg for the numbers.
+ *
+ * Two remaining sources of imprecision, both handled defensively rather than assumed away:
+ *   1. Euler angles from a tilted device still mix axes — pan/tilt is a relative-change
+ *      indicator, not a calibrated attitude readout, so treat convergence as "close enough,"
+ *      not exact.
+ *   2. We don't have an independently-verified mapping between the pan/tilt sign and which
+ *      physical direction a positive commanded speed drives each axis. Rather than assume a
+ *      correspondence and risk silently correcting in the wrong direction forever, each axis
+ *      adaptively flips its sign the first time a nonzero-speed tick makes that axis's error
+ *      worse instead of better — self-correcting regardless of which way the mapping runs.
+ *      (Observable in a real run: tick 2 often steps backwards once, then drives straight in.)
  */
 async function moveToClosedLoop({ yawDeg = 0, pitchDeg = 0, toleranceDeg = 3, speedDegPerSec = 25, tickMs = 250, settleMs = 150, maxMs = 8000 }) {
   const start = Date.now();
@@ -142,7 +149,11 @@ async function moveToClosedLoop({ yawDeg = 0, pitchDeg = 0, toleranceDeg = 3, sp
       await new Promise((resolve) => setTimeout(resolve, tickMs));
       continue;
     }
-    const { yaw, pitch } = quatToEulerDeg(quat);
+    // pan/tilt, NOT the raw yaw/pitch channels — the gimbal's `yaw` channel is pinned at -90
+    // at this mount orientation and physical pan shows up in `roll` instead. Steering on `yaw`
+    // is what made every move-to run to timeout with a flat history. See
+    // quatToGimbalControlDeg's comment for the measurements.
+    const { pan: yaw, tilt: pitch } = quatToGimbalControlDeg(quat);
     const yawError = wrapDeg(yawDeg - yaw);
     const pitchError = pitchDeg - pitch;
 
@@ -167,8 +178,8 @@ async function moveToClosedLoop({ yawDeg = 0, pitchDeg = 0, toleranceDeg = 3, sp
   }
 
   const quat = transport.lastQuaternion;
-  const final = quat ? quatToEulerDeg(quat) : { yaw: null, pitch: null };
-  return { converged: false, timedOut: true, ticks: history.length, finalYaw: final.yaw, finalPitch: final.pitch, history };
+  const final = quat ? quatToGimbalControlDeg(quat) : { pan: null, tilt: null };
+  return { converged: false, timedOut: true, ticks: history.length, finalYaw: final.pan, finalPitch: final.tilt, history };
 }
 
 const routes = {
@@ -177,7 +188,7 @@ const routes = {
     {
       ok: true,
       message: 'Osmo BLE backend is running.',
-      routes: ['GET /api/status', 'POST /api/scan', 'POST /api/connect', 'POST /api/pair', 'POST /api/disconnect', 'POST /api/command', 'POST /api/move-to', 'GET /api/frames', 'POST /api/test/recenter-probe', 'POST /api/test/command-probe', 'WS /ws'],
+      routes: ['GET /api/status', 'POST /api/scan', 'POST /api/connect', 'POST /api/pair-trigger', 'POST /api/pair', 'POST /api/disconnect', 'POST /api/command', 'POST /api/move-to', 'GET /api/frames', 'POST /api/test/recenter-probe', 'POST /api/test/command-probe', 'WS /ws'],
     },
   ],
   'GET /api/status': async () => [200, statusPayload()],
@@ -194,6 +205,14 @@ const routes = {
     const info = await transport.connect(deviceId);
     broadcast({ type: 'status', ...statusPayload() });
     return [200, { connected: true, ...info }];
+  },
+
+  // Separate from /api/pair so a caller without a PIN yet can make the device show one, rather
+  // than guessing at the required `pin` on /api/pair — see triggerPairing()'s own comment for
+  // why guessing is worse than just not pairing (real device-side lockout risk).
+  'POST /api/pair-trigger': async () => {
+    await transport.triggerPairing();
+    return [200, { triggered: true }];
   },
 
   'POST /api/pair': async (req) => {
