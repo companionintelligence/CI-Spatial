@@ -56,6 +56,13 @@ interface Seen {
   uploadFilename?: string
   uploadBytes?: number
   uploadSkipDescription?: string | null
+  /**
+   * Every upload in order, not just the last. The splat pipeline can attach a
+   * second file, and "exactly one splat encoding was uploaded" is a claim only
+   * the full list can settle — `uploadFilename` alone would show the winner and
+   * hide however many attempts came before it.
+   */
+  uploads: Array<{ name: string; bytes: number }>
   eventAuth?: string | null
   eventBody?: {
     events: Array<{
@@ -76,7 +83,8 @@ function stubServer(opts: {
   duplicate?: boolean
   rejectReason?: string
 } = {}) {
-  const seen: Seen = {}
+  const seen: Seen = { uploads: [] }
+  let nextFileId = 0
   const server = Deno.serve({ port: 0, onListen: () => {} }, async (req) => {
     const u = new URL(req.url)
     // Path is the API base + route: the gateway strips /api before CI-Server,
@@ -91,9 +99,12 @@ function stubServer(opts: {
       if (f instanceof File) {
         seen.uploadFilename = f.name
         seen.uploadBytes = (await f.arrayBuffer()).byteLength
+        seen.uploads.push({ name: f.name, bytes: seen.uploadBytes })
       }
       seen.uploadSkipDescription = form.get('skipDescription') as string | null
-      return Response.json([{ id: 'file-uuid-1' }])
+      // Distinct ids per upload: the GLB is always first, so `file-uuid-1`
+      // still means the mesh in every test written before splats existed.
+      return Response.json([{ id: `file-uuid-${++nextFileId}` }])
     }
     if (u.pathname.endsWith('/v1/events') && req.method === 'POST') {
       seen.eventAuth = req.headers.get('x-api-key')
@@ -213,7 +224,22 @@ const DETECT_MANIFEST = {
 /** A scans dir containing room.glb (+ optionally detection sidecars). */
 async function tempScans(
   detections: DetectFixture,
-  opts: { detectManifest?: boolean; interactions?: unknown } = {},
+  opts: {
+    detectManifest?: boolean
+    interactions?: unknown
+    /**
+     * Extra binary artifacts beside the mesh: filename -> byte length. Sizes
+     * matter more than contents here — `discoverSplatArtifacts` stats the file
+     * and the upload cap compares against what stat reported.
+     */
+    files?: Record<string, number>
+    /**
+     * Extra JSON sidecars: filename -> value, written verbatim. Verbatim so a
+     * value like `[]` can be tested: an array is a thing a sidecar can hold and
+     * a manifest reader must reject.
+     */
+    sidecars?: Record<string, unknown>
+  } = {},
 ): Promise<string> {
   const dir = await Deno.makeTempDir({ prefix: 'memory-push-test-' })
   await Deno.writeFile(`${dir}/room.glb`, new Uint8Array([0x67, 0x6c, 0x54, 0x46, 1, 2, 3, 4]))
@@ -235,6 +261,12 @@ async function tempScans(
   }
   if (opts.detectManifest) {
     await Deno.writeTextFile(`${dir}/room.splat-detect.manifest.json`, JSON.stringify(DETECT_MANIFEST))
+  }
+  for (const [name, size] of Object.entries(opts.files ?? {})) {
+    await Deno.writeFile(`${dir}/${name}`, new Uint8Array(size))
+  }
+  for (const [name, value] of Object.entries(opts.sidecars ?? {})) {
+    await Deno.writeTextFile(`${dir}/${name}`, JSON.stringify(value))
   }
   return dir
 }
@@ -562,6 +594,593 @@ Deno.test('push: refuses to run when the integration is disabled', async () => {
     throw new Error('expected a throw')
   } catch (err) {
     assert(String(err).includes('not configured'), `got: ${err}`)
+  }
+})
+
+// ── Splat artifacts, the metric frame, and the capture-time detections ────────
+//
+// Three populations of new payload, all of them optional, all of them read off
+// sidecars this test writes by hand. The shared contract is that none of them
+// may change what a scan without them ships — pinned at the bottom of this
+// section.
+
+/** What splat_train.ts lands beside the scan when Brush has run. */
+const TRAIN_MANIFEST = {
+  schemaVersion: 1,
+  tool: 'brush',
+  status: 'ok',
+  createdAt: '2026-08-01T10:40:00.000Z',
+  plyPath: 'room.splat.ply',
+  gaussianCount: 412_003,
+  frameCount: 87,
+}
+
+/** And what splat_finish.ts lands after compressing it. */
+const FINISH_MANIFEST = {
+  schemaVersion: 1,
+  tool: 'splat-transform',
+  status: 'ok',
+  createdAt: '2026-08-01T10:55:00.000Z',
+  sogPath: 'room.sog',
+  compressedPlyPath: 'room.compressed.ply',
+}
+
+/**
+ * A splat-align manifest whose fit is inside its own tolerance — the only case
+ * that may convert a splat-space length into metres.
+ *
+ * `projectTransform` is ROW-major (translation at 3/7/11) and is a +90° yaw
+ * about Y with a uniform scale of 2 and a translation, i.e. s·R with
+ * R·(x,y,z) = (z, y, −x). Chosen so every expected number below is exact in
+ * binary and hand-checkable: the sofa at (1,0,2) must land at (7, 0.5, −4).
+ */
+const ALIGN_MANIFEST = {
+  schemaVersion: 1,
+  tool: 'umeyama',
+  status: 'ok',
+  createdAt: '2026-08-01T11:15:00.000Z',
+  plyPath: 'room.splat.ply',
+  calibrationMethod: 'two-point-ground',
+  projectTransform: [
+    0, 0, 2, 3,
+    0, 2, 0, 0.5,
+    -2, 0, 0, -2,
+    0, 0, 0, 1,
+  ],
+  scale: 2,
+  residualM: 0.04,
+  correspondenceCount: 12,
+  params: { minCorrespondences: 4, maxResidualM: 0.25 },
+}
+
+/** The upload sidecar gltf.ts writes: VLM detections resolved to world space. */
+const META_SIDECAR = {
+  detections: [
+    { label: 'lamp', worldPos: { x: 1, y: 2, z: 3 }, confidence: 0.62, dimensions: { x: 9, y: 9, z: 9 } },
+    { label: 'chair', worldPos: { x: -0.5, y: 0, z: 1.25 } },
+    // Neither of these is a detection: no label, and no position.
+    { label: '', worldPos: { x: 0, y: 0, z: 0 } },
+    { label: 'ghost' },
+  ],
+}
+
+function payloadOf(seen: Seen): Record<string, unknown> {
+  return seen.eventBody!.events[0].payload
+}
+
+Deno.test('push: every splat encoding is referenced, exactly one is uploaded', async () => {
+  const srv = stubServer()
+  const dir = await tempScans('none', {
+    files: { 'room.sog': 12, 'room.compressed.ply': 40, 'room.splat.ply': 900 },
+    sidecars: {
+      'room.splat-train.manifest.json': TRAIN_MANIFEST,
+      'room.splat-finish.manifest.json': FINISH_MANIFEST,
+    },
+  })
+  try {
+    const result = await pushScanToMemory(cfgFor(srv.base), SCAN, { scansDir: dir })
+    const splat = payloadOf(srv.seen).splat as Record<string, unknown>
+    const artifacts = splat.artifacts as Array<Record<string, unknown>>
+
+    assertEquals(
+      artifacts.map((a) => a.kind).join(','),
+      'sog,compressed_ply,splat_ply',
+      'delivery-preference order: smallest encoding first',
+    )
+    assertEquals(artifacts.map((a) => a.filename).join(','), 'room.sog,room.compressed.ply,room.splat.ply')
+
+    // One attachment, not three of the same radiance field.
+    assertEquals(artifacts[0].file_id, 'file-uuid-2', 'the sog is attached (the glb took file-uuid-1)')
+    assertEquals(artifacts[1].file_id, null, 'the others are references — the appliance serves them from /scans/')
+    assertEquals(artifacts[2].file_id, null)
+    assertEquals(artifacts[2].bytes, 900, 'with their size, so a consumer can decide whether to fetch')
+    assertEquals(
+      srv.seen.uploads.map((u) => u.name).join(','),
+      'room.glb,room.sog',
+      'the 900-byte raw PLY is never sent alongside the sog it duplicates',
+    )
+
+    // Counts come off the manifests; nothing here opens a PLY.
+    assertEquals(splat.gaussian_count, 412_003)
+    assertEquals(splat.frame_count, 87)
+    assertEquals(splat.train_tool, 'brush')
+    assertEquals(splat.train_status, 'ok')
+    assertEquals(splat.finish_status, 'ok')
+
+    assertEquals(
+      JSON.stringify(payloadOf(srv.seen).file_ids),
+      JSON.stringify(['file-uuid-1', 'file-uuid-2']),
+      'one walkable list of every attachment, whichever pipeline produced it',
+    )
+    assertEquals(result.splatArtifactCount, 3)
+    assertEquals(JSON.stringify(result.splatFileIds), JSON.stringify(['file-uuid-2']))
+  } finally {
+    await srv.close()
+    await Deno.remove(dir, { recursive: true })
+  }
+})
+
+Deno.test('push: an encoding over the cap falls through to the next, and says why', async () => {
+  const srv = stubServer()
+  const dir = await tempScans('none', { files: { 'room.sog': 40, 'room.compressed.ply': 3 } })
+  try {
+    // The glb is exactly 8 bytes, so it still fits a cap of 8.
+    const result = await pushScanToMemory({ ...cfgFor(srv.base), maxUploadBytes: 8 }, SCAN, { scansDir: dir })
+    const artifacts = (payloadOf(srv.seen).splat as Record<string, unknown>).artifacts as Array<Record<string, unknown>>
+
+    assertEquals(artifacts[0].file_id, null, 'the 40-byte sog does not fit')
+    assert(String(artifacts[0].skipped_reason).includes('over the'), `got: ${artifacts[0].skipped_reason}`)
+    assertEquals(artifacts[0].bytes, 40, 'it is still named and sized — it exists on the appliance')
+    assertEquals(artifacts[1].file_id, 'file-uuid-2', 'and the next encoding down is attached instead')
+    assertEquals(srv.seen.uploads.map((u) => u.name).join(','), 'room.glb,room.compressed.ply')
+    assertEquals(result.eventIngested, 1, 'the memory lands either way')
+  } finally {
+    await srv.close()
+    await Deno.remove(dir, { recursive: true })
+  }
+})
+
+Deno.test('push: a trustworthy fit ships spatial_frame and carries each box into the project frame', async () => {
+  const srv = stubServer()
+  const dir = await tempScans('full', {
+    detectManifest: true,
+    sidecars: { 'room.splat-align.manifest.json': ALIGN_MANIFEST },
+  })
+  try {
+    const result = await pushScanToMemory(cfgFor(srv.base), SCAN, { scansDir: dir })
+    const frame = payloadOf(srv.seen).spatial_frame as Record<string, unknown>
+
+    assertEquals(frame.metric, true, 'the fit converged, scaled positively and measured itself in tolerance')
+    assertEquals(frame.units, 'm')
+    assertEquals(frame.frame, 'project')
+    assertEquals(frame.scale, 2)
+    assertEquals(frame.residual_m, 0.04)
+    assertEquals(frame.max_residual_m, 0.25)
+    assertEquals(frame.correspondence_count, 12)
+    assertEquals(frame.calibration_method, 'two-point-ground')
+    assertEquals(frame.fit_status, 'ok')
+    assertEquals((frame.project_transform as number[]).length, 16)
+    assert(String(frame.transform_convention).includes('row-major'), 'the convention is stated, not assumed')
+    assert(
+      String(frame.caveat).includes('not the ENU frame'),
+      'and the project frame is explicitly not where `location` lives',
+    )
+    assertEquals(result.spatialFrameMetric, true)
+
+    const objects = objectsIn(srv.seen.eventBody!.events[0])
+    const sofa = objects[0]
+    // Unchanged: the splat-frame numbers an older consumer already reads.
+    assertEquals(JSON.stringify(sofa.position), JSON.stringify({ x: 1, y: 0, z: 2 }))
+    assertEquals(JSON.stringify(sofa.extent_m), JSON.stringify({ x: 2.05, y: 0.82, z: 0.94 }))
+    // Added: the same box in the Place's metric frame. s·R applied to (1,0,2)
+    // is (2·2+3, 2·0+0.5, −2·1−2) = (7, 0.5, −4).
+    assertEquals(JSON.stringify(sofa.position_project), JSON.stringify({ x: 7, y: 0.5, z: -4 }))
+    assertEquals(
+      JSON.stringify(sofa.extent_metric_m),
+      JSON.stringify({ x: 4.1, y: 1.64, z: 1.88 }),
+      'side lengths scale by the uniform fit scale, exactly',
+    )
+
+    // The orientation makes the SAME trip as the position. The box is a +90°
+    // yaw about Y and so is the fit, so the composition is a 180° yaw:
+    // (x, y, z, w) = (0, 1, 0, 0). A `position_project` shipped beside the
+    // untransformed splat-frame quaternion — the defect this pins — would leave
+    // this at (0, 0.7071, 0, 0.7071).
+    const rp = sofa.rotation_project as Record<string, number>
+    assert(rp, 'a rotated box in a metric fit must carry its project-frame orientation')
+    assert(Math.abs(rp.y - 1) < 1e-9, `rotation_project.y ${rp.y}`)
+    assert(Math.abs(rp.x) < 1e-9 && Math.abs(rp.z) < 1e-9 && Math.abs(rp.w) < 1e-9, JSON.stringify(rp))
+    assert(
+      Math.abs(Math.hypot(rp.x, rp.y, rp.z, rp.w) - 1) < 1e-9,
+      'and it is a unit quaternion — the sidecar quaternion is normalised before composing',
+    )
+    assertEquals(
+      JSON.stringify(sofa.rotation),
+      JSON.stringify({ x: 0, y: 0.7071, z: 0, w: 0.7071 }),
+      'while `rotation` stays the splat-frame original, verbatim',
+    )
+
+    // An identity-rotation box comes back as the fit's own rotation.
+    const plant = objects[1].rotation_project as Record<string, number>
+    assert(Math.abs(plant.y - Math.SQRT1_2) < 1e-9 && Math.abs(plant.w - Math.SQRT1_2) < 1e-9, JSON.stringify(plant))
+
+    // The third object carried no rotation at all, so there is no orientation
+    // to disagree about and `position_project` alone is unambiguous.
+    assertEquals(JSON.stringify(objects[2].position_project), JSON.stringify({ x: 5, y: 0.5, z: -8 }))
+    assertEquals('rotation_project' in objects[2], false, 'no orientation is invented for a box that had none')
+
+    const meta = payloadOf(srv.seen).object_extents as Record<string, unknown>
+    assertEquals(meta.project_frame_aligned, true)
+    const metric = meta.metric as Record<string, unknown>
+    assertEquals(metric.scale, 2)
+    assertEquals(metric.residual_m, 0.04)
+    assertEquals(
+      JSON.stringify(metric.applied_to),
+      JSON.stringify(['extent_metric_m', 'position_project', 'rotation_project']),
+      'the pose fields are all-or-nothing, and the block says which shipped',
+    )
+    assertEquals(meta.frame, 'splat_local', 'the un-suffixed numbers are still splat-frame')
+  } finally {
+    await srv.close()
+    await Deno.remove(dir, { recursive: true })
+  }
+})
+
+Deno.test('push: rotation_project composes fit-then-box, pinned on two axes that do not commute', async () => {
+  // The test above uses a fit and a box that are both yaws about Y, which is
+  // symmetric: it cannot tell R_fit·R_box from R_box·R_fit. This one can.
+  // R_fit is +90° about X (row-major rows [1,0,0] [0,0,-1] [0,1,0], scale 1,
+  // no translation) and the sofa's box is +90° about Y, so the composition
+  // R_fit·R_box is [[0,0,1],[1,0,0],[0,1,0]] — a 120° turn about (1,1,1),
+  // whose quaternion is (0.5, 0.5, 0.5, 0.5). The reversed order would give
+  // z = −0.5, so the sign of z is the whole assertion.
+  const srv = stubServer()
+  const dir = await tempScans('full', {
+    sidecars: {
+      'room.splat-align.manifest.json': {
+        ...ALIGN_MANIFEST,
+        scale: 1,
+        projectTransform: [
+          1, 0, 0, 0,
+          0, 0, -1, 0,
+          0, 1, 0, 0,
+          0, 0, 0, 1,
+        ],
+      },
+    },
+  })
+  try {
+    await pushScanToMemory(cfgFor(srv.base), SCAN, { scansDir: dir })
+    const sofa = objectsIn(srv.seen.eventBody!.events[0])[0]
+    const rp = sofa.rotation_project as Record<string, number>
+    for (const axis of ['x', 'y', 'z', 'w'] as const) {
+      assert(Math.abs(rp[axis] - 0.5) < 1e-9, `rotation_project.${axis} = ${rp[axis]}, expected 0.5`)
+    }
+    // And the centre took the same transform: (1,0,2) under (x,y,z) -> (x,−z,y).
+    assertEquals(JSON.stringify(sofa.position_project), JSON.stringify({ x: 1, y: -2, z: 0 }))
+  } finally {
+    await srv.close()
+    await Deno.remove(dir, { recursive: true })
+  }
+})
+
+/**
+ * Rebuild a row-major rotation matrix from an xyzw quaternion.
+ *
+ * The inverse direction of the extraction under test, written out here rather
+ * than imported, so the round-trip below compares two independent statements of
+ * the same rotation instead of one implementation agreeing with itself.
+ */
+function matrixFromQuat(q: Record<string, number>): number[][] {
+  const { x, y, z, w } = q
+  return [
+    [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+    [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+    [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+  ]
+}
+
+Deno.test('push: the fit rotation survives extraction for every quaternion branch', async () => {
+  // Shepperd's method picks one of four branches by which diagonal term is
+  // largest, and a transcription slip in any of them ships a plausible wrong
+  // orientation. The trace>0 branch is the only one a yaw fixture reaches, so
+  // each of the other three gets a rotation that lands in it: a half-turn about
+  // X, Y and Z has trace −1 and puts the largest term on a different diagonal
+  // each time. The last row is a general rotation with no zeros to hide behind.
+  // Rodrigues, row-major. The axis-aligned half-turns that reach the three
+  // non-trace branches most obviously are a trap: at exactly 180° the
+  // quaternion has a single non-zero component and every off-diagonal term the
+  // branches differ in is 0, so a sign slip in one of them round-trips
+  // perfectly. These are 150° turns about *tilted* axes instead — past the
+  // 120° where the trace goes negative, with nothing zero anywhere.
+  const rot = (axis: [number, number, number], deg: number): number[][] => {
+    const n = Math.hypot(...axis)
+    const [x, y, z] = axis.map((a) => a / n)
+    const t = (deg * Math.PI) / 180
+    const c = Math.cos(t), si = Math.sin(t), k = 1 - c
+    return [
+      [c + x * x * k, x * y * k - z * si, x * z * k + y * si],
+      [y * x * k + z * si, c + y * y * k, y * z * k - x * si],
+      [z * x * k - y * si, z * y * k + x * si, c + z * z * k],
+    ]
+  }
+  const cases: Array<{ what: string; r: number[][] }> = [
+    { what: 'trace>0 (+90° about Y)', r: [[0, 0, 1], [0, 1, 0], [-1, 0, 0]] },
+    { what: 'trace>0 (+37° about a tilted axis)', r: rot([0.3, 0.5, 0.81], 37) },
+    // Which diagonal term is largest follows the dominant axis component, so
+    // these three land in the x-, y- and z-dominant branches respectively.
+    { what: 'x-dominant (150° about a mostly-X axis)', r: rot([0.9, 0.3, 0.2], 150) },
+    { what: 'y-dominant (150° about a mostly-Y axis)', r: rot([0.2, 0.9, 0.35], 150) },
+    { what: 'z-dominant (150° about a mostly-Z axis)', r: rot([0.25, 0.15, 0.94], 150) },
+    // Exactly 180°, which is the degenerate case the tilted turns above cover
+    // for: worth keeping so branch *selection* is pinned at the boundary too.
+    { what: 'x-dominant (180° about X)', r: [[1, 0, 0], [0, -1, 0], [0, 0, -1]] },
+    { what: 'y-dominant (180° about Y)', r: [[-1, 0, 0], [0, 1, 0], [0, 0, -1]] },
+    { what: 'z-dominant (180° about Z)', r: [[-1, 0, 0], [0, -1, 0], [0, 0, 1]] },
+    // A 120° turn about (1,1,1)/√3: trace exactly 0, all three diagonals tied,
+    // so it pins which way the ties break.
+    { what: 'general 120° (all diagonals tied)', r: [[0, 0, 1], [1, 0, 0], [0, 1, 0]] },
+  ]
+
+  for (const { what, r } of cases) {
+    const srv = stubServer()
+    const dir = await tempScans('full', {
+      sidecars: {
+        'room.splat-align.manifest.json': {
+          ...ALIGN_MANIFEST,
+          scale: 1,
+          projectTransform: [
+            r[0][0], r[0][1], r[0][2], 0,
+            r[1][0], r[1][1], r[1][2], 0,
+            r[2][0], r[2][1], r[2][2], 0,
+            0, 0, 0, 1,
+          ],
+        },
+      },
+    })
+    try {
+      await pushScanToMemory(cfgFor(srv.base), SCAN, { scansDir: dir })
+      // The plant's box rotation is the identity, so its rotation_project IS
+      // the fit's own rotation and the round-trip is unobscured.
+      const plant = objectsIn(srv.seen.eventBody!.events[0])[1]
+      const q = plant.rotation_project as Record<string, number>
+      assert(q, `${what}: no rotation_project emitted`)
+      const back = matrixFromQuat(q)
+      for (let i = 0; i < 3; i++) {
+        for (let j = 0; j < 3; j++) {
+          assert(
+            Math.abs(back[i][j] - r[i][j]) < 1e-9,
+            `${what}: R[${i}][${j}] round-tripped to ${back[i][j]}, expected ${r[i][j]}`,
+          )
+        }
+      }
+    } finally {
+      await srv.close()
+      await Deno.remove(dir, { recursive: true })
+    }
+  }
+})
+
+Deno.test('push: a fit outside its own tolerance ships the frame but no metric numbers', async () => {
+  const srv = stubServer()
+  const dir = await tempScans('full', {
+    detectManifest: true,
+    // The aligner said ok, but the residual it recorded is 0.9 m against its
+    // own 0.25 m limit. A fit that converged badly is a wrong answer, not a
+    // rounded one, so nothing converts.
+    sidecars: { 'room.splat-align.manifest.json': { ...ALIGN_MANIFEST, residualM: 0.9 } },
+  })
+  try {
+    const result = await pushScanToMemory(cfgFor(srv.base), SCAN, { scansDir: dir })
+    const frame = payloadOf(srv.seen).spatial_frame as Record<string, unknown>
+
+    assertEquals(frame.metric, false, 'this is the field a consumer branches on')
+    assertEquals(frame.scale, 2, 'the number is still reported — it is just not usable, and the caveat says so')
+    assertEquals(frame.residual_m, 0.9)
+    assertEquals(result.spatialFrameMetric, false)
+
+    const sofa = objectsIn(srv.seen.eventBody!.events[0])[0]
+    assertEquals('extent_metric_m' in sofa, false, 'no length is converted from a fit that failed')
+    assertEquals('position_project' in sofa, false)
+    assertEquals('rotation_project' in sofa, false)
+    assertEquals(JSON.stringify(sofa.extent_m), JSON.stringify({ x: 2.05, y: 0.82, z: 0.94 }), 'the splat-frame box is untouched')
+
+    const meta = payloadOf(srv.seen).object_extents as Record<string, unknown>
+    assertEquals(meta.project_frame_aligned, false)
+    assertEquals(meta.metric, null, 'and no metric provenance is claimed')
+  } finally {
+    await srv.close()
+    await Deno.remove(dir, { recursive: true })
+  }
+})
+
+Deno.test('push: a transform that is not a similarity ships no project-frame pose at all', async () => {
+  const srv = stubServer()
+  const dir = await tempScans('full', {
+    detectManifest: true,
+    sidecars: {
+      // Non-uniform scale: rows of length 2, 3 and 2. There is no single
+      // rotation in that block, so an orientation cannot be carried through it
+      // — and a position that travelled while the orientation stayed behind is
+      // the mixed-frame pose this refuses to emit.
+      'room.splat-align.manifest.json': {
+        ...ALIGN_MANIFEST,
+        projectTransform: [
+          0, 0, 2, 3,
+          0, 3, 0, 0.5,
+          -2, 0, 0, -2,
+          0, 0, 0, 1,
+        ],
+      },
+    },
+  })
+  try {
+    await pushScanToMemory(cfgFor(srv.base), SCAN, { scansDir: dir })
+    const sofa = objectsIn(srv.seen.eventBody!.events[0])[0]
+    assertEquals('position_project' in sofa, false, 'no half-applied pose')
+    assertEquals('rotation_project' in sofa, false)
+    // The uniform scale factor is still a measured number, so lengths convert.
+    assertEquals(JSON.stringify(sofa.extent_metric_m), JSON.stringify({ x: 4.1, y: 1.64, z: 1.88 }))
+    const metric = (payloadOf(srv.seen).object_extents as Record<string, unknown>).metric as Record<string, unknown>
+    assertEquals(JSON.stringify(metric.applied_to), JSON.stringify(['extent_metric_m']), 'and the block says only that shipped')
+  } finally {
+    await srv.close()
+    await Deno.remove(dir, { recursive: true })
+  }
+})
+
+Deno.test('push: capture-time detections ship with their world positions and their own frame block', async () => {
+  const srv = stubServer()
+  const dir = await tempScans('none', { sidecars: { 'room.json': META_SIDECAR } })
+  try {
+    const result = await pushScanToMemory(cfgFor(srv.base), SCAN, { scansDir: dir })
+    const mesh = payloadOf(srv.seen).mesh_objects as Array<Record<string, unknown>>
+
+    assertEquals(mesh.length, 2, 'an entry with no label or no position is not a detection')
+    assertEquals(mesh[0].label, 'lamp')
+    assertEquals(JSON.stringify(mesh[0].world_pos), JSON.stringify({ x: 1, y: 2, z: 3 }))
+    assertEquals(mesh[0].confidence, 0.62)
+    assertEquals('confidence' in mesh[1], false, 'no score is invented for an entry that carried none')
+    assertEquals(result.meshObjectCount, 2)
+
+    // The GLB exporter's `dimensions` is a 2D bbox fraction times hard-coded
+    // constants. It is present in the fixture and must not be forwarded: it
+    // would arrive indistinguishable from splat_analyzer's measured extents.
+    assertEquals('dimensions' in mesh[0], false, "gltf.ts's fabricated dimensions are not forwarded")
+    assert(!JSON.stringify(mesh).includes('dimensions'), 'not under any name, anywhere in the block')
+
+    const meshFrame = payloadOf(srv.seen).mesh_object_frame as Record<string, unknown>
+    assertEquals(meshFrame.frame, 'scan_world', 'a different frame from the splat boxes, and it says so')
+    assertEquals(meshFrame.has_extents, false)
+    assert(String(meshFrame.convention).includes('points, not volumes'), 'the convention says what these are not')
+  } finally {
+    await srv.close()
+    await Deno.remove(dir, { recursive: true })
+  }
+})
+
+Deno.test('push: a sidecar holding a JSON array reads as absent, not as an empty manifest', async () => {
+  const srv = stubServer()
+  const dir = await tempScans('full', {
+    // `typeof [] === 'object'`, so an array would otherwise pass the manifest
+    // guard and be read as a stage that ran and recorded nothing — a splat
+    // block full of nulls for a scan that never trained one, and a
+    // spatial_frame for a scan with no fit.
+    sidecars: {
+      'room.splat-train.manifest.json': [],
+      'room.splat-finish.manifest.json': [],
+      'room.splat-align.manifest.json': [],
+      'room.splat-detect.manifest.json': [],
+    },
+  })
+  try {
+    const result = await pushScanToMemory(cfgFor(srv.base), SCAN, { scansDir: dir })
+    const payload = payloadOf(srv.seen)
+
+    assertEquals('splat' in payload, false, 'an unreadable sidecar is not a splat that trained')
+    assertEquals('spatial_frame' in payload, false, 'nor a fit that solved')
+    assertEquals(
+      (payload.object_extents as Record<string, unknown>).detector,
+      null,
+      'nor a detector whose every parameter happens to be unset',
+    )
+    assertEquals(result.splatArtifactCount, 0)
+    assertEquals(result.spatialFrameMetric, false)
+    assertEquals(result.detectionCount, 3, 'the real sidecar still reads normally')
+  } finally {
+    await srv.close()
+    await Deno.remove(dir, { recursive: true })
+  }
+})
+
+Deno.test('push: the splat/align/mesh fields are additive — the old payload is untouched', async () => {
+  // The contract for every consumer that already reads these events: new
+  // stages add keys, they never move, rename or reinterpret an existing one.
+  // Asserted by pushing the SAME scan twice, once with none of the new
+  // sidecars and once with all of them, and diffing the two payloads.
+  const bare = stubServer()
+  const rich = stubServer()
+  const bareDir = await tempScans('full', { detectManifest: true })
+  const richDir = await tempScans('full', {
+    detectManifest: true,
+    files: { 'room.sog': 12 },
+    sidecars: {
+      'room.splat-train.manifest.json': TRAIN_MANIFEST,
+      'room.splat-finish.manifest.json': FINISH_MANIFEST,
+      'room.splat-align.manifest.json': ALIGN_MANIFEST,
+      'room.json': META_SIDECAR,
+    },
+  })
+  try {
+    await pushScanToMemory(cfgFor(bare.base), SCAN, { scansDir: bareDir })
+    await pushScanToMemory(cfgFor(rich.base), SCAN, { scansDir: richDir })
+    const old = payloadOf(bare.seen)
+    const now = payloadOf(rich.seen)
+
+    // Spelled out rather than derived from the code, so a key that quietly
+    // stops being emitted fails here rather than agreeing with its own bug.
+    const PRE_SPLAT_KEYS = [
+      'scan_id',
+      'session_id',
+      'glb_filename',
+      'glb_file_id',
+      'file_ids',
+      'point_count',
+      'detection_count',
+      'detected_labels',
+      'objects',
+      'object_extents',
+      'location',
+    ]
+    assertEquals(
+      Object.keys(old).sort().join(','),
+      [...PRE_SPLAT_KEYS].sort().join(','),
+      'a scan with none of the new stages ships the pre-splat shape and nothing else',
+    )
+    assertEquals(
+      Object.keys(now).sort().join(','),
+      [...PRE_SPLAT_KEYS, 'splat', 'spatial_frame', 'mesh_objects', 'mesh_object_frame'].sort().join(','),
+      'and the new stages add exactly four top-level keys',
+    )
+
+    // Every scalar/array key survives the new stages byte-identical. The three
+    // exceptions are handled below: they legitimately GAIN entries.
+    for (const k of PRE_SPLAT_KEYS) {
+      if (k === 'objects' || k === 'object_extents' || k === 'file_ids') continue
+      assertEquals(JSON.stringify(now[k]), JSON.stringify(old[k]), `${k} must not change`)
+    }
+    assertEquals(
+      JSON.stringify((now.file_ids as string[]).slice(0, 1)),
+      JSON.stringify(old.file_ids),
+      'file_ids only ever appends the new attachments',
+    )
+
+    // Per object: every key the old payload had, with the same value, plus at
+    // most the three project-frame additions.
+    const oldObjects = old.objects as Array<Record<string, unknown>>
+    const newObjects = now.objects as Array<Record<string, unknown>>
+    assertEquals(newObjects.length, oldObjects.length)
+    const ADDED = ['extent_metric_m', 'position_project', 'rotation_project']
+    oldObjects.forEach((o, i) => {
+      for (const [k, v] of Object.entries(o)) {
+        assertEquals(JSON.stringify(newObjects[i][k]), JSON.stringify(v), `object ${i} key ${k} must not change`)
+      }
+      const extra = Object.keys(newObjects[i]).filter((k) => !(k in o))
+      assertEquals(extra.every((k) => ADDED.includes(k)), true, `object ${i} gained ${extra.join(',')}`)
+    })
+
+    // Same for the qualifying block. `convention`/`caveat` are prose that grew
+    // to describe the new fields; the data-bearing keys did not move.
+    for (const k of ['source', 'frame', 'units', 'world_frame_aligned', 'calibrated', 'detector']) {
+      const a = (old.object_extents as Record<string, unknown>)[k]
+      const b = (now.object_extents as Record<string, unknown>)[k]
+      assertEquals(JSON.stringify(b), JSON.stringify(a), `object_extents.${k} must not change`)
+    }
+  } finally {
+    await bare.close()
+    await rich.close()
+    await Deno.remove(bareDir, { recursive: true })
+    await Deno.remove(richDir, { recursive: true })
   }
 })
 
