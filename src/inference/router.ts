@@ -5,37 +5,36 @@
  *   POSTs the image to the Deno inference server (localhost:8000, proxied by Vite).
  *   Faster in practice since the server runs multi-threaded ONNX on all machine cores.
  *
- * WebGPU path (GATED OFF — see WEBGPU_INFERENCE_ENABLED below):
- *   Intended to spawn a Web Worker running LFM2.5-VL-1.6B-ONNX on-device.
- *   Disabled at build time because it has never worked: the worker asks
- *   Transformers.js for an 'image-text-to-text' pipeline task that no released
- *   version registers, so every capture throws. Wave 05 replaces that call with
- *   the hand-rolled driver; until then the toggle is not offered.
+ * WebGPU path (opt-in via settings):
+ *   Spawns a Web Worker running LFM2.5-VL-1.6B-ONNX on-device
+ *   (./lfm-driver-web.ts, wave 05 ticket 0003), gated only by the browser's
+ *   actual WebGPU support — see `hasWebGPU` below. Wave 04 ticket 0004
+ *   gated this behind a build-time flag while the driver could not run at
+ *   all; wave 05 ticket 0004
+ *   (docs/factory/05-on-device-inference/0004-ungate-toggle-and-fallback-policy.md)
+ *   lifts that gate now that it genuinely does, and replaces this file's
+ *   fallback logic — both branches used to fall back to the server
+ *   *silently*, which contradicts the panel's "On-device — no data leaves
+ *   your phone" claim the moment it happens on a path that actually runs.
+ *   Failure is now reported to the caller as a typed WebGpuInferenceError
+ *   instead: no image crosses the network on a capture the UI says stayed
+ *   on-device.
  *
  * User preference persists in localStorage key 'infer-mode' ('server' | 'webgpu').
- * A stored 'webgpu' is resolved to server at read time and deliberately NOT
- * overwritten, so the choice survives for wave 05 to honour.
+ * A stored 'webgpu' is resolved to server at read time (never overwritten)
+ * when `hasWebGPU` is false, so a user who opted in on a capable device still
+ * gets it back if they open the app somewhere that cannot run it.
  * Both paths expose the same async interface:
  *   router.infer(blob) → Promise<RawDetection[]>
  */
-import { inferViaServer } from './server'
+// Explicit .ts extensions on these two: see src/scene/store.ts's identical
+// note — tests/unit/node/inference_router.test.ts imports this module
+// directly, and Node's ESM loader needs the real specifier, not Vite's
+// bundler resolution. RawDetection stays extension-less below; it's
+// type-only, so it's erased before Node's loader ever sees it.
+import { inferViaServer } from './server.ts'
 import type { RawDetection } from './prompt'
-import { INFER_MODE_KEY } from '../shared/storage-keys'
-
-/**
- * Build-time gate for the on-device WebGPU inference path.
- *
- * Off by default. The path cannot work in any released Transformers.js —
- * `pipeline('image-text-to-text', ...)` is not a registered task in 3.8.1 or
- * 4.2.0 — so offering it in the UI advertises a privacy guarantee
- * ("On-device — no data leaves your phone") that the code cannot honour, and
- * every capture throws before it is persisted.
- *
- * Set VITE_ENABLE_WEBGPU_INFERENCE=true to develop against it (wave 05).
- * Wave 05 ticket 0004 removes this gate once the path genuinely runs.
- */
-export const WEBGPU_INFERENCE_ENABLED =
-  import.meta.env?.VITE_ENABLE_WEBGPU_INFERENCE === 'true'
+import { INFER_MODE_KEY } from '../shared/storage-keys.ts'
 
 export type InferMode = 'server' | 'webgpu'
 
@@ -46,6 +45,29 @@ interface PendingRequest {
   resolve: (detections: RawDetection[]) => void
   reject: (err: Error) => void
   timer: ReturnType<typeof setTimeout>
+}
+
+export type WebGpuInferenceErrorCode = 'timeout' | 'not-provisioned' | 'worker-error'
+
+/**
+ * Typed failure from the on-device path, with a stable code so the HUD
+ * (src/main.ts's capture catch block) can tell the user specifically what
+ * happened instead of a generic "capture failed".
+ *
+ * Never caught here and turned into a server request on the caller's
+ * behalf — see this file's header and
+ * docs/factory/05-on-device-inference/0004-ungate-toggle-and-fallback-policy.md's
+ * "the naive fix is actively harmful". A capture that fails on-device fails;
+ * the image is never sent anywhere the UI didn't say it would go.
+ */
+export class WebGpuInferenceError extends Error {
+  code: WebGpuInferenceErrorCode
+
+  constructor(message: string, code: WebGpuInferenceErrorCode) {
+    super(message)
+    this.name = 'WebGpuInferenceError'
+    this.code = code
+  }
 }
 
 // Worker request budgets: generous while the model is still downloading/compiling,
@@ -62,15 +84,16 @@ export class InferenceRouter {
   private onModeChange: ModeChangeCallback | null = null
 
   /**
-   * True if the on-device path is both enabled and supported here.
+   * True if this browser exposes a WebGPU adapter.
    *
-   * The gate lives here rather than at each call site because every route into
-   * the worker already funnels through this getter — init(), setMode() and the
-   * HUD failure copy in main.ts. Returning false therefore closes all of them
-   * at once, and no code path can dispatch a capture to webgpu.worker.ts.
+   * This is a device-capability check, not a feature flag — every route into
+   * the worker funnels through this getter (init(), setMode(), the panel's
+   * toggle state, and the HUD failure copy in main.ts), so a device that
+   * cannot run the on-device path never gets offered it, and never silently
+   * re-gains it later (docs/factory/05-on-device-inference/
+   * 0004-ungate-toggle-and-fallback-policy.md's Non-goals).
    */
   get hasWebGPU(): boolean {
-    if (!WEBGPU_INFERENCE_ENABLED) return false
     return typeof navigator !== 'undefined' && 'gpu' in navigator
   }
 
@@ -100,10 +123,6 @@ export class InferenceRouter {
    * Spawns the WebGPU worker on first switch to 'webgpu'.
    */
   setMode(mode: InferMode): void {
-    // While gated, never persist a preference the app cannot honour — and in
-    // particular never overwrite an existing 'webgpu' with 'server', so a user
-    // who opted in before the gate gets it back when wave 05 lifts it.
-    if (mode === 'webgpu' && !WEBGPU_INFERENCE_ENABLED) return
     if (typeof localStorage !== 'undefined') localStorage.setItem(INFER_MODE_KEY, mode)
     const want = mode === 'webgpu' && this.hasWebGPU
     if (want === this.useWorker) return
@@ -120,16 +139,21 @@ export class InferenceRouter {
   }
 
   /**
-   * Worker crashed or failed to load — reject in-flight requests and fall back
-   * to server inference. Does not touch the saved localStorage preference, so
-   * the user's WebGPU choice survives a reload.
+   * Worker crashed or failed to load — reject in-flight requests and revert
+   * *future* captures to the server path. The requests that were in flight
+   * are rejected, not silently reissued to the server: whatever image they
+   * carried never leaves the device. Does not touch the saved localStorage
+   * preference, so the user's WebGPU choice survives a reload — only the
+   * live `useWorker`/`path` state (and the panel it drives, via
+   * `onModeChange`) reverts, so the UI stops claiming a capability that just
+   * broke instead of quietly using the server while still showing "WebGPU".
    */
   private _onWorkerFailure(err: unknown): void {
     console.error('[worker]', err)
     const message = err instanceof ErrorEvent && err.message ? err.message : 'WebGPU worker failed'
     for (const entry of this.pending.values()) {
       clearTimeout(entry.timer)
-      entry.reject(new Error(message))
+      entry.reject(new WebGpuInferenceError(message, 'worker-error'))
     }
     this.pending.clear()
     this.worker?.terminate()
@@ -137,7 +161,7 @@ export class InferenceRouter {
     this.useWorker = false
     this.modelReady = false
     this.onModeChange?.('server')
-    this.onProgress?.('WebGPU failed — using server', 1)
+    this.onProgress?.('On-device inference crashed — switched to Server', 1)
   }
 
   async infer(imageBlob: Blob): Promise<RawDetection[]> {
@@ -153,10 +177,16 @@ export class InferenceRouter {
     return new Promise<RawDetection[]>((resolve, reject) => {
       const timeoutMs = this.modelReady ? WORKER_TIMEOUT_READY_MS : WORKER_TIMEOUT_LOADING_MS
       const timer = setTimeout(() => {
-        // Worker is stuck on this request — fall back to the server for this
-        // call only; the worker itself stays alive.
+        // On-device inference genuinely works now (wave 05 ticket 0003), so a
+        // request stuck this long is a real failure to report — not a reason
+        // to quietly hand the same image to the server while the UI still
+        // says "On-device — no data leaves your phone" for this capture. See
+        // docs/factory/05-on-device-inference/0004-ungate-toggle-and-fallback-policy.md.
+        // The worker itself stays alive; only this one request fails, and the
+        // caller (src/main.ts) decides what the user sees and whether the
+        // frame is kept.
         this.pending.delete(id)
-        inferViaServer(imageBlob).then(resolve, reject)
+        reject(new WebGpuInferenceError('On-device inference timed out', 'timeout'))
       }, timeoutMs)
       this.pending.set(id, { resolve, reject, timer })
       this.worker!.postMessage({ type: 'infer', id, imageDataUrl: dataUrl })
@@ -192,7 +222,12 @@ export class InferenceRouter {
       const entry = this.pending.get(id)
       if (entry) {
         clearTimeout(entry.timer)
-        entry.reject(new Error(message))
+        // lfm-driver-web.ts's readCachedFile() throws this exact substring
+        // (see its header) when ticket 0002's provisioning cache is missing
+        // the requested file — the one on-device failure the user can fix
+        // from the panel rather than by retrying or switching engines.
+        const code: WebGpuInferenceErrorCode = message.includes('not cached') ? 'not-provisioned' : 'worker-error'
+        entry.reject(new WebGpuInferenceError(message, code))
         this.pending.delete(id)
       }
     }

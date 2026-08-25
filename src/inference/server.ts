@@ -4,7 +4,11 @@
  * Used on iOS and older Android where navigator.gpu is unavailable.
  * Requests are proxied same-origin through Vite.
  */
-import { normalizeDetections, parseDetections } from './prompt'
+// Explicit .ts extension: see src/scene/store.ts's identical note — this
+// module is now reachable from tests/unit/node/inference_router.test.ts via
+// router.ts's import of inferViaServer, and Node's ESM loader needs the real
+// specifier.
+import { normalizeDetections, parseDetections } from './prompt.ts'
 import type { RawDetection } from './prompt'
 
 // Empty string = same origin, proxied through Vite dev server (no mixed content).

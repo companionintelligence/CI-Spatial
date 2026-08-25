@@ -138,6 +138,27 @@ test('putCapture: a capture whose inference fails is still there, frame intact',
   assert.equal(store.captureCounts().failed, 1, 'and it must be counted, not silently absent')
 })
 
+// Wave 05 ticket 0004 (docs/factory/05-on-device-inference/
+// 0004-ungate-toggle-and-fallback-policy.md) — provenance extends the
+// existing capture record (ADR 0001) rather than adding a parallel one.
+
+test('putCapture: records which engine the capture was sent to', async () => {
+  const store = new DetectionStore()
+  const rec = await store.putCapture({
+    captureIndex: 1, timestamp: Date.now(), pose: pose(), blob: frame(), engine: 'webgpu',
+  })
+  assert.equal(rec.engine, 'webgpu')
+  assert.equal(store.getCapture(rec.captureId)?.engine, 'webgpu')
+})
+
+test('putCapture: engine defaults to server when the caller omits it', async () => {
+  const store = new DetectionStore()
+  const rec = await store.putCapture({
+    captureIndex: 1, timestamp: Date.now(), pose: pose(), blob: frame(),
+  })
+  assert.equal(rec.engine, 'server')
+})
+
 test('attachDetections: a successful capture yields one record carrying its detections', async () => {
   const store = new DetectionStore()
   const rec = await store.putCapture({

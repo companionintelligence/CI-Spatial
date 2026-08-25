@@ -15,10 +15,13 @@
  * that version are unchanged; only model construction and generation
  * changed.
  *
- * Still gated off behind WEBGPU_INFERENCE_ENABLED
- * (src/inference/router.ts) — this worker now genuinely runs, but the
- * toggle to offer it in the UI, and any fallback policy, is wave 05 ticket
- * 0004, deliberately kept separate.
+ * Un-gated as of wave 05 ticket 0004
+ * (docs/factory/05-on-device-inference/0004-ungate-toggle-and-fallback-policy.md)
+ * — offered whenever `InferenceRouter.hasWebGPU` (src/inference/router.ts)
+ * is true, which is now a pure device-capability check rather than a
+ * build-time flag. That ticket also owns the fallback policy: a failure
+ * here surfaces to the caller as a typed `WebGpuInferenceError` instead of
+ * silently retrying through the server.
  *
  * Assumes ticket 0002's model-provisioning cache
  * (src/inference/model-provisioning.ts) is already fully populated; if it
