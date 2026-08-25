@@ -88,7 +88,14 @@ interface CalibrationOptions {
    * the modal is open, which is the entire point of the readiness step.
    * `null` means no estimate yet.
    */
-  ground: () => { y: number; locked: boolean } | null
+  ground: () => {
+    y: number
+    locked: boolean
+    sampleCount?: number
+    inlierCount?: number
+    residualM?: number
+    fallback?: boolean
+  } | null
   /**
    * Grabs the live camera frame for a marker's reference photo (ticket 0007).
    *
@@ -255,6 +262,8 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
       <h2 id="project-calibration-title">${isFirstCalibration ? 'Set this project&apos;s world frame' : 'Align this scan to the project'}</h2>
       <p id="project-calibration-copy">Tap a spot on the ground to mark this project&apos;s origin.</p>
       <div id="project-calibration-status" class="project-calibration-status">Waiting for AR tracking...</div>
+      <div id="project-calibration-ground" class="project-calibration-ground" hidden></div>
+      <div id="project-calibration-tracking" class="project-calibration-ground" hidden></div>
       <div id="project-calibration-separation" class="project-calibration-separation" hidden></div>
       <label id="project-calibration-label-field" class="project-calibration-label-field" hidden>
         <span id="project-calibration-label-caption">Name this feature</span>
@@ -278,6 +287,8 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
   const title = pick<HTMLElement>('project-calibration-title')
   const copy = pick<HTMLElement>('project-calibration-copy')
   const status = pick<HTMLElement>('project-calibration-status')
+  const groundReadout = pick<HTMLElement>('project-calibration-ground')
+  const trackingReadout = pick<HTMLElement>('project-calibration-tracking')
   const separationEl = pick<HTMLElement>('project-calibration-separation')
   const confirmBtn = pick<HTMLButtonElement>('project-calibration-confirm')
   const commitBtn = pick<HTMLButtonElement>('project-calibration-commit')
@@ -772,8 +783,80 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
     }
   }
 
+  /**
+   * The floor fit's own numbers, on screen.
+   *
+   * The estimate is a statistic over SLAM feature points, not a detected
+   * surface, and it can be confidently wrong — `estimateFloorY()` was observed
+   * ~0.8 m out before ticket 0008 and the fit that replaced it has a support
+   * threshold of its own that a sparse floor can fail. When it is wrong the
+   * only person who can tell is the one standing in the room, and until now
+   * they had nothing to compare against: the grid rendered at *some* height
+   * with no indication of how well the data backed it.
+   *
+   * `inliers` is how many points actually support the chosen band — a floor
+   * with very few is a floor the fit barely saw. `±` is the RMS spread of
+   * those points, which reads near hit-test noise for a level floor and much
+   * wider for a tilted one. `no supported band` means no band cleared
+   * `FLOOR_MIN_BAND_SHARE` at all and the legacy percentile was used.
+   */
+  function renderGroundReadout(): void {
+    const estimate = options.ground()
+    if (!estimate) {
+      groundReadout.textContent = 'Floor: no estimate yet — fewer than 50 points mapped.'
+      show(groundReadout, stage === 'ground')
+      return
+    }
+    const parts = [`Floor ${estimate.y.toFixed(2)} m`]
+    if (estimate.fallback) parts.push('no supported band — percentile fallback')
+    else {
+      if (estimate.inlierCount !== undefined) parts.push(`${estimate.inlierCount} inliers`)
+      if (estimate.residualM !== undefined) parts.push(`±${(estimate.residualM * 100).toFixed(1)} cm`)
+    }
+    if (estimate.sampleCount !== undefined) parts.push(`of ${estimate.sampleCount} pts`)
+    parts.push(estimate.locked ? 'locked' : 'settling')
+    groundReadout.textContent = parts.join(' · ')
+    // Kept visible past the ground stage: the landmark tap is judged against
+    // this number, so it stays on screen while there is still a tap to judge.
+    show(groundReadout, stage === 'ground' || stage === 'landmark' || stage === 'heading')
+  }
+
+  /**
+   * Tracking health, and how many times the world frame has moved under us.
+   *
+   * Both markers and the floor grid are positioned once and never touched
+   * again by this module, so if they visibly move, the *session frame* moved —
+   * SLAM redefining its origin on recovery or loop closure. That is otherwise
+   * undetectable from inside the app: the pose keeps updating and the status
+   * can read NORMAL throughout, while every world-locked object shifts
+   * together and the accumulated point cloud silently becomes a mixture of two
+   * different coordinate frames.
+   *
+   * Shown during placement because it is the number that says whether anything
+   * placed can be trusted.
+   */
+  function renderTrackingReadout(): void {
+    const diagnostics = options.provider.getTrackingDiagnostics?.()
+    if (!diagnostics) {
+      show(trackingReadout, false)
+      return
+    }
+    const parts = [`Tracking ${diagnostics.status}`]
+    if (diagnostics.poseJumps > 0) {
+      parts.push(`⚠ ${diagnostics.poseJumps} frame shift${diagnostics.poseJumps === 1 ? '' : 's'}`)
+      parts.push(`last ${diagnostics.lastJumpM.toFixed(2)} m`)
+    } else {
+      parts.push('no frame shifts')
+    }
+    trackingReadout.textContent = parts.join(' · ')
+    trackingReadout.dataset['state'] = diagnostics.poseJumps > 0 ? 'warn' : 'ok'
+    show(trackingReadout, stage !== 'review' && stage !== 'mismatch')
+  }
+
   function renderStage(): void {
     renderSteps()
+    renderGroundReadout()
+    renderTrackingReadout()
     renderSeparation()
     renderReference()
     renderLabelField()

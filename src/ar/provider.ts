@@ -138,4 +138,17 @@ export interface ARProvider {
    * simply omits this method).
    */
   getScene?(): THREE.Scene | null
+  /**
+   * Live tracking health, for on-screen diagnostics.
+   *
+   * `poseJumps` counts frames where the camera translated further than any
+   * operator could have — the signature of SLAM redefining its own origin.
+   * When that happens every world-locked object shifts together and any
+   * previously harvested points are left in a frame that no longer exists,
+   * which is otherwise undetectable from inside the app: the pose keeps
+   * updating and the status can stay NORMAL throughout.
+   *
+   * Optional so a provider without the notion simply omits it.
+   */
+  getTrackingDiagnostics?(): { status: string; poseJumps: number; lastJumpM: number }
 }

@@ -1302,6 +1302,19 @@
       .project-calibration-card h2 { margin: 5px 0 8px; font-family: var(--ci-font-display); font-size: 25px; font-weight: 500; }
       .project-calibration-card p { margin: 0 0 12px; color: var(--ci-muted); font-size: 13px; line-height: 1.45; }
       .project-calibration-status { color: #eff0f0; font-size: 12px; font-weight: 700; }
+      /* The floor fit's own numbers. Monospace so a changing value does not
+         reflow the line while the user is watching it settle. */
+      .project-calibration-ground {
+        margin-top: 6px;
+        color: #72ddd4;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        letter-spacing: -0.01em;
+      }
+      .project-calibration-ground[hidden] { display: none; }
+      /* A frame shift invalidates everything already placed, so it is not a
+         neutral diagnostic — it reads as a warning. */
+      .project-calibration-ground[data-state='warn'] { color: #ff9b9b; }
       /* Two-step flow (ticket 0004): restores the progress dots #141 removed,
          rather than introducing a new component. */
       .project-calibration-steps {
