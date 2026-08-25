@@ -20,13 +20,25 @@ const RAD_TO_DEG = 180 / Math.PI
  *
  * Tighter than the retired 3-point method's one-foot (0.3048 m) default,
  * because a single distance between two deliberately-chosen features is a
- * cleaner measurement than three interdependent ones. But it is a guess: the
- * only empirical spatial-repeatability figure in this repo is
- * `DEDUP_RADIUS_M = 0.4` (`src/spatial/resolver.ts`), widened from 0.3 because
- * same-object captures land 0.3–0.4 m apart. That measures detection placement
- * rather than a direct floor tap, so it is an upper bound rather than a
- * refutation — but it is more than twice this value, so if the real spread
- * exceeds this tolerance the check will fire on correct calibrations.
+ * cleaner measurement than three interdependent ones.
+ *
+ * **Adopted by decision, not by measurement.** Ticket 0006 was closed without
+ * running its benchmark, so no device-measured repeatability figure backs this
+ * number and none is pending. Recorded plainly so nobody reads 0.15 as an
+ * empirical result.
+ *
+ * The known counter-evidence stands: the only empirical spatial-repeatability
+ * figure in this repo is `DEDUP_RADIUS_M = 0.4` (`src/spatial/resolver.ts`),
+ * widened from 0.3 because same-object captures land 0.3–0.4 m apart. That
+ * measures detection placement rather than a direct floor tap, so it is an
+ * upper bound rather than a refutation — but it is more than twice this value.
+ *
+ * **Revisit when:** users report mismatch warnings after re-tapping what they
+ * believe are the same two features. That symptom means the real spread
+ * exceeds this tolerance and the check is firing on correct calibrations,
+ * which is the failure mode this value risks. Widen it before concluding the
+ * user mis-tapped. `public/compass-bench.html` and the `?debug=pose` readout
+ * are the instruments if it needs settling empirically.
  */
 export const DEFAULT_SEPARATION_TOLERANCE_M = 0.15
 
@@ -37,9 +49,20 @@ export const DEFAULT_SEPARATION_TOLERANCE_M = 0.15
  * Heading error is roughly hit-test noise divided by separation, so short
  * baselines amplify angular error: two points 20 cm apart with ~3 cm noise give
  * ~8° of heading uncertainty — worse than a decent compass, which defeats the
- * point of the tier. One metre keeps it near 2°. The ~3 cm noise figure is
- * itself assumed; if ticket 0006 measures materially worse hit-test
- * repeatability, this must rise proportionally to hold the same angular error.
+ * point of the tier. One metre keeps it near 2°.
+ *
+ * **Adopted by decision, not by measurement.** The ~3 cm hit-test noise figure
+ * is an assumption that was never verified: ticket 0006 was closed without
+ * running the benchmark that would have set it. If real noise is materially
+ * worse, this must rise proportionally to hold the same angular error — the
+ * relationship is linear, so 6 cm noise needs a 2 m baseline for the same 2°.
+ *
+ * This is a floor, not a target. Longer baselines are strictly better for
+ * heading precision, which is why the capture copy encourages walking further
+ * rather than stopping at the minimum.
+ *
+ * **Revisit when:** two sessions of one room disagree in heading by more than
+ * a couple of degrees despite both pairs passing the separation check.
  */
 export const MIN_POINT_SEPARATION_M = 1.0
 
