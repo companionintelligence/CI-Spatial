@@ -309,6 +309,29 @@ export async function estimateModelCacheBytes(): Promise<number> {
   return (await getProvisioningStatus()).bytesReady
 }
 
+/**
+ * Returns the bytes of one provisioned file (a `MODEL_FILES` path, e.g.
+ * `'onnx/decoder_q4.onnx'` or `'tokenizer.json'`), or `undefined` if it
+ * hasn't finished downloading yet. Added for ticket 0003
+ * (docs/factory/05-on-device-inference/0003-webgpu-driver-runtime.md) —
+ * `src/inference/lfm-driver-web.ts`'s `LfmPort` reads model weights and the
+ * tokenizer through this instead of re-fetching them, per that ticket's
+ * Pinned Conventions: "the cached weights | from ticket 0002 | consumed,
+ * not re-fetched." Never touches the network itself — a miss here is the
+ * caller's cue that `provisionModel()` hasn't completed, not a fallback
+ * trigger (fallback policy is ticket 0004's job).
+ */
+export async function getCachedModelFile(path: string): Promise<Uint8Array | undefined> {
+  const db = await openDB()
+  try {
+    const record = await idbGet<CompleteRecord>(db, STORE_COMPLETE, path)
+    if (!record) return undefined
+    return new Uint8Array(await record.blob.arrayBuffer())
+  } finally {
+    db.close()
+  }
+}
+
 // ─── Size probing ────────────────────────────────────────────────────────
 
 async function headContentLength(url: string): Promise<number | null> {
