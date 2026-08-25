@@ -148,18 +148,21 @@ shape. A `version` bump is for a genuinely breaking envelope change.
   from 0.3 because same-object captures land "0.3-0.4 m apart" — is more than twice this
   number. That figure measures detection placement rather than a direct floor tap, so it is an
   upper bound, not a refutation; but it is close enough to warrant measuring before shipping.
-  **Ticket 0006 measures the real cross-session spread and sets this value.** If the measured
-  spread exceeds the tolerance, the check fires on correct calibrations. (Decided in this
-  ticket; value pending 0006.)
+  This ticket expected **ticket 0006 to measure the real cross-session spread and set this
+  value**. If the real spread exceeds the tolerance, the check fires on correct calibrations.
+  (Decided in this ticket. **Correction, 2026-08-25:** ticket 0006 closed *unrun*, so 0.15 is an **adopted
+  default, not a pending placeholder** — nothing is scheduled to measure it, and the revisit
+  trigger lives at the constant's definition in `src/world/geo.ts`. The risk named above is
+  therefore accepted rather than resolved.)
 - Q: Minimum separation between the two points? — A: `MIN_POINT_SEPARATION_M = 1.0`, enforced
   by ticket 0004's capture UI, not the type. Rationale: heading error is roughly hit-test
   noise divided by separation, so short baselines amplify angular error — two points 20 cm
   apart with ~3 cm noise give ~8° of heading uncertainty, which is worse than a decent
   compass. One metre keeps it near 2°. The retired 3-point method used a comparable
   `MIN_REFERENCE_DISTANCE_M = 0.75`. **Note the ~3 cm noise figure is itself assumed** — if
-  ticket 0006 measures materially worse hit-test repeatability, this minimum must rise
-  proportionally to hold the same angular error. (Decided in this ticket; noise figure pending
-  0006.)
+  hit-test repeatability is ever measured and proves materially worse, this minimum must rise
+  proportionally to hold the same angular error. (Decided in this ticket. **Correction, 2026-08-25:** ticket 0006 closed *unrun*,
+  so the ~3 cm figure remains an unverified assumption and nothing is scheduled to check it.)
 - Q: Should the frame carry reference photos of the two marker setups, to help a returning user
   re-place on the same physical spots? — A: Yes — **ticket 0007** adds an optional
   `referencePhotos` field to this member. Specified separately rather than here because it needs
