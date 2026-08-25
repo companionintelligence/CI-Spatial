@@ -13,9 +13,20 @@ deno task check && deno task test && npx tsc --noEmit
 
 Then start the app and confirm the ports are yours before assuming anything is broken:
 
+This repo's primary dev machine is Windows, where the agent's Bash tool is Git Bash —
+so `netstat` is the Windows binary and `grep` comes from Git Bash:
+
 ```bash
 netstat -ano | grep -E ':(8000|5173|5174)\s.*LISTENING'
 ```
+
+Native PowerShell equivalent, if you are not in Git Bash:
+
+```powershell
+Get-NetTCPConnection -State Listen | Where-Object LocalPort -in 8000,5173,5174
+```
+
+On macOS or Linux: `lsof -nP -iTCP -sTCP:LISTEN | grep -E '8000|5173|5174'`.
 
 `npm start` runs the Deno API on `:8000` and Vite on `:5173`. **Other git worktrees of this
 repo run their own Vite instances**, so a busy port often means a different checkout is

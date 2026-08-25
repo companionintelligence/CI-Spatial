@@ -74,7 +74,7 @@ const MARKER_IDS: MarkerId[] = ['landmark', 'heading']
  * landed on something that is not the floor — a step, a rug edge, a chair
  * rail — which the frame would otherwise absorb silently.
  *
- * **Adopted by decision, not by measurement** — ticket 0006 closed without
+ * **Adopted by decision, not by measurement.** Ticket 0006 closed without
  * running its benchmark. Deliberately tighter than GROUND_TAP_TOLERANCE_M:
  * that gate asks "is this roughly floor height?", this one asks "are these two
  * the same floor?".
