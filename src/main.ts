@@ -780,6 +780,98 @@ async function main() {
     }
   })
 
+  // ── Person capture — record a clip of a person for 4D reconstruction ──────
+  //
+  // A capture *mode*, so it lives on the action rail beside the other toggles
+  // rather than in the side panel where server-job triggers live.
+  //
+  // Deliberately records a raw camera stream rather than the AR canvas: the
+  // canvas has the HUD composited into it and is unusable as a reconstruction
+  // input. The AR session contributes pose only. See src/capture/clip-recorder.ts.
+  let clipRecorder: import('./capture/clip-recorder').ClipRecorder | null = null
+
+  const setPersonCaptureUI = (recording: boolean, label: string) => {
+    const btn = document.getElementById('person-capture-btn') as HTMLButtonElement | null
+    if (btn) {
+      btn.classList.toggle('active', recording)
+      btn.title = recording ? `Recording a person · ${label}` : 'Record a person (4D capture)'
+    }
+    const countEl = document.getElementById('person-capture-count')
+    if (countEl) countEl.textContent = recording ? label : ''
+  }
+
+  const stopPersonCapture = async () => {
+    if (!clipRecorder) return
+    const recorder = clipRecorder
+    clipRecorder = null
+    const clip = await recorder.stop()
+    setPersonCaptureUI(false, '')
+    if (!clip) {
+      overlay.setStatus('That recording came out empty. Try again.')
+      return
+    }
+
+    const { validateClip } = await import('./capture/clip-validation')
+    const { medianSpeedMps } = await import('./capture/pose-track')
+    const speed = medianSpeedMps(recorder.poseSamples)
+    const verdict = validateClip({
+      width: clip.width,
+      height: clip.height,
+      durationMs: clip.durationMs,
+      fps: clip.nominalFps,
+      hasArSession: clip.poseTrack.hasArSession,
+    }, speed === null ? undefined : { medianSpeedMps: speed })
+
+    if (!verdict.ok) {
+      // Say what is actually wrong with this clip, not what the rule is.
+      overlay.setStatus(verdict.problems[0].message)
+      return
+    }
+
+    overlay.setStatus(`Uploading clip · ${(clip.blob.size / 1_000_000).toFixed(1)} MB…`)
+    try {
+      const { uploadPersonClip } = await import('./capture/clip-upload')
+      const result = await uploadPersonClip(clip, {
+        projectId: selectedProject?.projectId ?? null,
+        areaId: selectedAreaId,
+        onProgress: pct => overlay.setStatus(`Uploading clip · ${pct}%`),
+      })
+      const advisory = verdict.advisories[0]
+      overlay.setStatus(
+        `Person clip uploaded${result.jobId ? ' — reconstruction queued' : ''}` +
+        (advisory ? ` · ${advisory.message}` : ''),
+      )
+    } catch (err) {
+      overlay.setStatus(`Clip upload failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  document.getElementById('person-capture-btn')?.addEventListener('click', () => {
+    if (clipRecorder) {
+      void stopPersonCapture()
+      return
+    }
+    void (async () => {
+      const { ClipRecorder } = await import('./capture/clip-recorder')
+      const recorder = new ClipRecorder(provider)
+      recorder.onStatus = (status) => {
+        if (status.state === 'recording') {
+          setPersonCaptureUI(true, `${Math.round((status.elapsedMs ?? 0) / 1000)}s`)
+        } else if (status.state === 'error') {
+          setPersonCaptureUI(false, '')
+          overlay.setStatus(status.message)
+        }
+      }
+      const started = await recorder.start()
+      if (!started) {
+        clipRecorder = null
+        return
+      }
+      clipRecorder = recorder
+      overlay.setStatus('Recording a person — keep the phone upright and move gently')
+    })()
+  })
+
   // ── Keyframe streaming — pose-tagged frames to the server during the scan ──
   const kfStreamer = keyframes
   kfStreamer.onStatus = (s) => {

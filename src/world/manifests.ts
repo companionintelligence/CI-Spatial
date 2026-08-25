@@ -107,3 +107,48 @@ export interface SplatFinishManifest extends PipelineManifestBase {
     iterations: number
   }
 }
+
+/**
+ * `person_4d.ts`'s manifest — the 4D person capture driver.
+ *
+ * The **posed multi-view frame set** is the contract between capture and
+ * processing, and this manifest is where its provenance is recorded. Both paths
+ * produce that same artifact:
+ *
+ *  - one clip  → 4DAnyone synthesizes the views a camera array would have seen
+ *  - N clips   → the real cameras already provide them, and 4DAnyone is skipped
+ *
+ * Recording which path ran is what makes the densifier swappable rather than a
+ * dependency: nothing downstream of the frame set knows or cares which produced
+ * it, and a future deformable trainer can replace the per-timestep step without
+ * touching capture or playback.
+ */
+export interface Person4DManifest extends PipelineManifestBase {
+  tool: '4d-capture'
+  takeId: string
+  /** How the views were obtained. 'densified' means 4DAnyone stood in for cameras. */
+  viewSource?: 'densified' | 'multi-camera'
+  /** Real clips in the take. 1 implies the densified path by construction. */
+  clipCount: number
+  /** Views per timestep fed to the trainer — real or synthesized. */
+  viewCount?: number
+  /** Timesteps trained; the sequence length. */
+  frameCount?: number
+  /** Playback rate of the sequence, distinct from the source clip's frame rate. */
+  fps?: number
+  durationMs?: number
+  /** Directory under SCANS_DIR holding frame-NNNNN.sog, when status is 'ok'. */
+  sequenceDir?: string
+  /**
+   * Worst inter-member residual at slice time, carried through from TakeSync.
+   *
+   * **Absent** when the take was unsynced — never defaulted to 0, which would
+   * claim a measurement that was never made (ADR 0005 rule 3).
+   */
+  syncResidualMs?: number
+  params: {
+    host: string
+    viewsPerLayer: number
+    timestepFps: number
+  }
+}

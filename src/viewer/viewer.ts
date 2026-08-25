@@ -215,6 +215,40 @@ const loadedSplats = new Map<string, LoadedSplat>()
 const scanSplatLayers = new Map<string, ScanSplatLayer>()
 let scanSplatVisible = false
 
+/**
+ * 4D person layers — a splat sequence per scan, played on a clock.
+ *
+ * Kept beside the static splat map rather than folded into it: a 4D layer owns
+ * a playhead and a windowed loader, and a scan can legitimately carry both a
+ * static splat and a sequence.
+ */
+const scanSplat4DLayers = new Map<string, import('./splat4d-layer').Splat4DLayer>()
+
+/**
+ * Attach a scan's 4D sequence, if it has one.
+ *
+ * Returns the layer, or null when the scan has no completed sequence — which is
+ * the normal case for every room scan, and for a person capture whose
+ * reconstruction was skipped because no GPU host is configured.
+ */
+async function ensureSplat4DLayer(scanId: string, scan: ScanManifest) {
+  const existing = scanSplat4DLayers.get(scanId)
+  if (existing) return existing
+
+  const { createSplat4DLayer } = await import('./splat4d-layer')
+  const layer = await createSplat4DLayer(scanId, scan.filename, {
+    onFrame: (mesh) => {
+      const loadedScan = loadedScans.get(scanId)
+      if (!loadedScan || !mesh) return
+      // Attach under the scan root, exactly where the static splat goes, so the
+      // transform gizmo and the scan's visibility apply to the sequence too.
+      if (mesh.mesh.parent !== loadedScan.root) loadedScan.root.add(mesh.mesh)
+    },
+  })
+  if (layer) scanSplat4DLayers.set(scanId, layer)
+  return layer
+}
+
 // Splat-detect object-box overlays attached per scan (splat-detect job output).
 const scanDetectLayers = new Map<string, ScanDetectLayer>()
 let scanDetectVisible = false
@@ -2053,6 +2087,24 @@ async function refreshSplatLayerPanel(scanId: string): Promise<void> {
     }
   }
 
+  // A person capture may also carry a 4D sequence. Attached here rather than in
+  // its own panel because it is the same question the user is asking — "what
+  // splat does this scan have?" — and a scan can carry both.
+  try {
+    const fourD = await ensureSplat4DLayer(scanId, scan)
+    if (fourD) {
+      fourD.setVisible(scanSplatVisible)
+      if (!fourD.playing) fourD.play()
+      const missing = fourD.missingFrames > 0 ? ` · ${fourD.missingFrames} frame(s) missing` : ''
+      status.textContent =
+        `4D person ready — ${fourD.frameCount} frames at ${fourD.fps}fps (${fourD.durationSec.toFixed(1)}s)${missing}.`
+      stats.textContent = ''
+      return
+    }
+  } catch (e) {
+    console.error('[viewer] 4D layer failed:', e)
+  }
+
   const m = layer.manifest
   if (m.status === 'ok') {
     const sourceNote = layer.loadedSource === 'sog'
@@ -2111,6 +2163,15 @@ function setScanSplatVisible(visible: boolean): void {
   scanSplatVisible = visible
   for (const layer of scanSplatLayers.values()) {
     if (layer.loaded) layer.loaded.mesh.visible = visible
+  }
+  // 4D sequences follow the same toggle — from the user's point of view it is
+  // one "show the splat" control, not two.
+  for (const layer of scanSplat4DLayers.values()) {
+    layer.setVisible(visible)
+    // Pause a hidden sequence: an invisible playhead still evicts and reloads
+    // meshes every frame, which is pure cost.
+    if (visible) layer.play()
+    else layer.pause()
   }
 }
 

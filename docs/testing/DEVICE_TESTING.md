@@ -129,6 +129,76 @@ all. Confirm the readout visually on the device.
 npm run qr -- "webxr.html"
 ```
 
+## Checklist C — 4D person capture
+
+**Status: unrun.** Every item below needs a person holding a phone (two, for C3). That is a
+hard boundary, not a tooling gap. The wave-10 code landed with these outstanding, and they are
+tracked here rather than quietly assumed — the same way wave 09 tracks its B2 item.
+
+### C1 — 8th Wall camera contention *(blocking; may reorder the feature)*
+
+The person recorder opens its own `getUserMedia` stream at portrait 1080p, deliberately not
+the AR canvas (which has the HUD composited into it and is unusable as a reconstruction
+input). On the 8th Wall path the camera is owned by `XR8`, and iOS Safari has historically
+allowed only one active capture per page.
+
+1. iPhone → `/` (8th Wall path), start a scan, wait for tracking.
+2. Tap the person-capture button on the action rail.
+3. Record the outcome:
+   - [ ] Recording starts and the AR session keeps tracking → **coexists**, nothing to change.
+   - [ ] Recording fails with a camera error → **does not coexist.** Person capture is
+         WebXR/Android-only until the 8th Wall path records from `XR8.CameraPixelArray`
+         instead, which is lower resolution and may fall below 4DAnyone's 720p floor. Say so
+         in the UI rather than failing obscurely.
+4. Note the resolution actually delivered (`getSettings()` in the recorder status).
+
+### C2 — Clip quality
+
+1. Record a 6-second clip on iPhone and on Android.
+2. Pull the clip (`GET /sessions/<id>/clip/clip.mp4`) and run `ffprobe` on it.
+3. Confirm, per device:
+   - [ ] Resolution ≥720p on the short edge, ideally 1080p
+   - [ ] Portrait, roughly 9:16
+   - [ ] Frame count ≥121 (`ffprobe -count_frames`)
+   - [ ] The container actually decodes — the client-side count is an estimate from
+         duration × nominal fps, and ffprobe is the authority
+4. Confirm `pose-track.json` timestamps span the clip and `hasArSession` is true.
+5. Note thermal behaviour: an AR session plus a separate camera capture is a heavy load, and
+   sustained recording may throttle the tracking the pose track depends on.
+
+### C3 — Multi-device sync residual *(supplies a constant)*
+
+`DEFAULT_SYNC_TOLERANCE_MS` (`src/world/types.ts`) is currently **adopted at 50ms, not
+measured**. ADR 0005 rule 5 says a tolerance must cite a measurement; this is the measurement.
+
+1. Two phones on the same tailnet, both calibrated to the **same two ground markers** for one
+   Place (this is what puts them in a shared frame — ADR 0005).
+2. Both join one take; record a clip on each.
+3. Read the residual back: `GET /takes/<takeId>` → each member's `sync.residualMs`.
+4. Repeat ≥10 times and record the spread here:
+
+   | Run | residualMs | Notes |
+   | --- | --- | --- |
+   |  |  |  |
+
+5. Set `DEFAULT_SYNC_TOLERANCE_MS` from the observed spread and cite this table at its
+   definition. **If the measured floor exceeds what a moving subject needs** (100ms at 1m/s is
+   already 10cm of disagreement), the honest finding is that network round-trip sync is
+   insufficient for multi-camera takes and only the single-clip densify path is viable — which
+   would make 4DAnyone a dependency rather than a swappable densifier, and falsify ADR 0006's
+   central claim. That is a real possible outcome, not a failure of the procedure.
+
+### C4 — Playback
+
+1. With the subsystem in stub mode (`cd subsystems/4d-capture && npm run stub`), queue a
+   `person-4d-reconstruct` job for a person scan.
+2. In the World Editor, open the scan's splat panel:
+   - [ ] A "4D person" layer appears and animates on a loop
+   - [ ] Toggling scan-splat visibility hides it and pauses playback
+   - [ ] Resident memory stays bounded over a few minutes of looping (the windowed loader)
+
+---
+
 ## Results matrix
 
 Copy per test session:
