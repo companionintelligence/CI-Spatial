@@ -34,6 +34,19 @@ payload, where it lives, and the typed API `broadcast()` and its callers use —
   permanent, distinct wire shapes (back-compat, per that wave's 0004) — the union
   models two members, it does not collapse them.
 
+  **Correction found during this ticket's grep (2026-08-24):** `job: Job` above does
+  not match what `main.ts` actually sends. `broadcastLegacyJobUpdate`
+  (`main.ts:2183-2197`) takes the `Job` that `worldJobToLegacyJob()` produces and
+  re-shapes it a second time before broadcasting, to stay byte-identical to the
+  retired `JobQueue`'s original `_emit()` payload: the field is `jobType`, not
+  `type`, and `error`/`note` are `string | null` (coerced with `?? null`), not
+  `Job`'s optional `string | undefined`. Reusing `Job` verbatim would not typecheck
+  against the real call site without changing the wire value, which Non-goals
+  forbids. The design below therefore types `job` as a new `LegacyJobUpdateJob`
+  (`src/shared/events.ts`) — the actual wire shape — not `Job`. This does not
+  change which two events exist or that they stay distinct, only what `job-update`'s
+  `job` field is typed as.
+
 ## Before implementation
 
 - `src/shared/events.ts` as landed by `foundation-updates/0006` (its exact `EVENT`
@@ -67,23 +80,46 @@ name in `foundation-updates/0006`'s `EVENT` map, with the exact field set each
 ticket's Open Q&A or a table — the full list is 0002's implementation input, not
 something 0002 should have to re-derive from `main.ts` itself).
 
+The full type declarations are landed in `src/shared/events.ts` (this ticket's
+deliverable, per Subtask 3) — this table is the same information, kept here per this
+section's own instruction so 0002 doesn't have to re-derive it from `main.ts`:
+
+| `type` | `main.ts` call site(s) | Fields beyond `type` |
+|---|---|---|
+| `client-log` | 1 (`/client-logs`, per log entry, line 447) | `ts: number`, `level: string`, `msg: string`, `stack?: string`, `url?: string`, `ua?: string`, `ip: string` |
+| `scan-added` | 1 (`/upload-scan`, line 521) | `filename: string`, `size: number` |
+| `scan-deleted` | 1 (`DELETE /scans/:filename`, line 744) | `filename: string` |
+| `scans-cleared` | 1 (`DELETE /scans`, line 765) | `deleted: number` |
+| `session-started` | 1 (`POST /sessions`, line 806) | `sessionId: string` |
+| `session-finalized` | 1 (`POST /sessions/:id/finalize`, line 940) | `sessionId: string`, `keyframeCount: number`, `glbFilename: string \| null` |
+| `video-ingested` | 1 (`/ingest-video`, line 1046) | `sessionId: string`, `scanId: string`, `jobId: string`, `frameCount: number` |
+| `photos-ingested` | 1 (`/ingest-photos`, line 1154) | `sessionId: string`, `scanId: string`, `jobId: string`, `frameCount: number` |
+| `world-job-update` | 6 (lines 2284, 2355, 2393, 3119, 3151, 3181 — every `WorldJob` status transition) | `worldId: string`, `job: WorldJob` |
+| `job-update` | 1 (`broadcastLegacyJobUpdate`, line 2186, itself called from 4 of the 6 `world-job-update` sites; a no-op for every `WorldJobType` but `optimize-scan`) | `job: LegacyJobUpdateJob` — see the Pinned-conventions correction above for why it isn't `Job` |
+
+All 10 rows are exact transcriptions verified against the current call sites — see
+Tests below.
+
 ## Definition of Done
 
-- [ ] `EventPayload` union is fully specified, one member per event name, with exact
+- [x] `EventPayload` union is fully specified, one member per event name, with exact
       field lists matching current `main.ts` call sites.
-- [ ] The `broadcast()` typed-overload API is specified (signature + how `main.ts`'s
+- [x] The `broadcast()` typed-overload API is specified (signature + how `main.ts`'s
       existing `eventSockets`/`JSON.stringify` internals stay unchanged).
-- [ ] `'job-update'` and `'world-job-update'` are both modeled explicitly, each citing
+- [x] `'job-update'` and `'world-job-update'` are both modeled explicitly, each citing
       why they're distinct (back-compat vs the real WorldJob shape).
 
 ## Tests
 
-- [ ] N/A — no code. Verify by grepping every `broadcast({ type:` call site in
+- [x] N/A — no code. Verify by grepping every `broadcast({ type:` call site in
       `main.ts` and confirming each has a corresponding union member in the design.
+      (Done: all 10 `EVENT.*` names used at `broadcast()` call sites have exactly one
+      matching `typeof EVENT.*` member in `EventPayload` — see `src/shared/events.ts`.
+      `deno task check`, `tsc --noEmit`, and `deno task test` all pass unchanged.)
 
 ## Acceptance Criteria
 
-- [ ] Given the finished design, when 0002 is implemented, then no `broadcast()` call
+- [x] Given the finished design, when 0002 is implemented, then no `broadcast()` call
       site requires a design decision — only a mechanical type annotation.
 
 ## Risks / potential issues
@@ -95,8 +131,8 @@ something 0002 should have to re-derive from `main.ts` itself).
 
 ## Subtasks
 
-1. [ ] Grep every `broadcast()` call site in `main.ts`; tabulate type + fields.
-2. [ ] Design `EventPayload` and the typed `broadcast()` signature.
-3. [ ] Write both into `src/shared/events.ts` as the ticket's actual deliverable
+1. [x] Grep every `broadcast()` call site in `main.ts`; tabulate type + fields.
+2. [x] Design `EventPayload` and the typed `broadcast()` signature.
+3. [x] Write both into `src/shared/events.ts` as the ticket's actual deliverable
        (design ticket, but the type declarations themselves are cheap enough to land
        here rather than duplicate them into prose first).
