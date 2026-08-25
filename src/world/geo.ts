@@ -10,7 +10,9 @@ const RAD_TO_DEG = 180 / Math.PI
  * types-only (zero runtime exports) and this module already owns the frame math
  * these values parameterise — `anchorToProjectTransform` below.
  *
- * Both are **placeholders pending measurement by wave 09 ticket 0006**, pinned
+ * Both are **adopted defaults, not measured values** — ticket 0006 shipped its
+ * benchmark instrument but was closed without anyone running it, so nothing is
+ * pending. Each carries its own rationale and a revisit trigger below; pinned
  * here so ticket 0004's capture flow does not invent its own.
  */
 
