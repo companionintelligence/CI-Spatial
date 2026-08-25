@@ -82,8 +82,11 @@ public/draco/
 
 .agents/*
 
-# Generated test fixtures — npm run gen:test-data
-test-data/
+# Generated test fixtures — npm run gen:test-data (test-data/cv/). The real-photograph
+# corpus below is checked in, not generated — see test-data/real/README.md.
+test-data/*
+!test-data/real/
+!test-data/real/**
 
 # LingBot-Map reference clip — fetched on demand via npm run test:lingbot:fetch-video.
 # Large CC-BY video; only LICENSE.txt is committed.

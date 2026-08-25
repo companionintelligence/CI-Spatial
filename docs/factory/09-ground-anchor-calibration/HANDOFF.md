@@ -83,7 +83,7 @@ consumer that does not exist.
 Scoped out deliberately: current requirement is aligning scans **within one Place**, not
 across Places. Revisit when the World Editor needs to be geo-referenced.
 
-### 2. There is a real 180° bug in the compass path, still unfixed
+### 2. The 180° compass bug — fixed by ticket 0009, except on the server
 
 `composeYUpTransform(t, bearing)` maps local **+Z** to the ENU direction at `bearing`
 (`geoToEnu` defines `x=east, y=up, z=north`). But the camera looks down **−Z** —
@@ -95,14 +95,37 @@ both placement paths that use a compass:
 - `server/main.ts` GPS fallback: `composeYUpTransform(translation, geoPose.bearing, 1)`
 - `anchorToProjectTransform(tapPos, bearingDeg)` — the one-point tier
 
-I grepped `src/world/`, `src/spatial/` and the server: there is **no compensating flip
-anywhere**. Two-point frames are immune (their heading is geometric), but older scans of the
-same Place carry this and will not overlay new ones.
-
 There is a second, larger error hiding behind it: `bearing` is sampled at *tap* time and
-describes the **device's** heading, not the session frame's. The correct frame yaw is
-`bearing − camera_yaw_within_session`, and that term is ignored entirely. The `Pose` rotation
-quaternion is available, so it is computable — it just isn't computed.
+describes the **device's** heading, not the session frame's. That term is unbounded, where the
+flip is a constant.
+
+**Ticket 0009 fixed both**, on the client, by measuring rather than by subtracting a literal
+180 — which would have encoded an unguaranteed assumption about how each provider initialises
+its world frame *and* left the tap-time error in place. `sessionFrameBearingDeg()` computes
+`deviceBearing − cameraYawInSession`: the camera's forward is one physical direction described
+in both frames at once, so their difference is the offset between them, and the 180° falls out
+on its own.
+
+Three things to carry forward:
+
+- **`server/main.ts`'s GPS fallback is still wrong and cannot be fixed where it stands.**
+  `composeYUpTransform(translation, geoPose.bearing, 1)` uses the device heading stored on the
+  scan, and the server has no camera pose to correct it with. It only runs for scans with no
+  `projectTransform` at all, so no session frame bearing exists for them. Fixing it needs the
+  client to persist a frame bearing into scan meta — a data-format change, and its own ticket.
+- **Frames recorded before 0009 are wrong by an unknown amount and cannot be migrated.** The
+  correction needs the camera pose at the instant the bearing was sampled, which was never
+  stored. A blanket −180 would fix only those captured at the session's starting orientation
+  and would add error to the rest. Survivable only because nothing reads `anchorBearingDeg`.
+- **The fix is analytic, not device-verified.** The tests are self-consistent with
+  `composeYUpTransform`'s convention; if that convention is itself wrong relative to the real
+  world they would agree with it and still be wrong. The settling check is small — stand facing
+  a known bearing, calibrate, read back `anchorBearingDeg` — and belongs with 0005's checklist.
+
+0009 also fixed the anchor marker's north tick, which had the same root cause:
+`buildAnchorMarker`'s parameter is a yaw **in the marker's parent frame**, which equals a
+compass bearing only where that frame's +Z is already north — true of project space, false of
+an AR session. It is named `northYawDeg` now.
 
 ### 3. Reversed point order rotates the frame exactly 180°, and passes verification
 
@@ -125,13 +148,24 @@ baseline exists to compare against. Do not report the failure as solved.
 
 ## Other findings worth knowing
 
-**`estimateFloorY()` is an 8th-percentile, not a plane fit.** It has been observed ~2 m out
-on a real capture (returned +0.84 m while the lowest detected object sat at −0.05 m). The
-frame no longer depends on it — PR #166 anchors the floor to the landmark's measured tap —
-but `isTapOnGround()` still does, so a bad estimate makes the gate reject genuine floor taps
-as "cm above the floor". The floor overlay added in #166 makes this visible; check it against
-the real floor before blaming the tolerance. Upgrading this to a RANSAC plane fit over the
-existing point cloud is the highest-value improvement available and costs the user nothing.
+**`estimateFloorY()` was an 8th-percentile, not a plane fit — fixed by ticket 0008.** It had
+been observed ~0.8 m out on a real capture (returned +0.84 m while the lowest detected object
+sat at −0.05 m). It now fits the lowest well-supported horizontal band instead, and a
+constructed regression reproducing the failure at +0.79 m is pinned in
+`tests/unit/deno/pointcloud.test.ts`.
+
+Two things to carry forward rather than assume solved:
+
+- **It is a one-parameter fit, not a plane fit, and deliberately so.** The session frame is
+  gravity-aligned, so a floor is a plane of constant y; an unconstrained 3-DOF fit can satisfy
+  itself on a *wall*. If the gravity estimate is off the floor is not level in the session
+  frame, and no horizontal fit can correct that — `groundEstimate().residualM` is the readout
+  that makes it visible. Acting on it is a follow-on ticket, to be written only if that number
+  says so.
+- **`fallback: false` is not proof a floor was found on a sparse cloud.** Structure-vs-scatter
+  is a statistical test and it is only reliable above ~1000 points (measured: at 400, 2 of 3
+  seeds produced a false positive). `MIN_POINTS_FOR_GROUND_ESTIMATE` is 50. Read `inlierCount`
+  and `residualM` for confidence there.
 
 **Detections can still be badly placed.** #166 bounded hit-test acceptance at
 `MAX_HIT_DISTANCE_M = 5.0` (it previously had no upper bound at all, making the primary path
@@ -228,13 +262,14 @@ tapping, and fall back to coordinate taps read off a screenshot when a node id g
    on the S9, return on a second device, and record the `separationM` spread against the
    baseline. If it does not improve, the honest outcome is to say so rather than keep a
    feature that only feels helpful — the ticket says this in its own risk section.
-3. **Upgrade `estimateFloorY()` to a plane fit.** Still the highest-value improvement available
-   that costs the user nothing.
-4. **Fix the −Z/+Z compass bug** if older scans need to overlay new ones.
-5. **Run the remaining on-device checks** — 0005's WebXR checklist and 0004's
-   compass-independence check, which is the clearest single demonstration this wave was worth
-   doing.
+3. **Run the remaining on-device checks** — 0005's WebXR checklist, 0004's
+   compass-independence check (the clearest single demonstration this wave was worth doing),
+   and 0009's bearing read-back, which is the one measurement that would confirm the compass
+   fix against the real world rather than against its own convention.
+4. **Ticket the server's GPS fallback** if uncalibrated scans ever need correct world
+   orientation — it needs a frame bearing persisted into scan meta, which does not exist yet.
 
-Done and no longer on this list: implementing 0007, and persisting both committed markers
+Done and no longer on this list: implementing 0007; persisting both committed markers
 (`dropCommittedPair()` now adds both to the scene directly, so `clearPlacement()` cannot tear
-the heading marker down).
+the heading marker down); the `estimateFloorY()` upgrade, which landed as ticket 0008; and the
+client half of the compass bug, which landed as ticket 0009.

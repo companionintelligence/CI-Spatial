@@ -107,7 +107,7 @@ Run the server/processing checks:
 
 ```bash
 npm run test:api
-npm run eval:cv
+CV_CORPUS=synthetic npm run eval:cv   # mock-engine regression fixture; CV_CORPUS=real needs a populated corpus
 npm run test:splat:unit
 npm run test:auth:unit
 ```

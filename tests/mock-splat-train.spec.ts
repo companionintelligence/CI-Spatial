@@ -139,6 +139,7 @@ test.describe('Splat-train server processing + viewer splat layer', () => {
     // Drive the splat-layer loader directly with a minimal scan record pointing
     // at the fixture base, then assert the SplatMesh initialised.
     const result = await page.evaluate(async (scanBase) => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const mod = await import('/src/viewer/splat-layer.ts') as typeof import('../src/viewer/splat-layer')
       const stubScan = {
         scanId: 'fixture-splat-scan',
@@ -194,6 +195,7 @@ test.describe('Splat-train server processing + viewer splat layer', () => {
     // (fake but valid) .compressed.ply — proven by numSplats matching the
     // compressed fixture's smaller gaussian count, not the raw ply's.
     const result = await page.evaluate(async (scanBase) => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const mod = await import('/src/viewer/splat-layer.ts') as typeof import('../src/viewer/splat-layer')
       const stubScan = {
         scanId: 'fixture-splat-scan-finish',
@@ -260,6 +262,7 @@ test.describe('Splat-train server processing + viewer splat layer', () => {
     await page.click('.sidebar-tab[data-tab="layers"]')
 
     const result = await page.evaluate(async (scanBase) => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const mod = await import('/src/viewer/splat-layer.ts') as typeof import('../src/viewer/splat-layer')
       const stubScan = {
         scanId: `scan-${scanBase}-err`,

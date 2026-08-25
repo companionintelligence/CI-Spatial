@@ -6,6 +6,14 @@
  * raw XR camera access (camera-access feature) isn't widely supported yet.
  * Hit-testing uses the WebXR hit-test API.
  *
+ * The companion stream is watched for staleness, not just presence: on some
+ * devices (observed on a Lume Pad 2 / ARCore / Chrome 151) the getUserMedia
+ * track and the XR session's own camera use can contend for the physical
+ * camera, and the video element keeps reporting HAVE_CURRENT_DATA while
+ * silently frozen on the last decoded frame. A capture is refused rather
+ * than re-encoding that frame — see docs/factory/04-capture-path-truthfulness/
+ * 0005-webxr-stale-camera-frame.md.
+ *
  * A THREE.WebGLRenderer is bound to the session's own WebGL2 context so the
  * calibration decal (and anything else world-locked) can render on top of
  * the passthrough — via renderer.xr.setSession(), not hand-rolled framebuffer
@@ -30,6 +38,17 @@ const MAX_XR_FPS = 120
 
 /** Rebuilds allowed while recovering a partially subscribed probe grid. */
 const MAX_GRID_ATTEMPTS = 2
+
+/**
+ * How long the companion camera stream's `currentTime` must stay frozen
+ * before a capture is refused as stale. A live `getUserMedia` stream
+ * perturbs `currentTime` every tick; a single stagnant sample could just be
+ * two rAF ticks landing on the same decoded frame before the next one
+ * arrives, so this requires stagnation across a margin of frames rather
+ * than one — several hundred ms is unambiguous. See
+ * docs/factory/04-capture-path-truthfulness/0005-webxr-stale-camera-frame.md.
+ */
+const VIDEO_STALL_THRESHOLD_MS = 500
 
 /**
  * One scanner interval of grid samples at the highest refresh rate we expect —
@@ -82,6 +101,12 @@ export class WebXRProvider implements ARProvider {
   private _gridAttempts = 0
   /** First subscription error seen, kept so the failure warning can name a cause. */
   private _gridError: unknown = null
+  /** `videoEl.currentTime` as of the last frame it was observed to change. */
+  private _videoLastCurrentTime = -1
+  /** rAF timestamp (ms) `currentTime` was first seen frozen at, or null while it's advancing. */
+  private _videoStalledSinceMs: number | null = null
+  /** Guards against overlapping re-acquire attempts while one is already in flight. */
+  private _recoveringStream = false
 
   async start(canvas: HTMLCanvasElement): Promise<void> {
     if (!navigator.xr) throw new Error('WebXR not available')
@@ -186,6 +211,24 @@ export class WebXRProvider implements ARProvider {
       // which does pass `frame`) runs alongside it, so every other tick here
       // calls back with frame === undefined. Skip those rather than crash.
       if (!frame) return
+
+      // Companion camera-stream liveness. readyState alone cannot tell a live
+      // frame from a corpse: it stays at HAVE_CURRENT_DATA (2) or above for a
+      // stream that has stopped advancing, which is exactly what let
+      // drawImage() below keep re-encoding the same frozen frame forever (see
+      // docs/factory/04-capture-path-truthfulness/0005). currentTime on a
+      // MediaStream-backed <video> only moves while the source is actually
+      // delivering samples, so tracking whether it has moved since the last
+      // tick is a direct, cheap signal of whether the feed is still alive.
+      if (self.videoEl && self.videoEl.readyState >= 2) {
+        if (self.videoEl.currentTime !== self._videoLastCurrentTime) {
+          self._videoLastCurrentTime = self.videoEl.currentTime
+          self._videoStalledSinceMs = null
+        } else if (self._videoStalledSinceMs === null) {
+          self._videoStalledSinceMs = time
+        }
+      }
+
       // Update pose
       const viewerPose = frame.getViewerPose(self.refSpace!)
       if (viewerPose) {
@@ -239,26 +282,47 @@ export class WebXRProvider implements ARProvider {
 
       // Resolve pending captureFrame() calls
       if (self.captureQueue.length > 0 && self.videoEl && self.videoEl.readyState >= 2) {
-        const w = self.videoEl.videoWidth
-        const h = self.videoEl.videoHeight
-        if (!self.offscreen || self.offscreen.width !== w || self.offscreen.height !== h) {
-          self.offscreen = new OffscreenCanvas(w, h)
-          self.offCtx = self.offscreen.getContext('2d') as OffscreenCanvasRenderingContext2D
+        const stalled = self._videoStalledSinceMs !== null &&
+          time - self._videoStalledSinceMs >= VIDEO_STALL_THRESHOLD_MS
+        if (stalled) {
+          // readyState still says HAVE_CURRENT_DATA, but currentTime has been
+          // frozen past the margin above — the frame drawImage() would produce
+          // is the same corpse every caller has already been handed. Refuse
+          // it rather than re-encode it again: a rejected capture never
+          // reaches the store (main.ts only persists after capture.capture()
+          // resolves), so nothing downstream can mistake it for a real one.
+          const queue = self.captureQueue.splice(0)
+          queue.forEach((pending) => {
+            clearTimeout(pending.timeout)
+            pending.reject(new Error('Camera stream stalled — restart the scan'))
+          })
+          // Best-effort recovery in the background — see attemptStreamRecovery().
+          // If it succeeds, the next capture attempt just works; if it fails
+          // or the platform can't safely re-acquire, the rejection above
+          // already told the user the truth.
+          void self.attemptStreamRecovery()
+        } else {
+          const w = self.videoEl.videoWidth
+          const h = self.videoEl.videoHeight
+          if (!self.offscreen || self.offscreen.width !== w || self.offscreen.height !== h) {
+            self.offscreen = new OffscreenCanvas(w, h)
+            self.offCtx = self.offscreen.getContext('2d') as OffscreenCanvasRenderingContext2D
+          }
+          self.offCtx!.drawImage(self.videoEl, 0, 0)
+          const imageData = self.offCtx!.getImageData(0, 0, w, h)
+          const frame_: RawFrame = {
+            pixels: imageData.data,
+            width: w,
+            height: h,
+            pose: { ...self.latestPose, position: { ...self.latestPose.position } },
+            timestamp: time,
+          }
+          const queue = self.captureQueue.splice(0)
+          queue.forEach((pending) => {
+            clearTimeout(pending.timeout)
+            pending.resolve(frame_)
+          })
         }
-        self.offCtx!.drawImage(self.videoEl, 0, 0)
-        const imageData = self.offCtx!.getImageData(0, 0, w, h)
-        const frame_: RawFrame = {
-          pixels: imageData.data,
-          width: w,
-          height: h,
-          pose: { ...self.latestPose, position: { ...self.latestPose.position } },
-          timestamp: time,
-        }
-        const queue = self.captureQueue.splice(0)
-        queue.forEach((pending) => {
-          clearTimeout(pending.timeout)
-          pending.resolve(frame_)
-        })
       }
 
       // Render the calibration decal (and anything else added to self.scene)
@@ -305,6 +369,9 @@ export class WebXRProvider implements ARProvider {
     this._gridError = null
     this._hitWrite = 0
     this._hitCount = 0
+    this._videoLastCurrentTime = -1
+    this._videoStalledSinceMs = null
+    this._recoveringStream = false
     this.videoStream = null
     this.viewerSpace = null
     this.renderer = null
@@ -314,6 +381,60 @@ export class WebXRProvider implements ARProvider {
 
   getScene(): THREE.Scene | null {
     return this.scene
+  }
+
+  /**
+   * Best-effort re-acquire of the companion camera stream after a detected
+   * stall, without ending the immersive-ar session. Whether this can
+   * succeed while ARCore (or another XR runtime) holds the camera exclusively
+   * is unconfirmed — see the ticket's second open question — so failure here
+   * is expected on some devices and is not itself an error: the caller has
+   * already rejected the in-flight capture with an honest message, so a
+   * failed recovery just means the *next* capture attempt fails the same way
+   * until the user restarts the scan, rather than the app silently hanging.
+   */
+  private async attemptStreamRecovery(): Promise<void> {
+    if (this._recoveringStream || !this.session) return
+    this._recoveringStream = true
+    try {
+      // Stop the stalled tracks before requesting a new stream — the same
+      // teardown stop() uses below, reused here so the old, no-longer-
+      // delivering tracks aren't still open (and possibly still holding the
+      // device) while a fresh request goes out.
+      this.videoStream?.getTracks().forEach((t) => t.stop())
+      this.videoStream = null
+
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      })
+
+      // stop() may have run (session ended) while getUserMedia() was pending.
+      if (!this.session) {
+        newStream.getTracks().forEach((t) => t.stop())
+        return
+      }
+
+      this.videoStream = newStream
+      if (!this.videoEl) this.videoEl = document.createElement('video')
+      this.videoEl.srcObject = newStream
+      this.videoEl.playsInline = true
+      this.videoEl.muted = true
+      await this.videoEl.play()
+
+      // Give the fresh stream a clean liveness baseline rather than judging
+      // it against currentTime readings from the stream it replaced.
+      this._videoLastCurrentTime = -1
+      this._videoStalledSinceMs = null
+      console.info('[webxr] camera stream re-acquired after a detected stall')
+    } catch (e) {
+      console.warn(
+        '[webxr] camera stream recovery failed — captures will keep failing until the scan is restarted:',
+        e,
+      )
+    } finally {
+      this._recoveringStream = false
+    }
   }
 
   captureFrame(timeoutMs = 4000): Promise<RawFrame> {
