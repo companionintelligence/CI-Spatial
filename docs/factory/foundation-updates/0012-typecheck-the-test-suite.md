@@ -67,16 +67,22 @@ The TS2345s are the interesting ones: they are object literals built as
 drift this ticket exists to make visible, and it is evidence the check earns its keep
 rather than a reason to defer it.
 
-**`@types/node` is not installed** (`node_modules/@types/` holds only `leaflet`,
-`three`, `webxr`). Specs use `Buffer` — `tests/api-house-readiness.spec.ts`,
-`tests/api-reference-photos.spec.ts`, `tests/mock-two-point-calibration.spec.ts` — so
-the tests project needs it as a `devDependency`.
+**On `@types/node`** — `node_modules/@types/` holds only `leaflet`, `three` and `webxr`, and
+several specs use `Buffer` (`tests/api-house-readiness.spec.ts`,
+`tests/api-reference-photos.spec.ts`, `tests/mock-two-point-calibration.spec.ts`), so this
+scoping pass concluded the tests project would need it as a `devDependency`.
+**That conclusion was wrong and implementation reversed it** — the `Buffer` diagnostic came
+from the throwaway config used for this very measurement, not from the real one. See Open
+questions. No dependency is added and no lockfile is touched; the paragraph is kept as written
+so the mistake is legible rather than edited out of history.
 
 ## Non-goals
 
-- **Do not fold `tests/` into the root `tsconfig.json`.** Its `lib` is
-  `ES2022, DOM, DOM.Iterable` on purpose — a browser program. Specs are Node programs
-  that drive a browser and need Node and Playwright types the app must never see.
+- **Do not fold `tests/` into the root `tsconfig.json`.** That config is what
+  `npm run build` and the pre-push `tsc --noEmit` check, so specs would land in the
+  production build's type graph. It also describes a browser program (`lib: ES2022, DOM,
+  DOM.Iterable`); specs are Node programs that drive a browser, and the two ambient
+  environments are worth keeping apart.
   Folding them in also puts spec files in `npm run build`'s type graph, which is the
   class of cross-runtime leak ADR 0002 exists because of.
 - **Do not add `tests/unit/deno/` to the TypeScript project.** Those use `jsr:`
@@ -140,10 +146,18 @@ convention in `package.json` rather than inventing a new separator.
 ## Open questions & answers
 
 - Q: Separate `tsconfig.tests.json`, or extend the root `include`? — A: **Separate.**
-  The root config is a browser program (`lib: DOM`, no Node types) and is consumed by
-  `vite build`; specs are Node programs. Folding them in would both pollute the
-  production build's type graph and force Node types into the app's `lib`. (Decided in
-  this ticket.)
+  The decisive reason is scope: the root config is what `npm run build` and the pre-push
+  `tsc --noEmit` type-check, so folding specs in would pull every Playwright file into the
+  **production build's type graph** — slower, and it puts test-only code where a build error
+  can come from a file that never ships.
+  **Corrected during implementation:** an earlier draft of this answer argued the root config
+  has "no Node types" and that folding specs in would "force Node types into the app's `lib`".
+  That conflates two settings. `lib` selects built-in library declarations (`ES2022`, `DOM`);
+  which `@types/*` packages are in scope is `types`/`typeRoots`. Folding specs in would not
+  have touched `lib` at all. The separation is still right — a browser program and a Node
+  program have different ambient environments, and keeping them apart is worth doing — but the
+  mechanism named was not the one at work. (Decided in this ticket; rationale corrected after
+  review.)
 - Q: Should the 41 `page.evaluate` import errors be fixed or suppressed? — A:
   **Suppressed, narrowly and with a comment naming the reason.** They are not defects:
   the specifier is resolved by Vite in the page at runtime. A blanket
@@ -267,10 +281,10 @@ npm run typecheck:tests && npm run verify && npm run build
   fixes. — **Mitigation:** check each against `src/world/types.ts` and its git history
   before editing; if a fixture is right and the schema moved, that is a finding worth
   reporting, not a cast.
-- **Risk:** `@types/node` in the tests program can leak Node globals into editor
-  IntelliSense for `src/` files if the tests config is picked up by the language
-  server for the wrong files. — **Mitigation:** keep `include` tight and verify the
-  root config still resolves first for `src/`.
+- **Risk:** ~~`@types/node` in the tests program can leak Node globals into editor
+  IntelliSense for `src/` files.~~ — **Did not arise:** no `types` override was added at all,
+  so the tests program's ambient environment is whatever the root config already resolves.
+  `include` is still kept tight so the language server picks the root config for `src/`.
 - **Risk:** Adding a devDependency invites `npm install`, which CLAUDE.md documents as
   the thing that corrupts this repo's tree and produces a Playwright error naming the
   wrong cause. — **Mitigation:** `rm -rf node_modules && npm ci` after the
@@ -283,7 +297,8 @@ npm run typecheck:tests && npm run verify && npm run build
 
 1. [ ] Re-measure: build a throwaway tests-only project extending `tsconfig.json` and
        record the current error count per file, with `noUnusedLocals` both on and off
-2. [ ] Add `@types/node` as a devDependency; `rm -rf node_modules && npm ci`
+2. [x] ~~Add `@types/node` as a devDependency; `rm -rf node_modules && npm ci`~~ — **not
+       needed**; the premise was wrong, see Open questions. No dependency added.
 3. [ ] Add `tsconfig.tests.json` (extends root; `include` = `tests/**/*.spec.ts`)
 4. [ ] Add `"typecheck:tests"` to `package.json` and chain it into `"verify"`
 5. [ ] Suppress the `page.evaluate` runtime-import specifiers per site, each with a

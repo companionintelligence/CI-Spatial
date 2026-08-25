@@ -746,8 +746,8 @@ test.describe('Tier 2: Boundary & Corner Cases', () => {
   })
 
   test('Test 23: Duplicate Collision Mitigation', () => {
-    const existing = new Map()
-    existing.set('chair:0.0,0.0,-1.0', {
+    const existing = new Map<string, WorldDetection>()
+    existing.set('chair:0.0,0.0,-1.0', legacyDetection({
       label: 'chair',
       confidence: 0.7,
       description: 'First chair',
@@ -755,7 +755,7 @@ test.describe('Tier 2: Boundary & Corner Cases', () => {
       worldPos: { x: 0.0, y: 0.0, z: -1.0 },
       worldRot: { x: 0, y: 0, z: 0, w: 1 },
       captureTimestamp: 1000,
-    })
+    }))
 
     const incoming = [{
       label: 'chair',
@@ -1095,8 +1095,8 @@ test.describe('Tier 3: Cross-Feature Combinations', () => {
 test.describe('Tier 4: Real-World Application Scenarios', () => {
 
   test('Test 34: Highly Cluttered Environment Scanning (F2 + F3)', async () => {
-    const existing = new Map()
-    existing.set('chair:1.0,2.0,-1.0', {
+    const existing = new Map<string, WorldDetection>()
+    existing.set('chair:1.0,2.0,-1.0', legacyDetection({
       label: 'chair',
       confidence: 0.8,
       description: 'First chair',
@@ -1104,7 +1104,7 @@ test.describe('Tier 4: Real-World Application Scenarios', () => {
       worldPos: { x: 1.0, y: 2.0, z: -1.0 },
       worldRot: { x: 0, y: 0, z: 0, w: 1 },
       captureTimestamp: 1000,
-    })
+    }))
 
     const incomingClose = [{
       label: 'chair',
@@ -1271,13 +1271,13 @@ test.describe('Tier 4: Real-World Application Scenarios', () => {
     const cap1 = normalizeDetections([
       { label: 'office chair', bbox: [0.1, 0.1, 0.2, 0.2], confidence: 0.7, description: 'First chair' },
     ])
-    const existing = new Map()
-    existing.set(`${cap1[0].label}:0.0,0.0,-1.0`, {
+    const existing = new Map<string, WorldDetection>()
+    existing.set(`${cap1[0].label}:0.0,0.0,-1.0`, legacyDetection({
       ...cap1[0],
       worldPos: { x: 0.0, y: 0.0, z: -1.0 },
       worldRot: { x: 0, y: 0, z: 0, w: 1 },
       captureTimestamp: 1000,
-    })
+    }))
 
     // Capture 2: same physical chair, VLM says "chair" this time.
     const cap2 = normalizeDetections([
@@ -1296,8 +1296,8 @@ test.describe('Tier 4: Real-World Application Scenarios', () => {
   })
 
   test('Test 41: Different canonical labels at the same position stay separate', () => {
-    const existing = new Map()
-    existing.set('chair:0.0,0.0,-1.0', {
+    const existing = new Map<string, WorldDetection>()
+    existing.set('chair:0.0,0.0,-1.0', legacyDetection({
       label: 'chair',
       confidence: 0.8,
       description: 'A chair',
@@ -1305,7 +1305,7 @@ test.describe('Tier 4: Real-World Application Scenarios', () => {
       worldPos: { x: 0.0, y: 0.0, z: -1.0 },
       worldRot: { x: 0, y: 0, z: 0, w: 1 },
       captureTimestamp: 1000,
-    })
+    }))
 
     const incoming = [{
       label: 'lamp',
@@ -1322,8 +1322,8 @@ test.describe('Tier 4: Real-World Application Scenarios', () => {
   })
 
   test('Test 42: findNearbyKey merges into the nearer of two same-label candidates', () => {
-    const existing = new Map()
-    existing.set('chair:0.0,0.0,0.0', {
+    const existing = new Map<string, WorldDetection>()
+    existing.set('chair:0.0,0.0,0.0', legacyDetection({
       label: 'chair',
       confidence: 0.6,
       description: 'Chair A',
@@ -1331,8 +1331,8 @@ test.describe('Tier 4: Real-World Application Scenarios', () => {
       worldPos: { x: 0.0, y: 0.0, z: 0.0 },
       worldRot: { x: 0, y: 0, z: 0, w: 1 },
       captureTimestamp: 1000,
-    })
-    existing.set('chair:0.3,0.0,0.0', {
+    }))
+    existing.set('chair:0.3,0.0,0.0', legacyDetection({
       label: 'chair',
       confidence: 0.6,
       description: 'Chair B',
@@ -1340,7 +1340,7 @@ test.describe('Tier 4: Real-World Application Scenarios', () => {
       worldPos: { x: 0.3, y: 0.0, z: 0.0 },
       worldRot: { x: 0, y: 0, z: 0, w: 1 },
       captureTimestamp: 1000,
-    })
+    }))
 
     // 0.28 m from A, 0.02 m from B — both inside DEDUP_RADIUS_M, B is nearer.
     const incoming = [{
