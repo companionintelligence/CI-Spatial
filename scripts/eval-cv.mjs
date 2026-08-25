@@ -1,35 +1,65 @@
 /**
- * CV model evaluation harness — scores /infer against the generated ground
- * truth (test-data/cv/expected.json).
+ * CV model evaluation harness — scores /infer against ground truth for a
+ * chosen corpus (scripts/lib/cv-corpus.mjs resolves CV_CORPUS).
  *
- *   node scripts/eval-cv.mjs                       # server at :8000
+ *   node scripts/eval-cv.mjs                       # server :8000, CV_CORPUS=real (default)
+ *   CV_CORPUS=synthetic node scripts/eval-cv.mjs    # mock-engine regression fixture
  *   SERVER_URL=http://localhost:8098 node scripts/eval-cv.mjs
- *   STRICT=1 node scripts/eval-cv.mjs              # exit 1 below thresholds
+ *   STRICT=1 node scripts/eval-cv.mjs               # gate — see below
  *
- * Works against any engine (mock / ollama / onnx) — the mock engine should
- * score ≈1.0 and acts as the pipeline regression baseline; real VLMs get an
- * honest precision/recall/IoU report on the same fixed corpus.
+ * STRICT=1 is the detection regression gate (docs/factory/
+ * 06-detection-ground-truth/0003-detection-regression-gate.md). If the
+ * scored corpus has a committed <corpus dir>/baseline.json (a checked-in
+ * copy of a prior report.json — see scripts/accept-detection-baseline.mjs),
+ * STRICT compares this run against it and fails only on a drop bigger than
+ * scripts/lib/detection-gate.mjs's BASELINE_TOLERANCE — "not worse than
+ * recorded," never an absolute bar. Without a committed baseline (true for
+ * the synthetic corpus, which is gitignored) it falls back to the original
+ * fixed thresholds below, which suit that corpus's deterministic ~1.0 mock
+ * baseline.
+ *
+ * Two corpora, two different jobs — see docs/factory/06-detection-ground-truth/:
+ *   - CV_CORPUS=real (default) -> test-data/real/ — real photographs with
+ *     human-verified ground truth (0001-real-photograph-corpus.md). The only
+ *     corpus that can tell a working vision model from a fabricating one;
+ *     this is what model selection (npm run bench:models) should use.
+ *   - CV_CORPUS=synthetic -> test-data/cv/ — furniture drawn as palette-
+ *     coloured rectangles (generate-cv-images.mjs / npm run gen:test-data).
+ *     A deterministic pipeline-regression fixture for the *mock* engine
+ *     only — the mock engine matches colour to label and scores ~1.0 here.
+ *     A real vision model is out of distribution against this corpus and is
+ *     expected to score ~0%; this script warns loudly when that happens so
+ *     the number isn't mistaken for a verdict on the model.
  *
  * Metrics: greedy IoU matching per image (same-label first), then
  *   precision, recall, mean IoU of matches, label accuracy.
- * Writes test-data/cv/report.json.
+ * Writes <corpus dir>/report.json, beside whichever corpus ran.
  */
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { resolveCorpus } from './lib/cv-corpus.mjs'
+import { BASELINE_FILENAME, BASELINE_TOLERANCE, compareToBaseline } from './lib/detection-gate.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const cvDir = join(root, 'test-data', 'cv')
 const SERVER = process.env.SERVER_URL ?? 'http://localhost:8000'
 const STRICT = process.env.STRICT === '1'
 const MATCH_IOU = 0.5
 const STRICT_THRESHOLDS = { precision: 0.9, recall: 0.9, meanIoU: 0.75 }
 
+const corpus = resolveCorpus(root, process.env.CV_CORPUS ?? 'real')
+const cvDir = corpus.dir
+const tag = `[eval-cv:${corpus.label}]`
+
 if (!existsSync(join(cvDir, 'expected.json'))) {
-  console.error('[eval-cv] test-data/cv/expected.json missing — run: npm run gen:test-data')
+  console.error(`${tag} ${corpus.missingHelp(corpus.rel)}`)
   process.exit(1)
 }
 const expected = JSON.parse(readFileSync(join(cvDir, 'expected.json'), 'utf8'))
+if (expected.length === 0) {
+  console.error(`${tag} ${corpus.emptyHelp(corpus.rel)}`)
+  process.exit(1)
+}
 
 function iou(a, b) {
   const x0 = Math.max(a[0], b[0])
@@ -44,10 +74,24 @@ function iou(a, b) {
 
 const health = await fetch(`${SERVER}/health`).then((r) => r.json()).catch(() => null)
 if (!health) {
-  console.error(`[eval-cv] server unreachable at ${SERVER} — start it with npm run server`)
+  console.error(`${tag} server unreachable at ${SERVER} — start it with npm run server`)
   process.exit(1)
 }
-console.log(`[eval-cv] engine: ${health.model} @ ${SERVER}\n`)
+console.log(`${tag} engine: ${health.model} @ ${SERVER}`)
+console.log(`${tag} corpus: ${corpus.rel} (${expected.length} images)`)
+
+// The synthetic corpus is colour rectangles, not photographs — a real vision
+// model is out of distribution against it and expected to score ~0%. Warn
+// loudly rather than let that number pass as a verdict on the model.
+const isMockEngine = health.model.startsWith('mock/')
+const outOfDistribution = corpus.label === 'synthetic' && !isMockEngine
+if (outOfDistribution) {
+  console.warn(`${tag} ⚠ scoring a real vision model (${health.model}) against the SYNTHETIC corpus.`)
+  console.warn(`${tag} ⚠ That corpus is palette-coloured rectangles, not photographs — a working model`)
+  console.warn(`${tag} ⚠ is expected to score near 0% here. This is NOT a verdict on the model.`)
+  console.warn(`${tag} ⚠ Use CV_CORPUS=real (the default) to actually rank vision models.`)
+}
+console.log('')
 
 let tp = 0
 let fp = 0
@@ -119,6 +163,8 @@ const meanIoU = tp ? iouSum / tp : 0
 const labelAccuracy = tp ? labelHits / tp : 0
 
 const report = {
+  corpus: corpus.label,
+  corpusDir: corpus.rel,
   engine: health.model,
   evaluatedAt: new Date().toISOString(),
   images: expected.length,
@@ -127,15 +173,37 @@ const report = {
   recall: +recall.toFixed(4),
   meanIoU: +meanIoU.toFixed(4),
   labelAccuracy: +labelAccuracy.toFixed(4),
+  ...(outOfDistribution && {
+    outOfDistributionWarning:
+      'Scored against the synthetic corpus with a non-mock engine. That corpus is palette-' +
+      'coloured rectangles, not photographs — a real vision model is expected to score near ' +
+      '0% here. This result is NOT a verdict on the model; use CV_CORPUS=real to rank models.',
+  }),
   perImage,
 }
 writeFileSync(join(cvDir, 'report.json'), JSON.stringify(report, null, 2))
 
-console.log(`\n[eval-cv] precision ${(precision * 100).toFixed(1)}%  recall ${(recall * 100).toFixed(1)}%  ` +
+console.log(`\n${tag} precision ${(precision * 100).toFixed(1)}%  recall ${(recall * 100).toFixed(1)}%  ` +
   `meanIoU ${meanIoU.toFixed(3)}  labelAcc ${(labelAccuracy * 100).toFixed(1)}%`)
-console.log(`[eval-cv] report → test-data/cv/report.json`)
+console.log(`${tag} report → ${corpus.rel}/report.json`)
+if (outOfDistribution) {
+  console.warn(`${tag} ⚠ the result above is NOT meaningful — see the warning above. It does not ` +
+    `reflect ${health.model}'s real quality. Use CV_CORPUS=real to rank vision models.`)
+}
 
-if (STRICT && (precision < STRICT_THRESHOLDS.precision || recall < STRICT_THRESHOLDS.recall || meanIoU < STRICT_THRESHOLDS.meanIoU)) {
-  console.error(`[eval-cv] FAIL — below strict thresholds ${JSON.stringify(STRICT_THRESHOLDS)}`)
-  process.exit(1)
+if (STRICT) {
+  const baselinePath = join(cvDir, BASELINE_FILENAME)
+  if (existsSync(baselinePath)) {
+    const baseline = JSON.parse(readFileSync(baselinePath, 'utf8'))
+    const regressions = compareToBaseline(report, baseline, BASELINE_TOLERANCE)
+    if (regressions.length) {
+      console.error(`${tag} FAIL — regressed vs committed baseline (${baseline.engine} @ ${baseline.evaluatedAt}), beyond tolerance ${JSON.stringify(BASELINE_TOLERANCE)}:`)
+      for (const r of regressions) console.error(`${tag}   ${r.metric}: ${r.baseline} → ${r.current} (Δ -${r.drop})`)
+      process.exit(1)
+    }
+    console.log(`${tag} within tolerance of committed baseline (${baseline.engine} @ ${baseline.evaluatedAt})`)
+  } else if (precision < STRICT_THRESHOLDS.precision || recall < STRICT_THRESHOLDS.recall || meanIoU < STRICT_THRESHOLDS.meanIoU) {
+    console.error(`${tag} FAIL — no committed baseline at ${corpus.rel}/${BASELINE_FILENAME}; below fallback absolute thresholds ${JSON.stringify(STRICT_THRESHOLDS)}`)
+    process.exit(1)
+  }
 }

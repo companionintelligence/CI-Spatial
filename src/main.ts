@@ -21,8 +21,9 @@ import { AutoCapture } from './capture/auto-capture'
 import { KeyframeStreamer } from './capture/keyframes'
 import { ScanQualityMonitor, isFrameUnusable } from './capture/quality-monitor'
 import type { FrameQuality } from './capture/quality-monitor'
-import { InferenceRouter } from './inference/router'
+import { InferenceRouter, WebGpuInferenceError } from './inference/router'
 import { InferServerError } from './inference/server'
+import { getProvisioningStatus, provisionModel, removeProvisionedModel, estimateModelCacheBytes } from './inference/model-provisioning'
 import { bucket, resolveDetections, mergeDetections } from './spatial/resolver'
 import { DetectionStore } from './scene/store'
 import {
@@ -306,11 +307,33 @@ async function main() {
       overlay.setStatus(`AI: ${mode === 'server' ? 'Server' : 'WebGPU'}`)
     },
     router.path,
+    // Wave 05 ticket 0004 — undefined (no row shown) on a device that cannot
+    // run the on-device path at all (router.hasWebGPU false). Provisioning
+    // 2.2 GB of weights a browser can never load them into buys nothing.
+    router.hasWebGPU
+      ? () => provisionModel((stage, pct) => overlay.setProgress(pct, stage)).finally(() => {
+        overlay.setProgress(null)
+        void checkStorageQuota(store, overlay)
+      })
+      : undefined,
+    router.hasWebGPU
+      ? async () => { await removeProvisionedModel(); return getProvisioningStatus() }
+      : undefined,
+    // Wave 05 ticket 0004 — the toggle is always offered, but a device
+    // without WebGPU gets told specifically why it's disabled instead of
+    // just failing on use (this ticket's Acceptance Criteria).
+    router.hasWebGPU ? null : 'This browser has no WebGPU support',
   )
   panel.mount()
   // WebRTC live view is an experimental feature and must not appear in normal
   // scanning until its device connection path is reliable.
   if (!WEBRTC_LIVE_ENABLED) panel.streamButton?.remove()
+  // Seed the "On-device model" row with real on-disk state (and, best-effort,
+  // the download's total size) rather than leaving it on its mount-time
+  // "checking…" placeholder indefinitely.
+  if (router.hasWebGPU) {
+    void getProvisioningStatus({ probe: true }).then((status) => panel.setModelStatus(status))
+  }
 
   const history = new SessionHistory(store)
   history.mount()
@@ -431,7 +454,11 @@ async function main() {
       // Not awaited: the write stays off the shutter's critical path, which
       // already has no flash, haptic or sound to cover latency
       // (../docs/product/UI_MANUAL.md:169-176). It is reconciled before the detections land.
-      const capturePersisted = store.putCapture({ captureIndex, timestamp, pose, blob })
+      // `engine: router.path` records which path this capture was actually
+      // sent to — wave 05 ticket 0004 provenance — read here rather than
+      // after router.infer() resolves so a captured-but-failed-on-device
+      // record still says "webgpu" (what was attempted), not "server".
+      const capturePersisted = store.putCapture({ captureIndex, timestamp, pose, blob, engine: router.path })
 
       overlay.setStatus('Analysing…')
 
@@ -562,6 +589,23 @@ async function main() {
           default:
             overlay.setStatus('Capture failed — try again')
         }
+      } else if (e instanceof WebGpuInferenceError) {
+        // On-device failed. The image was never sent anywhere — see
+        // src/inference/router.ts's fallback policy
+        // (docs/factory/05-on-device-inference/0004-ungate-toggle-and-fallback-policy.md).
+        // This branch exists so the user learns exactly that, instead of a
+        // generic "Capture failed" leaving them to guess whether their photo
+        // left the device.
+        switch (e.code) {
+          case 'timeout':
+            overlay.setStatus('On-device inference timed out — nothing was sent. Try again, or switch to Server.')
+            break
+          case 'not-provisioned':
+            overlay.setStatus('On-device model not downloaded yet — open the panel to download it, or switch to Server.')
+            break
+          default:
+            overlay.setStatus('On-device inference failed — nothing was sent. Try again, or switch to Server.')
+        }
       } else {
         const message = e instanceof Error ? e.message : String(e)
         const name = e instanceof Error ? e.name : ''
@@ -572,6 +616,14 @@ async function main() {
           // Keep the recovery instruction from the frame-validity guard visible;
           // this is a camera lifecycle problem, not an inference failure.
           overlay.setStatus('Camera feed unavailable — close Chrome, reopen the app, then retry')
+        } else if (message.includes('Camera stream stalled')) {
+          // WebXRProvider detected the companion getUserMedia stream had frozen
+          // (see docs/factory/04-capture-path-truthfulness/0005) and refused to
+          // return the stale frame it would otherwise have re-encoded forever.
+          // A background re-acquire may already have fixed it by the time this
+          // renders — if so the next capture just works — but this message
+          // must stay honest for the case where it didn't.
+          overlay.setStatus('Camera feed frozen — restart the scan to continue')
         } else if (message.includes('Timed out')) {
           // Check if the timeout is actually due to denied camera permission
           let denied = false
@@ -770,6 +822,98 @@ async function main() {
     } else {
       overlay.setStatus(`Auto-capture OFF · ${autoCapture.captureCount} auto captures`)
     }
+  })
+
+  // ── Person capture — record a clip of a person for 4D reconstruction ──────
+  //
+  // A capture *mode*, so it lives on the action rail beside the other toggles
+  // rather than in the side panel where server-job triggers live.
+  //
+  // Deliberately records a raw camera stream rather than the AR canvas: the
+  // canvas has the HUD composited into it and is unusable as a reconstruction
+  // input. The AR session contributes pose only. See src/capture/clip-recorder.ts.
+  let clipRecorder: import('./capture/clip-recorder').ClipRecorder | null = null
+
+  const setPersonCaptureUI = (recording: boolean, label: string) => {
+    const btn = document.getElementById('person-capture-btn') as HTMLButtonElement | null
+    if (btn) {
+      btn.classList.toggle('active', recording)
+      btn.title = recording ? `Recording a person · ${label}` : 'Record a person (4D capture)'
+    }
+    const countEl = document.getElementById('person-capture-count')
+    if (countEl) countEl.textContent = recording ? label : ''
+  }
+
+  const stopPersonCapture = async () => {
+    if (!clipRecorder) return
+    const recorder = clipRecorder
+    clipRecorder = null
+    const clip = await recorder.stop()
+    setPersonCaptureUI(false, '')
+    if (!clip) {
+      overlay.setStatus('That recording came out empty. Try again.')
+      return
+    }
+
+    const { validateClip } = await import('./capture/clip-validation')
+    const { medianSpeedMps } = await import('./capture/pose-track')
+    const speed = medianSpeedMps(recorder.poseSamples)
+    const verdict = validateClip({
+      width: clip.width,
+      height: clip.height,
+      durationMs: clip.durationMs,
+      fps: clip.nominalFps,
+      hasArSession: clip.poseTrack.hasArSession,
+    }, speed === null ? undefined : { medianSpeedMps: speed })
+
+    if (!verdict.ok) {
+      // Say what is actually wrong with this clip, not what the rule is.
+      overlay.setStatus(verdict.problems[0].message)
+      return
+    }
+
+    overlay.setStatus(`Uploading clip · ${(clip.blob.size / 1_000_000).toFixed(1)} MB…`)
+    try {
+      const { uploadPersonClip } = await import('./capture/clip-upload')
+      const result = await uploadPersonClip(clip, {
+        projectId: selectedProject?.projectId ?? null,
+        areaId: selectedAreaId,
+        onProgress: pct => overlay.setStatus(`Uploading clip · ${pct}%`),
+      })
+      const advisory = verdict.advisories[0]
+      overlay.setStatus(
+        `Person clip uploaded${result.jobId ? ' — reconstruction queued' : ''}` +
+        (advisory ? ` · ${advisory.message}` : ''),
+      )
+    } catch (err) {
+      overlay.setStatus(`Clip upload failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  document.getElementById('person-capture-btn')?.addEventListener('click', () => {
+    if (clipRecorder) {
+      void stopPersonCapture()
+      return
+    }
+    void (async () => {
+      const { ClipRecorder } = await import('./capture/clip-recorder')
+      const recorder = new ClipRecorder(provider)
+      recorder.onStatus = (status) => {
+        if (status.state === 'recording') {
+          setPersonCaptureUI(true, `${Math.round((status.elapsedMs ?? 0) / 1000)}s`)
+        } else if (status.state === 'error') {
+          setPersonCaptureUI(false, '')
+          overlay.setStatus(status.message)
+        }
+      }
+      const started = await recorder.start()
+      if (!started) {
+        clipRecorder = null
+        return
+      }
+      clipRecorder = recorder
+      overlay.setStatus('Recording a person — keep the phone upright and move gently')
+    })()
   })
 
   // ── Keyframe streaming — pose-tagged frames to the server during the scan ──
@@ -1986,14 +2130,29 @@ async function persistProjectSpatialFrame(project: Project): Promise<void> {
   }
 }
 
-/** One-time HUD warning when IndexedDB usage crosses 80 % of the browser quota. */
+/**
+ * One-time HUD warning when IndexedDB usage crosses 80 % of the browser quota.
+ *
+ * Wave 05 ticket 0002 (docs/factory/05-on-device-inference/0002-browser-model-provisioning.md)
+ * extends this to know about the on-device model cache: weights and scan
+ * data draw on the same origin quota, and weights are re-downloadable while
+ * scans are not, so when the model is a meaningful share of usage the
+ * warning names it as the thing to remove — never scan data. This never
+ * deletes anything itself; DoD is "not silently evicted," not "auto-evict
+ * weights."
+ */
 async function checkStorageQuota(store: DetectionStore, overlay: ReturnType<typeof setupStatusOverlay>): Promise<void> {
   if (quotaWarningShown) return
   const q = await store.quotaStatus()
-  if (q && q.quota > 0 && q.usage / q.quota > 0.8) {
-    quotaWarningShown = true
-    overlay.setStatus('Storage nearly full — old sessions may not save')
-  }
+  if (!q || q.quota <= 0 || q.usage / q.quota <= 0.8) return
+  quotaWarningShown = true
+
+  const modelBytes = await estimateModelCacheBytes().catch(() => 0)
+  overlay.setStatus(
+    modelBytes > 0 && modelBytes / q.usage > 0.3
+      ? 'Storage nearly full — remove the on-device model to free space'
+      : 'Storage nearly full — old sessions may not save',
+  )
 }
 
 /**

@@ -36,7 +36,7 @@ import { LAYER_LABELS, LAYER_ORDER, LAYERS_HIDDEN_BY_DEFAULT } from '../world/la
 import { buildAnchorMarker } from '../world/anchor-marker'
 import { registerPWA } from '../pwa'
 import { iconLabel } from '../ui/icons'
-import { EVENT } from '../shared/events'
+import { EVENT, type EventPayload, type LegacyJobUpdateJob } from '../shared/events'
 import { WEBRTC_LIVE_ENABLED } from '../rtc/feature'
 import type {
   EditPatch,
@@ -214,6 +214,40 @@ const loadedSplats = new Map<string, LoadedSplat>()
 // Trained-splat sidecars attached per scan (splat-train job output).
 const scanSplatLayers = new Map<string, ScanSplatLayer>()
 let scanSplatVisible = false
+
+/**
+ * 4D person layers — a splat sequence per scan, played on a clock.
+ *
+ * Kept beside the static splat map rather than folded into it: a 4D layer owns
+ * a playhead and a windowed loader, and a scan can legitimately carry both a
+ * static splat and a sequence.
+ */
+const scanSplat4DLayers = new Map<string, import('./splat4d-layer').Splat4DLayer>()
+
+/**
+ * Attach a scan's 4D sequence, if it has one.
+ *
+ * Returns the layer, or null when the scan has no completed sequence — which is
+ * the normal case for every room scan, and for a person capture whose
+ * reconstruction was skipped because no GPU host is configured.
+ */
+async function ensureSplat4DLayer(scanId: string, scan: ScanManifest) {
+  const existing = scanSplat4DLayers.get(scanId)
+  if (existing) return existing
+
+  const { createSplat4DLayer } = await import('./splat4d-layer')
+  const layer = await createSplat4DLayer(scanId, scan.filename, {
+    onFrame: (mesh) => {
+      const loadedScan = loadedScans.get(scanId)
+      if (!loadedScan || !mesh) return
+      // Attach under the scan root, exactly where the static splat goes, so the
+      // transform gizmo and the scan's visibility apply to the sequence too.
+      if (mesh.mesh.parent !== loadedScan.root) loadedScan.root.add(mesh.mesh)
+    },
+  })
+  if (layer) scanSplat4DLayers.set(scanId, layer)
+  return layer
+}
 
 // Splat-detect object-box overlays attached per scan (splat-detect job output).
 const scanDetectLayers = new Map<string, ScanDetectLayer>()
@@ -2055,6 +2089,24 @@ async function refreshSplatLayerPanel(scanId: string): Promise<void> {
     }
   }
 
+  // A person capture may also carry a 4D sequence. Attached here rather than in
+  // its own panel because it is the same question the user is asking — "what
+  // splat does this scan have?" — and a scan can carry both.
+  try {
+    const fourD = await ensureSplat4DLayer(scanId, scan)
+    if (fourD) {
+      fourD.setVisible(scanSplatVisible)
+      if (!fourD.playing) fourD.play()
+      const missing = fourD.missingFrames > 0 ? ` · ${fourD.missingFrames} frame(s) missing` : ''
+      status.textContent =
+        `4D person ready — ${fourD.frameCount} frames at ${fourD.fps}fps (${fourD.durationSec.toFixed(1)}s)${missing}.`
+      stats.textContent = ''
+      return
+    }
+  } catch (e) {
+    console.error('[viewer] 4D layer failed:', e)
+  }
+
   const m = layer.manifest
   if (m.status === 'ok') {
     const sourceNote = layer.loadedSource === 'sog'
@@ -2113,6 +2165,15 @@ function setScanSplatVisible(visible: boolean): void {
   scanSplatVisible = visible
   for (const layer of scanSplatLayers.values()) {
     if (layer.loaded) layer.loaded.mesh.visible = visible
+  }
+  // 4D sequences follow the same toggle — from the user's point of view it is
+  // one "show the splat" control, not two.
+  for (const layer of scanSplat4DLayers.values()) {
+    layer.setVisible(visible)
+    // Pause a hidden sequence: an invisible playhead still evicts and reloads
+    // meshes every frame, which is pure cost.
+    if (visible) layer.play()
+    else layer.pause()
   }
 }
 
@@ -3900,33 +3961,38 @@ function connectServerEvents(): void {
   }
   ws.addEventListener('message', (event) => {
     try {
-      const msg = JSON.parse(String(event.data)) as Record<string, unknown>
-      if (msg['type'] === EVENT.SCAN_ADDED || msg['type'] === EVENT.SESSION_FINALIZED) {
+      // Server and client are one deploy unit built and shipped together (ADR
+      // 0001; docs/factory/02-typed-event-payloads/0001 designs this union,
+      // 0002 types every `main.ts` broadcast() call site against it) — this
+      // cast asserts the shape the same-build server side always sends, it is
+      // not validating untrusted wire input.
+      const msg = JSON.parse(String(event.data)) as EventPayload
+      if (msg.type === EVENT.SCAN_ADDED || msg.type === EVENT.SESSION_FINALIZED) {
         scheduleWorldRefresh()
-      } else if (msg['type'] === EVENT.JOB_UPDATE) {
-        handleJobUpdate(msg['job'] as { target?: string; status?: string; note?: string | null })
-      } else if (msg['type'] === EVENT.WORLD_JOB_UPDATE) {
-        const wj = msg['job'] as { jobType?: string; type?: string; status?: string; scanId?: string } | undefined
-        const t = wj?.type ?? wj?.jobType
-        if (t === 'lingbot-map-reconstruct' && wj?.status === 'completed' && wj?.scanId) {
+      } else if (msg.type === EVENT.JOB_UPDATE) {
+        handleJobUpdate(msg.job)
+      } else if (msg.type === EVENT.WORLD_JOB_UPDATE) {
+        const wj: WorldJob = msg.job
+        const t: WorldJobType = wj.type
+        if (t === 'lingbot-map-reconstruct' && wj.status === 'completed' && wj.scanId) {
           lingbotOverlays.delete(wj.scanId)
           if (selectedScanId === wj.scanId) void refreshLingBotMapPanel(wj.scanId)
         }
-        if ((t === 'splat-train' || t === 'splat-finish') && wj?.status === 'completed' && wj?.scanId) {
+        if ((t === 'splat-train' || t === 'splat-finish') && wj.status === 'completed' && wj.scanId) {
           const existing = scanSplatLayers.get(wj.scanId)
           if (existing) disposeScanSplatLayer(existing)
           scanSplatLayers.delete(wj.scanId)
           if (selectedScanId === wj.scanId) void refreshSplatLayerPanel(wj.scanId)
         }
-        if (t === 'splat-detect' && wj?.status === 'completed' && wj?.scanId) {
+        if (t === 'splat-detect' && wj.status === 'completed' && wj.scanId) {
           scanDetectLayers.delete(wj.scanId)
           if (selectedScanId === wj.scanId) void refreshSplatDetectPanel(wj.scanId)
         }
-        if (t === 'thing-correspondence' && wj?.status === 'completed') {
+        if (t === 'thing-correspondence' && wj.status === 'completed') {
           scheduleWorldRefresh()
         }
         if ((t === 'lingbot-map-reconstruct' || t === 'splat-train')
-          && wj?.status === 'completed' && selectedScanId
+          && wj.status === 'completed' && selectedScanId
           && (!wj.scanId || wj.scanId === selectedScanId)) {
           void refreshQualityPanel(selectedScanId)
         }
@@ -3981,8 +4047,8 @@ async function refreshWorldScans(): Promise<void> {
   }
 }
 
-function handleJobUpdate(job: { target?: string; status?: string; note?: string | null } | undefined): void {
-  if (!job?.target || !world) return
+function handleJobUpdate(job: LegacyJobUpdateJob): void {
+  if (!job.target || !world) return
   const scan = world.scans.find((s) => s.filename === job.target)
   if (!scan) return
 

@@ -144,10 +144,21 @@ with no device, no SLAM binary, and no VLM weights.
 | Artifact | Generator | Contents |
 |---|---|---|
 | `test-data/homes/` | `scripts/generate-test-homes.mjs` | **24 procedural home scans** (8 archetypes × 3 variants: studio, living room, kitchen, office, dining, kids, media, one-bed). Each GLB matches the mobile exporter schema — point cloud (11k–22k pts sampled from walls/floor/furniture with SLAM-style noise), camera path, floor plane, detection boxes with full `extras`, geo metadata — plus a server-metadata sidecar and `expected.json` ground truth (dims, furniture positions/sizes/labels). |
-| `test-data/cv/` | `scripts/generate-cv-images.mjs` | **16 synthetic room images** (pseudo-3D front views with palette-coloured furniture) + `expected.json` bounding-box ground truth for scoring `/infer`. |
+| `test-data/cv/` | `scripts/generate-cv-images.mjs` | **16 synthetic room images** (pseudo-3D front views with palette-coloured furniture) + `expected.json` bounding-box ground truth. A deterministic regression fixture for the *mock* engine only — no photo-trained vision model can score meaningfully against it (see below). |
 
 Seed a running server with the corpus: `npm run seed:test-data`
 (`COUNT=6` for a subset, `SERVER_URL=` to target another server).
+
+### Real-photograph corpus (`test-data/real/`, checked in — not generated)
+
+Unlike the corpora above, `test-data/real/` is **not** produced by `npm run gen:test-data`
+and is carved out of the `test-data/` gitignore. It holds real photographs with
+human-verified ground truth (`verifiedBy`/`verifiedAt` per entry) — the only corpus that
+can tell a working vision model from a fabricating one; see
+`docs/factory/06-detection-ground-truth/0001-real-photograph-corpus.md` and
+`test-data/real/README.md` for sourcing, privacy and synonym policy. As of this writing
+it is scaffolded (schema + policy) but has **0 photographs** — a manual/physical step not
+yet done.
 
 ### Mock CV engine (`INFERENCE_MODE=mock`)
 
@@ -156,11 +167,57 @@ Seed a running server with the corpus: `npm run seed:test-data`
 `src/shared/cv-palette.ts`). It closes the loop with the generated CV images
 and the xr8-mock camera feed — `/infer` returns exact, repeatable detections.
 
-Score any engine against the corpus:
+Score any engine against a corpus, chosen by `CV_CORPUS` (default `real`):
 ```bash
-npm run eval:cv                 # → precision/recall/meanIoU/labelAcc + test-data/cv/report.json
-STRICT=1 npm run eval:cv        # CI gate (mock engine baseline: P=R=100%, meanIoU≈0.94)
+npm run eval:cv                       # CV_CORPUS=real (default) → test-data/real/report.json
+CV_CORPUS=synthetic npm run eval:cv   # mock-engine fixture → test-data/cv/report.json
+STRICT=1 CV_CORPUS=synthetic npm run eval:cv   # CI gate (mock engine baseline: P=R=100%, meanIoU≈0.94)
 ```
+Scoring a non-mock engine against `CV_CORPUS=synthetic` prints a loud warning and adds
+`outOfDistributionWarning` to `report.json` — a real vision model is expected to score
+~0% there and that is not a verdict on the model. See
+`docs/factory/06-detection-ground-truth/0002-retarget-eval-and-bench.md`.
+
+### Detection regression gate
+
+`STRICT=1` (above) is also the regression gate — see
+`docs/factory/06-detection-ground-truth/0003-detection-regression-gate.md`. It compares a
+run against a **committed baseline** (`<corpus dir>/baseline.json`, a checked-in copy of a
+prior `report.json` — same shape, no new format) and fails only on a drop bigger than
+`scripts/lib/detection-gate.mjs`'s `BASELINE_TOLERANCE` (±0.05 on precision/recall/meanIoU,
+a placeholder pending measured run-to-run variance — see that ticket's "Manual step
+remaining"). Without a committed baseline it falls back to the original fixed thresholds,
+which is what the synthetic corpus above uses today (it's gitignored, so nothing can be
+committed there).
+
+**What triggers it** — a change to any of: `server/inference.ts`, `server/prompt.ts`,
+`src/inference/prompt.ts`, `src/shared/model-catalog.ts`, `src/shared/ollama-model.ts`,
+`src/capture/capture.ts` (the full list, with why each one matters, is
+`scripts/lib/detection-gate.mjs`'s `TRIGGER_FILES`). Deliberately narrow — see
+`docs/factory/06-detection-ground-truth/0003-detection-regression-gate.md`'s "What triggers
+the gate".
+
+**Two enforcement halves**, per that ticket's chosen option 3:
+
+1. **CI-executable, every PR, no model needed** (`.github/workflows/deno-ci.yml`'s
+   `detection-gate` job):
+   - A path filter (`npm run check:detection-gate`) that WARNS if a trigger file changed
+     but `test-data/real/` has 0 photographs (true as of this writing — 0001's manual step),
+     and FAILS if the real corpus is populated but `test-data/real/baseline.json` wasn't
+     updated in the same diff.
+   - The mock-engine pipeline regression (`npm run gate:mock`) — starts the Deno server
+     with `INFERENCE_MODE=mock`, runs `CV_CORPUS=synthetic STRICT=1 npm run eval:cv`. Catches
+     harness/schema breakage, not model-quality regressions (the mock engine runs no model).
+2. **Local, human, pre-merge — required when you touch a trigger file above:**
+   ```bash
+   CV_CORPUS=real STRICT=1 npm run eval:cv    # scores your change against the real corpus
+   npm run accept:detection-baseline          # promotes report.json -> baseline.json
+   git add test-data/real/baseline.json       # commit it alongside your change
+   ```
+   This needs Ollama and the real corpus populated — CI cannot do it (no GPU, no models; see
+   the ticket's "hard constraint: CI has no model"). If `eval:cv` prints a `FAIL` line, the
+   diff regressed detection quality beyond tolerance; investigate before promoting a new
+   baseline over it.
 
 ### Mocked AR runtimes
 

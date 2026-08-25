@@ -85,6 +85,10 @@ export function jobProcessingLabel(type: WorldJobType): string | null {
       return 'training splat'
     case 'splat-detect':
       return 'detecting objects'
+    case 'person-4d-reconstruct':
+      // Long-running and off-box, so the label matters more here than for the
+      // local jobs — a user watching this waits minutes, not seconds.
+      return 'reconstructing person'
     case 'semantic-pass':
       return 'labeling objects'
     case 'align-scan':

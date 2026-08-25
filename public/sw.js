@@ -37,6 +37,20 @@ const API_PREFIXES = [
   '/client-logs',
 ]
 
+// wave 05 ticket 0002 (docs/factory/05-on-device-inference/0002-browser-model-provisioning.md):
+// src/inference/model-provisioning.ts fetches the ~2.2 GB LFM2.5-VL model
+// files from here with resumable `Range` requests. Excluded from this
+// worker's fetch handling entirely (not routed into staleWhileRevalidate,
+// not added to any cache below) for two reasons: (1) the Cache API's
+// `put()` rejects a 206 Partial Content response — every resumed chunk
+// would throw — and (2) `cache.match()` doesn't distinguish a plain GET
+// from a ranged one, so a stale whole-file hit could be served back for a
+// request that asked for a specific byte range. Model requests fall through
+// to the browser's normal networking untouched; model-provisioning.ts keeps
+// its own verified copy in IndexedDB. Additive only, per CLAUDE.md's "Do not
+// rename" — CACHE_VERSION and QUEUE_DB above are unchanged.
+const MODEL_PATH_PREFIX = '/models/'
+
 // Mirrors OFFLINE_QUEUE_DB_NAME in src/shared/storage-keys.ts — see the
 // note above CACHE_VERSION.
 const QUEUE_DB = 'companion-scan-offline-queue'
@@ -92,6 +106,7 @@ self.addEventListener('fetch', (event) => {
   const { request } = event
   const url = new URL(request.url)
   if (url.origin !== self.location.origin) return
+  if (url.pathname.startsWith(MODEL_PATH_PREFIX)) return  // see MODEL_PATH_PREFIX above
 
   if (request.method !== 'GET') {
     if (isQueueableWrite(request, url)) {

@@ -13,6 +13,14 @@ name: Deno CI
 # permission arbitrary native postinstall binaries the same way), so it
 # stays on `node --experimental-strip-types --test` — see package.json's
 # test:lingbot:glb script and the comment at the top of that test file.
+#
+# The detection-gate job below is the CI-executable half of the detection
+# regression gate (docs/factory/06-detection-ground-truth/
+# 0003-detection-regression-gate.md): a path filter (no model needed) plus
+# the mock-engine synthetic-corpus regression check (no model needed either
+# — see that ticket's "hard constraint: CI has no model"). The real-corpus
+# quality gate runs locally, against Ollama, as a documented pre-merge step —
+# see docs/testing/TEST_INFRA.md's "Detection regression gate" section.
 
 on:
   push:
@@ -55,3 +63,47 @@ jobs:
 
       - name: Run Deno test suite
         run: deno task test
+
+  detection-gate:
+    name: detection regression gate (mock engine + path filter)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the path-filter step needs `git merge-base` against
+          # the PR's base branch, which a shallow (depth-1) checkout can't do.
+          fetch-depth: 0
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: "2.9.5"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".node-version"
+
+      - name: Cache Deno dir
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/deno
+            ~/.deno
+          key: deno-${{ runner.os }}-${{ hashFiles('deno.lock') }}
+          restore-keys: |
+            deno-${{ runner.os }}-
+
+      - name: "Install npm: dependencies (nodeModulesDir)"
+        run: deno install
+
+      - name: Fetch base branch for the diff
+        run: git fetch origin ${{ github.event.pull_request.base.ref || 'main' }}
+
+      - name: Path filter — did this change touch a detection input?
+        run: npm run check:detection-gate
+        env:
+          BASE_REF: origin/${{ github.event.pull_request.base.ref || 'main' }}
+
+      - name: Mock-engine pipeline regression (no model, no GPU)
+        run: npm run gate:mock

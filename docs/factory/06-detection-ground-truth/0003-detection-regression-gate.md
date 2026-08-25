@@ -96,28 +96,98 @@ anything**; the gate may already be half-built.
 
 ## Open questions & answers
 
-- Q: Which enforcement option? — **OPEN, and the substance of this ticket.** Leaning option 3
-  (mock in CI, real corpus locally for detection-input changes), with option 1's committed
-  score file as the review-visible artefact. **Decide before coding.**
-- Q: What tolerance counts as a regression? — OPEN. Model output varies run to run even at
-  `temperature: 0.1`. A threshold too tight produces flapping; too loose misses real
-  regressions. Needs several runs of the same model on the final corpus to establish variance
-  before a number can be chosen.
-- Q: Does `STRICT=1` already do this? — OPEN. Read it first; the answer may shrink the ticket.
-- Q: How is "this change touches detection inputs" detected — a path-based CI filter, a
-  CODEOWNERS-style rule, or documentation? — OPEN. Path filters on the files listed above are
-  mechanical and reliable; documentation alone is what failed last time.
+- Q: Which enforcement option? — **Decided: option 3** (mock engine in CI, real corpus
+  locally for detection-input changes), with option 1's committed score file
+  (`test-data/real/baseline.json`, a checked-in copy of `report.json` — same shape, not a
+  new format) as the review-visible artefact. Implemented as: a CI-executable path filter
+  (`scripts/check-detection-gate.mjs`) that requires `baseline.json` to move alongside any
+  trigger-file change, plus a CI-executable mock/synthetic-corpus regression run
+  (`scripts/ci-mock-gate.mjs`, wired into `.github/workflows/deno-ci.yml`'s new
+  `detection-gate` job), plus a documented local pre-merge step
+  (`docs/testing/TEST_INFRA.md` § "Detection regression gate") for the real-corpus
+  comparison, which needs Ollama and cannot run in CI.
+- Q: What tolerance counts as a regression? — **Not fully decided — blocked, see "Manual
+  step remaining."** `scripts/lib/detection-gate.mjs`'s `BASELINE_TOLERANCE` (±0.05 on
+  precision/recall/meanIoU) ships as an explicitly-labelled placeholder, not a measured
+  figure — establishing it needs several runs of the same model against a *populated* real
+  corpus, and that corpus has 0 photographs as of this writing. It is deliberately tight
+  (produces false positives — an unnecessary rerun — before false negatives) so a wrong
+  guess fails safe.
+- Q: Does `STRICT=1` already do this? — **Answered: no, not as shipped, but it was the right
+  flag to extend rather than replace.** It gated on fixed absolute thresholds (0.9/0.9/0.75)
+  — exactly the "absolute bar" this ticket's Non-goals rule out for a quality gate, though
+  it's a reasonable check for the deterministic mock corpus, which is why that behaviour is
+  kept as the fallback path when no baseline is committed. `STRICT=1` now means "compare to
+  the committed baseline if one exists for this corpus, else fall back to the original fixed
+  thresholds" — same flag, extended meaning, per the pinned-conventions note to check this
+  before adding a new one.
+- Q: How is "this change touches detection inputs" detected? — **Decided: a path-based CI
+  filter** (`scripts/check-detection-gate.mjs`, `TRIGGER_FILES` in
+  `scripts/lib/detection-gate.mjs`), per the ticket's own lean. It warns rather than fails
+  while the real corpus is unpopulated (see Manual step remaining) — hard-failing every
+  detection-input change on a corpus nobody can populate from a repo checkout would be
+  exactly the kind of gate that gets disabled, which is the risk this ticket exists to avoid.
+  It becomes a hard failure automatically, no code change needed, once `test-data/real/` has
+  at least one verified photograph.
+
+## Manual step remaining
+
+**Establishing the tolerance from measured run-to-run variance (Subtask 2), and running
+the literal acceptance test — `OLLAMA_MODEL=moondream:latest` against the *populated* real
+corpus (Subtask 6) — cannot be done from this change.** Both need a real, populated
+`test-data/real/` corpus, and it has 0 photographs: ticket 0001's manual/physical step (a
+camera, staged objects, a human writing ground truth) is not done. This is the same
+blocker 0001 itself documents, one ticket downstream.
+
+What this change does instead, so the acceptance test is not simply skipped:
+- `tests/unit/node/detection_gate.test.ts` exercises `compareToBaseline()` against numbers
+  shaped like the actual wave 04 defect — a working-model-shaped baseline vs. a
+  moondream-shaped near-zero run (`GOOD_BASELINE` and the "wave 04 shape" test) — and
+  confirms it is flagged. This verifies the gate's *comparison logic* is correct; it is not
+  a substitute for the live run, and is labelled as such in the test file's header.
+- `BASELINE_TOLERANCE` ships as an explicitly-commented placeholder
+  (`scripts/lib/detection-gate.mjs`), not a measured value.
+- The path-filter check (`scripts/check-detection-gate.mjs`) detects the corpus's empty
+  state and warns instead of hard-failing, so this gap doesn't silently block every future
+  detection-input PR — see the "How is 'touches detection inputs' detected" answer above.
+
+To finish once `test-data/real/` is populated (0001's step):
+1. Run `CV_CORPUS=real STRICT=1 npm run eval:cv` against `qwen3-vl:4b` several times; record
+   the spread of precision/recall/meanIoU.
+2. Set `BASELINE_TOLERANCE` in `scripts/lib/detection-gate.mjs` from that spread, citing the
+   measurement in the comment that currently marks it provisional.
+3. Run `npm run accept:detection-baseline` to commit the first real `baseline.json`.
+4. Run `OLLAMA_MODEL=moondream:latest CV_CORPUS=real STRICT=1 npm run eval:cv` and confirm
+   it now fails against that baseline — the ticket's literal acceptance test.
+5. Check off this ticket's Definition of Done / Tests / Acceptance Criteria boxes below and
+   flip the atlas entry (`docs/factory/atlas.html`, "Detection evaluation & regression
+   gate") from pending to done.
 
 ## Files impacted
 
 Changed:
-- `scripts/eval-cv.mjs` — gate behaviour, if `STRICT` does not already cover it
-- `.github/workflows/deno-ci.yml` — the CI-executable portion
-- `package.json` — script wiring
-- `CONTRIBUTING`-equivalent docs — the pre-merge step, if the gate is partly human
+- `scripts/eval-cv.mjs` — `STRICT=1` now compares against a committed baseline when one
+  exists for the scored corpus, falling back to the original fixed thresholds otherwise
+- `.github/workflows/deno-ci.yml` — new `detection-gate` job: path filter + mock-engine run
+- `package.json` — `check:detection-gate`, `accept:detection-baseline`, `gate:mock` scripts;
+  `test:detection-gate` added to `verify`
+- `docs/testing/TEST_INFRA.md` — "Detection regression gate" section: what triggers it, the
+  two enforcement halves, the local pre-merge command sequence
+- `docs/factory/atlas.html` — new "Detection evaluation & regression gate" entry under
+  Inference & Jobs
 
 Added:
-- a committed baseline score artefact
+- `scripts/lib/detection-gate.mjs` — `TRIGGER_FILES`, `BASELINE_TOLERANCE`,
+  `compareToBaseline()`, `triggeredFiles()` — shared by every script below
+- `scripts/check-detection-gate.mjs` — the CI-executable path-filter check
+- `scripts/accept-detection-baseline.mjs` — promotes a fresh `report.json` to
+  `baseline.json`
+- `scripts/ci-mock-gate.mjs` — the CI-executable mock-engine pipeline regression run
+- `tests/unit/node/detection_gate.test.ts` — unit coverage for the comparison/path-filter
+  logic, including the wave-04-shaped mechanism check (see Manual step remaining)
+- a committed baseline score artefact — **not added**; see Manual step remaining. The
+  mechanism (`baseline.json`, same shape as `report.json`) is built and wired, but no real
+  score exists yet to commit, since the real corpus has 0 photographs.
 
 ## Schema required
 
@@ -125,28 +195,44 @@ None beyond a committed `report.json`-shaped baseline. Reuses the existing shape
 
 ## Definition of Done
 
-- [ ] Changing the default model without re-running the corpus fails, or is visible in review
-- [ ] The baseline score is committed and its provenance recorded (model, corpus, date)
-- [ ] CI runs whatever portion is genuinely executable without a GPU or models
-- [ ] The tolerance is derived from measured run-to-run variance, not guessed
-- [ ] The pre-merge step, if any, is documented where a contributor will meet it
-- [ ] `npm run verify` passes
+- [x] Changing the default model without re-running the corpus fails, or is visible in
+      review — mechanically enforced by `scripts/check-detection-gate.mjs` once the real
+      corpus is populated; warns (visible in the CI job log) until then
+- [ ] The baseline score is committed and its provenance recorded (model, corpus, date) —
+      **blocked, see Manual step remaining**: the mechanism exists, no real score does yet
+- [x] CI runs whatever portion is genuinely executable without a GPU or models — the
+      `detection-gate` job (path filter + mock-engine run)
+- [ ] The tolerance is derived from measured run-to-run variance, not guessed — **blocked,
+      see Manual step remaining**: ships as an explicitly-labelled placeholder
+- [x] The pre-merge step, if any, is documented where a contributor will meet it —
+      `docs/testing/TEST_INFRA.md` § "Detection regression gate"
+- [x] `npm run verify` passes
 
 ## Tests
 
 - [ ] Simulate the wave 04 defect: set `OLLAMA_MODEL=moondream:latest` and confirm the gate
       catches it. **This is the ticket's acceptance test** — if it does not catch the exact
-      regression that motivated the wave, it is not finished.
-- [ ] Confirm an unrelated change does not trigger a corpus run
-- [ ] Confirm the mock CI path still passes
+      regression that motivated the wave, it is not finished. **Blocked, see Manual step
+      remaining** — the real corpus has 0 photographs, so this cannot run for real yet.
+      `tests/unit/node/detection_gate.test.ts` verifies the comparison logic against
+      wave-04-shaped numbers as a mechanism-level substitute; it is not this test.
+- [x] Confirm an unrelated change does not trigger a corpus run — verified locally
+      (`check-detection-gate.mjs` against a diff touching only unrelated files exits 0
+      immediately) and by `triggeredFiles()`'s unit coverage
+- [x] Confirm the mock CI path still passes — verified locally: `npm run gate:mock` starts
+      the mock-engine server, scores the synthetic corpus, exits 0
 
 ## Acceptance Criteria
 
 - [ ] Given a change to the default model that degrades detection, Then it is caught before
-      merge
-- [ ] Given a change unrelated to detection, Then no model run is required
-- [ ] Given CI without Ollama or a GPU, Then the pipeline still passes on a good change
-- [ ] Given the baseline, Then a reviewer can see the score and when it was taken
+      merge — mechanism built (path filter + baseline comparison); **not end-to-end verified
+      against a real degrading change, see Manual step remaining**
+- [x] Given a change unrelated to detection, Then no model run is required
+- [x] Given CI without Ollama or a GPU, Then the pipeline still passes on a good change
+- [ ] Given the baseline, Then a reviewer can see the score and when it was taken —
+      `baseline.json` carries `engine`/`evaluatedAt` (report.json's existing provenance
+      fields) and `accept-detection-baseline.mjs` prints the score delta on promotion; **no
+      baseline exists yet to point to, see Manual step remaining**
 
 ## Risks / potential issues
 
@@ -165,10 +251,12 @@ None beyond a committed `report.json`-shaped baseline. Reuses the existing shape
 
 ## Subtasks
 
-1. [ ] Read what `STRICT=1` already does
-2. [ ] Establish run-to-run variance on the final corpus
-3. [ ] Choose the enforcement option
-4. [ ] Commit a baseline with recorded provenance
-5. [ ] Implement the gate and its trigger scope
-6. [ ] **Verify it catches `OLLAMA_MODEL=moondream:latest`**
-7. [ ] Document the pre-merge step where contributors will meet it
+1. [x] Read what `STRICT=1` already does
+2. [ ] Establish run-to-run variance on the final corpus — **blocked, see Manual step
+       remaining**
+3. [x] Choose the enforcement option
+4. [ ] Commit a baseline with recorded provenance — **blocked, see Manual step remaining**
+5. [x] Implement the gate and its trigger scope
+6. [ ] **Verify it catches `OLLAMA_MODEL=moondream:latest`** — **blocked, see Manual step
+       remaining**; mechanism-level substitute in `tests/unit/node/detection_gate.test.ts`
+7. [x] Document the pre-merge step where contributors will meet it
