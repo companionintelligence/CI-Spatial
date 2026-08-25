@@ -74,10 +74,14 @@ const MARKER_IDS: MarkerId[] = ['landmark', 'heading']
  * landed on something that is not the floor — a step, a rug edge, a chair
  * rail — which the frame would otherwise absorb silently.
  *
- * A placeholder pending ticket 0006's measurement, like
- * GROUND_TAP_TOLERANCE_M, and deliberately tighter than it: that gate asks
- * "is this roughly floor height?", this one asks "are these two the same
- * floor?".
+ * **Adopted by decision, not by measurement** — ticket 0006 closed without
+ * running its benchmark. Deliberately tighter than GROUND_TAP_TOLERANCE_M:
+ * that gate asks "is this roughly floor height?", this one asks "are these two
+ * the same floor?".
+ *
+ * **Revisit when:** the warning fires on pairs the user is confident are both
+ * on the floor, which would mean real hit-test noise exceeds the ~3 cm this
+ * assumes.
  */
 const MARKER_HEIGHT_DISAGREEMENT_M = 0.15
 

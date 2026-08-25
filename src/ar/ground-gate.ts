@@ -17,11 +17,20 @@
  * hit-test noise; comfortably rejects a tabletop (~0.75 m) or a chair seat
  * (~0.45 m).
  *
- * **A placeholder pending measurement.** The room-loop benchmark
- * (`../../docs/testing/DEVICE_TESTING.md`) is what sets this. Note the margin to a chair
- * seat is not large, so a worse-than-assumed hit-test noise figure narrows the
- * usable window quickly — which is why the caller offers an override rather
- * than treating a rejection as final.
+ * **Adopted by decision, not by measurement.** Ticket 0006 was closed without
+ * running the room-loop benchmark that was to set this, so no device data
+ * backs 0.25 and none is pending.
+ *
+ * The margin to a chair seat is not large, so a worse-than-assumed hit-test
+ * noise figure narrows the usable window quickly — which is why the caller
+ * offers an override rather than treating a rejection as final, and why that
+ * override must stay.
+ *
+ * **Revisit when:** users are told a genuine floor tap is "cm above the
+ * floor". Note that symptom has two possible causes and this constant is the
+ * less likely one: `estimateFloorY()` is an 8th-percentile of the point cloud
+ * rather than a plane fit, and has been observed ~2 m out. Check the floor
+ * overlay against the real floor before widening this.
  */
 export const GROUND_TAP_TOLERANCE_M = 0.25
 

@@ -7,6 +7,34 @@
 > **Dependencies:** None. **Should land first among this wave's measurement work** — its
 > output sets the tolerance constants tickets 0002, 0003 and 0004 currently guess at.
 
+> ## Status: CLOSED 2026-08-25 — instrument shipped, benchmark not run
+>
+> The measurement half of this ticket was **not performed**. Both procedures require a
+> human walking a device around a room five times; that never happened, and the checkboxes
+> below are left unticked because they describe work that was not done.
+>
+> **What did ship:** the pose/drift readout behind `?debug=pose`, `src/capture/pose-delta.ts`,
+> and the documented procedures in `docs/testing/DEVICE_TESTING.md`. The instrument is
+> complete and usable — anyone can run this later without rebuilding anything.
+>
+> **What this costs:** the three constants this ticket was to set are now **adopted defaults
+> rather than measured values**, and the code says so at each definition along with the
+> symptom that should trigger revisiting it:
+>
+> | constant | value | where |
+> |---|---|---|
+> | `DEFAULT_SEPARATION_TOLERANCE_M` | 0.15 | `src/world/geo.ts` |
+> | `MIN_POINT_SEPARATION_M` | 1.0 | `src/world/geo.ts` |
+> | `GROUND_TAP_TOLERANCE_M` | 0.25 | `src/ar/ground-gate.ts` |
+>
+> The known counter-evidence is unchanged and worth restating: `DEDUP_RADIUS_M = 0.4` is the
+> only empirical spatial-repeatability figure in the repo, and it is more than twice
+> `DEFAULT_SEPARATION_TOLERANCE_M`. If the real spread is nearer 0.4 m, the separation check
+> will fire on correct calibrations and tell users their markers do not match when they do.
+> That is the specific risk being accepted by closing this unrun.
+>
+> **Reopen if** any revisit trigger in those three definitions is observed in the field.
+
 ## Goal
 
 Add the camera-pose readout the scanner HUD is missing, and document a repeatable room-loop

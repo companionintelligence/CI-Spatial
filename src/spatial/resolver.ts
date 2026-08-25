@@ -45,10 +45,14 @@ const FALLBACK_DEPTH_M = 2.0
  * here is not fatal: the caller falls through to the async hit-test, then the
  * point-cloud raycast, then the camera-relative fallback.
  *
- * A room-scale bound by construction. Scanning a space genuinely deeper than
- * this needs it raised, and that is a deliberate decision rather than a silent
- * default — see the drift benchmark in ticket 0006 for the measurement that
- * should set it.
+ * A room-scale bound by construction, adopted by decision rather than
+ * measurement (ticket 0006 closed unrun). Scanning a space genuinely deeper
+ * than this needs it raised, and that should be a deliberate change rather
+ * than a silent default.
+ *
+ * **Revisit when:** legitimate far detections start disappearing in a large
+ * space. The rejection is logged with the measured distance, so the log says
+ * plainly whether this bound is the reason.
  */
 const MAX_HIT_DISTANCE_M = 5.0
 
