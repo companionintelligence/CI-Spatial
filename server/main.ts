@@ -1571,6 +1571,14 @@ function registerSessionScan(
     console.error(`[worlds] failed to persist ingest metadata for ${filename}:`, err)
   })
   const manifest = scanManifestFromStored(stored, world.originGeoPose, world.scans.length, world.shareSlug)
+  // A session-backed scan has no geometry yet: `<sessionId>.glb` is synthetic and only
+  // becomes a real file if a reconstruction job later writes one. Saying `ready` here
+  // claims something that has not happened — and when reconstruction is skipped (no
+  // lingbot_map worker installed, the common local case) it never happens at all, so the
+  // editor fetches the advertised glbUrl and shows the user a raw
+  // `responded with 404: Not Found` per scan. Observed 2026-08-24 with three photo-ingest
+  // sessions. `processing` is the honest state: ingested, awaiting geometry.
+  manifest.status = 'processing'
   world.scans.push(manifest)
   return manifest
 }

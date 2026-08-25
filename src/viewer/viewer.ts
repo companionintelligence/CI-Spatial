@@ -1243,7 +1243,18 @@ async function loadScanIntoWorld(scan: ScanManifest): Promise<void> {
         error: message,
       })
     }
-    setScanStatus(scan.scanId, `Error: ${message}`)
+    // A 404 on a session-backed scan is not a fault the user can act on by retrying: the
+    // scan was ingested but its geometry has not been reconstructed yet (and never will be
+    // if the reconstruction worker is not installed). Surfacing the raw
+    // `fetch … responded with 404: Not Found` there tells them nothing — say what is
+    // actually true and what produces the geometry.
+    const missingGeometry = scan.status === 'processing' || /\b404\b/.test(message)
+    setScanStatus(
+      scan.scanId,
+      missingGeometry
+        ? 'No geometry yet — ingested, awaiting reconstruction. Run a reconstruct job for this scan.'
+        : `Error: ${message}`,
+    )
     throw error
   }
 }
