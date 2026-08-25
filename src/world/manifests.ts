@@ -81,6 +81,14 @@ export interface ColmapPosesManifest extends PipelineManifestBase {
   pointCount?: number
   /** Keyframes offered to the solver. */
   frameCount?: number
+  /**
+   * The pre-rotation up direction estimated from the camera orientations, in
+   * COLMAP's original world frame. Present only when the reconstruction was
+   * gravity-aligned; absent means the cameras disagreed too much to tell.
+   */
+  upAxis?: [number, number, number]
+  /** Whether the emitted poses/cloud were rotated so that up is +Y. */
+  gravityAligned?: boolean
   params: {
     colmapBin: string
     featureType: string

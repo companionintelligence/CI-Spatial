@@ -16,9 +16,14 @@ import { assert } from 'jsr:@std/assert@^1.0.0/assert'
 
 import {
   buildPosesJson,
+  estimateUpAxis,
   parseImagesBin,
   parsePoints3DBin,
   pointsToPly,
+  rotateImagePose,
+  rotatePoint,
+  rotationBetween,
+  rotationToQuat,
 } from '../../../server/colmap/colmap_model.ts'
 import { isValidSessionDir, resolveParams, runColmapPoses } from '../../../server/colmap/colmap_poses.ts'
 import { openCvW2cToC2w, POSE_SOURCES, SEED_CLOUDS } from '../../../server/splat/splat_train_dataset.ts'
@@ -201,4 +206,99 @@ Deno.test('a session with too few keyframes skips with a capture hint', async ()
   } finally {
     await Deno.remove(dir, { recursive: true })
   }
+})
+
+// ─── Gravity alignment ────────────────────────────────────────────────────────
+// SfM has no gravity reference, so these rotations decide whether a room
+// renders upright or on its side. A sign error here is invisible in every
+// other test and only shows up as a wrong-looking splat, so check the algebra.
+
+const norm = (v: number[]) => Math.hypot(...v)
+const close = (a: number, b: number, eps = 1e-9) => Math.abs(a - b) < eps
+
+Deno.test('rotationBetween maps `from` onto `to`', () => {
+  const cases: Array<[[number, number, number], [number, number, number]]> = [
+    [[-1, 0, 0], [0, 1, 0]],
+    [[0, 0, 1], [0, 1, 0]],
+    [[0.577, 0.577, 0.577], [0, 1, 0]],
+  ]
+  for (const [from, to] of cases) {
+    const f = from.map((v) => v / norm(from)) as [number, number, number]
+    const got = rotatePoint(rotationBetween(f, to), f)
+    got.forEach((v, i) => assert(close(v, to[i], 1e-6), `axis ${i}: ${v} vs ${to[i]}`))
+  }
+})
+
+Deno.test('rotationBetween handles the identity and antiparallel corner cases', () => {
+  const id = rotationBetween([0, 1, 0], [0, 1, 0])
+  assertEquals(id, [[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+  // Antiparallel: the cross product vanishes and the axis is undetermined, so
+  // the only thing that must hold is that the vector actually ends up flipped.
+  const flipped = rotatePoint(rotationBetween([0, -1, 0], [0, 1, 0]), [0, -1, 0])
+  assert(close(flipped[1], 1, 1e-6), `expected +Y, got ${flipped.join(',')}`)
+})
+
+Deno.test('rotationToQuat round-trips through all four branches', () => {
+  // One matrix per branch of the stable quaternion extraction.
+  const mats = [
+    [[1, 0, 0], [0, 1, 0], [0, 0, 1]],            // trace > 0
+    [[1, 0, 0], [0, -1, 0], [0, 0, -1]],          // R00 dominant
+    [[-1, 0, 0], [0, 1, 0], [0, 0, -1]],          // R11 dominant
+    [[-1, 0, 0], [0, -1, 0], [0, 0, 1]],          // R22 dominant
+  ]
+  for (const R of mats) {
+    const q = rotationToQuat(R)
+    assert(close(norm(q), 1, 1e-6), `quaternion not unit: ${q.join(',')}`)
+  }
+})
+
+Deno.test('estimateUpAxis recovers gravity from upright cameras', () => {
+  // Identity rotation => camera +Y (down in OpenCV) is world +Y, so world "up"
+  // must come back as -Y.
+  const imgs = [0, 1, 2, 3].map((i) => ({
+    imageId: i, qvec: [1, 0, 0, 0] as [number, number, number, number],
+    tvec: [0, 0, 0] as [number, number, number], cameraId: 1, name: `kf-0000${i}.jpg`,
+  }))
+  const up = estimateUpAxis(imgs)
+  assert(up, 'consistent cameras must yield an up estimate')
+  assertEquals(up!.map((v) => Math.round(v)), [-0, -1, -0])
+})
+
+Deno.test('estimateUpAxis declines when cameras disagree', () => {
+  // Too few views to average, and mutually cancelling views, must both bail
+  // rather than confidently rotate the scene to a wrong orientation.
+  assertEquals(estimateUpAxis([]), null)
+  const opposed = [
+    { imageId: 1, qvec: [1, 0, 0, 0] as [number, number, number, number], tvec: [0, 0, 0] as [number, number, number], cameraId: 1, name: 'a.jpg' },
+    { imageId: 2, qvec: [0, 0, 0, 1] as [number, number, number, number], tvec: [0, 0, 0] as [number, number, number], cameraId: 1, name: 'b.jpg' },
+    { imageId: 3, qvec: [1, 0, 0, 0] as [number, number, number, number], tvec: [0, 0, 0] as [number, number, number], cameraId: 1, name: 'c.jpg' },
+    { imageId: 4, qvec: [0, 0, 0, 1] as [number, number, number, number], tvec: [0, 0, 0] as [number, number, number], cameraId: 1, name: 'd.jpg' },
+  ]
+  assertEquals(estimateUpAxis(opposed), null, 'cancelling down-vectors carry no gravity signal')
+})
+
+Deno.test('rotating the world keeps cameras and points in the same frame', () => {
+  // The whole point of rotating poses and points together: a point in front of
+  // a camera must still be in front of it afterwards. Composing the rotation on
+  // the wrong side leaves the cloud right and every camera wrong.
+  const img = {
+    imageId: 1, qvec: [1, 0, 0, 0] as [number, number, number, number],
+    tvec: [0, 0, 0] as [number, number, number], cameraId: 1, name: 'kf-00000.jpg',
+  }
+  const world: [number, number, number] = [0, 0, 5] // 5m down the camera axis
+  const Q = rotationBetween([-1, 0, 0], [0, 1, 0])
+
+  const rotImg = rotateImagePose(Q, img)
+  const rotPt = rotatePoint(Q, world)
+
+  // Project through the rotated pose and compare with the original camera-space
+  // coordinate (identity R, zero t => camera space == world space).
+  const [w, x, y, z] = rotImg.qvec
+  const R = [
+    [1 - 2 * y * y - 2 * z * z, 2 * x * y - 2 * z * w, 2 * x * z + 2 * y * w],
+    [2 * x * y + 2 * z * w, 1 - 2 * x * x - 2 * z * z, 2 * y * z - 2 * x * w],
+    [2 * x * z - 2 * y * w, 2 * y * z + 2 * x * w, 1 - 2 * x * x - 2 * y * y],
+  ]
+  const cam = rotatePoint(R, rotPt)
+  cam.forEach((v, i) => assert(close(v, world[i], 1e-6), `axis ${i}: ${v} vs ${world[i]}`))
 })

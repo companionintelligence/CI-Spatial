@@ -28,7 +28,16 @@
  */
 import { isServerSessionId } from '../../src/shared/session-id.ts'
 import { isRunnable } from '../exec_probe.ts'
-import { parseImagesBin, parsePoints3DBin, pointsToPly, buildPosesJson } from './colmap_model.ts'
+import {
+  parseImagesBin,
+  parsePoints3DBin,
+  pointsToPly,
+  buildPosesJson,
+  estimateUpAxis,
+  rotationBetween,
+  rotatePoint,
+  rotateImagePose,
+} from './colmap_model.ts'
 import type { ColmapPosesManifest } from '../../src/world/manifests.ts'
 
 export interface ColmapPosesRunOptions {
@@ -232,9 +241,33 @@ export async function runColmapPoses(opts: ColmapPosesRunOptions): Promise<Colma
   // fall back to it rather than discarding a usable reconstruction.
   const modelDir = growErr ? first.dir : await bestOf(grown, first.dir)
 
-  const images = parseImagesBin(await Deno.readFile(`${modelDir}/images.bin`))
+  let images = parseImagesBin(await Deno.readFile(`${modelDir}/images.bin`))
   if (images.length === 0) {
     return finish(manifestPath, { ...base, status: 'error', error: 'model contains no registered images' }, 2, logs.join('\n'), started)
+  }
+
+  let pts: ReturnType<typeof parsePoints3DBin> = []
+  try {
+    pts = parsePoints3DBin(await Deno.readFile(`${modelDir}/points3D.bin`))
+  } catch {
+    // No cloud is survivable — Brush random-inits inside the camera frustums.
+  }
+
+  // Gravity-align the whole reconstruction before anything consumes it.
+  // SfM has no gravity reference, so COLMAP's world frame is tilted at an
+  // arbitrary angle and a Y-up viewer renders the room on its side. Rotating
+  // once here — poses and points together, so they stay in the same frame —
+  // means every downstream consumer (transforms.json, the seed cloud, the
+  // trained splat, the viewer) inherits an upright world for free. Doing it in
+  // the viewer instead would fix only the viewer and leave the exported splat
+  // wrong for everyone else.
+  const up = estimateUpAxis(images)
+  let upAxis: [number, number, number] | undefined
+  if (up) {
+    upAxis = up
+    const Q = rotationBetween(up, [0, 1, 0])
+    images = images.map((img) => rotateImagePose(Q, img))
+    pts = pts.map((pt) => ({ ...pt, xyz: rotatePoint(Q, pt.xyz) }))
   }
 
   const posesPath = `${sessionDir}/colmap.poses.json`
@@ -242,15 +275,10 @@ export async function runColmapPoses(opts: ColmapPosesRunOptions): Promise<Colma
 
   let pointCloudPath: string | undefined
   let pointCount = 0
-  try {
-    const pts = parsePoints3DBin(await Deno.readFile(`${modelDir}/points3D.bin`))
-    if (pts.length > 0) {
-      pointCloudPath = `${sessionDir}/colmap.point-cloud.ply`
-      await Deno.writeFile(pointCloudPath, pointsToPly(pts))
-      pointCount = pts.length
-    }
-  } catch {
-    // No cloud is survivable — Brush random-inits inside the camera frustums.
+  if (pts.length > 0) {
+    pointCloudPath = `${sessionDir}/colmap.point-cloud.ply`
+    await Deno.writeFile(pointCloudPath, pointsToPly(pts))
+    pointCount = pts.length
   }
 
   return finish(manifestPath, {
@@ -260,6 +288,8 @@ export async function runColmapPoses(opts: ColmapPosesRunOptions): Promise<Colma
     pointCloudPath: pointCloudPath ? 'colmap.point-cloud.ply' : undefined,
     registeredImages: images.length,
     pointCount,
+    upAxis,
+    gravityAligned: Boolean(upAxis),
   }, 0, logs.join('\n'), started, { posesPath, pointCloudPath, registeredImages: images.length, pointCount })
 }
 
