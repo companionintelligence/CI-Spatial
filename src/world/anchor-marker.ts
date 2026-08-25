@@ -20,13 +20,23 @@ const anchorNorthMaterial = new THREE.LineBasicMaterial({ color: 0xff6b6b, trans
  * Built flat in the XZ plane directly (Y=0), so no separate lie-flat
  * rotation is needed — it's already lying on the ground by construction.
  *
- * When `bearingDeg` is known, the whole group is yawed so the tick points
- * true north: Three.js's Y-axis rotation maps local +Z to (sin θ, 0, cos θ),
- * which is exactly compass bearing's own 0°=north/90°=east convention, so no
- * sign flip is needed. `bearingDeg: null` (or omitted) renders a dimmed
- * "no compass fix" state instead of guessing an orientation.
+ * `northYawDeg` is the yaw, **in whatever frame this marker is added to**, at
+ * which true north lies. The group is yawed by it so the tick points north:
+ * Three.js's Y-axis rotation maps local +Z to (sin θ, 0, cos θ), matching the
+ * `atan2(x, z)` convention used by `composeYUpTransform` and
+ * `twoPointHeadingDeg`. `null` (or omitted) renders a dimmed "no compass fix"
+ * state instead of guessing an orientation.
+ *
+ * **It is a yaw, not a compass bearing, and wave 09 ticket 0009 renamed it for
+ * that reason.** The two coincide only where the parent frame's +Z already
+ * points north — which is true of project space and *not* of an AR session's
+ * frame, whose axes are fixed at session start and point wherever the device
+ * happened to be facing. Passing a raw bearing to a marker living in session
+ * space aims the tick at whatever the compass read rather than at north; with
+ * the camera at its starting orientation that is exactly backwards. The
+ * session-space caller converts with `-sessionFrameBearingDeg(...)`.
  */
-export function buildAnchorMarker(bearingDeg: number | null = null): THREE.Group {
+export function buildAnchorMarker(northYawDeg: number | null = null): THREE.Group {
   const group = new THREE.Group()
   group.name = 'calibration anchor'
 
@@ -41,7 +51,7 @@ export function buildAnchorMarker(bearingDeg: number | null = null): THREE.Group
   }
   const ringGeometry = new THREE.BufferGeometry()
   ringGeometry.setAttribute('position', new THREE.Float32BufferAttribute(ringVerts, 3))
-  const ring = new THREE.LineSegments(ringGeometry, (bearingDeg == null ? anchorDimRingMaterial : anchorRingMaterial).clone())
+  const ring = new THREE.LineSegments(ringGeometry, (northYawDeg == null ? anchorDimRingMaterial : anchorRingMaterial).clone())
   ring.name = 'anchor ring'
   group.add(ring)
 
@@ -53,17 +63,17 @@ export function buildAnchorMarker(bearingDeg: number | null = null): THREE.Group
   crossGeometry.setAttribute('position', new THREE.Float32BufferAttribute(crossVerts, 3))
   const crosshair = new THREE.LineSegments(crossGeometry, anchorCrosshairMaterial.clone())
   crosshair.name = 'anchor crosshair'
-  if (bearingDeg == null) (crosshair.material as THREE.LineBasicMaterial).opacity = 0.35
+  if (northYawDeg == null) (crosshair.material as THREE.LineBasicMaterial).opacity = 0.35
   group.add(crosshair)
 
-  if (bearingDeg != null) {
+  if (northYawDeg != null) {
     const tickVerts = [0, 0, ANCHOR_RADIUS_M, 0, 0, ANCHOR_RADIUS_M * 1.35]
     const tickGeometry = new THREE.BufferGeometry()
     tickGeometry.setAttribute('position', new THREE.Float32BufferAttribute(tickVerts, 3))
     const tick = new THREE.LineSegments(tickGeometry, anchorNorthMaterial.clone())
     tick.name = 'anchor north tick'
     group.add(tick)
-    group.rotation.y = THREE.MathUtils.degToRad(bearingDeg)
+    group.rotation.y = THREE.MathUtils.degToRad(northYawDeg)
   }
 
   return group

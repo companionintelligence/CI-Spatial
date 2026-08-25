@@ -176,10 +176,23 @@ export type ProjectSpatialFrame = {
       /** Max acceptable deviation from separationM on a later visit. Default `DEFAULT_SEPARATION_TOLERANCE_M`. */
       toleranceM: number
       /**
-       * Compass bearing at capture. Records which way project-space north is,
-       * for GPS/world placement only — NOT used to build the frame (that comes
-       * from the landmark→marker geometry). Null when unavailable, which costs
-       * absolute orientation but leaves the frame fully determined.
+       * True-north bearing of the **session frame's +Z axis** at capture.
+       * Records which way project-space north is, for GPS/world placement only
+       * — NOT used to build the frame (that comes from the landmark→marker
+       * geometry). Null when unavailable, which costs absolute orientation but
+       * leaves the frame fully determined.
+       *
+       * **The frame's bearing, not the device's** (wave 09 ticket 0009). A
+       * compass reports where the phone points; `composeYUpTransform` needs
+       * where the session's axes point, and the two differ by however the
+       * camera was held — by exactly 180° at the session's starting
+       * orientation. Produced by `sessionFrameBearingDeg()`.
+       *
+       * **Records written before ticket 0009 carry the old meaning and cannot
+       * be migrated:** correcting one needs the camera pose at the instant it
+       * was sampled, which was never stored. They are wrong by an unknown
+       * amount. Nothing in the app reads this field yet, which is the only
+       * reason that is survivable.
        */
       anchorBearingDeg: number | null
       /**
@@ -207,7 +220,15 @@ export type ProjectSpatialFrame = {
     }
   | {
       method: 'ground-tap-compass'
-      /** Load-bearing for this method: the frame's entire heading. Null means the frame sits at the session's arbitrary yaw. */
+      /**
+       * Load-bearing for this method: the frame's entire heading. Null means
+       * the frame sits at the session's arbitrary yaw.
+       *
+       * The **session frame's** bearing, not the device's — see the
+       * `'two-point-ground'` member's note. The correction matters far more
+       * here, because on this tier a 180° error is the frame's orientation
+       * rather than unread metadata.
+       */
       anchorBearingDeg: number | null
     }
 )
