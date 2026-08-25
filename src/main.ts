@@ -210,7 +210,25 @@ async function main() {
     selectedAreaId = areaId
     uploadPlaceTarget = { projectId: project?.projectId ?? null, areaId }
     sessionScanEntry = null
+    pointEditorLinksAtPlace(project?.projectId ?? null)
   })
+
+  /**
+   * Point every "open the editor / viewer" link at the Place being scanned.
+   *
+   * Without this they go to a bare `/editor`, which loads the `default` world — and that
+   * world admits only scans with no projectId, so a scan captured into a Place is invisible
+   * there by construction. The user finishes a scan, taps through, and sees an empty editor
+   * with their work apparently gone. It is not gone; it is in `project-<id>`.
+   */
+  function pointEditorLinksAtPlace(projectId: string | null): void {
+    const suffix = projectId ? `?project=${encodeURIComponent(projectId)}` : ''
+    for (const [id, base] of [['start-editor-card', '/editor'], ['viewer-link', '/viewer.html']] as const) {
+      const link = document.getElementById(id)
+      if (link instanceof HTMLAnchorElement) link.href = `${base}${suffix}`
+    }
+  }
+  pointEditorLinksAtPlace(selectedProject?.projectId ?? null)
   requestPlaceSelection = placePicker.open
   const pointCloud = new PointCloud(0.05)   // 5 cm voxel deduplication grid
   const poseHistory: Pose[] = []
@@ -627,6 +645,7 @@ async function main() {
         if (link) {
           link.style.display = 'inline-block'
         }
+        revealDownloadLink(result.uploadedFilename)
         return { outcome: 'exported', uploadedFilename: result.uploadedFilename }
       }
 
@@ -639,9 +658,15 @@ async function main() {
         return { outcome: 'queued' }
       }
 
-      // Downloaded, but the server refused it. The file is on the device.
-      overlay.setStatus('Scan saved locally — server sync failed')
-      setAutosaveStatus('Scan saved locally — server sync failed')
+      // The server refused it. Whether the device kept a copy depends on
+      // whether the local download could still run — on a phone it usually
+      // could not, and telling someone their scan is "saved locally" when no
+      // file exists is worse than telling them it failed.
+      const msg = result.savedLocally
+        ? 'Scan saved locally — server sync failed'
+        : 'Export failed — server rejected it and no local copy was saved'
+      overlay.setStatus(msg)
+      setAutosaveStatus(msg)
       return { outcome: 'local-only' }
     } catch (error) {
       overlay.setStatus('Export failed — try again')
@@ -697,6 +722,9 @@ async function main() {
         }
         lastUploadedFilename = result.uploadedFilename
         currentSessionGlbFilename = result.uploadedFilename
+        // Autosaves never trigger a local download, so the server copy is the
+        // only copy the user can get at — surface it as soon as one exists.
+        revealDownloadLink(result.uploadedFilename)
         if (keyframes?.active) {
           await keyframes.rotate({
             glbFilename: result.uploadedFilename,
@@ -1318,6 +1346,25 @@ function setupStatusOverlay() {
 function setAutosaveStatus(text: string): void {
   const el = document.getElementById('autosave-status')
   if (el) el.textContent = text
+}
+
+/**
+ * Point the "Download .glb" link at the server's saved copy and reveal it.
+ *
+ * Called only once a scan is genuinely on the server, because that URL is what
+ * makes the link work: `/scans/:filename` serves the GLB with
+ * `Content-Disposition: attachment`, so tapping it saves the file even where
+ * the in-page blob download cannot run (see `triggerDownload` in
+ * `src/export/gltf.ts` — mobile Chrome drops downloads that have lost user
+ * activation, which the exporter's awaits guarantee).
+ */
+function revealDownloadLink(uploadedFilename: string): void {
+  const link = document.getElementById('export-download-link') as HTMLAnchorElement | null
+  if (!link) return
+  link.href = `/scans/${encodeURIComponent(uploadedFilename)}`
+  // Hint the save-as name; same-origin, so the browser honours it.
+  link.download = uploadedFilename
+  link.style.display = 'inline-block'
 }
 
 async function resolveInitialProject(projectStore: ProjectStore): Promise<Project | null> {

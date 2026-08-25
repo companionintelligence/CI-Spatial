@@ -109,9 +109,17 @@ interface OptimizationManifest {
 }
 
 const query = new URLSearchParams(location.search)
-const initialWorldSlug = query.get('world') || 'default'
 const accessToken = query.get('token') || ''
 let activeProjectId = query.get('project') || null
+// `?project=` has to pick the world, not just filter within one. The `default` world
+// carries projectId null, and belongsToWorldProject() only admits scans whose own meta
+// projectId is also null — so every scan captured with a Place selected is excluded from
+// it by construction. Landing on `default` and filtering therefore always yields nothing,
+// which is exactly what happened: four real room scans sat in
+// `project-proj-…` while the editor showed an empty default world. Each project's world
+// slug is `project-<projectId>` (see synthesizeWorld / GET /projects/:id/world).
+const initialWorldSlug = query.get('world')
+  || (activeProjectId ? `project-${activeProjectId}` : 'default')
 
 function withAccessToken(url: string): string {
   if (!accessToken) return url
@@ -1243,7 +1251,18 @@ async function loadScanIntoWorld(scan: ScanManifest): Promise<void> {
         error: message,
       })
     }
-    setScanStatus(scan.scanId, `Error: ${message}`)
+    // A 404 on a session-backed scan is not a fault the user can act on by retrying: the
+    // scan was ingested but its geometry has not been reconstructed yet (and never will be
+    // if the reconstruction worker is not installed). Surfacing the raw
+    // `fetch … responded with 404: Not Found` there tells them nothing — say what is
+    // actually true and what produces the geometry.
+    const missingGeometry = scan.status === 'processing' || /\b404\b/.test(message)
+    setScanStatus(
+      scan.scanId,
+      missingGeometry
+        ? 'No geometry yet — ingested, awaiting reconstruction. Run a reconstruct job for this scan.'
+        : `Error: ${message}`,
+    )
     throw error
   }
 }
