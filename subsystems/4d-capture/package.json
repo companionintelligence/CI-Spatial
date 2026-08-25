@@ -1,0 +1,15 @@
+{
+  "name": "@companion/4d-capture",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Off-box 4D person reconstruction worker for Companion Scan (4DAnyone + per-timestep Brush)",
+  "scripts": {
+    "serve": "node server/service.mjs",
+    "stub": "node server/service.mjs --stub",
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
