@@ -5,7 +5,18 @@
  *   node scripts/eval-cv.mjs                       # server :8000, CV_CORPUS=real (default)
  *   CV_CORPUS=synthetic node scripts/eval-cv.mjs    # mock-engine regression fixture
  *   SERVER_URL=http://localhost:8098 node scripts/eval-cv.mjs
- *   STRICT=1 node scripts/eval-cv.mjs               # exit 1 below thresholds
+ *   STRICT=1 node scripts/eval-cv.mjs               # gate — see below
+ *
+ * STRICT=1 is the detection regression gate (docs/factory/
+ * 06-detection-ground-truth/0003-detection-regression-gate.md). If the
+ * scored corpus has a committed <corpus dir>/baseline.json (a checked-in
+ * copy of a prior report.json — see scripts/accept-detection-baseline.mjs),
+ * STRICT compares this run against it and fails only on a drop bigger than
+ * scripts/lib/detection-gate.mjs's BASELINE_TOLERANCE — "not worse than
+ * recorded," never an absolute bar. Without a committed baseline (true for
+ * the synthetic corpus, which is gitignored) it falls back to the original
+ * fixed thresholds below, which suit that corpus's deterministic ~1.0 mock
+ * baseline.
  *
  * Two corpora, two different jobs — see docs/factory/06-detection-ground-truth/:
  *   - CV_CORPUS=real (default) -> test-data/real/ — real photographs with
@@ -28,6 +39,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { resolveCorpus } from './lib/cv-corpus.mjs'
+import { BASELINE_FILENAME, BASELINE_TOLERANCE, compareToBaseline } from './lib/detection-gate.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SERVER = process.env.SERVER_URL ?? 'http://localhost:8000'
@@ -179,7 +191,19 @@ if (outOfDistribution) {
     `reflect ${health.model}'s real quality. Use CV_CORPUS=real to rank vision models.`)
 }
 
-if (STRICT && (precision < STRICT_THRESHOLDS.precision || recall < STRICT_THRESHOLDS.recall || meanIoU < STRICT_THRESHOLDS.meanIoU)) {
-  console.error(`${tag} FAIL — below strict thresholds ${JSON.stringify(STRICT_THRESHOLDS)}`)
-  process.exit(1)
+if (STRICT) {
+  const baselinePath = join(cvDir, BASELINE_FILENAME)
+  if (existsSync(baselinePath)) {
+    const baseline = JSON.parse(readFileSync(baselinePath, 'utf8'))
+    const regressions = compareToBaseline(report, baseline, BASELINE_TOLERANCE)
+    if (regressions.length) {
+      console.error(`${tag} FAIL — regressed vs committed baseline (${baseline.engine} @ ${baseline.evaluatedAt}), beyond tolerance ${JSON.stringify(BASELINE_TOLERANCE)}:`)
+      for (const r of regressions) console.error(`${tag}   ${r.metric}: ${r.baseline} → ${r.current} (Δ -${r.drop})`)
+      process.exit(1)
+    }
+    console.log(`${tag} within tolerance of committed baseline (${baseline.engine} @ ${baseline.evaluatedAt})`)
+  } else if (precision < STRICT_THRESHOLDS.precision || recall < STRICT_THRESHOLDS.recall || meanIoU < STRICT_THRESHOLDS.meanIoU) {
+    console.error(`${tag} FAIL — no committed baseline at ${corpus.rel}/${BASELINE_FILENAME}; below fallback absolute thresholds ${JSON.stringify(STRICT_THRESHOLDS)}`)
+    process.exit(1)
+  }
 }

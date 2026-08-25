@@ -178,6 +178,47 @@ Scoring a non-mock engine against `CV_CORPUS=synthetic` prints a loud warning an
 ~0% there and that is not a verdict on the model. See
 `docs/factory/06-detection-ground-truth/0002-retarget-eval-and-bench.md`.
 
+### Detection regression gate
+
+`STRICT=1` (above) is also the regression gate — see
+`docs/factory/06-detection-ground-truth/0003-detection-regression-gate.md`. It compares a
+run against a **committed baseline** (`<corpus dir>/baseline.json`, a checked-in copy of a
+prior `report.json` — same shape, no new format) and fails only on a drop bigger than
+`scripts/lib/detection-gate.mjs`'s `BASELINE_TOLERANCE` (±0.05 on precision/recall/meanIoU,
+a placeholder pending measured run-to-run variance — see that ticket's "Manual step
+remaining"). Without a committed baseline it falls back to the original fixed thresholds,
+which is what the synthetic corpus above uses today (it's gitignored, so nothing can be
+committed there).
+
+**What triggers it** — a change to any of: `server/inference.ts`, `server/prompt.ts`,
+`src/inference/prompt.ts`, `src/shared/model-catalog.ts`, `src/shared/ollama-model.ts`,
+`src/capture/capture.ts` (the full list, with why each one matters, is
+`scripts/lib/detection-gate.mjs`'s `TRIGGER_FILES`). Deliberately narrow — see
+`docs/factory/06-detection-ground-truth/0003-detection-regression-gate.md`'s "What triggers
+the gate".
+
+**Two enforcement halves**, per that ticket's chosen option 3:
+
+1. **CI-executable, every PR, no model needed** (`.github/workflows/deno-ci.yml`'s
+   `detection-gate` job):
+   - A path filter (`npm run check:detection-gate`) that WARNS if a trigger file changed
+     but `test-data/real/` has 0 photographs (true as of this writing — 0001's manual step),
+     and FAILS if the real corpus is populated but `test-data/real/baseline.json` wasn't
+     updated in the same diff.
+   - The mock-engine pipeline regression (`npm run gate:mock`) — starts the Deno server
+     with `INFERENCE_MODE=mock`, runs `CV_CORPUS=synthetic STRICT=1 npm run eval:cv`. Catches
+     harness/schema breakage, not model-quality regressions (the mock engine runs no model).
+2. **Local, human, pre-merge — required when you touch a trigger file above:**
+   ```bash
+   CV_CORPUS=real STRICT=1 npm run eval:cv    # scores your change against the real corpus
+   npm run accept:detection-baseline          # promotes report.json -> baseline.json
+   git add test-data/real/baseline.json       # commit it alongside your change
+   ```
+   This needs Ollama and the real corpus populated — CI cannot do it (no GPU, no models; see
+   the ticket's "hard constraint: CI has no model"). If `eval:cv` prints a `FAIL` line, the
+   diff regressed detection quality beyond tolerance; investigate before promoting a new
+   baseline over it.
+
 ### Mocked AR runtimes
 
 *   **XR8 mock** (`public/test-fixtures/xr8-mock.js`, load with `/?mock=xr8`):
