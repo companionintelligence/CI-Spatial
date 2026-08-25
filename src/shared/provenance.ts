@@ -94,4 +94,3 @@ export const NODE_PROVENANCE_KEYS = [
   'sourceScanIds',
 ] as const
 
-export type NodeProvenanceKey = typeof NODE_PROVENANCE_KEYS[number]

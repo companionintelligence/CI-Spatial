@@ -34,8 +34,6 @@
 /** The reserved 1:1 preview roles, plus the N-member capture role. */
 export type RtcRole = 'phone' | 'viewer' | 'capture'
 
-/** Roles that may have at most one live socket per room. */
-export const SINGLETON_ROLES: readonly RtcRole[] = ['phone', 'viewer']
 
 /**
  * Upper bound on `capture` members in one room.

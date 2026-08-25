@@ -124,6 +124,3 @@ function distance(a: Vec3, b: Vec3): number {
   return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2)
 }
 
-export function detectionsFromScanManifest(scan: ScanManifest): DetectionLike[] {
-  return []
-}

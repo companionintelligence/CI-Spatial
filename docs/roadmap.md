@@ -13,8 +13,8 @@ product model and migration rules live in
 
 ## Shipped
 
-Everything below is implemented on `main` and exercised by the test suite (31
-Playwright specs in `tests/`, 26 Deno unit tests in `tests/unit/deno/`, and 6
+Everything below is implemented on `main` and exercised by the test suite (35
+Playwright specs in `tests/`, 33 Deno unit tests in `tests/unit/deno/`, and 12
 Node unit tests in `tests/unit/node/`). The TypeScript codebase compiles clean.
 
 ### Capture (phone)
@@ -79,10 +79,14 @@ Node unit tests in `tests/unit/node/`). The TypeScript codebase compiles clean.
   stream live geometry; `/events` (SSE) for server push.
 - **Async job queue** — `/jobs` runs the `WorldJobType` set: `ingest`,
   `extract-layers`, `align-scan`, `merge-points`, `semantic-pass`,
-  `depth-reconstruct`, `lingbot-map-reconstruct`, `pipelines/splat-train`, `splat-detect`,
-  `export-world` (status `queued | processing | completed | failed`). The
-  editor's Queue-Job dropdown exposes 9; `splat-detect` fires from the Splat
-  Toolbox.
+  `depth-reconstruct`, `thing-correspondence`, `lingbot-map-reconstruct`,
+  `splat-train`, `splat-detect`, `splat-finish`, `sensenova-vision`,
+  `memory-push`, `export-world`, `optimize-scan`, and `person-4d-reconstruct`
+  (status `queued | processing | completed | failed`). The editor's Queue-Job
+  dropdown exposes 13 of these; `splat-detect` also fires from the Splat
+  Toolbox, and `memory-push`/`optimize-scan`/`person-4d-reconstruct` are
+  triggered by their own flows (Publish, upload, and person-capture) rather
+  than picked from the dropdown.
 - **Splat toolbox** — train (Brush, GPU-pinned), detect (3D interaction boxes),
   view, and compress Gaussian splats (`viewer/splat-*.ts`).
 - **Video ingest** — `/ingest-video` turns an uploaded walkthrough video into a
