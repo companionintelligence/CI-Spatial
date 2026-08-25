@@ -531,7 +531,7 @@ Inference is engine-agnostic. The Deno server picks its engine from `INFERENCE_M
 - **`onnx`** — runs the bundled `LiquidAI/LFM2.5-VL-1.6B-ONNX` locally via `onnxruntime-node` (CPU/GPU). ~2–8s on Apple Silicon.
 - **`mock`** — a deterministic colour-blob CV engine for CI and tests; needs no model download.
 
-Separately, a **WebGPU in-browser path** (via `@huggingface/transformers`) can run detection without the server. It is **opt-in**: the router (`src/inference/router.ts`) uses the server by default and only switches to WebGPU when the `infer-mode` localStorage key selects it — it does not auto-detect `navigator.gpu` or ping `/health` at startup.
+Separately, an **on-device WebGPU path** (via `@huggingface/transformers`) exists in the tree but is **gated off and not offered in the UI**: `WEBGPU_INFERENCE_ENABLED` in `src/inference/router.ts` defaults to `false` because the worker asks Transformers.js for an `image-text-to-text` pipeline task that no released version registers, so every capture would throw before the frame is even persisted. A stored `infer-mode = 'webgpu'` from before the gate resolves to the server path at read time and is never overwritten. Wave 05 (`docs/factory/05-on-device-inference/`) replaces the pipeline call with a hand-rolled driver and lifts the gate.
 
 ### LingBot-Map server processing
 
