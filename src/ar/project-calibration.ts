@@ -17,6 +17,8 @@ import {
 } from './reference-photo'
 import {
   anchorToProjectTransform,
+  normaliseBearingDeg,
+  sessionFrameBearingDeg,
   twoPointToProjectTransform,
   twoPointSeparationM,
   MIN_POINT_SEPARATION_M,
@@ -448,9 +450,9 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
    * exit path; anything added here is not. That difference is the whole reason
    * this helper is separate.
    */
-  function dropPersistentMarker(position: Vec3, bearingDeg: number | null, name: string): THREE.Group | null {
+  function dropPersistentMarker(position: Vec3, northYawDeg: number | null, name: string): THREE.Group | null {
     if (!scene) return null
-    const marker = buildAnchorMarker(bearingDeg)
+    const marker = buildAnchorMarker(northYawDeg)
     marker.name = name
     marker.position.set(position.x, position.y, position.z)
     scene.add(marker)
@@ -471,8 +473,10 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
    * orientation for the frame, not a property of each marker, and drawing it
    * twice would read as two independent compass fixes.
    */
-  function dropCommittedPair(landmark: Vec3, headingMarker: Vec3 | null, bearingDeg: number | null): void {
-    dropPersistentMarker(landmark, bearingDeg, 'calibration anchor landmark')
+  function dropCommittedPair(landmark: Vec3, headingMarker: Vec3 | null): void {
+    // The marker lives in session space, so its tick takes the session yaw at
+    // which north lies — not the compass bearing. See buildAnchorMarker.
+    dropPersistentMarker(landmark, northYawInSession(), 'calibration anchor landmark')
     if (headingMarker) dropPersistentMarker(headingMarker, null, 'calibration anchor heading')
   }
 
@@ -510,6 +514,34 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
   }
 
   // ── Geometry helpers ────────────────────────────────────────────────────
+
+  /**
+   * The true-north bearing of the **session frame's +Z axis** (ticket 0009).
+   *
+   * `options.bearing()` reports where the *device* is pointing.
+   * `composeYUpTransform` — which both `anchorToProjectTransform` and the
+   * server's GPS fallback build on — maps session +Z to the ENU direction at
+   * the bearing it is handed, so it needs the frame's heading, not the phone's.
+   * Passing the raw reading orients a scan by how the phone happened to be held
+   * and, with the camera near its starting orientation, points it exactly
+   * backwards.
+   *
+   * Sampled together with the pose deliberately: the two must describe the same
+   * instant, or the correction removes a yaw the device no longer has.
+   */
+  function frameBearing(): number | null {
+    return sessionFrameBearingDeg(options.bearing(), options.provider.getPose().rotation)
+  }
+
+  /**
+   * Where north lies in **session** coordinates, as a yaw — what
+   * `buildAnchorMarker` needs, since the decals it makes live in the session
+   * frame rather than in a north-aligned one.
+   */
+  function northYawInSession(): number | null {
+    const bearing = frameBearing()
+    return bearing === null ? null : normaliseBearingDeg(-bearing)
+  }
 
   function separation(): number | null {
     const a = points.landmark
@@ -940,7 +972,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
 
       // Metadata only on this tier: recorded so absolute orientation is
       // available for GPS placement, never read to build the frame (ADR 0005).
-      const bearingDeg = options.bearing()
+      const bearingDeg = frameBearing()
       const calibratedAt = new Date().toISOString()
       const calibration: ScanCalibration = {
         method: 'two-point-ground',
@@ -978,7 +1010,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
 
       // Both markers, not just the landmark: the pair is the reference, and a
       // heading marker the user cannot see is one they cannot check.
-      dropCommittedPair(landmark, headingMarker, bearingDeg)
+      dropCommittedPair(landmark, headingMarker)
 
       // Step 4 of the return-visit flow. Reachable only here, because only a
       // committed frame makes the stored points renderable at all.
@@ -993,7 +1025,9 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
     function commitSinglePoint(): void {
       const landmark = points.landmark
       if (!landmark) return
-      const bearingDeg = options.bearing()
+      // Load-bearing on this tier — it *is* the frame's heading — so the
+      // correction below matters far more here than on the two-point tier.
+      const bearingDeg = frameBearing()
       const calibratedAt = new Date().toISOString()
       const calibration: ScanCalibration = {
         method: 'ground-tap-compass',
@@ -1017,7 +1051,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
       // No reference photos on this tier (ticket 0007's non-goals): it has no
       // cross-session verification story, and a re-acquisition aid would imply
       // one. There is also no second marker to draw.
-      dropCommittedPair(landmark, null, bearingDeg)
+      dropCommittedPair(landmark, null)
       close({ calibration, spatialFrame })
     }
 

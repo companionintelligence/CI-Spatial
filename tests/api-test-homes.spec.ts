@@ -11,7 +11,7 @@
  *   API_URL=http://localhost:8000 npx playwright test --project=api
  */
 import { test, expect } from '@playwright/test'
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const API = process.env['API_URL'] ?? 'http://localhost:8000'

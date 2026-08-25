@@ -144,6 +144,7 @@ test.describe('LingBot-Map server processing + viewer overlay', () => {
     // in this test environment, so we ask the panel to load the fixture by
     // injecting a minimal scan record.
     const result = await page.evaluate(async (sessionId) => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const mod = await import('/src/viewer/lingbot-map.ts') as typeof import('../src/viewer/lingbot-map')
       const stubScan = {
         scanId: 'fixture-scan',

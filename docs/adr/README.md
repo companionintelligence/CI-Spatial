@@ -18,3 +18,5 @@ shape future work, promote it to an ADR and link back to the issue.
 - [0002. Shared types importable by the browser must live in Deno-API-free files](0002-shared-types-importable-by-the-browser-must-live-in-deno-api-free-files.md) — Accepted
 - [0003. Merged job system: WorldJob absorbs JobQueue](0003-merged-job-system.md) — Accepted
 - [0004. World-file writes are serialized per slug](0004-world-file-writes-are-serialized-per-slug.md) — Accepted
+- [0005. Spatial frames are established by geometry and verified by measurement](0005-spatial-frames-are-established-by-geometry-and-verified-by-measurement.md) — Proposed
+- [0006. A person capture is a calibrated take; view densification is a subsystem](0006-person-capture-is-a-calibrated-take-and-densification-is-a-subsystem.md) — Accepted

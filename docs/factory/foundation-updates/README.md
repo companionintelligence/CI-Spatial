@@ -29,6 +29,7 @@ was added mid-wave, during 0005 — see "Batch B — landed" below.
 | 0009 | [config-docs-and-naming-cleanup](0009-config-docs-and-naming-cleanup.md) | document every env var, fix stale repo names, freeze protected identifiers | ✅ merged (#71) |
 | 0010 | [single-source-vite-port](0010-single-source-vite-port.md) | `VITE_PORT` env var replaces six magic 5173s | ✅ merged (#76) |
 | 0011 | [name-ci-spatial](0011-name-ci-spatial.md) | cosmetic Companion-Scan→CI-Spatial rename, once an owner picks the name | ✅ merged (#76) |
+| 0012 | [typecheck-the-test-suite](0012-typecheck-the-test-suite.md) | bring `tests/*.spec.ts` under a type-check that something actually runs | 🔼 open |
 
 ## Execution order & parallelization
 
@@ -185,6 +186,23 @@ implementers to re-verify against current code rather than trust the original au
 - `main.ts` gained a `VITE_PORT` read and `scripts/test-box.mjs` gained a new env
   key passed to its Deno child — neither should conflict with either wave's scope,
   but re-grep rather than assume if either wave also touches those files.
+
+## 0012 — added after the wave closed
+
+Batch C called this wave complete at 11 tickets, and it was. **0012 reopens it**, which
+is worth stating plainly rather than quietly appending a row: it was found while
+addressing a review comment on wave 09's PR #176, not during the 2026-08-15 audits that
+grounded the original eleven.
+
+It belongs here rather than in a new wave for the same reason 0008 and 0010 did — it
+hardens the repo without changing what it does, and it freezes a guarantee everything
+else has been assuming. Specifically: **every ticket in every wave lists
+`npx tsc --noEmit` in its Definition of Done, and for anything under `tests/` that line
+has never meant what it appears to mean.** `tsconfig.json`'s `include` is `["src"]`.
+
+Unlike the original eleven it does not preserve current behaviour byte-for-byte in one
+respect: `npm run verify` will start failing on trees that used to pass, which is the
+point. Test *behaviour* is unchanged, and the ticket makes that a Definition-of-Done item.
 
 ## Explicitly deferred (found, not ticketed — needs an owner decision first)
 
