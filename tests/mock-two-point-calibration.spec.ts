@@ -132,6 +132,94 @@ async function sceneObjectNames(page: Page): Promise<string[]> {
   })
 }
 
+/**
+ * Give a Place a stored two-point frame over the API, as though it had been
+ * calibrated on some other device.
+ *
+ * `toleranceM` is a parameter because two of the tests below are about the
+ * reference panel rather than the separation check, and a frame whose stored
+ * `separationM` cannot match this mock's geometry would bounce them into the
+ * mismatch stage before they reached the thing under test.
+ */
+async function storeFrame(
+  request: APIRequestContext,
+  id: string,
+  frame: Record<string, unknown>,
+): Promise<void> {
+  const current = await (await request.get(`/projects/${id}`)).json()
+  const res = await request.put(`/projects/${id}`, {
+    data: {
+      ...current,
+      spatialFrame: {
+        version: 1,
+        createdAt: new Date().toISOString(),
+        method: 'two-point-ground',
+        landmark: { x: 0, y: 0, z: 0 },
+        anchorBearingDeg: null,
+        ...frame,
+      },
+    },
+  })
+  expect(res.ok(), `PUT /projects/${id} failed: ${res.status()}`).toBeTruthy()
+}
+
+/** A 1x1 white JPEG — a real image without shipping a fixture file. */
+const TINY_JPEG = Buffer.from(
+  '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////' +
+  '////////////////////////////////////////////////////wAALCAABAAEBAREA/8QAFAAB' +
+  'AAAAAAAAAAAAAAAAAAAACP/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAT8AH//Z',
+  'base64',
+)
+
+/** Upload one reference photo directly, standing in for another device's capture. */
+async function uploadPhoto(
+  request: APIRequestContext,
+  id: string,
+  role: 'landmark' | 'headingMarker',
+  tapPoint: { x: number; y: number },
+): Promise<string> {
+  const res = await request.post(`/projects/${id}/reference-photos`, {
+    multipart: {
+      image: { name: 'ref.jpg', mimeType: 'image/jpeg', buffer: TINY_JPEG },
+      meta: JSON.stringify({
+        role,
+        tapPoint,
+        pose: { position: { x: 0, y: 1.5, z: 0 }, rotation: { x: 0, y: 0, z: 0, w: 1 } },
+        capturedAt: new Date().toISOString(),
+      }),
+    },
+  })
+  expect(res.ok(), `POST reference-photo ${role} failed: ${res.status()}`).toBeTruthy()
+  return (await res.json()).url as string
+}
+
+/** The Place record as the server currently holds it. */
+async function readPlace(request: APIRequestContext, id: string): Promise<Record<string, never>> {
+  const after = await (await request.get('/projects')).json()
+  return (after.projects ?? after).find((p: { projectId: string }) => p.projectId === id)
+}
+
+/**
+ * Freeze the mock's pose, then place both markers at fixed screen coords.
+ *
+ * Frozen, the mock's screen-x → world-x map is exact and the separation is a
+ * pure function of the two coordinates — which is what lets a second visit
+ * reproduce the first one's `separationM` and actually reach the verified path.
+ */
+async function placeBothMarkers(page: Page, labels?: { a?: string; b?: string }): Promise<void> {
+  await page.evaluate(() => (window as unknown as Record<string, { freezeAt(n: number): number }>)['XR8'].freezeAt(300))
+  await tapCanvas(page, 0.10, 0.92)
+  await expect(page.locator('#project-calibration-confirm')).toBeVisible()
+  if (labels?.a) await page.locator('#project-calibration-label-input').fill(labels.a)
+  await page.locator('#project-calibration-confirm').click()
+  await tapCanvas(page, 0.86, 0.92)
+  if (labels?.b) await page.locator('#project-calibration-label-input').fill(labels.b)
+  const commit = page.locator('#project-calibration-commit')
+  await expect(commit).toBeEnabled()
+  await commit.click()
+  await expect(page.locator(CALIB)).toHaveCount(0)
+}
+
 test.describe('two-point calibration', () => {
   test.setTimeout(180_000)
 
@@ -253,6 +341,260 @@ test.describe('two-point calibration', () => {
       await expect(separation).toContainText(/need at least/i)
       await expect(page.locator('#project-calibration-commit')).toBeDisabled()
     } finally {
+      await deletePlace(request, place.id)
+    }
+  })
+
+  /**
+   * Ticket 0007. `separationM` proves the two points were the right *distance*
+   * apart, never that they were the *same two points* — and tapping the correct
+   * pair in reverse order passes the check while rotating the frame exactly
+   * 180°, reporting 'verified'. The photos and `pointLabels` asserted here are
+   * the only mitigation; the residual cannot see the failure at all.
+   */
+  test('commits a reference photo and label for each marker, and keeps both markers in the scene', async ({ page, request }) => {
+    const place = await createPlace(request, 'photos')
+    try {
+      await startArWithPlace(page, place.name)
+      await reachLandmarkStage(page)
+      await placeBothMarkers(page, { a: 'north door frame', b: 'radiator corner' })
+
+      // Both markers persist. Before this ticket `clearPlacement()` tore the
+      // heading marker down at commit, so the one thing that fixes the frame's
+      // rotation was invisible for the whole scan that followed.
+      const names = await sceneObjectNames(page)
+      expect(names).toContain('calibration anchor landmark')
+      expect(names).toContain('calibration anchor heading')
+
+      await expect(async () => {
+        const saved = await readPlace(request, place.id)
+        const frame = saved?.['spatialFrame'] as Record<string, never> | undefined
+        expect(frame?.['method']).toBe('two-point-ground')
+
+        // pointLabels existed in 0002's schema with nothing populating it.
+        // Order is load-bearing: index 0 is the landmark, and that is the
+        // order +Z is built from.
+        expect(frame?.['pointLabels']).toEqual(['north door frame', 'radiator corner'])
+
+        const photos = frame?.['referencePhotos'] as Record<string, Record<string, never>> | undefined
+        expect(photos, 'both photos, or neither').toBeTruthy()
+        for (const role of ['landmark', 'headingMarker']) {
+          const photo = photos![role]!
+          expect(photo['url']).toBe(`/projects/${place.id}/reference-photos/ref-${role}.jpg`)
+          expect(photo['localKey']).toBe(`${place.id}:${role}`)
+          // The tap point is what turns a photo of a wall into a photo of a
+          // *spot* on that wall.
+          const tap = photo['tapPoint'] as unknown as { x: number; y: number }
+          expect(tap.x).toBeGreaterThanOrEqual(0)
+          expect(tap.x).toBeLessThanOrEqual(1)
+          expect(tap.y).toBeGreaterThanOrEqual(0)
+          expect(tap.y).toBeLessThanOrEqual(1)
+          expect(photo['pose']).toBeTruthy()
+        }
+      }).toPass({ timeout: 20_000 })
+
+      // The bytes really are on the server, not just a URL in a record.
+      const served = await request.get(`/projects/${place.id}/reference-photos/ref-landmark.jpg`)
+      expect(served.status()).toBe(200)
+      expect(served.headers()['content-type']).toContain('image/jpeg')
+    } finally {
+      await deletePlace(request, place.id)
+    }
+  })
+
+  test('a return visit shows each stage its own photo, and draws the stored pair once the separation matches', async ({ page, request }) => {
+    const place = await createPlace(request, 'return')
+    try {
+      // Visit 1 — establishes the frame and both photos.
+      await startArWithPlace(page, place.name)
+      await reachLandmarkStage(page)
+      await placeBothMarkers(page, { a: 'north door frame', b: 'radiator corner' })
+      await expect(async () => {
+        const saved = await readPlace(request, place.id)
+        expect((saved?.['spatialFrame'] as Record<string, never>)?.['referencePhotos']).toBeTruthy()
+      }).toPass({ timeout: 20_000 })
+
+      // Visit 2 — same Place, fresh session.
+      await startArWithPlace(page, place.name)
+      await reachLandmarkStage(page)
+
+      const figure = page.locator('#project-calibration-reference-figure')
+      const title = page.locator('#project-calibration-reference-title')
+      await expect(page.locator('#project-calibration-reference')).toBeVisible()
+      // Which photo is which has to be unmistakable: order determines the
+      // frame's rotation, so a swapped pair is a silent 180°.
+      await expect(title).toContainText(/Point A/i)
+      await expect(page.locator('#project-calibration-reference-label')).toContainText('north door frame')
+      await expect(figure).toBeVisible({ timeout: 15_000 })
+      await expect(page.locator('#project-calibration-reference-img')).toHaveJSProperty('complete', true)
+
+      await page.evaluate(() => (window as unknown as Record<string, { freezeAt(n: number): number }>)['XR8'].freezeAt(300))
+      await tapCanvas(page, 0.10, 0.92)
+      await page.locator('#project-calibration-confirm').click()
+
+      // Stage 2 shows point B's photo, not point A's.
+      await expect(title).toContainText(/Point B/i)
+      await expect(page.locator('#project-calibration-reference-label')).toContainText('radiator corner')
+
+      await tapCanvas(page, 0.86, 0.92)
+      const commit = page.locator('#project-calibration-commit')
+      await expect(commit).toBeEnabled()
+      await commit.click()
+      await expect(page.locator(CALIB)).toHaveCount(0)
+
+      // Step 4 of the return-visit flow, and the only moment it is possible:
+      // the stored points are project-space and tautological, so drawing them
+      // needs the very transform calibration had not produced until now.
+      const names = await sceneObjectNames(page)
+      expect(names).toContain('calibration stored reference')
+      expect(names).toContain('calibration anchor landmark')
+      expect(names).toContain('calibration anchor heading')
+    } finally {
+      await deletePlace(request, place.id)
+    }
+  })
+
+  test('a Place calibrated on another device loads its photos from the server, crosshaired on the recorded tap', async ({ page, request }) => {
+    const place = await createPlace(request, 'seconddevice')
+    try {
+      // No local IndexedDB copy exists for this Place in this browser, so the
+      // panel can only work through the server — which is the entire reason a
+      // server copy is kept at all.
+      const tapPoint = { x: 0.42, y: 0.71 }
+      const landmarkUrl = await uploadPhoto(request, place.id, 'landmark', tapPoint)
+      const headingUrl = await uploadPhoto(request, place.id, 'headingMarker', { x: 0.6, y: 0.4 })
+      const capturedAt = new Date().toISOString()
+      await storeFrame(request, place.id, {
+        headingMarker: { x: 0, y: 0, z: 3.04 },
+        separationM: 3.04,
+        // Wide on purpose: this test is about the panel, not the separation
+        // check, which the commit test above already covers.
+        toleranceM: 25,
+        pointLabels: ['north door frame', 'radiator corner'],
+        referencePhotos: {
+          landmark: { url: landmarkUrl, localKey: `${place.id}:landmark`, tapPoint, pose: { position: { x: 0, y: 1.5, z: 0 }, rotation: { x: 0, y: 0, z: 0, w: 1 } }, capturedAt },
+          headingMarker: { url: headingUrl, localKey: `${place.id}:headingMarker`, tapPoint: { x: 0.6, y: 0.4 }, pose: { position: { x: 0, y: 1.5, z: 0 }, rotation: { x: 0, y: 0, z: 0, w: 1 } }, capturedAt },
+        },
+      })
+
+      await startArWithPlace(page, place.name)
+      await reachLandmarkStage(page)
+
+      const img = page.locator('#project-calibration-reference-img')
+      await expect(page.locator('#project-calibration-reference-figure')).toBeVisible({ timeout: 15_000 })
+      await expect(img).toHaveJSProperty('complete', true)
+
+      // The crosshair sits at the recorded tap, in pixels, over the photo as
+      // rendered — the last step between a correctly-stored tap and a mark the
+      // user acts on.
+      const placed = await page.evaluate(() => {
+        const image = document.getElementById('project-calibration-reference-img') as HTMLImageElement
+        const cross = document.getElementById('project-calibration-reference-crosshair') as HTMLElement
+        return { width: image.clientWidth, height: image.clientHeight, left: parseFloat(cross.style.left), top: parseFloat(cross.style.top) }
+      })
+      expect(placed.width).toBeGreaterThan(0)
+      expect(placed.left).toBeCloseTo(tapPoint.x * placed.width, 1)
+      expect(placed.top).toBeCloseTo(tapPoint.y * placed.height, 1)
+    } finally {
+      await deletePlace(request, place.id)
+    }
+  })
+
+  test('a frame with no photos explains itself, and calibration still completes', async ({ page, request }) => {
+    const place = await createPlace(request, 'nophotos')
+    try {
+      // Every Place calibrated before this ticket is in exactly this state.
+      await storeFrame(request, place.id, {
+        headingMarker: { x: 0, y: 0, z: 3.04 },
+        separationM: 3.04,
+        toleranceM: 25,
+      })
+
+      await startArWithPlace(page, place.name)
+      await reachLandmarkStage(page)
+
+      // An empty panel would read as "there is nothing to match", which on a
+      // Place whose photo merely failed to upload is a lie.
+      await expect(page.locator('#project-calibration-reference')).toBeVisible()
+      await expect(page.locator('#project-calibration-reference-figure')).toBeHidden()
+      await expect(page.locator('#project-calibration-reference-note'))
+        .toContainText(/before reference photos existed/i)
+
+      // And the photo is never a gate: this still commits.
+      await placeBothMarkers(page)
+      expect(await sceneObjectNames(page)).toContain('calibration anchor landmark')
+    } finally {
+      await deletePlace(request, place.id)
+    }
+  })
+
+  test('going offline mid-calibration still commits, keeps the bytes locally, and marks the URL pending', async ({ page, context, request }) => {
+    const place = await createPlace(request, 'offline')
+    try {
+      await startArWithPlace(page, place.name)
+      await reachLandmarkStage(page)
+
+      // Real browser-level offline, not a page route: `/projects` is a
+      // queueable prefix in `public/sw.js`, so the upload goes through the
+      // service worker and page-level interception never sees it. Going
+      // offline here exercises the path a user on a basement floor actually
+      // takes — including the 202-with-no-URL the worker answers with, which
+      // `isQueuedOffline` exists to stop callers reading as delivered.
+      //
+      // Offline starts only now: selecting the Place needs the network, the
+      // calibration that follows does not.
+      await context.setOffline(true)
+      await placeBothMarkers(page, { a: 'north door frame', b: 'radiator corner' })
+
+      // The photo is an aid, never a gate — the calibration itself completed.
+      expect(await sceneObjectNames(page)).toContain('calibration anchor landmark')
+      expect(await sceneObjectNames(page)).toContain('calibration anchor heading')
+
+      // The server is unreachable, so local storage is the only place the truth
+      // can be checked — which is the point: this device keeps working.
+      const local = await page.evaluate(async (projectId) => {
+        const db = await new Promise<IDBDatabase>((resolve, reject) => {
+          const req = indexedDB.open('ci-xr-projects')
+          req.onsuccess = () => resolve(req.result)
+          req.onerror = () => reject(req.error)
+        })
+        const project = await new Promise<{ spatialFrame?: Record<string, unknown> } | null>((resolve, reject) => {
+          const req = db.transaction('projects', 'readonly').objectStore('projects').get(projectId)
+          req.onsuccess = () => resolve((req.result ?? null) as { spatialFrame?: Record<string, unknown> } | null)
+          req.onerror = () => reject(req.error)
+        })
+        const photos = await new Promise<Array<{ role: string; blob: Blob }>>((resolve, reject) => {
+          const req = db.transaction('referencePhotos', 'readonly')
+            .objectStore('referencePhotos').index('byProject').getAll(projectId)
+          req.onsuccess = () => resolve(req.result as Array<{ role: string; blob: Blob }>)
+          req.onerror = () => reject(req.error)
+        })
+        db.close()
+        return {
+          frame: project?.spatialFrame ?? null,
+          photos: photos.map((p) => ({ role: p.role, bytes: p.blob?.size ?? 0 })).sort((a, b) => a.role.localeCompare(b.role)),
+        }
+      }, place.id)
+
+      const frame = local.frame as Record<string, never> | null
+      expect(frame?.['method']).toBe('two-point-ground')
+      expect(frame?.['pointLabels']).toEqual(['north door frame', 'radiator corner'])
+
+      const records = frame?.['referencePhotos'] as unknown as Record<string, Record<string, unknown>> | undefined
+      expect(records, 'the frame still carries both photo records').toBeTruthy()
+      for (const role of ['landmark', 'headingMarker']) {
+        // Pending, not delivered. Recording a URL here would make the next
+        // device fetch a 404 and show an empty panel instead of saying so.
+        expect(records![role]!['url'], `${role} url is pending`).toBeNull()
+        expect(records![role]!['localKey']).toBe(`${place.id}:${role}`)
+      }
+
+      // And the bytes really are here, which is what makes the aid work offline
+      // for the person who took the photo.
+      expect(local.photos.map((p) => p.role)).toEqual(['headingMarker', 'landmark'])
+      for (const p of local.photos) expect(p.bytes, `${p.role} blob has bytes`).toBeGreaterThan(0)
+    } finally {
+      await context.setOffline(false)
       await deletePlace(request, place.id)
     }
   })

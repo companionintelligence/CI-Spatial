@@ -225,6 +225,52 @@ export function imagePointToViewportPoint(
   }
 }
 
+/**
+ * The inverse of {@link imagePointToViewportPoint}: a live viewport
+ * coordinate back into the captured image's own coordinates.
+ *
+ * Wave 09 ticket 0007 needs this direction. A calibration tap is normalised
+ * against the **canvas**, but the reference photo it is drawn on is the
+ * **camera frame**, and the two do not share an aspect ratio — the feed is
+ * cover-cropped to fill the screen, so the stored image contains strictly more
+ * than the user saw. Storing the raw canvas coordinate and drawing it over the
+ * photo would put the crosshair off the tapped feature by however much the
+ * crop removed, and a crosshair that points at the wrong spot is worse than
+ * none: the user would still trust it.
+ *
+ * Lives beside its forward direction rather than in the calibration module so
+ * there is one owner of the cover-crop convention (ADR 0001). The pair
+ * round-trips: mapping a point through both returns it unchanged.
+ *
+ * Note the result is deliberately **not** clamped to 0..1. A viewport point
+ * always lies inside the cover-cropped image, so an out-of-range result means
+ * the caller passed sizes that do not describe this frame — better surfaced by
+ * a validator than silently pinned to an edge.
+ */
+export function viewportPointToImagePoint(
+  x: number,
+  y: number,
+  imageSize: ViewSize | undefined,
+  viewportSize: ViewSize | undefined,
+): { x: number; y: number } {
+  if (!imageSize || !viewportSize) return { x, y }
+  const iw = imageSize.width
+  const ih = imageSize.height
+  const vw = viewportSize.width
+  const vh = viewportSize.height
+  if (![iw, ih, vw, vh].every((n) => Number.isFinite(n) && n > 0)) return { x, y }
+
+  const scale = Math.max(vw / iw, vh / ih)
+  const displayedW = iw * scale
+  const displayedH = ih * scale
+  const offsetX = (vw - displayedW) / 2
+  const offsetY = (vh - displayedH) / 2
+  return {
+    x: (x * vw - offsetX) / (iw * scale),
+    y: (y * vh - offsetY) / (ih * scale),
+  }
+}
+
 export async function resolveDetections(
   detections: RawDetection[],
   timestamp: number,

@@ -1,6 +1,20 @@
 import * as THREE from 'three'
 import type { ARProvider, HitResult } from './provider'
-import type { Project, ProjectSpatialFrame, ScanCalibration, Vec3 } from '../world/types'
+import type {
+  CalibrationReferencePhoto,
+  Project,
+  ProjectSpatialFrame,
+  ScanCalibration,
+  Vec3,
+} from '../world/types'
+import {
+  referenceCrosshairPixels,
+  referencePhotoTitle,
+  tapPointWithinPhoto,
+  type PendingReferencePhoto,
+  type ReferencePhotoCapture,
+  type ReferencePhotoRole,
+} from './reference-photo'
 import {
   anchorToProjectTransform,
   twoPointToProjectTransform,
@@ -33,6 +47,21 @@ export interface CalibrationResult {
    * is exactly the failure the separation check exists to catch.
    */
   spatialFrame?: ProjectSpatialFrame
+  /**
+   * Reference photos captured for the two markers, for the host to persist and
+   * upload (wave 09 ticket 0007).
+   *
+   * Present only alongside a changed `spatialFrame`, and for the same reason:
+   * the photos describe *that* frame's two points. A merely-verified visit
+   * keeps the stored frame, so it keeps the stored photos too — re-shooting
+   * them every visit would let the reference drift exactly as rewriting the
+   * frame would.
+   *
+   * Never populated on the `'ground-tap-compass'` fallback tier: that tier has
+   * no cross-session verification story at all, and a re-acquisition aid on it
+   * would imply one.
+   */
+  referencePhotos?: PendingReferencePhoto[]
 }
 
 interface CalibrationOptions {
@@ -58,6 +87,23 @@ interface CalibrationOptions {
    * `null` means no estimate yet.
    */
   ground: () => { y: number; locked: boolean } | null
+  /**
+   * Grabs the live camera frame for a marker's reference photo (ticket 0007).
+   *
+   * Optional, and allowed to resolve `null` or reject. A denied frame, a
+   * pending capture, or a host that supplies no accessor at all degrades
+   * re-acquisition on the next visit — it must never fail the calibration,
+   * which is why every call site here treats a miss as a missing photo and
+   * carries on.
+   */
+  capturePhoto?: () => Promise<ReferencePhotoCapture | null>
+  /**
+   * Resolves a stored reference photo to something an `<img>` can display —
+   * the local blob where this device took it, the server copy otherwise.
+   * `null` when neither is reachable, which the panel reports rather than
+   * showing an empty box.
+   */
+  loadReferencePhoto?: (photo: CalibrationReferencePhoto) => Promise<string | null>
 }
 
 type Stage = 'ground' | 'landmark' | 'heading' | 'review' | 'mismatch'
@@ -148,6 +194,40 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
    */
   let transientStatus: string | null = null
 
+  // ── Reference photos and labels (ticket 0007) ───────────────────────────
+  /** Role each marker id maps to in the stored schema. */
+  const ROLE_OF: Record<MarkerId, ReferencePhotoRole> = { landmark: 'landmark', heading: 'headingMarker' }
+  /**
+   * Where each marker's placing tap landed on the **canvas**, normalised.
+   * `placeAt()` already computes this and used to discard it after the
+   * hit-test; keeping it costs nothing and is what turns a photo of a wall
+   * into a photo of a *spot* on that wall.
+   */
+  const tapPoints: Record<MarkerId, { x: number; y: number } | null> = { landmark: null, heading: null }
+  /** The user's typed description per marker, e.g. "north door frame". */
+  const labels: Record<MarkerId, string> = { landmark: '', heading: '' }
+  /**
+   * In-flight or settled photo capture per marker. A promise rather than a
+   * value because capture is kicked off at the moment the marker is committed
+   * and must not stall the stage transition — the flow reads it once, at
+   * commit.
+   */
+  const photoTasks: Record<MarkerId, Promise<PendingReferencePhoto | null> | null> = { landmark: null, heading: null }
+  /** Object URLs handed out for stored photos, revoked on teardown. */
+  const objectUrls: string[] = []
+  /** Which stored photo the panel is currently showing, so it reloads only on change. */
+  let shownReferenceRole: ReferencePhotoRole | null = null
+  /** Which marker the label input currently holds, so typing is not clobbered. */
+  let labelFieldFor: MarkerId | null = null
+  /**
+   * True while a commit is awaiting its reference-photo capture. The commit
+   * button stays mounted across that await and the 200 ms render poll keeps
+   * running, so without this a second tap would commit the same frame twice —
+   * the second one resolving an already-resolved promise and dropping a
+   * duplicate anchor into the scene.
+   */
+  let commitInFlight = false
+
   const overlay = document.createElement('section')
   overlay.id = 'project-calibration'
   overlay.innerHTML = `
@@ -163,6 +243,22 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
       <p id="project-calibration-copy">Tap a spot on the ground to mark this project&apos;s origin.</p>
       <div id="project-calibration-status" class="project-calibration-status">Waiting for AR tracking...</div>
       <div id="project-calibration-separation" class="project-calibration-separation" hidden></div>
+      <div id="project-calibration-reference" class="project-calibration-reference" hidden>
+        <div class="project-calibration-reference-head">
+          <span id="project-calibration-reference-title">Last time</span>
+          <span id="project-calibration-reference-label" class="project-calibration-reference-label" hidden></span>
+        </div>
+        <figure id="project-calibration-reference-figure" class="project-calibration-reference-figure" hidden>
+          <img id="project-calibration-reference-img" alt="The camera view when this marker was placed, with a crosshair on the exact spot that was tapped" />
+          <span id="project-calibration-reference-crosshair" class="project-calibration-crosshair" aria-hidden="true"></span>
+        </figure>
+        <p id="project-calibration-reference-note" class="project-calibration-reference-note" hidden></p>
+      </div>
+      <label id="project-calibration-label-field" class="project-calibration-label-field" hidden>
+        <span id="project-calibration-label-caption">Name this feature</span>
+        <input id="project-calibration-label-input" type="text" maxlength="60" autocomplete="off"
+               placeholder="e.g. north door frame" />
+      </label>
       <div class="project-calibration-actions">
         <button id="project-calibration-confirm" type="button" class="project-calibration-link project-calibration-link-promoted" hidden>Confirm landmark</button>
         <button id="project-calibration-commit" type="button" class="project-calibration-link project-calibration-link-promoted" hidden>Use this alignment</button>
@@ -188,6 +284,16 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
   const skipGround = pick<HTMLButtonElement>('project-calibration-skip-ground')
   const fallbackBtn = pick<HTMLButtonElement>('project-calibration-fallback')
   const skip = pick<HTMLButtonElement>('project-calibration-skip')
+  const referenceEl = pick<HTMLElement>('project-calibration-reference')
+  const referenceTitle = pick<HTMLElement>('project-calibration-reference-title')
+  const referenceLabel = pick<HTMLElement>('project-calibration-reference-label')
+  const referenceFigure = pick<HTMLElement>('project-calibration-reference-figure')
+  const referenceImg = pick<HTMLImageElement>('project-calibration-reference-img')
+  const referenceCrosshair = pick<HTMLElement>('project-calibration-reference-crosshair')
+  const referenceNote = pick<HTMLElement>('project-calibration-reference-note')
+  const labelField = pick<HTMLElement>('project-calibration-label-field')
+  const labelCaption = pick<HTMLElement>('project-calibration-label-caption')
+  const labelInput = pick<HTMLInputElement>('project-calibration-label-input')
 
   // ── Scene decals ────────────────────────────────────────────────────────
   // Everything placed while the flow is running lives under `placement`, which
@@ -231,6 +337,9 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
     floorGrid = null
     floorGridY = null
     if (scene) scene.remove(placement)
+    // Object URLs for stored photos are per-flow; nothing outside this modal
+    // renders them, so holding them past teardown only leaks.
+    objectUrls.splice(0).forEach((url) => URL.revokeObjectURL(url))
   }
 
   function refreshSelectionVisuals(): void {
@@ -332,11 +441,72 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
     refreshBaseline()
   }
 
-  function dropCommittedOrigin(position: Vec3, bearingDeg: number | null): void {
-    if (!scene) return
+  /**
+   * Adds a marker to the scene **directly**, so it outlives the flow.
+   *
+   * Everything under `placement` is torn down by `clearPlacement()` on every
+   * exit path; anything added here is not. That difference is the whole reason
+   * this helper is separate.
+   */
+  function dropPersistentMarker(position: Vec3, bearingDeg: number | null, name: string): THREE.Group | null {
+    if (!scene) return null
     const marker = buildAnchorMarker(bearingDeg)
+    marker.name = name
     marker.position.set(position.x, position.y, position.z)
     scene.add(marker)
+    return marker
+  }
+
+  /**
+   * Keeps **both** committed markers in the scene for the rest of the session.
+   *
+   * Ticket 0004 as shipped kept only the landmark: `clearPlacement()` tore the
+   * heading marker's decal down at commit, so point B vanished the moment the
+   * user committed — leaving the one thing that fixes the frame's rotation
+   * invisible for the entire scan that followed. Ticket 0007 requires both,
+   * because the pair *is* the reference: a user who cannot see where B went
+   * cannot notice they placed it on the wrong feature.
+   *
+   * Only the landmark carries the north tick — the bearing describes one
+   * orientation for the frame, not a property of each marker, and drawing it
+   * twice would read as two independent compass fixes.
+   */
+  function dropCommittedPair(landmark: Vec3, headingMarker: Vec3 | null, bearingDeg: number | null): void {
+    dropPersistentMarker(landmark, bearingDeg, 'calibration anchor landmark')
+    if (headingMarker) dropPersistentMarker(headingMarker, null, 'calibration anchor heading')
+  }
+
+  /**
+   * Draws the Place's **stored** pair into the live scene — step 4 of ticket
+   * 0007's return-visit flow, and the only moment at which it is possible.
+   *
+   * Stored points are project-space and tautological (`landmark` is the origin,
+   * `headingMarker` is +Z at `separationM`), so rendering them needs a
+   * session→project transform. That transform is what calibration produces, so
+   * before this point the overlay would be circular — which is exactly why the
+   * flow shows *photos* beforehand and geometry only afterwards.
+   *
+   * Here the transform exists, and its inverse is available without matrix
+   * work: the stored landmark maps to the landmark the user just placed, and
+   * the stored heading marker maps to `storedSeparationM` along the baseline
+   * they just defined. Any visible gap between this and the marker they placed
+   * is the residual, shown at room scale instead of as a number.
+   */
+  function drawStoredPair(landmark: Vec3, headingMarker: Vec3, storedSeparationM: number): void {
+    const dx = headingMarker.x - landmark.x
+    const dz = headingMarker.z - landmark.z
+    const measured = Math.hypot(dx, dz)
+    if (!Number.isFinite(measured) || measured <= 0) return
+    dropPersistentMarker(landmark, null, 'calibration stored reference')
+    dropPersistentMarker(
+      {
+        x: landmark.x + (dx / measured) * storedSeparationM,
+        y: landmark.y,
+        z: landmark.z + (dz / measured) * storedSeparationM,
+      },
+      null,
+      'calibration stored reference',
+    )
   }
 
   // ── Geometry helpers ────────────────────────────────────────────────────
@@ -394,9 +564,158 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
     show(separationEl, true)
   }
 
+  /** The marker this stage is asking the user to place, if any. */
+  function activeMarker(): MarkerId | null {
+    return stage === 'landmark' ? 'landmark' : stage === 'heading' ? 'heading' : null
+  }
+
+  /**
+   * Which marker the label field is naming.
+   *
+   * Not the same as {@link activeMarker}, and the difference is not cosmetic:
+   * placing the heading marker advances straight to `'review'` in the same
+   * tick, so a field bound to the placement stage alone can never be reached
+   * for point B — the frame would be committable with only half its
+   * `pointLabels`. Review therefore names the heading marker by default, and
+   * whichever marker is selected when one is.
+   */
+  function labelTarget(): MarkerId | null {
+    const active = activeMarker()
+    if (active) return active
+    if (stage === 'review') return selected ?? 'heading'
+    return null
+  }
+
+  function storedPhotoFor(id: MarkerId): CalibrationReferencePhoto | null {
+    const photos = storedTwoPoint?.referencePhotos
+    if (!photos) return null
+    return id === 'landmark' ? photos.landmark : photos.headingMarker
+  }
+
+  function storedLabelFor(id: MarkerId): string {
+    const pair = storedTwoPoint?.pointLabels
+    if (!pair) return ''
+    return (id === 'landmark' ? pair[0] : pair[1]) ?? ''
+  }
+
+  function positionCrosshair(tapPoint: { x: number; y: number }): void {
+    const { left, top } = referenceCrosshairPixels(tapPoint, {
+      width: referenceImg.clientWidth,
+      height: referenceImg.clientHeight,
+    })
+    referenceCrosshair.style.left = `${left}px`
+    referenceCrosshair.style.top = `${top}px`
+  }
+
+  /**
+   * Shows the stored reference photo for whichever marker is being placed.
+   *
+   * Deliberately **before** placement rather than as an AR overlay: a photo
+   * needs no transform to be recognisable, which is the one property that lets
+   * it help at the only moment help is possible. See ticket 0007, "Why a photo
+   * and not the stored points themselves".
+   *
+   * Every failure mode says what happened. An empty panel would read as "there
+   * is nothing to match", which on a Place whose photo merely failed to upload
+   * is a lie that costs the user the re-acquisition they came for.
+   */
+  function renderReference(): void {
+    const active = activeMarker()
+    if (!active || !storedTwoPoint) {
+      show(referenceEl, false)
+      shownReferenceRole = null
+      return
+    }
+    show(referenceEl, true)
+    const role = ROLE_OF[active]
+    referenceTitle.textContent = `Last time — ${referencePhotoTitle(role)}`
+
+    const storedLabel = storedLabelFor(active)
+    referenceLabel.textContent = storedLabel ? `“${storedLabel}”` : ''
+    show(referenceLabel, !!storedLabel)
+
+    if (role === shownReferenceRole) {
+      // Already loaded; only the crosshair needs to track layout changes.
+      const photo = storedPhotoFor(active)
+      if (photo && !referenceFigure.hidden) positionCrosshair(photo.tapPoint)
+      return
+    }
+    shownReferenceRole = role
+
+    const photo = storedPhotoFor(active)
+    show(referenceFigure, false)
+    if (!photo) {
+      referenceNote.textContent = storedLabel
+        ? 'No photo was saved for this point — go by the description above.'
+        : 'This Place was aligned before reference photos existed, so there is nothing to match against. Place this marker on the same physical feature as last time.'
+      show(referenceNote, true)
+      return
+    }
+
+    referenceNote.textContent = 'Loading the saved photo…'
+    show(referenceNote, true)
+    const load = options.loadReferencePhoto
+    if (!load) {
+      referenceNote.textContent = 'The saved photo is not available in this session.'
+      return
+    }
+    void load(photo)
+      .catch(() => null)
+      .then((src) => {
+        // The stage can move on while a photo is loading; dropping a late
+        // result is correct, showing point A's photo during stage B is not.
+        if (shownReferenceRole !== role) return
+        if (!src) {
+          referenceNote.textContent = photo.url === null
+            ? 'This point’s photo never finished uploading, so it is not on this device. Place it from memory.'
+            : 'The saved photo could not be loaded. Place this marker from memory.'
+          return
+        }
+        // Blob URLs are ours to release; a data URL or a plain path is not.
+        if (src.startsWith('blob:')) objectUrls.push(src)
+        referenceImg.onload = () => positionCrosshair(photo.tapPoint)
+        referenceImg.src = src
+        show(referenceFigure, true)
+        show(referenceNote, false)
+        positionCrosshair(photo.tapPoint)
+      })
+  }
+
+  /**
+   * The `pointLabels` field (ticket 0002's schema, populated for the first
+   * time by 0007).
+   *
+   * A typed description is the cheap half of the mitigation and the half that
+   * survives an ambiguous photo: two stretches of skirting board look alike,
+   * "north door frame" and "radiator corner" do not. It matters most for the
+   * reversed-pair failure — the one that rotates the frame 180° and still
+   * reports `'verified'` — because a label is the only artefact that says
+   * which of the two points this one was meant to be.
+   */
+  function renderLabelField(): void {
+    const active = labelTarget()
+    show(labelField, active !== null)
+    if (!active) {
+      labelFieldFor = null
+      return
+    }
+    labelCaption.textContent = active === 'landmark'
+      ? 'Name point A (optional, helps you find it next time)'
+      : 'Name point B (optional)'
+    if (labelFieldFor !== active) {
+      labelFieldFor = active
+      // Prefill from the stored label so a re-set frame keeps a description
+      // the user already wrote, rather than silently dropping it.
+      if (!labels[active]) labels[active] = storedLabelFor(active)
+      labelInput.value = labels[active]
+    }
+  }
+
   function renderStage(): void {
     renderSteps()
     renderSeparation()
+    renderReference()
+    renderLabelField()
     refreshFloorGrid()
     const sep = separation()
     const farEnough = sep !== null && sep >= MIN_POINT_SEPARATION_M
@@ -504,10 +823,86 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
     }
 
     /**
+     * Grabs the camera frame for one marker, at the moment that marker is
+     * committed — Confirm for the landmark, Commit for the heading marker.
+     *
+     * **Commit, not provisional placement**, for two reasons that point the
+     * same way: adjustment during the tap-near flow would otherwise burn a
+     * frame per correction, and a photo that does not match the *committed*
+     * position actively misleads on the next visit.
+     *
+     * Deliberately not awaited by its callers. `captureFrame()` waits for the
+     * next camera frame and can take a beat, and the flow must not stall on it
+     * — the photo is an aid, never a gate. The result is read once, at commit.
+     *
+     * The tap is normalised against the **canvas**; the photo is the camera
+     * frame, which is cover-cropped to fill that canvas and so contains more
+     * than the user saw. `tapPointWithinPhoto` reconciles the two. When it
+     * cannot, the photo is dropped rather than stored with a crosshair that
+     * would point confidently at the wrong feature.
+     */
+    function beginPhotoCapture(id: MarkerId): void {
+      const capturePhoto = options.capturePhoto
+      const tapPoint = tapPoints[id]
+      photoTasks[id] = null
+      if (!capturePhoto || !tapPoint) return
+      const role = ROLE_OF[id]
+      photoTasks[id] = (async () => {
+        try {
+          const frame = await capturePhoto()
+          if (!frame) return null
+          const rect = options.canvas.getBoundingClientRect()
+          const within = tapPointWithinPhoto(tapPoint, frame.frameSize, {
+            width: rect.width,
+            height: rect.height,
+          })
+          if (!within) return null
+          return {
+            role,
+            blob: frame.blob,
+            thumbDataUrl: frame.thumbDataUrl,
+            tapPoint: within,
+            pose: frame.pose,
+            capturedAt: new Date().toISOString(),
+            label: null,
+          }
+        } catch {
+          // "Capture already pending", a denied frame, a timeout — every one of
+          // these is a failed photo, never a failed calibration.
+          return null
+        }
+      })()
+    }
+
+    /**
+     * Collects whatever the capture tasks produced, stamping each with the
+     * label as typed at commit time rather than at capture time — the user is
+     * free to name a feature after confirming it.
+     */
+    async function collectPhotos(): Promise<PendingReferencePhoto[]> {
+      const collected: PendingReferencePhoto[] = []
+      for (const id of MARKER_IDS) {
+        const task = photoTasks[id]
+        if (!task) continue
+        const photo = await task.catch(() => null)
+        if (photo) collected.push({ ...photo, label: labels[id].trim() || null })
+      }
+      return collected
+    }
+
+    /** `pointLabels` for the stored frame, or undefined when neither was named. */
+    function committedLabels(): [string, string] | undefined {
+      const a = labels.landmark.trim()
+      const b = labels.heading.trim()
+      return a || b ? [a, b] : undefined
+    }
+
+    /**
      * Commits the two-point frame. `override` records the pair despite a
      * separation mismatch, which costs the 'verified' status by definition.
      */
-    function commitTwoPoint(override: boolean): void {
+    async function commitTwoPoint(override: boolean): Promise<void> {
+      if (commitInFlight) return
       const landmark = points.landmark
       const headingMarker = points.heading
       if (!landmark || !headingMarker) return
@@ -524,6 +919,23 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
         stage = 'mismatch'
         renderStage()
         return
+      }
+
+      const frameChanged = !storedTwoPoint || override
+      // Only a changed frame keeps photos, so only a changed frame is worth a
+      // capture. This sits after the mismatch check on purpose: a pair that is
+      // about to be sent back for re-placement should not cost a frame.
+      let referencePhotos: PendingReferencePhoto[] = []
+      if (frameChanged) {
+        commitInFlight = true
+        beginPhotoCapture('heading')
+        transientStatus = 'Saving reference photos…'
+        renderStage()
+        try {
+          referencePhotos = await collectPhotos()
+        } finally {
+          commitInFlight = false
+        }
       }
 
       // Metadata only on this tier: recorded so absolute orientation is
@@ -543,7 +955,6 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
         status: storedTwoPoint && !override ? 'verified' : 'provisional',
       }
 
-      const frameChanged = !storedTwoPoint || override
       const spatialFrame: ProjectSpatialFrame | undefined = frameChanged
         ? {
             version: 1,
@@ -557,11 +968,25 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
             separationM,
             toleranceM,
             anchorBearingDeg: bearingDeg,
+            ...(committedLabels() ? { pointLabels: committedLabels() } : {}),
+            // `referencePhotos` is intentionally absent here. The URLs and
+            // local keys do not exist until the host has stored and uploaded
+            // the bytes, so the host attaches them to this frame before it is
+            // persisted — see `referencePhotos` on CalibrationResult.
           }
         : undefined
 
-      dropCommittedOrigin(landmark, bearingDeg)
-      close({ calibration, spatialFrame })
+      // Both markers, not just the landmark: the pair is the reference, and a
+      // heading marker the user cannot see is one they cannot check.
+      dropCommittedPair(landmark, headingMarker, bearingDeg)
+
+      // Step 4 of the return-visit flow. Reachable only here, because only a
+      // committed frame makes the stored points renderable at all.
+      if (storedTwoPoint && !override) {
+        drawStoredPair(landmark, headingMarker, storedTwoPoint.separationM)
+      }
+
+      close({ calibration, spatialFrame, ...(frameChanged ? { referencePhotos } : {}) })
     }
 
     /** #141's single-tap tier, kept for rooms where a second point is impractical. */
@@ -589,7 +1014,10 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
             method: 'ground-tap-compass',
             anchorBearingDeg: bearingDeg,
           }
-      dropCommittedOrigin(landmark, bearingDeg)
+      // No reference photos on this tier (ticket 0007's non-goals): it has no
+      // cross-session verification story, and a re-acquisition aid would imply
+      // one. There is also no second marker to draw.
+      dropCommittedPair(landmark, null, bearingDeg)
       close({ calibration, spatialFrame })
     }
 
@@ -614,7 +1042,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
      * statistic. The estimator keeps its proper job: sanity-checking taps in
      * `isTapOnGround()`, where being roughly right is enough.
      */
-    function applyTap(position: Vec3): void {
+    function applyTap(position: Vec3, tapPoint: { x: number; y: number }): void {
       // Select-then-retap, per ticket 0004: a selected marker moves to the next
       // tap wherever it lands; otherwise a tap within ANCHOR_RADIUS_M of an
       // existing marker selects it rather than placing something new.
@@ -636,6 +1064,13 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
           return
         }
       }
+
+      // Where this tap landed on screen, kept for the marker it is placing.
+      // Re-placing invalidates any photo already taken for that marker: a photo
+      // of the *previous* spot, crosshaired at the previous tap, is worse than
+      // no photo — it would send the next visit to the wrong feature.
+      tapPoints[target] = tapPoint
+      photoTasks[target] = null
 
       if (target === 'landmark') {
         setMarker('landmark', position)
@@ -708,13 +1143,17 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
           // only it knows which marker this tap is for — and the landmark's own
           // measured height is what defines the floor.
           transientStatus = null
-          applyTap({ x: hit.position.x, y: hit.position.y, z: hit.position.z })
+          applyTap({ x: hit.position.x, y: hit.position.y, z: hit.position.z }, { x, y })
         } finally {
           tapInFlight = false
           renderStage()
         }
       })()
     }
+
+    labelInput.addEventListener('input', () => {
+      if (labelFieldFor) labels[labelFieldFor] = labelInput.value
+    })
 
     skip.addEventListener('click', () => close(null))
     skipGround.addEventListener('click', () => {
@@ -723,6 +1162,10 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
     })
     confirmBtn.addEventListener('click', () => {
       if (!points.landmark) return
+      // The landmark is committed at this click and the user is still standing
+      // where they tapped it, so this is the only moment the photo can show
+      // the view they had. Not awaited — the stage advances immediately.
+      beginPhotoCapture('landmark')
       selected = null
       transientStatus = null
       refreshSelectionVisuals()
@@ -734,6 +1177,10 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
         detach(decals[id])
         decals[id] = null
         points[id] = null
+        // Both points are being re-placed, so both photos describe positions
+        // that no longer exist.
+        tapPoints[id] = null
+        photoTasks[id] = null
       })
       refreshBaseline()
       selected = null
@@ -741,8 +1188,8 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
       stage = 'landmark'
       renderStage()
     })
-    commitBtn.addEventListener('click', () => commitTwoPoint(false))
-    overrideBtn.addEventListener('click', () => commitTwoPoint(true))
+    commitBtn.addEventListener('click', () => void commitTwoPoint(false))
+    overrideBtn.addEventListener('click', () => void commitTwoPoint(true))
     fallbackBtn.addEventListener('click', () => commitSinglePoint())
 
     // Matches the placeground reference's own guard: a two-finger touch is a

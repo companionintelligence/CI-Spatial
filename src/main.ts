@@ -25,7 +25,16 @@ import { InferenceRouter } from './inference/router'
 import { InferServerError } from './inference/server'
 import { bucket, resolveDetections, mergeDetections } from './spatial/resolver'
 import { DetectionStore } from './scene/store'
-import { ProjectStore, type Project, type ScanCalibration, type ScanEntry } from './project/project-store'
+import {
+  ProjectStore,
+  referencePhotoKey,
+  type Project,
+  type ScanCalibration,
+  type ScanEntry,
+} from './project/project-store'
+import type { PendingReferencePhoto } from './ar/reference-photo'
+import type { CalibrationReferencePhoto } from './world/types'
+import { isQueuedOffline } from './shared/offline-queue'
 import type { AreaKind, PlaceArea, PlaceType } from './world/types'
 import { AROverlay } from './ui/overlay'
 import { SidePanel, type ExportOutcome } from './ui/panel'
@@ -1021,6 +1030,32 @@ async function main() {
         const estimate = pointCloud.groundEstimate()
         return estimate ? { y: estimate.y, locked: estimate.locked } : null
       },
+      // Reference photos (ticket 0007) reuse the existing capture path rather
+      // than adding a second encoder: same RGBA -> ImageBitmap -> OffscreenCanvas
+      // -> JPEG chain, same size caps. A rejection here ("Capture already
+      // pending", a timeout, a denied frame) is a failed photo, never a failed
+      // calibration - the flow treats a null the same way.
+      capturePhoto: async () => {
+        const frame = await capture.capture(CAPTURE_FRAME_TIMEOUT_MS)
+        const thumbDataUrl = await capture.captureThumbnail(frame.blob).catch(() => '')
+        return {
+          blob: frame.blob,
+          thumbDataUrl,
+          pose: frame.pose,
+          frameSize: { width: frame.frameWidth, height: frame.frameHeight },
+        }
+      },
+      // Local blob first, server copy second. That order is what makes the aid
+      // work offline on the device that took it, while still working at all on
+      // a second device - which is the scenario the server copy exists for.
+      loadReferencePhoto: async (photo) => {
+        const local = await projectStore.getReferencePhoto(photo.localKey).catch(() => null)
+        if (local?.blob) return URL.createObjectURL(local.blob)
+        if (!photo.url) return null
+        const res = await fetch(photo.url).catch(() => null)
+        if (!res?.ok) return null
+        return URL.createObjectURL(await res.blob())
+      },
     })
     if (calibration) {
       sessionCalibration = calibration.calibration
@@ -1036,6 +1071,19 @@ async function main() {
       // session — the exact failure the separation check exists to catch.
       if (calibration.spatialFrame) {
         selectedProject.spatialFrame = calibration.spatialFrame
+        // Photos accompany a *changed* frame only, and are attached before the
+        // record is written so the URLs travel with it through the existing
+        // Place write path rather than needing a second sync.
+        if (calibration.referencePhotos?.length) {
+          const stored = await storeReferencePhotos(
+            projectStore,
+            selectedProject.projectId,
+            calibration.referencePhotos,
+          )
+          if (stored && calibration.spatialFrame.method === 'two-point-ground') {
+            calibration.spatialFrame.referencePhotos = stored
+          }
+        }
         await projectStore.updateProject(selectedProject)
         await persistProjectSpatialFrame(selectedProject)
       }
@@ -1780,6 +1828,101 @@ async function fetchProjects(): Promise<Project[]> {
   const response = await fetch('/projects')
   if (!response.ok) return []
   return await response.json() as Project[]
+}
+
+/**
+ * Store both reference photos locally, upload them, and return the records to
+ * hang on the Place's frame (wave 09 ticket 0007).
+ *
+ * Local first, and unconditionally: IndexedDB is what makes the aid work
+ * offline and instantly on the device that took it, and it must survive an
+ * upload that never lands. The server copy is what makes it work on a
+ * *different* device, which is the whole reason `spatialFrame` is synced at
+ * all - a Place calibrated on one phone and re-scanned on another is a real
+ * scenario for this app's fleet.
+ *
+ * Returns `null` unless **both** photos are available. The schema pairs them
+ * deliberately: a frame is defined by two points, and a panel that could show
+ * a photo for A but never for B would let the user confirm half a reference
+ * and believe they had confirmed all of it - which is precisely the
+ * reversed-pair failure the photos exist to catch. The orphaned local blob is
+ * harmless; its key is deterministic, so the next calibration overwrites it.
+ *
+ * Never throws. A failure here degrades re-acquisition on the next visit; it
+ * must not cost the user the calibration they just completed.
+ */
+async function storeReferencePhotos(
+  projectStore: ProjectStore,
+  projectId: string,
+  photos: PendingReferencePhoto[],
+): Promise<{ landmark: CalibrationReferencePhoto; headingMarker: CalibrationReferencePhoto } | null> {
+  const records: Partial<Record<PendingReferencePhoto['role'], CalibrationReferencePhoto>> = {}
+
+  for (const photo of photos) {
+    const localKey = referencePhotoKey(projectId, photo.role)
+    try {
+      await projectStore.putReferencePhoto({
+        localKey,
+        projectId,
+        role: photo.role,
+        blob: photo.blob,
+        thumbDataUrl: photo.thumbDataUrl,
+        capturedAt: photo.capturedAt,
+      })
+    } catch (error) {
+      console.warn('[calibration] Reference photo could not be stored locally:', error)
+      continue
+    }
+    records[photo.role] = {
+      url: await uploadReferencePhoto(projectId, photo),
+      localKey,
+      tapPoint: photo.tapPoint,
+      pose: photo.pose,
+      capturedAt: photo.capturedAt,
+    }
+  }
+
+  const { landmark, headingMarker } = records
+  if (!landmark || !headingMarker) {
+    console.warn('[calibration] Only one reference photo survived capture - the frame keeps none.')
+    return null
+  }
+  return { landmark, headingMarker }
+}
+
+/**
+ * Uploads one photo, returning its server URL or `null` for "pending".
+ *
+ * `null` covers both being offline and the upload failing outright. Offline is
+ * not a loss: `/projects` is a queueable prefix in `public/sw.js`, so the
+ * service worker durably queues the POST and replays it later - but it answers
+ * 202 with no server-assigned URL, and reading that 2xx as delivered is the
+ * exact mistake `isQueuedOffline` exists to prevent. Recording it as pending is
+ * the honest state, and the panel says so on the next device rather than
+ * showing an empty box.
+ */
+async function uploadReferencePhoto(projectId: string, photo: PendingReferencePhoto): Promise<string | null> {
+  try {
+    const form = new FormData()
+    form.append('image', photo.blob, `ref-${photo.role}.jpg`)
+    form.append('meta', JSON.stringify({
+      role: photo.role,
+      tapPoint: photo.tapPoint,
+      pose: photo.pose,
+      capturedAt: photo.capturedAt,
+      ...(photo.label ? { label: photo.label } : {}),
+    }))
+    const res = await fetch(`/projects/${encodeURIComponent(projectId)}/reference-photos`, {
+      method: 'POST',
+      body: form,
+    })
+    if (!res.ok || isQueuedOffline(res)) return null
+    const body = await res.json() as { url?: string }
+    return body.url ?? null
+  } catch (error) {
+    console.warn('[calibration] Reference photo upload failed; keeping the local copy:', error)
+    return null
+  }
 }
 
 /** Mirror the locally-created project frame so other devices use the same references. */

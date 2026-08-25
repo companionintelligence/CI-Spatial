@@ -109,6 +109,35 @@ export interface Project {
 export type Place = Project
 
 /**
+ * One marker's reference photo — the camera frame at the moment that marker
+ * was committed, with the exact tap point recorded so a crosshair can be drawn
+ * over it on a return visit (wave 09 ticket 0007).
+ *
+ * **A human aid, never an input to the transform.** Nothing that builds
+ * `sessionToProject` may read this. It exists because `separationM` proves the
+ * two points were the right *distance* apart and never that they were the
+ * *same two points* — and tapping the correct pair in reverse order passes the
+ * separation check while rotating the frame exactly 180°. Only the user can
+ * catch that, and only if given something to recognise.
+ *
+ * Recognition is also why this is a photo rather than the stored points
+ * themselves: `landmark` and `headingMarker` are tautological by construction
+ * (origin, and +Z at `separationM`), and drawing them in a new session would
+ * need the very `sessionToProject` that calibration has not produced yet.
+ */
+export interface CalibrationReferencePhoto {
+  /** Server URL, once uploaded. Null while pending or if the upload never succeeded. */
+  url: string | null
+  /** Local IndexedDB key for the blob — always present on the capturing device. */
+  localKey: string
+  /** Normalised 0-1 screen coords of the tap within this frame; a crosshair is drawn here. */
+  tapPoint: { x: number; y: number }
+  /** Camera pose at capture, so the vantage point is recoverable later. */
+  pose: { position: Vec3; rotation: Quat }
+  capturedAt: string
+}
+
+/**
  * A Place's durable alignment reference.
  *
  * `'two-point-ground'` is the preferred, higher-accuracy tier. An established
@@ -153,8 +182,28 @@ export type ProjectSpatialFrame = {
        * absolute orientation but leaves the frame fully determined.
        */
       anchorBearingDeg: number | null
-      /** Optional human descriptions of the two physical features, e.g. "north door frame". */
+      /**
+       * Optional human descriptions of the two physical features, e.g.
+       * "north door frame". Typed during capture (ticket 0007) and shown
+       * beside each reference photo on return — a label survives a photo that
+       * turns out ambiguous, and it is the only thing that distinguishes point
+       * A from point B when both photos look like a stretch of floor.
+       *
+       * Index 0 is the landmark, index 1 is the heading marker. That order is
+       * load-bearing: it is the order the frame's +Z axis is built from.
+       */
       pointLabels?: [string, string]
+      /**
+       * Reference photos of each marker's physical setup, shown on a return
+       * visit so the user re-places on the same spots. Purely a human aid —
+       * never an input to the transform. Absent when capture or upload
+       * failed, which degrades re-acquisition but does not invalidate the
+       * frame.
+       */
+      referencePhotos?: {
+        landmark: CalibrationReferencePhoto
+        headingMarker: CalibrationReferencePhoto
+      }
     }
   | {
       method: 'ground-tap-compass'

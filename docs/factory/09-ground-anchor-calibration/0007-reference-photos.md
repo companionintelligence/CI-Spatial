@@ -232,49 +232,74 @@ string with `role: 'landmark' | 'headingMarker'`, `tapPoint`, `pose`), mirroring
 
 ## Definition of Done
 
-- [ ] A photo is captured on commit of each marker (not on provisional placement), with tap
-      coords and pose
-- [ ] Photos persist locally in the new `referencePhotos` store; `DB_VERSION` bumped to 2 with
-      the existing stores untouched
-- [ ] Photos upload via the new route; the returned URL is stored on the frame and synced
+- [x] A photo is captured on commit of each marker (not on provisional placement), with tap
+      coords and pose — landmark on **Confirm landmark**, heading marker on **Use this
+      alignment**, which are the two moments the user is still standing where they tapped.
+      Re-placing a marker discards any photo already taken for it, because a photo of the
+      previous spot is worse than none
+- [x] Photos persist locally in the new `referencePhotos` store; `DB_VERSION` bumped to 2 with
+      the existing stores untouched — proved against a **populated v1 database** in
+      `tests/mock-project-store-upgrade.spec.ts`, not just a fresh one
+- [x] Photos upload via the new route; the returned URL is stored on the frame and synced
       through the existing `PUT /projects/:id` path
-- [ ] Upload failure or offline leaves the local copy, marks the URL pending, and does not
+- [x] Upload failure or offline leaves the local copy, marks the URL pending, and does not
       block calibration
-- [ ] On a return visit, each placement stage shows its stored reference photo with a
+- [x] On a return visit, each placement stage shows its stored reference photo with a
       crosshair at the recorded tap point
-- [ ] A frame whose photos are missing or un-uploaded says so rather than showing an empty
-      panel
-- [ ] Re-calibration replaces both photos rather than appending
-- [ ] `pointLabels` is captured alongside each photo and shown with it on return — a short
-      typed description ("north door frame") survives a photo that turns out ambiguous. The
-      field already exists in ticket 0002's schema and nothing currently populates it
-- [ ] Both committed markers stay rendered in the AR scene for the rest of the session, not
-      only the landmark. Ticket 0004 as shipped calls `dropCommittedOrigin()` for the landmark
-      alone, and `clearPlacement()` tears the heading marker's decal down at commit
-- [ ] After a successful separation check, both stored markers are drawn in the live scene as
+- [x] A frame whose photos are missing or un-uploaded says so rather than showing an empty
+      panel — three distinct messages: no photo was ever taken, the photo never finished
+      uploading and this is not the device that took it, or the load failed
+- [x] Re-calibration replaces both photos rather than appending — the local key and the
+      server filename are both derived from `(place, role)`, so replacement is structural
+      rather than a cleanup step that can be forgotten
+- [x] `pointLabels` is captured alongside each photo and shown with it on return
+- [x] Both committed markers stay rendered in the AR scene for the rest of the session, not
+      only the landmark
+- [x] After a successful separation check, both stored markers are drawn in the live scene as
       confirmation (step 4 of the return-visit flow)
-- [ ] Photos are never read by any transform or verification code path
-- [ ] `npx tsc --noEmit`, `deno task check`, `deno task test` pass
+- [x] Photos are never read by any transform or verification code path — `sessionToProject` is
+      built only by `twoPointToProjectTransform(landmark, headingMarker)` and
+      `anchorToProjectTransform(landmark, bearingDeg)`; the sole reader of `referencePhotos`
+      is the calibration panel
+- [x] `npx tsc --noEmit`, `deno task check`, `deno task test` pass
 
 ## Tests
 
-- [ ] Deno (server): `POST /projects/:id/reference-photos` accepts a valid multipart body and
+- [x] Deno (server): `POST /projects/:id/reference-photos` accepts a valid multipart body and
       returns a URL; rejects a missing `image`, a missing/invalid `meta`, and an unknown `role`
-- [ ] Deno (server): `GET` serves the stored bytes; a traversal attempt in `:file` is rejected
-      (mirror whatever coverage `/sessions/:id/keyframes/:file` already has — check first)
-- [ ] Deno: the new test file is registered in `deno.json`'s `"test"` task string
-- [ ] Unit: crosshair placement maps normalised tap coords to pixel coords for a given rendered
-      photo size — the same class of projection bug ticket 0005 guards elsewhere
-- [ ] Playwright (`tests/`): with a stored frame carrying photos, the calibration overlay
+- [x] Deno (server): `GET` serves the stored bytes; a traversal attempt in `:file` is rejected.
+      **Checked first, as asked, and the answer changed the split:** `/sessions/:id/keyframes`
+      has no Deno coverage at all — its routes are exercised through `api-*` Playwright specs,
+      and only its *shape* helpers are unit-tested (`session_id.ts`). So this mirrors that
+      exactly: `tests/unit/deno/reference_photos.test.ts` proves the path/role/meta logic in
+      `server/project_media.ts` (which exists separately from `main.ts` for the same reason
+      `session_id.ts` does — `main.ts` cannot be imported without running `Deno.serve`), and
+      `tests/api-reference-photos.spec.ts` proves the routes are wired to it and the bytes
+      survive a round trip
+- [x] Deno: the new test file is registered. Note the task is `deno test … tests/unit/deno/` —
+      a **directory**, not the file list the ticket assumed, so dropping the file in registers it
+- [x] Unit: crosshair placement maps normalised tap coords to pixel coords for a given rendered
+      photo size — and, more importantly, the canvas→frame step in front of it. The tap is
+      normalised against the canvas while the photo is the cover-cropped camera frame, so the
+      naive value is wrong by however much the crop removed; `viewportPointToImagePoint` is
+      tested as the exact inverse of the existing `imagePointToViewportPoint`
+- [x] Playwright (`tests/`): with a stored frame carrying photos, the calibration overlay
       renders the reference panel; with a frame lacking them, it renders the explanatory empty
-      state and calibration still completes
-- [ ] Manual: airplane mode during calibration → calibration completes, photo stored locally,
-      URL pending
-- [ ] On-device: calibrate a Place with photos; return in a fresh session on a **second
-      device**; confirm the photos load from the server and materially help re-placement.
-      Record the `separationM` spread with photos available versus ticket 0006's
+      state and calibration still completes. Also covers the second-device path (server copy
+      only, no local blob) and that stage 2 shows point B's photo rather than point A's
+- [x] ~~Manual~~ automated: `context.setOffline(true)` mid-calibration → calibration completes,
+      both blobs are in IndexedDB, and both URLs record as pending. Deliberately browser-level
+      offline rather than a Playwright route: `/projects` is a queueable prefix in
+      `public/sw.js`, so the upload goes through the service worker and page-level
+      interception never sees it — the first attempt at this test passed a route-abort straight
+      through to the server
+- [ ] **On-device, not run:** calibrate a Place with photos; return in a fresh session on a
+      **second device**; confirm the photos load from the server and materially help
+      re-placement. Record the `separationM` spread with photos available versus ticket 0006's
       Procedure 2 baseline without them — this is the measurement that says whether the
-      feature actually reduced re-acquisition error
+      feature actually reduced re-acquisition error. **It cannot be run yet:** 0006's
+      Procedure 2/2a baseline was never taken (that ticket closed unrun), so there is nothing
+      to compare against. Taking the baseline is the blocker, not this feature
 
 ```bash
 npx tsc --noEmit && deno task check && deno task test
@@ -283,17 +308,19 @@ npx playwright test tests/ar-scan.spec.ts
 
 ## Acceptance Criteria
 
-- [ ] Given a first calibration, When both markers are committed, Then two photos are captured,
+- [x] Given a first calibration, When both markers are committed, Then two photos are captured,
       stored locally, and uploaded
-- [ ] Given a return visit, When the landmark placement stage opens, Then its reference photo
+- [x] Given a return visit, When the landmark placement stage opens, Then its reference photo
       is shown with a crosshair on the recorded tap point
-- [ ] Given the heading-marker stage, Then its own photo is shown, not the landmark's
-- [ ] Given an offline device, When calibration runs, Then it completes, the photo is stored
+- [x] Given the heading-marker stage, Then its own photo is shown, not the landmark's
+- [x] Given an offline device, When calibration runs, Then it completes, the photo is stored
       locally, and the pending state is visible rather than silent
-- [ ] Given a second device opening the same Place, Then the photos load from the server
-- [ ] Given a Place calibrated before this ticket, Then calibration runs exactly as it does
+- [x] Given a second device opening the same Place, Then the photos load from the server
+      (covered headlessly — no local blob exists for the Place, so only the server copy can
+      satisfy the panel; the real two-device run is the unrun on-device item above)
+- [x] Given a Place calibrated before this ticket, Then calibration runs exactly as it does
       today with an explanatory empty state, no crash and no migration
-- [ ] Given any code path that builds `sessionToProject`, Then it does not read
+- [x] Given any code path that builds `sessionToProject`, Then it does not read
       `referencePhotos`
 
 ## Risks / potential issues
@@ -332,23 +359,59 @@ npx playwright test tests/ar-scan.spec.ts
 
 ## Subtasks
 
-1. [ ] Add `CalibrationReferencePhoto` and the `referencePhotos` field to `src/world/types.ts`
-2. [ ] Bump `ProjectStore` to `DB_VERSION = 2`, add the `referencePhotos` store and CRUD; test
+1. [x] Add `CalibrationReferencePhoto` and the `referencePhotos` field to `src/world/types.ts`
+2. [x] Bump `ProjectStore` to `DB_VERSION = 2`, add the `referencePhotos` store and CRUD; test
        the upgrade against a populated v1 database
-3. [ ] Add `POST`/`GET /projects/:id/reference-photos` to `main.ts`, copying the keyframe
+3. [x] Add `POST`/`GET /projects/:id/reference-photos` to `main.ts`, copying the keyframe
        handler's multipart validation and `sessionDir()`-style path safety
-4. [ ] Write the server tests; register the file in `deno.json`
-5. [ ] Pass a capture accessor into `CalibrationOptions`; capture on marker commit with tap
+4. [x] Write the server tests; register the file in `deno.json`
+5. [x] Pass a capture accessor into `CalibrationOptions`; capture on marker commit with tap
        coords and pose
-6. [ ] Persist locally, upload, store the returned URL on the frame, sync via the existing
+6. [x] Persist locally, upload, store the returned URL on the frame, sync via the existing
        Place write path
-7. [ ] Wire the offline/failure degradation path
-8. [ ] Add the reference-photo panel with crosshair overlay to `index.html`; show per stage
-9. [ ] Add the missing-photo empty state
-10. [ ] Write the crosshair unit test and the Playwright coverage
-11. [ ] `npx tsc --noEmit`, `deno task check`, `deno task test`, Playwright
-12. [ ] Run the two-device on-device check; record the `separationM` spread against 0006's
-        Procedure 2 baseline
-13. [ ] Capture and store `pointLabels` per marker; show them beside the photos on return
-14. [ ] Keep both committed markers in the scene for the session, and draw the stored pair once
+7. [x] Wire the offline/failure degradation path
+8. [x] Add the reference-photo panel with crosshair overlay to `index.html`; show per stage
+9. [x] Add the missing-photo empty state
+10. [x] Write the crosshair unit test and the Playwright coverage
+11. [x] `npx tsc --noEmit`, `deno task check`, `deno task test`, Playwright
+12. [ ] **Not run.** The two-device on-device check; record the `separationM` spread against
+        0006's Procedure 2 baseline — which does not exist yet, so this is blocked on 0006's
+        measurement rather than on this ticket
+13. [x] Capture and store `pointLabels` per marker; show them beside the photos on return
+14. [x] Keep both committed markers in the scene for the session, and draw the stored pair once
         the separation check passes
+
+## What landed, and what the implementation had to decide
+
+Three things the ticket left open were settled during implementation. They are recorded here
+because each one is a decision a reader would otherwise have to re-derive from the diff.
+
+**The tap coordinate needed aspect correction the ticket did not anticipate.** The ticket says
+to store "the tap's normalised screen coordinates". Those are normalised against the *canvas*;
+the photo is the *camera frame*, and the AR feed is cover-cropped to fill the screen — so the
+stored image contains strictly more than the user saw, and the two coordinate systems do not
+agree. Storing the raw canvas value would put the crosshair off the tapped feature by however
+much the crop removed. `src/spatial/resolver.ts` already owned that conversion in the other
+direction (`imagePointToViewportPoint`, used for VLM bboxes), so this adds
+`viewportPointToImagePoint` beside it rather than a second projection (ADR 0001), and the unit
+test asserts the pair round-trips.
+
+**"Capture on commit of each marker" resolves to Confirm and Commit, not to frame commit.** The
+landmark's photo is taken when **Confirm landmark** is pressed and the heading marker's when
+**Use this alignment** is pressed — the two moments the user is still standing where they
+tapped. Capturing both at frame commit would give point A a photo taken from point B, whose
+crosshair coordinates would be meaningless. A marker re-placed after its photo was taken drops
+that photo rather than keeping a stale one.
+
+**Point B could not be named where the ticket implies.** Placing the heading marker advances to
+`'review'` in the same tick, so a label field bound to the placement stages alone is
+unreachable for point B — the frame would have been committable with half its `pointLabels`.
+The review stage therefore names the heading marker by default, and whichever marker is
+selected when one is.
+
+Two smaller notes: the reference panel's `display` rules each need their own `[hidden]` rule,
+because an author-sheet `display` beats the UA sheet's `[hidden] { display: none }` and the
+panel stayed on screen after `el.hidden = true`. And the offline test uses browser-level
+offline rather than a Playwright route, because `/projects` is a queueable prefix in
+`public/sw.js` — the upload goes through the service worker, and a route abort passes straight
+through to the server.
