@@ -285,10 +285,11 @@ export class PointCloud {
    * is stable, so it locks, and `groundEstimate().locked` reports a confidently
    * wrong floor.
    *
-   * Fitting the densest band instead maximises *support* rather than trusting a
-   * quantile — the same robust-estimation idea as RANSAC, reduced to the one
+   * Fitting a band by its *support* instead — how many points actually lie in
+   * it — is the same robust-estimation idea as RANSAC, reduced to the one
    * degree of freedom this problem has. It is `O(n)` where the sort was
-   * `O(n log n)`.
+   * `O(n log n)`. Which supported band is chosen is the next paragraph but one:
+   * the lowest that qualifies, not the best-supported.
    *
    * **Why one degree of freedom and not a general plane fit.** The session
    * frame is gravity-aligned — this codebase depends on that everywhere, and

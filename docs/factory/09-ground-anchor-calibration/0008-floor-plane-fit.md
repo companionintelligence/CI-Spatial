@@ -56,10 +56,13 @@ parameters the geometry does not have, and the cost is concrete: an unconstraine
 satisfy itself on a **wall**, which is the largest planar surface in most rooms and is
 exactly what must never be returned.
 
-So: fit the one parameter that is free. Find the `y` with the **most support** — the densest
-horizontal band — rather than a fixed quantile. That is the same robust-estimation idea as
-RANSAC (maximise inliers, ignore outliers) reduced to the one degree of freedom the problem
-actually has, and it is `O(n)` with a histogram where the current sort is `O(n log n)`.
+So: fit the one parameter that is free. Choose a `y` by **how many points actually support
+it** rather than by a fixed quantile. That is the same robust-estimation idea as RANSAC
+(count inliers, ignore outliers) reduced to the one degree of freedom the problem actually
+has, and it is `O(n)` with a histogram where the current sort is `O(n log n)`.
+
+Which supported band, though, is the next question — and "the best-supported" is the wrong
+answer. See below.
 
 Preferring density alone is not enough: a well-sampled tabletop can out-vote a sparsely-seen
 floor. So among bands with **substantial** support, take the **lowest**. "Lowest well-supported
@@ -268,7 +271,9 @@ npx tsc --noEmit && deno task check && deno task test
   degenerate end. Recorded as this constant's revisit trigger.
 - **Risk:** A histogram over a decimated cloud has half the counts, so an absolute support
   threshold would silently change meaning after `_decimate()`. — **Mitigation:** the
-  threshold is a fraction of the best band, never an absolute; called out in Open questions.
+  threshold is a fraction of the **whole cloud**, never an absolute — and never a fraction of
+  the best-supported band either, which is the separate error Open questions records this
+  ticket having made and corrected.
 - **Risk:** This is the input to a gate whose own tolerances are unmeasured, so a
   "better" estimator cannot be proven better on device without 0006. — **Mitigation:** be
   honest about that: the tests prove it fixes a **reproducible, constructed** failure. The
