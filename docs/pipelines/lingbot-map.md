@@ -39,8 +39,8 @@ Mobile app   ──upload .glb──►  Deno server  ──fork──►  scrip
 | File | Purpose |
 |------|---------|
 | `scripts/lingbot_map_worker.py` | Python entrypoint that runs LingBot-Map inference and writes the three sibling artifacts. |
-| `lingbot_map.ts` | Deno-side driver that spawns the Python worker, parses the result manifest, and emits the GLB sidecar. |
-| `lingbot_map_glb.ts` | PLY → quantised GLB POINTS primitive (via gltf-transform). |
+| `server/lingbot-map/lingbot_map.ts` | Deno-side driver that spawns the Python worker, parses the result manifest, and emits the GLB sidecar. |
+| `server/lingbot-map/lingbot_map_glb.ts` | PLY → quantised GLB POINTS primitive (via gltf-transform). |
 | `lingbot_map_ply.ts` | Runtime-agnostic binary-LE PLY parser shared by server + browser. |
 | `src/viewer/lingbot-map.ts` | Three.js loader that pulls the PLY + poses and overlays them under the selected scan. |
 | `scripts/fetch-lingbot-test-video.mjs` | Downloads the CC-BY reference clip. |

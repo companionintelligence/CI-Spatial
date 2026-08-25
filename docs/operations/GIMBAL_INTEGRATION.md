@@ -177,7 +177,7 @@ pipeline, not invented:
 
 **Correction to a common assumption:** this pipeline's real end artifact is a point cloud /
 gaussian splat (`.ply`/`.sog`), not a GLTF — a `.glb` only exists as an optional lossy sidecar
-(`lingbot_map_glb.ts`) or as the *separate*, unrelated `pipeline.ts` (which optimizes a
+(`server/lingbot-map/lingbot_map_glb.ts`) or as the *separate*, unrelated `server/pipeline.ts` (which optimizes a
 pre-existing mobile-exported `.glb`, not something this pipeline produces). A full gaussian splat
 is a further, manually-enqueued `splat-train` job — worth doing, but 9 sparse gridded photos is
 thin input for 3DGS quality; the point cloud is the realistic fast result from one run.

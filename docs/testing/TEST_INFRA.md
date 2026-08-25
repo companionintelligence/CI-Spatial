@@ -36,7 +36,7 @@ The project runs Vite (frontend dev server) and Deno (backend/inference server) 
 npm run start
 ```
 This spawns:
-1. **Deno Server:** runs `main.ts` with `--allow-net`, `--allow-read`, `--allow-write`, `--allow-env`, and `--allow-ffi` permissions on port `8000`.
+1. **Deno Server:** runs `server/main.ts` with `--allow-net`, `--allow-read`, `--allow-write`, `--allow-env`, and `--allow-ffi` permissions on port `8000`.
 2. **Vite Dev Server:** serves the client pages (HTML/TS) on port `5173`.
 
 Alternatively, you can run them individually:
@@ -77,7 +77,7 @@ Configure these variables in your environment or a `.env` file:
 *   **`PORT`**: Port for the Deno Hono server.
     *   *Default:* `8000`
 *   **`ALLOWED_ORIGIN_PREFIX`**: Prefix for CORS origin filtering on the server.
-    *   *Default:* Localhost and tailscale networks (matched via RegExp pattern in `main.ts`).
+    *   *Default:* Localhost and tailscale networks (matched via RegExp pattern in `server/main.ts`).
 *   **`SCANS_DIR`**: Directory on the server where uploaded `.glb` scans and companion JSON metadata are saved.
     *   *Default:* `./scans`
 *   **`SUMMARIES_DIR`**: Directory where markdown session summaries are saved.
@@ -116,7 +116,7 @@ The test suite contains **53+ browser and server checks** organized across 4 dis
 
 ### Tailscale Integration & CORS
 The Deno server is designed to support remote devices (like iPhones) connecting over a Tailscale Tailnet.
-*   **CORS Origin Matching:** In `main.ts`, the CORS allowed origins are programmatically matched against `localhost`, `127.0.0.1`, private local subnets (`192.168.x.x`, `10.x.x.x`, `172.16.0.0/12`), Tailscale subnet IPs (`100.64.0.0/10`), and Tailscale domain names (`*.ts.net`).
+*   **CORS Origin Matching:** In `server/main.ts`, the CORS allowed origins are programmatically matched against `localhost`, `127.0.0.1`, private local subnets (`192.168.x.x`, `10.x.x.x`, `172.16.0.0/12`), Tailscale subnet IPs (`100.64.0.0/10`), and Tailscale domain names (`*.ts.net`).
 *   **Configuring HTTPS:** To use WebXR/8th Wall on a remote phone, the app must be served over HTTPS. Ensure the Tailscale URL is configured with HTTPS or use `vite-plugin-basic-ssl` to test securely.
 
 ### Deno Execution Flags
@@ -151,7 +151,7 @@ Seed a running server with the corpus: `npm run seed:test-data`
 
 ### Mock CV engine (`INFERENCE_MODE=mock`)
 
-`inference.ts` gains a third engine: a deterministic colour-blob detector
+`server/inference.ts` gains a third engine: a deterministic colour-blob detector
 (grid sampling + union-find connected components over the shared palette in
 `src/shared/cv-palette.ts`). It closes the loop with the generated CV images
 and the xr8-mock camera feed — `/infer` returns exact, repeatable detections.
