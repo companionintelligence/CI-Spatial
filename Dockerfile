@@ -2,7 +2,7 @@
 #
 # Stage 1 builds the Vite static bundle (scanner + editor UI); stage 2 is the
 # Deno API server, which also serves that bundle via the STATIC_DIR
-# fall-through in main.ts — one container, one port (8000), UI + API.
+# fall-through in server/main.ts — one container, one port (8000), UI + API.
 
 # Stage 1 — build the static viewer bundle (vite)
 FROM node:22-alpine AS web
@@ -18,8 +18,8 @@ COPY *.ts ./
 # Every root HTML file. Also a glob: vite.config.ts's `input` map grew
 # ar-hittest-sphere.html (#115) and ar-ground-anchor.html (wave 09) after this
 # line was written, and Vite fails the build with UNRESOLVED_ENTRY when an
-# entry it names is missing from the context. Same failure mode as the server
-# module list below, one stage earlier.
+# entry it names is missing from the context. Same failure mode the server
+# module copy below avoids, one stage earlier.
 COPY *.html ./
 COPY src/ ./src/
 COPY public/ ./public/
@@ -30,21 +30,24 @@ RUN node scripts/copy-draco.mjs && npx vite build
 FROM denoland/deno:2.8.3
 WORKDIR /app
 
-# node + ffmpeg power the /ingest-video and /ingest-photos routes (main.ts
+# node + ffmpeg power the /ingest-video and /ingest-photos routes (server/main.ts
 # spawns `node scripts/ingest-*.mjs`, which shell out to ffmpeg/ffprobe).
 USER root
 RUN apt-get update \
   && apt-get install -y --no-install-recommends nodejs ffmpeg \
   && rm -rf /var/lib/apt/lists/*
 
-# Server modules. A glob, deliberately, not a hand-maintained list: the previous
-# explicit list was last updated 2026-08-05 and main.ts had since grown static
-# imports of nine modules it never named (world_job_pump/lock/membership/prune,
-# scan_id, scan_index, sensenova_vision, session_id, thing_match). `deno cache
-# main.ts` below fails on the first of them, so the image has not built since
-# 2026-08-16 — and nothing noticed, because publishing is workflow_dispatch-only
-# and the CI-Marketplace manifest pins the :latest built before the break.
-# The list was the bug; enumerating it correctly would only reset the clock.
+# Server modules. `COPY server/ ./server/` grabs the whole directory rather than
+# a hand-maintained file list — the previous approach (an explicit COPY list,
+# then a *.ts glob at the repo root) twice fell behind as server/main.ts grew
+# new static imports the list didn't name, breaking `deno cache` here without
+# anyone noticing (publishing is workflow_dispatch-only). A directory copy
+# can't have that failure mode: it structurally cannot omit a file that exists
+# under server/. `*.ts` at the root now only matches vite.config.ts and
+# playwright.config.ts (everything server-side now lives under server/), so
+# it's kept as a harmless glob rather than deleted, for the same reason: it's
+# what stops the next root-level module from silently missing the build
+# instead of failing it.
 COPY *.ts deno.json deno.lock ./
 COPY server/ ./server/
 COPY src/world/ ./src/world/
@@ -54,7 +57,7 @@ COPY src/shared/ ./src/shared/
 # the Brush trainer need GPU-capable hosts — install them on the host and point
 # LINGBOT_MAP_PYTHON / SPLAT_DETECT_PYTHON / SPLAT_TRAIN_BIN at them; the jobs
 # degrade gracefully (skippedReason) when the binaries are absent.
-# NOTE: these are spawned by main.ts at runtime, so their own imports must be
+# NOTE: these are spawned by server/main.ts at runtime, so their own imports must be
 # here too — ingest-{video,photos}.mjs both `import './ingest-quality.mjs'`.
 # A miss here is invisible at build time and only shows up as a 500 from the
 # ingest routes in a real install.

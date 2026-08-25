@@ -20,7 +20,7 @@ interaction zones for WebXR").
   0 objects on sparse input
 - ⚠️ Boxes live in the **editor only**, not the AR scanner or the scan's semantic tags
 - ⚠️ Coordinate frame of `interactions.json` vs our world frame unvalidated on a real room
-- ℹ️ The **memory push does ship the boxes** — `memory_push.ts` sends each object's
+- ℹ️ The **memory push does ship the boxes** — `server/memory_push.ts` sends each object's
   extent (m + whole mm), rotation, peak score and vote count to CI-Server, because
   `ci.inventory`'s `length_mm`/`width_mm`/`height_mm` columns have nothing else to
   populate them from. Every push carries an `object_extents` block declaring
@@ -67,7 +67,7 @@ outcome, not a failure.
 
 ## Phase 2 — Expose the knobs  ✅ done in this change
 
-`splat_detect.ts` now takes `quality` / `scoreThreshold` / `minVotes` / `minPeakScore`
+`server/splat/splat_detect.ts` now takes `quality` / `scoreThreshold` / `minVotes` / `minPeakScore`
 (job payload → env `SPLAT_DETECT_*` → run_local.py defaults). Default quality bumped
 `low` → `medium` (90 views vs 24). Clustering knobs stay unset until Phase 1 calibrates
 them, so we never fight the analyzer's own defaults blind. The Detect Objects UI can grow

@@ -3,13 +3,13 @@
 ## What this repo does
 
 A browser-based AR room scanner. A phone (Safari via 8th Wall SLAM, or Chrome/Quest via
-native WebXR) walks through a space; a Deno server (`main.ts`, `:8000`) receives
+native WebXR) walks through a space; a Deno server (`server/main.ts`, `:8000`) receives
 keyframes and detections; a Vite/Three.js frontend (`:5173`) renders the scan and a
 multi-scan World Editor. Reconstruction runs through two independent pipelines — a
-fast GLB-optimizer (the `optimize-scan` `WorldJob` type → `pipeline.ts`) and a slower,
+fast GLB-optimizer (the `optimize-scan` `WorldJob` type → `server/pipeline.ts`) and a slower,
 higher-fidelity chain (LingBot-Map point clouds → Brush Gaussian-splat training →
 splat detection/finish). Both pipelines run as `WorldJob`s through the single job
-system in `main.ts` (`docs/adr/0003-merged-job-system.md`) — see "Hard rule: reuse,
+system in `server/main.ts` (`docs/adr/0003-merged-job-system.md`) — see "Hard rule: reuse,
 don't duplicate" below. Tailscale is the deployment backbone: hostnames, HTTPS certs,
 and CORS are all built around `*.ts.net`.
 
@@ -17,7 +17,7 @@ and CORS are all built around `*.ts.net`.
 
 ```bash
 npm start                    # Deno API (:8000) + Vite HTTPS dev server (:5173)
-deno task check              # type-check main.ts (do this after any main.ts change)
+deno task check              # type-check server/main.ts (do this after any server/main.ts change)
 deno task test                # Deno unit tests
 npm run qr -- "/scanner.html?world=default"   # QR code for on-device testing
 npm run logs:watch           # stream a phone's console over the wire (?debug=remote)
@@ -42,7 +42,7 @@ collection of independent features. See
 already does the job.** This codebase has two cautionary examples of not doing that
 — both since fixed, but worth knowing so a third doesn't happen:
 
-- Two unrelated types used to both be named `ScanManifest` (`jobs.ts` vs
+- Two unrelated types used to both be named `ScanManifest` (`server/jobs.ts` vs
   `src/world/types.ts`) — fixed by renaming the `jobs.ts` one to `OptimizeScanManifest`.
 - Two entirely separate job-queue systems used to exist side by side: `jobs.ts`'s
   `JobQueue` (only handled `optimize-scan`) and the `WorldJob` system in `main.ts`
@@ -51,9 +51,11 @@ already does the job.** This codebase has two cautionary examples of not doing t
   `docs/adr/0003-merged-job-system.md` and `docs/factory/01-merge-jobs/`: `JobQueue`
   was ported onto `WorldJob` (which gained crash recovery, single-flight execution,
   dedupe, and bounded history to match what `JobQueue` already guaranteed) and then
-  retired — the class no longer exists, and `jobs.ts` now holds only the legacy
+  retired — the class no longer exists, and `server/jobs.ts` now holds only the legacy
   `Job`/`JobStatus`/`OptimizeScanManifest` shape definitions the `/jobs` API shim and
-  the on-disk manifest format still use.
+  the on-disk manifest format still use. (Both files — and every other server-side
+  Deno module — were later grouped from the repo root into `server/`, in a separate,
+  unrelated repo-tidy pass.)
 
 New background job types extend `WorldJob`, not a new parallel queue. New "thing" data
 extends `WorldDetection`/`DetectObject`. New "place" data extends `ScanManifest`/
@@ -89,7 +91,7 @@ about to create this codebase's third `ScanManifest` — don't.
   `docs/factory/foundation-updates/0001-reconcile-license-contradiction.md`, but
   don't assume every doc in the repo agrees; grep before trusting a license claim.
 - Hostname resolution (`TAILSCALE_HOSTNAME`/`ALLOWED_ORIGIN_PREFIX`) must stay in sync
-  between `vite.config.ts`'s `resolveHostname()` and `main.ts`'s copy of the same
+  between `vite.config.ts`'s `resolveHostname()` and `server/main.ts`'s copy of the same
   algorithm — they're deliberately parallel implementations (different runtimes), not
   a shared module. See
   `docs/factory/foundation-updates/0002-fix-allowed-origin-prefix-autodetect.md`.
@@ -97,8 +99,8 @@ about to create this codebase's third `ScanManifest` — don't.
   `"nodeModulesDir": "auto"`, so `deno install` / any `deno task` builds its own
   `node_modules/.deno/` layout for the eight `npm:` packages in its import map (hono,
   onnxruntime-node, jimp, the `@gltf-transform/*` trio, draco3dgltf, jose). Only `hono` is
-  imported by `main.ts` itself; the rest arrive through the modules it pulls in
-  (`inference.ts`, `pipeline.ts`, `portal_auth.ts`, and the splat/lingbot runners). That setting
+  imported by `server/main.ts` itself; the rest arrive through the modules it pulls in
+  (`server/inference.ts`, `server/pipeline.ts`, `server/portal_auth.ts`, and the splat/lingbot runners). That setting
   is load-bearing — it cannot simply be dropped — and `deno.json:26`'s `allowScripts`
   expects `onnxruntime-node`'s install script to run, so Deno needs a real tree.
   **Install with `npm ci`, not `npm install`.** `npm ci` rebuilds the tree wholesale from
@@ -126,8 +128,8 @@ persisted user data or an external integration instead of erroring.
 | localStorage key `'companion-scan-onboarded'` | `src/main.ts` | Every existing user sees the onboarding flow again on next launch. |
 | Service-worker cache/queue names `'companion-scan-offline-queue'`, `'companion-scan-v3'`, `'companion-scan-flush'` | `public/sw.js` (also referenced from `src/pwa.ts`) | Breaks the offline upload queue for anyone with a stale service worker still installed — queued uploads become unreachable under the new name. |
 | GHCR image name `ghcr.io/companionintelligence/ci-web-xr-scan` | `.github/workflows/docker-publish.yml` | Breaks every existing deploy pointing at that image tag — pulls start 404ing. |
-| OIDC client id `'ci-web-xr-scan'` | `portal_auth.ts` | Must exactly match the client registration in the CI-Portal identity provider — "Sign in with Companion Account" breaks until the IdP registration is updated too. |
-| memory-push `sourceSystem` `'companion-scan'` | `memory_push.ts` | Namespaces the idempotency keys sent to CI-Server — renaming it makes every previously-pushed memory look new, so re-pushes duplicate instead of deduping. |
+| OIDC client id `'ci-web-xr-scan'` | `server/portal_auth.ts` | Must exactly match the client registration in the CI-Portal identity provider — "Sign in with Companion Account" breaks until the IdP registration is updated too. |
+| memory-push `sourceSystem` `'companion-scan'` | `server/memory_push.ts` | Namespaces the idempotency keys sent to CI-Server — renaming it makes every previously-pushed memory look new, so re-pushes duplicate instead of deduping. |
 
 If one of these truly needs to change, it's a coordinated migration (data
 backfill, IdP update, or image-tag redirect), not a rename — treat it as its

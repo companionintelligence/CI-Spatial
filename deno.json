@@ -7,9 +7,9 @@
     "migrate-jobs": "deno run --allow-read --allow-write --allow-env server/migrations/migrate_jobs.ts",
     "migrate-scan-ids": "deno run --allow-read --allow-write --allow-env server/migrations/migrate_scan_ids.ts",
     "test": "deno test --allow-read --allow-write --allow-env --allow-net --allow-run tests/unit/deno/",
-    "test:mock": "deno test --allow-read --allow-env --allow-net inference_mock.test.ts",
-    "test:splat": "deno test --allow-read --allow-write --allow-env --allow-run splat_train.test.ts splat_detect.test.ts splat_finish.test.ts",
-    "test:auth": "deno test --allow-read --allow-write --allow-env --allow-net --allow-run portal_auth.test.ts memory_push.test.ts lingbot_map.test.ts"
+    "test:mock": "deno test --allow-read --allow-env --allow-net tests/unit/deno/inference_mock.test.ts",
+    "test:splat": "deno test --allow-read --allow-write --allow-env --allow-run tests/unit/deno/splat_train.test.ts tests/unit/deno/splat_detect.test.ts tests/unit/deno/splat_finish.test.ts",
+    "test:auth": "deno test --allow-read --allow-write --allow-env --allow-net --allow-run tests/unit/deno/portal_auth.test.ts tests/unit/deno/memory_push.test.ts tests/unit/deno/lingbot_map.test.ts"
   },
   "imports": {
     "@std/path": "jsr:@std/path@^1.0.0",

@@ -1,8 +1,9 @@
 name: Deno CI
 
-# Type-checks and tests the Deno backend (main.ts + the server-side modules
-# it imports: inference/jobs/pipeline/portal_auth/memory_push/lingbot_map/
-# splat_*). The npm-based frontend (Vite/Playwright) is out of scope here —
+# Type-checks and tests the Deno backend (server/main.ts + the server-side
+# modules it imports: inference/jobs/pipeline/portal_auth/memory_push/
+# lingbot_map/splat_*, all under server/). The npm-based frontend
+# (Vite/Playwright) is out of scope here —
 # see docker-publish.yml for the full-container smoke test that exercises
 # both together.
 #

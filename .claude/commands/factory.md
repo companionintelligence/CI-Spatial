@@ -74,22 +74,23 @@ write "match existing convention" without stating what it is. Probe the repo for
 patterns:
 
 - **Reuse first (ADR 0001):** does an existing type in `src/world/types.ts`, an
-  existing `WorldJobType`, an existing route in `main.ts`, or an existing env var
+  existing `WorldJobType`, an existing route in `server/main.ts`, or an existing env var
   already cover this? Search before pinning something new. State what you searched.
 - **Naming & structure:** how modules/files/tests are named and laid out
   (`src/<subsystem>/`, `*.test.ts` alongside the file it tests).
 - **Data layer:** this repo has no schema library (no Zod/io-ts) — types are
   hand-written TypeScript interfaces in `src/world/types.ts`, validated (where
-  validated at all) with ad-hoc type guards in `main.ts`. Match that; don't introduce
+  validated at all) with ad-hoc type guards in `server/main.ts`. Match that; don't introduce
   a validation library for one ticket.
-- **Server routes:** Hono handlers in `main.ts`, CORS via the existing
+- **Server routes:** Hono handlers in `server/main.ts`, CORS via the existing
   `isAllowedOrigin()` allowlist (don't add a parallel allowlist), config read via
   `Deno.env.get('X') ?? <default>` at module scope.
 - **Client/server split:** browser code under `src/`, imports `type`-only from
-  `src/world/types.ts` where possible; server-only logic stays in the root-level
-  `.ts` files (`main.ts`, `jobs.ts`, `pipeline.ts`, `splat_*.ts`, `lingbot_map.ts`).
-- **Tests:** Deno tests (`*.test.ts`, run via `deno task test`) for server/pipeline
-  code; Playwright (`tests/`) for browser flows.
+  `src/world/types.ts` where possible; server-only logic stays under `server/`
+  (`server/main.ts`, `server/jobs.ts`, `server/pipeline.ts`, `server/splat/splat_*.ts`,
+  `server/lingbot-map/lingbot_map.ts`).
+- **Tests:** Deno tests (`*.test.ts`, in `tests/unit/deno/`, run via `deno task test`)
+  for server/pipeline code; Playwright (`tests/`) for browser flows.
 - **Prior decisions:** anything in `docs/adr/` that constrains the choice — cite the
   ADR id, don't just paraphrase it.
 

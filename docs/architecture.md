@@ -312,7 +312,7 @@ On the client, WebGPU (on-device ONNX in a Web Worker) versus server inference i
 
 ### API Routes & Interface Specification
 
-Routes are registered at the top level of `main.ts`. (Server-side Deno modules live at the **repo root** — `main.ts`, `inference.ts`, `jobs.ts` (legacy type shapes only), `world_job_pump.ts`, `pipeline.ts`, `lingbot_map*.ts`, `splat_train.ts`, `splat_detect.ts` — there is no `server/` subdirectory.)
+Routes are registered at the top level of `server/main.ts`. (Server-side Deno modules live under **`server/`** — `main.ts`, `inference.ts`, `jobs.ts` (legacy type shapes only), and grouped subdirectories `server/world/` (`world_job_pump.ts` and friends), `server/lingbot-map/`, `server/splat/`, and `server/migrations/`; `pipeline.ts` sits directly under `server/`. `server/repo-root.ts` exports `REPO_ROOT` for resolving paths outside `server/` — `scripts/`, `public/models/` — since a caller-relative `../` breaks the moment a file's nesting changes.)
 
 | Endpoint | Method | Payload | Success Response | Notes |
 |---|---|---|---|---|
@@ -359,7 +359,7 @@ A **world** (`WorldProject`, `src/world/types.ts`) is an anchored spatial contai
 
 #### Roles & Tokens (`WORLD_STRICT_AUTH`)
 
-Places/projects carry role-scoped membership (`MemberRole`: `owner | editor | commenter | viewer | scanner`) and share slugs. The environment flag `WORLD_STRICT_AUTH=1` (`main.ts`) turns on strict token enforcement: requests must present a valid role token, and anonymous access is rejected. When unset (default), routes allow anonymous access — appropriate for a single-owner LAN/Tailnet deployment. Recipients open the Spatial Editor at `/editor?project=<id>` with their granted role; a `viewer` link is read-only and a `commenter` link reserves comment capability without edit rights.
+Places/projects carry role-scoped membership (`MemberRole`: `owner | editor | commenter | viewer | scanner`) and share slugs. The environment flag `WORLD_STRICT_AUTH=1` (`server/main.ts`) turns on strict token enforcement: requests must present a valid role token, and anonymous access is rejected. When unset (default), routes allow anonymous access — appropriate for a single-owner LAN/Tailnet deployment. Recipients open the Spatial Editor at `/editor?project=<id>` with their granted role; a `viewer` link is read-only and a `commenter` link reserves comment capability without edit rights.
 
 ### World Job Types & Processing (`/worlds/:slug/jobs`)
 
@@ -377,19 +377,19 @@ The `/worlds/:slug/jobs` queue runs **asynchronous** world jobs (`WorldJobType`,
 | `pipelines/splat-train` | **Brush** (wgpu/AMD, GPU-pinned) 3D Gaussian Splatting | `*.splat.ply` |
 | `splat-detect` | **OWLv2** open-vocabulary detection over the splat | `*.interactions.json` (3D boxes) |
 | `splat-finish` | **@playcanvas/splat-transform** web-delivery compression | `*.sog` + `*.compressed.ply` |
-| `memory-push` | CI-Server `/v1/events` push (`memory_push.ts`) | a `capture.scan` memory event with the GLB attached |
+| `memory-push` | CI-Server `/v1/events` push (`server/memory_push.ts`) | a `capture.scan` memory event with the GLB attached |
 | `export-world` | world composition | combined GLB + semantic JSON |
-| `optimize-scan` | `pipeline.ts` (quantize / Draco / point-cloud LODs) | `*.opt.glb` + `*.lodN.glb` + `*.manifest.json` |
+| `optimize-scan` | `server/pipeline.ts` (quantize / Draco / point-cloud LODs) | `*.opt.glb` + `*.lodN.glb` + `*.manifest.json` |
 
 The editor's Queue-Job dropdown exposes ten of these. The other three are reached differently: `splat-detect` is fired from the Splat Toolbox section, `optimize-scan` is queued automatically on every upload (never manually — and filtered out of the Processing Queue panel; see [`product/UX_FLOW.md`](product/UX_FLOW.md) § Phase 3), and `memory-push` has no UI entry point at all, only the generic `POST /worlds/:slug/jobs` API. Many runners emit a **plan/placeholder** artifact and report a "hint" when the real worker (Brush, LingBot-Map Python, Open3D) is not wired via env vars — the planned-vs-real distinction is intentional so the queue works end-to-end in CI.
 
-### Scan Optimization Pipeline (`pipeline.ts`, dispatched as a WorldJob)
+### Scan Optimization Pipeline (`server/pipeline.ts`, dispatched as a WorldJob)
 
 Every uploaded `.glb` is queued as an `optimize-scan` **WorldJob** — the same
-single-flight, crash-recovering queue (`world_job_pump.ts`) that runs every
+single-flight, crash-recovering queue (`server/world/world_job_pump.ts`) that runs every
 other job type (sequential worker — the box also runs VLM inference). The
 standalone `JobQueue` that used to own this was retired by the 01-merge-jobs
-wave (`docs/adr/0003-merged-job-system.md`); `jobs.ts` survives only as the
+wave (`docs/adr/0003-merged-job-system.md`); `server/jobs.ts` survives only as the
 legacy `Job`/`JobStatus`/`OptimizeScanManifest` type shapes the `/jobs`
 back-compat shim still responds in:
 
@@ -567,7 +567,7 @@ Where bbox values are 0–1 normalized to image dimensions.
 ```
 
 Vision models tuned for structured/OCR-style output (e.g. `moondream`,
-LFM2.5-VL) follow this reliably; `prompt.ts` parses and validates the array.
+LFM2.5-VL) follow this reliably; `server/prompt.ts` parses and validates the array.
 
 ### Privacy & CI positioning
 

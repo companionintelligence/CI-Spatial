@@ -93,7 +93,7 @@ converted).
 ## Detect — splat_analyzer
 
 **What:** runs open-vocabulary 3D object detection over a splat. The driver
-(`splat_detect.ts`) spawns `splat_analyzer/run_local.py`, which renders the
+(`server/splat/splat_detect.ts`) spawns `splat_analyzer/run_local.py`, which renders the
 splat, runs **OWLv2** open-vocab detection on the renders, lifts the 2D boxes
 into 3D, and writes `interactions.json`. The driver copies that next to the scan
 and writes a `splat-detect` manifest.
@@ -208,7 +208,7 @@ several visits); the server route always ingests one upload as one session.
 
 ## Finish — splat-transform (SOG + compressed PLY)
 
-**What:** the post-processing Stage 4. `splat_finish.ts` spawns the
+**What:** the post-processing Stage 4. `server/splat/splat_finish.ts` spawns the
 [@playcanvas/splat-transform](https://github.com/playcanvas/splat-transform)
 CLI (an npm devDependency, run via node) on a scan's trained
 `<base>.splat.ply` to produce the two web-delivery artifacts plus a manifest:
@@ -267,7 +267,7 @@ dependencies.
 - **Self-Organizing Gaussians (SOG)** — ✅ landed as the `splat-finish` job
   above (splat-transform's SOG writer); the viewer already prefers the `.sog`.
 - **SPZ (Niantic)** — a compact binary splat container; splat-transform can
-  also write `.spz`, so adding it to `splat_finish.ts` is a one-liner if a
+  also write `.spz`, so adding it to `server/splat/splat_finish.ts` is a one-liner if a
   consumer wants that format.
 
 **Meshing from splats (the GLTF export leg):**
