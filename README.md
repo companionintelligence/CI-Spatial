@@ -425,7 +425,7 @@ In WebXR mode the point cloud accumulates from per-frame hit-test samples (WebXR
 
 `deno test` unit suites live under `tests/unit/deno/`, split out from the repo root (and from
 the server modules they cover) during a later repo-tidy pass. Run them all with `deno task test`
-(see `deno.json`). Six `tests/unit/node/` suites run under
+(see `deno.json`). Twelve `tests/unit/node/` suites run under
 `node --experimental-strip-types --test` instead:
 
 | Suite | Script | Why not Deno |
@@ -436,9 +436,17 @@ the server modules they cover) during a later repo-tidy pass. Run them all with 
 | `detection_store.test.ts` | `npm run test:store` | frontend code (`src/scene/store.ts`'s `indexedDB`/`navigator.storage`) — `deno test --no-check` actually passes it, but `deno.json` carries no DOM lib override the way `tsconfig.json` does for `src/`, so plain `deno check` fails on the browser globals |
 | `glb_provenance.test.ts` | `npm run test:provenance` | frontend code (`src/export/gltf.ts` + `src/viewer/editor.ts`), transitively DOM-typed — same DOM-lib gap as `detection_store.test.ts` |
 | `resolver.test.ts` | `npm run test:resolver` | covers frontend code (`src/spatial/resolver.ts` + `three`, DOM-typed `ARProvider.start(canvas)`), not a server module |
+| `inference_router.test.ts` | `npm run test:router` | covers `src/inference/router.ts`, which the test stubs `navigator`/`Worker` for — same DOM-lib gap |
+| `model_provisioning.test.ts` | `npm run test:model-provisioning` | covers `src/inference/model-provisioning.ts`'s pure helpers only, deliberately avoiding its `IndexedDB`/`fetch`/`navigator` module-scope code — same discipline as `detection_store.test.ts` |
+| `detection_gate.test.ts` | `npm run test:detection-gate` | covers `scripts/lib/detection-gate.mjs`, shared logic for the npm-script family (`eval-cv.mjs`, `check-detection-gate.mjs`, `accept-detection-baseline.mjs`) — not a Deno-invoked module |
+| `clock_sync.test.ts` | `npm run test:clock-sync` | covers `src/capture/clock-sync.ts`, which lives under `src/` with the browser code it ships alongside |
+| `clip_validation.test.ts` | `npm run test:clip-validation` | covers `src/capture/clip-validation.ts`, same `src/`-resident reason as `clock_sync.test.ts` |
+| `splat4d_window.test.ts` | `npm run test:splat4d` | covers `src/viewer/playback-clock.ts`, frontend viewer code — same class as `editor_pick.test.ts` |
 
-`test:pipeline:graph`, `test:editor:pick`, `test:store`, `test:resolver`, and `test:provenance`
-are all wired into `npm run verify`; `test:lingbot:glb` is not, and is run on its own.
+Every suite above except `test:lingbot:glb` is wired into `npm run verify` — it runs on its own
+because `@gltf-transform/functions` pulling in `sharp`'s native binary makes it the one suite
+that can fail on a machine with no prebuilt binary for its platform, which shouldn't block a
+routine `verify`.
 
 CI runs `deno task check` (type-check) and `deno task test` on every push/PR via
 [`.github/workflows/deno-ci.yml`](.github/workflows/deno-ci.yml); the full containerized
