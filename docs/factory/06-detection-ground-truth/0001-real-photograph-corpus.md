@@ -6,6 +6,37 @@
 > **Dependencies:** None to start. Much cheaper after wave 04 ticket 0003 (capture
 > retention) — see Sourcing.
 
+> ## Status: PARTIAL 2026-08-24 — decisions and scaffolding landed, photography not taken
+>
+> Taking the photographs and hand-verifying ground truth against them is a physical/human
+> step — a real camera, real staged objects, a human looking at each photo before writing
+> down what's in it — that could not be performed here. It is **not done**, and the
+> checkboxes describing it below are left unticked deliberately.
+>
+> **What did ship**, in `test-data/real/`: the corpus directory (checked in via a
+> `.gitignore` exception, since `test-data/` is otherwise generated-and-ignored), a
+> schema-conformant but empty `expected.json` (zero entries because zero photographs
+> exist — not zero true objects), and `test-data/real/README.md` recording every decision
+> the ticket's Open questions asked for: the sourcing option (hand-shot, with the
+> reasoning for not yet using real captures even though wave 04 ticket 0003 has landed as
+> [#117](https://github.com/companionintelligence/CI-Spatial/pull/117)), the privacy
+> policy, capture-matched encoding, the verification protocol (`verifiedBy`/`verifiedAt`
+> additive fields), corpus size (40, with reasoning), and the synonym policy
+> (`acceptableLabels` allowed-set, additive field, scoring wire-up deliberately left to
+> 0002 per this ticket's own non-goals).
+>
+> **What this costs:** every Definition-of-Done item and Acceptance Criterion that depends
+> on actual images — the corpus existing, ground truth being verified, the known-good/
+> known-bad score gap — is unmet. `test-data/real/README.md`'s "Manual step remaining"
+> section is the concrete continuation: shoot ~40 images per the documented checklist,
+> author ground truth per-image before running any model, then run `qwen3-vl:4b` and
+> `moondream:latest` and record the gap.
+>
+> **Reopen (flip this back to in-progress) once photographs exist** — populate
+> `expected.json`, run the two models, and update both this banner and the wave atlas
+> entry (deliberately not pre-written here — see the wave README's Atlas diff — since it
+> should describe what the harness becomes after 0002, not this scaffolding alone).
+
 ## Goal
 
 Build a corpus of **real photographs** with human-verified ground truth, so that a working
@@ -144,20 +175,30 @@ against the synthetic corpus unchanged.
 
 ## Definition of Done
 
-- [ ] A corpus of real photographs exists, matching capture encoding
-- [ ] Ground truth is human-verified, with verifier and date recorded
-- [ ] It uses the existing `expected.json` schema
-- [ ] Labels come from the prompt's stated vocabulary
-- [ ] The synonym policy is decided and documented
-- [ ] The privacy question is answered before any real-home image is committed
-- [ ] A working model scores **materially above zero**; a fabricating model scores near zero
+- [ ] A corpus of real photographs exists, matching capture encoding — **not done, see
+      Status banner; `test-data/real/README.md` §3 records the encoding it must match**
+- [ ] Ground truth is human-verified, with verifier and date recorded — **not done; the
+      `verifiedBy`/`verifiedAt` fields are specified and ready in the schema**
+- [x] It uses the existing `expected.json` schema — `test-data/real/expected.json` is a
+      valid, empty instance of it; `test-data/real/README.md` documents the additive fields
+- [x] Labels come from the prompt's stated vocabulary — documented in
+      `test-data/real/README.md` §4, pointing at `CORE_LABELS`
+- [x] The synonym policy is decided and documented — allowed-set,
+      `test-data/real/README.md` §6
+- [x] The privacy question is answered before any real-home image is committed —
+      `test-data/real/README.md` §2; no image (real-home or otherwise) has been committed
+- [ ] A working model scores **materially above zero**; a fabricating model scores near
+      zero — **not done, blocked on the corpus existing**
 
 ## Tests
 
-- [ ] Run the corpus against `qwen3-vl:4b` (known good) and record the score
-- [ ] Run it against `moondream:latest` (known fabricating) and record the score
+- [ ] Run the corpus against `qwen3-vl:4b` (known good) and record the score — **not run,
+      no corpus yet**
+- [ ] Run it against `moondream:latest` (known fabricating) and record the score — **not
+      run, no corpus yet**
 - [ ] **The gap between those two is the corpus's actual validation.** If they score
-      similarly, the corpus does not work and neither does this ticket.
+      similarly, the corpus does not work and neither does this ticket. — **cannot be
+      checked until the two rows above exist**
 
 ```
 SERVER_URL=http://localhost:8100 node scripts/eval-cv.mjs   # after 0002 retargeting
@@ -165,10 +206,17 @@ SERVER_URL=http://localhost:8100 node scripts/eval-cv.mjs   # after 0002 retarge
 
 ## Acceptance Criteria
 
-- [ ] Given the corpus and a working model, Then the score is well above zero
-- [ ] Given the corpus and `moondream:latest`, Then the score is near zero
-- [ ] Given those two runs, Then the difference is large enough to rank models by
-- [ ] Given the synthetic corpus, Then the mock engine still scores ~1.0 (unbroken)
+- [ ] Given the corpus and a working model, Then the score is well above zero — **blocked,
+      no corpus**
+- [ ] Given the corpus and `moondream:latest`, Then the score is near zero — **blocked, no
+      corpus**
+- [ ] Given those two runs, Then the difference is large enough to rank models by —
+      **blocked, no corpus**
+- [ ] Given the synthetic corpus, Then the mock engine still scores ~1.0 (unbroken) — **not
+      re-run here; unticked rather than assumed. This ticket did not touch
+      `test-data/cv/`, `scripts/generate-cv-images.mjs`, or `scripts/eval-cv.mjs`, so there
+      is no mechanism by which it could have changed, but confirm with
+      `npm run gen:test-data && npm run eval:cv` before relying on this box**
 
 ## Risks / potential issues
 
@@ -188,10 +236,15 @@ SERVER_URL=http://localhost:8100 node scripts/eval-cv.mjs   # after 0002 retarge
 
 ## Subtasks
 
-1. [ ] Answer the privacy question and pick a sourcing option
-2. [ ] Decide corpus size against per-run cost
-3. [ ] Decide the synonym policy
-4. [ ] Shoot or collect the images at capture-matched encoding
-5. [ ] Author and verify ground truth; record verifier and date
-6. [ ] Run known-good and known-bad models; confirm the gap
-7. [ ] Document sourcing, verification and policy alongside the fixture
+1. [x] Answer the privacy question and pick a sourcing option —
+       `test-data/real/README.md` §1-2
+2. [x] Decide corpus size against per-run cost — `test-data/real/README.md` §5
+3. [x] Decide the synonym policy — `test-data/real/README.md` §6
+4. [ ] Shoot or collect the images at capture-matched encoding — **manual step remaining,
+       see Status banner**
+5. [ ] Author and verify ground truth; record verifier and date — **manual step
+       remaining; blocked on 4**
+6. [ ] Run known-good and known-bad models; confirm the gap — **manual step remaining;
+       blocked on 4-5**
+7. [x] Document sourcing, verification and policy alongside the fixture —
+       `test-data/real/README.md`
