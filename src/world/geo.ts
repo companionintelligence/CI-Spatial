@@ -1,4 +1,4 @@
-import type { GeoPose, Vec3 } from './types'
+import type { GeoPose, Quat, Vec3 } from './types'
 
 const EARTH_RADIUS_M = 6_378_137
 const DEG_TO_RAD = Math.PI / 180
@@ -119,6 +119,79 @@ export function enuToGeo(origin: GeoPose, local: Vec3): GeoPose {
     lng,
     altitudeM: (origin.altitudeM ?? 0) + local.y,
   }
+}
+
+/**
+ * Yaw of the camera's forward direction **within the AR session's own frame**,
+ * in degrees.
+ *
+ * Uses the same `atan2(x, z)` convention as {@link composeYUpTransform} and
+ * {@link twoPointHeadingDeg}: 0° is session +Z, 90° is session +X.
+ *
+ * A camera at identity rotation returns **180°**, not 0 — the camera looks down
+ * its own −Z, so at identity its forward is session −Z. That is not a quirk to
+ * work around; it is the measurement that makes
+ * {@link sessionFrameBearingDeg} correct without assuming anything about how a
+ * provider initialises its world frame.
+ */
+export function cameraYawInSessionDeg(rotation: Quat): number {
+  // Third column of the rotation matrix is R·(0,0,1); the camera's forward is
+  // R·(0,0,-1), so both components are negated.
+  const { x, y, z, w } = rotation
+  const forwardX = -2 * (x * z + y * w)
+  const forwardZ = 2 * (x * x + y * y) - 1
+  return Math.atan2(forwardX, forwardZ) * RAD_TO_DEG
+}
+
+/** Fold any angle into [0, 360). */
+export function normaliseBearingDeg(deg: number): number {
+  return ((deg % 360) + 360) % 360
+}
+
+/**
+ * The true-north bearing of the **session frame's +Z axis**, given the device's
+ * compass heading and the camera pose at the moment that heading was read.
+ *
+ * ## Why the raw compass heading is the wrong number
+ *
+ * A compass reports where the **device** is pointing. Every consumer of
+ * `anchorBearingDeg` needs where the **session frame** is pointing, and the two
+ * differ by however the camera happens to be held. `composeYUpTransform` maps
+ * session +Z to the ENU direction at the bearing it is given
+ * (`geoToEnu` defines `x = east, y = up, z = north`), so handing it a device
+ * heading orients a scan by the phone's attitude rather than the room's.
+ *
+ * Two errors were folded into that, and this one function removes both:
+ *
+ * 1. **A 180° flip.** The camera looks down its own −Z. With the session frame
+ *    established at the camera's starting orientation — which is the usual
+ *    case — session +Z points *behind* the initial view, so a scan built from
+ *    the raw heading faces exactly backwards.
+ * 2. **The camera's yaw within the session.** The heading is sampled when the
+ *    user taps, not at session start, so any turning done in between is
+ *    included in the reading and none of it belongs to the frame.
+ *
+ * ## Why this needs no assumption about the provider
+ *
+ * It would be tempting to subtract a literal 180. That would encode a guess
+ * about how WebXR and 8th Wall each initialise their world frame, and it would
+ * still leave error 2 in place. Measuring
+ * {@link cameraYawInSessionDeg} instead makes the correction self-evident: the
+ * camera's forward is one direction expressed in both frames at once — session
+ * yaw on one side, compass bearing on the other — so their difference *is* the
+ * offset between the frames. The 180° falls out on its own whenever the camera
+ * happens to sit at the session's starting orientation.
+ *
+ * Returns `null` for a null heading, which stays the honest "no compass fix"
+ * value rather than a silent 0.
+ */
+export function sessionFrameBearingDeg(
+  deviceBearingDeg: number | null | undefined,
+  cameraRotation: Quat,
+): number | null {
+  if (deviceBearingDeg === null || deviceBearingDeg === undefined) return null
+  if (!Number.isFinite(deviceBearingDeg)) return null
+  return normaliseBearingDeg(deviceBearingDeg - cameraYawInSessionDeg(cameraRotation))
 }
 
 export function composeYUpTransform(translation: Vec3, bearingDeg: number | null | undefined, scale = 1): number[] {

@@ -83,7 +83,7 @@ consumer that does not exist.
 Scoped out deliberately: current requirement is aligning scans **within one Place**, not
 across Places. Revisit when the World Editor needs to be geo-referenced.
 
-### 2. There is a real 180° bug in the compass path, still unfixed
+### 2. The 180° compass bug — fixed by ticket 0009, except on the server
 
 `composeYUpTransform(t, bearing)` maps local **+Z** to the ENU direction at `bearing`
 (`geoToEnu` defines `x=east, y=up, z=north`). But the camera looks down **−Z** —
@@ -95,14 +95,37 @@ both placement paths that use a compass:
 - `server/main.ts` GPS fallback: `composeYUpTransform(translation, geoPose.bearing, 1)`
 - `anchorToProjectTransform(tapPos, bearingDeg)` — the one-point tier
 
-I grepped `src/world/`, `src/spatial/` and the server: there is **no compensating flip
-anywhere**. Two-point frames are immune (their heading is geometric), but older scans of the
-same Place carry this and will not overlay new ones.
-
 There is a second, larger error hiding behind it: `bearing` is sampled at *tap* time and
-describes the **device's** heading, not the session frame's. The correct frame yaw is
-`bearing − camera_yaw_within_session`, and that term is ignored entirely. The `Pose` rotation
-quaternion is available, so it is computable — it just isn't computed.
+describes the **device's** heading, not the session frame's. That term is unbounded, where the
+flip is a constant.
+
+**Ticket 0009 fixed both**, on the client, by measuring rather than by subtracting a literal
+180 — which would have encoded an unguaranteed assumption about how each provider initialises
+its world frame *and* left the tap-time error in place. `sessionFrameBearingDeg()` computes
+`deviceBearing − cameraYawInSession`: the camera's forward is one physical direction described
+in both frames at once, so their difference is the offset between them, and the 180° falls out
+on its own.
+
+Three things to carry forward:
+
+- **`server/main.ts`'s GPS fallback is still wrong and cannot be fixed where it stands.**
+  `composeYUpTransform(translation, geoPose.bearing, 1)` uses the device heading stored on the
+  scan, and the server has no camera pose to correct it with. It only runs for scans with no
+  `projectTransform` at all, so no session frame bearing exists for them. Fixing it needs the
+  client to persist a frame bearing into scan meta — a data-format change, and its own ticket.
+- **Frames recorded before 0009 are wrong by an unknown amount and cannot be migrated.** The
+  correction needs the camera pose at the instant the bearing was sampled, which was never
+  stored. A blanket −180 would fix only those captured at the session's starting orientation
+  and would add error to the rest. Survivable only because nothing reads `anchorBearingDeg`.
+- **The fix is analytic, not device-verified.** The tests are self-consistent with
+  `composeYUpTransform`'s convention; if that convention is itself wrong relative to the real
+  world they would agree with it and still be wrong. The settling check is small — stand facing
+  a known bearing, calibrate, read back `anchorBearingDeg` — and belongs with 0005's checklist.
+
+0009 also fixed the anchor marker's north tick, which had the same root cause:
+`buildAnchorMarker`'s parameter is a yaw **in the marker's parent frame**, which equals a
+compass bearing only where that frame's +Z is already north — true of project space, false of
+an AR session. It is named `northYawDeg` now.
 
 ### 3. Reversed point order rotates the frame exactly 180°, and passes verification
 
@@ -239,11 +262,14 @@ tapping, and fall back to coordinate taps read off a screenshot when a node id g
    on the S9, return on a second device, and record the `separationM` spread against the
    baseline. If it does not improve, the honest outcome is to say so rather than keep a
    feature that only feels helpful — the ticket says this in its own risk section.
-3. **Fix the −Z/+Z compass bug** if older scans need to overlay new ones.
-4. **Run the remaining on-device checks** — 0005's WebXR checklist and 0004's
-   compass-independence check, which is the clearest single demonstration this wave was worth
-   doing.
+3. **Run the remaining on-device checks** — 0005's WebXR checklist, 0004's
+   compass-independence check (the clearest single demonstration this wave was worth doing),
+   and 0009's bearing read-back, which is the one measurement that would confirm the compass
+   fix against the real world rather than against its own convention.
+4. **Ticket the server's GPS fallback** if uncalibrated scans ever need correct world
+   orientation — it needs a frame bearing persisted into scan meta, which does not exist yet.
 
 Done and no longer on this list: implementing 0007; persisting both committed markers
 (`dropCommittedPair()` now adds both to the scene directly, so `clearPlacement()` cannot tear
-the heading marker down); and the `estimateFloorY()` upgrade, which landed as ticket 0008.
+the heading marker down); the `estimateFloorY()` upgrade, which landed as ticket 0008; and the
+client half of the compass bug, which landed as ticket 0009.
