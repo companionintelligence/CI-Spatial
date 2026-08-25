@@ -162,9 +162,11 @@ interpretation changes while gated.
 - [x] The HUD failure copy no longer suggests WebGPU — `router.hasWebGPU` is false, so the
       `src/main.ts:407` ternary drops the suggestion without a separate edit
 - [x] `webgpu.worker.ts` carries a header naming both blockers and pointing at wave 05
-- [x] `atlas.html:353` describes the path as in-progress, not working — done on the
-      `docs/atlas-post-wave-04` branch, deliberately not duplicated here to avoid a conflict
-- [x] `README.md:148` no longer advertises the opt-in as available
+- [x] `atlas.html:433` describes the path as gated, not working — the `docs/atlas-post-wave-04`
+      branch named below never existed/merged; landed directly on `main` instead (2026-08-24,
+      `fix/gate-webgpu-toggle-atlas-readme`), which also bumped the wave card to 4/5
+- [x] `README.md:534` (the second, duplicate mention this ticket's own PR #128 missed) no
+      longer advertises the opt-in as available; the first mention at `:179` already didn't
 - [x] `npx tsc --noEmit` and `npm run verify` pass (21 tests, 0 failures)
 
 ## Tests
@@ -219,5 +221,9 @@ npm run verify
        deliberately: wave 05 restores the branch by lifting the gate, with no diff to revert.
 5. [x] Resolve a stored `webgpu` preference to `server` at read time, without rewriting it
 6. [x] Add the explanatory header to `webgpu.worker.ts`
-7. [x] Update `atlas.html:353` (on `docs/atlas-post-wave-04`) and `README.md:148` (here)
+7. [x] Update `atlas.html:433` and `README.md:179` — done here in PR #128. A second,
+       duplicate WebGPU mention at `README.md:534` and the wave-card summary at
+       `atlas.html:312` were missed by #128 and closed out separately, 2026-08-24, on
+       `fix/gate-webgpu-toggle-atlas-readme` (the `docs/atlas-post-wave-04` branch this
+       subtask originally named never existed).
 8. [x] Run `npm run verify` — 21 tests, 0 failures

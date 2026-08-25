@@ -1,3 +1,6 @@
+import type { JobStatus } from '../../server/jobs.ts'
+import type { WorldJob } from '../world/types.ts'
+
 /**
  * `/events` WebSocket message-type constants — the wire protocol for the
  * server's live broadcast stream (see `main.ts`'s `broadcast()`/`/events`
@@ -112,3 +115,119 @@ export const EVENT = {
 } as const
 
 export type EventType = typeof EVENT[keyof typeof EVENT]
+
+// ── Payload shapes (docs/factory/02-typed-event-payloads/0001) ───────────────
+//
+// `EventPayload` is the discriminated union (discriminant: `type`) of every
+// shape a `broadcast()` call site in `main.ts` sends today. It exists so
+// `broadcast()` can be typed as `broadcast(payload: EventPayload): void`
+// instead of `broadcast(event: Record<string, unknown>): void` — the same
+// function body (`main.ts:228-235`: spread the payload, stamp `at: Date.now()`,
+// `JSON.stringify`, fan out to `eventSockets`) stays byte-identical; only the
+// parameter type changes, so a call site with a missing/misspelled/mistyped
+// field fails at the `broadcast()` call, not only where a consumer reads it.
+// That's ticket 0002's mechanical implementation — this file only specifies
+// the type. Landing the real declarations here (not as prose first) is this
+// design ticket's own explicit call (0001 Subtask 3): the shapes are cheap
+// enough that writing them twice would just be duplication for its own sake.
+//
+// Every wire VALUE below is a transcription of what `main.ts` already sends
+// (grepped post-`01-merge-jobs`) — none were changed or redesigned to produce
+// this union; see the per-member call-site citations.
+
+/**
+ * The `job` field of a `'job-update'` broadcast (`main.ts`'s
+ * `broadcastLegacyJobUpdate`, `main.ts:2183-2197`) — deliberately **not** the
+ * `Job` interface (`server/jobs.ts`). `worldJobToLegacyJob()` first produces a
+ * real `Job` (field `type`, optional `error`/`note`), but
+ * `broadcastLegacyJobUpdate` then re-shapes *that* one more time before it
+ * goes on the wire, to stay byte-identical to the retired `JobQueue`'s
+ * original `_emit()` payload: `type` becomes `jobType`, and `error`/`note`
+ * are coerced from `undefined` to `null` (`legacy.error ?? null`,
+ * `legacy.note ?? null`) rather than omitted. That second re-shape — not
+ * `Job` itself — is what's actually broadcast, so it's what this type models.
+ * (`Job` reused verbatim would not typecheck against the real call site, and
+ * fixing that by changing the call site would be a wire-value change, out of
+ * scope per this ticket's Non-goals.)
+ */
+export interface LegacyJobUpdateJob {
+  id: string
+  jobType: 'optimize-scan'
+  target: string
+  status: JobStatus
+  error: string | null
+  note: string | null
+}
+
+/**
+ * Discriminated union covering every `/events` broadcast. One member per
+ * `EVENT` name above; field lists are exact transcriptions of each
+ * `broadcast({ type: ..., ... })` call site in `main.ts` (post
+ * `01-merge-jobs`), including error-branch-only fields.
+ *
+ * | `type` | `main.ts` call site(s) | Fields beyond `type` |
+ * |---|---|---|
+ * | `client-log` | 1 (`/client-logs` handler, per log entry) | `ts: number`, `level: string`, `msg: string`, `stack?: string`, `url?: string`, `ua?: string`, `ip: string` — spread from the per-entry `record`; `stack`/`url`/`ua` are optional because the client didn't send them (`entry.stack`, `entry.url`, `body.ua` are all optional on the request body). |
+ * | `scan-added` | 1 (`/upload-scan`, after save) | `filename: string`, `size: number` (`buffer.byteLength`) |
+ * | `scan-deleted` | 1 (`DELETE /scans/:filename`) | `filename: string` |
+ * | `scans-cleared` | 1 (`DELETE /scans`) | `deleted: number` |
+ * | `session-started` | 1 (`POST /sessions`) | `sessionId: string` |
+ * | `session-finalized` | 1 (`POST /sessions/:id/finalize`) | `sessionId: string`, `keyframeCount: number`, `glbFilename: string \| null` (`null` when the client didn't send one, or `safeScanName()` rejected it) |
+ * | `video-ingested` | 1 (`/ingest-video`, after registering the scan) | `sessionId: string`, `scanId: string`, `jobId: string`, `frameCount: number` |
+ * | `photos-ingested` | 1 (`/ingest-photos`, after registering the scan) | `sessionId: string`, `scanId: string`, `jobId: string`, `frameCount: number` |
+ * | `world-job-update` | 6 (every `WorldJob` status transition — dispatch start/progress, claim, complete, requeue-on-crash-recovery) | `worldId: string`, `job: WorldJob` (the full record, including the not-ok/failed-claim branches — same shape every time) |
+ * | `job-update` | 1 (`broadcastLegacyJobUpdate`, itself called from 4 of the 6 `world-job-update` sites, a no-op for every `WorldJobType` but `optimize-scan`) | `job: LegacyJobUpdateJob` (see that type's doc comment for why it isn't `Job`) |
+ *
+ * `'job-update'` and `'world-job-update'` both fire for the same
+ * `optimize-scan` transition (paired, per `01-merge-jobs`/0004) but are
+ * modeled as two distinct members, not collapsed: `'world-job-update'`
+ * carries the real `WorldJob`, `'job-update'` carries the legacy
+ * back-compat shape existing consumers (`src/viewer/viewer.ts`'s
+ * `handleJobUpdate`) still expect. Both are permanent wire shapes, not a
+ * migration in progress.
+ *
+ * `sessionId` on `session-finalized` is read from a `Record<string, unknown>`
+ * at the call site (`record['sessionId']`, `main.ts:940`) — statically
+ * `unknown` today even though the runtime value is always the `string`
+ * minted by `POST /sessions`. Modeling it as `string` here is the payload's
+ * true wire type; ticket 0002 will need a narrowing cast or a typed `record`
+ * at that one call site to satisfy it — not a design change, a mechanical
+ * consequence of this file being typed for the first time.
+ */
+export type EventPayload =
+  | {
+    type: typeof EVENT.CLIENT_LOG
+    ts: number
+    level: string
+    msg: string
+    stack?: string
+    url?: string
+    ua?: string
+    ip: string
+  }
+  | { type: typeof EVENT.SCAN_ADDED; filename: string; size: number }
+  | { type: typeof EVENT.SCAN_DELETED; filename: string }
+  | { type: typeof EVENT.SCANS_CLEARED; deleted: number }
+  | { type: typeof EVENT.SESSION_STARTED; sessionId: string }
+  | {
+    type: typeof EVENT.SESSION_FINALIZED
+    sessionId: string
+    keyframeCount: number
+    glbFilename: string | null
+  }
+  | {
+    type: typeof EVENT.VIDEO_INGESTED
+    sessionId: string
+    scanId: string
+    jobId: string
+    frameCount: number
+  }
+  | {
+    type: typeof EVENT.PHOTOS_INGESTED
+    sessionId: string
+    scanId: string
+    jobId: string
+    frameCount: number
+  }
+  | { type: typeof EVENT.WORLD_JOB_UPDATE; worldId: string; job: WorldJob }
+  | { type: typeof EVENT.JOB_UPDATE; job: LegacyJobUpdateJob }
