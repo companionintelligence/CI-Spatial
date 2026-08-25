@@ -554,6 +554,14 @@ async function main() {
           // Keep the recovery instruction from the frame-validity guard visible;
           // this is a camera lifecycle problem, not an inference failure.
           overlay.setStatus('Camera feed unavailable — close Chrome, reopen the app, then retry')
+        } else if (message.includes('Camera stream stalled')) {
+          // WebXRProvider detected the companion getUserMedia stream had frozen
+          // (see docs/factory/04-capture-path-truthfulness/0005) and refused to
+          // return the stale frame it would otherwise have re-encoded forever.
+          // A background re-acquire may already have fixed it by the time this
+          // renders — if so the next capture just works — but this message
+          // must stay honest for the case where it didn't.
+          overlay.setStatus('Camera feed frozen — restart the scan to continue')
         } else if (message.includes('Timed out')) {
           // Check if the timeout is actually due to denied camera permission
           let denied = false
