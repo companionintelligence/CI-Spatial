@@ -5,6 +5,33 @@
 > **Design:** this ticket is the spec
 > **Dependencies:** 0001 (a corpus worth pointing at)
 
+> ## Status: PARTIAL 2026-08-25 — tooling retargeted and verified; real-corpus scores blocked on 0001
+>
+> Everything this ticket asked for in code and docs is done and verified: `CV_CORPUS`
+> selects the corpus (env var, following the `SERVER_URL` precedent), defaulting to
+> `real` (`test-data/real/`); `bench:models` picks the corpus per candidate (`mock` ->
+> synthetic, everything else -> real, overridable); a non-mock engine scored against the
+> synthetic corpus gets a loud warning and an `outOfDistributionWarning` field in
+> `report.json`; the corpus name appears in every summary line of console output and in
+> `report.json`; `npm run verify` passes.
+>
+> **What's blocked:** ticket 0001 shipped the real corpus *scaffolded* — schema, policy,
+> `test-data/real/README.md` — but with **0 photographs** (`expected.json` is `[]`); that
+> is a physical/human step ("Manual step remaining" in `test-data/real/README.md`), not
+> something this ticket can perform. So the two Tests that need real photographs
+> (`qwen3-vl:4b` / `moondream:latest` scored on `test-data/real/`) and the Acceptance
+> Criterion that depends on them ("two models of very different quality... the better one
+> ranks higher") are **not run** — `eval-cv.mjs` correctly refuses to score an empty
+> corpus (see below) rather than report a misleading 0%. The mechanism itself is verified
+> instead using the synthetic corpus as a stand-in dataset: `mock` (100%) outranks
+> `moondream:latest` (0%) in a real `bench:models` run, proving the corpus-per-candidate
+> selection, scoring, and ranking all work; only the *discriminating* real-photograph data
+> is missing.
+>
+> **Reopen (flip this back to in-progress) once `test-data/real/expected.json` is
+> populated** — run `npm run bench:models` for real, record the `qwen3-vl:4b` vs
+> `moondream:latest` gap, and tick the remaining boxes below.
+
 ## Goal
 
 Make `eval:cv` and `bench:models` score against the real corpus, keep the synthetic one for
@@ -81,15 +108,28 @@ No new type, no new config format.
 - Q: Env var or CLI flag for corpus selection? — A: Env var, following `SERVER_URL` at
   `eval-cv.mjs:23`. The script is invoked from npm scripts where env prefixes are already the
   idiom. (Decided 2026-08-18.)
-- Q: Which corpus is the default? — Leaning **real**, because the failure this wave exists to
-  prevent is someone running the default and believing the number. The mock baseline then
-  opts in explicitly. **Confirm against `bench:models`'s mock-baseline flow before deciding.**
+- Q: Which corpus is the default? — **Decided: real** (`CV_CORPUS=real`, `test-data/real/`),
+  because the failure this wave exists to prevent is someone running the default and
+  believing the number. The mock baseline opts in explicitly (`CV_CORPUS=synthetic`, or
+  automatically when the candidate is `mock` — see next answer). (Decided 2026-08-25.)
 - Q: Does `bench:models` need per-candidate corpus selection, or is running the mock baseline
-  separately acceptable? — OPEN. Depends on how `BENCH_MODELS=mock` is actually used in
-  practice; ask before adding machinery.
+  separately acceptable? — **Decided: per-candidate, automatic.** The `mock` candidate
+  always scores against `synthetic` (where it scores ~1.0); every other candidate scores
+  against `real`. `CV_CORPUS` overrides this for *all* candidates in one invocation when
+  someone deliberately wants that (e.g. comparing several VLMs on the synthetic corpus on
+  purpose — `eval-cv.mjs`'s warning still fires). This lets `BENCH_MODELS=mock,<vlm>` run in
+  one invocation without misconfiguration risk, which "run the mock baseline separately"
+  would not guarantee. (Decided 2026-08-25.)
 - Q: Should `eval-cv.mjs` refuse to score a VLM against the synthetic corpus outright? —
-  OPEN. A loud warning is probably better than a refusal — the mock path legitimately needs
-  it, and a hard block would need an escape hatch that people would then always pass.
+  **Decided: warn, don't refuse** (as this ticket originally leaned) — the mock path
+  legitimately needs to run non-mock engines against the synthetic corpus during
+  development/debugging, and a hard block would need an escape hatch people would always
+  pass anyway. Separately, `eval-cv.mjs` *does* refuse outright when a corpus's
+  `expected.json` is missing or empty (0 entries) — that is not "out of distribution", it is
+  "nothing to score", and reporting a 0% in that case would be exactly the kind of
+  misleading number this wave exists to eliminate. This is why the real corpus's current
+  empty state (0001 not finished) produces a clear error, not a silent 0%. (Decided
+  2026-08-25.)
 
 ## Files impacted
 
@@ -106,29 +146,48 @@ None. `expected.json` and `report.json` keep their shapes.
 
 ## Definition of Done
 
-- [ ] `eval-cv.mjs` runs against either corpus, selected by env var, defaulting per the
-      resolved open question
-- [ ] `bench:models` scores candidates on the discriminating corpus
-- [ ] The mock engine still scores ~1.0 on the synthetic corpus
-- [ ] Every doc that describes the harness says which corpus does which job
-- [ ] Running a VLM against the synthetic corpus warns that the result is not meaningful
-- [ ] `npm run verify` passes
+- [x] `eval-cv.mjs` runs against either corpus, selected by env var, defaulting per the
+      resolved open question — `CV_CORPUS`, default `real`; `scripts/lib/cv-corpus.mjs`
+- [x] `bench:models` scores candidates on the discriminating corpus — per-candidate
+      selection, real by default (see resolved Open questions)
+- [x] The mock engine still scores ~1.0 on the synthetic corpus — verified: precision
+      100.0%, recall 100.0%, meanIoU 0.944, labelAcc 100.0%
+- [x] Every doc that describes the harness says which corpus does which job — `README.md`,
+      `docs/testing/TEST_INFRA.md`, `docs/testing/user-test-suite.md`; `docs/README.md` and
+      `docs/product/UX_FLOW.md` checked and did not carry the false claim
+- [x] Running a VLM against the synthetic corpus warns that the result is not meaningful —
+      verified with `moondream:latest`
+- [x] `npm run verify` passes — verified (296 passed, 0 failed)
 
 ## Tests
 
-- [ ] `qwen3-vl:4b` on the real corpus — materially above zero
-- [ ] `moondream:latest` on the real corpus — near zero, and clearly separated
-- [ ] mock on the synthetic corpus — still ~1.0
-- [ ] A VLM on the synthetic corpus — still 0.0%, but now with a warning explaining why
+- [ ] `qwen3-vl:4b` on the real corpus — materially above zero — **not run; `test-data/real/`
+      has 0 images, see Status banner**
+- [ ] `moondream:latest` on the real corpus — near zero, and clearly separated — **not run,
+      same reason**
+- [x] mock on the synthetic corpus — still ~1.0 — verified: precision 100.0%, recall 100.0%,
+      meanIoU 0.944, labelAcc 100.0%
+- [x] A VLM on the synthetic corpus — still 0.0%, but now with a warning explaining why —
+      verified with `moondream:latest`: precision/recall/labelAcc 0.0%,
+      `outOfDistributionWarning` present in `report.json`, warning printed before and after
+      the run
 
 ## Acceptance Criteria
 
 - [ ] Given `npm run bench:models`, When two models of very different quality are compared,
-      Then the better one ranks higher
+      Then the better one ranks higher — **mechanism verified, not the real scenario**: with
+      `CV_CORPUS=synthetic` forced (the only populated corpus available), `BENCH_MODELS=mock,
+      moondream:latest` ranks `mock` (100%) above `moondream:latest` (0%) in
+      `test-data/bench-summary.json` and the printed table. The actual scenario — two real
+      VLMs on the real corpus — is blocked on 0001.
 - [ ] Given the README's instructions followed literally, Then the resulting choice is sound
-- [ ] Given the mock regression path, Then it is unaffected
-- [ ] Given a 0.0% VLM result on the synthetic corpus, Then the output explains that this is
-      expected and not a model verdict
+      — **blocked**: the README now says correctly that `bench:models` can't rank models
+      until the real corpus is populated (see Status banner), so there is no "resulting
+      choice" to evaluate yet
+- [x] Given the mock regression path, Then it is unaffected — verified (~1.0, unchanged
+      scoring maths)
+- [x] Given a 0.0% VLM result on the synthetic corpus, Then the output explains that this is
+      expected and not a model verdict — verified
 
 ## Risks / potential issues
 
@@ -143,10 +202,14 @@ None. `expected.json` and `report.json` keep their shapes.
 
 ## Subtasks
 
-1. [ ] Resolve the default-corpus and `bench:models` questions
-2. [ ] Add corpus selection to `eval-cv.mjs`, following the `SERVER_URL` pattern
-3. [ ] Retarget `bench-models.mjs`
-4. [ ] Add the out-of-distribution warning
-5. [ ] Name the corpus in console output and `report.json`
-6. [ ] Fix every doc that describes what the harness measures
-7. [ ] Verify the known-good / known-bad separation and the mock baseline together
+1. [x] Resolve the default-corpus and `bench:models` questions — see resolved Open questions
+2. [x] Add corpus selection to `eval-cv.mjs`, following the `SERVER_URL` pattern —
+       `CV_CORPUS`, shared resolution in `scripts/lib/cv-corpus.mjs`
+3. [x] Retarget `bench-models.mjs` — per-candidate corpus selection
+4. [x] Add the out-of-distribution warning
+5. [x] Name the corpus in console output and `report.json`
+6. [x] Fix every doc that describes what the harness measures
+7. [ ] Verify the known-good / known-bad separation and the mock baseline together — **mock
+       baseline verified; known-good/known-bad separation only demonstrated with the
+       synthetic corpus as a stand-in (mock vs. moondream:latest) since the real corpus has
+       no images yet — not the real verification this subtask asks for. Blocked on 0001.**

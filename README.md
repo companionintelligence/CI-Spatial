@@ -176,7 +176,7 @@ graph TD
 ## Features
 
 - **AR scanning** — 8th Wall OSS SLAM tracks the environment and accumulates a colourised point cloud in real time.
-- **Engine-agnostic inference** — object detection runs through a local Deno server whose engine is chosen by `INFERENCE_MODE`: `ollama` (default, runs whatever `OLLAMA_MODEL` names — `qwen3-vl:4b` by default, with the context window pinned by `OLLAMA_NUM_CTX`), `onnx` (bundled `LiquidAI/LFM2.5-VL-1.6B-ONNX` via `onnxruntime-node`), or `mock` (deterministic colour-blob CV engine for CI/tests). An on-device WebGPU path exists in the tree but is **gated off and not offered in the UI** — it has never worked, and is being rebuilt in `docs/factory/05-on-device-inference/`. Note `npm run bench:models` cannot currently rank vision models: it scores them on a synthetic corpus that a working model and a fabricating one both fail identically (see `docs/factory/06-detection-ground-truth/`).
+- **Engine-agnostic inference** — object detection runs through a local Deno server whose engine is chosen by `INFERENCE_MODE`: `ollama` (default, runs whatever `OLLAMA_MODEL` names — `qwen3-vl:4b` by default, with the context window pinned by `OLLAMA_NUM_CTX`), `onnx` (bundled `LiquidAI/LFM2.5-VL-1.6B-ONNX` via `onnxruntime-node`), or `mock` (deterministic colour-blob CV engine for CI/tests). An on-device WebGPU path exists in the tree but is **gated off and not offered in the UI** — it has never worked, and is being rebuilt in `docs/factory/05-on-device-inference/`. `npm run eval:cv` / `npm run bench:models` score `/infer` output against ground truth from a corpus selected by `CV_CORPUS`: `real` (default, `test-data/real/`) is human-verified photographs — the only fixture that can tell a working vision model from a fabricating one, so it's what `bench:models` uses to rank candidates; `synthetic` (`test-data/cv/`) is the generated colour-rectangle corpus, a regression fixture for the *mock* engine only — scoring a real model against it warns loudly instead of reporting a silent 0%. As of this writing the real corpus is scaffolded but has **0 photographs** (a manual/physical step, not yet done — see `docs/factory/06-detection-ground-truth/`), so `bench:models` cannot rank models until it is populated.
 - **3D object pins** — detected objects are placed at their SLAM-resolved world positions as live 3D labels tracking the scene.
 - **Onboarding Overlay** — 5-step interactive overlay guiding users through permission prompts, movement speeds, the 3 capture pipelines, real-time quality diagnostics, and desktop editing. Bypasses automatically on CI/mocks and replays on help button click.
 - **HUD Quality Verdict** — Real-time rendering of `qualityMonitor.summary()` status directly on the phone HUD as a colorized verdict chip (`✓ Ready`, `⚠ Review`, `❌ Sparse`) next to the status row.
@@ -472,8 +472,8 @@ The repo defines ~30 npm scripts. The most common:
 | `npm run test:mock` / `test:api` | Mock-engine + API-only test tiers |
 | `npm run smoke:pipeline` | End-to-end scan-optimization pipeline smoke test |
 | `npm run setup:models` | Show the recommended Ollama vision-model catalog and install the ones you want |
-| `npm run bench:models` | Benchmark Ollama vision models to pick `OLLAMA_MODEL` |
-| `npm run eval:cv` | Evaluate the mock CV engine against fixtures |
+| `npm run bench:models` | Score Ollama vision-model candidates against the real-photograph corpus to pick `OLLAMA_MODEL` (`BENCH_MODELS=mock` for the mock-engine baseline, `CV_CORPUS=...` to override the corpus) |
+| `npm run eval:cv` | Score `/infer` output against ground truth — real-photograph corpus by default, `CV_CORPUS=synthetic` for the mock-engine regression fixture |
 | `npm run ingest:video` | Ingest a walkthrough video into a session scan |
 | `npm run links:house` | Print the house-validation scanner/viewer links |
 | `npm run gen:test-data` / `seed:test-data` | Generate / seed test fixtures |
