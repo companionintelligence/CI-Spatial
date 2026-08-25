@@ -9,21 +9,45 @@ Mobile 2" over BLE but was never updated past 2020 and requires a developer acco
 App Key + one-time internet activation — more friction than a local test app should need. This
 project instead builds on community reverse-engineering of DJI's DUML protocol.
 
-**Important caveat:** none of the research below has been verified against an actual Osmo
-Mobile 6. It's synthesized from reverse-engineering of the Osmo Pocket 3 and Osmo Action
-3/4/5 Pro, which share DJI's Mimo app and (very likely) the same wire protocol — but the exact
-characteristic mapping and gimbal command set are unconfirmed for this specific device. See
-"Confidence levels" below. Pairing and the frame codec are the exception: verified bit-exact
-against a real captured frame (`protocol/duml.test.mjs`).
+**Provenance caveat — read the confidence column, not the prose.** The research below started
+as a synthesis of reverse-engineering for the Osmo Pocket 3 and Osmo Action 3/4/5 Pro, which
+share DJI's Mimo app and (very likely) the same wire protocol. Since then a good deal of it
+*has* been checked against a real Osmo Mobile 6, and some of the original guesses were wrong:
+
+- **Verified against real hardware:** the frame codec and pairing (bit-exact against a captured
+  frame, `protocol/duml.test.mjs`); the speed command's axis order and signs (live-verified via
+  the web UI joystick and corrected in `protocol/commands.mjs`); the motors moving at all, which
+  requires a **macOS Bluetooth bond** and not just the app's PIN flow.
+- **Disproved against real hardware:** the absolute-angle opcode (`GIMBAL_ABS_ANGLE`, cmdId
+  `0x14`) does nothing — an A/B test on one gimbal in one session gave delta 0.126 for a speed
+  command and 0.0002 for an absolute-angle command. The "mode" toggle (`GIMBAL_SET_WORK_MODE`,
+  cmdId `0x44`) behaves as a portrait/landscape switch, not the lock/follow/fpv selector the
+  SDK-derived name in `protocol/constants.mjs` implies.
+- **Still unconfirmed for this device:** the write-characteristic choice (see below), and the
+  telemetry cmdSet.
+
+The full integration record — including the closed-loop rewrite that replaced the dead
+absolute-angle opcode, the mislabeled feedback axis, and the BLE-wedge and unbonded-gimbal
+gotchas — lives in [`../../docs/operations/GIMBAL_INTEGRATION.md`](../../docs/operations/GIMBAL_INTEGRATION.md).
+Treat that document as the current state of the hardware; this README covers the protocol.
 
 ## Quick start
 
 ```bash
 npm install
 npm run test:protocol   # verifies the DUML codec against a real captured frame
-npm run web             # http://localhost:8787 — Web Bluetooth pairing/control UI
+npm run backend         # :8788 — the ONE process that owns the BLE connection (node --watch)
+npm run web             # http://localhost:8787 — "Scanner Control" UI (Web Bluetooth or backend)
+npm run cli -- grid --dry-run   # scripted capture runs against the backend
 npm run mcp             # MCP server over stdio, for use with Claude Code / Claude Desktop
 ```
+
+**`npm run backend` is the one to start first for anything real.** The MCP server and the web
+UI's backend mode are both thin HTTP clients of it, deliberately, so exactly one process ever
+holds a BLE connection to the single physical gimbal — and because a Claude-Code-spawned
+subprocess cannot be granted Bluetooth by macOS at all. Run it in a real interactive terminal.
+Full reasoning in
+[`../../docs/operations/GIMBAL_INTEGRATION.md`](../../docs/operations/GIMBAL_INTEGRATION.md).
 
 **First run on macOS:** the first time `npm run mcp` accesses Bluetooth, macOS will show a
 permission prompt for Terminal/Node under *System Settings → Privacy & Security → Bluetooth*.
@@ -87,10 +111,12 @@ The stdio registration (`"command": "node", "args": [...]`) and the HTTP one are
 run whichever transport matches how you're registering it; both share the same BLE connection
 logic and tool set.
 
-Includes `gimbal_sweep` and `get_orientation` tools built for driving automated capture sweeps
-(step yaw across a range, dwelling at each step) — the intended use case is mounting a phone in
-the gimbal to drive an external scanning client through a room, without that client needing any
-awareness of the gimbal at all (see below).
+Includes `gimbal_sweep`, `gimbal_move_to`, `plan_scan_grid` and `get_orientation` tools built for
+driving automated capture sweeps — the intended use case is mounting a phone in the gimbal to
+drive an external scanning client through a room, without that client needing any awareness of
+the gimbal at all (see below). Positioning is **closed-loop** (speed corrections against live
+telemetry) because the absolute-angle opcode is dead: always check `converged` in the result
+rather than assuming a call that returned without erroring reached its target.
 
 ### As a subsystem for CI-Spatial
 
@@ -100,8 +126,16 @@ in `../../docs/operations/GIMBAL_INTEGRATION.md`. Key finding from that integrat
 client auto-captures purely off the phone's own tracked movement (distance/rotation thresholds),
 so no signaling between this subsystem and the scanner client is needed for a basic sweep —
 physically moving the phone via `gimbal_sweep` is sufficient on its own. For an exact photo
-count instead, see `GIMBAL_INTEGRATION.md`'s grid-capture section (`plan_scan_grid` +
-`gimbal_move_to` + an explicit camera-capture call, feeding CI-Spatial's own `/ingest-photos`).
+count instead, the backend orchestrates the whole run itself — `POST /api/grid-capture`, driven
+by `npm run cli -- grid` or the web UI's **Run scan**, moving the gimbal and taking each photo
+on the phone before feeding CI-Spatial's own `/ingest-photos`. See `GIMBAL_INTEGRATION.md`'s
+grid-capture section.
+
+**One thing to know before expecting 3D out of it:** a gimbal turning in place gives
+structure-from-motion no parallax, so COLMAP cannot solve poses from a single-station grid —
+measured on this rig at 29 of 36 image pairs classified `PLANAR_OR_PANORAMIC`. That constraint
+and what to do about it are documented in `GIMBAL_INTEGRATION.md` and
+`../../docs/pipelines/colmap-poses.md`.
 
 ## Layout
 
@@ -111,11 +145,26 @@ protocol/          shared codec — pure JS, runs unmodified in both Node and th
   duml.test.mjs        validates the codec against a real captured frame — run this first
   constants.mjs        BLE service/characteristic UUIDs, DUML component/cmdSet/cmdId constants
   commands.mjs          command builders (pairing, gimbal recenter/mode/nudge, raw/RE escape hatch)
+  telemetry.mjs         decoders for the orientation frames the gimbal streams at 10-20Hz
+                        (quatToEulerDeg, quatToGimbalControlDeg — the closed-loop feedback)
+  phone_telemetry.mjs   wire shape for the PHONE's compass/tilt/GPS, relayed over the backend's
+                        /ws — displayed alongside gimbal telemetry, never averaged into it
 server/
   ble-transport.mjs      Node BLE transport (@stoprocent/noble): scan, connect, pair, write-char fallback
-  mcp-server.mjs          MCP server exposing it all as tools
-web/
-  index.html / app.mjs   Web Bluetooth client + control UI, sharing protocol/* directly
+  backend.mjs             the single BLE owner: HTTP + /ws, closed-loop move-to, grid capture
+  android-capture.mjs     minimal MCP-over-HTTP client for the phone in the cradle (photo capture)
+  cli.mjs                 scripted runs against the backend (scan/connect/grid/…)
+  mcp-server.mjs          MCP server exposing it all as tools — an HTTP client of backend.mjs
+web/                 "Scanner Control" PWA — two pathways, direct Web Bluetooth and backend
+  index.html            markup + styles for both pathways
+  app.mjs                 direct Web Bluetooth client, sharing protocol/* with the Node side
+  backend-client.mjs      backend pathway: scan presets, grid runs, the scan-in-progress lock
+  orientation.mjs         compass dial + tilt gauge rendering
+  joystick.mjs            virtual joystick (mouse/touch/arrow keys), shared by both pathways
+  coverage.mjs            persistent cmdSet:cmdId coverage grid — "what have I actually tried"
+  frame-log.mjs           structured, filterable TX/RX frame inspector
+  ui.mjs                  tabs, settings drawer, connection dot
+  manifest.json / sw.js / icon.svg   PWA install + offline shell
   server.mjs               zero-dependency static file server (for the localhost requirement)
 ```
 
@@ -184,9 +233,10 @@ confirmed by grepping all of them for encrypt/aes/signature/auth/nonce/token.
 | Command | Confidence | Source |
 |---|---|---|
 | Pairing (`pair()` / Pair button) | High (byte-verified) | lib-osmo-ble, djictl, xaionaro capture |
-| Gimbal recenter (`gimbal_recenter`) | Medium — sets absolute angle (0,0,0), not a confirmed dedicated recenter opcode | lib-osmo-ble |
-| Gimbal mode lock/follow/fpv (`gimbal_set_mode`) | Medium | lib-osmo-ble |
-| Gimbal speed nudge (`gimbal_nudge`) | Medium | lib-osmo-ble |
+| Gimbal speed nudge (`gimbal_nudge`) | **High — the one motion command confirmed to move real hardware.** Axis order and signs were live-verified via the joystick and corrected | lib-osmo-ble + live OM6 |
+| Gimbal absolute angle (cmdId `0x14`) | **Disproved — does nothing on an OM6.** A/B tested against a speed command in the same session | live OM6 |
+| Gimbal recenter (`gimbal_recenter`) | Rewritten: no longer an absolute-angle write (that opcode is dead). Now a closed-loop move to (0,0) on top of the speed command — and "0,0" is wherever this device's quaternion frame reads zero, not confirmed mechanical centre | live OM6 |
+| Gimbal mode (`gimbal_set_mode`, cmdId `0x44`) | Reaches the device, but behaves as a **portrait/landscape switch**, not the lock/follow/fpv selector the SDK name implies | live OM6 |
 | Battery/telemetry (`get_recent_frames`) | Low-medium, passive only — no query command exists, sources disagree on exact cmdSet | node-osmo, lib-osmo-ble |
 | **Shutter / photo trigger** | **Not implemented** — zero byte-level data in any source | — |
 | **Record start/stop** | **Not implemented** — one unused constant exists (djictl), never wired to a payload | — |
@@ -200,10 +250,16 @@ Mimo on Android, pull `FS/data/misc/bluetooth/logs/btsnoop_hci.log`, open in Wir
 for what fires when you press the physical shutter button — that's the fastest path to a real
 answer, much faster than guessing from a different product's opcodes.
 
-Also worth testing early: lib-osmo-ble's authors found gimbal-motion commands are accepted
-with no error but may not actually move the motors over BLE alone on a Pocket 3 — they suspect
-an active WiFi/streaming session is required. `gimbal_recenter` / the D-pad in the web UI is the
-fastest way to find out whether that's also true here.
+**Answered:** lib-osmo-ble's authors found gimbal-motion commands accepted with no error but
+possibly not moving the motors over BLE alone on a Pocket 3, and suspected an active
+WiFi/streaming session was required. On an OM6 that is **not** the blocker — the motors do move
+over plain BLE. The real precondition is a **macOS Bluetooth bond**: unbonded, the gimbal
+honours roughly one motor command per connection and then silently ignores everything after it,
+at every tick duration and settle gap tried, which looks exactly like a protocol or timing bug
+and was investigated as one at length. `POST /api/pair-trigger` surfaces the *OS* confirmation
+dialog that creates the bond; the `SetPairingPin` handshake here is a different mechanism and
+was never the missing piece. Note `paired: false` in `/api/status` does not tell you — that flag
+is `ble-transport.mjs`'s own latch, not the OS bond state.
 
 ### Advanced / reverse-engineering escape hatch
 

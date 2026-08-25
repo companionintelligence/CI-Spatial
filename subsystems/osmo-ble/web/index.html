@@ -2,13 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Osmo Gimbal Control</title>
+<title>Scanner Control</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
 <meta name="theme-color" content="#041620" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-<meta name="apple-mobile-web-app-title" content="Osmo Ctrl" />
+<meta name="apple-mobile-web-app-title" content="Scanner Ctrl" />
 <link rel="manifest" href="./manifest.json" />
 <link rel="icon" href="./icon.svg" type="image/svg+xml" />
 <link rel="apple-touch-icon" href="./icon.svg" />
@@ -61,11 +61,16 @@
      applied sparingly, to the handful of buttons that are the main action of their row. */
   button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
   button.primary:hover:not(:disabled) { background: var(--accent); opacity: .9; }
-  input[type=text], select {
+  input[type=text], input[type=number], select {
     background: transparent; border: 1px solid var(--border); color: var(--text); border-radius: var(--radius-md);
     padding: 9px 10px; font-size: 13px; font-family: inherit; min-height: 40px;
   }
-  input[type=text]:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  input[type=text]:focus, input[type=number]:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  /* Spinner arrows removed: they're invisible on the phones this is used from and only eat
+     width from an already-narrow numeric field. Keyboard up/down still steps the value. */
+  input[type=number] { -moz-appearance: textfield; }
+  input[type=number]::-webkit-outer-spin-button,
+  input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
   label { font-size: 12px; color: var(--dim); margin-right: 4px; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
   .row:last-child { margin-bottom: 0; }
@@ -74,12 +79,23 @@
     font-size: 18px; padding: 0; flex-shrink: 0;
   }
 
-  /* ---- Top bar ---- */
-  .topbar {
-    display: flex; align-items: center; gap: 8px; padding: calc(8px + var(--safe-t)) calc(10px + var(--safe-r)) 8px calc(10px + var(--safe-l));
-    border-bottom: 1px solid var(--border); background: var(--panel); flex-shrink: 0;
+  /* ---- Top bar ----
+     One control only, on the right, where a thumb holding the phone can reach it. Everything
+     that used to sit up here — the CI mark, the Direct/Server switcher and the connection dot —
+     now lives in the drawer: none of them is something you touch mid-scan, and each of them was
+     costing width on the one bar that has to stay out of the way. */
+  /* Floating, not a bar: a full-width strip with its own border and background was spending
+     a whole row of vertical space to carry a single button. Overlaying it on the panel gives
+     that space back to the readout and the joystick, which are what the operator actually
+     looks at. Sits inside the safe-area inset so it clears a notch or a rounded corner. */
+  .menu-float {
+    position: fixed; z-index: 10;
+    top: calc(6px + var(--safe-t)); right: calc(6px + var(--safe-r));
+    background: color-mix(in srgb, var(--panel) 82%, transparent);
+    border-color: var(--border);
+    backdrop-filter: blur(6px);
   }
-  .brand-mark { width: 22px; height: 22px; flex-shrink: 0; }
+  .brand-mark { width: 20px; height: 20px; flex-shrink: 0; }
   .tabs {
     display: flex; flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 3px; gap: 3px;
   }
@@ -88,35 +104,198 @@
     color: var(--dim);
   }
   .tab.active { background: var(--accent); color: var(--accent-ink); }
-  .status-pill { display: flex; align-items: center; gap: 6px; padding: 0 6px; flex-shrink: 0; }
+  .status-pill { display: flex; align-items: center; gap: 6px; padding: 0 6px; flex-shrink: 0; font-size: 11px; color: var(--dimmer); }
+  /* The app name lives in the tab/PWA title and the drawer header, not on the control surface.
+     This keeps a real <h1> for the document outline and screen readers without spending a
+     pixel on it. */
+  .visually-hidden {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
   .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--warn); flex-shrink: 0; transition: background .2s; }
   .dot.on { background: var(--ok); }
 
-  /* ---- Main / joystick ---- */
+  /* ---- Main / joystick ----
+     Joystick pinned to the very bottom of the screen (not vertically centered in the
+     remaining space) so it sits in one-handed mobile thumb reach. Everything else that used
+     to share this view — the action bar, the auto-scan panel — moves above it in a scrollable
+     middle region, so adding controls there never pushes the joystick out of thumb range. */
   main { flex: 1; min-height: 0; position: relative; }
   .panel {
-    position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
-    gap: 22px; padding: 16px calc(16px + var(--safe-r)) calc(28px + var(--safe-b)) calc(16px + var(--safe-l));
+    position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+    /* The top inset is the panel's own job now: with the menu button floating instead of
+       sitting in a bar, nothing else stands between the readout and a notch or status bar. */
+    padding: calc(8px + var(--safe-t)) calc(12px + var(--safe-r)) calc(6px + var(--safe-b)) calc(12px + var(--safe-l));
+    gap: 8px;
   }
-  .quick-actions { display: flex; gap: 8px; width: 100%; max-width: 340px; }
-  .quick-btn { flex: 1; min-height: 52px; font-size: 13px; font-weight: 600; padding: 4px 6px; }
-  .quick-btn.active { background: var(--panel-2); border-color: var(--accent); color: var(--accent); }
-  .joystick-wrap { flex: 1; display: flex; align-items: center; justify-content: center; width: 100%; }
+  .panel-scroll {
+    width: 100%; max-width: 380px; flex: 1 1 auto; min-height: 0; overflow-y: auto;
+    -webkit-overflow-scrolling: touch; display: flex; flex-direction: column; gap: 6px;
+  }
 
-  /* ---- Orientation readout (main view) ---- */
+  /* ---- Scan-in-progress state ----
+     A running scan owns the gimbal, so the manual controls are locked (see setScanActive in
+     backend-client.mjs, and the matching 409 on the backend). Dimming them is the honest
+     signal: the alternative is a joystick that looks live, accepts a drag, and silently loses
+     a fight with the grid controller — which is exactly what wedged a real 105-position run. */
+  .grid-bar-track {
+    height: 4px; border-radius: 2px; background: var(--bg); border: 1px solid var(--border);
+    overflow: hidden; margin-top: 8px;
+  }
+  .grid-bar-fill {
+    height: 100%; width: 0%; background: var(--accent); transition: width .3s ease-out;
+  }
+  body.scanning .joystick-wrap { opacity: .3; }
+  body.scanning .act-bar { opacity: .45; }
+  body.scanning .scan-panel, body.scanning details.debug-section {
+    border-color: var(--accent);
+  }
+  /* The scan panel gets a live border pulse — motion is the cue that reads from across a room,
+     which is where the operator usually is while the rig sweeps. */
+  @keyframes scan-pulse { 0%, 100% { border-color: var(--accent); } 50% { border-color: var(--border); } }
+  body.scanning details.debug-section { animation: scan-pulse 2s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) { body.scanning details.debug-section { animation: none; } }
+  body.scanning #be-grid-progress { color: var(--accent); font-weight: 600; }
+
+  /* ---- Compact action bar ----
+     One row, five actions (three on the Direct pathway, which has no capture path). Each is an
+     icon over a short label so the row survives a 375px-wide phone, and stays >=44px tall so it
+     is still a thumb target. The icon is a ::before fed from data-icon rather than a child
+     element on purpose: both clients relabel these buttons by assigning textContent (Stick:
+     ON/OFF, Portrait/Landscape), which would wipe a child span. */
+  .act-bar { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 5px; width: 100%; }
+  .act-btn {
+    min-height: 46px; padding: 4px 2px; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 1px; font-size: 10px; font-weight: 600; line-height: 1.15;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  }
+  .act-btn::before { content: attr(data-icon); font-size: 15px; line-height: 1; font-weight: 400; }
+  .act-btn.active { background: var(--panel-2); border-color: var(--accent); color: var(--accent); }
+
+  .gp-warn { color: var(--warn); }
+  .checkbox-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); cursor: pointer; }
+  .checkbox-row input { width: 18px; height: 18px; accent-color: var(--accent); }
+
+  /* ---- Scan type + parameters ----
+     The scan type is a row of buttons rather than a <select>: on a phone a select is a modal
+     picker for what is really a four-way toggle, and the current choice was invisible until you
+     opened it. Selected state is the same solid mint fill the primary CTA uses.
+     The pans/tilts lists underneath used to be free-text comma lists — the single most painful
+     thing on this page to edit one-handed. They are now from/to/step numbers, which is what the
+     presets always were, so the phone shows a numeric keypad, nothing can be mistyped into a
+     silently-dropped value, and the resulting position count is stated before you run it. */
+  .scan-types { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin-bottom: 10px; }
+  .scan-type { min-height: 40px; font-size: 11.5px; font-weight: 600; padding: 4px 2px; }
+  .scan-type.selected { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
+  .grid-params { display: grid; grid-template-columns: 34px repeat(3, 1fr); gap: 5px; align-items: center; }
+  .gp-head { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--dimmer); text-align: center; }
+  .gp-axis { font-size: 11.5px; color: var(--dim); font-weight: 600; }
+  .gp-num { width: 100%; text-align: center; padding: 9px 2px; font-variant-numeric: tabular-nums; }
+  .gp-summary {
+    margin: 8px 0 10px; font-size: 11.5px; line-height: 1.5; color: var(--dim);
+    font-variant-numeric: tabular-nums;
+  }
+  .gp-summary strong { color: var(--text); }
+  .gp-summary .gp-capped { color: var(--warn); }
+  .scan-run { width: 100%; min-height: 44px; }
+
+  /* ---- Orientation readout (top of the main view) ----
+     Compass + tilt gauge + the three numbers, then the phone's own sensors in a separate
+     captioned block. Two gauges, because this mount only has two observable axes: pan has no
+     fixed reference (only a relative zero from wherever the gimbal booted) and wraps, so it gets
+     a rotating dial — bearing-style, not attitude-style. Tilt is a bounded, asymmetric range (a
+     real mechanical stall found live around +16°, not a display choice) that a dial would waste
+     most of its face on, so it gets an upright gauge beside the dial. Yaw is a number only;
+     orientation.mjs's header says why it gets no gauge, and why the phone block is fenced off
+     from the gimbal one instead of averaged into it. */
   .orientation-readout {
-    width: 100%; max-width: 340px; background: var(--panel-2); border: 1px solid var(--border);
-    border-radius: 10px; padding: 8px 12px; text-align: center;
-    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dim); flex-shrink: 0;
+    width: 100%; max-width: 380px; background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); padding: 6px 9px 7px;
+    font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dim); flex-shrink: 0;
   }
-  .or-euler { font-size: 14px; color: var(--text); font-weight: 600; font-family: inherit; }
-  .or-quat { font-size: 11px; color: var(--dimmer); margin-top: 2px; }
-  .or-delta-row { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 6px; }
-  .or-delta { color: var(--accent); font-weight: 600; }
-  .or-delta-row button { padding: 3px 10px; min-height: 28px; font-size: 11px; }
+  .or-gauges { display: flex; align-items: flex-start; gap: 10px; }
+  /* flex-start above, and the compass first in the row: the dial belongs in this block's
+     top-left corner, not floating in the vertical middle of it. */
+  .compass-wrap, .tilt-gauge { flex-shrink: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+  .gauge-name { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--dimmer); }
 
+  /* Which instrument produced the numbers under it. Two captions, because there are two
+     reference frames on this readout and they are not comparable. */
+  .or-src { font-size: 9px; text-transform: uppercase; letter-spacing: .04em; color: var(--dimmer); line-height: 1.2; }
+  .or-src-gimbal { margin-bottom: 2px; }
+
+  .or-nums { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; padding-top: 2px; }
+  .or-num { display: flex; align-items: baseline; gap: 6px; }
+  .or-num-k { flex: 0 0 26px; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--dimmer); }
+  .or-num-v { font-size: 15px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+  .or-num-note { font-size: 9px; color: var(--dimmer); }
+  /* Yaw is not a steerable axis, so it reads one step quieter than the two that are. */
+  .or-num-sub .or-num-v { font-size: 12px; font-weight: 500; color: var(--dim); }
+  .or-num-clip { color: var(--warn); }
+
+  .compass { width: 72px; height: 72px; display: block; }
+  .compass-ring { fill: var(--bg); stroke: var(--border); stroke-width: 1.5; }
+  .compass-hub { fill: var(--dimmer); }
+  .compass-tick { stroke: var(--border); stroke-width: 1.5; }
+  .compass-tick-major { stroke: var(--dim); stroke-width: 2; }
+  .compass-label { fill: var(--dimmer); font-size: 9px; font-family: 'Manrope', sans-serif; text-anchor: middle; dominant-baseline: middle; }
+  /* transform-box: view-box states explicitly that transform-origin is in viewBox user units,
+     so 60px 60px is the dial centre and not some box relative to the needle's own geometry —
+     a 3px-wide line whose centre is nowhere near the hub. orientation.mjs sets a one-argument
+     CSS rotate() to match; see the note there for why the SVG rotate(a cx cy) presentation
+     attribute cannot be used together with this transition. */
+  .compass-needle {
+    stroke: var(--accent); stroke-width: 3; stroke-linecap: round;
+    transform-box: view-box; transform-origin: 60px 60px; transition: transform .15s ease-out;
+  }
+
+  .tilt-track {
+    position: relative; width: 8px; height: 56px; margin: 3px 0; border-radius: 4px;
+    background: var(--bg); border: 1px solid var(--border);
+  }
+  .tilt-zero { position: absolute; left: -3px; right: -3px; height: 1px; background: var(--dimmer); }
+  .tilt-fill { position: absolute; left: 0; right: 0; background: var(--accent); opacity: .45; border-radius: 4px; }
+  .tilt-marker {
+    position: absolute; left: 50%; width: 10px; height: 10px; border-radius: 50%;
+    background: var(--accent); border: 2px solid var(--accent-ink); transform: translate(-50%, 50%);
+    transition: bottom .15s ease-out;
+  }
+  .tilt-marker-clip { background: var(--warn); }
+
+  /* The quaternion line wraps on a narrow phone, and must only ever wrap *between* components:
+     orientation.mjs emits one span per component and these keep each of them intact, so no
+     wrap can land inside a number. (Both word-break: break-all and the default break-after-a-
+     minus produced "w-" / "0.107", which reads as a truncated value, not a wrapped one.) */
+  .or-quat { font-size: 10.5px; color: var(--dimmer); margin-top: 4px; }
+  .or-quat-part { white-space: nowrap; }
+  .or-quat-part + .or-quat-part { margin-left: 6px; }
+  .or-delta-row { display: flex; align-items: center; gap: 6px; margin-top: 3px; }
+  .or-delta { color: var(--accent); font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .or-delta-row button { padding: 2px 8px; min-height: 26px; font-size: 11px; flex-shrink: 0; }
+  /* Mount tripwire — hidden entirely unless raw yaw has actually moved since this session's
+     first sample. See orientation.mjs for why it no longer compares against a hardcoded angle. */
+  .or-mount { font-size: 10.5px; margin-top: 5px; }
+  .or-mount-off { color: var(--warn); }
+
+  /* The phone's sensors are a different instrument in a different reference frame, so they get
+     their own caption and a rule above them — never a shared row with the gimbal's numbers. */
+  .or-phone { margin-top: 7px; padding-top: 6px; border-top: 1px dashed var(--border); }
+  .or-phone-body { display: flex; flex-wrap: wrap; gap: 1px 10px; margin-top: 3px; font-size: 11.5px; }
+  .or-phone-idle { color: var(--dimmer); font-style: italic; }
+  .or-p-k { color: var(--dimmer); }
+  .or-p-v { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .or-p-warn { color: var(--warn); }
+
+  /* The 20px bottom padding is the joystick hint's room: .joystick-hint is absolutely
+     positioned 22px below the pad, so with only the panel's own bottom padding under it the
+     hint was clipped by the screen edge wherever the safe-area inset is 0 (desktop, Android
+     Chrome). Reserve it here rather than fattening the panel, which would push the pad up. */
+  .joystick-wrap {
+    flex: 0 0 auto; display: flex; align-items: center; justify-content: center; width: 100%;
+    padding: 0 0 16px;
+  }
   .joystick-pad {
-    position: relative; width: min(72vw, 300px); height: min(72vw, 300px); border-radius: 50%;
+    position: relative; width: min(46vw, 30vh, 190px); height: min(46vw, 30vh, 190px); border-radius: 50%;
     background: radial-gradient(circle at center, #232a33 0%, #181c21 70%);
     border: 1px solid var(--btn-border); touch-action: none; cursor: grab; user-select: none;
     outline: none;
@@ -151,7 +330,10 @@
     display: flex; align-items: center; justify-content: space-between; padding: 14px 14px 10px;
     font-weight: 600; flex-shrink: 0; border-bottom: 1px solid var(--border);
   }
+  .drawer-title { display: flex; align-items: center; gap: 8px; }
   .drawer-body { overflow-y: auto; padding: 10px 14px 20px; -webkit-overflow-scrolling: touch; }
+  /* Pathway switcher + connection dot, relocated here from the top bar. */
+  .drawer-mode { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 
   details {
     background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px; overflow: hidden;
@@ -229,6 +411,8 @@
     border-radius: var(--radius-md); padding: 10px 12px; font-size: 12px; line-height: 1.5;
   }
 
+  /* Recovery instructions for a wedged gimbal, not documentation — this exact procedure has
+     been needed repeatedly, and it is unguessable from the UI. It stays. */
   .reset-tip {
     margin: 10px 0 0; padding: 8px 10px; font-size: 11.5px; line-height: 1.5; color: var(--dim);
     background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-md);
@@ -250,6 +434,8 @@
   .test-row { display: flex; flex-direction: column; gap: 3px; padding: 8px 0; border-bottom: 1px solid var(--border); }
   .test-row:last-child { border-bottom: none; }
   .test-row button { width: 100%; text-align: left; min-height: 40px; }
+  /* Still used by live, per-run output (test-matrix verdict lines, grid progress rows) — the
+     static explanatory paragraphs that used to share this class are gone. */
   .test-desc { color: var(--dimmer); font-size: 11px; }
 
   [data-pathway-only] { display: none; }
@@ -263,46 +449,97 @@
 </head>
 <body data-pathway="server">
 
-  <header class="topbar">
-    <button id="btn-menu" class="icon-btn" aria-label="Open settings">☰</button>
-    <img src="./ci-mark.svg" alt="Companion Intelligence" class="brand-mark" />
-    <div class="tabs" role="tablist">
-      <button class="tab" data-panel="direct" role="tab">Direct</button>
-      <button class="tab active" data-panel="server" role="tab">Server</button>
-    </div>
-    <span class="status-pill" data-pathway-only="direct"><span id="dot-direct" class="dot"></span></span>
-    <span class="status-pill" data-pathway-only="server"><span id="dot-server" class="dot"></span></span>
-  </header>
+  <h1 class="visually-hidden">Scanner Control</h1>
+  <button id="btn-menu" class="icon-btn menu-float" aria-label="Open settings">☰</button>
 
   <main>
     <section class="panel" data-pathway-only="direct">
       <div id="orientation-direct" class="orientation-readout"></div>
-      <div class="joystick-wrap"><div id="joystick-pad" class="joystick-pad disabled"></div></div>
-      <div class="quick-actions">
-        <button id="btn-recenter" class="quick-btn" disabled>Recenter</button>
-        <button id="btn-landscape" class="quick-btn" disabled>Landscape</button>
-        <button id="btn-stick-toggle" class="quick-btn" disabled>Stick: OFF</button>
+      <div class="panel-scroll">
+        <div class="act-bar">
+          <button id="btn-recenter" class="act-btn" data-icon="⊕" disabled>Center</button>
+          <button id="btn-landscape" class="act-btn" data-icon="↻" disabled>Landscape</button>
+          <button id="btn-stick-toggle" class="act-btn" data-icon="◉" disabled>Stick: OFF</button>
+        </div>
       </div>
+      <div class="joystick-wrap"><div id="joystick-pad" class="joystick-pad disabled"></div></div>
     </section>
 
     <section class="panel" data-pathway-only="server">
       <div id="orientation-server" class="orientation-readout"></div>
-      <div class="joystick-wrap"><div id="be-joystick-pad" class="joystick-pad disabled"></div></div>
-      <div class="quick-actions">
-        <button id="be-btn-recenter" class="quick-btn" disabled>Recenter</button>
-        <button id="be-btn-landscape" class="quick-btn" disabled>Landscape</button>
-        <button id="be-btn-stick-toggle" class="quick-btn" disabled>Stick: OFF</button>
+      <div class="panel-scroll">
+        <div class="act-bar">
+          <button id="be-btn-recenter" class="act-btn" data-icon="⊕" disabled>Center</button>
+          <button id="be-btn-landscape" class="act-btn" data-icon="↻" disabled>Landscape</button>
+          <button id="be-btn-stick-toggle" class="act-btn" data-icon="◉" disabled>Stick: OFF</button>
+          <button id="be-btn-capture" class="act-btn" data-icon="📷" disabled>Photo</button>
+          <button id="be-btn-capture-both" class="act-btn" data-icon="📷" disabled>Photo ×2</button>
+        </div>
+
+        <details open class="debug-section">
+          <summary>Auto scan</summary>
+          <div class="details-body">
+            <div class="scan-types" id="be-scan-types" role="group" aria-label="Scan type">
+              <button type="button" class="scan-type" data-preset="dome">Dome</button>
+              <button type="button" class="scan-type" data-preset="quick25">Quick 25</button>
+              <button type="button" class="scan-type" data-preset="band">Band</button>
+              <button type="button" class="scan-type" data-preset="custom">Custom</button>
+            </div>
+            <div class="grid-params">
+              <span></span>
+              <span class="gp-head">from°</span>
+              <span class="gp-head">to°</span>
+              <span class="gp-head">step°</span>
+              <span class="gp-axis">Pan</span>
+              <input id="be-pan-from" class="gp-num" type="number" inputmode="numeric" step="5" value="-150" aria-label="Pan from, degrees" />
+              <input id="be-pan-to" class="gp-num" type="number" inputmode="numeric" step="5" value="150" aria-label="Pan to, degrees" />
+              <input id="be-pan-step" class="gp-num" type="number" inputmode="numeric" min="1" step="5" value="30" aria-label="Pan step, degrees" />
+              <span class="gp-axis">Tilt</span>
+              <input id="be-tilt-from" class="gp-num" type="number" inputmode="numeric" step="5" value="-15" aria-label="Tilt from, degrees" />
+              <input id="be-tilt-to" class="gp-num" type="number" inputmode="numeric" step="5" value="0" aria-label="Tilt to, degrees" />
+              <input id="be-tilt-step" class="gp-num" type="number" inputmode="numeric" min="1" step="5" value="15" aria-label="Tilt step, degrees" />
+            </div>
+            <div id="be-grid-summary" class="gp-summary" aria-live="polite"></div>
+            <div class="row" style="gap:6px;">
+              <label for="be-capture-mode">Capture</label>
+              <select id="be-capture-mode">
+                <option value="camera" selected>Camera (photos via phone)</option>
+                <option value="scanner">Scanner app (AR poses)</option>
+              </select>
+            </div>
+            <label class="checkbox-row" style="margin-bottom:10px;">
+              <input type="checkbox" id="be-grid-both" /> Both orientations per position
+            </label>
+            <button id="be-btn-grid" class="primary scan-run" disabled>Run scan</button>
+            <div class="grid-bar-track"><div id="be-grid-bar" class="grid-bar-fill"></div></div>
+            <div id="be-grid-progress" class="test-desc" style="margin-top:8px;"></div>
+            <div id="be-grid-results"></div>
+          </div>
+        </details>
       </div>
+      <div class="joystick-wrap"><div id="be-joystick-pad" class="joystick-pad disabled"></div></div>
     </section>
   </main>
 
   <div id="drawer-backdrop" class="drawer-backdrop"></div>
   <aside id="drawer" class="drawer">
     <div class="drawer-header">
-      <span>Settings &amp; connect</span>
+      <span class="drawer-title">
+        <img src="./ci-mark.svg" alt="Companion Intelligence" class="brand-mark" />
+        Scanner Control
+      </span>
       <button id="btn-drawer-close" class="icon-btn" aria-label="Close">✕</button>
     </div>
     <div class="drawer-body">
+
+      <div class="drawer-mode">
+        <div class="tabs" role="tablist">
+          <button class="tab" data-panel="direct" role="tab">Direct</button>
+          <button class="tab active" data-panel="server" role="tab">Server</button>
+        </div>
+        <span class="status-pill" data-pathway-only="direct"><span id="dot-direct" class="dot"></span></span>
+        <span class="status-pill" data-pathway-only="server"><span id="dot-server" class="dot"></span></span>
+      </div>
 
       <div data-pathway-only="direct">
         <details open>
@@ -329,10 +566,6 @@
         <details open class="debug-section">
           <summary>Command coverage</summary>
           <div class="details-body">
-            <p class="test-desc" style="margin:0 0 8px;">
-              Every cmdSet:cmdId this session has tried, seeded with everything we have a named
-              builder for. Click any row to load it into Raw command below.
-            </p>
             <div id="coverage"></div>
           </div>
         </details>
@@ -340,10 +573,6 @@
         <details class="debug-section">
           <summary>Orientation toggle (not lock/follow/fpv)</summary>
           <div class="details-body">
-            <p class="test-desc" style="margin:0 0 8px;">
-              cmdId 0x44 — disassembly + live test confirm this rotates the phone mount between
-              portrait/landscape, it is NOT a real lock/follow/fpv mode selector.
-            </p>
             <div class="row">
               <button data-mode="lock" disabled>Byte 0</button>
               <button data-mode="follow" disabled>Byte 1 (landscape)</button>
@@ -355,10 +584,6 @@
         <details class="debug-section">
           <summary>Frame inspector</summary>
           <div class="details-body">
-            <p class="test-desc" style="margin:0 0 8px;">
-              Every TX/RX DUML frame, decoded. Telemetry is muted by default — un-mute it to
-              watch orientation frames live, or click any other row to load it into Raw command.
-            </p>
             <div id="frames"></div>
           </div>
         </details>
@@ -427,36 +652,8 @@
         </details>
 
         <details open class="debug-section">
-          <summary>Grid capture</summary>
-          <div class="details-body">
-            <p class="test-desc" style="margin:0 0 8px;">
-              Move the gimbal through every grid position and take a photo at each, on the phone
-              mounted in the cradle. Serpentine order, so it never swings back across the full pan
-              range between rows.
-            </p>
-            <div class="row" style="gap:8px;flex-wrap:wrap;">
-              <label>Pans <input id="be-grid-pans" type="text" value="120,145,170" size="14" /></label>
-              <label>Tilts <input id="be-grid-tilts" type="text" value="-10,0,10" size="10" /></label>
-              <button id="be-btn-grid" disabled>Run grid capture</button>
-            </div>
-            <p class="test-desc" style="margin:8px 0 0;">
-              Needs the phone's MCP URL + token — set <code>ANDROID_MCP_URL</code> and
-              <code>ANDROID_MCP_TOKEN</code> in the backend's environment. The phone caps
-              concurrent MCP sessions, so detach any Claude Code session attached to it first.
-            </p>
-            <div id="be-grid-progress" class="test-desc" style="margin-top:8px;"></div>
-            <div id="be-grid-results"></div>
-          </div>
-        </details>
-
-        <details open class="debug-section">
           <summary>Command coverage</summary>
           <div class="details-body">
-            <p class="test-desc" style="margin:0 0 8px;">
-              Every cmdSet:cmdId this session has tried, seeded with everything we have a named
-              builder for. Green = confirmed movement, amber = sent but no movement detected, grey
-              = never tried. Click any row to load it into Raw command below.
-            </p>
             <div id="be-coverage"></div>
           </div>
         </details>
@@ -464,10 +661,6 @@
         <details class="debug-section">
           <summary>Command test matrix</summary>
           <div class="details-body">
-            <p class="test-desc" style="margin:0 0 4px;">
-              One button per corrected command variant — sends the frame, reads gimbal
-              telemetry before/after, shows a MOVED verdict. Watch the physical gimbal too.
-            </p>
             <div id="be-test-matrix"></div>
           </div>
         </details>
@@ -475,10 +668,6 @@
         <details class="debug-section">
           <summary>Orientation toggle (not lock/follow/fpv)</summary>
           <div class="details-body">
-            <p class="test-desc" style="margin:0 0 8px;">
-              cmdId 0x44 — disassembly + live test confirm this rotates the phone mount between
-              portrait/landscape, it is NOT a real lock/follow/fpv mode selector.
-            </p>
             <div class="row">
               <button data-be-mode="lock" disabled>Byte 0</button>
               <button data-be-mode="follow" disabled>Byte 1 (landscape)</button>
@@ -490,11 +679,6 @@
         <details class="debug-section">
           <summary>Frame inspector</summary>
           <div class="details-body">
-            <p class="test-desc" style="margin:0 0 8px;">
-              Every TX/RX DUML frame, decoded. Telemetry is muted by default since it streams at
-              10-20Hz and buries everything else — un-mute it to watch orientation frames live,
-              or click any other row to load it into Raw command below.
-            </p>
             <div id="be-frames"></div>
           </div>
         </details>
@@ -522,6 +706,9 @@
         </details>
       </div>
 
+      <!-- Kept, and kept collapsed: this is not how-to prose but the provenance of every command
+           on this page — which ones are live-verified and which are inference. Deleting it would
+           delete the caveats, not just the explanation. -->
       <details>
         <summary>About</summary>
         <div class="details-body">

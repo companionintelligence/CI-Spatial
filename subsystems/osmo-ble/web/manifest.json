@@ -1,7 +1,7 @@
 {
-  "name": "Osmo Gimbal Control",
-  "short_name": "Osmo Ctrl",
-  "description": "Direct and backend-mediated control for a DJI Osmo Mobile 6 gimbal over BLE",
+  "name": "Scanner Control",
+  "short_name": "Scanner Ctrl",
+  "description": "Aims the scanner rig — direct and backend-mediated control of the DJI Osmo Mobile 6 gimbal carrying the phone that runs Companion Scan",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
