@@ -2113,6 +2113,13 @@
                 <span id="status-text" aria-live="polite">Initialising…</span>
                 <span id="verdict-chip" class="verdict-scanning" style="display:inline-block; font-size:10px; font-weight:700; padding:1.5px 5px; border-radius:4px; margin-left:6px; background:rgba(255,255,255,0.08); color:rgba(255,255,255,0.6); text-transform:uppercase; letter-spacing:0.04em;">Scanning</span>
                 <a id="export-view-link" href="/viewer.html?world=default" style="display:none; color:#72ddd4; font-weight:700; text-decoration:none; margin-left:8px;">View in 3D →</a>
+                <!-- Download the server's copy, not a blob. `exportToGLB`'s
+                     local download runs after several awaits (GLTFExporter's
+                     FileReader), so user activation has expired by then and
+                     mobile Chrome silently drops the download. A real link the
+                     user taps carries its own activation, and /scans/:filename
+                     already replies with Content-Disposition: attachment. -->
+                <a id="export-download-link" href="#" download style="display:none; color:#72ddd4; font-weight:700; text-decoration:none; margin-left:8px;">Download .glb ↓</a>
                 <span id="scan-stats"></span>
               </div>
               <!-- Scan-quality guidance. Deliberately its own line rather than

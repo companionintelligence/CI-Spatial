@@ -645,6 +645,7 @@ async function main() {
         if (link) {
           link.style.display = 'inline-block'
         }
+        revealDownloadLink(result.uploadedFilename)
         return { outcome: 'exported', uploadedFilename: result.uploadedFilename }
       }
 
@@ -657,9 +658,15 @@ async function main() {
         return { outcome: 'queued' }
       }
 
-      // Downloaded, but the server refused it. The file is on the device.
-      overlay.setStatus('Scan saved locally — server sync failed')
-      setAutosaveStatus('Scan saved locally — server sync failed')
+      // The server refused it. Whether the device kept a copy depends on
+      // whether the local download could still run — on a phone it usually
+      // could not, and telling someone their scan is "saved locally" when no
+      // file exists is worse than telling them it failed.
+      const msg = result.savedLocally
+        ? 'Scan saved locally — server sync failed'
+        : 'Export failed — server rejected it and no local copy was saved'
+      overlay.setStatus(msg)
+      setAutosaveStatus(msg)
       return { outcome: 'local-only' }
     } catch (error) {
       overlay.setStatus('Export failed — try again')
@@ -715,6 +722,9 @@ async function main() {
         }
         lastUploadedFilename = result.uploadedFilename
         currentSessionGlbFilename = result.uploadedFilename
+        // Autosaves never trigger a local download, so the server copy is the
+        // only copy the user can get at — surface it as soon as one exists.
+        revealDownloadLink(result.uploadedFilename)
         if (keyframes?.active) {
           await keyframes.rotate({
             glbFilename: result.uploadedFilename,
@@ -1336,6 +1346,25 @@ function setupStatusOverlay() {
 function setAutosaveStatus(text: string): void {
   const el = document.getElementById('autosave-status')
   if (el) el.textContent = text
+}
+
+/**
+ * Point the "Download .glb" link at the server's saved copy and reveal it.
+ *
+ * Called only once a scan is genuinely on the server, because that URL is what
+ * makes the link work: `/scans/:filename` serves the GLB with
+ * `Content-Disposition: attachment`, so tapping it saves the file even where
+ * the in-page blob download cannot run (see `triggerDownload` in
+ * `src/export/gltf.ts` — mobile Chrome drops downloads that have lost user
+ * activation, which the exporter's awaits guarantee).
+ */
+function revealDownloadLink(uploadedFilename: string): void {
+  const link = document.getElementById('export-download-link') as HTMLAnchorElement | null
+  if (!link) return
+  link.href = `/scans/${encodeURIComponent(uploadedFilename)}`
+  // Hint the save-as name; same-origin, so the browser honours it.
+  link.download = uploadedFilename
+  link.style.display = 'inline-block'
 }
 
 async function resolveInitialProject(projectStore: ProjectStore): Promise<Project | null> {
