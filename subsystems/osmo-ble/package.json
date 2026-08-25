@@ -8,6 +8,7 @@
     "web": "node web/server.mjs",
     "backend": "node --watch server/backend.mjs",
     "mcp": "node server/mcp-server.mjs",
+    "cli": "node server/cli.mjs",
     "test:protocol": "node protocol/duml.test.mjs"
   },
   "dependencies": {

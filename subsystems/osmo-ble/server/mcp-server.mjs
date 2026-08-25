@@ -98,11 +98,29 @@ function createMcpServer() {
   );
 
   server.registerTool(
+    'pair_trigger',
+    {
+      title: 'Put the gimbal into pairing mode, without a PIN',
+      description:
+        'Sends just the pairing-trigger bytes, no PIN — the gimbal is expected to enter pairing mode and show a PIN on its own screen. Use this when you do not have a PIN yet, so the caller does not have to guess one for the `pair` tool: a wrong PIN is a real device-side attempt that can trip a lockout, making the eventual real pairing attempt harder. After calling this, check the device screen, then call `pair` with what it shows.',
+      inputSchema: {},
+    },
+    async () => {
+      try {
+        const result = await backendFetch('/api/pair-trigger', { method: 'POST' });
+        return textResult(result);
+      } catch (err) {
+        return errorResult(err);
+      }
+    }
+  );
+
+  server.registerTool(
     'pair',
     {
       title: 'Pair with the connected device',
       description:
-        "Run the pairing handshake. The gimbal shows a PIN code on its own screen when it enters pairing mode (triggered by this call) — read that PIN and pass it here. Do not guess a PIN; it's device-generated per pairing attempt in the real DJI Mimo app flow.",
+        "Run the pairing handshake. The gimbal shows a PIN code on its own screen when it enters pairing mode (triggered by this call) — read that PIN and pass it here. Do not guess a PIN; it's device-generated per pairing attempt in the real DJI Mimo app flow. If no PIN is showing yet, call pair_trigger first to make the device display one without also submitting a guess.",
       inputSchema: {
         pin: z.string().describe('PIN code shown on the device screen'),
         identifier: z.string().optional().describe('App instance identifier string (defaults to a harmless constant used by prior research)'),
@@ -213,7 +231,7 @@ function createMcpServer() {
     {
       title: 'Sweep gimbal across a yaw range',
       description:
-        'MEDIUM CONFIDENCE — step the gimbal yaw from startYawDeg to endYawDeg in stepDeg increments using the same closed-loop positioning as gimbal_move_to (the absolute-angle opcode this used to rely on is confirmed non-functional on this hardware), dwelling dwellMs at each step before moving on — intended for driving a phone mounted in the gimbal through a scan sweep (e.g. for CI-Spatial\'s room scanner, which auto-captures purely off the phone\'s own tracked movement/rotation). Set dwellMs comfortably above the scanner client\'s auto-capture interval (~2.5s+) so each step actually registers as a new capture rather than motion blur. Capped at 60 steps per call. For interleaving a photo capture between steps yourself, use gimbal_move_to instead. CAUTION (see GIMBAL_INTEGRATION.md, 2026-08-24): only the first motor command of a BLE connection has been reliably observed to work on real hardware — every gimbal_move_to step in this sweep after the first is exposed to that failure mode, so a sweep that reports success on every step needs its per-step history checked for real yaw movement, not just absence of an error.',
+        'MEDIUM CONFIDENCE — step the gimbal yaw from startYawDeg to endYawDeg in stepDeg increments using the same closed-loop positioning as gimbal_move_to (the absolute-angle opcode this used to rely on is confirmed non-functional on this hardware), dwelling dwellMs at each step before moving on — intended for driving a phone mounted in the gimbal through a scan sweep (e.g. for CI-Spatial\'s room scanner, which auto-captures purely off the phone\'s own tracked movement/rotation). Set dwellMs comfortably above the scanner client\'s auto-capture interval (~2.5s+) so each step actually registers as a new capture rather than motion blur. Capped at 60 steps per call. For interleaving a photo capture between steps yourself, use gimbal_move_to instead. Note (2026-08-24): the underlying closed-loop positioning had a wrong-feedback-axis bug that stopped it ever converging on real hardware; fixed, see gimbal_move_to and GIMBAL_INTEGRATION.md. If the gimbal has no macOS Bluetooth bond it will still ignore motor commands outright, which shows up as every step reporting a flat history — check the bond before suspecting this tool.',
       inputSchema: {
         startYawDeg: z.number().min(-160).max(160),
         endYawDeg: z.number().min(-160).max(160),
@@ -254,7 +272,7 @@ function createMcpServer() {
     {
       title: 'Move gimbal to an absolute angle (closed-loop)',
       description:
-        'Move to a single absolute (yawDeg, pitchDeg) using closed-loop speed control driven by live quaternion feedback, not the absolute-angle opcode — that opcode (cmdId 0x14) was live-tested 2026-08-21 and confirmed to do nothing on this hardware, likely because our guessed payload struct never matched DJI\'s real (larger) angle-set structs. This is the single-step primitive behind gimbal_sweep, exposed on its own so a caller can interleave something else (e.g. a photo-capture tool call on a different MCP server) between steps of a multi-position scan (see plan_scan_grid). Returns {converged, timedOut, ticks, finalYaw, finalPitch, history} — check `converged` before assuming the position was actually reached; the yaw/pitch mapping used for feedback is an approximate Euler decomposition, not a calibrated attitude readout, so treat "close enough within toleranceDeg" as the real contract, not exact degrees. CAUTION (found 2026-08-24, see GIMBAL_INTEGRATION.md): on real hardware this backend has been observed honouring only the first motor command per BLE connection, then silently ignoring every command after it — any type, any timing — until reconnected. A timedOut result under that condition looks identical to a slow-but-progressing move at the API level; before trusting a second or later gimbal_move_to call in the same session, inspect the returned history array yourself and confirm yaw/pitch are actually changing between ticks, not just that the call returned without erroring.',
+        'Move to a single absolute (yawDeg, pitchDeg) using closed-loop speed control driven by live quaternion feedback, not the absolute-angle opcode — that opcode (cmdId 0x14) was live-tested 2026-08-21 and confirmed to do nothing on this hardware, likely because our guessed payload struct never matched DJI\'s real (larger) angle-set structs. This is the single-step primitive behind gimbal_sweep, exposed on its own so a caller can interleave something else (e.g. a photo-capture tool call on a different MCP server) between steps of a multi-position scan (see plan_scan_grid). Returns {converged, timedOut, ticks, finalYaw, finalPitch, history} — check `converged` before assuming the position was actually reached; the yaw/pitch mapping used for feedback is an approximate Euler decomposition, not a calibrated attitude readout, so treat "close enough within toleranceDeg" as the real contract, not exact degrees. Fixed 2026-08-24: the loop previously steered on the raw `yaw` Euler channel, which on a mounted OM6 is pinned at -90 while physical pan lands in `roll` — so it never converged on real hardware. It now steers on measured pan/tilt (see GIMBAL_INTEGRATION.md). finalYaw/finalPitch carry pan/tilt values; the field names are kept for wire compatibility. If a call does report timedOut, read the history array and check whether pan/tilt actually change between ticks — a completely flat history means the gimbal is not moving at all (no macOS Bluetooth bond, or a wedged BLE stack), which is a different problem from a move that fell short.',
       inputSchema: {
         yawDeg: z.number().min(-160).max(160).optional().describe('Target yaw in degrees (default 0)'),
         pitchDeg: z.number().min(-60).max(60).optional().describe('Target pitch in degrees (default 0)'),

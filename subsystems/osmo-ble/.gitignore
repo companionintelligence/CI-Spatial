@@ -1,2 +1,5 @@
 node_modules/
 *.log
+
+# server/cli.mjs's remembered-device state — local convenience only, not a BLE bond of any kind.
+.cli-state.json

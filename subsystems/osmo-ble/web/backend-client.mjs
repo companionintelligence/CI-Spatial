@@ -28,6 +28,11 @@ const els = {
   rawCmdId: document.getElementById('be-raw-cmdid'),
   rawPayload: document.getElementById('be-raw-payload'),
   rawSend: document.getElementById('be-btn-raw-send'),
+  gridPans: document.getElementById('be-grid-pans'),
+  gridTilts: document.getElementById('be-grid-tilts'),
+  gridRun: document.getElementById('be-btn-grid'),
+  gridProgress: document.getElementById('be-grid-progress'),
+  gridResults: document.getElementById('be-grid-results'),
   testMatrix: document.getElementById('be-test-matrix'),
   coverage: document.getElementById('be-coverage'),
   frames: document.getElementById('be-frames'),
@@ -124,7 +129,7 @@ async function api(method, path, body) {
 }
 
 function setConnectedControlsEnabled(enabled) {
-  for (const el of [els.disconnect, els.pin, els.pair, els.recenter, els.landscape, els.stickToggle, ...els.modeButtons, els.rawSend, ...testButtons]) {
+  for (const el of [els.disconnect, els.pin, els.pair, els.recenter, els.landscape, els.stickToggle, els.gridRun, ...els.modeButtons, els.rawSend, ...testButtons]) {
     el.disabled = !enabled;
   }
   els.joystickPad.classList.toggle('disabled', !enabled);
@@ -245,6 +250,8 @@ function connectWs() {
       setConnectedControlsEnabled(msg.connected);
       els.status.textContent = `backend: ${msg.connected ? 'connected' : 'not connected'}${msg.paired ? ', paired' : ''}`;
       if (!msg.connected) tryAutoconnect();
+    } else if (msg.type === 'grid-progress') {
+      renderGridProgress(msg);
     } else if (msg.type === 'frame') {
       if (msg.error) {
         frameLog.add({ at: msg.at, dir: 'rx', error: msg.error });
@@ -446,3 +453,75 @@ for (const def of TEST_DEFS) {
   els.testMatrix.appendChild(row);
   testButtons.push(btn);
 }
+
+// ── Grid capture ───────────────────────────────────────────────────────────────
+// The run itself lives in the backend (POST /api/grid-capture), not here, for the same reason
+// the BLE connection does: the phone caps concurrent MCP sessions, so exactly one process may
+// hold one. This panel starts the run and renders the progress the backend broadcasts on the
+// WS the page is already connected to — a 9-position run takes minutes, and a silent request
+// that long is indistinguishable from a hang.
+function renderGridProgress(msg) {
+  if (msg.phase === 'start') {
+    els.gridResults.innerHTML = '';
+    els.gridProgress.textContent = `Starting ${msg.total}-position run…`;
+    return;
+  }
+  if (msg.phase === 'moving') {
+    els.gridProgress.textContent = `[${msg.position}/${msg.total}] moving to pan=${msg.target.pan} tilt=${msg.target.tilt}…`;
+    return;
+  }
+  if (msg.phase === 'capturing') {
+    els.gridProgress.textContent = `[${msg.position}/${msg.total}] ${msg.converged ? 'converged' : 'NOT converged'} — taking photo…`;
+    return;
+  }
+  if (msg.phase === 'captured') {
+    const row = document.createElement('div');
+    row.className = 'test-row';
+    const verdict = msg.converged ? 'converged' : 'NOT converged';
+    row.innerHTML = `<span class="verdict ${msg.converged ? 'moved' : 'notmoved'}">${verdict}</span>`;
+    const label = document.createElement('span');
+    label.className = 'test-desc';
+    label.textContent = `${msg.position}. pan=${(msg.pan ?? 0).toFixed(1)} tilt=${(msg.tilt ?? 0).toFixed(1)} (${msg.ticks} ticks)`;
+    row.appendChild(label);
+    // The photo stays on the phone; this links to the device's own share URL rather than
+    // proxying bytes through the backend.
+    const link = document.createElement('a');
+    link.href = msg.photoUrl;
+    link.target = '_blank';
+    link.rel = 'noreferrer';
+    link.textContent = 'photo';
+    row.appendChild(link);
+    els.gridResults.appendChild(row);
+    return;
+  }
+  if (msg.phase === 'done') {
+    els.gridProgress.textContent = `Done — ${msg.converged}/${msg.total} converged.`;
+    return;
+  }
+  if (msg.phase === 'error') {
+    els.gridProgress.textContent = `Failed after ${msg.captured} position(s): ${msg.error}`;
+  }
+}
+
+function parseDegList(value, fallback) {
+  const parsed = value.split(',').map((v) => Number(v.trim())).filter((v) => Number.isFinite(v));
+  return parsed.length ? parsed : fallback;
+}
+
+els.gridRun?.addEventListener('click', async () => {
+  els.gridRun.disabled = true;
+  try {
+    const pans = parseDegList(els.gridPans.value, [120, 145, 170]);
+    const tilts = parseDegList(els.gridTilts.value, [-10, 0, 10]);
+    log(`Grid capture: ${pans.length * tilts.length} positions...`);
+    const run = await api('POST', '/api/grid-capture', { pans, tilts });
+    log(`Grid capture done: ${run.converged}/${run.total} converged.`, 'ok');
+  } catch (err) {
+    // The backend returns partial results with its error, and renderGridProgress has already
+    // drawn whatever completed — so this only needs to report, not reconstruct state.
+    log(`Grid capture failed: ${err.message}`, 'warn');
+    els.gridProgress.textContent = `Failed: ${err.message}`;
+  } finally {
+    els.gridRun.disabled = false;
+  }
+});

@@ -427,6 +427,29 @@
         </details>
 
         <details open class="debug-section">
+          <summary>Grid capture</summary>
+          <div class="details-body">
+            <p class="test-desc" style="margin:0 0 8px;">
+              Move the gimbal through every grid position and take a photo at each, on the phone
+              mounted in the cradle. Serpentine order, so it never swings back across the full pan
+              range between rows.
+            </p>
+            <div class="row" style="gap:8px;flex-wrap:wrap;">
+              <label>Pans <input id="be-grid-pans" type="text" value="120,145,170" size="14" /></label>
+              <label>Tilts <input id="be-grid-tilts" type="text" value="-10,0,10" size="10" /></label>
+              <button id="be-btn-grid" disabled>Run grid capture</button>
+            </div>
+            <p class="test-desc" style="margin:8px 0 0;">
+              Needs the phone's MCP URL + token — set <code>ANDROID_MCP_URL</code> and
+              <code>ANDROID_MCP_TOKEN</code> in the backend's environment. The phone caps
+              concurrent MCP sessions, so detach any Claude Code session attached to it first.
+            </p>
+            <div id="be-grid-progress" class="test-desc" style="margin-top:8px;"></div>
+            <div id="be-grid-results"></div>
+          </div>
+        </details>
+
+        <details open class="debug-section">
           <summary>Command coverage</summary>
           <div class="details-body">
             <p class="test-desc" style="margin:0 0 8px;">

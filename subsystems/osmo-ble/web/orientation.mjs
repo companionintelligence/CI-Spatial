@@ -4,7 +4,7 @@
 // Bluetooth) and server (backend WS) panels — only where the quaternion samples come from
 // differs, not how they're displayed.
 
-import { quaternionDelta, quatToEulerDeg } from '../protocol/telemetry.mjs';
+import { quaternionDelta, quatToEulerDeg, quatToGimbalControlDeg } from '../protocol/telemetry.mjs';
 
 export function attachOrientationReadout(container) {
   const eulerEl = document.createElement('div');
@@ -37,8 +37,13 @@ export function attachOrientationReadout(container) {
   function update(quat) {
     if (!quat) return;
     latest = quat;
+    // Raw channels stay on show — they are the diagnostic that revealed `yaw` is pinned at -90
+    // on this mount while physical pan lands in `roll`. The pan/tilt pair after them is what
+    // the closed-loop controller actually steers on (quatToGimbalControlDeg), so a reader
+    // comparing this readout against a move-to run sees the same numbers the controller sees.
     const { roll, pitch, yaw } = quatToEulerDeg(quat);
-    eulerEl.textContent = `pitch ${pitch.toFixed(1)}°  yaw ${yaw.toFixed(1)}°  roll ${roll.toFixed(1)}°`;
+    const { pan, tilt } = quatToGimbalControlDeg(quat);
+    eulerEl.textContent = `pan ${pan.toFixed(1)}°  tilt ${tilt.toFixed(1)}°   ·  raw: pitch ${pitch.toFixed(1)}°  yaw ${yaw.toFixed(1)}°  roll ${roll.toFixed(1)}°`;
     quatEl.textContent = `x${quat[0].toFixed(3)} y${quat[1].toFixed(3)} z${quat[2].toFixed(3)} w${quat[3].toFixed(3)}`;
     if (reference) {
       deltaEl.textContent = `Δ ${quaternionDelta(reference, quat).toFixed(3)} since ref`;

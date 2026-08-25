@@ -43,43 +43,41 @@ refused new connections (`Error: Peripheral already connected`) even after a cle
 button, and trigger together for about a second. If a backend restart + rescan doesn't recover a
 connection, try this before assuming it's a code or macOS-side problem.
 
-**Known gotcha — motor commands stop working after the first one per connection, and neither
-reconnecting nor waiting recovers them.** Discovered 2026-08-24, live-tested against a real OM6.
-Sequence, all against a healthy connection with live telemetry flowing throughout (`connected:
-true`, quaternion updating every read):
+**Known gotcha — an unbonded gimbal ignores motor commands, and it looks like a code bug.**
+Two separate problems presented as one symptom here on 2026-08-24, and the first was
+misdiagnosed before the second was found. Both are now resolved; the sequence is recorded
+because the *misdiagnosis* is the reusable lesson.
 
-1. Forgot the device in macOS Bluetooth settings (it had gone stale after the 2026-08-23 wedge
-   above), rediscovered it fresh via `POST /api/scan`, connected.
-2. First `speed` command after that connect: **moved** (delta 0.105, `moved: true`).
-3. Every command after that first one — `speed` at every tick duration tried (250ms/500ms/600ms/
-   700ms/900ms), every settle gap tried (0s/1s/2s/4s/8s between attempts), and `recenter` (a
-   completely different command type) — **did not move it**. Not degraded: delta stayed under
-   0.0002 (pure sensor noise) across every one of these, versus 0.02+ for anything that actually
-   moved. `moveToClosedLoop`'s own 15/23-tick runs showed yaw flat within ±1.3° of its start for
-   the full 8–15 second call.
-4. A plain `disconnect()` + `connect()` on the same already-known device id did **not** restore
-   it — the post-reconnect first command also failed to move. Only the original post-*forget*
-   connection ever got the one working command.
+**Problem 1 — no macOS Bluetooth bond.** Before bonding, the gimbal honoured roughly one motor
+command per connection and then silently ignored everything after it: `speed` at every tick
+duration tried (250–900 ms), every settle gap tried (0–8 s), and `recenter` (a different command
+type entirely) all left delta under 0.0002 — pure sensor noise, versus 0.02+ for anything that
+actually moved. A plain `disconnect()`/`connect()` did not recover it. This looked exactly like
+a protocol or timing bug, and was investigated as one at length. It was neither.
 
-Ruled out as the cause: `moveToClosedLoop`'s own logic (the failure reproduces with raw
-`speed`+stop calls made directly, outside the loop); tick/settle timing (tested across a 30×
-range); `MsgIdSequence` wraparound (a simple `(n+1) & 0xffff` counter — nowhere near wrapping
-after 2–4 commands); and stale write-characteristic caching (`ble-transport.mjs`'s `disconnect`
-path does correctly null `_writeChar` via the peripheral's own `'disconnect'` event).
+**Fix: pair the gimbal to macOS itself.** Running `POST /api/pair-trigger` (see below) surfaced
+a *macOS* Bluetooth confirmation dialog — not the app's PIN flow. Accepting it created a real OS
+bond, and the lockout vanished immediately: five consecutive `speed` commands all moved the
+device, and reversing direction moved it freely at full delta. Note the device may show a plain
+confirm rather than a PIN; the `SetPairingPin` handshake in `ble-transport.mjs` is a *different*
+mechanism and was never the missing piece.
 
-**Working theory, not yet confirmed:** this backend never does real BLE pairing.
-`ble-transport.mjs`'s own comment says so —
-`this._paired = true // latch write channel regardless; treat any response as forward
-progress` — that flag is a heuristic about *our* state, not the gimbal's. The pattern (exactly
-one motor command honoured per connection, any type, then silent ignore regardless of gap)
-matches a device that grants a single grace command to an unpaired central and then requires a
-real `SetPairingPin` exchange — which needs the PIN shown on the gimbal's own screen — before
-honouring anything further. **Untested**: the gimbal's screen showed no PIN when this was found,
-so `POST /api/pair` with a real PIN has never been tried against this specific symptom. That is
-the next thing to try, and it would confirm or rule out the theory in one step.
+If motor commands go dead in this pattern, **check System Settings → Bluetooth for a bond before
+touching any code.** `paired: false` in `/api/status` does not tell you — that flag is
+`ble-transport.mjs`'s own heuristic (`this._paired = true // latch write channel regardless`),
+not the OS bond state.
 
-Until that test happens, **do not trust `gimbal_move_to`/`gimbal_sweep` for more than the first
-motor command of a session** — see the correction in "Closed-loop positioning" below.
+**Problem 2 — the closed-loop controller steered on a dead axis.** Even bonded, `move-to` still
+ran to timeout. Measured directly: physical pan moves the `roll` channel, while `yaw` sits pinned
+at exactly -90.00 ±0.05 regardless of how far the gimbal actually turns. `moveToClosedLoop` read
+`yaw`, so its error never changed and it looped until `maxMs` with a flat history. Fixed by
+steering on `quatToGimbalControlDeg`'s pan/tilt instead — see "Closed-loop positioning" below.
+
+**The lesson worth keeping:** a gimbal that does not move has at least three unrelated causes
+that look identical from the API — no OS bond, a wedged BLE stack (the 2026-08-23 entry above),
+and a controller reading a channel that carries no information. A flat `history` array is
+consistent with all three. Check the bond first (cheapest), then whether telemetry responds to a
+raw `speed` probe at all, and only then suspect the control loop.
 
 ## Why no signaling is needed for a passive sweep
 
@@ -130,14 +128,31 @@ several of these together across a yaw range; `gimbal_recenter` targets `(0, 0)`
 wherever this device's quaternion frame reads as zero, not independently confirmed to be true
 mechanical center).
 
-**Correction (2026-08-24): `converged: false` from a real hardware run can mean "the gimbal never
-moved at all," not just "didn't quite reach the target."** See the "motor commands stop working
-after the first one" gotcha above — a session that already spent its one working command will
-report `timedOut: true` with a flat, unmoving `history` on every `gimbal_move_to` call after that,
-indistinguishable at the API level from a slow-but-progressing move unless you read the `history`
-array yourself and check whether `yaw`/`pitch` are actually changing between ticks, not just
-whether the call returned. `gimbal_sweep`'s later steps are the most exposed to this, since only
-its first step gets the one working command.
+**Fixed 2026-08-24 — the feedback axis was wrong, and it never converged before this.** The loop
+read `quatToEulerDeg().yaw`. Measured live on a mounted OM6, that channel is pinned at exactly
+-90.00 ±0.05 no matter how far the gimbal pans; the physical pan lands in `roll` instead, while
+tilt correctly lands in `pitch`. The two real axes are cleanly decoupled — tilting leaves roll
+flat — they were simply mislabeled by a constant frame rotation. So the loop's error never
+changed, its adaptive sign-flip had no gradient to work with, and every call ran to `maxMs`
+reporting `converged: false` with a flat `history`.
+
+Measurements, three equal pan nudges then three reversing:
+
+```
+start        pan(roll)=164.5   yaw=-90.00   tilt(pitch)=0.3
++pan x3      pan=144.8 -> 127.9 -> 105.7    yaw=-90.00 throughout
+-pan x3      pan=123.1 -> 144.7 -> 164.2    yaw=-90.00 throughout
+```
+
+The loop now steers on `quatToGimbalControlDeg`'s pan/tilt (`protocol/telemetry.mjs`). Verified
+after the fix: targets 140°, 165°, 130° and 150° all returned `converged: true` in 7–20 ticks,
+landing within the 5° tolerance. `finalYaw`/`finalPitch` in the result are pan/tilt values — the
+field names are kept for wire compatibility.
+
+**Still check `converged` rather than assuming success**, and if a run does fail, read the
+`history` array and confirm pan/tilt actually change between ticks. A flat history means the
+gimbal is not moving at all (see the bond/wedge causes above), which is a different problem from
+a move that merely fell short.
 
 **Movement-only rehearsal, live-tested 2026-08-21** (no photo capture — `android-beam-pro-1` was
 unreachable at the time): before the closed-loop version existed, the 9-position grid from
@@ -152,6 +167,46 @@ speed move + auto-stop, no positioning), `get_recent_frames` (raw telemetry), `p
 (see below).
 
 ## Automated N-shot grid capture → Companion Scan's real ingest pipeline
+
+**The whole run is one command now.** The manual tool-by-tool sequence below still describes what
+happens, and is what you want when driving it from an MCP client, but you no longer have to
+orchestrate it by hand:
+
+```bash
+npm run cli -- grid --dry-run                       # print the plan, touch nothing
+npm run cli -- grid                                 # move -> photo at all 9 positions
+npm run cli -- grid --ingest http://localhost:8000/ingest-photos
+npm run cli -- grid --pans 100,130,160 --tilts -15,0,15 --out ./myscan
+```
+
+or press **Run grid capture** in the web UI (`npm run web`), which shows per-position progress
+live. Both call `POST /api/grid-capture` on the backend, which is where the orchestration
+actually lives — deliberately, so exactly one process ever holds an MCP session to the phone.
+
+**Prerequisite — the phone's MCP URL and token:** set `ANDROID_MCP_URL` and `ANDROID_MCP_TOKEN`
+in the *backend's* environment (the CLI can also pass `--device-url` / `--device-token`). The
+per-device token variables in `.env.example` are the same values; see
+[DEVICE_TESTING.md](../testing/DEVICE_TESTING.md) for the fleet table.
+
+> **The phone caps concurrent MCP sessions, and a Claude Code session counts.** Verified
+> 2026-08-24: with Claude Code attached to `android-beam-pro-1`, every backend `initialize`
+> returned `503 {"error":"Too many active sessions"}`. There is no way around it — probing the
+> device with a valid token showed that apart from `/mcp`, `/health` and the `/s/<hash>` share
+> URLs, every path 404s, so MCP is the only control interface and there is no REST fallback.
+> The backend therefore opens a session, runs the grid, and `DELETE`s it, holding the slot only
+> for the duration of a capture — but it still cannot run while another client is attached.
+> **Detach the phone's MCP server in Claude Code before running a grid capture from the CLI or
+> web UI.**
+
+A non-converged position is recorded, not fatal — the photo is still taken and the result
+carries `converged: false`. Aborting would throw away the frames already captured, and a frame
+from a position that is merely close is usually still usable; the caller decides.
+
+The CLI also checks that the downloaded frames are byte-distinct and warns if they are not.
+That is not a formality: wave 04 hit a stalled camera returning six byte-identical JPEGs across
+47 minutes, and nothing notices unless something compares them.
+
+### The underlying sequence
 
 For an *exact* photo count (e.g. "9 photos") rather than relying on auto-capture heuristics,
 drive an explicit camera-capture tool instead — verified against this repo's actual capture→3D

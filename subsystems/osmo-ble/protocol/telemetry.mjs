@@ -27,6 +27,36 @@ export function quaternionDelta(a, b) {
  * gimbal-lock-adjacent coupling) — treat this as a relative-change indicator. Shared by the web
  * orientation readout and the backend's closed-loop move-to controller (server/backend.mjs).
  */
+/**
+ * The gimbal's pan/tilt as the closed-loop controller should read them, rather than as raw
+ * ZYX Tait-Bryan channels.
+ *
+ * quatToEulerDeg()'s own caveat ("we haven't confirmed which axis maps to which real-world
+ * pitch/yaw/roll") turned out to matter enormously. Measured live against a real OM6,
+ * 2026-08-24, phone mounted in the cradle:
+ *
+ *   physical pan   -> the `roll` channel     (164.5 -> 144.8 -> 127.9 -> 105.7 across three
+ *                                             equal +pan nudges, then back to 164.2 reversing)
+ *   physical tilt  -> the `pitch` channel    (0.4 -> 15.0 -> 17.3, back to -6.9) — already right
+ *   the `yaw` channel -> PINNED at -90.00 +/- 0.05 throughout ALL of the above
+ *
+ * The two real axes are cleanly decoupled (tilting left roll flat at 164.5); they are simply
+ * mislabeled by a constant frame rotation. `yaw` carries no information at all at this mount
+ * orientation.
+ *
+ * This is why moveToClosedLoop never converged: it steered on `yaw`, so its error never changed,
+ * its adaptive sign-flip never had a gradient to work with, and every call ran to maxMs
+ * reporting `converged: false` with a flat history — indistinguishable from "the gimbal ignored
+ * the command", which is what it was originally misdiagnosed as.
+ *
+ * Returns `pan`/`tilt` deliberately, not `yaw`/`pitch`: naming them after the physical motion is
+ * what stops the next reader re-introducing the same bug by reaching for `.yaw`.
+ */
+export function quatToGimbalControlDeg(quat) {
+  const { roll, pitch } = quatToEulerDeg(quat);
+  return { pan: roll, tilt: pitch };
+}
+
 export function quatToEulerDeg([x, y, z, w]) {
   const sinrCosp = 2 * (w * x + y * z);
   const cosrCosp = 1 - 2 * (x * x + y * y);
