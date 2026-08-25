@@ -22,6 +22,7 @@ import type { WorldDetection } from '../spatial/resolver'
 // imports the store directly — the same reason src/shared/test-homes.ts:10 carries one.
 import { SCAN_DB_NAME } from '../shared/storage-keys.ts'
 import { isServerSessionId, newLocalSessionId } from '../shared/session-id.ts'
+import { quotaStatus as sharedQuotaStatus } from '../shared/storage-quota.ts'
 // Type-only, so it is erased before Node's loader sees it and needs no .ts
 // extension. Reusing CaptureResult's pose is the point: a capture record stores
 // the pose the capture module already produced, it does not declare a new one.
@@ -234,16 +235,13 @@ export class DetectionStore {
     if (this.db) await this.loadCaptures()
   }
 
-  /** Storage usage/quota via the StorageManager API; null when unavailable */
+  /**
+   * Storage usage/quota via the StorageManager API; null when unavailable.
+   * Delegates to src/shared/storage-quota.ts — see that file's header for
+   * why this is shared rather than reimplemented (ADR 0001).
+   */
   async quotaStatus(): Promise<{ usage: number; quota: number } | null> {
-    if (!navigator.storage?.estimate) return null
-    try {
-      const { usage, quota } = await navigator.storage.estimate()
-      if (usage === undefined || quota === undefined) return null
-      return { usage, quota }
-    } catch {
-      return null
-    }
+    return sharedQuotaStatus()
   }
 
   get detections(): Map<string, StoredDetection> {

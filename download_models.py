@@ -24,7 +24,9 @@ META = [
     "chat_template.jinja",
 ]
 
-# Browser and server path: FP16 embed models + Q4 decoder (~1.5 GB)
+# Browser and server path: FP16 embed models + Q4 decoder (2.2 GB — measured
+# 2026-08-18; the previous "~1.5 GB" here understated it by 47%, see
+# docs/factory/05-on-device-inference/0002-browser-model-provisioning.md)
 ONNX_FILES = [
     "onnx/embed_tokens_fp16.onnx",
     "onnx/embed_tokens_fp16.onnx_data",

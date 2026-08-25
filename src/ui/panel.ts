@@ -7,6 +7,7 @@
  */
 import type { DetectionStore, StoredDetection } from '../scene/store'
 import { WEBGPU_INFERENCE_ENABLED, type InferMode } from '../inference/router'
+import { formatBytes, type ProvisioningStatus } from '../inference/model-provisioning'
 import { icon, iconLabel, type IconName } from './icons'
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -61,6 +62,8 @@ export class SidePanel {
   private _streamBtn: HTMLButtonElement | null = null
   private _aiServerBtn: HTMLButtonElement | null = null
   private _aiWebGPUBtn: HTMLButtonElement | null = null
+  private _modelStatusText: HTMLElement | null = null
+  private _modelActionBtn: HTMLButtonElement | null = null
 
   get streamButton(): HTMLButtonElement | null { return this._streamBtn }
 
@@ -71,6 +74,14 @@ export class SidePanel {
     private readonly onProcess?: (action: string) => void,
     private readonly onInferMode?: (mode: InferMode) => void,
     private _currentInferMode: InferMode = 'server',
+    /**
+     * Wave 05 ticket 0002 — starts (or resumes) the on-device model
+     * download. Undefined when WEBGPU_INFERENCE_ENABLED is off, same gating
+     * as the WebGPU toggle itself; see this.mount()'s "On-device model" row.
+     */
+    private readonly onProvisionModel?: () => Promise<ProvisioningStatus>,
+    /** Deletes the cached model to reclaim space — explicit, user-initiated only. */
+    private readonly onRemoveModel?: () => Promise<ProvisioningStatus>,
   ) {
     this.panel = document.getElementById('side-panel')!
     this.content = document.getElementById('panel-content')!
@@ -218,6 +229,35 @@ export class SidePanel {
       aiNote.textContent = 'Server uses all machine cores'
       aiWrap.appendChild(aiNote)
 
+      // ── On-device model provisioning (wave 05 ticket 0002) ────────────────
+      // Gated the same as the WebGPU toggle above: the runtime that would
+      // consume this cache doesn't exist yet (ticket 0003), but developing
+      // against provisioning itself only needs VITE_ENABLE_WEBGPU_INFERENCE=true.
+      // A dedicated row rather than folded into the WebGPU pill click: which
+      // routing/fallback decisions a selected mode triggers is ticket 0004's
+      // "ungate-toggle-and-fallback-policy", not this ticket's to decide.
+      if (WEBGPU_INFERENCE_ENABLED && this.onProvisionModel) {
+        const modelRow = document.createElement('div')
+        modelRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;padding-top:2px;'
+
+        const modelStatusText = document.createElement('div')
+        modelStatusText.id = 'model-provision-status'
+        modelStatusText.style.cssText = 'font-size:10px;color:rgba(255,255,255,0.45);min-width:0;'
+        modelStatusText.textContent = 'On-device model: checking…'
+        this._modelStatusText = modelStatusText
+
+        const modelBtn = document.createElement('button')
+        modelBtn.className = 'panel-btn-ghost'
+        modelBtn.id = 'panel-provision-model-btn'
+        modelBtn.textContent = 'Download'
+        modelBtn.disabled = true
+        modelBtn.addEventListener('click', () => { void this._handleModelAction() })
+        this._modelActionBtn = modelBtn
+
+        modelRow.append(modelStatusText, modelBtn)
+        aiWrap.appendChild(modelRow)
+      }
+
       this.footer.appendChild(aiWrap)
       this._setAIMode(this._currentInferMode)
     }
@@ -271,6 +311,58 @@ export class SidePanel {
     }
     const note = document.getElementById('ai-engine-note')
     if (note) note.textContent = mode === 'server' ? 'Server uses all machine cores' : 'On-device — no data leaves your phone'
+  }
+
+  /**
+   * Reflect a ProvisioningStatus (wave 05 ticket 0002) in the "On-device
+   * model" row. Called after every status read/change — mount, download
+   * click, removal, and once eagerly at boot (src/main.ts) — never inferred
+   * from a click alone, so a page reload always shows the true on-disk
+   * state rather than whatever the last click implied.
+   */
+  setModelStatus(status: ProvisioningStatus): void {
+    if (!this._modelStatusText || !this._modelActionBtn) return
+
+    const sizeLabel = formatBytes(status.bytesTotal)
+    const persistedNote = status.persisted === false ? ' — not persistent, may be evicted' : ''
+
+    // dataset.action, not textContent, drives _handleModelAction below — 'retry'
+    // and 'resume' both re-run onProvisionModel (provisionModel() already skips
+    // complete files and resumes partial ones); only 'remove' is a distinct call.
+    if (status.state === 'ready') {
+      this._modelStatusText.textContent = `On-device model: ready (${sizeLabel})${persistedNote}`
+      this._modelActionBtn.textContent = 'Remove'
+      this._modelActionBtn.dataset['action'] = 'remove'
+    } else if (status.state === 'partial') {
+      const pct = status.bytesTotal ? Math.round((status.bytesReady / status.bytesTotal) * 100) : null
+      this._modelStatusText.textContent = `On-device model: ${pct !== null ? `${pct}% downloaded` : 'partially downloaded'} (${sizeLabel})`
+      this._modelActionBtn.textContent = 'Resume'
+      this._modelActionBtn.dataset['action'] = 'resume'
+    } else if (status.state === 'error') {
+      this._modelStatusText.textContent = `On-device model: ${status.error === 'insufficient-storage' ? 'not enough free storage' : 'download failed'}`
+      this._modelActionBtn.textContent = 'Retry'
+      this._modelActionBtn.dataset['action'] = 'retry'
+    } else {
+      this._modelStatusText.textContent = `On-device model: not downloaded (${sizeLabel})`
+      this._modelActionBtn.textContent = 'Download'
+      this._modelActionBtn.dataset['action'] = 'download'
+    }
+    this._modelActionBtn.disabled = false
+  }
+
+  private async _handleModelAction(): Promise<void> {
+    const btn = this._modelActionBtn
+    if (!btn) return
+    const isRemove = btn.dataset['action'] === 'remove'
+    btn.disabled = true
+    try {
+      const status = isRemove
+        ? await this.onRemoveModel?.()
+        : await this.onProvisionModel?.()
+      if (status) this.setModelStatus(status)
+    } finally {
+      if (this._modelActionBtn) this._modelActionBtn.disabled = false
+    }
   }
 
   /**

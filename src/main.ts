@@ -21,8 +21,9 @@ import { AutoCapture } from './capture/auto-capture'
 import { KeyframeStreamer } from './capture/keyframes'
 import { ScanQualityMonitor, isFrameUnusable } from './capture/quality-monitor'
 import type { FrameQuality } from './capture/quality-monitor'
-import { InferenceRouter } from './inference/router'
+import { InferenceRouter, WEBGPU_INFERENCE_ENABLED } from './inference/router'
 import { InferServerError } from './inference/server'
+import { getProvisioningStatus, provisionModel, removeProvisionedModel, estimateModelCacheBytes } from './inference/model-provisioning'
 import { bucket, resolveDetections, mergeDetections } from './spatial/resolver'
 import { DetectionStore } from './scene/store'
 import {
@@ -288,11 +289,30 @@ async function main() {
       overlay.setStatus(`AI: ${mode === 'server' ? 'Server' : 'WebGPU'}`)
     },
     router.path,
+    // Wave 05 ticket 0002 — undefined (no row shown) unless the WebGPU path
+    // is gated on, matching the toggle above. See src/ui/panel.ts's
+    // "On-device model provisioning" comment for why this isn't wired into
+    // the mode toggle itself.
+    WEBGPU_INFERENCE_ENABLED
+      ? () => provisionModel((stage, pct) => overlay.setProgress(pct, stage)).finally(() => {
+        overlay.setProgress(null)
+        void checkStorageQuota(store, overlay)
+      })
+      : undefined,
+    WEBGPU_INFERENCE_ENABLED
+      ? async () => { await removeProvisionedModel(); return getProvisioningStatus() }
+      : undefined,
   )
   panel.mount()
   // WebRTC live view is an experimental feature and must not appear in normal
   // scanning until its device connection path is reliable.
   if (!WEBRTC_LIVE_ENABLED) panel.streamButton?.remove()
+  // Seed the "On-device model" row with real on-disk state (and, best-effort,
+  // the download's total size) rather than leaving it on its mount-time
+  // "checking…" placeholder indefinitely.
+  if (WEBGPU_INFERENCE_ENABLED) {
+    void getProvisioningStatus({ probe: true }).then((status) => panel.setModelStatus(status))
+  }
 
   const history = new SessionHistory(store)
   history.mount()
@@ -1939,14 +1959,29 @@ async function persistProjectSpatialFrame(project: Project): Promise<void> {
   }
 }
 
-/** One-time HUD warning when IndexedDB usage crosses 80 % of the browser quota. */
+/**
+ * One-time HUD warning when IndexedDB usage crosses 80 % of the browser quota.
+ *
+ * Wave 05 ticket 0002 (docs/factory/05-on-device-inference/0002-browser-model-provisioning.md)
+ * extends this to know about the on-device model cache: weights and scan
+ * data draw on the same origin quota, and weights are re-downloadable while
+ * scans are not, so when the model is a meaningful share of usage the
+ * warning names it as the thing to remove — never scan data. This never
+ * deletes anything itself; DoD is "not silently evicted," not "auto-evict
+ * weights."
+ */
 async function checkStorageQuota(store: DetectionStore, overlay: ReturnType<typeof setupStatusOverlay>): Promise<void> {
   if (quotaWarningShown) return
   const q = await store.quotaStatus()
-  if (q && q.quota > 0 && q.usage / q.quota > 0.8) {
-    quotaWarningShown = true
-    overlay.setStatus('Storage nearly full — old sessions may not save')
-  }
+  if (!q || q.quota <= 0 || q.usage / q.quota <= 0.8) return
+  quotaWarningShown = true
+
+  const modelBytes = await estimateModelCacheBytes().catch(() => 0)
+  overlay.setStatus(
+    modelBytes > 0 && modelBytes / q.usage > 0.3
+      ? 'Storage nearly full — remove the on-device model to free space'
+      : 'Storage nearly full — old sessions may not save',
+  )
 }
 
 /**
