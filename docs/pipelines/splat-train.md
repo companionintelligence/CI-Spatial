@@ -234,9 +234,19 @@ in CI, but the served-`.ply` → `SplatMesh` data path is identical to a real ru
   `.ply` on this box). The integration wiring, dataset conversion, artifact
   serving, and viewer load are all tested; the actual `brush-cli` spawn is
   covered only by the synthetic fixture + the injected-spawn unit test.
+- **The splat has no metres.** Brush inherits the pose solver's frame, and
+  monocular SfM is scale-blind — COLMAP's output is correct only up to an
+  unknown scale factor, at an arbitrary origin. `colmap-poses` gravity-aligns
+  the model (world +Y up), which fixes orientation but not size. Metres come
+  only from the separate, explicitly-queued `splat-align` job, which fits a
+  7-DoF similarity against a *calibrated* scan — and which skips outright when
+  the scan is uncalibrated. Until that has run and reported an `ok`, treat any
+  dimension read off a splat as unitless. See
+  [`splat-align.md`](splat-align.md).
 - The trained splat is attached under the scan's root transform, so gizmo edits
-  move it with the scan, but the splat's own world frame is Brush's — precise
-  cross-scan alignment still needs an `align-scan` pass.
+  move it with the scan. Precise cross-scan alignment still needs an
+  `align-scan` pass; `splat-align` addresses scale and frame, not scan-to-scan
+  registration.
 - Brush does not emit a compressed PLY by default; the `.compressed.ply` sidecar
   is best-effort (only landed if a compressed variant appears in the export dir).
 

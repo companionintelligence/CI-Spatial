@@ -20,6 +20,35 @@ one-handed PWA matching CI-Common's design tokens (`packages/tokens/src/tokens.c
 with a live orientation readout, a persistent command-coverage grid, and a structured frame
 inspector.
 
+**Update (2026-08-25) — the web UI is now "Scanner Control", built around running a scan rather
+than probing the protocol.** What changed, all in `subsystems/osmo-ble/web/`:
+
+- **Scan-type presets** replace hand-typed position lists: **Dome** (the default — 21 pan
+  columns x 5 tilt rows = **105 positions**, a long run), **Quick 25** (5x5 around centre, a
+  look rather than a reconstruction), **Band** (wide and shallow, for corridor-shaped rooms),
+  and **Custom**. Editing any field moves the selection to Custom, so the lit name always
+  describes the numbers on screen. The interior rows of the multi-row presets are
+  interpolations, not separately measured coverage figures.
+- **A compact action bar**, plus a **compass + tilt readout**. The compass needle comes from
+  the *phone's* magnetometer, relayed to the backend over the existing `/ws` broadcast as
+  `phone-telemetry` (`protocol/phone_telemetry.mjs`). It is displayed *alongside* the gimbal's
+  own quaternion, never averaged into it — the gimbal quaternion is relative to wherever it
+  booted and has no compass reference, while the phone heading is absolute but unreliable
+  indoors near steel. `headingAccuracyDeg` travels with the heading for exactly that reason.
+- **A scan-in-progress lock.** While a grid run owns the gimbal, the backend rejects manual
+  motion commands with **HTTP 409**, and the UI disables the joystick, recenter, capture and
+  run controls to match. This is an interlock, not a nicety: the joystick streams `speed`
+  commands to the same two motors the closed-loop controller is steering, and one stray touch
+  makes two controllers fight. It really happened — see the wedge note below.
+- **`POST /api/grid-stop`**, checked between positions so a long dome unwinds cleanly instead
+  of being killed mid-move. No front-end calls it yet — curl only.
+- **Wedge detection.** Three consecutive positions that time out *without the reported pose
+  moving* (< 1.5°) abort the run with an error naming the likely cause — the gimbal's BLE stack
+  has wedged, and the fix is the physical button-combo reset below. Two in a row could just be
+  a tight corner; three is the signature. This was written after a stray joystick touch during
+  a 105-position dome pinned the gimbal at one pose (pan -121.5, tilt -27.6) for six
+  consecutive positions, each burning the full `maxMs` and photographing the same view.
+
 **Architecture — one BLE connection, owned by `server/backend.mjs`:** the `osmo-gimbal` MCP
 server does **not** hold its own Bluetooth connection. It's a Claude Code-spawned subprocess,
 parented by the same process tree as Claude's own tool execution — and a captured macOS crash
@@ -179,6 +208,13 @@ orchestrate it by hand:
 > `skipped: No module named 'lingbot_map'` — that worker is not installed on this box. The CLI
 > released the phone's MCP session on exit, confirmed by a fresh client being able to connect
 > immediately afterwards.
+>
+> **A CPU pose solver exists now, but it does not rescue *this* path.** `/ingest-photos` still
+> auto-enqueues `lingbot-map-reconstruct`, so that same `No module named 'lingbot_map'` skip is
+> still what a box without the GPU worker shows. Queueing a `splat-train` now auto-chains a
+> **`colmap-poses`** job that solves camera poses on CPU — but COLMAP needs parallax, and a
+> gimbal pivoting on one spot produces none. See the parallax warning further down this section
+> before assuming it applies here.
 
 ```bash
 npm run cli -- grid --dry-run                       # print the plan, touch nothing
@@ -187,9 +223,21 @@ npm run cli -- grid --ingest http://localhost:8000/ingest-photos
 npm run cli -- grid --pans 100,130,160 --tilts -15,0,15 --out ./myscan
 ```
 
-or press **Run grid capture** in the web UI (`npm run web`), which shows per-position progress
-live. Both call `POST /api/grid-capture` on the backend, which is where the orchestration
-actually lives — deliberately, so exactly one process ever holds an MCP session to the phone.
+or press **Run scan** in the Scanner Control web UI (`npm run web`), which shows per-position
+progress live. Both call `POST /api/grid-capture` on the backend, which is where the
+orchestration actually lives — deliberately, so exactly one process ever holds an MCP session to
+the phone.
+
+**The two front-ends do not default to the same plan.** The CLI still defaults to 3x3 = 9
+positions (`--pans 120,145,170 --tilts -10,0,10`); the web UI defaults to the **Dome** preset —
+21 pan columns at 15° from -150 to 150, crossed with 5 tilt rows at 10° from -30 to 10, so 105
+positions and tens of minutes of gimbal-and-phone time. It defaults wide because the failure
+this pipeline keeps hitting is too *few* distinct viewing angles, not too many. `--pans`/`--tilts`
+take explicit comma-separated lists, so reproducing a preset from the CLI means writing all 21
+values out. Either way the backend refuses manual
+motion commands with a 409 for the run's duration, and `POST /api/grid-stop` aborts it cleanly
+between positions — note that endpoint currently has **no caller**: neither the CLI nor the web
+UI exposes a stop control yet, so today it is reachable only by curl.
 
 **Prerequisite — the phone's MCP URL and token:** set `ANDROID_MCP_URL` and `ANDROID_MCP_TOKEN`
 in the *backend's* environment (the CLI can also pass `--device-url` / `--device-token`). The
@@ -233,17 +281,58 @@ pipeline, not invented:
 4. `POST /ingest-photos` (`main.ts:809-903`, multipart `files: File[]`, optional `name`) with the
    collected photos → `202 {sessionId, scanId, jobId, frameCount, droppedBlurry}`. This is the
    real, already-built ingest path for a pose-less photo batch: it EXIF-orders, blur-filters, and
-   auto-enqueues a `lingbot-map-reconstruct` job (pose estimation runs server-side).
+   auto-enqueues a `lingbot-map-reconstruct` job (pose estimation runs server-side, on GPU).
 5. Poll `GET /worlds/default/jobs` for that `jobId` until `status` is `completed` or `failed`.
 6. The completed job's artifact exposes `pointCloudUrl: /sessions/{sessionId}/lingbot-map.point-cloud.ply`
    and `posesUrl: .../lingbot-map.poses.json`.
+7. **On a box without the LingBot-Map Python worker, step 4's job skips and there is no point
+   cloud.** A `colmap-poses` job is the CPU alternative for pose-less sessions in general — but
+   read the warning immediately below before reaching for it here.
+
+> ⚠️ **A gimbal turning in place is the exact capture structure-from-motion cannot solve, and
+> that is geometry, not a setting.** SfM needs **parallax** — the camera must *translate*, not
+> just rotate. Views from a rig pivoting on one spot are related by a homography, from which no
+> depth can be triangulated at any resolution, with any feature detector, on any GPU.
+> [`../pipelines/colmap-poses.md`](../pipelines/colmap-poses.md) names a gimbal explicitly as
+> this failure case; COLMAP's own diagnosis is `PLANAR_OR_PANORAMIC` two-view geometries with no
+> `CALIBRATED` ones.
+>
+> **Measured on this rig:** a capture confined to one narrow station classified **29 of 36 image
+> pairs as `PLANAR_OR_PANORAMIC` and registered only 4 of 9 images.** A wider sweep measurably
+> helps — the phone's lens sits off the pan/tilt axes, so a big pan does produce a small
+> baseline, and each station simply sees more of the room — which is why the web UI defaults to
+> the 105-position dome and why **Quick 25** is 25 rather than 9 (nine frames from one station
+> is below what SfM needs to register reliably; the old 9-shot preset produced runs that looked
+> complete and then failed to reconstruct). But a wider sweep does not *manufacture* translation.
+> For a genuinely well-conditioned capture the rig has to be physically moved between grids and
+> the sessions pooled (`scripts/scan-room.ts --pool <a> <b> … --as <id>`). **Multi-station
+> pooling is untested from this capture path** — recorded as the constraint and the remedy, not
+> as a verified procedure.
+>
+> LingBot-Map is a different kind of model — a feed-forward transformer that predicts geometry
+> rather than triangulating it — so it is not bound by this constraint, which is part of why
+> this path was built around it in the first place.
+
+**Hardware limits the presets stay inside** (probed on the real OM6, so treat them as the
+envelope for any `--pans`/`--tilts` you write by hand): yaw sweeps cleanly across roughly
+±175°, **provided a single move never has to cross the ±180 seam**; tilt converges down to
+about **−40°** but **stalls near +16°**, which is a real mechanical limit rather than a display
+choice.
 
 **Correction to a common assumption:** this pipeline's real end artifact is a point cloud /
 gaussian splat (`.ply`/`.sog`), not a GLTF — a `.glb` only exists as an optional lossy sidecar
 (`server/lingbot-map/lingbot_map_glb.ts`) or as the *separate*, unrelated `server/pipeline.ts` (which optimizes a
 pre-existing mobile-exported `.glb`, not something this pipeline produces). A full gaussian splat
 is a further, manually-enqueued `splat-train` job — worth doing, but 9 sparse gridded photos is
-thin input for 3DGS quality; the point cloud is the realistic fast result from one run.
+thin input for 3DGS quality; the point cloud is the realistic fast result from one run. (This is
+the same coverage problem the parallax warning above quantifies — it is why the web UI's default
+preset is the 105-position dome rather than the CLI's 3x3.)
+
+**And note what a splat from this path is *not*: measured.** Structure-from-motion is
+scale-blind, so a reconstruction from gridded photos has no metres in it at any stage. Nothing
+in this capture path is calibrated — a gimbal grid records no physically measured distance — so
+the `splat-align` job that supplies metric scale will correctly *skip* on these scans. Do not
+read dimensions off the result.
 
 This whole sequence is inherently cross-MCP-server (gimbal moves from `osmo-gimbal`, photos from
 an `android-*` server, ingest via a plain HTTP call to this repo's own Deno server) — no single
