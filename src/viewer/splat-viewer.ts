@@ -6,10 +6,15 @@
  * renderer.render(scene, camera) call automatically, no render-loop changes
  * needed.
  *
- * There's no in-repo training pipeline yet (the `splat-train` world job in
- * main.ts is a placeholder that only records inputs — see jobNoteFor), so
- * loading is manual: point this at a URL or a local file exported from an
- * external trainer (gsplat, Postshot, Polycam, etc).
+ * Loading is by URL or local file. Splats reach the viewer three ways now:
+ * the `splat-train` world job (Brush, `server/splat/splat_train.ts`), the
+ * `person-4d-reconstruct` job's per-timestep sequence
+ * (`src/viewer/splat4d-layer.ts`), and the manual URL/file panel for assets
+ * exported from an external trainer (gsplat, Postshot, Polycam, etc).
+ *
+ * (This comment previously said there was no in-repo training pipeline and that
+ * `splat-train` only recorded its inputs. That stopped being true when Brush
+ * landed.)
  */
 import * as THREE from 'three'
 import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark'
@@ -26,6 +31,11 @@ export interface LoadedSplat {
   id: string
   label: string
   mesh: SplatMesh
+  /**
+   * Set only for a member of a 4D sequence — one timestep of a person capture.
+   * Absent for an ordinary static splat, which is every other caller.
+   */
+  sequence?: { frameIndex: number; frameCount: number }
 }
 
 export type SplatSource =
