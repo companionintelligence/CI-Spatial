@@ -27,6 +27,7 @@ export type WorldJobType =
   | 'depth-reconstruct'
   | 'thing-correspondence'
   | 'lingbot-map-reconstruct'
+  | 'colmap-poses'
   | 'splat-train'
   | 'splat-detect'
   | 'splat-finish'
@@ -544,6 +545,7 @@ export interface WorldProject {
 // (main.ts and all src/viewer/* already import from it).
 export type {
   PipelineManifestBase,
+  ColmapPosesManifest,
   SplatTrainManifest,
   SplatDetectManifest,
   SplatFinishManifest,

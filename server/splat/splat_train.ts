@@ -23,6 +23,7 @@
 
 import { buildBrushDataset } from './splat_train_dataset.ts'
 import { isRunnable } from '../exec_probe.ts'
+import { runColmapPoses } from '../colmap/colmap_poses.ts'
 import { isServerSessionId } from '../../src/shared/session-id.ts'
 // The manifest type lives in src/world/manifests.ts, not here — see that
 // file's header (it's the canonical, Deno-API-free home so the browser
@@ -41,10 +42,22 @@ export interface SplatTrainRunOptions {
   outputCompressedPlyPath?: string
   /** Path where the splat-train manifest is written (defaults next to outputPlyPath). */
   manifestPath?: string
-  /** Brush binary. Falls back to env BRUSH_BIN, then ~/brush/src/target/release/brush-cli. */
+  /** Brush binary. Falls back to env BRUSH_BIN, then ~/brush/target/release/brush-cli. */
   brushBin?: string
-  /** wgpu device pin. Falls back to env BRUSH_DEVICE, then "DiscreteGpu(1)". */
+  /**
+   * wgpu adapter pin, forwarded as CUBECL_WGPU_DEFAULT_DEVICE. Falls back to
+   * env BRUSH_DEVICE, then empty — meaning *no* pin, so wgpu picks the default
+   * adapter (Metal on Apple Silicon, the sole dGPU on a single-GPU box). Only
+   * set it on a multi-GPU host that needs a specific one; a hardcoded default
+   * like `DiscreteGpu(1)` matches exactly one machine and selects nothing
+   * everywhere else.
+   */
   device?: string
+  /**
+   * Run a COLMAP pose solve when the session has no poses (default true,
+   * or env SPLAT_TRAIN_AUTO_POSES=0 to disable).
+   */
+  autoSolvePoses?: boolean
   /** Training iterations. Falls back to env BRUSH_TRAIN_ITERS, then 15000. */
   trainIters?: number
   /** SH degree. Falls back to env BRUSH_SH_DEGREE, then 2. */
@@ -75,7 +88,7 @@ export interface SplatTrainResult {
   exitCode: number
 }
 
-const DEFAULT_BRUSH_BIN = `${Deno.env.get('HOME') ?? '~'}/brush/src/target/release/brush-cli`
+const DEFAULT_BRUSH_BIN = `${Deno.env.get('HOME') ?? '~'}/brush/target/release/brush-cli`
 
 /**
  * Delegates to the shared `SESSION_ID_RE` (`src/shared/session-id.ts`) rather
@@ -89,7 +102,7 @@ export function isValidSessionDir(sessionDir: string): boolean {
 
 export function resolveParams(opts: SplatTrainRunOptions) {
   const brushBin = opts.brushBin ?? Deno.env.get('BRUSH_BIN') ?? DEFAULT_BRUSH_BIN
-  const device = opts.device ?? Deno.env.get('BRUSH_DEVICE') ?? 'DiscreteGpu(1)'
+  const device = opts.device ?? Deno.env.get('BRUSH_DEVICE') ?? ''
   const trainIters = opts.trainIters ?? intFromEnv('BRUSH_TRAIN_ITERS', 15000)
   const shDegree = opts.shDegree ?? intFromEnv('BRUSH_SH_DEGREE', 2)
   const maxResolution = opts.maxResolution ?? intFromEnv('BRUSH_MAX_RES', 1280)
@@ -157,25 +170,53 @@ export async function runSplatTrain(opts: SplatTrainRunOptions): Promise<SplatTr
   }
 
   // 2. Convert the session → Nerfstudio dataset.
+  //
+  // A pose-less session is recoverable, not terminal: COLMAP can solve the
+  // poses on CPU. Auto-chaining it here is what makes `splat-train` a
+  // pipeline rather than a stage that requires a human to notice the
+  // dependency and queue it by hand — which is exactly how every
+  // photo-ingest session ended up stuck at "no camera poses". Opt out with
+  // SPLAT_TRAIN_AUTO_POSES=0 (or `autoSolvePoses: false`) when a caller
+  // wants the failure surfaced instead of repaired.
   let dataset
+  const autoSolve = opts.autoSolvePoses ?? Deno.env.get('SPLAT_TRAIN_AUTO_POSES') !== '0'
   try {
     dataset = await buildBrushDataset({ sessionDir: opts.sessionDir })
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
-    // "no keyframes" is a graceful skip; any other conversion failure is an error.
-    if (/no keyframes|no usable keyframes/.test(msg)) {
+  } catch (e0) {
+    const msg0 = e0 instanceof Error ? e0.message : String(e0)
+    if (autoSolve && /no camera poses/.test(msg0)) {
+      const solved = await runColmapPoses({ sessionDir: opts.sessionDir })
+      if (solved.status !== 'ok') {
+        // Surface COLMAP's own diagnosis — it distinguishes "not installed"
+        // from "this capture has no parallax", and those need different fixes.
+        const reason = solved.manifest.skippedReason ?? solved.manifest.error ?? 'pose solve failed'
+        return _finish(manifestPath, {
+          ...baseManifest,
+          status: solved.status === 'skipped' ? 'skipped' : 'error',
+          ...(solved.status === 'skipped' ? { skippedReason: reason } : { error: reason }),
+          remediation: solved.manifest.remediation,
+        }, solved.status === 'skipped' ? 0 : 2, solved.log)
+      }
+    }
+    try {
+      dataset = await buildBrushDataset({ sessionDir: opts.sessionDir })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      // "no keyframes" is a graceful skip; any other conversion failure is an error.
+      if (/no keyframes|no usable keyframes/.test(msg)) {
+        return _finish(manifestPath, {
+          ...baseManifest,
+          status: 'skipped',
+          skippedReason: msg,
+          remediation: 'Stream keyframes for this scan before training a splat.',
+        }, 0, msg)
+      }
       return _finish(manifestPath, {
         ...baseManifest,
-        status: 'skipped',
-        skippedReason: msg,
-        remediation: 'Stream keyframes for this scan before training a splat.',
-      }, 0, msg)
+        status: 'error',
+        error: `dataset build failed: ${msg}`,
+      }, 2, msg)
     }
-    return _finish(manifestPath, {
-      ...baseManifest,
-      status: 'error',
-      error: `dataset build failed: ${msg}`,
-    }, 2, msg)
   }
   baseManifest.frameCount = dataset.frameCount
 
@@ -187,7 +228,9 @@ export async function runSplatTrain(opts: SplatTrainRunOptions): Promise<SplatTr
     // already exists
   }
   const args = buildBrushArgs(dataset.datasetDir, exportDir, params)
-  const env: Record<string, string> = { CUBECL_WGPU_DEFAULT_DEVICE: params.device }
+  const env: Record<string, string> = params.device
+    ? { CUBECL_WGPU_DEFAULT_DEVICE: params.device }
+    : {}
 
   let spawnResult: { code: number; stderr: string }
   try {

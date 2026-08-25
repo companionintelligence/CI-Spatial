@@ -61,6 +61,34 @@ export interface SplatTrainManifest extends PipelineManifestBase {
   }
 }
 
+/**
+ * colmap_poses.ts's manifest — the CPU structure-from-motion pose solver.
+ *
+ * Its outputs (`colmap.poses.json`, `colmap.point-cloud.ply`) intentionally
+ * mirror LingBot-Map's, so `buildBrushDataset` reads either producer through
+ * one code path (ADR 0001).
+ */
+export interface ColmapPosesManifest extends PipelineManifestBase {
+  tool: 'colmap'
+  sessionDir: string
+  /** Basename of the written poses.json (relative to the session dir), when 'ok'. */
+  posesPath?: string
+  /** Basename of the sparse seed cloud, when points were triangulated. */
+  pointCloudPath?: string
+  /** Images COLMAP successfully registered. */
+  registeredImages?: number
+  /** Triangulated points in the sparse model. */
+  pointCount?: number
+  /** Keyframes offered to the solver. */
+  frameCount?: number
+  params: {
+    colmapBin: string
+    featureType: string
+    matcherType: string
+    maxImageSize: number
+  }
+}
+
 /** splat_detect.ts's manifest — the splat_analyzer (OWLv2 detection) driver. */
 export interface SplatDetectManifest extends PipelineManifestBase {
   tool: 'splat-analyzer'

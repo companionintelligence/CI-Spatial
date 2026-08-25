@@ -350,12 +350,17 @@ Deno.test('buildBrushDataset falls back to lingbot-map.poses.json when records l
 
 Deno.test('buildBrushDataset gives a clear error when no pose is available anywhere', async () => {
   const tmp = await Deno.makeTempDir({ prefix: 'splat-pose-' })
-  const sessionDir = await makePoselessSession(tmp) // no lingbot-map.poses.json written
-  await assertRejects(
+  const sessionDir = await makePoselessSession(tmp) // no pose file from any provider
+  // The message must name the CPU solver first. Naming only the GPU-bound
+  // provider is what sent every pose-less session to a dead end: the reader
+  // now accepts either producer, so the remediation has to say so.
+  const err = await assertRejects(
     () => buildBrushDataset({ sessionDir, datasetDir: `${tmp}/ds` }),
     Error,
-    'run a lingbot-map-reconstruct job on this session first',
+    'run a colmap-poses job on this session first',
   )
+  assert(err.message.includes('colmap.poses.json'), 'names the CPU provider it looked for')
+  assert(err.message.includes('lingbot-map.poses.json'), 'still names the GPU provider')
   await Deno.remove(tmp, { recursive: true })
 })
 

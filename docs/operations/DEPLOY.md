@@ -63,8 +63,8 @@ All box-local config lives in `~/.config/cscan/env` (never in the repo):
 | `CSCAN_SKIP_BUILD` | `1` = skip `vite build` on cscan-web restart |
 | `LINGBOT_MAP_PYTHON` / `LINGBOT_MAP_MODEL_PATH` | reconstruction worker |
 | `HIP_VISIBLE_DEVICES` | GPU for the LingBot worker (`1`; Ollama is pinned to `0` via its own drop-in) |
-| `BRUSH_BIN` | Brush CLI for the `splat-train` job (default `~/brush/src/target/release/brush-cli`) |
-| `BRUSH_DEVICE` | wgpu adapter pin for Brush (default `DiscreteGpu(1)`; **not** HIP — see below) |
+| `BRUSH_BIN` | Brush CLI for the `splat-train` job (default `~/brush/target/release/brush-cli`) |
+| `BRUSH_DEVICE` | wgpu adapter pin for Brush (default *unset* = let wgpu choose; **not** HIP — see below) |
 | `BRUSH_TRAIN_ITERS` / `BRUSH_SH_DEGREE` / `BRUSH_MAX_RES` | Brush training knobs (defaults `15000` / `2` / `1280`) |
 
 Apply config changes: `systemctl --user restart cscan-server cscan-web`.
@@ -110,11 +110,11 @@ session using [Brush](https://github.com/ArthurBrussee/brush). Full details in
 [../pipelines/splat-train.md](../pipelines/splat-train.md); the deploy-relevant bits:
 
 - **Binary**: build Brush once and point `BRUSH_BIN` at the `brush-cli`
-  release binary (default `~/brush/src/target/release/brush-cli`). If the
+  release binary (default `~/brush/target/release/brush-cli`). If the
   binary is missing the job records a `skipped` manifest with a remediation
   hint — the server never crashes.
 - **GPU pin**: Brush uses `wgpu-native`, **not** HIP, so it is pinned with
-  `BRUSH_DEVICE=DiscreteGpu(1)` (the CUBECL/wgpu adapter selector) rather than
+  `BRUSH_DEVICE=DiscreteGpu(1)` on multi-GPU hosts only (the CUBECL/wgpu adapter selector) rather than
   `HIP_VISIBLE_DEVICES`. This targets the non-Ollama 7900 XTX and avoids the
   `llvmpipe` software adapter. Because Ollama is on GPU0 and LingBot-Map also
   uses GPU1, do not run a splat-train and a LingBot-Map job concurrently on a

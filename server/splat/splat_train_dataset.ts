@@ -140,10 +140,10 @@ export async function buildBrushDataset(opts: BuildDatasetOptions): Promise<Buil
 
   await Deno.mkdir(imagesDir, { recursive: true })
 
-  // Pose fallback for pose-less sessions (video ingest): LingBot-Map's
-  // estimated per-frame poses, loaded lazily on the first record without one.
+  // Pose fallback for pose-less sessions (photo/video ingest): a solved
+  // per-frame pose set, loaded lazily on the first record without one.
   // `undefined` = not yet loaded, `null` = load attempted and unavailable.
-  let lingbotPoses: Map<string, number[][]> | null | undefined
+  let solvedPoses: Map<string, number[][]> | null | undefined
   const frames: NerfstudioFrame[] = []
   let dropped = 0
   let droppedNoPose = 0
@@ -158,8 +158,8 @@ export async function buildBrushDataset(opts: BuildDatasetOptions): Promise<Buil
     if (recordHasPose(rec)) {
       transform = poseToMatrix(rec.pose ?? {})
     } else {
-      if (lingbotPoses === undefined) lingbotPoses = await readLingbotPoses(sessionDir)
-      const fallback = lingbotPoses?.get(file)
+      if (solvedPoses === undefined) solvedPoses = await readSolvedPoses(sessionDir)
+      const fallback = solvedPoses?.get(file)
       if (!fallback) {
         dropped++
         droppedNoPose++
@@ -204,24 +204,31 @@ export async function buildBrushDataset(opts: BuildDatasetOptions): Promise<Buil
   if (frames.length === 0) {
     if (droppedNoPose > 0) {
       throw new Error(
-        `no camera poses: keyframe records carry no pose and ${sessionDir}/lingbot-map.poses.json ` +
-          'has no usable camera matrices — run a lingbot-map-reconstruct job on this session first',
+        'no camera poses: keyframe records carry no pose, and neither ' +
+          `${sessionDir}/colmap.poses.json nor ${sessionDir}/lingbot-map.poses.json ` +
+          'has usable camera matrices — run a colmap-poses job on this session first ' +
+          '(CPU, no GPU required), or a lingbot-map-reconstruct job if you have one available',
       )
     }
     throw new Error('no usable keyframes (all images missing/unreadable)')
   }
 
-  // Seed the splat init from a prior LingBot-Map point cloud when present —
-  // Brush's PLY importer accepts a plain xyz(+rgb) cloud as SfM init.
+  // Seed the splat init from whichever solver produced a sparse cloud —
+  // Brush's PLY importer accepts a plain xyz(+rgb) cloud as SfM init. Ordered
+  // to match POSE_SOURCES so the cloud comes from the same solver as the poses
+  // it is expressed in: mixing a COLMAP cloud with LingBot poses (or vice
+  // versa) would seed the splat in a different world frame than the cameras.
   let seedPlyPath: string | undefined
-  const srcPly = `${sessionDir}/lingbot-map.point-cloud.ply`
-  try {
-    const plyBytes = await Deno.readFile(srcPly)
-    seedPlyPath = `${datasetDir}/sparse_pc.ply`
-    await Deno.writeFile(seedPlyPath, plyBytes)
-  } catch {
-    // no seed cloud — Brush will random-init inside the camera frustums
-    seedPlyPath = undefined
+  for (const cloud of SEED_CLOUDS) {
+    try {
+      const plyBytes = await Deno.readFile(`${sessionDir}/${cloud}`)
+      seedPlyPath = `${datasetDir}/sparse_pc.ply`
+      await Deno.writeFile(seedPlyPath, plyBytes)
+      break
+    } catch {
+      // try the next producer; none present means Brush random-inits
+      seedPlyPath = undefined
+    }
   }
 
   const transforms: NerfstudioTransforms = {
@@ -373,16 +380,43 @@ export function poseToMatrix(pose: NonNullable<KeyframeRecord['pose']>): number[
 }
 
 /**
- * Read `<sessionDir>/lingbot-map.poses.json` and return a map of keyframe
- * file → 4×4 camera-to-world matrix in the OpenGL/Blender convention that
- * `transforms.json` expects. Returns null when the file is missing or carries
- * no usable matrices (e.g. the worker's pose decode failed and only
- * capture-time poses were written).
+ * Per-frame pose files this builder understands, in priority order.
+ *
+ * COLMAP comes first deliberately: it is the CPU solver, so it is the one that
+ * can actually have run on an arbitrary host, and when both exist the COLMAP
+ * model is the one with a measured reprojection error behind it. Both files
+ * share a format — see `openCvW2cToC2w` — so this is a lookup order, not two
+ * code paths (ADR 0001).
  */
+export const POSE_SOURCES = ['colmap.poses.json', 'lingbot-map.poses.json'] as const
+
+/** Seed point clouds, ordered to match POSE_SOURCES so frames agree. */
+export const SEED_CLOUDS = ['colmap.point-cloud.ply', 'lingbot-map.point-cloud.ply'] as const
+
+/**
+ * Read the first available pose file and return a map of keyframe file →
+ * 4×4 camera-to-world matrix in the OpenGL/Blender convention that
+ * `transforms.json` expects. Returns null when no provider wrote one, or
+ * when every candidate carries no usable matrices (e.g. a worker's pose
+ * decode failed and only capture-time poses were written).
+ */
+export async function readSolvedPoses(sessionDir: string): Promise<Map<string, number[][]> | null> {
+  for (const name of POSE_SOURCES) {
+    const found = await readPoseFile(`${sessionDir}/${name}`)
+    if (found) return found
+  }
+  return null
+}
+
+/** Back-compat alias — the LingBot-only entry point this used to expose. */
 export async function readLingbotPoses(sessionDir: string): Promise<Map<string, number[][]> | null> {
+  return await readPoseFile(`${sessionDir}/lingbot-map.poses.json`)
+}
+
+async function readPoseFile(path: string): Promise<Map<string, number[][]> | null> {
   let raw: string
   try {
-    raw = await Deno.readTextFile(`${sessionDir}/lingbot-map.poses.json`)
+    raw = await Deno.readTextFile(path)
   } catch {
     return null
   }
@@ -396,14 +430,14 @@ export async function readLingbotPoses(sessionDir: string): Promise<Map<string, 
   const out = new Map<string, number[][]>()
   for (const frame of parsed.frames) {
     if (typeof frame?.file !== 'string') continue
-    const c2w = lingbotPoseToC2w(frame.cameraToWorld)
+    const c2w = openCvW2cToC2w(frame.cameraToWorld)
     if (c2w) out.set(frame.file, c2w)
   }
   return out.size > 0 ? out : null
 }
 
 /**
- * Convert a lingbot-map.poses.json `cameraToWorld` entry into the row-major
+ * Convert a pose-file `cameraToWorld` entry into the row-major
  * 4×4 OpenGL/Blender camera-to-world matrix Nerfstudio/Brush expect.
  *
  * Convention (verified against the sources, not the key name):
@@ -424,7 +458,7 @@ export async function readLingbotPoses(sessionDir: string): Promise<Map<string, 
  * Accepts nested 3×4 / 4×4 rows or a flat row-major 12/16 array; returns null
  * for anything else.
  */
-export function lingbotPoseToC2w(matrix: unknown): number[][] | null {
+export function openCvW2cToC2w(matrix: unknown): number[][] | null {
   const m = normaliseMatrixRows(matrix)
   if (!m) return null
   // Transpose of the rotation block = its inverse (orthonormal).

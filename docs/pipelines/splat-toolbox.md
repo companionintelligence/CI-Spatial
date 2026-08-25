@@ -79,7 +79,7 @@ video-ingest sessions). Give it a reconstructed session, get back a splat.
     -d '{"type":"splat-train","scanId":"scan-<id>"}'
   ```
 
-**Env:** `BRUSH_BIN` (default `~/brush/src/target/release/brush-cli`). Missing
+**Env:** `BRUSH_BIN` (default `~/brush/target/release/brush-cli`). Missing
 binary → a `skipped` manifest with a remediation hint, never a crash. Full
 env/params table in `splat-train.md`.
 

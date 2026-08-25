@@ -708,8 +708,8 @@
       <div class="twrap"><table>
         <thead><tr><th>Variable</th><th>Default</th><th>Purpose</th></tr></thead>
         <tbody>
-          <tr><td class="name">BRUSH_BIN</td><td class="def">~/brush/src/target/release/brush-cli</td><td class="purpose">Gaussian-splat trainer binary</td></tr>
-          <tr><td class="name">BRUSH_DEVICE</td><td class="def">DiscreteGpu(1)</td><td class="purpose">wgpu adapter pin — <em>not</em> a HIP id</td></tr>
+          <tr><td class="name">BRUSH_BIN</td><td class="def">~/brush/target/release/brush-cli</td><td class="purpose">Gaussian-splat trainer binary</td></tr>
+          <tr><td class="name">BRUSH_DEVICE</td><td class="def">(unset)</td><td class="purpose">wgpu adapter pin — <em>not</em> a HIP id</td></tr>
           <tr><td class="name">BRUSH_TRAIN_ITERS / SH_DEGREE / MAX_RES</td><td class="def">15000 / 2 / 1280</td><td class="purpose">Training iteration count, spherical-harmonics degree, image resolution</td></tr>
           <tr><td class="name">SPLAT_DETECT_PYTHON / _DIR</td><td class="def">~/.venvs/splat-analyzer/… / ~/splat_analyzer</td><td class="purpose">Detector venv + checkout location</td></tr>
           <tr><td class="name">SPLAT_DETECT_QUALITY</td><td class="def">medium</td><td class="purpose">Camera-coverage preset: low=24 views, medium=90, high=192</td></tr>

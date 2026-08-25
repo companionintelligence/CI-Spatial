@@ -1,0 +1,204 @@
+/**
+ * Deno unit tests for the COLMAP pose-solver surface.
+ *
+ * COLMAP itself is an external binary that CI does not install, so — like
+ * splat_train.test.ts — these cover the TS side only: the binary-model
+ * parsers, the pose-format conversion that lets one reader serve both COLMAP
+ * and LingBot-Map, PLY serialisation, and the "binary missing → skipped
+ * manifest" fallback the world-job coordinator depends on.
+ *
+ * The parsers are the part worth testing hard: they read little-endian binary
+ * laid out by another program, so a silent offset error would surface far
+ * downstream as a subtly wrong reconstruction rather than as a crash.
+ */
+import { assertEquals } from 'jsr:@std/assert@^1.0.0/equals'
+import { assert } from 'jsr:@std/assert@^1.0.0/assert'
+
+import {
+  buildPosesJson,
+  parseImagesBin,
+  parsePoints3DBin,
+  pointsToPly,
+} from '../../../server/colmap/colmap_model.ts'
+import { isValidSessionDir, resolveParams, runColmapPoses } from '../../../server/colmap/colmap_poses.ts'
+import { openCvW2cToC2w, POSE_SOURCES, SEED_CLOUDS } from '../../../server/splat/splat_train_dataset.ts'
+
+/** Encode one images.bin record the way COLMAP's writer lays it out. */
+function encodeImagesBin(
+  entries: Array<{ id: number; q: number[]; t: number[]; cam: number; name: string; nPts?: number }>,
+): Uint8Array {
+  const parts: Uint8Array[] = []
+  const head = new Uint8Array(8)
+  new DataView(head.buffer).setBigUint64(0, BigInt(entries.length), true)
+  parts.push(head)
+
+  for (const e of entries) {
+    const nameBytes = new TextEncoder().encode(e.name)
+    const nPts = e.nPts ?? 0
+    const buf = new Uint8Array(4 + 32 + 24 + 4 + nameBytes.length + 1 + 8 + nPts * 24)
+    const dv = new DataView(buf.buffer)
+    let o = 0
+    dv.setInt32(o, e.id, true); o += 4
+    for (const v of e.q) { dv.setFloat64(o, v, true); o += 8 }
+    for (const v of e.t) { dv.setFloat64(o, v, true); o += 8 }
+    dv.setInt32(o, e.cam, true); o += 4
+    buf.set(nameBytes, o); o += nameBytes.length
+    buf[o] = 0; o += 1
+    dv.setBigUint64(o, BigInt(nPts), true)
+    parts.push(buf)
+  }
+  const total = parts.reduce((n, p) => n + p.length, 0)
+  const out = new Uint8Array(total)
+  let at = 0
+  for (const p of parts) { out.set(p, at); at += p.length }
+  return out
+}
+
+Deno.test('parseImagesBin round-trips ids, pose, and name', () => {
+  const bytes = encodeImagesBin([
+    { id: 7, q: [1, 0, 0, 0], t: [1, 2, 3], cam: 1, name: 'kf-00000.jpg' },
+    // A trailing points2D block must be skipped, not misread as the next record.
+    { id: 9, q: [0, 1, 0, 0], t: [4, 5, 6], cam: 1, name: 'sub/kf-00001.jpg', nPts: 3 },
+  ])
+  const imgs = parseImagesBin(bytes)
+  assertEquals(imgs.length, 2)
+  assertEquals(imgs[0].imageId, 7)
+  assertEquals(imgs[0].name, 'kf-00000.jpg')
+  assertEquals(imgs[0].tvec, [1, 2, 3])
+  assertEquals(imgs[1].name, 'sub/kf-00001.jpg')
+  assertEquals(imgs[1].qvec, [0, 1, 0, 0])
+})
+
+Deno.test('parseImagesBin handles an empty model', () => {
+  const head = new Uint8Array(8)
+  new DataView(head.buffer).setBigUint64(0, 0n, true)
+  assertEquals(parseImagesBin(head).length, 0)
+})
+
+Deno.test('parsePoints3DBin reads xyz/rgb and skips tracks', () => {
+  const trackLen = 2
+  const buf = new Uint8Array(8 + (8 + 24 + 3 + 8 + 8 + trackLen * 8))
+  const dv = new DataView(buf.buffer)
+  let o = 0
+  dv.setBigUint64(o, 1n, true); o += 8
+  dv.setBigUint64(o, 42n, true); o += 8
+  dv.setFloat64(o, 1.5, true); dv.setFloat64(o + 8, -2.5, true); dv.setFloat64(o + 16, 3.5, true); o += 24
+  buf[o] = 10; buf[o + 1] = 20; buf[o + 2] = 30; o += 3
+  dv.setFloat64(o, 0.42, true); o += 8
+  dv.setBigUint64(o, BigInt(trackLen), true)
+
+  const pts = parsePoints3DBin(buf)
+  assertEquals(pts.length, 1)
+  assertEquals(pts[0].xyz, [1.5, -2.5, 3.5])
+  assertEquals(pts[0].rgb, [10, 20, 30])
+  assertEquals(pts[0].trackLength, trackLen)
+})
+
+Deno.test('pointsToPly writes a parseable binary header and body', () => {
+  const ply = pointsToPly([
+    { xyz: [1, 2, 3], rgb: [255, 0, 0], error: 0, trackLength: 2 },
+    { xyz: [4, 5, 6], rgb: [0, 255, 0], error: 0, trackLength: 2 },
+  ])
+  const text = new TextDecoder().decode(ply.subarray(0, 200))
+  assert(text.startsWith('ply\n'))
+  assert(text.includes('element vertex 2'))
+  assert(text.includes('format binary_little_endian 1.0'))
+
+  const headerEnd = text.indexOf('end_header\n') + 'end_header\n'.length
+  assertEquals(ply.length - headerEnd, 2 * 15) // 3×f32 + 3×u8 per vertex
+  const dv = new DataView(ply.buffer, ply.byteOffset + headerEnd)
+  assertEquals(dv.getFloat32(0, true), 1)
+  assertEquals(ply[headerEnd + 12], 255)
+})
+
+Deno.test('buildPosesJson emits the shared OpenCV w2c shape, keyed by basename', () => {
+  // Identity rotation, translation (1,2,3): the camera sits at -t in world space.
+  const out = buildPosesJson([
+    { imageId: 1, qvec: [1, 0, 0, 0], tvec: [1, 2, 3], cameraId: 1, name: 'images/kf-00000.jpg' },
+  ])
+  assertEquals(out.tool, 'colmap')
+  assertEquals(out.frames[0].file, 'kf-00000.jpg', 'COLMAP paths are relative to its own image root')
+  assertEquals(out.frames[0].cameraToWorld.length, 3)
+  assertEquals(out.frames[0].cameraToWorld[0], [1, 0, 0, 1])
+})
+
+Deno.test('COLMAP poses convert through the same reader LingBot-Map uses', () => {
+  // The whole point of matching formats (ADR 0001): buildPosesJson's output
+  // must be consumable by the converter written for lingbot-map.poses.json.
+  const { frames } = buildPosesJson([
+    { imageId: 1, qvec: [1, 0, 0, 0], tvec: [1, 2, 3], cameraId: 1, name: 'kf-00000.jpg' },
+  ])
+  const c2w = openCvW2cToC2w(frames[0].cameraToWorld)
+  assert(c2w, 'shared converter must accept a COLMAP-produced pose')
+  // Inverting an identity-rotation w2c puts the camera centre at -t, and the
+  // OpenCV→OpenGL axis flip negates the Y and Z basis columns.
+  assertEquals(c2w![0], [1, -0, -0, -1])
+  assertEquals(c2w![1][3], -2)
+  assertEquals(c2w![2][3], -3)
+  assertEquals(c2w![3], [0, 0, 0, 1])
+})
+
+Deno.test('pose sources and seed clouds stay aligned', () => {
+  // A mismatch here would seed the splat in a different world frame than the
+  // cameras it is trained against — silent, and visually catastrophic.
+  assertEquals(POSE_SOURCES.length, SEED_CLOUDS.length)
+  assertEquals(POSE_SOURCES[0].split('.')[0], SEED_CLOUDS[0].split('.')[0])
+  assertEquals(POSE_SOURCES[1].split('.')[0], SEED_CLOUDS[1].split('.')[0])
+})
+
+Deno.test('isValidSessionDir accepts server ids and rejects traversal', () => {
+  assert(isValidSessionDir('/scans/sessions/sess-photo-20260824-192434'))
+  assert(!isValidSessionDir('/scans/sessions/local-123'))
+  assert(!isValidSessionDir('/scans/sessions/..'))
+})
+
+Deno.test('resolveParams honours env overrides', () => {
+  const prev = Deno.env.get('COLMAP_BIN')
+  try {
+    Deno.env.set('COLMAP_BIN', '/opt/colmap/bin/colmap')
+    assertEquals(resolveParams({ sessionDir: '/x' }).colmapBin, '/opt/colmap/bin/colmap')
+    // An explicit option still beats the env var.
+    assertEquals(resolveParams({ sessionDir: '/x', colmapBin: '/other' }).colmapBin, '/other')
+  } finally {
+    if (prev === undefined) Deno.env.delete('COLMAP_BIN')
+    else Deno.env.set('COLMAP_BIN', prev)
+  }
+})
+
+Deno.test('a missing COLMAP binary is a skip, not a failure', async () => {
+  const dir = await Deno.makeTempDir()
+  const sessionDir = `${dir}/sess-photo-test`
+  await Deno.mkdir(sessionDir)
+  try {
+    const r = await runColmapPoses({ sessionDir, colmapBin: `${dir}/definitely-not-here` })
+    assertEquals(r.status, 'skipped', 'an absent optional tool must not fail the job')
+    assertEquals(r.exitCode, 0)
+    assert(r.manifest.remediation, 'a skip must tell the operator how to fix it')
+    // The manifest is written even on skip — the coordinator relies on that.
+    const written = JSON.parse(await Deno.readTextFile(`${sessionDir}/colmap-poses.manifest.json`))
+    assertEquals(written.status, 'skipped')
+  } finally {
+    await Deno.remove(dir, { recursive: true })
+  }
+})
+
+Deno.test('a session with too few keyframes skips with a capture hint', async () => {
+  const dir = await Deno.makeTempDir()
+  const sessionDir = `${dir}/sess-photo-thin`
+  await Deno.mkdir(sessionDir)
+  await Deno.writeFile(`${sessionDir}/kf-00000.jpg`, new Uint8Array([0xff, 0xd8]))
+  try {
+    // _spawn asserts COLMAP is never reached: the guard must fire first.
+    const r = await runColmapPoses({
+      sessionDir,
+      colmapBin: Deno.execPath(),
+      _spawn: () => {
+        throw new Error('COLMAP must not be spawned for a too-thin session')
+      },
+    })
+    assertEquals(r.status, 'skipped')
+    assert(r.manifest.skippedReason?.includes('at least 3'))
+  } finally {
+    await Deno.remove(dir, { recursive: true })
+  }
+})

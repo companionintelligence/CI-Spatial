@@ -61,6 +61,7 @@ import {
 import { loadSessionIndex, sessionForScan, type SessionIndex } from './scan_index.ts'
 import { pruneScansMissingFromDisk } from './world/world_prune.ts'
 import { runLingBotMapReconstruction } from './lingbot-map/lingbot_map.ts'
+import { runColmapPoses } from './colmap/colmap_poses.ts'
 import { runSplatTrain } from './splat/splat_train.ts'
 import { runSplatDetect } from './splat/splat_detect.ts'
 import { runSplatFinish } from './splat/splat_finish.ts'
@@ -1269,6 +1270,7 @@ const WORLD_JOB_TYPES = new Set<WorldJobType>([
   'depth-reconstruct',
   'thing-correspondence',
   'lingbot-map-reconstruct',
+  'colmap-poses',
   'splat-train',
   'splat-detect',
   'splat-finish',
@@ -2297,6 +2299,11 @@ async function _dispatchWorldJob(slug: string, jobId: string): Promise<void> {
       return
     }
 
+    if (job.type === 'colmap-poses') {
+      await _runColmapPosesJob(slug, jobId)
+      return
+    }
+
     if (job.type === 'splat-train') {
       await _runSplatTrainJob(slug, jobId)
       return
@@ -2543,6 +2550,63 @@ async function detectionLikesForWorld(world: WorldProject): Promise<DetectionLik
     })
   }
   return detections
+}
+
+/**
+ * `colmap-poses` runner — solves camera poses for a session with COLMAP.
+ *
+ * This is the CPU counterpart to `_runLingBotMapJob`. Both write the same two
+ * artifacts (a poses.json and a sparse seed cloud) into the session dir, which
+ * is what lets `buildBrushDataset` consume either through one path
+ * (ADR 0001). A missing COLMAP binary is reported as a *skip* with a
+ * remediation, never a failure, matching every other optional-tool stage here.
+ */
+async function _runColmapPosesJob(slug: string, jobId: string): Promise<void> {
+  try {
+    const start = await claimSessionJob(slug, jobId)
+    if (!start) return
+    const { scan, sessionId, sessionPath } = start
+
+    const result = await runColmapPoses({ sessionDir: sessionPath })
+
+    await commitWorldJob(slug, jobId, (currentJob, current) => {
+      currentJob.progress = 1
+      if (result.status === 'ok') {
+        currentJob.status = 'completed'
+        currentJob.result =
+          `COLMAP registered ${result.registeredImages ?? 0} image(s), ` +
+          `${result.pointCount ?? 0} point(s)`
+        currentJob.artifacts = [{
+          type: 'colmap-poses',
+          label: `${scan.name} camera poses`,
+          url: `/sessions/${encodeURIComponent(sessionId)}/colmap.poses.json`,
+          metadata: {
+            sessionId,
+            registeredImages: result.registeredImages ?? null,
+            pointCount: result.pointCount ?? null,
+          },
+        }]
+        applyCompletedJobToWorld(currentJob, current)
+      } else if (result.status === 'skipped') {
+        currentJob.status = 'completed'
+        currentJob.result = `COLMAP skipped: ${result.manifest.skippedReason ?? 'unknown reason'}`
+        currentJob.artifacts = [{
+          type: 'colmap-poses-skip',
+          label: 'COLMAP run skipped',
+          url: `/sessions/${encodeURIComponent(sessionId)}/colmap-poses.manifest.json`,
+          metadata: { sessionId, skippedReason: result.manifest.skippedReason ?? null },
+        }]
+      } else {
+        currentJob.status = 'failed'
+        currentJob.error = result.manifest.error ?? `colmap exit ${result.exitCode}`
+        currentJob.result = currentJob.error
+      }
+      currentJob.updatedAt = new Date().toISOString()
+    })
+  } catch (err) {
+    console.error('[colmap-poses job error]', err)
+    await failWorldJob(slug, jobId, errorMessage(err))
+  }
 }
 
 async function _runLingBotMapJob(slug: string, jobId: string): Promise<void> {
@@ -3214,7 +3278,7 @@ function scanForJob(job: WorldJob, world: WorldProject): ScanManifest | null {
 }
 
 /** The job types that cannot run without RGB keyframe observations. */
-const KEYFRAME_JOB_TYPES = ['depth-reconstruct', 'lingbot-map-reconstruct', 'splat-train']
+const KEYFRAME_JOB_TYPES = ['depth-reconstruct', 'lingbot-map-reconstruct', 'colmap-poses', 'splat-train']
 
 /**
  * Filesystem facts `jobFailureReason` needs but must not look up itself.
@@ -3255,7 +3319,7 @@ async function keyframePreflight(slug: string, jobId: string): Promise<JobPrefli
 
 function jobFailureReason(job: WorldJob, world: WorldProject, preflight: JobPreflight = {}): string | null {
   const scan = scanForJob(job, world)
-  if (['align-scan', 'extract-layers', 'semantic-pass', 'depth-reconstruct', 'lingbot-map-reconstruct', 'splat-train', 'splat-detect', 'splat-finish', 'memory-push'].includes(job.type) && !scan) {
+  if (['align-scan', 'extract-layers', 'semantic-pass', 'depth-reconstruct', 'lingbot-map-reconstruct', 'colmap-poses', 'splat-train', 'splat-detect', 'splat-finish', 'memory-push'].includes(job.type) && !scan) {
     return `${job.type} requires a selected scan.`
   }
   if (job.type === 'memory-push' && !memoryPushCfg.enabled) {
@@ -3317,6 +3381,8 @@ function jobResultFor(job: WorldJob): string {
       return 'Thing correspondence resolved scan observations into durable cross-session objects.'
     case 'lingbot-map-reconstruct':
       return 'LingBot-Map streaming reconstruction complete. Point cloud + per-frame poses written to the session.'
+    case 'colmap-poses':
+      return 'COLMAP structure-from-motion solved per-frame camera poses. colmap.poses.json + sparse seed cloud written to the session.'
     case 'splat-train':
       return 'Gaussian splat trained with Brush. The .splat.ply sidecar is available as a splat layer on the scan.'
     case 'splat-detect':
