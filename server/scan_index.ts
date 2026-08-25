@@ -32,6 +32,17 @@ export interface SessionIndex {
   bySessionId: Map<string, Record<string, unknown>>
   /** session record's `glbFilename` → that record. First writer in readDir order wins. */
   byGlb: Map<string, Record<string, unknown>>
+  /**
+   * `takeId` → the session ids sharing it, in `Deno.readDir` order.
+   *
+   * A take is N simultaneous captures of one subject, and it is deliberately a
+   * *derived* set rather than a stored aggregate — so this grouping is folded
+   * into the single sweep above rather than given its own directory scan. That
+   * matters: the whole reason this module exists is that a per-scan directory
+   * walk was O(scans × sessions) and took 120s on ~2,900 files. Adding a
+   * per-take walk would reintroduce exactly that.
+   */
+  byTakeId: Map<string, string[]>
 }
 
 /**
@@ -44,6 +55,7 @@ export interface SessionIndex {
 export async function loadSessionIndex(sessionsDir: string): Promise<SessionIndex> {
   const bySessionId = new Map<string, Record<string, unknown>>()
   const byGlb = new Map<string, Record<string, unknown>>()
+  const byTakeId = new Map<string, string[]>()
 
   try {
     for await (const entry of Deno.readDir(sessionsDir)) {
@@ -56,11 +68,19 @@ export async function loadSessionIndex(sessionsDir: string): Promise<SessionInde
         const glb = asString(record['glbFilename'])
         // First match in readDir order wins, matching the old sweep's early return.
         if (glb && !byGlb.has(glb)) byGlb.set(glb, record)
+        // Unlike glbFilename, a takeId groups rather than resolves — every
+        // member session belongs, so this accumulates instead of first-wins.
+        const takeId = asString(record['takeId'])
+        if (takeId) {
+          const members = byTakeId.get(takeId)
+          if (members) members.push(entry.name)
+          else byTakeId.set(takeId, [entry.name])
+        }
       } catch { /* incomplete session dir */ }
     }
   } catch { /* sessions dir missing */ }
 
-  return { bySessionId, byGlb }
+  return { bySessionId, byGlb, byTakeId }
 }
 
 /**
@@ -98,4 +118,22 @@ export async function sessionForScan(
   }
 
   return index.byGlb.get(filename) ?? null
+}
+
+/**
+ * The session records belonging to one take, in sweep order.
+ *
+ * Empty for an unknown take id, and for a solo capture — a session with no
+ * `takeId` is not a one-member take, it is simply not part of one, and the two
+ * must stay distinguishable.
+ */
+export function sessionsForTake(index: SessionIndex, takeId: string): Record<string, unknown>[] {
+  const ids = index.byTakeId.get(takeId)
+  if (!ids) return []
+  const out: Record<string, unknown>[] = []
+  for (const id of ids) {
+    const record = index.bySessionId.get(id)
+    if (record) out.push(record)
+  }
+  return out
 }

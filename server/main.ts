@@ -27,7 +27,12 @@
  * DELETE /projects/:id     → { ok: true }
  * POST /projects/:id/reference-photos        multipart { image, meta } → { ok, role, url }
  * GET  /projects/:id/reference-photos/:file  → image/jpeg
- * GET  /rtc-signal         WebSocket upgrade — WebRTC signaling relay
+ * GET  /takes/:takeId     member sessions of one take (derived from session.json)
+ * POST /takes/:takeId/sync a member reports its measured clock offset
+ * GET  /sessions/:id/clip/:file   the durable person clip (ranged)
+ * GET  /sessions/:id/pose-track.json  camera track recorded beside a person clip
+ * GET  /scans/:base.4d/:frame     one timestep of a 4D person sequence
+ * GET  /rtc-signal         WebSocket upgrade — signalling relay (preview pair + take rooms)
  * GET  /events             WebSocket upgrade — server event broadcast (scans/jobs)
  *
  * Run:
@@ -58,7 +63,22 @@ import {
   referencePhotoUrl,
   roleForReferencePhotoFile,
 } from './project_media.ts'
-import { loadSessionIndex, sessionForScan, type SessionIndex } from './scan_index.ts'
+import { loadSessionIndex, sessionForScan, sessionsForTake, type SessionIndex } from './scan_index.ts'
+import { isClientId, isTakeId } from './take_id.ts'
+import { buildTakeSync, exchangeFailed } from './world/take_sync.ts'
+import { rangedResponse, readFileRange } from './http_range.ts'
+import { type Person4DClip, runPerson4D } from './person4d/person_4d.ts'
+import {
+  joinRoom,
+  leaveRoom,
+  previewPairReady,
+  relayTargets,
+  roster,
+  type RtcRole,
+  type RtcRoom,
+  sendAll,
+  WS_OPEN,
+} from './world/rtc_rooms.ts'
 import { pruneScansMissingFromDisk } from './world/world_prune.ts'
 import { runLingBotMapReconstruction } from './lingbot-map/lingbot_map.ts'
 import { runSplatTrain } from './splat/splat_train.ts'
@@ -178,6 +198,10 @@ const MAX_KEYFRAMES_PER_SESSION = 2000
 const WORLD_STRICT_AUTH = Deno.env.get('WORLD_STRICT_AUTH') === '1'
 // /infer hardening knobs
 const INFER_MAX_IMAGE_BYTES = Number(Deno.env.get('INFER_MAX_IMAGE_BYTES') ?? '') || 12_000_000
+// Thumbnail sample rate for a person clip. Low because the clip itself is the
+// artifact — these frames exist only for the editor's preview, not to feed a
+// reconstruction.
+const PERSON_THUMBNAIL_FPS = 1
 // /ingest-video guard: reject an upload whose Content-Length exceeds this (bytes).
 const INGEST_MAX_VIDEO_BYTES = Number(Deno.env.get('INGEST_MAX_VIDEO_BYTES') ?? '') || 1_500_000_000
 // /ingest-photos guard: reject an upload whose Content-Length exceeds this (bytes).
@@ -652,13 +676,14 @@ const SPLAT_ARTIFACT_MIME: Array<{ suffix: string; mime: string }> = [
   { suffix: '.splat-detect.manifest.json', mime: 'application/json' },
   { suffix: '.splat-finish.manifest.json', mime: 'application/json' },
   { suffix: '.interactions.json', mime: 'application/json' },
+  { suffix: '.4d-capture.manifest.json', mime: 'application/json' },
   { suffix: '.compressed.ply', mime: 'application/octet-stream' },
   { suffix: '.splat.ply', mime: 'application/octet-stream' },
   // Bundled SOG is a ZIP container; served as a binary download/asset.
   { suffix: '.sog', mime: 'application/octet-stream' },
 ]
 
-app.get('/scans/:filename{.+\\.(splat\\.ply|compressed\\.ply|sog|splat-train\\.manifest\\.json|splat-detect\\.manifest\\.json|splat-finish\\.manifest\\.json|interactions\\.json)}', async (c) => {
+app.get('/scans/:filename{.+\\.(splat\\.ply|compressed\\.ply|sog|splat-train\\.manifest\\.json|splat-detect\\.manifest\\.json|splat-finish\\.manifest\\.json|4d-capture\\.manifest\\.json|interactions\\.json)}', async (c) => {
   const filename = c.req.param('filename')
   if (!filename || filename.includes('/') || filename.includes('\\') || filename.startsWith('.')) {
     return c.json({ error: 'Invalid filename' }, 400)
@@ -799,10 +824,27 @@ app.post('/sessions', async (c) => {
   // creates the directory one names. Both halves living here is what makes the
   // id trustworthy downstream.
   const sessionId = newServerSessionId()
+
+  // Optional take membership. A take is N simultaneous captures of one subject,
+  // and it is the *derived* set of sessions sharing a takeId rather than a
+  // stored aggregate — so there is nothing to create here beyond recording the
+  // key. Absent takeId keeps meaning exactly what it always has: an ordinary
+  // solo capture. Both fields are validated rather than trusted; takeId is
+  // echoed into a signalling room name, so a malformed one must not survive.
+  const body = await c.req.json().catch(() => ({})) as { takeId?: unknown; clientId?: unknown }
+  const takeId = isTakeId(body.takeId) ? body.takeId : null
+  const clientId = takeId && isClientId(body.clientId) ? body.clientId : null
+
   await Deno.mkdir(`${SESSIONS_DIR}/${sessionId}`, { recursive: true })
-  const record = { sessionId, startedAt: new Date().toISOString(), keyframeCount: 0 }
+  const record = {
+    sessionId,
+    startedAt: new Date().toISOString(),
+    keyframeCount: 0,
+    ...(takeId ? { takeId } : {}),
+    ...(clientId ? { clientId } : {}),
+  }
   await Deno.writeTextFile(`${SESSIONS_DIR}/${sessionId}/session.json`, JSON.stringify(record, null, 2))
-  console.log(`[session] opened ${sessionId}`)
+  console.log(`[session] opened ${sessionId}${takeId ? ` (take ${takeId})` : ''}`)
   broadcast({ type: EVENT.SESSION_STARTED, sessionId })
   return c.json(record, 201)
 })
@@ -871,6 +913,95 @@ const LINGBOT_MAP_ARTIFACTS: Record<string, string> = {
   'lingbot-map.poses.json': 'application/json',
   'lingbot-map.manifest.json': 'application/json',
 }
+
+// GET /sessions/:id/clip/:file — the durable person clip.
+//
+// The only ranged route in this codebase. A clip is orders of magnitude larger
+// than the JPEG keyframes this directory layout was sized for, so it is served
+// with a seeking read rather than buffered whole like every other artifact —
+// both so the editor can scrub it and so a few concurrent requests cannot
+// exhaust the box.
+const CLIP_FILE_MIME: Record<string, string> = {
+  'clip.mp4': 'video/mp4',
+  'clip.webm': 'video/webm',
+}
+
+// GET /scans/:base.4d/:frame — one timestep of a 4D person sequence.
+//
+// The only artifact route with a path segment beyond the flat SCANS_DIR. A
+// sequence is hundreds of files, and the flat suffix-allowlist route this repo
+// otherwise uses would need a per-frame regex; a directory also keeps
+// `GET /scans`'s sweep from walking them. Same traversal guard as every other
+// artifact route, applied to both segments.
+app.get('/scans/:base/:frame', async (c) => {
+  const base = c.req.param('base')
+  const frame = c.req.param('frame')
+  if (!base.endsWith('.4d')) return c.json({ error: 'Not found' }, 404)
+  for (const part of [base, frame]) {
+    if (part.includes('/') || part.includes('\\') || part.startsWith('.') || part.includes('..')) {
+      return c.json({ error: 'Invalid path' }, 400)
+    }
+  }
+  // Allowlist the frame shape rather than sanitising it — the writer is the
+  // subsystem and the names are fully determined.
+  if (!/^frame-\d{5}\.(sog|ply)$/.test(frame)) return c.json({ error: 'Invalid frame path' }, 400)
+
+  try {
+    const bytes = await Deno.readFile(`${SCANS_DIR}/${base}/${frame}`)
+    return new Response(bytes, {
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        // A sequence frame is immutable once written — a rebuild lands under a
+        // new job rather than editing in place.
+        'Cache-Control': 'private, max-age=3600',
+      },
+    })
+  } catch {
+    return c.json({ error: 'Not found' }, 404)
+  }
+})
+
+app.get('/sessions/:id/pose-track.json', async (c) => {
+  const dir = sessionDir(c.req.param('id'))
+  if (!dir) return c.json({ error: 'Invalid session id' }, 400)
+  try {
+    const bytes = await Deno.readFile(`${dir}/pose-track.json`)
+    return new Response(bytes, {
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'private, max-age=300' },
+    })
+  } catch {
+    return c.json({ error: 'Not found' }, 404)
+  }
+})
+
+app.get('/sessions/:id/clip/:file', async (c) => {
+  const dir = sessionDir(c.req.param('id'))
+  if (!dir) return c.json({ error: 'Invalid session id' }, 400)
+  // An allowlist, not a sanitiser — clip filenames are server-chosen, so only
+  // the two names the ingest route can write resolve at all.
+  const file = c.req.param('file')
+  const mime = CLIP_FILE_MIME[file]
+  if (!mime) return c.json({ error: 'Invalid clip path' }, 400)
+
+  const path = `${dir}/${file}`
+  let size: number
+  try {
+    const stat = await Deno.stat(path)
+    if (!stat.isFile) return c.json({ error: 'Not found' }, 404)
+    size = stat.size
+  } catch {
+    return c.json({ error: 'Not found' }, 404)
+  }
+
+  return await rangedResponse({
+    rangeHeader: c.req.header('range'),
+    size,
+    contentType: mime,
+    cacheControl: 'private, max-age=300',
+    readRange: (start, length) => readFileRange(path, start, length),
+    readAll: () => Deno.readFile(path),
+  })
+})
 
 app.get('/sessions/:id/:artifact{lingbot-map\\..+}', async (c) => {
   const dir = sessionDir(c.req.param('id'))
@@ -984,9 +1115,38 @@ app.post('/ingest-video', async (c) => {
     return c.json({ error: 'Selected Area was not found in this Place' }, 404)
   }
   const fpsRaw = form.get('fps')
+
+  // Ingest has two modes, and they differ on one load-bearing point: what the
+  // durable artifact is.
+  //
+  //  - 'walkthrough' (the default, and every pre-existing caller) extracts
+  //    keyframes and deletes the video. The keyframe session is the artifact.
+  //  - 'person' KEEPS the clip, because 4DAnyone consumes the video itself
+  //    rather than frames, and extracts only a few thumbnails for the editor.
+  //
+  // Both statements are true; neither generalises. Absent mode is walkthrough,
+  // so every existing client is unaffected.
+  const modeRaw = form.get('mode')
+  const personMode = modeRaw === 'person'
+
   const fps = typeof fpsRaw === 'string' && Number.isFinite(Number(fpsRaw)) && Number(fpsRaw) > 0
     ? String(Number(fpsRaw))
-    : '2'
+    // A person clip needs thumbnails, not a reconstruction dataset — the clip
+    // is what gets reconstructed, off-box. Sampling it at walkthrough rates
+    // would write hundreds of frames nothing reads.
+    : personMode ? String(PERSON_THUMBNAIL_FPS) : '2'
+
+  const takeIdRaw = form.get('takeId')
+  const takeId = isTakeId(takeIdRaw) ? takeIdRaw : null
+  const clientIdRaw = form.get('clientId')
+  const clientId = isClientId(clientIdRaw) ? clientIdRaw : null
+  const mimeRaw = form.get('mimeType')
+  // The negotiated container differs per device and the extension cannot be
+  // trusted to imply it — Safari and Chrome disagree on both.
+  const clipMime = typeof mimeRaw === 'string' && /^video\/(mp4|webm)(;|$)/.test(mimeRaw)
+    ? mimeRaw
+    : null
+  const poseTrack = form.get('poseTrack')
 
   // Save the upload to a temp file the ingest script reads, then delete it.
   const tmpDir = `${SCANS_DIR}/tmp`
@@ -1009,21 +1169,41 @@ app.post('/ingest-video', async (c) => {
     const output = await cmd.output()
     const stdout = new TextDecoder().decode(output.stdout).trim()
     const stderr = new TextDecoder().decode(output.stderr).trim()
-    if (output.code !== 0) {
+
+    const lastLine = stdout.split('\n').filter(Boolean).pop() ?? ''
+    let parsed: { sessionId?: string; frameCount?: number; sessionDir?: string } = {}
+    try {
+      parsed = JSON.parse(lastLine)
+    } catch { /* handled per-mode below */ }
+
+    // The two modes disagree about how bad a failed extraction is, and the
+    // difference is exactly which artifact is durable.
+    //
+    //  - walkthrough: the keyframes ARE the artifact, so a failure is total.
+    //  - person: the CLIP is the artifact and the frames are thumbnails for the
+    //    editor's preview. Losing them costs a preview; failing the request
+    //    would lose a recording the user cannot re-shoot. So person mode
+    //    degrades — it still opens a session and still keeps the clip.
+    const extractionFailed = output.code !== 0 || !parsed.sessionId || !sessionDir(parsed.sessionId)
+    if (extractionFailed && !personMode) {
       console.error('[ingest-video] script failed:', stderr)
       return c.json({ error: `ingest failed (exit ${output.code})`, detail: stderr.slice(-500) }, 500)
     }
 
-    const lastLine = stdout.split('\n').filter(Boolean).pop() ?? ''
-    let parsed: { sessionId?: string; frameCount?: number; sessionDir?: string }
-    try {
-      parsed = JSON.parse(lastLine)
-    } catch {
-      console.error('[ingest-video] could not parse script output:', stdout)
-      return c.json({ error: 'ingest produced no parseable summary' }, 500)
+    let sessionId = parsed.sessionId
+    let frameCount = parsed.frameCount ?? 0
+    if (extractionFailed) {
+      console.warn(`[ingest-video] thumbnail extraction failed (exit ${output.code}); keeping the clip anyway:`, stderr.slice(-300))
+      frameCount = 0
+      // Mint a session directly. The clip still needs somewhere durable to live,
+      // and the id is what everything downstream keys off.
+      sessionId = newServerSessionId()
+      await Deno.mkdir(`${SESSIONS_DIR}/${sessionId}`, { recursive: true })
+      await Deno.writeTextFile(
+        `${SESSIONS_DIR}/${sessionId}/session.json`,
+        JSON.stringify({ sessionId, startedAt: new Date().toISOString(), keyframeCount: 0 }, null, 2),
+      )
     }
-    const sessionId = parsed.sessionId
-    const frameCount = parsed.frameCount ?? 0
     if (!sessionId || !sessionDir(sessionId)) {
       return c.json({ error: `ingest returned an invalid session id: ${sessionId}` }, 500)
     }
@@ -1032,6 +1212,59 @@ app.post('/ingest-video', async (c) => {
     // from silently leaking into the default workspace.
     const targetSlug = projectId ? projectWorldSlug(projectId) : 'default'
     if (projectId) await loadProjectWorld(projectId)
+
+    if (personMode) {
+      // Keep the clip. This is the one place the two modes genuinely diverge:
+      // the video IS the artifact here, so it is moved into the session
+      // directory instead of being dropped by the `finally` below.
+      const clipExt = clipMime?.startsWith('video/webm') ? 'webm' : 'mp4'
+      const clipName = `clip.${clipExt}`
+      const sessionPath = `${SESSIONS_DIR}/${sessionId}`
+      await Deno.copyFile(tmpVideo, `${sessionPath}/${clipName}`)
+
+      if (poseTrack instanceof File) {
+        await Deno.writeFile(`${sessionPath}/pose-track.json`, new Uint8Array(await poseTrack.arrayBuffer()))
+      }
+
+      // Record take membership and the real container on the session record, so
+      // the processing subsystem never has to guess either.
+      try {
+        const recordPath = `${sessionPath}/session.json`
+        const record = JSON.parse(await Deno.readTextFile(recordPath)) as Record<string, unknown>
+        record['captureKind'] = 'person'
+        // Visible rather than silent: a preview-less clip is still fully
+        // reconstructable, but the editor should be able to say why it has no
+        // thumbnail instead of appearing broken.
+        if (extractionFailed) record['thumbnailsUnavailable'] = true
+        record['clipFile'] = clipName
+        record['clipMimeType'] = clipMime ?? `video/${clipExt}`
+        record['clipBytes'] = video.size
+        if (takeId) record['takeId'] = takeId
+        if (clientId) record['clientId'] = clientId
+        if (poseTrack instanceof File) record['poseTrackFile'] = 'pose-track.json'
+        await Deno.writeTextFile(recordPath, JSON.stringify(record, null, 2))
+      } catch (err) {
+        console.error('[ingest-video] could not record person clip metadata:', err)
+      }
+
+      // Deliberately NO lingbot-map-reconstruct: that job reconstructs a
+      // *place* from a walkthrough and has nothing to say about a person. The
+      // person-4d-reconstruct job is enqueued explicitly, once the take is
+      // complete — a take may still be gaining members at this point.
+      const { value: personScan } = await updateWorld(targetSlug, (world) =>
+        registerSessionScan(world, sessionId, scanName ?? undefined, frameCount, 'person-capture', projectId, areaId))
+
+      broadcast({ type: EVENT.VIDEO_INGESTED, sessionId, scanId: personScan.scanId, jobId: '', frameCount })
+      return c.json({
+        sessionId,
+        scanId: personScan.scanId,
+        jobId: null,
+        frameCount,
+        takeId,
+        clipUrl: `/sessions/${sessionId}/clip/${clipName}`,
+      }, 202)
+    }
+
     const { world, value: { scan, job } } = await updateWorld(targetSlug, (world) => {
       const scan = registerSessionScan(world, sessionId, scanName ?? undefined, frameCount, 'video-ingest', projectId, areaId)
       const job = createWorldJob(world, 'lingbot-map-reconstruct', scan.scanId, {
@@ -1046,7 +1279,9 @@ app.post('/ingest-video', async (c) => {
     broadcast({ type: EVENT.VIDEO_INGESTED, sessionId, scanId: scan.scanId, jobId: job.jobId, frameCount })
     return c.json({ sessionId, scanId: scan.scanId, jobId: job.jobId, frameCount }, 202)
   } finally {
-    // Always drop the temp video — the keyframe session is the durable artifact.
+    // Always drop the TEMP video. In person mode the clip has already been
+    // copied into the session directory above — that copy is the durable
+    // artifact, and this only removes the upload scratch file.
     await removeIfExists(tmpVideo)
   }
 })
@@ -1184,6 +1419,107 @@ app.get('/sessions', async (c) => {
   return c.json([...index.bySessionId.values()])
 })
 
+// GET /takes/:takeId — the member sessions of one take.
+//
+// A take has no directory and no record of its own: it is the set of sessions
+// sharing a takeId, resolved from the sweep loadSessionIndex already performs.
+// A well-formed id with no members is 200 + an empty array rather than 404 —
+// the take may simply not have been recorded yet, and the two are not worth
+// distinguishing to a caller that is about to poll anyway.
+app.get('/takes/:takeId', async (c) => {
+  const takeId = c.req.param('takeId')
+  if (!isTakeId(takeId)) return c.json({ error: 'Invalid take id' }, 400)
+  const index = await loadSessionIndex(SESSIONS_DIR)
+  const sessions = sessionsForTake(index, takeId)
+  return c.json({ takeId, memberCount: sessions.length, sessions })
+})
+
+// POST /takes/:takeId/sync — a member reports its measured clock offset.
+//
+// Each device measures its own offset from server time and posts it here; the
+// server is the only place that can compute the number that actually matters,
+// the inter-member residual, because only it sees every member's estimate.
+//
+// Idempotent and order-independent: members report whenever their burst
+// finishes, and every report recomputes the residual across everyone who has
+// reported so far and rewrites all their records. So a take that starts as one
+// member ('unsynced', 'solo-take') becomes 'measured' for both the moment a
+// second member reports, without anything needing to re-post.
+app.post('/takes/:takeId/sync', async (c) => {
+  const takeId = c.req.param('takeId')
+  if (!isTakeId(takeId)) return c.json({ error: 'Invalid take id' }, 400)
+
+  const body = await c.req.json().catch(() => ({})) as {
+    clientId?: unknown; offsetMs?: unknown; sampleCount?: unknown; expectedMembers?: unknown
+  }
+  if (!isClientId(body.clientId)) return c.json({ error: 'Missing or malformed clientId' }, 400)
+  // A null estimate is a legitimate outcome — every probe in the burst was
+  // dropped — and it must be recorded as exchange-failed rather than coerced to
+  // a zero offset that would read as a perfect measurement.
+  const failed = body.offsetMs === null
+  if (!failed && typeof body.offsetMs !== 'number') {
+    return c.json({ error: 'offsetMs must be a number, or null for a failed exchange' }, 400)
+  }
+
+  const index = await loadSessionIndex(SESSIONS_DIR)
+  const memberIds = index.byTakeId.get(takeId) ?? []
+  if (memberIds.length === 0) return c.json({ error: 'Take has no member sessions' }, 404)
+
+  const measuredAt = new Date().toISOString()
+
+  // Stash this member's raw estimate first, then aggregate over everyone who
+  // has one. The raw offset is kept alongside the derived record so a later
+  // report can recompute the residual without asking anyone to re-measure.
+  const reported = new Map<string, { offsetMs: number; sampleCount: number }>()
+  const sessionByClient = new Map<string, string>()
+  for (const sessionId of memberIds) {
+    const record = index.bySessionId.get(sessionId)
+    const clientId = record ? asString(record['clientId']) : null
+    if (!clientId) continue
+    sessionByClient.set(clientId, sessionId)
+    if (clientId === body.clientId) {
+      if (!failed) {
+        reported.set(clientId, {
+          offsetMs: body.offsetMs as number,
+          sampleCount: typeof body.sampleCount === 'number' ? body.sampleCount : 0,
+        })
+      }
+      continue
+    }
+    const prior = record?.['syncOffset'] as { offsetMs?: unknown; sampleCount?: unknown } | undefined
+    if (prior && typeof prior.offsetMs === 'number') {
+      reported.set(clientId, {
+        offsetMs: prior.offsetMs,
+        sampleCount: typeof prior.sampleCount === 'number' ? prior.sampleCount : 0,
+      })
+    }
+  }
+
+  const expectedMembers = typeof body.expectedMembers === 'number' ? body.expectedMembers : sessionByClient.size
+  const records = buildTakeSync(
+    [...reported.entries()].map(([clientId, v]) => ({ clientId, ...v })),
+    measuredAt,
+    { expectedMembers },
+  )
+
+  for (const [clientId, sessionId] of sessionByClient) {
+    const dir = `${SESSIONS_DIR}/${sessionId}`
+    try {
+      const record = JSON.parse(await Deno.readTextFile(`${dir}/session.json`)) as Record<string, unknown>
+      const raw = reported.get(clientId)
+      if (raw) record['syncOffset'] = raw
+      record['sync'] = records.get(clientId)
+        ?? (clientId === body.clientId && failed ? exchangeFailed(measuredAt) : record['sync'] ?? exchangeFailed(measuredAt))
+      await Deno.writeTextFile(`${dir}/session.json`, JSON.stringify(record, null, 2))
+    } catch (err) {
+      console.error(`[take-sync] could not update ${sessionId}:`, err)
+    }
+  }
+
+  const mine = records.get(body.clientId) ?? exchangeFailed(measuredAt)
+  return c.json({ takeId, memberCount: sessionByClient.size, reportedCount: reported.size, sync: mine })
+})
+
 // ── Upload session summary (.md) ──────────────────────────────────────────────
 
 // ── GET /scan-locations — geo metadata for all scans ─────────────────────────
@@ -1273,11 +1609,12 @@ const WORLD_JOB_TYPES = new Set<WorldJobType>([
   'splat-detect',
   'splat-finish',
   'sensenova-vision',
+  'person-4d-reconstruct',
   'memory-push',
   'export-world',
 ])
 
-const DEFAULT_WORKER_CAPABILITIES = ['cpu', 'onnx', 'ollama', 'open3d', 'splat', 'vggt', 'lingbot-map', 'sensenova-vision']
+const DEFAULT_WORKER_CAPABILITIES = ['cpu', 'onnx', 'ollama', 'open3d', 'splat', 'vggt', 'lingbot-map', 'sensenova-vision', '4d-capture']
 
 interface StoredScanInfo {
   filename: string
@@ -1538,7 +1875,10 @@ function registerSessionScan(
   sessionId: string,
   scanName: string | undefined,
   frameCount: number,
-  source: 'video-ingest' | 'photo-ingest' = 'video-ingest',
+  // 'person-capture' is a scan whose subject is a person rather than a place.
+  // It shares the session-backed scan shape — a capture is still a capture —
+  // but carries no place geometry, so the editor can tell the two apart.
+  source: 'video-ingest' | 'photo-ingest' | 'person-capture' = 'video-ingest',
   projectId: string | null = null,
   areaId: string | null = null,
 ): ScanManifest {
@@ -1988,6 +2328,21 @@ function clientBaseUrl(c: { req: { url: string; header: (name: string) => string
   return `${url.protocol}//${url.host}`
 }
 
+/**
+ * The base URL the 4d-capture subsystem fetches clips from.
+ *
+ * It runs on another machine, so a relative path is useless to it and
+ * `localhost` is actively wrong. This is the API origin — port 8000, not Vite's
+ * 5173 — reachable over the tailnet. `FDANYONE_CALLBACK_BASE` overrides it for
+ * deployments where the subsystem reaches this server by a different name than
+ * the browser does.
+ */
+function person4dCallbackBase(): string {
+  const override = Deno.env.get('FDANYONE_CALLBACK_BASE')
+  if (override) return override.replace(/\/+$/, '')
+  return TAILSCALE_HOSTNAME ? `https://${TAILSCALE_HOSTNAME}:${PORT}` : `http://localhost:${PORT}`
+}
+
 function viteBaseUrlFromEnv(): string {
   try {
     const url = new URL(ALLOWED_ORIGIN_PREFIX)
@@ -2271,7 +2626,9 @@ async function _dispatchWorldJob(slug: string, jobId: string): Promise<void> {
             ? 'splat-analyzer'
             : job.type === 'splat-finish'
               ? 'splat-transform'
-              : job.type === 'sensenova-vision'
+              : job.type === 'person-4d-reconstruct'
+                ? '4d-capture'
+                : job.type === 'sensenova-vision'
                 ? 'sensenova-vision'
               : job.type === 'memory-push'
                 ? 'companion-memory'
@@ -2306,6 +2663,11 @@ async function _dispatchWorldJob(slug: string, jobId: string): Promise<void> {
 
     if (job.type === 'sensenova-vision') {
       await _runSenseNovaVisionJob(slug, jobId)
+      return
+    }
+
+    if (job.type === 'person-4d-reconstruct') {
+      await _runPerson4DJob(slug, jobId)
       return
     }
 
@@ -2641,6 +3003,137 @@ async function _runSenseNovaVisionJob(slug: string, jobId: string): Promise<void
     })
   } catch (error) {
     console.error('[sensenova] job failed:', error)
+    await failWorldJob(slug, jobId, errorMessage(error))
+  }
+}
+
+/**
+ * Reconstruct a 4D person from a take.
+ *
+ * Unlike every other runner here, the work happens on another machine — see
+ * `server/person4d/person_4d.ts` for why (43.3 GiB of CUDA against a 24 GiB
+ * ROCm fleet). This function assembles the take, delegates, and ingests.
+ *
+ * Two behaviours worth knowing:
+ *
+ *  - **Progress is committed in throttled steps.** Each commit takes the
+ *    per-slug world lock and rewrites the whole world JSON (ADR 0004), so a
+ *    per-frame update on a 24-frame sequence would be 24 full rewrites under
+ *    lock. 5% steps keep the editor's progress bar honest without that cost.
+ *  - **A missing subsystem is a green job.** `skipped` maps to 'completed' with
+ *    a remediation string, matching BRUSH_BIN and LINGBOT_MAP_* — the appliance
+ *    must not break because no GPU host is attached.
+ */
+async function _runPerson4DJob(slug: string, jobId: string): Promise<void> {
+  try {
+    const start = await claimJobScan(slug, jobId)
+    if (!start) return
+    const { scan } = start
+
+    const base = scan.filename.replace(/\.glb$/, '')
+    const sequenceDir = `${SCANS_DIR}/${base}.4d`
+    const manifestPath = `${SCANS_DIR}/${base}.4d-capture.manifest.json`
+
+    // Assemble the take. A solo capture is a first-class input, not a
+    // degenerate take — it is the ordinary single-phone case, and it is the one
+    // the densify path exists for.
+    const index = await loadSessionIndex(SESSIONS_DIR)
+    const ownRecord = scan.sessionId ? index.bySessionId.get(scan.sessionId) : undefined
+    const takeId = ownRecord ? asString(ownRecord['takeId']) : null
+    const memberRecords = takeId
+      ? sessionsForTake(index, takeId)
+      : (ownRecord ? [ownRecord] : [])
+
+    const callbackBase = person4dCallbackBase()
+    const clips: Person4DClip[] = []
+    let worstResidual: number | undefined
+    for (const record of memberRecords) {
+      const sessionId = asString(record['sessionId'])
+      const clipFile = asString(record['clipFile'])
+      if (!sessionId || !clipFile) continue
+      clips.push({
+        clientId: asString(record['clientId']),
+        url: `${callbackBase}/sessions/${sessionId}/clip/${clipFile}`,
+        mimeType: asString(record['clipMimeType']) ?? 'video/mp4',
+        poseTrackUrl: record['poseTrackFile'] ? `${callbackBase}/sessions/${sessionId}/pose-track.json` : null,
+        sync: record['sync'] ?? null,
+      })
+      const sync = record['sync'] as { method?: unknown; residualMs?: unknown } | undefined
+      if (sync?.method === 'measured' && typeof sync.residualMs === 'number') {
+        worstResidual = worstResidual === undefined ? sync.residualMs : Math.max(worstResidual, sync.residualMs)
+      }
+    }
+
+    // Throttle progress to ~5% steps — each commit rewrites the world JSON.
+    let lastCommitted = 0
+    const result = await runPerson4D({
+      takeId: takeId ?? `take-solo-${scan.scanId}`,
+      clips,
+      sequenceDir,
+      manifestPath,
+      syncResidualMs: worstResidual,
+      provenance: { sessionId: scan.sessionId ?? undefined, scanId: scan.scanId },
+      onProgress: (fraction) => {
+        if (fraction - lastCommitted < 0.05) return
+        lastCommitted = fraction
+        void commitWorldJob(slug, jobId, (currentJob) => {
+          currentJob.progress = Math.min(0.99, fraction)
+          currentJob.updatedAt = new Date().toISOString()
+        })
+      },
+    })
+
+    await commitWorldJob(slug, jobId, (currentJob, current) => {
+      currentJob.progress = 1
+      if (result.status === 'ok') {
+        currentJob.status = 'completed'
+        currentJob.result = jobResultFor(currentJob)
+        currentJob.artifacts = jobArtifactsFor(currentJob, current)
+        currentJob.artifacts ??= []
+        currentJob.artifacts.push({
+          type: 'splat4d-sequence',
+          label: `${scan.name} 4D sequence`,
+          url: `/scans/${encodeURIComponent(`${base}.4d-capture.manifest.json`)}`,
+          metadata: {
+            frameCount: result.manifest.frameCount ?? null,
+            fps: result.manifest.fps ?? null,
+            viewSource: result.manifest.viewSource ?? null,
+            clipCount: result.manifest.clipCount,
+          },
+        })
+        // Promote the scan's splat4d layer to a real sidecar layer.
+        const targetScan = current.scans.find(s => s.scanId === scan.scanId)
+        if (targetScan) {
+          const existing = targetScan.layerIndex.find(l => l.type === 'splat4d')
+          if (existing) {
+            existing.source = 'sidecar'
+            existing.count = result.manifest.frameCount ?? null
+          } else {
+            targetScan.layerIndex.push({
+              id: `${scan.scanId}-splat4d`,
+              type: 'splat4d',
+              label: '4D person',
+              visibleByDefault: false,
+              encodedInGlb: false,
+              count: result.manifest.frameCount ?? null,
+              source: 'sidecar',
+            })
+          }
+        }
+      } else if (result.status === 'skipped') {
+        // Green, with a hint. No GPU host attached is a configuration state,
+        // not a failure of the scan.
+        currentJob.status = 'completed'
+        currentJob.result = `4D reconstruction skipped: ${result.manifest.skippedReason ?? 'unavailable'}${result.manifest.remediation ? ` — ${result.manifest.remediation}` : ''}`
+      } else {
+        currentJob.status = 'failed'
+        currentJob.error = result.manifest.error ?? 'person-4d reconstruction failed'
+        currentJob.result = currentJob.error
+      }
+      currentJob.updatedAt = new Date().toISOString()
+    })
+  } catch (error) {
+    console.error('[person-4d] job failed:', error)
     await failWorldJob(slug, jobId, errorMessage(error))
   }
 }
@@ -3247,7 +3740,7 @@ async function keyframePreflight(slug: string, jobId: string): Promise<JobPrefli
 
 function jobFailureReason(job: WorldJob, world: WorldProject, preflight: JobPreflight = {}): string | null {
   const scan = scanForJob(job, world)
-  if (['align-scan', 'extract-layers', 'semantic-pass', 'depth-reconstruct', 'lingbot-map-reconstruct', 'splat-train', 'splat-detect', 'splat-finish', 'memory-push'].includes(job.type) && !scan) {
+  if (['align-scan', 'extract-layers', 'semantic-pass', 'depth-reconstruct', 'lingbot-map-reconstruct', 'splat-train', 'splat-detect', 'splat-finish', 'memory-push', 'person-4d-reconstruct'].includes(job.type) && !scan) {
     return `${job.type} requires a selected scan.`
   }
   if (job.type === 'memory-push' && !memoryPushCfg.enabled) {
@@ -3289,6 +3782,9 @@ function applyCompletedJobToWorld(job: WorldJob, world: WorldProject): void {
   else if (job.type === 'sensenova-vision') {
     scan.status = scan.qualitySummary?.status ?? 'ready'
   }
+  else if (job.type === 'person-4d-reconstruct') {
+    scan.status = scan.qualitySummary?.status ?? 'ready'
+  }
 }
 
 function jobResultFor(job: WorldJob): string {
@@ -3317,6 +3813,8 @@ function jobResultFor(job: WorldJob): string {
       return 'Splat finished with splat-transform. The web-optimized .sog and .compressed.ply sidecars are ready for delivery.'
     case 'sensenova-vision':
       return 'SenseNova-Vision processed the scan keyframes and wrote task-specific visual geometry artifacts.'
+    case 'person-4d-reconstruct':
+      return 'Person reconstructed in 4D. The .4d/ sequence is available as a splat4d layer on the scan.'
     case 'memory-push':
       return 'Scan pushed to Companion Memory as a capture.scan event with the GLB attached.'
     case 'export-world':
@@ -4383,88 +4881,134 @@ app.get('/events', (c) => {
   return response
 })
 
-// ── WebRTC signaling — /rtc-signal?room=<id>&role=phone|viewer ───────────────
+// ── Signalling relay — /rtc-signal?room=<id>&role=phone|viewer|capture ───────
 //
-// Simple relay: one "phone" sender + one "viewer" receiver per room.
-// Messages are arbitrary JSON (SDP offer/answer, ICE candidates).
-// The server never inspects the payload — it only routes by room + role.
-
-interface RtcPeer {
-  ws: WebSocket
-  role: 'phone' | 'viewer'
-}
-
-/** roomId → { phone?, viewer? } */
-const rtcRooms = new Map<string, Partial<Record<'phone' | 'viewer', RtcPeer>>>()
+// One relay, two room shapes (see server/world/rtc_rooms.ts for the rules):
+//
+//  - `phone` + `viewer` are reserved singleton roles carrying the original 1:1
+//    live-preview semantics. Payloads (SDP/ICE) are never inspected.
+//  - `capture` is an N-member role used to coordinate a take: several phones
+//    recording one subject, exchanging roster/arm/start/stop and the clock-sync
+//    probes that ticket 0002 measures an offset from.
+//
+// Gating is per-role and deliberately split. Live preview stays behind
+// VITE_ENABLE_WEBRTC_LIVE because its device-to-editor path is unreliable;
+// coordinated capture is the point of the 4D person wave, so it is ungated.
+const rtcRooms = new Map<string, RtcRoom>()
 
 app.get('/rtc-signal', (c) => {
-  if (!WEBRTC_LIVE_ENABLED) {
+  const url = new URL(c.req.url)
+  const roleParam = url.searchParams.get('role')
+  const role: RtcRole = roleParam === 'phone' ? 'phone' : roleParam === 'capture' ? 'capture' : 'viewer'
+
+  // Per-role gate: the preview pair is experimental, capture is not.
+  if (role !== 'capture' && !WEBRTC_LIVE_ENABLED) {
     return c.json({ error: 'WebRTC live streaming is disabled.' }, 404)
   }
-  const { socket, response } = Deno.upgradeWebSocket(c.req.raw)
-  const url = new URL(c.req.url)
-  const roomId = (url.searchParams.get('room') ?? 'default').replace(/[^a-zA-Z0-9_-]/g, '')
-  const role   = url.searchParams.get('role') === 'phone' ? 'phone' : 'viewer'
 
-  if (!rtcRooms.has(roomId)) rtcRooms.set(roomId, {})
+  const { socket, response } = Deno.upgradeWebSocket(c.req.raw)
+  const roomId = (url.searchParams.get('room') ?? 'default').replace(/[^a-zA-Z0-9_-]/g, '')
+  const clientId = url.searchParams.get('clientId')
+  const label = url.searchParams.get('label') ?? undefined
+
+  if (!rtcRooms.has(roomId)) rtcRooms.set(roomId, { members: new Map() })
   const room = rtcRooms.get(roomId)!
 
-  const peer: RtcPeer = { ws: socket, role }
-  // A role has exactly one live socket. Reconnects (and a second editor tab) arrive
-  // while the previous socket is still half-open, so the incumbent is closed here
-  // rather than silently dropped — otherwise its later close event would delete the
-  // peer that replaced it and wedge the room for both sides.
-  const previous = room[role]
-  room[role] = peer
-  if (previous && previous.ws !== socket) {
-    console.log(`[rtc] ${role} reconnected to room "${roomId}" — closing the superseded socket`)
-    try { previous.ws.close() } catch { /* already gone */ }
+  const joined = joinRoom(room, role, clientId, socket, label)
+  if (!joined.ok) {
+    // Refuse explicitly rather than dropping the socket, so the device can say
+    // why it could not join instead of showing an unexplained failure.
+    socket.addEventListener('open', () => {
+      try { socket.send(JSON.stringify({ type: 'join-rejected', reason: joined.reason, message: joined.message })) } catch { /* closed */ }
+      try { socket.close() } catch { /* already gone */ }
+    })
+    return response
   }
-  console.log(`[rtc] ${role} joined room "${roomId}"`)
+  const peer = joined.peer
 
-  // Notify each side when both peers are present
-  const notifyReady = () => {
-    if (room.phone && room.viewer) {
-      const msg = JSON.stringify({ type: 'peer-ready' })
-      if (room.phone.ws.readyState === 1) { // WebSocket.OPEN
-        try { room.phone.ws.send(msg) } catch { /* closed */ }
-      }
-      if (room.viewer.ws.readyState === 1) { // WebSocket.OPEN
-        try { room.viewer.ws.send(msg) } catch { /* closed */ }
-      }
+  // A role has exactly one live socket. Reconnects (and a second editor tab)
+  // arrive while the previous socket is still half-open, so the incumbent is
+  // closed here rather than silently dropped — otherwise its later close event
+  // would delete the peer that replaced it and wedge the room for both sides.
+  if (joined.superseded) {
+    console.log(`[rtc] ${peer.peerId} reconnected to room "${roomId}" — closing the superseded socket`)
+    try { joined.superseded.ws.close() } catch { /* already gone */ }
+  }
+  console.log(`[rtc] ${role} (${peer.peerId}) joined room "${roomId}"`)
+
+  const announce = () => {
+    // The preview handshake is FIRST and is sent only to the preview pair,
+    // byte-for-byte as before this endpoint gained take rooms.
+    //
+    // This ordering is load-bearing, not cosmetic: `mock-rtc-room.spec.ts`
+    // asserts on the *first* frame a joining viewer receives, and a roster sent
+    // ahead of `peer-ready` silently broke the live feed's rendezvous. The
+    // roster is a take concept — a phone/viewer preview pair has no use for one
+    // — so it goes only to capture members.
+    if (previewPairReady(room)) {
+      sendAll(
+        [...room.members.values()].filter(p => p.role === 'phone' || p.role === 'viewer'),
+        { type: 'peer-ready' },
+      )
+    }
+    const capture = [...room.members.values()].filter(p => p.role === 'capture')
+    if (capture.length > 0) {
+      sendAll(capture, { type: 'roster', room: roomId, members: roster(room) })
     }
   }
 
-  socket.addEventListener('open', () => {
-    notifyReady()
-  })
-  if (socket.readyState === 1) {
-    notifyReady()
-  }
+  socket.addEventListener('open', () => announce())
+  if (socket.readyState === WS_OPEN) announce()
 
   socket.addEventListener('message', (ev) => {
-    const other = role === 'phone' ? room.viewer : room.phone
-    if (!other) return  // other side not connected yet — drop
-    try {
-      other.ws.send(ev.data as string)
-    } catch { /* other peer closed */ }
+    const raw = ev.data as string
+
+    // Clock-sync probes are answered here rather than relayed: the server's
+    // clock is the shared reference every member estimates an offset against,
+    // and a peer-relayed reply would measure the wrong path. Everything else is
+    // forwarded without inspection, exactly as before.
+    if (typeof raw === 'string' && raw.includes('"sync-ping"')) {
+      try {
+        const msg = JSON.parse(raw) as Record<string, unknown>
+        if (msg['type'] === 'sync-ping') {
+          const serverTime = Date.now()
+          try {
+            socket.send(JSON.stringify({ type: 'sync-pong', id: msg['id'] ?? null, t1: serverTime, t2: Date.now() }))
+          } catch { /* closing */ }
+          return
+        }
+      } catch { /* fall through to relay */ }
+    }
+
+    for (const other of relayTargets(room, peer)) {
+      try { other.ws.send(raw) } catch { /* other peer closed */ }
+    }
   })
 
   socket.addEventListener('close', () => {
     // Only the socket that currently holds the slot may clear it. A superseded
-    // socket closing after its replacement registered must not evict the live peer,
-    // nor tell the other side that this role has left when it has not.
-    if (room[role] !== peer) {
+    // socket closing after its replacement registered must not evict the live
+    // peer, nor tell the others that this member has left when it has not.
+    if (!leaveRoom(room, peer)) {
       console.log(`[rtc] superseded ${role} socket closed in room "${roomId}" — live peer kept`)
       return
     }
-    console.log(`[rtc] ${role} left room "${roomId}"`)
-    delete room[role]
-    if (!room.phone && !room.viewer) rtcRooms.delete(roomId)
-    // Notify remaining peer that the other disconnected
-    const remaining = role === 'phone' ? room.viewer : room.phone
-    if (remaining) {
-      try { remaining.ws.send(JSON.stringify({ type: 'peer-left', role })) } catch { /* closed */ }
+    console.log(`[rtc] ${role} (${peer.peerId}) left room "${roomId}"`)
+    if (room.members.size === 0) {
+      rtcRooms.delete(roomId)
+      return
+    }
+    // Same rule on departure: roster to capture members only, so the preview
+    // pair's message stream is exactly what it was.
+    const capture = [...room.members.values()].filter(p => p.role === 'capture')
+    if (capture.length > 0) {
+      sendAll(capture, { type: 'roster', room: roomId, members: roster(room) })
+    }
+    if (role === 'phone' || role === 'viewer') {
+      sendAll(
+        [...room.members.values()].filter(p => p.role === 'phone' || p.role === 'viewer'),
+        { type: 'peer-left', role },
+      )
     }
   })
 

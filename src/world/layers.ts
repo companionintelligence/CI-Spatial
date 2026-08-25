@@ -12,6 +12,7 @@ export const LAYER_ORDER: LayerType[] = [
   'depth',
   'semanticMasks',
   'splat',
+  'splat4d',
   'anchor',
 ]
 
@@ -32,6 +33,7 @@ export const LAYERS_HIDDEN_BY_DEFAULT: ReadonlySet<LayerType> = new Set<LayerTyp
   'depth',
   'semanticMasks',
   'splat',
+  'splat4d',
   'anchor',
 ])
 
@@ -46,6 +48,7 @@ export const LAYER_LABELS: Record<LayerType, string> = {
   rgbFrames: 'RGB frames',
   depth: 'Depth',
   splat: 'Gaussian splat',
+  splat4d: '4D person',
   semanticMasks: 'Semantic masks',
   anchor: 'Calibration anchors',
 }
