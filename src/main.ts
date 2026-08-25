@@ -210,7 +210,25 @@ async function main() {
     selectedAreaId = areaId
     uploadPlaceTarget = { projectId: project?.projectId ?? null, areaId }
     sessionScanEntry = null
+    pointEditorLinksAtPlace(project?.projectId ?? null)
   })
+
+  /**
+   * Point every "open the editor / viewer" link at the Place being scanned.
+   *
+   * Without this they go to a bare `/editor`, which loads the `default` world — and that
+   * world admits only scans with no projectId, so a scan captured into a Place is invisible
+   * there by construction. The user finishes a scan, taps through, and sees an empty editor
+   * with their work apparently gone. It is not gone; it is in `project-<id>`.
+   */
+  function pointEditorLinksAtPlace(projectId: string | null): void {
+    const suffix = projectId ? `?project=${encodeURIComponent(projectId)}` : ''
+    for (const [id, base] of [['start-editor-card', '/editor'], ['viewer-link', '/viewer.html']] as const) {
+      const link = document.getElementById(id)
+      if (link instanceof HTMLAnchorElement) link.href = `${base}${suffix}`
+    }
+  }
+  pointEditorLinksAtPlace(selectedProject?.projectId ?? null)
   requestPlaceSelection = placePicker.open
   const pointCloud = new PointCloud(0.05)   // 5 cm voxel deduplication grid
   const poseHistory: Pose[] = []
