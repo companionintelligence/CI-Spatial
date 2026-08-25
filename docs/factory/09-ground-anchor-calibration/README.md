@@ -32,9 +32,10 @@ what makes cross-session verification possible at all — see
 **0006 lands first.** Three constants in this wave are currently placeholders —
 `GROUND_TAP_TOLERANCE_M` (0003), `DEFAULT_SEPARATION_TOLERANCE_M` and
 `MIN_POINT_SEPARATION_M` (0002) — and all three are bounded by one unmeasured quantity: how
-repeatably this app places a point in a room. 0006 measures it. Setting a tolerance below the
-real drift floor makes every correct repeat visit report a false mismatch, so guessing here is
-not a small risk.
+repeatably this app places a point in a room. 0006 was to measure it and **closed unrun on
+2026-08-25**, so all three remain adopted defaults with revisit triggers recorded at their
+definitions. Setting a tolerance below the real drift floor makes every correct repeat visit
+report a false mismatch, so this is an accepted risk rather than a retired one.
 
 0006 also has a sequencing constraint of its own: **run its Procedure 2 before 0007 exists**, so
 the recorded spread is a clean no-aid baseline that 0007 can be measured against.

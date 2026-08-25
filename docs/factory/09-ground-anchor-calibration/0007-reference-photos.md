@@ -20,7 +20,7 @@ Ticket 0006 frames cross-session error as:
 > within-session drift **+** re-acquisition error (did the user place the landmark on the same
 > physical spot?)
 
-Everything else in this wave works on the first term. 0006 measures drift, 0003 stabilises the
+Everything else in this wave works on the first term. 0006 instruments drift, 0003 stabilises the
 ground plane, 0004 removes the compass from the frame. **Nothing reduces the second term** —
 today a returning user re-finds the landmark from memory, unaided, and any error there enters
 the frame directly as a translation and (via the heading marker) a rotation.
