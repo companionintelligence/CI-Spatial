@@ -45,6 +45,27 @@ killing someone else's server.
 | 0006 room-loop drift benchmark | **closed unrun** — instrument shipped, measurement never taken |
 | 0007 reference photos | specced and revised, **not implemented** |
 
+## Settled: two taps stay the default
+
+Raised and closed 2026-08-25. The two-point (two-tap) flow is the default and geometry
+supplies the heading; the compass is **not** promoted back to setting a frame's rotation. The
+one-tap `'ground-tap-compass'` tier stays as a labelled lower-accuracy fallback for rooms
+where a second point is impractical.
+
+What backs it, stated with its limits:
+
+- The S9 has a working true-north source, so this is not an argument about broken hardware.
+- Measured short-term compass jitter: **~3-4° circular sd** over ~3 s windows
+  (`public/compass-bench.html`). Already ~2x worse than a 1 m geometric baseline and ~10x
+  worse than the 4.9 m baseline actually captured.
+- **The decisive measurement was not taken.** Spatial bias — a steady, wrong reading caused by
+  building steel — needs the bench's Mark-at-several-spots walk. Jitter cannot see it, which
+  means the measured figure *understates* the compass's risk. The decision is safe against the
+  gap for that reason, not because the gap does not matter.
+
+Do not reopen this on jitter numbers alone. If it is reopened, the between-marks spread from
+the bench walk is the number that would move it.
+
 ## The three things most likely to bite you
 
 ### 1. Absolute orientation does not exist
@@ -173,10 +194,12 @@ tapping, and fall back to coordinate taps read off a screenshot when a node id g
 
 ## Suggested order of work
 
-1. **Run 0006's benchmark** if the constants are ever doubted — closed unrun, revisit triggers
+1. **Implement 0007** (reference photos + `pointLabels`) — the current priority. With two
+   taps confirmed as the default, re-acquiring the *same* two features every visit is the
+   whole ballgame, and 0007 is the only mitigation for the reversed-pair 180°. Dependencies
+   are landed and the ticket was revised for this on 2026-08-25.
+2. **Run 0006's benchmark** if the constants are ever doubted — closed unrun, revisit triggers
    are recorded at each constant's definition.
-2. **Implement 0007** (reference photos + `pointLabels`). It is the only mitigation for the
-   reversed-pair 180°, and its dependencies are landed.
 3. **Persist both committed markers.** `dropCommittedOrigin()` handles the landmark only;
    `clearPlacement()` tears the heading marker's decal down at commit. Required by 0007 and
    already in its DoD.
