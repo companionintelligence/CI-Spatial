@@ -630,12 +630,17 @@ export class WebXRProvider implements ARProvider {
   }
 
   hitTest(x: number, y: number): HitResult | null {
-    // WebXR hit-test must happen inside a frame callback.
-    // This synchronous call returns the result from the most recent frame
-    // for the screen-centre as a rough proxy.
-    // For accurate per-bbox hit-tests call captureAndHitTest() asynchronously.
+    // WebXR hit-test results can only be read inside an XR frame callback
+    // (frame.getHitTestResults), so the synchronous half of the ARProvider
+    // contract cannot be satisfied here: this ALWAYS returns null, for every
+    // coordinate. It does not fall back to the last frame or to the screen
+    // centre — nothing is cached for that.
+    //
+    // Callers that need a real result use hitTestAsync() below. src/main.ts
+    // wires it up as `asyncHitTest` for both consumers that matter: the
+    // spatial resolver (src/spatial/resolver.ts) and the two-point
+    // calibration flow (src/ar/project-calibration.ts).
     void x; void y
-    // Return null — the spatial resolver will use the async path below.
     return null
   }
 

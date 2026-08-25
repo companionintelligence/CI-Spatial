@@ -135,8 +135,32 @@ async function main() {
   let selectedAreaId: string | null = null
   let projectSelectionReady = false
   let resolveStartAr: () => void = () => {}
+  /**
+   * Set by section 3 when no AR runtime could be created — the one path where
+   * main() `return`s while `startArPressed` is still pending.
+   *
+   * Without it that return is a silent dead end for anyone already inside the
+   * Place picker: the modal (#place-sheet, z-index 80) covers the start screen
+   * (z-index 20), so `showArHelp()`'s #ar-help line and the disabled Start
+   * button are both written where nothing can see them — and then the confirm
+   * tap runs beginArSession(), which removes #start-screen and #ar-help with
+   * it, replaces the status with "Starting AR…", and resolves a gate that
+   * nothing is awaiting any more. Observed as: tap "Scan This Place", AR never
+   * starts, no error anywhere.
+   */
+  let arRuntimeError: string | null = null
   const beginArSession = async () => {
     if (startPressed) return
+    // Nothing downstream is left to honour this tap once section 3 has given
+    // up, so report the real reason and leave the start screen (and the
+    // still-usable Upload path) standing rather than tearing it down for an
+    // AR session that cannot happen. The banner lives inside #ar-overlay, not
+    // #start-screen, so it survives whichever of the two is torn down first.
+    if (arRuntimeError) {
+      showPermissionBanner(arRuntimeError)
+      overlay.setStatus(arRuntimeError)
+      return
+    }
     startPressed = true
     // This runs from the place-choice tap, which is still a real user gesture.
     // That keeps Safari's motion permission request eligible after the modal.
@@ -373,10 +397,22 @@ async function main() {
     await emulation.installWebXREmulation()
   }
 
-  // XR8 global is set by xr.js (8th Wall OSS engine binary in public/xr.js).
+  // XR8 global is set by xr.js (the 8th Wall / Niantic Spatial XR Engine
+  // binary in public/xr.js — free and key-less, but proprietary; see the
+  // licence note at the top of src/ar/eighthwall.ts).
   // If it's not present after a grace timeout we fall back to WebXR.
   // index.html skips loading xr.js entirely when ?ar=webxr is set.
-  const xr8Available = forcedMode === 'webxr' ? false : await waitForXR8(3000)
+  // 3000 ms here was a silent dead-end on a real phone, and it is worth naming why
+  // because the number looks generous and is not. xr.js does NOT assign
+  // `window.XR8` or fire `xrloaded` when the small loader lands — it first awaits
+  // `Promise.all(preloadChunks.map(loadChunk))`, and index.html asks for the
+  // `slam` chunk, which is public/xr-slam.js: 5.5 MB plus WASM init. Over a phone
+  // link that routinely takes longer than 3 s, so `xr8Available` came back false
+  // while the engine was still loading perfectly well and would be ready a moment
+  // later. The fallback then called createWebXRProvider(), which throws on any
+  // Android Chrome without ARCore, and main() returned with the user's tap still
+  // sitting behind the Place picker — a button that did nothing, with no error.
+  const xr8Available = forcedMode === 'webxr' ? false : await waitForXR8(XR8_LOAD_TIMEOUT_MS)
 
   if (xr8Available) {
     try {
@@ -392,10 +428,15 @@ async function main() {
       provider = await createWebXRProvider()
       overlay.setStatus(forcedMode === 'webxr' ? 'WebXR ready (native AR session)' : 'WebXR ready')
     } catch (e) {
-      overlay.setStatus(forcedMode === 'webxr'
+      const reason = forcedMode === 'webxr'
         ? 'WebXR not available — on iOS open this page in HelloXR'
-        : 'AR not available on this device')
+        : 'AR not available on this device'
+      overlay.setStatus(reason)
       showArHelp()
+      // Arms the section-0 gate to report this instead of dead-ending — see
+      // arRuntimeError. Must be set BEFORE the return, because the tap that
+      // needs it may still be sitting behind the open Place picker.
+      arRuntimeError = reason
       console.error('[main] No AR runtime available:', e)
       return
     }
@@ -2384,18 +2425,49 @@ function updateQualityOverlay(snap: import('./capture/quality-monitor').QualityS
   overlay.style.display = 'flex'
 }
 
-function waitForXR8(timeoutMs: number): Promise<boolean> {  return new Promise((resolve) => {
+/**
+ * How long to wait for the 8th Wall engine before falling back.
+ *
+ * Sized against what is actually being fetched, not picked for feel: the
+ * `slam` preload chunk (public/xr-slam.js) is ~5.5 MB and must download,
+ * parse, and initialise WASM before xr.js assigns `window.XR8`. 20 s covers a
+ * cold load on a phone over a slow link with room to spare; the cost of
+ * waiting too long is a slower fallback on a device that genuinely lacks the
+ * engine, while the cost of waiting too little is the far worse failure this
+ * replaced — a scanner that silently refuses to start.
+ */
+const XR8_LOAD_TIMEOUT_MS = 20_000
+
+function waitForXR8(timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
     if (typeof (window as unknown as Record<string, unknown>)['XR8'] !== 'undefined') {
       resolve(true)
       return
     }
-    const timer = setTimeout(() => {
+    // Poll as well as listen. `xrloaded` is a one-shot event, so a listener
+    // attached after it fired never hears it — and the engine's own bootstrap
+    // is async, which makes that race real rather than theoretical. The poll
+    // makes arrival detectable however it happened.
+    const started = Date.now()
+    const poll = setInterval(() => {
+      if (typeof (window as unknown as Record<string, unknown>)['XR8'] !== 'undefined') {
+        settle(true)
+      } else if (Date.now() - started >= timeoutMs) {
+        console.warn(
+          `[main] 8th Wall engine did not load within ${timeoutMs} ms — falling back. ` +
+          'The slam preload chunk is ~5.5 MB; a slow link can exceed this.',
+        )
+        settle(false)
+      }
+    }, 250)
+
+    function settle(result: boolean) {
+      clearInterval(poll)
       window.removeEventListener('xrloaded', onLoaded)
-      resolve(false)
-    }, timeoutMs)
+      resolve(result)
+    }
     function onLoaded() {
-      clearTimeout(timer)
-      resolve(true)
+      settle(true)
     }
     window.addEventListener('xrloaded', onLoaded, { once: true })
   })
