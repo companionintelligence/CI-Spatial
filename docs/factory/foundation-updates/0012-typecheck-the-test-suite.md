@@ -161,11 +161,27 @@ convention in `package.json` rather than inventing a new separator.
   turns out to be dead (it is the largest offender at 38 errors — check whether any
   npm script or workflow still runs it), deleting it is a legitimate resolution;
   silently excluding it is not. (Decided in this ticket.)
-- Q: Does this need `@types/node`? — A: **Yes**, as a `devDependency`. Confirmed
-  missing, and `Buffer` is used in at least three specs. Install with `npm ci`
-  semantics in mind — see CLAUDE.md: `npm install` mutating an existing tree is what
-  corrupts it, so add the dep and then `rm -rf node_modules && npm ci`. (Decided in
-  this ticket.)
+- Q: Does this need `@types/node`? — A: **No. Corrected during implementation.** The ticket
+  claimed yes on the strength of a `TS2591 Cannot find name 'Buffer'` — but that came from the
+  throwaway config used to scope the work, whose absolute `extends` path failed to resolve. A
+  real `tsconfig.tests.json` extending `./tsconfig.json` resolves node globals without any
+  `types` override and reports **zero** `Buffer` errors. No dependency was added, no lockfile
+  touched, and the `rm -rf node_modules && npm ci` dance the ticket prescribed was not needed.
+  A good reminder that a diagnostic from a hand-rolled config is evidence about the config
+  first.
+- Q: Was there anything in the 23 "real" errors worth more than a mechanical fix? — A: **Yes,
+  and it was the whole justification.** `tests/server.spec.ts` typed its shared helpers as
+  `request: Parameters<typeof test>[1] extends { request: infer R } ? R : never` — a
+  conditional that resolves to **`never`**, making every one of the 15 call sites an error and
+  every `request` argument unusable. It had been papered over with `request as any` at each
+  site. Replacing it with the `APIRequestContext` Playwright actually exports fixed all 15 at
+  once and let 17 casts be deleted. Nothing in the repo could have reported this.
+- Q: Do the `@ts-expect-error` directives need to be adjacent to the import? — A: **Yes, and
+  getting it wrong fails loudly, which is the argument for the directive over alternatives.**
+  A multi-line explanatory comment placed *between* the directive and the import binds the
+  directive to the comment instead, and TypeScript then reports `TS2578 Unused
+  '@ts-expect-error' directive` — six of them, on the first attempt. The explanation goes above
+  the directive, never between. (Found during implementation.)
 
 ## Files impacted
 
@@ -173,8 +189,9 @@ New:
 - `tsconfig.tests.json`
 
 Changed:
-- `package.json` (the `typecheck:tests` script; `verify` chain; `@types/node` devDependency)
-- `package-lock.json` (`@types/node`)
+- `package.json` (the `typecheck:tests` script; `verify` chain). **No `@types/node`** — see
+  Open questions; the ticket's assumption there was wrong.
+- ~~`package-lock.json`~~ — untouched, no dependency added
 - `tests/e2e-suite.spec.ts`, `tests/server.spec.ts`, `tests/mock-splat-toolbox.spec.ts`,
   `tests/mock-splat-train.spec.ts`, `tests/mock-editor-homes.spec.ts`,
   `tests/mock-lingbot-map.spec.ts`, `tests/mock-editor-quality.spec.ts` — the 7 files
@@ -189,18 +206,19 @@ None.
 
 ## Definition of Done
 
-- [ ] `tsconfig.tests.json` exists, extends the root config, and includes exactly
+- [x] `tsconfig.tests.json` exists, extends the root config, and includes exactly
       `tests/**/*.spec.ts` — not `tests/unit/**`
-- [ ] `npm run typecheck:tests` exists and exits non-zero on a type error in any spec
-- [ ] `npm run verify` runs it, so `.githooks/pre-push` picks it up with no hook change
-- [ ] `@types/node` is a devDependency and `Buffer` resolves in specs
-- [ ] All 34 `tests/*.spec.ts` type-check clean
-- [ ] The `page.evaluate` dynamic-import specifiers are suppressed **per site with a
+- [x] `npm run typecheck:tests` exists and exits non-zero on a type error in any spec
+- [x] `npm run verify` runs it, so `.githooks/pre-push` picks it up with no hook change
+- [x] `Buffer` resolves in specs — **without** adding `@types/node`, which turned out not to
+      be needed
+- [x] All 34 `tests/*.spec.ts` type-check clean
+- [x] The `page.evaluate` dynamic-import specifiers are suppressed **per site with a
       comment naming why**, never file-wide
-- [ ] Every genuine error is fixed in the spec, not by weakening a type in `src/`
-- [ ] No test's assertions changed; the suites behave identically
-- [ ] `CLAUDE.md` Key commands mentions the new command
-- [ ] `npx tsc --noEmit`, `deno task check`, `deno task test`, `npm run typecheck:tests` pass
+- [x] Every genuine error is fixed in the spec, not by weakening a type in `src/`
+- [x] No test's assertions changed; the suites behave identically
+- [x] `CLAUDE.md` Key commands mentions the new command
+- [x] `npx tsc --noEmit`, `deno task check`, `deno task test`, `npm run typecheck:tests` pass
 
 ## Tests
 

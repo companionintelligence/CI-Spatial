@@ -8,7 +8,8 @@
   "scripts": {
     "dev": "vite --host",
     "build": "tsc --noEmit && vite build",
-    "verify": "deno task check && deno task test && tsc --noEmit && npm run test:pipeline:graph && npm run test:editor:pick && npm run test:store && npm run test:resolver && npm run test:provenance",
+    "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",
+    "verify": "deno task check && deno task test && tsc --noEmit && npm run typecheck:tests && npm run test:pipeline:graph && npm run test:editor:pick && npm run test:store && npm run test:resolver && npm run test:provenance",
     "test:pipeline:graph": "node --experimental-strip-types --no-warnings --test tests/unit/node/pipeline_detection_graph.test.ts",
     "test:editor:pick": "node --experimental-strip-types --no-warnings --test tests/unit/node/editor_pick.test.ts",
     "test:store": "node --experimental-strip-types --no-warnings --test tests/unit/node/detection_store.test.ts",

@@ -294,7 +294,9 @@ test.describe('editor with test-home data', () => {
     // that job. Same pattern as tests/e2e-suite.spec.ts "Raycast Mesh Picking".
     await page.goto('/viewer.html?world=default')
     const result = await page.evaluate(async () => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const { SceneEditor } = await import('/src/viewer/editor.ts')
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const THREE = await import('/node_modules/.vite/deps/three.js')
       const editor = new SceneEditor()
       const scene = new THREE.Scene()

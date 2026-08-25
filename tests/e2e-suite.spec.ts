@@ -3,9 +3,47 @@
  * Implements 38 specific test cases covering F1, F2, and F3 features.
  */
 import { test, expect } from '@playwright/test'
-import { mergeDetections } from '../src/spatial/resolver'
+import type * as THREE from 'three'
+import { mergeDetections, type WorldDetection } from '../src/spatial/resolver'
 import { normalizeDetections, parseDetections } from '../server/prompt.ts'
 import { ONBOARDING_KEY } from '../src/shared/storage-keys'
+
+/**
+ * Complete a pre-#128 detection fixture into a valid `WorldDetection`.
+ *
+ * `WorldDetection` gained `detectionId`, `observations` and `lastSeenAt` in
+ * #128. These fixtures were last written in #116 and were never updated. They
+ * kept passing because `mergeDetections` deliberately tolerates records without
+ * those fields — rows written before #128 really do lack them — so nothing
+ * surfaced the drift until the suite was type-checked at all
+ * (foundation-updates/0012).
+ *
+ * The defaults are chosen to be **behaviourally identical to omitting the
+ * fields**, so every assertion below keeps testing exactly what it tested
+ * before: `observations: []` takes the same `?? ` branch as `undefined` in
+ * `observationFromWorldDetection`, and `lastSeenAt: captureTimestamp` is what
+ * `prev.lastSeenAt ?? prev.captureTimestamp` already resolved to.
+ *
+ * Making that explicit is the point. These tests exercise the *legacy* record
+ * shape, which is now a stated choice rather than an accident — and it makes
+ * visible that the modern path, where `observations` accumulates across
+ * sessions, is not covered here at all.
+ */
+type LegacyDetectionFixture =
+  & Omit<WorldDetection, 'detectionId' | 'observations' | 'lastSeenAt' | 'bbox'>
+  & { bbox: number[] }
+
+function legacyDetection(d: LegacyDetectionFixture): WorldDetection {
+  return {
+    ...d,
+    // The literals really are 4-tuples; only the inference widens them.
+    bbox: d.bbox as [number, number, number, number],
+    detectionId: `${d.label}:${d.captureTimestamp}`,
+    observations: [],
+    lastSeenAt: d.captureTimestamp,
+  }
+}
+
 
 // 5173 here is just the last-resort default (matches VITE_PORT's own default in
 // main.ts/vite.config.ts). Set VITE_URL to point at a differently-ported instance.
@@ -149,6 +187,7 @@ test.describe('Tier 1: Feature Coverage', () => {
     await page.evaluate(() => document.getElementById('start-screen')?.remove())
 
     const captureResult = await page.evaluate(async () => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const module = await import('/src/capture/capture.ts')
       const mockProvider = {
         captureFrame: async () => ({
@@ -193,6 +232,7 @@ test.describe('Tier 1: Feature Coverage', () => {
     })
 
     const fov = await page.evaluate(async () => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const { EighthWallProvider } = await import('/src/ar/eighthwall.ts')
       const provider = new EighthWallProvider()
       const canvas = document.createElement('canvas')
@@ -241,6 +281,7 @@ test.describe('Tier 1: Feature Coverage', () => {
     })
 
     const pts = await page.evaluate(async () => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const { EighthWallProvider } = await import('/src/ar/eighthwall.ts')
       const provider = new EighthWallProvider()
       const canvas = document.createElement('canvas')
@@ -296,6 +337,7 @@ test.describe('Tier 1: Feature Coverage', () => {
     })
 
     const result = await page.evaluate(async () => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const { EighthWallProvider } = await import('/src/ar/eighthwall.ts')
       const provider = new EighthWallProvider()
       const canvas = document.createElement('canvas')
@@ -337,6 +379,7 @@ test.describe('Tier 1: Feature Coverage', () => {
   test('Test 9: Centroid 3D Position Extraction', async ({ page }) => {
     await page.goto(BASE, { waitUntil: 'domcontentloaded' })
     const resolvedPos = await page.evaluate(async () => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const { resolveDetections } = await import('/src/spatial/resolver.ts')
       const mockProvider = {
         hitTest: (x: number, y: number) => {
@@ -361,8 +404,11 @@ test.describe('Tier 1: Feature Coverage', () => {
   test('Test 10: GLB Export Hierarchy Compilation', async ({ page }) => {
     await page.goto(BASE, { waitUntil: 'domcontentloaded' })
     const sceneJson = await page.evaluate(async () => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const { exportToGLB } = await import('/src/export/gltf.ts')
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const { DetectionStore } = await import('/src/scene/store.ts')
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const { PointCloud } = await import('/src/scene/pointcloud.ts')
 
       const store = new DetectionStore()
@@ -423,7 +469,9 @@ test.describe('Tier 1: Feature Coverage', () => {
   test('Test 12: Raycast Mesh Picking and Highlight', async ({ page }) => {
     await page.goto(`${BASE}/viewer.html`, { waitUntil: 'domcontentloaded' })
     const pickResult = await page.evaluate(async () => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const { SceneEditor } = await import('/src/viewer/editor.ts')
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const THREE = await import('/node_modules/.vite/deps/three.js')
       const editor = new SceneEditor()
 
@@ -450,7 +498,9 @@ test.describe('Tier 1: Feature Coverage', () => {
   test('Test 13: Semantic Mode Material Color Mapping', async ({ page }) => {
     await page.goto(`${BASE}/viewer.html`, { waitUntil: 'domcontentloaded' })
     const viewModeResult = await page.evaluate(async () => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const { SceneEditor } = await import('/src/viewer/editor.ts')
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const THREE = await import('/node_modules/.vite/deps/three.js')
       const editor = new SceneEditor()
 
@@ -478,7 +528,9 @@ test.describe('Tier 1: Feature Coverage', () => {
   test('Test 14: Custom Tag and Note Updating', async ({ page }) => {
     await page.goto(`${BASE}/viewer.html`, { waitUntil: 'domcontentloaded' })
     const updateResult = await page.evaluate(async () => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const { SceneEditor } = await import('/src/viewer/editor.ts')
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const THREE = await import('/node_modules/.vite/deps/three.js')
       const editor = new SceneEditor()
 
@@ -504,6 +556,7 @@ test.describe('Tier 1: Feature Coverage', () => {
   test('Test 15: Adaptive Bounding Box Geometry Overlays', async ({ page }) => {
     await page.goto(`${BASE}/viewer.html`, { waitUntil: 'domcontentloaded' })
     const overlaysCount = await page.evaluate(async () => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const THREE = await import('/node_modules/.vite/deps/three.js')
       const scene = new THREE.Scene()
       const box = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial())
@@ -584,6 +637,7 @@ test.describe('Tier 2: Boundary & Corner Cases', () => {
   test('Test 21: Fallback Positioning for Missing Hit-Tests', async ({ page }) => {
     await page.goto(BASE, { waitUntil: 'domcontentloaded' })
     const resolvedPos = await page.evaluate(async () => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const { resolveDetections } = await import('/src/spatial/resolver.ts')
       const mockProvider = {
         hitTest: () => null
@@ -605,8 +659,11 @@ test.describe('Tier 2: Boundary & Corner Cases', () => {
   test('Test 22: Point Cloud Raycast Fallback', async ({ page }) => {
     await page.goto(BASE, { waitUntil: 'domcontentloaded' })
     const resolvedPos = await page.evaluate(async () => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const { resolveDetections } = await import('/src/spatial/resolver.ts')
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const THREE = await import('/node_modules/.vite/deps/three.js')
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const { PointCloud } = await import('/src/scene/pointcloud.ts')
 
       const mockProvider = {
@@ -644,6 +701,7 @@ test.describe('Tier 2: Boundary & Corner Cases', () => {
     await page.goto(BASE, { waitUntil: 'domcontentloaded' })
     const threeModuleUrl = `/@fs${process.cwd()}/node_modules/three/build/three.module.js`
     const positions = await page.evaluate(async (threeUrl) => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const { resolveDetections } = await import('/src/spatial/resolver.ts')
       const THREE = await import(threeUrl)
 
@@ -673,7 +731,7 @@ test.describe('Tier 2: Boundary & Corner Cases', () => {
         cameraPose,
         captureCamera,
       })
-      return results.map((r) => r.worldPos)
+      return results.map((r: { worldPos: { x: number; y: number; z: number } }) => r.worldPos)
     }, threeModuleUrl)
 
     expect(positions).toHaveLength(2)
@@ -709,7 +767,7 @@ test.describe('Tier 2: Boundary & Corner Cases', () => {
       captureTimestamp: 1100,
     }]
 
-    const merged = mergeDetections(existing, incoming)
+    const merged = mergeDetections(existing, incoming.map(legacyDetection))
     expect(merged.size).toBe(1)
     const val = Array.from(merged.values())[0]
     expect(val.confidence).toBe(0.9)
@@ -733,6 +791,7 @@ test.describe('Tier 2: Boundary & Corner Cases', () => {
     })
 
     const fov = await page.evaluate(async () => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const { EighthWallProvider } = await import('/src/ar/eighthwall.ts')
       const provider = new EighthWallProvider()
       const canvas = document.createElement('canvas')
@@ -776,6 +835,7 @@ test.describe('Tier 2: Boundary & Corner Cases', () => {
         stop: () => {},
       }
 
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const { EighthWallProvider } = await import('/src/ar/eighthwall.ts')
       const provider = new EighthWallProvider()
       const canvas = document.createElement('canvas')
@@ -799,6 +859,7 @@ test.describe('Tier 2: Boundary & Corner Cases', () => {
   test('Test 25: Quaternion Normalization Safeguards', async ({ page }) => {
     await page.goto(BASE, { waitUntil: 'domcontentloaded' })
     const resolvedRot = await page.evaluate(async () => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const { resolveDetections } = await import('/src/spatial/resolver.ts')
       const mockProvider = {
         hitTest: () => ({
@@ -821,7 +882,9 @@ test.describe('Tier 2: Boundary & Corner Cases', () => {
   test('Test 26: Raycast Probes on Empty Scenes', async ({ page }) => {
     await page.goto(`${BASE}/viewer.html`, { waitUntil: 'domcontentloaded' })
     const testResult = await page.evaluate(async () => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const { SceneEditor } = await import('/src/viewer/editor.ts')
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const THREE = await import('/node_modules/.vite/deps/three.js')
       const editor = new SceneEditor()
       const picked = editor.pick(0, 0, new THREE.PerspectiveCamera())
@@ -833,7 +896,9 @@ test.describe('Tier 2: Boundary & Corner Cases', () => {
   test('Test 27: Missing Mesh Metadata Fallbacks', async ({ page }) => {
     await page.goto(`${BASE}/viewer.html`, { waitUntil: 'domcontentloaded' })
     const details = await page.evaluate(async () => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const { SceneEditor } = await import('/src/viewer/editor.ts')
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const THREE = await import('/node_modules/.vite/deps/three.js')
       const editor = new SceneEditor()
 
@@ -854,6 +919,7 @@ test.describe('Tier 2: Boundary & Corner Cases', () => {
   test('Test 28: Invalid View Mode Recovery', async ({ page }) => {
     await page.goto(`${BASE}/viewer.html`, { waitUntil: 'domcontentloaded' })
     const activeMode = await page.evaluate(async () => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const { SceneEditor } = await import('/src/viewer/editor.ts')
       const editor = new SceneEditor()
       editor.setMode('invalid-mode' as any)
@@ -865,6 +931,7 @@ test.describe('Tier 2: Boundary & Corner Cases', () => {
   test('Test 29: Extreme Scale Model Fitting', async ({ page }) => {
     await page.goto(`${BASE}/viewer.html`, { waitUntil: 'domcontentloaded' })
     const cameraPosChanged = await page.evaluate(async () => {
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const THREE = await import('/node_modules/.vite/deps/three.js')
       const scene = new THREE.Scene()
       const box = new THREE.Mesh(new THREE.BoxGeometry(0.0001, 0.0001, 0.0001))
@@ -910,6 +977,7 @@ test.describe('Tier 2: Boundary & Corner Cases', () => {
       // No stray #geomap-drawer div here: mount() builds its own element with that id
       // (geomap.ts), so creating one first would leave a locator resolving to the empty
       // outer div rather than the mounted map.
+      // @ts-expect-error browser-runtime specifier, resolved by Vite in the page — not resolvable by tsc
       const { GeoMap } = await import('/src/viewer/geomap.ts')
       const geoMap = new GeoMap()
       geoMap.mount(document.body)
@@ -1048,7 +1116,7 @@ test.describe('Tier 4: Real-World Application Scenarios', () => {
       captureTimestamp: 1100,
     }]
 
-    const result1 = mergeDetections(existing, incomingClose)
+    const result1 = mergeDetections(existing, incomingClose.map(legacyDetection))
     expect(result1.size).toBe(1)
     const merged = Array.from(result1.values())[0]
     expect(merged.confidence).toBe(0.9)
@@ -1063,7 +1131,7 @@ test.describe('Tier 4: Real-World Application Scenarios', () => {
       captureTimestamp: 1200,
     }]
 
-    const result2 = mergeDetections(existing, incomingFar)
+    const result2 = mergeDetections(existing, incomingFar.map(legacyDetection))
     expect(result2.size).toBe(2)
   })
 
@@ -1222,7 +1290,7 @@ test.describe('Tier 4: Real-World Application Scenarios', () => {
       captureTimestamp: 1100,
     }]
 
-    const merged = mergeDetections(existing, incoming)
+    const merged = mergeDetections(existing, incoming.map(legacyDetection))
     expect(merged.size).toBe(1)
     expect(Array.from(merged.values())[0].label).toBe('chair')
   })
@@ -1249,7 +1317,7 @@ test.describe('Tier 4: Real-World Application Scenarios', () => {
       captureTimestamp: 1100,
     }]
 
-    const merged = mergeDetections(existing, incoming)
+    const merged = mergeDetections(existing, incoming.map(legacyDetection))
     expect(merged.size).toBe(2)
   })
 
@@ -1285,7 +1353,7 @@ test.describe('Tier 4: Real-World Application Scenarios', () => {
       captureTimestamp: 1100,
     }]
 
-    const merged = mergeDetections(existing, incoming)
+    const merged = mergeDetections(existing, incoming.map(legacyDetection))
     expect(merged.size).toBe(2)
     expect(merged.get('chair:0.0,0.0,0.0')?.description).toBe('Chair A')
     expect(merged.get('chair:0.3,0.0,0.0')?.description).toBe('Re-seen chair, closer to B')
