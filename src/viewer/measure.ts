@@ -1,10 +1,34 @@
 /**
  * MeasureTool — two-click distance measurement for the World Scan Editor.
  *
- * Click two points on any scan geometry (meshes or point clouds) and a line
- * with a metre readout is drawn between them.  The world is metric ENU, so
- * measurements against the generated test homes can be asserted exactly
- * (e.g. a wall of home-00-studio-a measures its expected.json dims).
+ * Click two points on any scan geometry (meshes or point clouds) and a line is
+ * drawn between them, labelled with the straight-line distance in the scene's
+ * *world* units.
+ *
+ * **The "m" suffix is only earned by geometry that arrived metric.** The label
+ * (`_draw` below) writes `m` unconditionally, and the raycast accepts any
+ * visible `THREE.Mesh`/`THREE.Points` in the scene — it does not ask where the
+ * geometry's scale came from. Today that splits three ways:
+ *
+ *  - **GLB scan geometry — metres.** Exported from an AR session whose poses are
+ *    already metric (subject to SLAM drift, but in real units). This is the case
+ *    the test-home corpus exercises, and the only one where a reading is a
+ *    real-world dimension.
+ *  - **LingBot-Map point clouds — NOT metres.** `src/viewer/lingbot-map.ts`
+ *    attaches `lingbot-map.point-cloud.ply` under the scan root with no scale
+ *    recovery, and `scripts/lingbot_map_worker.py` writes the model's
+ *    `world_points` verbatim. Monocular reconstruction is scale-blind (see
+ *    `server/splat/splat_align.ts`'s header), so measuring across those points
+ *    yields an arbitrary-unit number wearing a metre suffix.
+ *  - **Trained splats — not measurable at all.** SparkJS's `SplatMesh` extends
+ *    `SplatGenerator extends THREE.Object3D`, so the filter in `handleClick`
+ *    never returns one. Note the inversion this leaves: `SparkRenderer` *does*
+ *    extend `THREE.Mesh` (a 2x2 double-sided quad at the scene origin, added
+ *    unconditionally by `attachSparkRenderer`) and is NOT excluded here, so a
+ *    ray through the origin can snap to it instead of to real geometry.
+ *
+ * Making the readout state its own frame — the way `splat-layer.ts`'s
+ * `formatAlignmentStatus` does for a splat — is unfinished work, not a decision.
  *
  * Exposed as `window.__measureTool` for automated tests.
  */
@@ -32,7 +56,13 @@ export class MeasureTool {
     return this._active
   }
 
-  /** Distance of the last completed measurement, metres (null when none) */
+  /**
+   * Distance of the last completed measurement, in the scene's world units
+   * (null when none). Metres only when both clicked points landed on geometry
+   * that arrived metric — see the unit caveat in this file's header; the name
+   * is kept because `window.__measureTool.lastDistanceM` is a published test
+   * hook (tests/mock-editor-homes.spec.ts).
+   */
   get lastDistanceM(): number | null {
     return this._lastDistance
   }

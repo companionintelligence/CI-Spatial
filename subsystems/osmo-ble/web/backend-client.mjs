@@ -8,6 +8,7 @@ import { attachFrameLog } from './frame-log.mjs';
 import { attachCoverage } from './coverage.mjs';
 import { decodeQuaternion } from '../protocol/telemetry.mjs';
 import { decodeFrame } from '../protocol/duml.mjs';
+import { PHONE_TELEMETRY, isPhoneTelemetry } from '../protocol/phone_telemetry.mjs';
 
 const els = {
   url: document.getElementById('be-url'),
@@ -28,17 +29,36 @@ const els = {
   rawCmdId: document.getElementById('be-raw-cmdid'),
   rawPayload: document.getElementById('be-raw-payload'),
   rawSend: document.getElementById('be-btn-raw-send'),
-  gridPans: document.getElementById('be-grid-pans'),
-  gridTilts: document.getElementById('be-grid-tilts'),
+  gridBothOrientations: document.getElementById('be-grid-both'),
   gridRun: document.getElementById('be-btn-grid'),
   gridProgress: document.getElementById('be-grid-progress'),
+  gridBar: document.getElementById('be-grid-bar'),
+  captureMode: document.getElementById('be-capture-mode'),
   gridResults: document.getElementById('be-grid-results'),
+  gridSummary: document.getElementById('be-grid-summary'),
+  scanTypes: [...document.querySelectorAll('#be-scan-types .scan-type')],
+  axis: {
+    pan: {
+      from: document.getElementById('be-pan-from'),
+      to: document.getElementById('be-pan-to'),
+      step: document.getElementById('be-pan-step'),
+    },
+    tilt: {
+      from: document.getElementById('be-tilt-from'),
+      to: document.getElementById('be-tilt-to'),
+      step: document.getElementById('be-tilt-step'),
+    },
+  },
+  capture: document.getElementById('be-btn-capture'),
+  captureBoth: document.getElementById('be-btn-capture-both'),
   testMatrix: document.getElementById('be-test-matrix'),
   coverage: document.getElementById('be-coverage'),
   frames: document.getElementById('be-frames'),
   log: document.getElementById('be-log'),
 };
-const orientationReadout = attachOrientationReadout(els.orientation);
+// showPhone: only this pathway can ever receive phone-sensor frames — they ride the same
+// backend WebSocket as gimbal telemetry, which the direct/Web-Bluetooth panel never opens.
+const orientationReadout = attachOrientationReadout(els.orientation, { showPhone: true });
 
 // Clicking a frame-log row or a coverage-grid cell loads it straight into Raw Command so a
 // gap in coverage, or an unknown RX frame you just spotted, is one click from being probed.
@@ -128,11 +148,43 @@ async function api(method, path, body) {
   return json;
 }
 
+/**
+ * Lock the manual controls while a scan owns the gimbal, and say so loudly.
+ *
+ * The joystick is the one that actually matters: it streams `speed` commands to the same two
+ * motors the grid's closed-loop controller is steering, so a single stray touch mid-run puts
+ * two controllers in a fight. That is not hypothetical — it wedged a 105-position dome at one
+ * pose for six consecutive positions, each burning the full timeout and photographing the same
+ * view. The backend rejects those commands too (409); this is the half that stops the user
+ * being offered a control that cannot work.
+ */
+let scanActive = false;
+function setScanActive(active) {
+  scanActive = active;
+  document.body.classList.toggle('scanning', active);
+  // Pointer-events off as well as the visual disable: `.disabled` on the pad is a class the
+  // joystick module also uses for "not connected", and a class alone still lets a touch start
+  // a drag on some builds.
+  els.joystickPad?.classList.toggle('disabled', active || !lastConnected);
+  els.joystickPad?.toggleAttribute('inert', active);
+  for (const el of [els.recenter, els.landscape, els.stickToggle, els.capture, els.captureBoth]) {
+    if (el) el.disabled = active || !lastConnected;
+  }
+  if (els.gridRun) els.gridRun.disabled = active || !lastConnected;
+}
+
+// Tracked so setScanActive can restore the right state when a scan ends: "enabled" is the AND
+// of connected and not-scanning, and neither alone is enough to decide it.
+let lastConnected = false;
+
 function setConnectedControlsEnabled(enabled) {
-  for (const el of [els.disconnect, els.pin, els.pair, els.recenter, els.landscape, els.stickToggle, els.gridRun, ...els.modeButtons, els.rawSend, ...testButtons]) {
+  lastConnected = enabled;
+  for (const el of [els.disconnect, els.pin, els.pair, els.recenter, els.landscape, els.stickToggle, els.gridRun, els.capture, els.captureBoth, ...els.modeButtons, els.rawSend, ...testButtons]) {
     el.disabled = !enabled;
   }
   els.joystickPad.classList.toggle('disabled', !enabled);
+  // A reconnect mid-scan must not hand the joystick back — re-apply the scan lock last.
+  if (scanActive) setScanActive(true);
 }
 
 // Auto-reconnects on a fixed interval so the page picks up the backend the moment you start it
@@ -252,6 +304,13 @@ function connectWs() {
       if (!msg.connected) tryAutoconnect();
     } else if (msg.type === 'grid-progress') {
       renderGridProgress(msg);
+    } else if (msg.type === PHONE_TELEMETRY) {
+      // The phone's own sensors, relayed onto this same socket. Validated with the shared
+      // predicate from the protocol module rather than trusted on the `type` tag alone, and
+      // handed to a separate readout entry point — it is a different reference frame from the
+      // gimbal quaternion below and the two must never be mixed (see phone_telemetry.mjs).
+      if (isPhoneTelemetry(msg)) orientationReadout.updatePhone(msg);
+      else log('Dropped a malformed phone-telemetry frame.', 'warn');
     } else if (msg.type === 'frame') {
       if (msg.error) {
         frameLog.add({ at: msg.at, dir: 'rx', error: msg.error });
@@ -346,17 +405,209 @@ for (const btn of els.modeButtons) {
   });
 }
 
-// Promoted to the main view: the one cmdId-0x44 value with confirmed real-world behavior
-// (rotates the phone mount to landscape) — see the drawer's "Orientation toggle" section for
-// the other two still-unresolved byte values.
+// A port/landscape TOGGLE, not a one-way "set landscape": alternates between the one
+// cmdId-0x44 value with confirmed real-world behavior ('follow' — rotates the phone mount to
+// landscape) and byte 0 ('lock'), which is only a best guess at portrait — see the drawer's
+// "Orientation toggle" section for why that byte is still unconfirmed. The button label always
+// names the orientation a click will move TO, and only ever claims "Portrait" with a caveat.
+let currentOrientation = 'landscape'; // assumed starting state; no query exists to read it back
+function renderOrientationButton() {
+  els.landscape.textContent = currentOrientation === 'landscape' ? 'Portrait*' : 'Landscape';
+  els.landscape.title = currentOrientation === 'landscape'
+    ? '*byte 0 — best-guess portrait, not independently confirmed'
+    : 'Confirmed: rotates the phone mount to landscape';
+}
+renderOrientationButton();
 els.landscape.addEventListener('click', async () => {
+  const target = currentOrientation === 'landscape' ? 'lock' : 'follow';
   try {
-    const { frameHex } = await api('POST', '/api/command', { type: 'setMode', params: { mode: 'follow' } });
-    logTxFrame(frameHex, { label: 'SetMode(follow / landscape)' });
+    const { frameHex } = await api('POST', '/api/command', { type: 'setMode', params: { mode: target } });
+    logTxFrame(frameHex, { label: `SetMode(${target}${target === 'follow' ? ' / landscape' : ' / best-guess portrait'})` });
+    currentOrientation = target === 'follow' ? 'landscape' : 'portrait';
+    renderOrientationButton();
   } catch (err) {
-    log(`Landscape toggle failed: ${err.message}`, 'warn');
+    log(`Orientation toggle failed: ${err.message}`, 'warn');
   }
 });
+
+// Every photo path — one-off or scan — runs through the phone's MCP server, and it fails in one
+// of two ways you cannot guess from the error text alone. This used to be a permanent paragraph
+// under the Auto scan panel; it is screen space spent on something that only matters at the
+// moment a capture actually fails, so it is logged there instead.
+const MCP_HINT = 'Photos go through the phone\'s MCP server: the backend needs ANDROID_MCP_URL + ANDROID_MCP_TOKEN, and the phone allows one MCP session at a time — detach any other one (e.g. a Claude Code session) first.';
+
+// One-off "take a photo right now" quick actions — not a scan, just the gimbal's current
+// position. Both hit /api/capture-photo, which owns its own MCP session to the phone the same
+// way /api/grid-capture does (see that endpoint's own comment for why this can't live here).
+els.capture?.addEventListener('click', async () => {
+  els.capture.disabled = true;
+  try {
+    log('Capturing photo...');
+    const { shots } = await api('POST', '/api/capture-photo', {});
+    log(`Captured: ${shots[0]?.photoUrl ?? '(no url)'}`, 'ok');
+  } catch (err) {
+    log(`Capture failed: ${err.message}`, 'warn');
+    log(MCP_HINT, 'warn');
+  } finally {
+    els.capture.disabled = false;
+  }
+});
+els.captureBoth?.addEventListener('click', async () => {
+  els.captureBoth.disabled = true;
+  try {
+    log('Capturing landscape + best-guess portrait...');
+    const { shots } = await api('POST', '/api/capture-photo', { bothOrientations: true });
+    for (const s of shots) log(`  ${s.orientation}: ${s.photoUrl}`, 'ok');
+  } catch (err) {
+    log(`Capture failed: ${err.message}`, 'warn');
+    log(MCP_HINT, 'warn');
+  } finally {
+    els.captureBoth.disabled = false;
+  }
+});
+
+// ── Scan type + grid parameters ─────────────────────────────────────────────
+// Each preset is a from/to/step range per axis, which is what the old comma-separated lists
+// already were in disguise.
+//
+// Ordered widest-first, and `dome` is the default: reconstruction quality is driven by how
+// much of the room each station sees, and the failure this pipeline actually keeps hitting is
+// too FEW distinct viewing angles, not too many. A measured example from this rig: a capture
+// confined to one narrow station classified 29 of 36 image pairs PLANAR_OR_PANORAMIC and
+// registered only 4 of 9 images. Defaulting to the widest sweep puts the good outcome on the
+// path of least resistance; the narrower presets stay one tap away for a quick check.
+//
+// Every range sits inside what was actually probed as safe on hardware: yaw sweeps cleanly
+// across ~+/-175 degrees provided a single move never has to cross the +/-180 seam, and tilt
+// converges down to about -40 degrees but stalls near +16 degrees — a real mechanical limit,
+// not a display choice. Nothing here goes past those.
+//
+// The interior rows of the multi-row presets are interpolations, not separately measured
+// angles: they lie between two tilts that were run on hardware, which is a plan choice rather
+// than a re-measurement. "Custom" is simply whatever is in the fields.
+const SCAN_PRESETS = {
+  // Full dome — the default. 21 pan columns x 5 tilt rows = 105 positions. That is a long run
+  // (tens of minutes of gimbal-and-phone time), which is exactly why the position count is
+  // rendered live under the fields rather than left for the operator to work out.
+  dome: { pan: { from: -150, to: 150, step: 15 }, tilt: { from: -30, to: 10, step: 10 } },
+  // Quick 25 — a 5x5 block around centre, for a fast look rather than a reconstruction.
+  // Deliberately 25 and not 9: nine frames from one station is below what structure-from-motion
+  // needs to register reliably, so the old preset produced runs that looked complete and then
+  // failed to reconstruct.
+  quick25: { pan: { from: -60, to: 60, step: 30 }, tilt: { from: -30, to: 10, step: 10 } },
+  // Horizontal band — a wide, shallow sweep for long or corridor-shaped rooms, where the
+  // useful information is spread around the horizon rather than up and down. Denser in pan
+  // than the old version (17 columns at 20 degrees, was 11 at 30) because pan is the axis that
+  // carries the coverage here, and shallower in tilt (2 rows) so it stays a band.
+  band: { pan: { from: -160, to: 160, step: 20 }, tilt: { from: -10, to: 5, step: 15 } },
+};
+
+// A few hundred positions is hours of gimbal-and-phone time, and a mistyped step is the easy
+// way to ask for one by accident (a step of 0 wouldn't terminate at all). Generation stops at
+// this many values per axis and the summary line says so, rather than truncating in silence.
+const MAX_STEPS_PER_AXIS = 60;
+
+// Mirrors DEFAULT_KEYFRAME_OPTIONS.minRotationDeg in src/capture/keyframes.ts. Duplicated
+// rather than imported because that is TypeScript inside the Vite app and this is a plain
+// ES module served by a different server — the same deliberate parallel-implementation pair
+// as vite.config.ts/server/main.ts's resolveHostname. If the scanner default changes, this
+// must change with it, and nothing will fail loudly.
+const SCANNER_MIN_ROTATION_DEG = 20;
+
+function axisValues({ from, to, step }) {
+  const lo = Math.min(from, to);
+  const hi = Math.max(from, to);
+  const stride = Math.max(1, Math.abs(step));
+  const out = [];
+  // The 1e-9 slack keeps the far endpoint in when lo/hi/stride divide evenly but land a hair
+  // under hi through float accumulation.
+  for (let v = lo; v <= hi + 1e-9 && out.length < MAX_STEPS_PER_AXIS; v += stride) {
+    out.push(Math.round(v * 10) / 10);
+  }
+  return out;
+}
+
+// An empty or half-typed field reads as 0 rather than NaN — mid-edit the box is legitimately
+// blank, and a NaN would poison the whole grid instead of just that number.
+function readAxis(name) {
+  const group = els.axis[name];
+  const num = (el) => {
+    const v = Number(el.value);
+    return el.value.trim() !== '' && Number.isFinite(v) ? v : 0;
+  };
+  return { from: num(group.from), to: num(group.to), step: num(group.step) };
+}
+
+function currentGrid() {
+  const pan = readAxis('pan');
+  const tilt = readAxis('tilt');
+  return { pans: axisValues(pan), tilts: axisValues(tilt) };
+}
+
+// The position count was never visible before the run started — the old free-text lists made
+// you count commas. It is the number that decides whether this is a two-minute or a two-hour
+// run, so it is stated next to the control that sets it.
+function renderGridSummary() {
+  const { pans, tilts } = currentGrid();
+  const total = document.createElement('strong');
+  total.textContent = `${pans.length * tilts.length} positions`;
+  const detail = document.createElement('span');
+  detail.textContent = ` · pan ${pans[0]}…${pans[pans.length - 1]}° ×${pans.length} · tilt ${tilts[0]}…${tilts[tilts.length - 1]}° ×${tilts.length}`;
+  els.gridSummary.replaceChildren(total, detail);
+  if (pans.length >= MAX_STEPS_PER_AXIS || tilts.length >= MAX_STEPS_PER_AXIS) {
+    const capped = document.createElement('span');
+    capped.className = 'gp-capped';
+    capped.textContent = ` · capped at ${MAX_STEPS_PER_AXIS} per axis`;
+    els.gridSummary.appendChild(capped);
+  }
+
+  // Scanner mode has a step floor that camera mode does not, and getting it wrong fails
+  // SILENTLY: the scanner emits a keyframe only once the camera has rotated at least
+  // minRotationDeg (default 20), so a finer grid drives the gimbal through every position and
+  // captures nothing at some of them. The run reports 105/105 "converged" and the session ends
+  // up with far fewer frames than positions, which looks like a capture bug rather than a
+  // configuration one. Say so before the run, not after.
+  if (els.captureMode?.value === 'scanner') {
+    const panStep = Math.abs(readAxis('pan').step);
+    const tiltStep = Math.abs(readAxis('tilt').step);
+    const tooFine = [
+      panStep && panStep < SCANNER_MIN_ROTATION_DEG ? `pan ${panStep}°` : null,
+      tiltStep && tiltStep < SCANNER_MIN_ROTATION_DEG ? `tilt ${tiltStep}°` : null,
+    ].filter(Boolean);
+    if (tooFine.length) {
+      const warn = document.createElement('span');
+      warn.className = 'gp-warn';
+      warn.textContent = ` · ${tooFine.join(' and ')} below the scanner's ${SCANNER_MIN_ROTATION_DEG}° keyframe threshold — those positions capture nothing`;
+      els.gridSummary.appendChild(warn);
+    }
+  }
+}
+
+let selectedPreset = null;
+function selectPreset(name) {
+  selectedPreset = name;
+  for (const btn of els.scanTypes) btn.classList.toggle('selected', btn.dataset.preset === name);
+  const preset = SCAN_PRESETS[name]; // 'custom' has no entry, so it leaves the fields alone
+  if (preset) {
+    for (const axis of ['pan', 'tilt']) {
+      for (const key of ['from', 'to', 'step']) els.axis[axis][key].value = String(preset[axis][key]);
+    }
+  }
+  renderGridSummary();
+}
+for (const btn of els.scanTypes) btn.addEventListener('click', () => selectPreset(btn.dataset.preset));
+
+// Hand-editing any number means the plan is no longer the preset that is lit, so the selection
+// moves to Custom instead of leaving a name on screen that no longer describes the fields.
+for (const axis of ['pan', 'tilt']) {
+  for (const key of ['from', 'to', 'step']) {
+    els.axis[axis][key].addEventListener('input', () => {
+      if (selectedPreset === 'custom') renderGridSummary();
+      else selectPreset('custom');
+    });
+  }
+}
+selectPreset('dome');
 
 // Promoted to the main view since the test matrix flags this as a possible precondition for
 // motion commands to be honored — a local toggle (not read back from the device, which has no
@@ -464,11 +715,18 @@ function renderGridProgress(msg) {
   if (msg.phase === 'start') {
     els.gridResults.innerHTML = '';
     els.gridProgress.textContent = `Starting ${msg.total}-position run…`;
+    setScanActive(true);
     return;
   }
   if (msg.phase === 'moving') {
     els.gridProgress.textContent = `[${msg.position}/${msg.total}] moving to pan=${msg.target.pan} tilt=${msg.target.tilt}…`;
     return;
+  }
+  if (msg.phase === 'moving' || msg.phase === 'capturing') {
+    // A bare "[n/total]" line is easy to miss on a phone held at arm's length while the rig
+    // is moving; the bar is the part that reads at a glance from across the room.
+    const pct = msg.total ? Math.round((msg.position / msg.total) * 100) : 0;
+    if (els.gridBar) els.gridBar.style.width = `${pct}%`;
   }
   if (msg.phase === 'capturing') {
     els.gridProgress.textContent = `[${msg.position}/${msg.total}] ${msg.converged ? 'converged' : 'NOT converged'} — taking photo…`;
@@ -483,43 +741,74 @@ function renderGridProgress(msg) {
     label.className = 'test-desc';
     label.textContent = `${msg.position}. pan=${(msg.pan ?? 0).toFixed(1)} tilt=${(msg.tilt ?? 0).toFixed(1)} (${msg.ticks} ticks)`;
     row.appendChild(label);
-    // The photo stays on the phone; this links to the device's own share URL rather than
+    // The photo stays on the phone; these link to the device's own share URL rather than
     // proxying bytes through the backend.
-    const link = document.createElement('a');
-    link.href = msg.photoUrl;
-    link.target = '_blank';
-    link.rel = 'noreferrer';
-    link.textContent = 'photo';
-    row.appendChild(link);
+    const shots = [{ href: msg.photoUrl, text: 'photo' }];
+    if (msg.photoUrlPortrait) shots.push({ href: msg.photoUrlPortrait, text: 'photo (portrait*)' });
+    for (const shot of shots) {
+      const link = document.createElement('a');
+      link.href = shot.href;
+      link.target = '_blank';
+      link.rel = 'noreferrer';
+      link.textContent = shot.text;
+      link.style.marginLeft = '6px';
+      row.appendChild(link);
+    }
     els.gridResults.appendChild(row);
     return;
   }
   if (msg.phase === 'done') {
+    setScanActive(false);
     els.gridProgress.textContent = `Done — ${msg.converged}/${msg.total} converged.`;
     return;
   }
   if (msg.phase === 'error') {
+    setScanActive(false);
     els.gridProgress.textContent = `Failed after ${msg.captured} position(s): ${msg.error}`;
   }
 }
 
-function parseDegList(value, fallback) {
-  const parsed = value.split(',').map((v) => Number(v.trim())).filter((v) => Number.isFinite(v));
-  return parsed.length ? parsed : fallback;
-}
-
+// Not routed through the shared api() helper: that does a single res.json(), but this
+// endpoint streams NDJSON (one JSON object per line, see backend.mjs's grid-capture handler)
+// so a multi-minute run keeps the connection demonstrably alive instead of sending zero bytes
+// until the very end — which is what silently killed real runs before this existed. This page
+// already renders progress from the WS broadcast (renderGridProgress below), so the stream here
+// only needs to be read to know when the run actually finished — but reading and discarding it
+// still matters, since an unconsumed body can itself stall/backpressure the connection.
 els.gridRun?.addEventListener('click', async () => {
   els.gridRun.disabled = true;
   try {
-    const pans = parseDegList(els.gridPans.value, [120, 145, 170]);
-    const tilts = parseDegList(els.gridTilts.value, [-10, 0, 10]);
-    log(`Grid capture: ${pans.length * tilts.length} positions...`);
-    const run = await api('POST', '/api/grid-capture', { pans, tilts });
-    log(`Grid capture done: ${run.converged}/${run.total} converged.`, 'ok');
+    // Same generator the summary line above the button rendered from, so the run is exactly the
+    // one the count promised — no second parse of the same fields to drift out of step with it.
+    const { pans, tilts } = currentGrid();
+    const bothOrientations = els.gridBothOrientations?.checked ?? false;
+    log(`Grid capture: ${pans.length * tilts.length} position(s)${bothOrientations ? ' x 2 orientations' : ''}...`);
+    const res = await fetch(`${baseUrl()}/api/grid-capture`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pans, tilts, bothOrientations }),
+    });
+    if (!res.body) throw new Error(`HTTP ${res.status}`);
+    let buf = '';
+    let final = null;
+    for await (const chunk of res.body) {
+      buf += new TextDecoder().decode(chunk, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (!line.trim()) continue;
+        const event = JSON.parse(line);
+        if (event.phase === 'done' || event.phase === 'error') final = event;
+      }
+    }
+    if (final?.phase === 'error') throw new Error(final.error);
+    log(`Grid capture done: ${final?.converged ?? '?'}/${final?.total ?? '?'} converged.`, 'ok');
   } catch (err) {
-    // The backend returns partial results with its error, and renderGridProgress has already
-    // drawn whatever completed — so this only needs to report, not reconstruct state.
+    // The backend broadcasts partial progress on the WS as it goes, and renderGridProgress has
+    // already drawn whatever completed — so this only needs to report, not reconstruct state.
     log(`Grid capture failed: ${err.message}`, 'warn');
+    log(MCP_HINT, 'warn');
     els.gridProgress.textContent = `Failed: ${err.message}`;
   } finally {
     els.gridRun.disabled = false;

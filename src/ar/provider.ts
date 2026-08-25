@@ -59,15 +59,39 @@ export interface ARProvider {
   getPose(): Pose
 
   /**
-   * Returns true once the AR runtime has locked on and tracking is stable.
-   * Hit-tests and captures before this point may return unreliable results.
+   * Returns true once the AR runtime has produced a real pose.
+   *
+   * **This is "tracking has started", not "tracking is currently good."** The
+   * doc here used to claim the latter ("locked on and tracking is stable") and
+   * no implementation delivers it:
+   * - `EighthWallProvider` returns `_slamReady`, set on the *first* pose and
+   *   never cleared. 8th Wall reports a live `trackingStatus`
+   *   (`INITIALIZING` / `LIMITED` / `NORMAL` / `NOT_AVAILABLE`) which the
+   *   provider logs and discards, so a session that degrades to `LIMITED`
+   *   still reports tracking here.
+   * - `WebXRProvider` returns `session !== null && _haveRealProjection`,
+   *   i.e. the same "a usable pose has arrived at least once".
+   *
+   * Callers that need *current* tracking quality do not get it from this —
+   * `QualityMonitor.tick()`'s `trackingLost: !provider.isTracking()` is
+   * therefore only ever true before the first pose, and
+   * `KeyframeStreamer._tick()` will keep streaming through degraded tracking.
+   * Fixing that means surfacing the runtime's own status, not retitling this.
    */
   isTracking(): boolean
 
   /**
    * Vertical field-of-view in degrees for the AR camera.
-   * Used to reconstruct a Three.js PerspectiveCamera from the SLAM pose
-   * when the Threejs pipeline module is not loaded.
+   *
+   * Used to reconstruct a Three.js PerspectiveCamera from the SLAM pose when
+   * the Threejs pipeline module is not loaded — and, the consumer this doc
+   * omitted, written into every keyframe's `intrinsics.fovYDeg` by
+   * `KeyframeStreamer` and by `pose-track.ts`. `deriveIntrinsics()` in
+   * `server/splat/splat_train_dataset.ts` turns that into the `fl_x`/`fl_y`
+   * of the Brush training dataset, so an implementation's fallback constant
+   * does not stay local to the viewer: it reaches reconstruction looking like
+   * a measured focal length. `EighthWallProvider` currently always returns its
+   * 60° fallback — see the note there.
    */
   getCameraFovY(): number
 

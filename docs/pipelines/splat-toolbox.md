@@ -9,8 +9,16 @@ the **editor UI**, from a **scanner/session**, and from **curl**.
 
 All the trained/derived artifacts land next to the scan in `SCANS_DIR` as
 sidecars (`<base>.splat.ply`, `<base>.splat-train.manifest.json`,
-`<base>.interactions.json`, `<base>.splat-detect.manifest.json`), and are served
-back through the `/scans/:filename` routes the Spatial Editor already understands.
+`<base>.interactions.json`, `<base>.splat-detect.manifest.json`,
+`<base>.splat-align.manifest.json`), and are served back through the
+`/scans/:filename` routes the Spatial Editor already understands. Pose-solving
+outputs are the exception — they belong to the *session*, not the scan, and
+stay in `scans/sessions/<id>/`.
+
+> **A splat is unitless until `splat-align` says otherwise.** Monocular SfM
+> recovers geometry only up to an unknown scale factor, so nothing between
+> **Solve poses** and **Finish** produces a measurement. Real-world dimensions
+> come from the **Align** stage alone, and only for a calibrated scan.
 
 ---
 
@@ -19,8 +27,10 @@ back through the `/scans/:filename` routes the Spatial Editor already understand
 | Tool | Engine | Job type / entry point | Produces |
 |------|--------|------------------------|----------|
 | **View** | SparkJS (`@sparkjsdev/spark`) | viewer splat layer | in-browser 3DGS render |
+| **Solve poses** | [COLMAP](https://colmap.github.io/) (CPU) | `colmap-poses` world job (auto-chained *before* train) | `colmap.poses.json` + `colmap.point-cloud.ply` (+ manifest) |
 | **Train** | [Brush](https://github.com/ArthurBrussee/brush) (wgpu) | `splat-train` world job | `<base>.splat.ply` (+ manifest) |
 | **Finish** | [@playcanvas/splat-transform](https://github.com/playcanvas/splat-transform) | `splat-finish` world job (auto-chained after train) | `<base>.sog` + `<base>.compressed.ply` (+ manifest) |
+| **Align** | Umeyama 7-DoF similarity fit (pure TS) | `splat-align` world job (**queued explicitly**) | `<base>.splat-align.manifest.json` — the metric scale |
 | **Detect** | [splat_analyzer](#detect--splat_analyzer) + OWLv2 | `splat-detect` world job | `<base>.interactions.json` (+ manifest) |
 | **Ingest video** | ffmpeg (+ adaptive fps + blur gate) | `scripts/ingest-video.mjs` / `POST /ingest-video` | keyframe session (pose-less) |
 | **Ingest photos** | sharp/jimp (+ EXIF ordering + blur gate) | `scripts/ingest-photos.mjs` / `POST /ingest-photos` | keyframe session(s) (pose-less) |
@@ -57,20 +67,50 @@ See `splat-train.md` for the full viewer wiring.
 
 ---
 
+## Solve poses — COLMAP
+
+**What:** CPU structure-from-motion. Feature-extract → exhaustive match → a
+two-pass mapper, writing `colmap.poses.json` and a sparse seed cloud into the
+session dir in the same format LingBot-Map uses, so `buildBrushDataset` reads
+either provider through one path (ADR 0001). The emitted model is
+gravity-aligned to world +Y up, because SfM carries no gravity reference.
+
+**When:** the session has no per-frame poses — every `photo-ingest` and
+video-ingest session. `splat-train` runs it automatically in that case, so
+normally you never queue it by hand.
+
+**How**
+- **Auto:** any `splat-train` on a pose-less session (`SPLAT_TRAIN_AUTO_POSES=0`
+  to opt out and have the "no camera poses" failure surfaced instead).
+- **curl:** `-d '{"type":"colmap-poses","scanId":"scan-<id>"}'`
+
+**Env:** `COLMAP_BIN` (default `colmap` on PATH), `COLMAP_FEATURE_TYPE`,
+`COLMAP_MATCHER_TYPE`, `COLMAP_MAX_IMAGE_SIZE`. A missing binary → a `skipped`
+manifest with a remediation. Full detail, including the two-layout gotcha and
+the rotation-only-capture diagnosis, in
+**[colmap-poses.md](colmap-poses.md)**.
+
+---
+
 ## Train — Brush
 
 **What:** converts a scan's keyframe session into a Nerfstudio dataset and spawns
 the Brush CLI to train an INRIA-format 3DGS `.ply`, landed as a scan sidecar.
 
-**When:** a scan has a finalized session with keyframes **and** poses (either
-per-keyframe poses, or a LingBot-Map `lingbot-map.poses.json` fallback for
-video-ingest sessions). Give it a reconstructed session, get back a splat.
+**When:** a scan has a finalized session with keyframes. Poses are no longer a
+precondition you have to satisfy yourself: a live AR session carries
+per-keyframe poses, and for a pose-less one `splat-train` auto-chains
+`colmap-poses` (CPU) before giving up. `splat_train_dataset.ts` looks for
+`colmap.poses.json` first and `lingbot-map.poses.json` second — COLMAP leads
+because it is the solver that can actually have run on an arbitrary host, and
+when both exist it is the model with a measured reprojection error behind it.
 
 **How**
 - **Editor:** Splat Toolbox → **Train splat** on the selected scan (enqueues a
   `splat-train` world job).
-- **Session:** a video-ingest session first runs `lingbot-map-reconstruct` to
-  estimate poses; then `splat-train` consumes them via `splat_train_dataset.ts`.
+- **Session:** an ingest session's poses are solved first — by the auto-chained
+  `colmap-poses` job, or by `lingbot-map-reconstruct` where that GPU worker is
+  installed; then `splat-train` consumes either via `splat_train_dataset.ts`.
 - **curl:**
   ```sh
   curl -X POST $BASE/worlds/default/jobs \
@@ -79,9 +119,17 @@ video-ingest sessions). Give it a reconstructed session, get back a splat.
     -d '{"type":"splat-train","scanId":"scan-<id>"}'
   ```
 
-**Env:** `BRUSH_BIN` (default `~/brush/src/target/release/brush-cli`). Missing
+**Env:** `BRUSH_BIN` (default `~/brush/target/release/brush-cli`). Missing
 binary → a `skipped` manifest with a remediation hint, never a crash. Full
 env/params table in `splat-train.md`.
+
+**Building Brush bites twice** — `rustc` must be **1.95 or newer**
+(burn/cubecl/rerun refuse to compile below it), and the build flag is
+`cargo build --release -p brush-cli`, **not** `--bin brush-cli`. The workspace's
+`default-members` scopes `--bin` to a different package, and the resulting
+error is actively misleading: it says there is no bin target named `brush-cli`
+while listing `brush-cli` as an available bin. Full setup in
+[splat-train.md](splat-train.md#setup-one-time-on-the-inference-box).
 
 Invariants preserved by the dataset converter: Nerfstudio `camera_model` is
 **PERSPECTIVE**, and poses are emitted as OpenGL camera-to-world with **no extra
@@ -256,6 +304,38 @@ run with no output → an `error` manifest carrying the stderr tail.
 
 ---
 
+## Align — Umeyama similarity fit
+
+**What:** the only stage that puts metres into a splat.
+`server/splat/splat_align.ts` fits a 7-DoF similarity (rotation, translation,
+uniform scale) between the SfM camera centres and the *same* cameras expressed
+in the Place's metric frame, and writes
+`<base>.splat-align.manifest.json` carrying a row-major `projectTransform`,
+the `scale`, the RMS `residualM`, and the `calibrationMethod` behind it.
+
+**When:** on a scan whose `ScanCalibration` has a real measured tier. The fit
+itself needs only solved poses plus that calibration — it never reads the
+`.ply` — so it can run before or after training; the manifest is simply named
+after the splat it describes. **It is not auto-chained**: unlike
+`splat-finish`, you queue it.
+
+**How**
+- **curl:** `-d '{"type":"splat-align","scanId":"scan-<id>"}'`
+
+**It refuses rather than guesses.** An uncalibrated scan, a missing pose solve,
+fewer than 4 paired cameras, a straight-line capture, a non-positive scale, or
+a residual over 0.25 m all produce a `skipped` manifest with a remediation. A
+wrong scale is worse than no scale — it makes every downstream distance wrong
+while looking fine.
+
+**Env:** none. Thresholds are exported constants in `splat_align.ts`.
+
+> **Unverified end to end.** The fit and every refusal path are unit-tested,
+> but no run against a real calibrated capture is recorded. See
+> **[splat-align.md](splat-align.md)**.
+
+---
+
 ## Further reading / candidate tools
 
 Curated from the [awesome-3D-gaussian-splatting](https://github.com/MrNeRF/awesome-3D-gaussian-splatting)
@@ -278,12 +358,14 @@ dependencies.
   reconstruction; a candidate for turning a room splat into the GLTF the editor
   already renders.
 
-**SLAM-coupled / pose-free 3DGS (skip or shore up LingBot-Map poses):**
+**SLAM-coupled / pose-free 3DGS (skip the separate pose-solve step):**
 - **MonoGS / Gaussian Splatting SLAM** — monocular SLAM that builds the splat and
-  the trajectory jointly; could replace the two-stage ingest→reconstruct→train
+  the trajectory jointly; could replace the two-stage ingest→solve→train
   for the video arm.
-- **COLMAP-Free 3DGS (CF-3DGS)** — trains without precomputed poses, relevant to
-  our pose-less video-ingest sessions where LingBot-Map is the only pose source.
+- **COLMAP-Free 3DGS (CF-3DGS)** — trains without precomputed poses. Less urgent
+  now that `colmap-poses` gives pose-less sessions a CPU solver, but it would
+  still collapse two stages into one. Note that neither of these recovers
+  scale either — pose-free is not metric.
 
 **Splat segmentation / language-embedded (richer than box detection):**
 - **LangSplat** — embeds CLIP language features per Gaussian for open-vocab 3D

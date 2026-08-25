@@ -2054,12 +2054,14 @@ async function refreshSplatLayerPanel(scanId: string): Promise<void> {
     stats.textContent = ''
     return
   }
-  if (!scan.sessionId) {
-    status.textContent = 'This scan has no streamed keyframes — start keyframe streaming first.'
-    stats.textContent = ''
-    return
-  }
-
+  // No sessionId gate here on purpose. A trained splat is a *sidecar of the
+  // scan* (<base>.splat.ply + manifest), not a property of a live capture
+  // session: a splat trained from a photo-ingest pool, or one imported
+  // alongside a GLB, is perfectly valid on a scan that never streamed a
+  // keyframe. Gating on sessionId made those splats permanently invisible
+  // even though every artifact was present and served. `fetchScanSplatLayer`
+  // already answers the real question by returning null when no
+  // splat-train manifest exists, so the honest check is simply to ask it.
   let layer = scanSplatLayers.get(scanId)
   if (!layer) {
     status.textContent = 'Loading trained splat…'

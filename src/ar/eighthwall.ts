@@ -1,5 +1,15 @@
 /**
- * 8th Wall OSS engine provider.
+ * 8th Wall / Niantic Spatial XR Engine provider.
+ *
+ * **Not open source**, despite what this comment said until 2026-08-25. The
+ * binary is free and needs no API key, but the licence header at the top of
+ * `public/xr.js` is the "XR ENGINE LICENSE AGREEMENT" — a limited,
+ * revocable, non-sublicensable grant that forbids modifying or redistributing
+ * the Software other than in its original form, and (§1.2) forbids use "in
+ * connection with any product or service: (1) which is offered for a fee or
+ * other consideration, and (2) whose value derives, entirely or
+ * substantially, from the functionality of the Software". Read that clause
+ * before assuming this file may ship in a paid product.
  *
  * Prerequisites:
  *   1. Download the engine binary from https://8th.io/xrjs
@@ -32,6 +42,42 @@ const MAX_POINT_DISTANCE_M = 50
 
 /** How long start() waits for /xr.js before giving up with a real error. */
 const XR_LOAD_TIMEOUT_MS = 10_000
+
+/**
+ * How the camera frame is mapped onto the canvas.
+ *
+ * `contain` sizes the canvas to the CAMERA's aspect and centres it, so the
+ * whole sensor frame is on screen with bars on two sides. `cover` sizes the
+ * canvas to the viewport and lets the engine crop the frame to fill it — the
+ * full-bleed look, and what this file did unconditionally before 2026-08-25.
+ *
+ * `contain` is the default because it collapses two camera models into one.
+ * The projection matrix the engine publishes is built for the CANVAS rect (see
+ * `_fitCanvas` for the chain), so with canvas aspect == camera aspect nothing
+ * is cropped and that projection describes exactly the frame `captureFrame()`
+ * uploads. Under `cover` the two diverge as soon as the viewport is WIDER than
+ * the camera — a phone lying in a landscape gimbal cradle, which is this app's
+ * main scanning rig. The display then crops top and bottom, `_fovY` measures
+ * that cropped frustum, and `KeyframeStreamer` stamps it into every keyframe as
+ * the lens of an image that was never cropped. `deriveIntrinsics()` in
+ * `server/splat/splat_train_dataset.ts` turns it into fl_x/fl_y and the
+ * reconstruction bends geometry to fit a lens the camera does not have.
+ */
+type CameraFit = 'contain' | 'cover'
+
+/**
+ * `?camerafit=cover` restores the pre-2026-08-25 full-bleed mapping.
+ *
+ * It exists so the letterbox can be compared against full-bleed on the actual
+ * phone without a rebuild — the whole of this fit change is reasoned from
+ * public/xr.js and three.js sources, not from a device. Prefer `contain`: see
+ * the `CameraFit` note for what `cover` costs the keyframe intrinsics.
+ */
+function resolveCameraFit(): CameraFit {
+  return new URLSearchParams(window.location.search).get('camerafit') === 'cover'
+    ? 'cover'
+    : 'contain'
+}
 
 // XR8 is a global injected by xr.js — we declare it to satisfy TypeScript
 declare const XR8: {
@@ -187,10 +233,53 @@ export class EighthWallProvider implements ARProvider {
   private _latestWorldPoints: Array<{ x: number; y: number; z: number }> = []
   private _lastTrackingStatus = ''
   private _diagLogged = false
-  /** Camera vertical field-of-view in degrees (from intrinsics, else 60° default) */
+  /**
+   * Camera vertical field-of-view in degrees, read from the projection matrix
+   * the SLAM engine publishes each frame (`_syncReality()` below). 60 is only
+   * the value before the first frame lands.
+   *
+   * It matters downstream: `KeyframeStreamer` stamps this into every keyframe's
+   * `intrinsics.fovYDeg`, and `deriveIntrinsics()` in
+   * `server/splat/splat_train_dataset.ts` turns it into the `fl_x`/`fl_y` of
+   * the Brush training dataset. The engine builds that projection for the
+   * CANVAS rect, so this describes the uploaded keyframe only while the canvas
+   * crops nothing — which is what the `contain` fit guarantees.
+   */
   private _fovY = 60
-  /** Viewport aspect ratio at XR8.run() time */
+  /**
+   * Aspect (width/height) implied by the engine's projection matrix, or null
+   * until a frame supplies one.
+   *
+   * This tracks the CANVAS, not the sensor: the engine derives the projection
+   * from `cam.pixelRect*`, which is the canvas size (see `_fitCanvas`). Kept as
+   * a cross-check that `_aspect` and the engine agree — if these two ever drift
+   * apart, the render and the pose intrinsics are describing different lenses.
+   */
+  private _cameraAspect: number | null = null
+  /** Canvas (drawing-buffer) aspect ratio — what `getCameraAspect()` returns. */
   private _aspect = 9 / 16
+  /** How the frame is mapped onto the canvas; see `CameraFit`. */
+  private _fit: CameraFit = resolveCameraFit()
+  /**
+   * Camera frame size as the ENGINE sees it, from its own `videoWidth`/
+   * `videoHeight` hook arguments. 0 until the first frame.
+   *
+   * Deliberately the engine's numbers and not `track.getSettings()`: xr.js fits
+   * the camera texture to the canvas with exactly this pair (`yg()` in
+   * public/xr.js), so sizing the canvas from the same pair cannot disagree with
+   * the engine about which way round the frame is. Browsers differ on whether a
+   * portrait device reports rotated or sensor-native track dimensions; this
+   * sidesteps the question entirely.
+   */
+  private _videoW = 0
+  private _videoH = 0
+  /** CSS box we last claimed on the canvas, as `style.width`/`style.height`. */
+  private _cssWidth = ''
+  private _cssHeight = ''
+  /** Viewport-change listener, held so `stop()` can remove it. */
+  private _onViewportChange: (() => void) | null = null
+  /** The canvas `start()` was given, so `stop()` can release its inline size. */
+  private _canvas: HTMLCanvasElement | null = null
 
   private _syncReality(source: unknown, label: string, canvas: HTMLCanvasElement): void {
     const reality = findRealityObject(source)
@@ -217,12 +306,42 @@ export class EighthWallProvider implements ARProvider {
       this._slamReady = true
     }
 
-    // Camera intrinsics → vertical FOV
-    const intr = reality['intrinsics'] as Record<string, unknown> | null | undefined
-    if (intr) {
-      const fy = (intr['fy'] as number | undefined)
-        ?? (intr['focalLength'] as Record<string, number> | undefined)?.y
-      const imgH = (intr['height'] as number | undefined) ?? canvas.height
+    // Camera intrinsics → vertical FOV.
+    //
+    // Read the FLAT 16-element projection matrix this build actually publishes
+    // (`DA = camera.getIntrinsic().getMatrix44f().toArray()` in
+    // public/xr-slam.js).
+    // The formula is not inferred — it is xr.js's own PlayCanvas binding, which
+    // does exactly this with the same array:
+    //     camera.fov = 2*Math.atan(1/o[5])*180/Math.PI
+    //     camera.aspectRatio = o[5]/o[0]
+    // (element 5 is the projection matrix's [1][1], i.e. 1/tan(fovY/2); element
+    // 0 is [0][0] = 1/(aspect*tan(fovY/2)) — so their ratio is the aspect.)
+    //
+    // The object-shaped read this replaced (`intr.fy` / `intr.focalLength.y` /
+    // `intr.height`) could never fire against an array, so `_fovY` sat at its
+    // 60-degree placeholder and that placeholder was written into every
+    // keyframe's intrinsics and on into the Brush dataset's fl_x/fl_y. A
+    // reconstruction told the wrong lens bends geometry to fit it.
+    const intr = reality['intrinsics']
+    const proj = Array.isArray(intr)
+      ? (intr as number[])
+      : ArrayBuffer.isView(intr)
+        ? Array.from(intr as unknown as Float32Array)
+        : null
+    if (proj && proj.length >= 6 && Number.isFinite(proj[5]) && proj[5] !== 0) {
+      this._fovY = 2 * Math.atan(1 / proj[5]) * (180 / Math.PI)
+      if (Number.isFinite(proj[0]) && proj[0] !== 0) {
+        this._cameraAspect = proj[5] / proj[0]
+      }
+    } else if (intr && typeof intr === 'object' && !Array.isArray(intr)) {
+      // Object-shaped intrinsics: kept because 8th Wall has published this shape
+      // on other builds, and falling back is cheaper than guessing which one a
+      // future engine drop ships.
+      const rec = intr as Record<string, unknown>
+      const fy = (rec['fy'] as number | undefined)
+        ?? (rec['focalLength'] as Record<string, number> | undefined)?.y
+      const imgH = (rec['height'] as number | undefined) ?? canvas.height
       if (fy && imgH) {
         this._fovY = 2 * Math.atan(imgH / (2 * fy)) * (180 / Math.PI)
       }
@@ -234,6 +353,132 @@ export class EighthWallProvider implements ARProvider {
       ...extractPointBatch(reality['points'], this.latestPose),
     ]
     if (newPts.length > 0) this._latestWorldPoints = newPts
+  }
+
+  /**
+   * Size the canvas — both of its sizes — for the current viewport and camera
+   * frame. Safe to call every time either one might have changed.
+   *
+   * A canvas has two independent sizes and this method is the only place that
+   * sets either of them:
+   *
+   *   • `canvas.width`/`.height` is the GL drawing buffer. XR8 never assigns
+   *     it, it READS it, once per frame in its pre-render step: `Z()` in
+   *     public/xr.js compares the canvas against the size it last saw and
+   *     dispatches `onCanvasSizeChange` when they differ. That dispatch is what
+   *     re-fits the camera texture (`GlTextureRenderer`), resizes the three.js
+   *     renderer, and — this is the part that matters here — reconfigures the
+   *     SLAM engine's graphics intrinsics: `XrController`'s handler writes
+   *     canvasWidth/Height into `cam.pixelRectWidth/Height`, which becomes
+   *     `GraphicsIntrinsics.textureWidth/Height` in the WASM configure call
+   *     (public/xr-slam.js), which is what produces the projection matrix
+   *     `_syncReality()` reads back as `_fovY`/`_cameraAspect`.
+   *
+   *     So the render and the pose intrinsics are both derived from THIS
+   *     number and cannot desync from each other by resizing. What a resize
+   *     does change is whether that shared projection still matches the frame
+   *     `captureFrame()` uploads — which is the whole argument for `contain`;
+   *     see `CameraFit`.
+   *
+   *   • `canvas.style.width`/`.height` is the CSS box, in CSS pixels. It must
+   *     be the drawing buffer divided by dpr, or the browser rescales the
+   *     rendered image on its way to the screen. See `_claimCanvasBox()` —
+   *     three.js fights us for these two properties.
+   *
+   * `margin: auto` against index.html's `position: fixed; inset: 0` centres the
+   * letterbox: with all four insets 0 and a definite width/height, auto margins
+   * absorb the slack on both axes (CSS 2.1 §10.3.7), so the bars split evenly.
+   */
+  private _fitCanvas(canvas: HTMLCanvasElement): void {
+    const dpr = window.devicePixelRatio || 1
+    const viewW = window.innerWidth
+    const viewH = window.innerHeight
+    const frameAspect = this._videoW > 0 && this._videoH > 0 ? this._videoW / this._videoH : 0
+
+    let cssW = viewW
+    let cssH = viewH
+    if (this._fit === 'contain' && frameAspect > 0) {
+      // Fit inside: the axis that would overflow is the one we shrink.
+      //
+      // `frameAspect` is taken as the frame's aspect AS DISPLAYED, because that
+      // is how xr.js's own fit treats the same pair. If a device turns out to
+      // report it unrotated — a landscape `frame` in the `[8thwall][aspect]`
+      // log while the phone is upright — this letterboxes to a small sideways
+      // box. That is the signal to fall back to `?camerafit=cover` and fix the
+      // orientation handling, not to nudge the numbers here.
+      if (viewW / viewH > frameAspect) cssW = viewH * frameAspect
+      else cssH = viewW / frameAspect
+    }
+
+    // Round the DRAWING BUFFER first and derive the CSS box back from it, so
+    // the two aspects are identical to the pixel. Rounding the CSS box first
+    // and multiplying would leave a sub-percent aspect mismatch, which shows up
+    // as a slightly stretched preview — small, permanent, and hard to diagnose.
+    const bufW = Math.max(1, Math.round(cssW * dpr))
+    const bufH = Math.max(1, Math.round(cssH * dpr))
+
+    // Assigning canvas.width/height reallocates and clears the drawing buffer
+    // even when the value is unchanged, so only touch it on a real change.
+    if (canvas.width !== bufW || canvas.height !== bufH) {
+      canvas.width = bufW
+      canvas.height = bufH
+    }
+    this._aspect = bufW / bufH
+
+    this._cssWidth = `${bufW / dpr}px`
+    this._cssHeight = `${bufH / dpr}px`
+    this._claimCanvasBox(canvas)
+  }
+
+  /**
+   * (Re-)assert our CSS box on the canvas.
+   *
+   * Called repeatedly because we do not own these properties uncontested.
+   * XR8.Threejs's pipeline module calls `renderer.setSize(canvasWidth,
+   * canvasHeight)` — once when it builds the renderer, and again on every
+   * `onCanvasSizeChange` — passing the DRAWING-BUFFER size and leaving
+   * three.js's `updateStyle` at its default `true`, so three.js writes
+   * `canvas.style.width = "<device pixels>px"` (three r0.184,
+   * `WebGLRenderer.setSize`). On a dpr-3 phone that inline style makes the
+   * element three times the viewport, and because index.html pins the canvas
+   * with `position: fixed; inset: 0`, a definite width/height wins over
+   * `right`/`bottom`: the element is anchored top-left and the user sees a 3x
+   * magnification of the top-left corner of the feed.
+   *
+   * That magnification is display-only — the tracker stages the full camera
+   * texture (`_c8EmAsm_stageFrame` takes `frameStartResult.textureWidth/
+   * Height`) and `captureFrame()` reads the full `camerapixelarray` — but it is
+   * the large half of "the preview is far more zoomed in than the native
+   * camera app".
+   *
+   * Measured, not assumed — but measured in headless Chromium, not on the
+   * phone. Driving the real three.js r184 build against a canvas carrying
+   * index.html's exact `#camerafeed` rules, in a 360x800 viewport at dpr 3:
+   * the element's bounding rect is 360x800 before the renderer exists and
+   * 1080x2400 at (0,0) immediately after `setSize(1080, 2400)`, with inline
+   * `style="width: 1080px; height: 2400px"`. Re-asserting the CSS box restores
+   * it, and a second `setSize` breaks it again — hence "repeatedly". What is
+   * NOT verified is the phone: no camera, no XR8, no SLAM was in that test.
+   */
+  private _claimCanvasBox(canvas: HTMLCanvasElement): void {
+    if (!this._cssWidth) return
+    if (canvas.style.width !== this._cssWidth) canvas.style.width = this._cssWidth
+    if (canvas.style.height !== this._cssHeight) canvas.style.height = this._cssHeight
+    if (canvas.style.margin !== 'auto') canvas.style.margin = 'auto'
+  }
+
+  /**
+   * Record the engine's camera frame size and re-fit if it changed. Fed by
+   * every hook that carries `videoWidth`/`videoHeight` (onStart,
+   * onVideoSizeChange, onDeviceOrientationChange) — they overlap, and the
+   * cheapest way to be right is to accept all of them and ignore repeats.
+   */
+  private _noteFrameSize(canvas: HTMLCanvasElement, w?: number, h?: number): void {
+    if (!w || !h || !Number.isFinite(w) || !Number.isFinite(h)) return
+    if (w === this._videoW && h === this._videoH) return
+    this._videoW = w
+    this._videoH = h
+    this._fitCanvas(canvas)
   }
 
   async start(canvas: HTMLCanvasElement): Promise<void> {
@@ -311,9 +556,34 @@ export class EighthWallProvider implements ARProvider {
         // xrScene() is only available once the Threejs pipeline module's own
         // onStart has run (it creates the scene/camera/renderer) — module
         // onStart hooks fire in array order above, so Threejs's has already
-        // run by the time this one does.
-        onStart() {
+        // run by the time this one does. That ordering is also why the canvas
+        // sizing lands here: Threejs's onStart is where three.js first stamps
+        // its device-pixel CSS box on the canvas (see `_claimCanvasBox`), and
+        // this hook runs immediately after it, in the same frame.
+        onStart(args: { videoWidth?: number; videoHeight?: number }) {
           self._scene = XR8.Threejs.xrScene().scene
+          self._noteFrameSize(canvas, args.videoWidth, args.videoHeight)
+          self._claimCanvasBox(canvas)
+        },
+
+        // The engine dispatches these to every pipeline module when the camera
+        // frame size changes or the device rotates. They are the only
+        // authoritative source for the frame's aspect — see `_videoW`.
+        onVideoSizeChange(args: { videoWidth?: number; videoHeight?: number }) {
+          self._noteFrameSize(canvas, args.videoWidth, args.videoHeight)
+        },
+        onDeviceOrientationChange(args: { videoWidth?: number; videoHeight?: number }) {
+          // The engine fires this from the window's orientationchange with the
+          // dimensions it has *now*, which may still be the pre-rotation pair;
+          // re-fit against the new viewport regardless, and let the
+          // onVideoSizeChange that follows correct the frame size.
+          self._noteFrameSize(canvas, args.videoWidth, args.videoHeight)
+          self._fitCanvas(canvas)
+        },
+        // Fires after we resize the canvas — and after three.js has reacted to
+        // that resize by overwriting our CSS box.
+        onCanvasSizeChange() {
+          self._claimCanvasBox(canvas)
         },
 
         // onUpdate runs AFTER all module onProcessCpu hooks, so processCpuResult
@@ -321,6 +591,12 @@ export class EighthWallProvider implements ARProvider {
         // This is the correct place to read SLAM pose in this xr.js build.
         onUpdate(args: { processCpuResult?: Record<string, unknown>; processGpuResult?: Record<string, unknown>; frameStartResult?: Record<string, unknown> }) {
           self._syncReality(args.processCpuResult ?? args.processGpuResult ?? args.frameStartResult, 'onUpdate', canvas)
+          // Backstop for the CSS box. onCanvasSizeChange above should already
+          // have restored it, but that relies on this module's hooks running
+          // after XR8.Threejs's; two string comparisons a frame buy
+          // independence from that assumption, and a wrong CSS box is a
+          // silently mis-scaled preview rather than an error.
+          self._claimCanvasBox(canvas)
         },
 
         onProcessCpu({ processCpuResult, processGpuResult, frameStartResult }: {
@@ -363,15 +639,67 @@ export class EighthWallProvider implements ARProvider {
       },
     ])
 
-    // XR8 does not resize the canvas itself — it uses canvas.width/canvas.height
-    // as the GL viewport.  Set them to the physical pixel size of the screen so
-    // GlTextureRenderer renders at full device resolution, not the default 300×150.
-    const dpr = window.devicePixelRatio || 1
-    canvas.width = Math.round(window.innerWidth * dpr)
-    canvas.height = Math.round(window.innerHeight * dpr)
-    this._aspect = window.innerWidth / window.innerHeight
+    this._canvas = canvas
+
+    // Initial sizing. The camera frame size is not known until the engine
+    // reports it, so this first pass just fills the viewport at device
+    // resolution (otherwise the canvas would run at its 300×150 default); the
+    // onStart / onVideoSizeChange hooks above re-fit it as soon as the frame
+    // size arrives, and XR8 picks the new size up on the next pre-render.
+    this._fitCanvas(canvas)
+
+    // A viewport change (rotation, URL bar, split screen) changes the box we
+    // are fitting into, so re-fit — the engine's own orientation hook cannot do
+    // this for us because it does not know we size to the camera's aspect.
+    this._onViewportChange = () => this._fitCanvas(canvas)
+    window.addEventListener('resize', this._onViewportChange)
+    window.addEventListener('orientationchange', this._onViewportChange)
 
     XR8.run({ canvas, allowedDevices: XR8.XrConfig.device().ANY })
+
+    // Aspect diagnostic — read it from the phone's remote console on the next
+    // AR start (`?debug=remote`). This is the only way any of the fit reasoning
+    // in this file gets checked against real hardware.
+    //
+    // `crop` is the number to look at: how much of the camera frame the display
+    // throws away along its tighter axis. Under `contain` it must read 1.00 —
+    // if it does not, `frame` and `canvas` disagree and the fit is wrong.
+    // `projectionAspect` must track `canvas.aspect`, since the engine builds
+    // that projection from the canvas rect; a drift there means the render and
+    // the keyframe intrinsics have come apart.
+    //
+    // `trackSettings` is the raw getUserMedia track resolution, logged only to
+    // show which constraint xr.js settled on (its list is 4:3 — 1600x1200,
+    // 1440x1080, 1280x960, 960x720, 640x480). It can legitimately disagree with
+    // `frame` in orientation: browsers differ on whether they report rotated or
+    // sensor-native dimensions on a portrait device. `frame` is what the engine
+    // fits with, so `frame` is what we fit with.
+    setTimeout(() => {
+      const video = document.querySelector('video') as HTMLVideoElement | null
+      const track = video?.srcObject instanceof MediaStream
+        ? video.srcObject.getVideoTracks()[0]
+        : undefined
+      const settings = track?.getSettings?.()
+      const canvasAspect = canvas.width / canvas.height
+      const frameAspect = this._videoW > 0 && this._videoH > 0 ? this._videoW / this._videoH : null
+      console.log('[8thwall][aspect]', JSON.stringify({
+        fit: this._fit,
+        canvas: { w: canvas.width, h: canvas.height, aspect: +canvasAspect.toFixed(3) },
+        cssBox: { w: this._cssWidth, h: this._cssHeight, dpr: window.devicePixelRatio || 1 },
+        viewport: { w: window.innerWidth, h: window.innerHeight },
+        frame: frameAspect
+          ? { w: this._videoW, h: this._videoH, aspect: +frameAspect.toFixed(3) }
+          : 'unreported',
+        trackSettings: settings?.width && settings?.height
+          ? { w: settings.width, h: settings.height }
+          : 'unavailable',
+        fovYDeg: +this._fovY.toFixed(2),
+        projectionAspect: this._cameraAspect ? +this._cameraAspect.toFixed(3) : null,
+        crop: frameAspect
+          ? +Math.max(frameAspect / canvasAspect, canvasAspect / frameAspect).toFixed(2)
+          : null,
+      }))
+    }, 4000)
 
     // Diagnostics only: captures may proceed without stable tracking after the
     // caller's wait timeout, but isTracking() should mean a real pose arrived.
@@ -385,6 +713,22 @@ export class EighthWallProvider implements ARProvider {
   stop(): void {
     XR8.stop()
     this._scene = null
+    if (this._onViewportChange) {
+      window.removeEventListener('resize', this._onViewportChange)
+      window.removeEventListener('orientationchange', this._onViewportChange)
+      this._onViewportChange = null
+    }
+    // Hand the CSS box back to index.html's stylesheet. Leaving our inline
+    // width/height behind would pin a stopped session's letterbox onto whatever
+    // renders into this canvas next.
+    this._cssWidth = ''
+    this._cssHeight = ''
+    if (this._canvas) {
+      this._canvas.style.removeProperty('width')
+      this._canvas.style.removeProperty('height')
+      this._canvas.style.removeProperty('margin')
+      this._canvas = null
+    }
   }
 
   getScene(): THREE.Scene | null {
@@ -410,6 +754,18 @@ export class EighthWallProvider implements ARProvider {
     })
   }
 
+  /**
+   * `x`/`y` are normalised against the CANVAS, not the window.
+   *
+   * XR8 interprets them against the canvas rect, and `provider.ts` calls them
+   * "normalised screen coords" — a distinction with no difference while the
+   * canvas fills the viewport. Under the `contain` fit it stops filling the
+   * viewport, so the two disagree by the letterbox. Callers that divide by the
+   * canvas's own `getBoundingClientRect()` (project-calibration.ts) stay
+   * correct; callers that divide by `window.innerWidth/innerHeight`
+   * (spatial/resolver.ts) do not. Not corrected here: converting inside this
+   * method would double-correct the callers that already got it right.
+   */
   hitTest(x: number, y: number): HitResult | null {
     const results = XR8.XrController.hitTest(x, y, ['FEATURE_POINT'])
     console.log('[8thwall-hitTest] input:', x, y, 'raw results:', JSON.stringify(results))
@@ -475,6 +831,14 @@ export class EighthWallProvider implements ARProvider {
     return this._fovY
   }
 
+  /**
+   * Canvas aspect — which under the `contain` fit is also the camera frame's
+   * aspect, because the canvas is sized to it. That equality is what lets one
+   * accessor serve both consumers honestly: the three.js cameras built for
+   * screen-space raycasting (main.ts, ui/overlay.ts), and the
+   * `intrinsics.aspect` stamped alongside each uploaded keyframe. Under
+   * `cover` they are two different lenses and this returns the display one.
+   */
   getCameraAspect(): number {
     return this._aspect
   }

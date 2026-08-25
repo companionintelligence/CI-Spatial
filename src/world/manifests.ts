@@ -61,6 +61,87 @@ export interface SplatTrainManifest extends PipelineManifestBase {
   }
 }
 
+/**
+ * colmap_poses.ts's manifest — the CPU structure-from-motion pose solver.
+ *
+ * Its outputs (`colmap.poses.json`, `colmap.point-cloud.ply`) intentionally
+ * mirror LingBot-Map's, so `buildBrushDataset` reads either producer through
+ * one code path (ADR 0001).
+ */
+export interface ColmapPosesManifest extends PipelineManifestBase {
+  tool: 'colmap'
+  sessionDir: string
+  /** Basename of the written poses.json (relative to the session dir), when 'ok'. */
+  posesPath?: string
+  /** Basename of the sparse seed cloud, when points were triangulated. */
+  pointCloudPath?: string
+  /** Images COLMAP successfully registered. */
+  registeredImages?: number
+  /** Triangulated points in the sparse model. */
+  pointCount?: number
+  /** Keyframes offered to the solver. */
+  frameCount?: number
+  /**
+   * The pre-rotation up direction estimated from the camera orientations, in
+   * COLMAP's original world frame. Present only when the reconstruction was
+   * gravity-aligned; absent means the cameras disagreed too much to tell.
+   */
+  upAxis?: [number, number, number]
+  /** Whether the emitted poses/cloud were rotated so that up is +Y. */
+  gravityAligned?: boolean
+  params: {
+    colmapBin: string
+    featureType: string
+    matcherType: string
+    maxImageSize: number
+  }
+}
+
+/**
+ * The similarity transform that carries a splat out of structure-from-motion's arbitrary
+ * frame and into a Place's metric project space.
+ *
+ * Why this type exists at all: monocular SfM reconstructs only *up to an unknown scale
+ * factor* — COLMAP's output has no metres in it, sits at an arbitrary origin, and has an
+ * arbitrary heading. A calibrated scan does have metres (ScanCalibration's two-point-ground
+ * method carries a physically measured `separationM`). Those two facts were never connected,
+ * which is why a trained splat could not be measured, placed beside its own mesh, or fused
+ * with a second visit.
+ *
+ * The fit is Umeyama over a correspondence that already exists in the data: COLMAP's solved
+ * camera centres and the calibrated session poses describe *the same physical camera path*,
+ * once in arbitrary units and once in metres. Seven degrees of freedom (rotation 3,
+ * translation 3, uniform scale 1) come out in closed form.
+ *
+ * Per ADR 0005's rule 3 — a status that claims verification must be backed by a measurement —
+ * `residualM` is the RMS of the fitted correspondence in metres, and callers must treat a
+ * large residual as "this fit is wrong", not as a number to display. `scale` is the single
+ * most load-bearing field: it is what makes every downstream distance real.
+ */
+export interface SplatAlignManifest extends PipelineManifestBase {
+  tool: 'umeyama'
+  /** Basename of the splat this transform applies to. */
+  plyPath?: string
+  /**
+   * Row-major 4x4 mapping SfM space -> project space, scale already folded in. Column-major
+   * would silently transpose against THREE.Matrix4.fromArray, so the convention is pinned
+   * here and asserted in tests rather than left to the reader.
+   */
+  projectTransform?: number[]
+  /** Uniform scale factor: multiply an SfM-space length by this to get metres. */
+  scale?: number
+  /** RMS fit residual in metres. Large = the correspondence disagreed; do not trust the fit. */
+  residualM?: number
+  /** How many camera centres were paired to produce the fit. */
+  correspondenceCount?: number
+  /** Which calibration tier supplied the metric side — determines how much to trust `scale`. */
+  calibrationMethod?: string
+  params: {
+    minCorrespondences: number
+    maxResidualM: number
+  }
+}
+
 /** splat_detect.ts's manifest — the splat_analyzer (OWLv2 detection) driver. */
 export interface SplatDetectManifest extends PipelineManifestBase {
   tool: 'splat-analyzer'

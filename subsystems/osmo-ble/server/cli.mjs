@@ -10,10 +10,12 @@
 // Usage: node server/cli.mjs <command> [args...]
 //   node server/cli.mjs help          — full command list
 //
-// "forget" here only clears what THIS CLI remembers locally (.cli-state.json, gitignored) — it
-// is not a macOS Bluetooth unpair. There is no reliable, official macOS CLI for that; use
-// System Settings → Bluetooth → (device) → Forget, the same manual step already documented in
-// GIMBAL_INTEGRATION.md for recovering a wedged gimbal-side BLE state.
+// "forget" only clears what THIS CLI remembers locally (.cli-state.json, gitignored) — not a
+// macOS Bluetooth unpair. For that, use "forget-os" (wraps blueutil's EXPERIMENTAL --unpair;
+// `brew install blueutil` if it's missing) or the manual System Settings -> Bluetooth ->
+// (device) -> Forget step GIMBAL_INTEGRATION.md documents. Neither one fixes a wedged
+// gimbal-side BLE stack (same doc, "gimbal itself can get into a stuck BLE state") — that's a
+// physical button-combo reset on the gimbal, not a macOS pairing problem.
 
 import { readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -89,6 +91,11 @@ Connection lifecycle:
   status                                 Connection/pairing state + last quaternion
   disconnect                             Disconnect the current BLE session
   forget                                 Clear the locally remembered device id (not a macOS unpair)
+  forget-os [name]                       Real macOS Bluetooth unpair (needs blueutil); omitted
+                                          name reuses the one remembered from the last scan
+  reconnect [name]                       forget-os -> scan -> connect -> pair-trigger in one go —
+                                          the recovery sequence for a stale/corrupt macOS bond.
+                                          Still needs you to accept the OS dialog or enter a PIN.
 
 Pairing:
   pair-trigger                           Send just the pairing-trigger bytes — puts the device
@@ -109,6 +116,15 @@ Automated capture:
        [--device-url URL] [--device-token TOK]   (default: ANDROID_MCP_URL / ANDROID_MCP_TOKEN)
        [--out DIR]                        Download the photos here (default: ./grid-<timestamp>)
        [--ingest URL]                     POST them to a CI-Spatial /ingest-photos when done
+       [--movement-only] [--dwell ms]     Sweep WITHOUT taking photos — the phone's scanner
+                                          web app captures pose-tagged keyframes instead.
+                                          Those AR poses are metric (device VIO), which is what
+                                          lets splat-align recover a true scale. Use a pan step
+                                          of at least the scanner's minRotationDeg (default 20)
+                                          or some positions emit no keyframe at all.
+       [--both-orientations]              2 shots per position: landscape (confirmed), then
+                                          byte-0 (best-guess portrait, NOT independently
+                                          confirmed) — see "Orientation toggle" in the web UI
        [--tolerance deg] [--max ms] [--resolution WxH] [--quality N] [--dry-run]
                                           Move -> photo at every grid position, in serpentine
                                           order. --dry-run prints the plan and exits.
@@ -149,6 +165,10 @@ async function main() {
       print(devices);
       if (devices.length) {
         const best = devices.find((d) => d.likelyOsmo) ?? devices[0];
+        // Remembered here (not just on connect) so `forget-os`/`reconnect` have a real advertised
+        // name to unpair by even if the user never explicitly re-connects — scan is the only
+        // step that ever sees the name at all; /api/connect's response doesn't carry it.
+        saveState({ ...loadState(), lastDeviceId: best.id, lastDeviceName: best.name });
         console.error(`\n(${devices.length} found${devices.some((d) => d.likelyOsmo) ? '; ★ = likelyOsmo' : ''}. To connect: node server/cli.mjs connect ${best.id})`);
       }
       return;
@@ -174,6 +194,39 @@ async function main() {
       } catch {
         print({ forgotten: false, note: 'Nothing was remembered.' });
       }
+      return;
+    }
+
+    case 'forget-os': {
+      const name = positional[0] || loadState().lastDeviceName;
+      if (!name) throw new Error('No device name given and none remembered — run `scan` first, or pass one explicitly: forget-os "OM6-E06YAM-2".');
+      print(await api('POST', '/api/forget-os', { name }));
+      return;
+    }
+
+    case 'reconnect': {
+      // Convenience chain for the exact recovery sequence GIMBAL_INTEGRATION.md documents by
+      // hand: unpair -> rescan -> reconnect -> re-trigger pairing. Does NOT complete pairing
+      // itself (that needs a PIN read off the device screen, or the macOS confirm dialog
+      // accepted by a human) — it gets you to the point of being ready for that.
+      const name = positional[0] || loadState().lastDeviceName;
+      if (!name) throw new Error('No device name given and none remembered — run `scan` first, or pass one explicitly: reconnect "OM6-E06YAM-2".');
+      console.error(`Unpairing "${name}" from macOS...`);
+      const forgetResult = await api('POST', '/api/forget-os', { name });
+      print(forgetResult);
+      if (!forgetResult.unpaired) {
+        console.error('\nUnpair failed or blueutil is missing — continuing to rescan anyway; pairing may just re-confirm the existing bond.');
+      }
+      console.error('\nRescanning...');
+      const { devices } = await api('POST', '/api/scan', {});
+      const match = devices.find((d) => d.name === name) ?? devices.find((d) => d.likelyOsmo);
+      if (!match) throw new Error(`"${name}" was not found in this scan — is it powered on and in range?`);
+      saveState({ ...loadState(), lastDeviceId: match.id, lastDeviceName: match.name });
+      console.error(`Connecting to ${match.name}...`);
+      print(await api('POST', '/api/connect', { deviceId: match.id }));
+      console.error('\nTriggering pairing...');
+      await api('POST', '/api/pair-trigger');
+      console.error('\nAccept the macOS Bluetooth confirmation dialog now (or read a PIN off the gimbal screen and run `pair <pin>`), then verify with: node server/cli.mjs recenter-probe');
       return;
     }
 
@@ -256,34 +309,98 @@ async function main() {
 
       const outDir = flags.out || `grid-${new Date().toISOString().replace(/[:.]/g, '-')}`;
       console.error(`Running ${pans.length * tilts.length} positions — this takes a few minutes.`);
-      console.error('(Live progress is broadcast on the backend WS; the web UI shows it as it goes.)\n');
-
-      const run = await api('POST', '/api/grid-capture', {
-        pans,
-        tilts,
-        deviceUrl: flags['device-url'],
-        deviceToken: flags['device-token'],
-        toleranceDeg: flags.tolerance ? Number(flags.tolerance) : undefined,
-        maxMs: flags.max ? Number(flags.max) : undefined,
-        resolution: flags.resolution,
-        quality: flags.quality ? Number(flags.quality) : undefined,
-      });
-
-      for (const r of run.results) {
-        console.error(`  ${String(r.position).padStart(2)}: pan=${(r.pan ?? 0).toFixed(1)} tilt=${(r.tilt ?? 0).toFixed(1)}  ${r.converged ? 'converged' : 'NOT converged'} (${r.ticks} ticks)`);
-      }
-      console.error(`\n  ${run.converged}/${run.total} converged`);
-
+      console.error(`(Streaming progress below; each photo downloads to ${outDir}/ as its position finishes — a later failure only costs what comes after it.)\n`);
       mkdirSync(outDir, { recursive: true });
-      const files = [];
-      for (const r of run.results) {
-        const dest = `${outDir}/pos-${String(r.position).padStart(2, '0')}.jpg`;
-        const res = await fetch(r.photoUrl);
-        if (!res.ok) throw new Error(`downloading position ${r.position}: HTTP ${res.status}`);
-        writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
-        files.push(dest);
+
+      // Streamed NDJSON, not one buffered response (see backend.mjs's grid-capture handler for
+      // why): a multi-minute request that sends zero bytes until the very end reads as a hung
+      // connection to undici's own default timeout, which is exactly what silently killed two
+      // real runs (22 and 84 positions) before this existed — both lost everything captured up
+      // to that point because nothing had been downloaded yet. Downloading per-line as it
+      // arrives is what fixes that: whatever already landed on disk survives a later failure.
+      let gridRes;
+      try {
+        gridRes = await fetch(`${BACKEND_URL}/api/grid-capture`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            pans,
+            tilts,
+            deviceUrl: flags['device-url'],
+            deviceToken: flags['device-token'],
+            toleranceDeg: flags.tolerance ? Number(flags.tolerance) : undefined,
+            maxMs: flags.max ? Number(flags.max) : undefined,
+            resolution: flags.resolution,
+            quality: flags.quality ? Number(flags.quality) : undefined,
+            bothOrientations: Boolean(flags['both-orientations']),
+            // --movement-only: sweep without taking photos, so the phone's scanner web app
+            // captures pose-tagged keyframes instead. Those poses are what give the
+            // reconstruction a real metric scale; MCP camera JPEGs carry none.
+            capturePhotos: !flags['movement-only'],
+            dwellMs: flags.dwell ? Number(flags.dwell) : undefined,
+          }),
+        });
+      } catch (err) {
+        throw new Error(`Can't reach the backend at ${BACKEND_URL} — start it with "npm run backend" in a real terminal (${err.message})`);
       }
+      if (!gridRes.ok && !gridRes.body) throw new Error(`Backend returned HTTP ${gridRes.status}`);
+
+      const files = [];
+      let total = pans.length * tilts.length;
+      let converged = 0;
+      let sawDone = false;
+      let sawError = null;
+      let buf = '';
+      for await (const chunk of gridRes.body) {
+        buf += Buffer.from(chunk).toString('utf8');
+        let nl;
+        while ((nl = buf.indexOf('\n')) !== -1) {
+          const line = buf.slice(0, nl);
+          buf = buf.slice(nl + 1);
+          if (!line.trim()) continue;
+          const event = JSON.parse(line);
+          if (event.phase === 'start') {
+            total = event.total;
+          } else if (event.phase === 'captured') {
+            console.error(`  ${String(event.position).padStart(2)}: pan=${(event.pan ?? 0).toFixed(1)} tilt=${(event.tilt ?? 0).toFixed(1)}  ${event.converged ? 'converged' : 'NOT converged'} (${event.ticks} ticks)`);
+            if (event.converged) converged++;
+            // Movement-only positions carry no photoUrl: this backend deliberately took no
+            // photo, because the phone's own scanner app is capturing pose-tagged keyframes
+            // instead. Downloading is not just skipped but *must* be — fetch(null) throws
+            // "Failed to parse URL from null" and kills the run mid-sweep.
+            if (!event.photoUrl) {
+              console.error(`    (movement-only — the scanner app captures this position)`);
+              continue;
+            }
+            const shots = [{ suffix: '', url: event.photoUrl }];
+            if (event.photoUrlPortrait) shots.push({ suffix: '-portrait', url: event.photoUrlPortrait });
+            for (const shot of shots) {
+              const dest = `${outDir}/pos-${String(event.position).padStart(2, '0')}${shot.suffix}.jpg`;
+              const photoRes = await fetch(shot.url);
+              if (!photoRes.ok) {
+                console.error(`    WARNING: downloading position ${event.position}${shot.suffix}: HTTP ${photoRes.status} — skipped`);
+                continue;
+              }
+              writeFileSync(dest, Buffer.from(await photoRes.arrayBuffer()));
+              files.push(dest);
+            }
+          } else if (event.phase === 'done') {
+            sawDone = true;
+            total = event.total;
+            converged = event.converged;
+          } else if (event.phase === 'error') {
+            sawError = event.error;
+          }
+        }
+      }
+      console.error(`\n  ${converged}/${total} converged`);
       console.error(`  downloaded ${files.length} photo(s) to ${outDir}/`);
+      if (sawError) {
+        console.error(`\n  Backend reported an error partway through: ${sawError}`);
+        console.error(`  ${files.length} photo(s) captured before the failure are still on disk in ${outDir}/ — nothing before the error was lost.`);
+      } else if (!sawDone) {
+        console.error(`\n  WARNING: the stream ended without a "done" event — the connection may have dropped mid-run. ${files.length} photo(s) downloaded so far are still on disk.`);
+      }
 
       // Distinct-bytes check, not a formality: a stalled camera returning the same frame over
       // and over is a real failure mode this project has hit before (wave 04, six byte-identical

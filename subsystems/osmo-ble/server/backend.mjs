@@ -10,20 +10,99 @@
 // on the first BLE call (see ../README.md "Known environment gotcha").
 
 import http from 'node:http';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { WebSocketServer } from 'ws';
 import { OsmoBleTransport } from './ble-transport.mjs';
 import { buildGimbalRecenter, buildGimbalAbsoluteAngle, buildGimbalSetMode, buildGimbalSpeedControl, buildGimbalStickControlEnable, buildGimbalResetAndCenter, buildRawCommand } from '../protocol/commands.mjs';
 import { GIMBAL_MODE } from '../protocol/constants.mjs';
 import { quaternionDelta, quatToGimbalControlDeg } from '../protocol/telemetry.mjs';
 import { AndroidMcpClient, capturePhoto, planGrid } from './android-capture.mjs';
+import { PHONE_TELEMETRY, isPhoneTelemetry, normalizePhoneTelemetry } from '../protocol/phone_telemetry.mjs';
 
 const PORT = Number(process.env.BACKEND_PORT) || 8788;
 const transport = new OsmoBleTransport();
+const execFileAsync = promisify(execFile);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * True while a grid capture owns the gimbal.
+ *
+ * This is a real interlock, not a UI nicety. `moveToClosedLoop` steers by reading telemetry,
+ * computing an error, and sending a speed correction — so any OTHER speed command arriving
+ * mid-run is a second controller fighting the first for the same two motors. Observed on
+ * hardware: a stray joystick touch during a 105-position dome left the gimbal pinned at one
+ * pose (pan -121.5, tilt -27.6) for six consecutive positions, each burning the full `maxMs`
+ * timeout and photographing the same view.
+ *
+ * Guarded at the HTTP boundary specifically: the grid's own corrections go through
+ * `buildAndSend()` directly and are unaffected, so this blocks external interference without
+ * blocking the run itself.
+ */
+let gridRunning = false;
+/** Set by POST /api/grid-stop; the run loop checks it between positions and unwinds cleanly. */
+let gridCancelRequested = false;
+/** Pose movement below this (degrees) between consecutive timed-out moves reads as "not moving". */
+const STUCK_POSE_EPSILON_DEG = 1.5;
+/** How many such positions in a row before calling it a wedge. Two could be a tight corner. */
+const STUCK_POSITIONS_LIMIT = 3;
+
+/**
+ * Real macOS Bluetooth unpair, via blueutil's `--unpair` (EXPERIMENTAL per its own --help —
+ * wraps a private IOBluetoothDevice API Apple doesn't document, not something to treat as
+ * bulletproof).
+ *
+ * Why this exists despite cli.mjs's `forget` command already existing: that command is
+ * explicitly local-only (clears .cli-state.json, leaves the OS pairing untouched — see its own
+ * comment) because at the time it was written there was no reliable macOS CLI for a real
+ * unpair. blueutil fills that gap. Kept as a separate endpoint/command (`forget-os`, not a
+ * behavior change to `forget`) rather than overloading the existing one, so a script already
+ * depending on `forget`'s narrower, documented meaning doesn't silently start doing something
+ * bigger.
+ *
+ * Disconnects first: unpairing while noble still holds the GATT connection open has produced
+ * inconsistent state in testing elsewhere in this file's own history (see the BLE-wedge and
+ * bond gotchas in docs/operations/GIMBAL_INTEGRATION.md) — tearing down our own connection
+ * first at least rules that out as a contributor.
+ *
+ * Does NOT fix a wedged gimbal-side BLE stack (docs/operations/GIMBAL_INTEGRATION.md's
+ * "gimbal itself can get into a stuck BLE state" gotcha) — that one is on the gimbal, not in
+ * macOS's pairing database, and its only known fix is the physical button-combo reset. This
+ * only clears what macOS itself remembers, so a stale/corrupt bond can be forced fresh.
+ */
+async function unpairMacOSBluetooth(name) {
+  try {
+    await transport.disconnect();
+  } catch {
+    // already disconnected — fine, we're about to unpair regardless
+  }
+  try {
+    const { stdout, stderr } = await execFileAsync('blueutil', ['--unpair', name]);
+    return { unpaired: true, stdout: stdout.trim(), stderr: stderr.trim() };
+  } catch (err) {
+    // Distinguish "blueutil isn't installed" (a setup gap the caller can fix) from "blueutil
+    // ran and failed" (e.g. the name wasn't found, or the device was never paired to begin
+    // with) — both are real outcomes, but only one has an actionable remediation.
+    if (err.code === 'ENOENT') {
+      return {
+        unpaired: false,
+        error: 'blueutil is not installed',
+        remediation: 'brew install blueutil',
+      };
+    }
+    return { unpaired: false, error: err.stderr?.trim() || err.message }
+  }
+}
 
 const wsClients = new Set();
-function broadcast(msg) {
+// `except` skips one socket — used when relaying a message that ARRIVED on /ws, so the phone
+// that sent its own telemetry doesn't get it echoed back over a mobile link that is already the
+// scarcest thing in this setup. Defaulted to null, so every existing single-argument caller
+// (frames, status, grid-progress) behaves exactly as before.
+function broadcast(msg, except = null) {
   const data = JSON.stringify(msg);
   for (const ws of wsClients) {
+    if (ws === except) continue;
     if (ws.readyState === ws.OPEN) ws.send(data);
   }
 }
@@ -45,8 +124,97 @@ transport.on('frame', (frame) => {
 });
 transport.on('disconnect', () => broadcast({ type: 'status', connected: false, paired: false }));
 
+// ── Phone telemetry relay ────────────────────────────────────────────────────────────────────
+// The operator's phone posts its own compass/orientation/GPS samples UP the same /ws socket the
+// control UI already listens on, and we fan them back out to the other clients. This is a relay,
+// not a fusion step: the gimbal's quaternion is relative to wherever it booted and has no compass
+// reference at all, while the phone's heading is absolute and unreliable indoors — ADR 0005's
+// rule (geometry for relative alignment, compass for absolute orientation) means these two are
+// displayed side by side and never averaged into one number. The wire shape is pinned in
+// ../protocol/phone_telemetry.mjs; this file validates against it rather than re-deriving what a
+// valid frame looks like, so the sender, the relay and the readout can't drift apart.
+//
+// Only the newest sample is kept, not a history: its one job is to let GET /api/status (and the
+// status frame every new WS client gets on connect) hand a late-joining control UI something to
+// render immediately, instead of a blank readout until the phone's next tick. `at` stays the
+// phone's own timestamp — re-stamping it here would hide how stale the sample is, which is
+// exactly what a reader needs to know when a phone has walked out of Wi-Fi range.
+let lastPhoneTelemetry = null;
+
+// A valid frame is ~250 bytes of JSON; this is generous headroom, not a measured limit. The point
+// is only that an inbound frame from a phone browser cannot be arbitrarily large — this is the
+// first inbound message path on /ws and its sender is an untrusted network peer.
+const PHONE_TELEMETRY_MAX_BYTES = 4096;
+
+// Rate-limited because a phone stuck sending garbage does so at its send rate (~4Hz), and an
+// unthrottled warn per frame buries every other line in the log.
+//
+// The counter is CUMULATIVE, not per-window, and deliberately so: a window counter that resets
+// each time it prints loses the tail of any burst that stops before the next window opens — the
+// log's last word would be "dropped 1" after dropping six. A running total is a number that is
+// still true whenever it is next printed, and the delta between two lines is the burst size.
+let droppedInboundTotal = 0;
+let droppedInboundWarnedAt = 0;
+function warnDroppedInbound(reason) {
+  droppedInboundTotal++;
+  const now = Date.now();
+  if (now - droppedInboundWarnedAt < 5000) return;
+  console.warn(`[ws] ${droppedInboundTotal} inbound frame(s) dropped since start; most recent: ${reason}`);
+  droppedInboundWarnedAt = now;
+}
+
+/**
+ * Handle one inbound /ws message. Returns on every failure path and never throws: an exception
+ * escaping a 'message' listener is an uncaught error that kills the process — i.e. a phone
+ * browser reloading mid-scan could take the backend, and the BLE connection with it, down.
+ * That is the whole reason this is a function with early returns rather than inline parsing.
+ */
+function handleInboundWsMessage(ws, data, isBinary) {
+  if (isBinary) {
+    warnDroppedInbound('binary frame (nothing on /ws speaks binary)');
+    return;
+  }
+  if (data.length > PHONE_TELEMETRY_MAX_BYTES) {
+    warnDroppedInbound(`${data.length} bytes exceeds the ${PHONE_TELEMETRY_MAX_BYTES}-byte cap`);
+    return;
+  }
+  let msg;
+  try {
+    msg = JSON.parse(data.toString('utf8'));
+  } catch (err) {
+    warnDroppedInbound(`not JSON (${err.message})`);
+    return;
+  }
+  if (!msg || typeof msg !== 'object' || msg.type !== PHONE_TELEMETRY) {
+    warnDroppedInbound(`unhandled type ${JSON.stringify(msg?.type)}`);
+    return;
+  }
+  if (!isPhoneTelemetry(msg)) {
+    warnDroppedInbound('failed isPhoneTelemetry() — a field the contract types number|null was neither');
+    return;
+  }
+  // Validate FIRST, then normalize — not normalize instead of validating. normalizePhoneTelemetry
+  // coerces anything it doesn't recognize to null, so on its own it would happily turn a garbage
+  // frame into a well-formed all-null one and relay that as if the phone had genuinely reported
+  // "no heading, no fix". A dropped frame is honest; a fabricated empty one is not.
+  lastPhoneTelemetry = normalizePhoneTelemetry(msg);
+  broadcast(lastPhoneTelemetry, ws);
+}
+
 function statusPayload() {
-  return { connected: transport.connected, paired: transport.paired, lastQuaternion: transport.lastQuaternion };
+  return {
+    connected: transport.connected,
+    paired: transport.paired,
+    lastQuaternion: transport.lastQuaternion,
+    // Newest phone sample, or null if none has arrived this process lifetime. Included here (and
+    // so in GET /api/status and the on-connect status frame) so a client that connects between
+    // phone ticks isn't blank; it is a cache of the last relayed frame, not a live reading.
+    phoneTelemetry: lastPhoneTelemetry,
+    // Whether a grid capture currently owns the gimbal. On status (not only on the WS progress
+    // stream) so a client that loads or reconnects mid-scan can lock its manual controls
+    // immediately, instead of offering a joystick that the backend will reject.
+    scanning: gridRunning,
+  };
 }
 
 function sendJson(res, code, body) {
@@ -189,7 +357,7 @@ const routes = {
     {
       ok: true,
       message: 'Osmo BLE backend is running.',
-      routes: ['GET /api/status', 'POST /api/scan', 'POST /api/connect', 'POST /api/pair-trigger', 'POST /api/pair', 'POST /api/disconnect', 'POST /api/command', 'POST /api/move-to', 'POST /api/grid-capture', 'GET /api/frames', 'POST /api/test/recenter-probe', 'POST /api/test/command-probe', 'WS /ws'],
+      routes: ['GET /api/status', 'POST /api/scan', 'POST /api/connect', 'POST /api/pair-trigger', 'POST /api/pair', 'POST /api/disconnect', 'POST /api/forget-os', 'POST /api/command', 'POST /api/move-to', 'POST /api/capture-photo', 'POST /api/grid-capture', 'POST /api/grid-stop', 'GET /api/scan-sessions', 'GET /api/frames', 'POST /api/test/recenter-probe', 'POST /api/test/command-probe', 'WS /ws'],
     },
   ],
   'GET /api/status': async () => [200, statusPayload()],
@@ -230,8 +398,41 @@ const routes = {
     return [200, { disconnected: true }];
   },
 
+  // A real macOS unpair (see unpairMacOSBluetooth's own comment for why this is separate from
+  // cli.mjs's local-only `forget`). `name` is required rather than defaulted to a guessed DJI
+  // device name: this repo's own docs record the gimbal advertising under either
+  // "OM6-E06YAM-1" or "OM6-E06YAM-2" depending on BLE stack state (GIMBAL_INTEGRATION.md's
+  // "started advertising as two separate peripherals at once" gotcha), so a hardcoded suffix
+  // would silently no-op against the wrong one. The caller (cli.mjs) remembers the real name
+  // from its own scan/connect step for exactly this reason.
+  'POST /api/forget-os': async (req) => {
+    const { name } = await readJsonBody(req);
+    if (!name) return [400, { error: 'name is required — the exact advertised device name (see `scan`/`status`), not a guess.' }];
+    const result = await unpairMacOSBluetooth(name);
+    broadcast({ type: 'status', ...statusPayload() });
+    return [result.unpaired ? 200 : 502, result];
+  },
+
+  // Stop a running grid. Needed because killing the HTTP client does NOT stop the server-side
+  // loop — it kept sweeping with nobody listening, and `gridRunning` then held the motion
+  // interlock closed so the gimbal could not even be recovered by hand.
+  'POST /api/grid-stop': async () => {
+    if (!gridRunning) return [200, { stopped: false, note: 'No scan is running.' }];
+    gridCancelRequested = true;
+    return [200, { stopped: true, note: 'Scan will stop after the current position.' }];
+  },
+
   'POST /api/command': async (req) => {
     const { type, params } = await readJsonBody(req);
+    // Motion commands only — a scan does not care about setMode/raw probes, and blocking
+    // those would be surprising. 409 (conflict) rather than 400: the request is well-formed,
+    // it just lost a race for a single physical resource.
+    if (gridRunning && (type === 'speed' || type === 'recenter' || type === 'resetAndCenter')) {
+      return [409, {
+        error: 'A scan is running and owns the gimbal — motion commands are rejected until it finishes.',
+        remediation: 'Wait for the scan to finish, or stop it, before moving the gimbal by hand.',
+      }];
+    }
     const result = await buildAndSend(type, params);
     return [200, result];
   },
@@ -247,30 +448,72 @@ const routes = {
   // Drive a full grid capture: move -> photo -> move -> photo, for every position. Lives here
   // rather than in the CLI or the web UI so both get the same implementation and, more
   // importantly, so exactly one process ever holds an MCP session to the phone — the device
-  // caps concurrent sessions (see android-capture.mjs). Progress is broadcast over the existing
-  // WS as it goes, because a 9-position run takes minutes and a silent HTTP request that long
-  // is indistinguishable from a hang.
-  'POST /api/grid-capture': async (req) => {
+  // caps concurrent sessions (see android-capture.mjs).
+  //
+  // Streamed as NDJSON (one JSON object per line, flushed as each position finishes) rather
+  // than buffered into one response sent only at the very end. Two real failures on real
+  // hardware forced this: a ~20+ position run (each position: up to 15s move + an MCP photo
+  // round-trip) easily runs 5-10+ minutes, and a response that sends zero bytes for that long
+  // is indistinguishable from a hung connection to anything timing it — undici's client-side
+  // default eventually kills it with a bare "fetch failed", which is exactly what happened here
+  // (twice, at 22 and 84 positions). Writing headers immediately and a line per position keeps
+  // the connection demonstrably alive throughout. The second problem this fixes: the old
+  // buffer-everything shape meant a failure on position 20 of 22 discarded the 19 already
+  // captured, because the CLI only downloaded photos after the whole request resolved — with
+  // streaming, the CLI downloads each photo as its line arrives, so a later failure only costs
+  // the positions after it, not everything before it.
+  //
+  // Still broadcasts on the existing WS too (unchanged) — the web UI keeps working exactly as
+  // before; NDJSON is the second, independent consumer for callers (the CLI) that would rather
+  // not hold a WS connection open just to watch one HTTP call finish.
+  'POST /api/grid-capture': async (req, url, res) => {
     const body = await readJsonBody(req);
     const pans = body.pans ?? [120, 145, 170];
     const tilts = body.tilts ?? [-10, 0, 10];
     const deviceUrl = body.deviceUrl ?? process.env.ANDROID_MCP_URL;
     const deviceToken = body.deviceToken ?? process.env.ANDROID_MCP_TOKEN;
-    if (!deviceUrl) return [400, { error: 'deviceUrl is required (or set ANDROID_MCP_URL)' }];
-    if (!deviceToken) return [400, { error: 'deviceToken is required (or set ANDROID_MCP_TOKEN) — see .env.example' }];
+    // Movement-only: sweep the grid but take no photos over MCP. The phone runs the scanner
+    // web app instead, which captures its own keyframes AND tags each with an AR pose from
+    // the device's visual-inertial odometry.
+    //
+    // That pose is the whole point. The MCP camera path produces bare JPEGs with no pose, so
+    // structure-from-motion can only ever recover the room up to an unknown scale — there is
+    // nothing metric anywhere in the capture to fit against, and splat-align correctly skips.
+    // VIO poses ARE metric (the IMU measures real acceleration), so they give the fit a real
+    // metric side and the reconstruction a true scale.
+    //
+    // Note the scanner fires a keyframe every `minRotationDeg` (default 20°) of rotation, so a
+    // grid whose pan step is smaller than that will not produce one keyframe per position.
+    const capturePhotos = body.capturePhotos !== false;
+    if (capturePhotos && !deviceUrl) return [400, { error: 'deviceUrl is required (or set ANDROID_MCP_URL)' }];
+    if (capturePhotos && !deviceToken) return [400, { error: 'deviceToken is required (or set ANDROID_MCP_TOKEN) — see .env.example' }];
     if (!transport.connected) return [400, { error: 'not connected to a gimbal — scan + connect first' }];
 
     const grid = planGrid({ pans, tilts });
     const prefix = body.prefix ?? `grid-${Date.now()}`;
-    const client = new AndroidMcpClient({ url: deviceUrl, token: deviceToken });
+    const client = capturePhotos ? new AndroidMcpClient({ url: deviceUrl, token: deviceToken }) : null;
     const results = [];
 
-    broadcast({ type: 'grid-progress', phase: 'start', total: grid.length });
+    res.writeHead(200, {
+      'Content-Type': 'application/x-ndjson',
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'no-cache',
+    });
+    const emit = (event) => {
+      broadcast({ type: 'grid-progress', ...event });
+      res.write(JSON.stringify(event) + '\n');
+    };
+
+    emit({ phase: 'start', total: grid.length, prefix });
+    gridRunning = true;
+    gridCancelRequested = false;
+    let stuckRun = 0;
+    let lastStuckPose = null;
     try {
-      await client.open();
+      if (client) await client.open();
       for (const [i, target] of grid.entries()) {
         const position = i + 1;
-        broadcast({ type: 'grid-progress', phase: 'moving', position, total: grid.length, target });
+        emit({ phase: 'moving', position, total: grid.length, target });
 
         const move = await moveToClosedLoop({
           yawDeg: target.pan,
@@ -282,30 +525,169 @@ const routes = {
         // A non-converged move is recorded, not fatal: a photo from a position that is merely
         // close is still usable, and aborting the whole run would throw away the frames already
         // captured. The caller decides what to do with `converged: false`.
-        broadcast({ type: 'grid-progress', phase: 'capturing', position, total: grid.length, converged: move.converged });
-        const photoUrl = await capturePhoto(client, {
-          path: `${prefix}/pos-${String(position).padStart(2, '0')}.jpg`,
-          cameraId: body.cameraId ?? '0',
-          resolution: body.resolution ?? '1280x720',
-          quality: body.quality ?? 85,
-        });
+        emit({ phase: 'capturing', position, total: grid.length, converged: move.converged });
+        if (!capturePhotos) {
+          // Hold still long enough for the scanner's pose poller (~350ms) to see a settled
+          // pose and emit a keyframe. Moving straight on would blur the frame it captures.
+          await sleep(body.dwellMs ?? 1200);
+          const entry = { position, target, converged: move.converged, ticks: move.ticks, pan: move.finalYaw, tilt: move.finalPitch, photoUrl: null, capturedBy: 'scanner-app' };
+          results.push(entry);
+          emit({ phase: 'captured', ...entry, total: grid.length });
+          if (gridCancelRequested) {
+            emit({ phase: 'error', error: `Scan stopped by request after ${results.length} position(s).`, captured: results.length });
+            res.end();
+            return;
+          }
+          continue;
+        }
 
-        const entry = { position, target, converged: move.converged, ticks: move.ticks, pan: move.finalYaw, tilt: move.finalPitch, photoUrl };
+        const photoOpts = { cameraId: body.cameraId ?? '0', resolution: body.resolution ?? '1280x720', quality: body.quality ?? 85 };
+        let photoUrl, photoUrlPortrait;
+        if (body.bothOrientations) {
+          // 'follow' is confirmed landscape; 'lock' (byte 0) is only a best guess at portrait —
+          // see the "Orientation toggle" section's own caveat. Land landscape first (the
+          // confirmed one) so a run that only manages one shot per position before a failure
+          // still has the orientation we trust.
+          await buildAndSend('setMode', { mode: 'follow' });
+          await sleep(1000);
+          photoUrl = await capturePhoto(client, { path: `${prefix}/pos-${String(position).padStart(2, '0')}-landscape.jpg`, ...photoOpts });
+          await buildAndSend('setMode', { mode: 'lock' });
+          await sleep(1000);
+          photoUrlPortrait = await capturePhoto(client, { path: `${prefix}/pos-${String(position).padStart(2, '0')}-portrait.jpg`, ...photoOpts });
+        } else {
+          photoUrl = await capturePhoto(client, { path: `${prefix}/pos-${String(position).padStart(2, '0')}.jpg`, ...photoOpts });
+        }
+
+        const entry = { position, target, converged: move.converged, ticks: move.ticks, pan: move.finalYaw, tilt: move.finalPitch, photoUrl, ...(photoUrlPortrait ? { photoUrlPortrait } : {}) };
         results.push(entry);
-        broadcast({ type: 'grid-progress', phase: 'captured', ...entry, total: grid.length });
+        emit({ phase: 'captured', ...entry, total: grid.length });
+
+        // Wedge detection. A gimbal whose BLE stack has locked up keeps streaming telemetry and
+        // keeps accepting writes — it just stops moving, so every move burns its full timeout
+        // and photographs the same view. Left unchecked this quietly spends the rest of a
+        // 105-position run capturing one frame over and over (observed twice on real hardware).
+        // The signature is unambiguous: consecutive non-converged moves whose reported pose
+        // barely changes. Bail with a remediation instead of grinding on.
+        if (!move.converged && move.finalYaw !== null && move.finalPitch !== null) {
+          if (lastStuckPose
+            && Math.abs(move.finalYaw - lastStuckPose.pan) < STUCK_POSE_EPSILON_DEG
+            && Math.abs(move.finalPitch - lastStuckPose.tilt) < STUCK_POSE_EPSILON_DEG) {
+            stuckRun += 1;
+          } else {
+            stuckRun = 1;
+          }
+          lastStuckPose = { pan: move.finalYaw, tilt: move.finalPitch };
+          if (stuckRun >= STUCK_POSITIONS_LIMIT) {
+            emit({
+              phase: 'error',
+              error: `Gimbal stopped moving — ${stuckRun} consecutive positions timed out at the same pose `
+                + `(pan ${move.finalYaw.toFixed(1)}, tilt ${move.finalPitch.toFixed(1)}). `
+                + 'Its Bluetooth stack has most likely wedged. Hold Shutter + Switch + Trigger '
+                + 'together for ~1s to hardware-reset it, reconnect, and re-run. '
+                + `The ${results.length} position(s) captured so far are on disk.`,
+              captured: results.length,
+            });
+            res.end();
+            return;
+          }
+        } else {
+          stuckRun = 0;
+          lastStuckPose = null;
+        }
+
+        if (gridCancelRequested) {
+          emit({ phase: 'error', error: `Scan stopped by request after ${results.length} position(s).`, captured: results.length });
+          res.end();
+          return;
+        }
       }
     } catch (err) {
-      broadcast({ type: 'grid-progress', phase: 'error', error: String(err.message || err), captured: results.length });
-      // Partial results are returned alongside the error — the frames already on the phone are
-      // real and the caller may still want them.
-      return [500, { error: String(err.message || err), captured: results.length, results }];
+      emit({ phase: 'error', error: String(err.message || err), captured: results.length });
+      res.end();
+      return;
     } finally {
-      await client.close();
+      gridRunning = false;
+      if (client) await client.close();
     }
 
     const converged = results.filter((r) => r.converged).length;
-    broadcast({ type: 'grid-progress', phase: 'done', total: grid.length, converged });
-    return [200, { prefix, total: grid.length, converged, results }];
+    emit({ phase: 'done', total: grid.length, converged });
+    res.end();
+  },
+
+  // One-off capture at the gimbal's CURRENT position — not a grid, just "take a photo now"
+  // for the quick-action buttons. `bothOrientations: true` shoots landscape (confirmed via
+  // setMode('follow')) then rotates to the byte-0 orientation and shoots again; that second
+  // orientation is NOT independently confirmed to be portrait — see the "Orientation toggle"
+  // section's own caveat — so callers should treat it as best-effort, not verified.
+  'POST /api/capture-photo': async (req) => {
+    const body = await readJsonBody(req);
+    const deviceUrl = body.deviceUrl ?? process.env.ANDROID_MCP_URL;
+    const deviceToken = body.deviceToken ?? process.env.ANDROID_MCP_TOKEN;
+    if (!deviceUrl) return [400, { error: 'deviceUrl is required (or set ANDROID_MCP_URL)' }];
+    if (!deviceToken) return [400, { error: 'deviceToken is required (or set ANDROID_MCP_TOKEN) — see .env.example' }];
+    const prefix = body.prefix ?? `shot-${Date.now()}`;
+    const client = new AndroidMcpClient({ url: deviceUrl, token: deviceToken });
+    const shots = [];
+    try {
+      await client.open();
+      if (body.bothOrientations) {
+        await buildAndSend('setMode', { mode: 'follow' }); // confirmed landscape
+        await sleep(1200); // let the physical rotation settle before the shot
+        shots.push({ orientation: 'landscape', photoUrl: await capturePhoto(client, {
+          path: `${prefix}-landscape.jpg`, cameraId: body.cameraId ?? '0',
+          resolution: body.resolution ?? '1280x720', quality: body.quality ?? 85,
+        }) });
+        await buildAndSend('setMode', { mode: 'lock' }); // best-guess portrait — unconfirmed
+        await sleep(1200);
+        shots.push({ orientation: 'portrait-unconfirmed', photoUrl: await capturePhoto(client, {
+          path: `${prefix}-portrait.jpg`, cameraId: body.cameraId ?? '0',
+          resolution: body.resolution ?? '1280x720', quality: body.quality ?? 85,
+        }) });
+      } else {
+        shots.push({ orientation: body.orientation ?? 'current', photoUrl: await capturePhoto(client, {
+          path: `${prefix}.jpg`, cameraId: body.cameraId ?? '0',
+          resolution: body.resolution ?? '1280x720', quality: body.quality ?? 85,
+        }) });
+      }
+    } catch (err) {
+      return [500, { error: String(err.message || err), shots }];
+    } finally {
+      await client.close();
+    }
+    return [200, { shots }];
+  },
+
+  // Which capture session did a movement-only sweep actually feed?
+  //
+  // In movement-only mode this backend never touches the phone — the scanner web app streams
+  // its own pose-tagged keyframes straight to the CI-Spatial server. That is the point (those
+  // AR poses are the only metric reference the pipeline has), but it also means this backend
+  // is blind to whether anything was captured. An operator would otherwise sweep 27 positions,
+  // see "done", and only discover an empty session minutes later in the editor.
+  //
+  // So ask the scan server directly. Proxied through here rather than called from the browser
+  // because the control UI is served from a different origin and the scan server sets no CORS
+  // header for it; the backend already talks to that host for ingest.
+  'GET /api/scan-sessions': async (req, url) => {
+    const base = url.searchParams.get('server') || process.env.CI_SPATIAL_URL || 'http://localhost:8000';
+    try {
+      const res = await fetch(`${base}/sessions`, { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) return [502, { error: `scan server returned HTTP ${res.status}`, base }];
+      const sessions = await res.json();
+      // Newest first, and only the live-AR ones: a photo-ingest session is a previous upload,
+      // never something this sweep produced.
+      const live = (Array.isArray(sessions) ? sessions : [])
+        .filter((s) => s && s.source !== 'photo-ingest')
+        .sort((a, b) => String(b.startedAt ?? '').localeCompare(String(a.startedAt ?? '')));
+      return [200, { base, liveSessions: live.slice(0, 5), total: live.length }];
+    } catch (err) {
+      return [502, {
+        error: String(err.message || err),
+        base,
+        remediation: 'Is the CI-Spatial Deno server running on that origin? Set CI_SPATIAL_URL to point elsewhere.',
+      }];
+    }
   },
 
   'GET /api/frames': async (req, url) => {
@@ -363,10 +745,17 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   try {
-    const [code, body] = await handler(req, url);
-    sendJson(res, code, body);
+    // /api/grid-capture streams its own response (see that handler's own comment for why —
+    // long-running, no single buffered body) and manages `res` directly, so it returns
+    // undefined instead of a [code, body] tuple. Every other route is unchanged.
+    const result = await handler(req, url, res);
+    if (result !== undefined) {
+      const [code, body] = result;
+      sendJson(res, code, body);
+    }
   } catch (err) {
-    sendJson(res, 500, { error: err.message });
+    if (!res.headersSent) sendJson(res, 500, { error: err.message });
+    else res.end(JSON.stringify({ phase: 'error', error: err.message }) + '\n');
   }
 });
 
@@ -374,6 +763,13 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 wss.on('connection', (ws) => {
   wsClients.add(ws);
   ws.send(JSON.stringify({ type: 'status', ...statusPayload() }));
+  // /ws used to be send-only; phone telemetry is the first thing that talks back up it. See
+  // handleInboundWsMessage for why every rejection path there returns instead of throwing.
+  ws.on('message', (data, isBinary) => handleInboundWsMessage(ws, data, isBinary));
+  // ws re-throws a socket 'error' as an uncaught exception when nothing is listening for it, so
+  // without this line a phone dropping off Wi-Fi mid-send can kill the backend. Logged and
+  // dropped; the 'close' that follows does the actual cleanup.
+  ws.on('error', (err) => console.warn(`[ws] client socket error: ${err.message}`));
   ws.on('close', () => wsClients.delete(ws));
 });
 

@@ -33,7 +33,9 @@ export type WorldJobType =
   | 'depth-reconstruct'
   | 'thing-correspondence'
   | 'lingbot-map-reconstruct'
+  | 'colmap-poses'
   | 'splat-train'
+  | 'splat-align'
   | 'splat-detect'
   | 'splat-finish'
   /**
@@ -657,6 +659,8 @@ export interface WorldProject {
 export type {
   Person4DManifest,
   PipelineManifestBase,
+  ColmapPosesManifest,
+  SplatAlignManifest,
   SplatTrainManifest,
   SplatDetectManifest,
   SplatFinishManifest,
