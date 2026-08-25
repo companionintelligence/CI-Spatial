@@ -36,7 +36,7 @@ import { LAYER_LABELS, LAYER_ORDER, LAYERS_HIDDEN_BY_DEFAULT } from '../world/la
 import { buildAnchorMarker } from '../world/anchor-marker'
 import { registerPWA } from '../pwa'
 import { iconLabel } from '../ui/icons'
-import { EVENT } from '../shared/events'
+import { EVENT, type EventPayload, type LegacyJobUpdateJob } from '../shared/events'
 import { WEBRTC_LIVE_ENABLED } from '../rtc/feature'
 import type {
   EditPatch,
@@ -3879,33 +3879,38 @@ function connectServerEvents(): void {
   }
   ws.addEventListener('message', (event) => {
     try {
-      const msg = JSON.parse(String(event.data)) as Record<string, unknown>
-      if (msg['type'] === EVENT.SCAN_ADDED || msg['type'] === EVENT.SESSION_FINALIZED) {
+      // Server and client are one deploy unit built and shipped together (ADR
+      // 0001; docs/factory/02-typed-event-payloads/0001 designs this union,
+      // 0002 types every `main.ts` broadcast() call site against it) — this
+      // cast asserts the shape the same-build server side always sends, it is
+      // not validating untrusted wire input.
+      const msg = JSON.parse(String(event.data)) as EventPayload
+      if (msg.type === EVENT.SCAN_ADDED || msg.type === EVENT.SESSION_FINALIZED) {
         scheduleWorldRefresh()
-      } else if (msg['type'] === EVENT.JOB_UPDATE) {
-        handleJobUpdate(msg['job'] as { target?: string; status?: string; note?: string | null })
-      } else if (msg['type'] === EVENT.WORLD_JOB_UPDATE) {
-        const wj = msg['job'] as { jobType?: string; type?: string; status?: string; scanId?: string } | undefined
-        const t = wj?.type ?? wj?.jobType
-        if (t === 'lingbot-map-reconstruct' && wj?.status === 'completed' && wj?.scanId) {
+      } else if (msg.type === EVENT.JOB_UPDATE) {
+        handleJobUpdate(msg.job)
+      } else if (msg.type === EVENT.WORLD_JOB_UPDATE) {
+        const wj: WorldJob = msg.job
+        const t: WorldJobType = wj.type
+        if (t === 'lingbot-map-reconstruct' && wj.status === 'completed' && wj.scanId) {
           lingbotOverlays.delete(wj.scanId)
           if (selectedScanId === wj.scanId) void refreshLingBotMapPanel(wj.scanId)
         }
-        if ((t === 'splat-train' || t === 'splat-finish') && wj?.status === 'completed' && wj?.scanId) {
+        if ((t === 'splat-train' || t === 'splat-finish') && wj.status === 'completed' && wj.scanId) {
           const existing = scanSplatLayers.get(wj.scanId)
           if (existing) disposeScanSplatLayer(existing)
           scanSplatLayers.delete(wj.scanId)
           if (selectedScanId === wj.scanId) void refreshSplatLayerPanel(wj.scanId)
         }
-        if (t === 'splat-detect' && wj?.status === 'completed' && wj?.scanId) {
+        if (t === 'splat-detect' && wj.status === 'completed' && wj.scanId) {
           scanDetectLayers.delete(wj.scanId)
           if (selectedScanId === wj.scanId) void refreshSplatDetectPanel(wj.scanId)
         }
-        if (t === 'thing-correspondence' && wj?.status === 'completed') {
+        if (t === 'thing-correspondence' && wj.status === 'completed') {
           scheduleWorldRefresh()
         }
         if ((t === 'lingbot-map-reconstruct' || t === 'splat-train')
-          && wj?.status === 'completed' && selectedScanId
+          && wj.status === 'completed' && selectedScanId
           && (!wj.scanId || wj.scanId === selectedScanId)) {
           void refreshQualityPanel(selectedScanId)
         }
@@ -3960,8 +3965,8 @@ async function refreshWorldScans(): Promise<void> {
   }
 }
 
-function handleJobUpdate(job: { target?: string; status?: string; note?: string | null } | undefined): void {
-  if (!job?.target || !world) return
+function handleJobUpdate(job: LegacyJobUpdateJob): void {
+  if (!job.target || !world) return
   const scan = world.scans.find((s) => s.filename === job.target)
   if (!scan) return
 

@@ -56,11 +56,18 @@ const ws = new WebSocket(WS_URL, { rejectUnauthorized: false })
 
 ws.on('open', () => console.log('Connected — waiting for client logs\n'))
 ws.on('message', (data) => {
+  /**
+   * `EventPayload` (docs/factory/02-typed-event-payloads/0001) is the source
+   * of truth for every `/events` message shape. This plain `.mjs` script has
+   * no build step, so it isn't converted to a real `import` of that union —
+   * this JSDoc `@type` reference is a type-check-free stand-in that still
+   * gives an editor drift detection (hover types, the `'client-log'` literal
+   * below) if `src/shared/events.ts` changes shape.
+   * @type {import('../src/shared/events.ts').EventPayload}
+   */
   let msg
   try { msg = JSON.parse(data.toString()) } catch { return }
-  // 'client-log' is the wire value of EVENT.CLIENT_LOG in src/shared/events.ts —
-  // that file is the source of truth for all /events message types (this plain
-  // .mjs script isn't converted to import it, but keep this literal in sync).
+  // 'client-log' is the wire value of EVENT.CLIENT_LOG in src/shared/events.ts.
   if (msg.type !== 'client-log') return
   // Server may broadcast one message per entry or a batch in `entries`.
   for (const entry of msg.entries ?? [msg]) printEntry({ ip: msg.ip, ...entry })
