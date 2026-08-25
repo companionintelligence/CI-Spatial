@@ -50,6 +50,8 @@
   var sawAbsolute = false
   var sawIos = false
   var eventNames = {}
+  /** Last source that actually produced a true-north bearing, for a stable readout. */
+  var usableSource = null
   var marks = []
 
   var nowEl = document.getElementById('now')
@@ -125,12 +127,22 @@
     // Mirror geo-tracker.ts exactly: it only accepts the two forms above, so a
     // relative-only device yields bearing null and the frame falls back to the
     // AR session's arbitrary startup yaw.
-    srcEl.textContent = how + '   [' + Object.keys(eventNames).map(function (k) {
-      return k + ':' + eventNames[k]
-    }).join(' ') + ']'
+    //
+    // Report a STABLE summary, not the last event's classification. Android
+    // emits both a relative `deviceorientation` stream and an absolute
+    // `deviceorientationabsolute` stream at similar rates, so overwriting this
+    // line per event made it flicker — and a reader who caught it mid-flicker
+    // would conclude "NOT true north, ignored" while absolute samples were in
+    // fact being collected the whole time.
+    if (bearing !== null) usableSource = how
+    srcEl.textContent =
+      (usableSource ? 'using: ' + usableSource : 'no true-north source yet — ' + how) +
+      '   [' + Object.keys(eventNames).map(function (k) {
+        return k + ':' + eventNames[k]
+      }).join(' ') + ']'
     if (bearing === null) {
-      nowEl.textContent = 'null'
-      nowEl.className = 'big warn'
+      // Do not blank the reading: a relative event arriving between two
+      // absolute ones would otherwise flash "null" over a perfectly good value.
       return
     }
     nowEl.className = 'big'
