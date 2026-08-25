@@ -293,11 +293,25 @@ box stays open until one exists:
   silent (a plausible frame, subtly rotated). — **Mitigation:** `MIN_POINT_SEPARATION_M = 1.0`
   enforced in UI with copy encouraging a longer baseline; the live separation readout makes
   the tradeoff visible; the on-device compass-independence check is the real proof.
-- **Risk:** Two taps plus adjustment is more friction than #141's one tap, on a flow that
-  runs before every scan. — **Mitigation:** the single-point fallback remains for users who
-  want speed; the accuracy difference is stated rather than imposed. If telemetry-free
-  observation shows users always take the fallback, that is a signal the second tap needs to
-  be optional-but-encouraged rather than default — capture it rather than assume.
+- **Risk (RESOLVED 2026-08-25 — two taps stay the default):** Two taps plus adjustment is
+  more friction than #141's one tap, on a flow that runs before every scan. This was raised
+  directly after walking the flow on a Galaxy Tab S9 Ultra, which is exactly the
+  telemetry-free observation this risk asked for. **Decision: keep two taps as the default.**
+  The single-point fallback remains for rooms where a second point is impractical, labelled
+  lower-accuracy, and is not promoted to default.
+
+  Partial supporting evidence, from `public/compass-bench.html` on that S9 — read the
+  measurement caveats before citing it:
+  - The device *does* deliver a true-north source (`deviceorientationabsolute` at ~33-40 Hz),
+    so `bearingDeg: null` is not the issue on this hardware.
+  - Short-term compass jitter measured **~3-4° circular sd** over ~3 s windows. That is
+    already ~2x worse than the weakest geometric case (a 1 m baseline at the assumed 3 cm
+    hit-test noise, ~1.7-2°) and ~10x worse than the 4.9 m baseline actually captured (~0.35°).
+  - **Not measured:** absolute accuracy, i.e. spatial bias from building steel. That needs the
+    bench's Mark-at-several-spots walk, which was not performed. It is also the *decisive*
+    number, because the dangerous magnetometer failure is a reading that is rock-steady and
+    wrong — which jitter cannot detect. Jitter therefore understates the compass's risk rather
+    than overstating it, so the decision does not depend on the missing measurement.
 - **Risk:** `separationM` verifies that two points the *right distance apart* were tapped —
   not that they were the *same* two points. A room with two door frames 2 m apart in different
   places passes. — **Mitigation:** honest limitation, stated in copy: the residual detects
