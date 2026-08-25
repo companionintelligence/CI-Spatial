@@ -6,7 +6,8 @@
  *   - Inline edit of label + description
  */
 import type { DetectionStore, StoredDetection } from '../scene/store'
-import { WEBGPU_INFERENCE_ENABLED, type InferMode } from '../inference/router'
+import type { InferMode } from '../inference/router'
+import { formatBytes, type ProvisioningStatus } from '../inference/model-provisioning'
 import { icon, iconLabel, type IconName } from './icons'
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -61,6 +62,8 @@ export class SidePanel {
   private _streamBtn: HTMLButtonElement | null = null
   private _aiServerBtn: HTMLButtonElement | null = null
   private _aiWebGPUBtn: HTMLButtonElement | null = null
+  private _modelStatusText: HTMLElement | null = null
+  private _modelActionBtn: HTMLButtonElement | null = null
 
   get streamButton(): HTMLButtonElement | null { return this._streamBtn }
 
@@ -71,6 +74,23 @@ export class SidePanel {
     private readonly onProcess?: (action: string) => void,
     private readonly onInferMode?: (mode: InferMode) => void,
     private _currentInferMode: InferMode = 'server',
+    /**
+     * Wave 05 ticket 0002 — starts (or resumes) the on-device model
+     * download. Undefined on a device without WebGPU (wave 05 ticket 0004);
+     * see this.mount()'s "On-device model" row.
+     */
+    private readonly onProvisionModel?: () => Promise<ProvisioningStatus>,
+    /** Deletes the cached model to reclaim space — explicit, user-initiated only. */
+    private readonly onRemoveModel?: () => Promise<ProvisioningStatus>,
+    /**
+     * Wave 05 ticket 0004 — null when this device can run on-device
+     * inference; otherwise the specific reason the toggle is disabled (e.g.
+     * "This browser has no WebGPU support"). A device that cannot run it
+     * says so rather than failing on use, and never silently re-enables
+     * later (this ticket's Non-goals) — the toggle stays disabled for the
+     * lifetime of this SidePanel instance.
+     */
+    private readonly webGPUUnavailableReason: string | null = null,
   ) {
     this.panel = document.getElementById('side-panel')!
     this.content = document.getElementById('panel-content')!
@@ -203,20 +223,59 @@ export class SidePanel {
 
       this._aiServerBtn = mkToggle('monitor', 'Server', 'server')
       aiRow.appendChild(this._aiServerBtn)
-      // The WebGPU control is not built while the path is gated off. Every
-      // consumer of _aiWebGPUBtn is already null-guarded, so leaving it null is
-      // enough — the button simply never exists. Wave 05 restores it.
-      if (WEBGPU_INFERENCE_ENABLED) {
-        this._aiWebGPUBtn = mkToggle('bolt', 'WebGPU', 'webgpu')
-        aiRow.appendChild(this._aiWebGPUBtn)
+      // Wave 05 ticket 0004 un-gates this button — it is always offered now,
+      // rather than only existing behind a build-time flag. A device that
+      // cannot run it (this.webGPUUnavailableReason set) still shows the
+      // control, disabled, with the specific reason in its title — "the
+      // control explains why rather than failing on use" (this ticket's
+      // Acceptance Criteria), and disabled buttons don't dispatch click
+      // events, so onInferMode('webgpu') can never fire from here on such a
+      // device.
+      this._aiWebGPUBtn = mkToggle('bolt', 'On-device', 'webgpu')
+      if (this.webGPUUnavailableReason) {
+        this._aiWebGPUBtn.disabled = true
+        this._aiWebGPUBtn.title = this.webGPUUnavailableReason
+        this._aiWebGPUBtn.style.opacity = '0.35'
+        this._aiWebGPUBtn.style.cursor = 'not-allowed'
       }
+      aiRow.appendChild(this._aiWebGPUBtn)
       aiWrap.appendChild(aiRow)
 
       const aiNote = document.createElement('div')
       aiNote.id = 'ai-engine-note'
       aiNote.style.cssText = 'font-size:10px;color:rgba(255,255,255,0.25);padding:2px 0;'
-      aiNote.textContent = 'Server uses all machine cores'
+      aiNote.textContent = this.webGPUUnavailableReason ?? 'Server uses all machine cores'
       aiWrap.appendChild(aiNote)
+
+      // ── On-device model provisioning (wave 05 ticket 0002) ────────────────
+      // Gated on the same capability as the toggle above (this.onProvisionModel
+      // is undefined when router.hasWebGPU is false — see src/main.ts):
+      // downloading 2.2 GB of weights a browser can never load buys nothing.
+      // A dedicated row rather than folded into the WebGPU pill click: which
+      // routing/fallback decisions a selected mode triggers is ticket 0004's
+      // "ungate-toggle-and-fallback-policy" job, decided in src/main.ts and
+      // src/inference/router.ts, not here.
+      if (this.onProvisionModel) {
+        const modelRow = document.createElement('div')
+        modelRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;padding-top:2px;'
+
+        const modelStatusText = document.createElement('div')
+        modelStatusText.id = 'model-provision-status'
+        modelStatusText.style.cssText = 'font-size:10px;color:rgba(255,255,255,0.45);min-width:0;'
+        modelStatusText.textContent = 'On-device model: checking…'
+        this._modelStatusText = modelStatusText
+
+        const modelBtn = document.createElement('button')
+        modelBtn.className = 'panel-btn-ghost'
+        modelBtn.id = 'panel-provision-model-btn'
+        modelBtn.textContent = 'Download'
+        modelBtn.disabled = true
+        modelBtn.addEventListener('click', () => { void this._handleModelAction() })
+        this._modelActionBtn = modelBtn
+
+        modelRow.append(modelStatusText, modelBtn)
+        aiWrap.appendChild(modelRow)
+      }
 
       this.footer.appendChild(aiWrap)
       this._setAIMode(this._currentInferMode)
@@ -270,7 +329,66 @@ export class SidePanel {
       this._aiWebGPUBtn.setAttribute('data-active', String(mode === 'webgpu'))
     }
     const note = document.getElementById('ai-engine-note')
-    if (note) note.textContent = mode === 'server' ? 'Server uses all machine cores' : 'On-device — no data leaves your phone'
+    if (note) {
+      // A device that can't run on-device inference says so persistently —
+      // this note is the "why" the disabled toggle's title also carries, and
+      // it must survive updateInferMode() calls, not just mount() (wave 05
+      // ticket 0004's "says so specifically" acceptance criterion).
+      note.textContent = this.webGPUUnavailableReason
+        ?? (mode === 'server' ? 'Server uses all machine cores' : 'On-device — no data leaves your phone')
+    }
+  }
+
+  /**
+   * Reflect a ProvisioningStatus (wave 05 ticket 0002) in the "On-device
+   * model" row. Called after every status read/change — mount, download
+   * click, removal, and once eagerly at boot (src/main.ts) — never inferred
+   * from a click alone, so a page reload always shows the true on-disk
+   * state rather than whatever the last click implied.
+   */
+  setModelStatus(status: ProvisioningStatus): void {
+    if (!this._modelStatusText || !this._modelActionBtn) return
+
+    const sizeLabel = formatBytes(status.bytesTotal)
+    const persistedNote = status.persisted === false ? ' — not persistent, may be evicted' : ''
+
+    // dataset.action, not textContent, drives _handleModelAction below — 'retry'
+    // and 'resume' both re-run onProvisionModel (provisionModel() already skips
+    // complete files and resumes partial ones); only 'remove' is a distinct call.
+    if (status.state === 'ready') {
+      this._modelStatusText.textContent = `On-device model: ready (${sizeLabel})${persistedNote}`
+      this._modelActionBtn.textContent = 'Remove'
+      this._modelActionBtn.dataset['action'] = 'remove'
+    } else if (status.state === 'partial') {
+      const pct = status.bytesTotal ? Math.round((status.bytesReady / status.bytesTotal) * 100) : null
+      this._modelStatusText.textContent = `On-device model: ${pct !== null ? `${pct}% downloaded` : 'partially downloaded'} (${sizeLabel})`
+      this._modelActionBtn.textContent = 'Resume'
+      this._modelActionBtn.dataset['action'] = 'resume'
+    } else if (status.state === 'error') {
+      this._modelStatusText.textContent = `On-device model: ${status.error === 'insufficient-storage' ? 'not enough free storage' : 'download failed'}`
+      this._modelActionBtn.textContent = 'Retry'
+      this._modelActionBtn.dataset['action'] = 'retry'
+    } else {
+      this._modelStatusText.textContent = `On-device model: not downloaded (${sizeLabel})`
+      this._modelActionBtn.textContent = 'Download'
+      this._modelActionBtn.dataset['action'] = 'download'
+    }
+    this._modelActionBtn.disabled = false
+  }
+
+  private async _handleModelAction(): Promise<void> {
+    const btn = this._modelActionBtn
+    if (!btn) return
+    const isRemove = btn.dataset['action'] === 'remove'
+    btn.disabled = true
+    try {
+      const status = isRemove
+        ? await this.onRemoveModel?.()
+        : await this.onProvisionModel?.()
+      if (status) this.setModelStatus(status)
+    } finally {
+      if (this._modelActionBtn) this._modelActionBtn.disabled = false
+    }
   }
 
   /**

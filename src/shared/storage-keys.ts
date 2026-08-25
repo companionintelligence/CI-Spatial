@@ -113,3 +113,14 @@ export const SW_CACHE_NAME = 'companion-scan-v3'
  * worker still installed. (CLAUDE.md "Do not rename".)
  */
 export const SW_SYNC_TAG = 'companion-scan-flush'
+
+/**
+ * IndexedDB database name for the on-device model-weight cache — wave 05
+ * ticket 0002 (docs/factory/05-on-device-inference/0002-browser-model-provisioning.md).
+ * Read/written by src/inference/model-provisioning.ts. Brand new as of that
+ * ticket, so nothing depends on the old name yet, but treat it as frozen the
+ * same way as every other entry in this file from here on: renaming it later
+ * would orphan a phone's already-downloaded 2.2 GB of weights under the old
+ * database, forcing a silent, unannounced re-download.
+ */
+export const MODEL_CACHE_DB_NAME = 'companion-scan-model-cache'

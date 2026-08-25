@@ -26,6 +26,7 @@
     "npm:jose@^5.9.6": "5.10.0",
     "npm:leaflet@1.9.4": "1.9.4",
     "npm:onnxruntime-node@^1.21.0": "1.21.0",
+    "npm:onnxruntime-web@1.21": "1.21.1",
     "npm:qrcode-terminal@0.12": "0.12.0",
     "npm:three@0.184": "0.184.0",
     "npm:typescript@^6.0.3": "6.0.3",
@@ -110,7 +111,7 @@
       "dependencies": [
         "@huggingface/jinja",
         "onnxruntime-node",
-        "onnxruntime-web",
+        "onnxruntime-web@1.22.0-dev.20250409-89f8206ba4",
         "sharp"
       ]
     },
@@ -1213,6 +1214,9 @@
     "onnxruntime-common@1.21.0": {
       "integrity": "sha512-Q632iLLrtCAVOTO65dh2+mNbQir/QNTVBG3h/QdZBpns7mZ0RYbLRBgGABPbpU9351AgYy7SJf1WaeVwMrBFPQ=="
     },
+    "onnxruntime-common@1.21.1": {
+      "integrity": "sha512-E0q8+fMyJ+F8dvlwVsXcujrOc96lkPIDAZh3p6pjrZS4bzjowIcUMv48W5zOcFLtlWyycUlRPJWUUK2+3IL1eA=="
+    },
     "onnxruntime-common@1.22.0-dev.20250409-89f8206ba4": {
       "integrity": "sha512-vDJMkfCfb0b1A836rgHj+ORuZf4B4+cc2bASQtpeoJLueuFc5DuYwjIZUBrSvx/fO5IrLjLz+oTrB3pcGlhovQ=="
     },
@@ -1225,6 +1229,17 @@
       ],
       "os": ["win32", "darwin", "linux"],
       "scripts": true
+    },
+    "onnxruntime-web@1.21.1": {
+      "integrity": "sha512-be7zmmN9z8vCj7g6LISNGyeWH9pZjomDjBZ1PYtodoE5VCX7ebabVl3zJHTGjOABFsj2D+kNfy48L7NXNGGU4w==",
+      "dependencies": [
+        "flatbuffers",
+        "guid-typescript",
+        "long",
+        "onnxruntime-common@1.21.1",
+        "platform",
+        "protobufjs"
+      ]
     },
     "onnxruntime-web@1.22.0-dev.20250409-89f8206ba4": {
       "integrity": "sha512-0uS76OPgH0hWCPrFKlL8kYVV7ckM7t/36HfbgoFw6Nd0CZVVbQC4PkrR8mBX8LtNUFZO25IQBqV2Hx2ho3FlbQ==",
@@ -1721,6 +1736,7 @@
         "npm:iwer@^2.2.1",
         "npm:jimp@^1.6.1",
         "npm:leaflet@1.9.4",
+        "npm:onnxruntime-web@1.21",
         "npm:qrcode-terminal@0.12",
         "npm:three@0.184",
         "npm:typescript@^6.0.3",
