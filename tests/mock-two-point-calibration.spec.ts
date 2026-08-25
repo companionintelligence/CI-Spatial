@@ -17,6 +17,18 @@
  */
 import { test, expect, type Page, type APIRequestContext } from '@playwright/test'
 import { ONBOARDING_KEY } from '../src/shared/storage-keys'
+import type { Project, ProjectSpatialFrame } from '../src/world/types'
+
+/**
+ * The `'two-point-ground'` member of the frame union.
+ *
+ * Assertions below read `pointLabels`, `referencePhotos` and `separationM`,
+ * none of which exist on the `'ground-tap-compass'` member — so they have to
+ * narrow first, exactly as production code does. Deriving the type from the
+ * union rather than restating its fields is what makes a schema change show up
+ * here as a compile error instead of a silently-passing test.
+ */
+type TwoPointFrame = Extract<ProjectSpatialFrame, { method: 'two-point-ground' }>
 
 const CALIB = '#project-calibration'
 const LAT = 33.51466
@@ -193,10 +205,21 @@ async function uploadPhoto(
   return (await res.json()).url as string
 }
 
-/** The Place record as the server currently holds it. */
-async function readPlace(request: APIRequestContext, id: string): Promise<Record<string, never>> {
-  const after = await (await request.get('/projects')).json()
-  return (after.projects ?? after).find((p: { projectId: string }) => p.projectId === id)
+/** The Place record as the server currently holds it, or undefined if it is gone. */
+async function readPlace(request: APIRequestContext, id: string): Promise<Project | undefined> {
+  const after = await (await request.get('/projects')).json() as Project[] | { projects: Project[] }
+  const projects = Array.isArray(after) ? after : after.projects
+  return projects.find((p) => p.projectId === id)
+}
+
+/**
+ * The Place's stored two-point frame, or undefined when it has none — either
+ * because nothing was committed or because it landed on the one-point tier.
+ * Both are real outcomes a caller must distinguish, so neither is asserted here.
+ */
+function twoPointFrame(place: Project | undefined): TwoPointFrame | undefined {
+  const frame = place?.spatialFrame
+  return frame?.method === 'two-point-ground' ? frame : undefined
 }
 
 /**
@@ -367,29 +390,27 @@ test.describe('two-point calibration', () => {
       expect(names).toContain('calibration anchor heading')
 
       await expect(async () => {
-        const saved = await readPlace(request, place.id)
-        const frame = saved?.['spatialFrame'] as Record<string, never> | undefined
-        expect(frame?.['method']).toBe('two-point-ground')
+        const frame = twoPointFrame(await readPlace(request, place.id))
+        expect(frame, 'a two-point frame was persisted').toBeTruthy()
 
         // pointLabels existed in 0002's schema with nothing populating it.
         // Order is load-bearing: index 0 is the landmark, and that is the
         // order +Z is built from.
-        expect(frame?.['pointLabels']).toEqual(['north door frame', 'radiator corner'])
+        expect(frame!.pointLabels).toEqual(['north door frame', 'radiator corner'])
 
-        const photos = frame?.['referencePhotos'] as Record<string, Record<string, never>> | undefined
+        const photos = frame!.referencePhotos
         expect(photos, 'both photos, or neither').toBeTruthy()
-        for (const role of ['landmark', 'headingMarker']) {
-          const photo = photos![role]!
-          expect(photo['url']).toBe(`/projects/${place.id}/reference-photos/ref-${role}.jpg`)
-          expect(photo['localKey']).toBe(`${place.id}:${role}`)
+        for (const role of ['landmark', 'headingMarker'] as const) {
+          const photo = photos![role]
+          expect(photo.url).toBe(`/projects/${place.id}/reference-photos/ref-${role}.jpg`)
+          expect(photo.localKey).toBe(`${place.id}:${role}`)
           // The tap point is what turns a photo of a wall into a photo of a
           // *spot* on that wall.
-          const tap = photo['tapPoint'] as unknown as { x: number; y: number }
-          expect(tap.x).toBeGreaterThanOrEqual(0)
-          expect(tap.x).toBeLessThanOrEqual(1)
-          expect(tap.y).toBeGreaterThanOrEqual(0)
-          expect(tap.y).toBeLessThanOrEqual(1)
-          expect(photo['pose']).toBeTruthy()
+          expect(photo.tapPoint.x).toBeGreaterThanOrEqual(0)
+          expect(photo.tapPoint.x).toBeLessThanOrEqual(1)
+          expect(photo.tapPoint.y).toBeGreaterThanOrEqual(0)
+          expect(photo.tapPoint.y).toBeLessThanOrEqual(1)
+          expect(photo.pose).toBeTruthy()
         }
       }).toPass({ timeout: 20_000 })
 
@@ -410,8 +431,7 @@ test.describe('two-point calibration', () => {
       await reachLandmarkStage(page)
       await placeBothMarkers(page, { a: 'north door frame', b: 'radiator corner' })
       await expect(async () => {
-        const saved = await readPlace(request, place.id)
-        expect((saved?.['spatialFrame'] as Record<string, never>)?.['referencePhotos']).toBeTruthy()
+        expect(twoPointFrame(await readPlace(request, place.id))?.referencePhotos).toBeTruthy()
       }).toPass({ timeout: 20_000 })
 
       // Visit 2 — same Place, fresh session.
@@ -558,9 +578,9 @@ test.describe('two-point calibration', () => {
           req.onsuccess = () => resolve(req.result)
           req.onerror = () => reject(req.error)
         })
-        const project = await new Promise<{ spatialFrame?: Record<string, unknown> } | null>((resolve, reject) => {
+        const project = await new Promise<Project | null>((resolve, reject) => {
           const req = db.transaction('projects', 'readonly').objectStore('projects').get(projectId)
-          req.onsuccess = () => resolve((req.result ?? null) as { spatialFrame?: Record<string, unknown> } | null)
+          req.onsuccess = () => resolve((req.result ?? null) as Project | null)
           req.onerror = () => reject(req.error)
         })
         const photos = await new Promise<Array<{ role: string; blob: Blob }>>((resolve, reject) => {
@@ -576,17 +596,18 @@ test.describe('two-point calibration', () => {
         }
       }, place.id)
 
-      const frame = local.frame as Record<string, never> | null
-      expect(frame?.['method']).toBe('two-point-ground')
-      expect(frame?.['pointLabels']).toEqual(['north door frame', 'radiator corner'])
+      const frame = local.frame
+      expect(frame?.method).toBe('two-point-ground')
+      const twoPoint = frame?.method === 'two-point-ground' ? frame : undefined
+      expect(twoPoint!.pointLabels).toEqual(['north door frame', 'radiator corner'])
 
-      const records = frame?.['referencePhotos'] as unknown as Record<string, Record<string, unknown>> | undefined
+      const records = twoPoint!.referencePhotos
       expect(records, 'the frame still carries both photo records').toBeTruthy()
-      for (const role of ['landmark', 'headingMarker']) {
+      for (const role of ['landmark', 'headingMarker'] as const) {
         // Pending, not delivered. Recording a URL here would make the next
         // device fetch a 404 and show an empty panel instead of saying so.
-        expect(records![role]!['url'], `${role} url is pending`).toBeNull()
-        expect(records![role]!['localKey']).toBe(`${place.id}:${role}`)
+        expect(records![role].url, `${role} url is pending`).toBeNull()
+        expect(records![role].localKey).toBe(`${place.id}:${role}`)
       }
 
       // And the bytes really are here, which is what makes the aid work offline
