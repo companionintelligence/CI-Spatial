@@ -21,7 +21,6 @@
     "npm:draco3dgltf@^1.5.7": "1.5.7",
     "npm:hono@^4.7.0": "4.12.9",
     "npm:iwer@^2.2.1": "2.2.1",
-    "npm:jimp@^1.6.0": "1.6.1",
     "npm:jimp@^1.6.1": "1.6.1",
     "npm:jose@^5.9.6": "5.10.0",
     "npm:leaflet@1.9.4": "1.9.4",
@@ -1436,8 +1435,8 @@
     "safe-buffer@5.2.1": {
       "integrity": "sha512-rp3So07KcdmmKbGvgaNxQSJr7bGVSVk5S9Eq1F+ppbRo70+YeaDxkw5Dd8NPN+GD6bjnYm2VuPuCXmpuYvmCXQ=="
     },
-    "sax@1.6.0": {
-      "integrity": "sha512-6R3J5M4AcbtLUdZmRv2SygeVaM7IhrLXu9BmnOGmmACak8fiUtOsYNWUS4uK7upbmHIBbLBeFeI//477BKLBzA=="
+    "sax@1.6.1": {
+      "integrity": "sha512-42tBVwLWnaQvW5zc4HbZrTuWccECCZfBi92FDuwtqxasH+JbPB3/FOKb1m222K42R4WxuxzzMsTswfzgtSu64Q=="
     },
     "semver-compare@1.0.0": {
       "integrity": "sha512-YM3/ITh2MJ5MtzaM429anh+x2jiLVjqILF4m4oyQB18W7Ggea7BfqdH/wGMK7dDiMghv/6WG7znWMwUDzJiXow=="
@@ -1501,8 +1500,8 @@
         "simple-concat"
       ]
     },
-    "simple-xml-to-json@1.2.4": {
-      "integrity": "sha512-3MY16e0ocMHL7N1ufpdObURGyX+lCo0T/A+y6VCwosLdH1HSda4QZl1Sdt/O+2qWp48WFi26XEp5rF0LoaL0Dg=="
+    "simple-xml-to-json@1.2.7": {
+      "integrity": "sha512-mz9VXphOxQWX3eQ/uXCtm6upltoN0DLx8Zb5T4TFC4FHB7S9FDPGre8CfLWqPWQQH/GrQYd2AXhhVM5LDpYx6Q=="
     },
     "source-map-js@1.2.1": {
       "integrity": "sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA=="
@@ -1714,7 +1713,7 @@
       "npm:@gltf-transform/functions@^4.4.0",
       "npm:draco3dgltf@^1.5.7",
       "npm:hono@^4.7.0",
-      "npm:jimp@^1.6.0",
+      "npm:jimp@^1.6.1",
       "npm:jose@^5.9.6",
       "npm:onnxruntime-node@^1.21.0"
     ],

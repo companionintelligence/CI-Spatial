@@ -113,7 +113,6 @@ const VARIANTS = ['A', 'B', 'C']
 const BASE_LAT = 37.7745
 const BASE_LNG = -122.4189
 
-export const TEST_HOME_COUNT = ARCHETYPES.length * VARIANTS.length
 
 /** Build all 24 deterministic homes */
 export function buildTestHomes(): TestHome[] {
