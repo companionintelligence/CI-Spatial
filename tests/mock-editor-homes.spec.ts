@@ -3,8 +3,14 @@
  *
  * Seeds three homes through the real upload+optimize pipeline, then drives
  * the editor: scan list population, progressive load status, layer panel,
- * and the measurement tool (asserted against expected.json dimensions via
- * the window.__measureTool hook).
+ * and the measurement tool via the window.__measureTool hook.
+ *
+ * NOTE: the measurement test below does NOT assert against expected.json
+ * dimensions — an earlier version of this comment said it did. It clicks two
+ * arbitrary viewport points and only bounds the result to (0.01, 500), which a
+ * wrong-by-a-constant-factor scale would pass. Nothing in this suite would
+ * catch the tool reporting non-metric units with a metre suffix (see the unit
+ * caveat in src/viewer/measure.ts's header).
  *
  * Requirements: Vite dev server (VITE_URL) + Deno server behind the proxy.
  * Run: npx playwright test --project=chromium-mock mock-editor-homes

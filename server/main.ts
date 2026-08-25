@@ -82,6 +82,7 @@ import {
 import { pruneScansMissingFromDisk } from './world/world_prune.ts'
 import { runLingBotMapReconstruction } from './lingbot-map/lingbot_map.ts'
 import { runColmapPoses } from './colmap/colmap_poses.ts'
+import { runSplatAlign } from './splat/splat_align.ts'
 import { runSplatTrain } from './splat/splat_train.ts'
 import { runSplatDetect } from './splat/splat_detect.ts'
 import { runSplatFinish } from './splat/splat_finish.ts'
@@ -110,6 +111,7 @@ import type {
   GeoPose,
   MemberRole,
   Project,
+  ScanCalibration,
   ScanManifest,
   ScanManifestStatus,
   ScanQualitySummary,
@@ -676,6 +678,7 @@ const SPLAT_ARTIFACT_MIME: Array<{ suffix: string; mime: string }> = [
   { suffix: '.splat-train.manifest.json', mime: 'application/json' },
   { suffix: '.splat-detect.manifest.json', mime: 'application/json' },
   { suffix: '.splat-finish.manifest.json', mime: 'application/json' },
+  { suffix: '.splat-align.manifest.json', mime: 'application/json' },
   { suffix: '.interactions.json', mime: 'application/json' },
   { suffix: '.4d-capture.manifest.json', mime: 'application/json' },
   { suffix: '.compressed.ply', mime: 'application/octet-stream' },
@@ -684,7 +687,7 @@ const SPLAT_ARTIFACT_MIME: Array<{ suffix: string; mime: string }> = [
   { suffix: '.sog', mime: 'application/octet-stream' },
 ]
 
-app.get('/scans/:filename{.+\\.(splat\\.ply|compressed\\.ply|sog|splat-train\\.manifest\\.json|splat-detect\\.manifest\\.json|splat-finish\\.manifest\\.json|4d-capture\\.manifest\\.json|interactions\\.json)}', async (c) => {
+app.get('/scans/:filename{.+\\.(splat\\.ply|compressed\\.ply|sog|splat-train\\.manifest\\.json|splat-detect\\.manifest\\.json|splat-finish\\.manifest\\.json|splat-align\\.manifest\\.json|4d-capture\\.manifest\\.json|interactions\\.json)}', async (c) => {
   const filename = c.req.param('filename')
   if (!filename || filename.includes('/') || filename.includes('\\') || filename.startsWith('.')) {
     return c.json({ error: 'Invalid filename' }, 400)
@@ -1611,6 +1614,7 @@ const WORLD_JOB_TYPES = new Set<WorldJobType>([
   'lingbot-map-reconstruct',
   'colmap-poses',
   'splat-train',
+  'splat-align',
   'splat-detect',
   'splat-finish',
   'sensenova-vision',
@@ -2669,6 +2673,11 @@ async function _dispatchWorldJob(slug: string, jobId: string): Promise<void> {
       return
     }
 
+    if (job.type === 'splat-align') {
+      await _runSplatAlignJob(slug, jobId)
+      return
+    }
+
     if (job.type === 'splat-detect') {
       await _runSplatDetectJob(slug, jobId)
       return
@@ -2926,6 +2935,95 @@ async function detectionLikesForWorld(world: WorldProject): Promise<DetectionLik
  * (ADR 0001). A missing COLMAP binary is reported as a *skip* with a
  * remediation, never a failure, matching every other optional-tool stage here.
  */
+/**
+ * `splat-align` runner — fits the similarity transform that carries a trained splat out of
+ * structure-from-motion's arbitrary units and into the Place's metric frame.
+ *
+ * The driver deliberately does not read the world file (it takes `calibration` as an argument),
+ * so this runner is the piece that knows where calibration lives: on the scan entry. That
+ * separation is why the driver stayed unit-testable without a world fixture.
+ *
+ * A scan with no calibration is a *skip*, not a failure — with no calibrated metres to fit
+ * against, the only "scale" available would be the AR runtime's unverified units, and claiming
+ * a metric result from those is precisely the unbacked claim ADR 0005 rule 3 forbids.
+ */
+async function _runSplatAlignJob(slug: string, jobId: string): Promise<void> {
+  try {
+    const start = await claimSessionJob(slug, jobId)
+    if (!start) return
+    const { scan, sessionId, sessionPath } = start
+
+    const base = scan.filename.replace(/\.glb$/, '')
+
+    // Calibration reaches the server through the scan's meta sidecar, not through
+    // ScanManifest: `ScanCalibration` lives on the client-side `ScanEntry` (the project
+    // store) and is written into `<base>.json` by the GLB exporter alongside the scan.
+    // ScanManifest only surfaces the flattened `calibrationMethod`/`calibrationStatus`
+    // summary fields, which are not enough to fit against — the fit needs the full
+    // `sessionToProject` matrix. Reading the sidecar directly is therefore the honest
+    // path, and an absent/unparseable sidecar simply yields no calibration, which
+    // runSplatAlign already treats as a skip.
+    let calibration: ScanCalibration | null = null
+    try {
+      const raw = JSON.parse(await Deno.readTextFile(scanMetaPath(scan.filename))) as Record<string, unknown>
+      const candidate = raw['calibration']
+      if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
+        calibration = candidate as ScanCalibration
+      }
+    } catch {
+      // No sidecar, or malformed JSON — indistinguishable from "not calibrated" here,
+      // and both lead to the same skip with the same remediation.
+    }
+
+    const result = await runSplatAlign({
+      sessionDir: sessionPath,
+      calibration,
+      plyPath: `${SCANS_DIR}/${base}.splat.ply`,
+      provenance: { sessionId, scanId: scan.scanId },
+    })
+
+    await commitWorldJob(slug, jobId, (currentJob, current) => {
+      currentJob.progress = 1
+      if (result.status === 'ok') {
+        currentJob.status = 'completed'
+        const scaleText = result.scale ? `1 SfM unit = ${result.scale.toFixed(4)} m` : 'scale unavailable'
+        currentJob.result =
+          `Splat aligned to the Place metric frame — ${scaleText}, ` +
+          `residual ${((result.residualM ?? 0) * 100).toFixed(1)} cm over ${result.correspondenceCount ?? 0} cameras.`
+        currentJob.artifacts = [{
+          type: 'splat-align',
+          label: `${scan.name} metric alignment`,
+          url: `/scans/${encodeURIComponent(`${base}.splat-align.manifest.json`)}`,
+          metadata: {
+            scale: result.scale ?? null,
+            residualM: result.residualM ?? null,
+            correspondenceCount: result.correspondenceCount ?? null,
+            calibrationMethod: result.manifest.calibrationMethod ?? null,
+          },
+        }]
+        applyCompletedJobToWorld(currentJob, current)
+      } else if (result.status === 'skipped') {
+        currentJob.status = 'completed'
+        currentJob.result = `Splat alignment skipped: ${result.manifest.skippedReason ?? 'unknown reason'}`
+        currentJob.artifacts = [{
+          type: 'splat-align-skip',
+          label: 'Splat alignment skipped',
+          url: `/scans/${encodeURIComponent(`${base}.splat-align.manifest.json`)}`,
+          metadata: { skippedReason: result.manifest.skippedReason ?? null, remediation: result.manifest.remediation ?? null },
+        }]
+      } else {
+        currentJob.status = 'failed'
+        currentJob.error = result.manifest.error ?? 'splat alignment failed'
+        currentJob.result = currentJob.error
+      }
+      currentJob.updatedAt = new Date().toISOString()
+    })
+  } catch (err) {
+    console.error('[splat-align job error]', err)
+    await failWorldJob(slug, jobId, errorMessage(err))
+  }
+}
+
 async function _runColmapPosesJob(slug: string, jobId: string): Promise<void> {
   try {
     const start = await claimSessionJob(slug, jobId)
@@ -3774,7 +3872,7 @@ function scanForJob(job: WorldJob, world: WorldProject): ScanManifest | null {
 }
 
 /** The job types that cannot run without RGB keyframe observations. */
-const KEYFRAME_JOB_TYPES = ['depth-reconstruct', 'lingbot-map-reconstruct', 'colmap-poses', 'splat-train']
+const KEYFRAME_JOB_TYPES = ['depth-reconstruct', 'lingbot-map-reconstruct', 'colmap-poses', 'splat-train', 'splat-align']
 
 /**
  * Filesystem facts `jobFailureReason` needs but must not look up itself.
@@ -3815,7 +3913,7 @@ async function keyframePreflight(slug: string, jobId: string): Promise<JobPrefli
 
 function jobFailureReason(job: WorldJob, world: WorldProject, preflight: JobPreflight = {}): string | null {
   const scan = scanForJob(job, world)
-  if (['align-scan', 'extract-layers', 'semantic-pass', 'depth-reconstruct', 'lingbot-map-reconstruct', 'colmap-poses', 'splat-train', 'splat-detect', 'splat-finish', 'memory-push', 'person-4d-reconstruct'].includes(job.type) && !scan) {
+  if (['align-scan', 'extract-layers', 'semantic-pass', 'depth-reconstruct', 'lingbot-map-reconstruct', 'colmap-poses', 'splat-train', 'splat-align', 'splat-detect', 'splat-finish', 'memory-push', 'person-4d-reconstruct'].includes(job.type) && !scan) {
     return `${job.type} requires a selected scan.`
   }
   if (job.type === 'memory-push' && !memoryPushCfg.enabled) {
@@ -3882,6 +3980,8 @@ function jobResultFor(job: WorldJob): string {
       return 'LingBot-Map streaming reconstruction complete. Point cloud + per-frame poses written to the session.'
     case 'colmap-poses':
       return 'COLMAP structure-from-motion solved per-frame camera poses. colmap.poses.json + sparse seed cloud written to the session.'
+    case 'splat-align':
+      return 'Splat aligned to the Place metric frame. The stored similarity transform gives the splat real-world scale and position.'
     case 'splat-train':
       return 'Gaussian splat trained with Brush. The .splat.ply sidecar is available as a splat layer on the scan.'
     case 'splat-detect':

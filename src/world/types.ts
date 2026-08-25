@@ -35,6 +35,7 @@ export type WorldJobType =
   | 'lingbot-map-reconstruct'
   | 'colmap-poses'
   | 'splat-train'
+  | 'splat-align'
   | 'splat-detect'
   | 'splat-finish'
   /**
@@ -659,6 +660,7 @@ export type {
   Person4DManifest,
   PipelineManifestBase,
   ColmapPosesManifest,
+  SplatAlignManifest,
   SplatTrainManifest,
   SplatDetectManifest,
   SplatFinishManifest,

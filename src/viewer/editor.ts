@@ -202,8 +202,15 @@ export class SceneEditor {
     // at that level, and the gizmo moved it while the saved patch was replayed onto the
     // LOD — so the object came back displaced, and rescaled by the medium proxy's
     // normalisation. Testing parent-is-LOD first resolves to the LOD from every shape.
-    // Labelled nodes outside an LOD (e.g. splat-detect boxes) still select as
-    // themselves, because their parent is not an LOD and the label test still decides.
+    // Labelled nodes outside an LOD still select as themselves, because their
+    // parent is not an LOD and the label test still decides.
+    //
+    // This comment used to cite splat-detect boxes as that case. It is not one:
+    // buildDetectBoxes() (src/viewer/splat-detect-layer.ts) makes each box a
+    // THREE.LineSegments, and the filter above admits only Mesh and Points, so a
+    // detect box is never `hits[0].object` and never reachable by the walk. The
+    // splat-detect overlay is display-only in the editor today — it cannot be
+    // picked, inspected, or moved by the gizmo.
     while (obj && obj !== this._scene) {
       if (obj.parent && obj.parent instanceof THREE.LOD) {
         obj = obj.parent
