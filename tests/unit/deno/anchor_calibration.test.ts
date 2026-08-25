@@ -14,8 +14,11 @@ import { assert, assertAlmostEquals, assertEquals } from 'jsr:@std/assert@^1.0.0
 import * as THREE from 'three'
 import {
   anchorToProjectTransform,
+  cameraYawInSessionDeg,
   composeYUpTransform,
   identityMatrix,
+  normaliseBearingDeg,
+  sessionFrameBearingDeg,
   twoPointToProjectTransform,
   twoPointHeadingDeg,
   twoPointSeparationM,
@@ -506,4 +509,126 @@ Deno.test('residual: a re-measured pair is within tolerance; a different pair is
   // A deliberately different second feature, half a metre off.
   const wrongPair = twoPointSeparationM(LANDMARK, { ...HEADING_MARKER, z: HEADING_MARKER.z + 0.5 })
   assert(Math.abs(wrongPair - stored) > DEFAULT_SEPARATION_TOLERANCE_M)
+})
+
+// ── Session-frame bearing (wave 09 ticket 0009) ─────────────────────────────
+//
+// `composeYUpTransform` maps session +Z to the ENU direction at the bearing it
+// is given. Everything below establishes what bearing that has to be, because
+// the raw compass heading — which is what every call site used to pass — is
+// the heading of the *device*, not of the frame.
+
+/** Quaternion for a rotation of `deg` about the Y axis. */
+function yawQuat(deg: number) {
+  const half = (deg * Math.PI) / 360
+  return { x: 0, y: Math.sin(half), z: 0, w: Math.cos(half) }
+}
+
+const IDENTITY_ROT = { x: 0, y: 0, z: 0, w: 1 }
+
+/**
+ * The compass bearing `composeYUpTransform(_, b)` actually sends a session
+ * direction to, read back out of the matrix it produces.
+ *
+ * Deriving this from the matrix rather than asserting angles directly is what
+ * makes these tests about the real contract: if the yaw convention in
+ * `composeYUpTransform` ever changes sign, every case here fails.
+ */
+function bearingOfSessionDirection(frameBearingDeg: number, sessionYawDeg: number): number {
+  const m = composeYUpTransform({ x: 0, y: 0, z: 0 }, frameBearingDeg, 1)
+  const yaw = (sessionYawDeg * Math.PI) / 180
+  const dir = { x: Math.sin(yaw), z: Math.cos(yaw) }
+  // Column-major: east = row 0, north = row 2.
+  const east = m[0]! * dir.x + m[8]! * dir.z
+  const north = m[2]! * dir.x + m[10]! * dir.z
+  return normaliseBearingDeg((Math.atan2(east, north) * 180) / Math.PI)
+}
+
+Deno.test('cameraYawInSessionDeg: an identity camera faces session -Z, i.e. yaw 180', () => {
+  // Not a quirk to correct for — this is the measurement that makes the
+  // frame-bearing correction work without assuming how a provider sets up its
+  // world frame.
+  assertAlmostEquals(Math.abs(cameraYawInSessionDeg(IDENTITY_ROT)), 180, 1e-9)
+})
+
+Deno.test('cameraYawInSessionDeg: tracks the camera turning within the session', () => {
+  // Rotating +90° about Y takes the camera's forward from session -Z to -X,
+  // which is session yaw -90 in the atan2(x, z) convention.
+  assertAlmostEquals(cameraYawInSessionDeg(yawQuat(90)), -90, 1e-6)
+  assertAlmostEquals(cameraYawInSessionDeg(yawQuat(-90)), 90, 1e-6)
+  assertAlmostEquals(Math.abs(cameraYawInSessionDeg(yawQuat(180))), 0, 1e-6)
+})
+
+Deno.test('sessionFrameBearingDeg: the camera direction agrees in both frames', () => {
+  // The defining property. The camera's forward is one physical direction
+  // described twice — as a session yaw and as a compass bearing — so a correct
+  // frame bearing makes the two descriptions agree.
+  for (const deviceBearing of [0, 37, 90, 180, 275, 359]) {
+    for (const cameraTurn of [0, 45, 90, 180, -120]) {
+      const rotation = yawQuat(cameraTurn)
+      const frameBearing = sessionFrameBearingDeg(deviceBearing, rotation)!
+      const cameraSessionYaw = cameraYawInSessionDeg(rotation)
+      assertAlmostEquals(
+        bearingOfSessionDirection(frameBearing, cameraSessionYaw),
+        normaliseBearingDeg(deviceBearing),
+        1e-6,
+        `device ${deviceBearing}°, camera turned ${cameraTurn}°`,
+      )
+    }
+  }
+})
+
+Deno.test('sessionFrameBearingDeg: the raw compass heading is 180 degrees wrong at session start', () => {
+  // The bug this ticket exists for, stated as a test. With the camera at the
+  // session's starting orientation, passing the device heading straight to
+  // composeYUpTransform — which is what every call site did — points the scan
+  // exactly backwards.
+  const deviceBearing = 90 // facing east
+  const corrected = sessionFrameBearingDeg(deviceBearing, IDENTITY_ROT)!
+
+  assertAlmostEquals(corrected, 270, 1e-6, 'session +Z is behind the initial view')
+  assertAlmostEquals(
+    Math.abs(normaliseBearingDeg(corrected - deviceBearing)),
+    180,
+    1e-6,
+    'the uncorrected value is exactly reversed',
+  )
+
+  // And the reversal is real, not a bookkeeping artefact: the camera is looking
+  // east, so the direction it faces had better read as east.
+  assertAlmostEquals(
+    bearingOfSessionDirection(corrected, cameraYawInSessionDeg(IDENTITY_ROT)),
+    90,
+    1e-6,
+  )
+  assertAlmostEquals(
+    bearingOfSessionDirection(deviceBearing, cameraYawInSessionDeg(IDENTITY_ROT)),
+    270,
+    1e-6,
+    'uncorrected, the camera would be reported facing west while looking east',
+  )
+})
+
+Deno.test('sessionFrameBearingDeg: mid-session turning does not leak into the frame', () => {
+  // The second, larger error behind the flip. The frame is fixed at session
+  // start; the heading is sampled whenever the user taps. Turning 60° between
+  // those two moments changes the device heading by 60° and the frame by
+  // nothing, so the corrected value must be identical.
+  const atStart = sessionFrameBearingDeg(10, yawQuat(0))!
+  const afterTurning = sessionFrameBearingDeg(70, yawQuat(60))!
+  assertAlmostEquals(afterTurning, atStart, 1e-6)
+})
+
+Deno.test('sessionFrameBearingDeg: no compass fix stays null rather than becoming 0', () => {
+  assertEquals(sessionFrameBearingDeg(null, IDENTITY_ROT), null)
+  assertEquals(sessionFrameBearingDeg(undefined, IDENTITY_ROT), null)
+  assertEquals(sessionFrameBearingDeg(Number.NaN, IDENTITY_ROT), null)
+})
+
+Deno.test('normaliseBearingDeg: folds into [0, 360)', () => {
+  assertEquals(normaliseBearingDeg(0), 0)
+  assertEquals(normaliseBearingDeg(360), 0)
+  assertEquals(normaliseBearingDeg(-90), 270)
+  assertEquals(normaliseBearingDeg(450), 90)
+  assertEquals(normaliseBearingDeg(-450), 270)
 })
