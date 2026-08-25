@@ -21,7 +21,7 @@ import { AutoCapture } from './capture/auto-capture'
 import { KeyframeStreamer } from './capture/keyframes'
 import { ScanQualityMonitor, isFrameUnusable } from './capture/quality-monitor'
 import type { FrameQuality } from './capture/quality-monitor'
-import { InferenceRouter, WEBGPU_INFERENCE_ENABLED } from './inference/router'
+import { InferenceRouter, WebGpuInferenceError } from './inference/router'
 import { InferServerError } from './inference/server'
 import { getProvisioningStatus, provisionModel, removeProvisionedModel, estimateModelCacheBytes } from './inference/model-provisioning'
 import { bucket, resolveDetections, mergeDetections } from './spatial/resolver'
@@ -289,19 +289,22 @@ async function main() {
       overlay.setStatus(`AI: ${mode === 'server' ? 'Server' : 'WebGPU'}`)
     },
     router.path,
-    // Wave 05 ticket 0002 — undefined (no row shown) unless the WebGPU path
-    // is gated on, matching the toggle above. See src/ui/panel.ts's
-    // "On-device model provisioning" comment for why this isn't wired into
-    // the mode toggle itself.
-    WEBGPU_INFERENCE_ENABLED
+    // Wave 05 ticket 0004 — undefined (no row shown) on a device that cannot
+    // run the on-device path at all (router.hasWebGPU false). Provisioning
+    // 2.2 GB of weights a browser can never load them into buys nothing.
+    router.hasWebGPU
       ? () => provisionModel((stage, pct) => overlay.setProgress(pct, stage)).finally(() => {
         overlay.setProgress(null)
         void checkStorageQuota(store, overlay)
       })
       : undefined,
-    WEBGPU_INFERENCE_ENABLED
+    router.hasWebGPU
       ? async () => { await removeProvisionedModel(); return getProvisioningStatus() }
       : undefined,
+    // Wave 05 ticket 0004 — the toggle is always offered, but a device
+    // without WebGPU gets told specifically why it's disabled instead of
+    // just failing on use (this ticket's Acceptance Criteria).
+    router.hasWebGPU ? null : 'This browser has no WebGPU support',
   )
   panel.mount()
   // WebRTC live view is an experimental feature and must not appear in normal
@@ -310,7 +313,7 @@ async function main() {
   // Seed the "On-device model" row with real on-disk state (and, best-effort,
   // the download's total size) rather than leaving it on its mount-time
   // "checking…" placeholder indefinitely.
-  if (WEBGPU_INFERENCE_ENABLED) {
+  if (router.hasWebGPU) {
     void getProvisioningStatus({ probe: true }).then((status) => panel.setModelStatus(status))
   }
 
@@ -433,7 +436,11 @@ async function main() {
       // Not awaited: the write stays off the shutter's critical path, which
       // already has no flash, haptic or sound to cover latency
       // (../docs/product/UI_MANUAL.md:169-176). It is reconciled before the detections land.
-      const capturePersisted = store.putCapture({ captureIndex, timestamp, pose, blob })
+      // `engine: router.path` records which path this capture was actually
+      // sent to — wave 05 ticket 0004 provenance — read here rather than
+      // after router.infer() resolves so a captured-but-failed-on-device
+      // record still says "webgpu" (what was attempted), not "server".
+      const capturePersisted = store.putCapture({ captureIndex, timestamp, pose, blob, engine: router.path })
 
       overlay.setStatus('Analysing…')
 
@@ -563,6 +570,23 @@ async function main() {
             break
           default:
             overlay.setStatus('Capture failed — try again')
+        }
+      } else if (e instanceof WebGpuInferenceError) {
+        // On-device failed. The image was never sent anywhere — see
+        // src/inference/router.ts's fallback policy
+        // (docs/factory/05-on-device-inference/0004-ungate-toggle-and-fallback-policy.md).
+        // This branch exists so the user learns exactly that, instead of a
+        // generic "Capture failed" leaving them to guess whether their photo
+        // left the device.
+        switch (e.code) {
+          case 'timeout':
+            overlay.setStatus('On-device inference timed out — nothing was sent. Try again, or switch to Server.')
+            break
+          case 'not-provisioned':
+            overlay.setStatus('On-device model not downloaded yet — open the panel to download it, or switch to Server.')
+            break
+          default:
+            overlay.setStatus('On-device inference failed — nothing was sent. Try again, or switch to Server.')
         }
       } else {
         const message = e instanceof Error ? e.message : String(e)

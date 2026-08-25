@@ -6,7 +6,7 @@
  *   - Inline edit of label + description
  */
 import type { DetectionStore, StoredDetection } from '../scene/store'
-import { WEBGPU_INFERENCE_ENABLED, type InferMode } from '../inference/router'
+import type { InferMode } from '../inference/router'
 import { formatBytes, type ProvisioningStatus } from '../inference/model-provisioning'
 import { icon, iconLabel, type IconName } from './icons'
 
@@ -76,12 +76,21 @@ export class SidePanel {
     private _currentInferMode: InferMode = 'server',
     /**
      * Wave 05 ticket 0002 — starts (or resumes) the on-device model
-     * download. Undefined when WEBGPU_INFERENCE_ENABLED is off, same gating
-     * as the WebGPU toggle itself; see this.mount()'s "On-device model" row.
+     * download. Undefined on a device without WebGPU (wave 05 ticket 0004);
+     * see this.mount()'s "On-device model" row.
      */
     private readonly onProvisionModel?: () => Promise<ProvisioningStatus>,
     /** Deletes the cached model to reclaim space — explicit, user-initiated only. */
     private readonly onRemoveModel?: () => Promise<ProvisioningStatus>,
+    /**
+     * Wave 05 ticket 0004 — null when this device can run on-device
+     * inference; otherwise the specific reason the toggle is disabled (e.g.
+     * "This browser has no WebGPU support"). A device that cannot run it
+     * says so rather than failing on use, and never silently re-enables
+     * later (this ticket's Non-goals) — the toggle stays disabled for the
+     * lifetime of this SidePanel instance.
+     */
+    private readonly webGPUUnavailableReason: string | null = null,
   ) {
     this.panel = document.getElementById('side-panel')!
     this.content = document.getElementById('panel-content')!
@@ -214,29 +223,39 @@ export class SidePanel {
 
       this._aiServerBtn = mkToggle('monitor', 'Server', 'server')
       aiRow.appendChild(this._aiServerBtn)
-      // The WebGPU control is not built while the path is gated off. Every
-      // consumer of _aiWebGPUBtn is already null-guarded, so leaving it null is
-      // enough — the button simply never exists. Wave 05 restores it.
-      if (WEBGPU_INFERENCE_ENABLED) {
-        this._aiWebGPUBtn = mkToggle('bolt', 'WebGPU', 'webgpu')
-        aiRow.appendChild(this._aiWebGPUBtn)
+      // Wave 05 ticket 0004 un-gates this button — it is always offered now,
+      // rather than only existing behind a build-time flag. A device that
+      // cannot run it (this.webGPUUnavailableReason set) still shows the
+      // control, disabled, with the specific reason in its title — "the
+      // control explains why rather than failing on use" (this ticket's
+      // Acceptance Criteria), and disabled buttons don't dispatch click
+      // events, so onInferMode('webgpu') can never fire from here on such a
+      // device.
+      this._aiWebGPUBtn = mkToggle('bolt', 'On-device', 'webgpu')
+      if (this.webGPUUnavailableReason) {
+        this._aiWebGPUBtn.disabled = true
+        this._aiWebGPUBtn.title = this.webGPUUnavailableReason
+        this._aiWebGPUBtn.style.opacity = '0.35'
+        this._aiWebGPUBtn.style.cursor = 'not-allowed'
       }
+      aiRow.appendChild(this._aiWebGPUBtn)
       aiWrap.appendChild(aiRow)
 
       const aiNote = document.createElement('div')
       aiNote.id = 'ai-engine-note'
       aiNote.style.cssText = 'font-size:10px;color:rgba(255,255,255,0.25);padding:2px 0;'
-      aiNote.textContent = 'Server uses all machine cores'
+      aiNote.textContent = this.webGPUUnavailableReason ?? 'Server uses all machine cores'
       aiWrap.appendChild(aiNote)
 
       // ── On-device model provisioning (wave 05 ticket 0002) ────────────────
-      // Gated the same as the WebGPU toggle above: the runtime that would
-      // consume this cache doesn't exist yet (ticket 0003), but developing
-      // against provisioning itself only needs VITE_ENABLE_WEBGPU_INFERENCE=true.
+      // Gated on the same capability as the toggle above (this.onProvisionModel
+      // is undefined when router.hasWebGPU is false — see src/main.ts):
+      // downloading 2.2 GB of weights a browser can never load buys nothing.
       // A dedicated row rather than folded into the WebGPU pill click: which
       // routing/fallback decisions a selected mode triggers is ticket 0004's
-      // "ungate-toggle-and-fallback-policy", not this ticket's to decide.
-      if (WEBGPU_INFERENCE_ENABLED && this.onProvisionModel) {
+      // "ungate-toggle-and-fallback-policy" job, decided in src/main.ts and
+      // src/inference/router.ts, not here.
+      if (this.onProvisionModel) {
         const modelRow = document.createElement('div')
         modelRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;padding-top:2px;'
 
@@ -310,7 +329,14 @@ export class SidePanel {
       this._aiWebGPUBtn.setAttribute('data-active', String(mode === 'webgpu'))
     }
     const note = document.getElementById('ai-engine-note')
-    if (note) note.textContent = mode === 'server' ? 'Server uses all machine cores' : 'On-device — no data leaves your phone'
+    if (note) {
+      // A device that can't run on-device inference says so persistently —
+      // this note is the "why" the disabled toggle's title also carries, and
+      // it must survive updateInferMode() calls, not just mount() (wave 05
+      // ticket 0004's "says so specifically" acceptance criterion).
+      note.textContent = this.webGPUUnavailableReason
+        ?? (mode === 'server' ? 'Server uses all machine cores' : 'On-device — no data leaves your phone')
+    }
   }
 
   /**
