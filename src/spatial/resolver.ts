@@ -27,6 +27,31 @@ import type { DetectionObservation } from '../world/types'
 const DEDUP_RADIUS_M = 0.4
 const FALLBACK_DEPTH_M = 2.0
 
+/**
+ * Furthest a hit-test result may be from the camera and still be believed, in
+ * metres.
+ *
+ * The acceptance test below used to have a floor (`dist >= 0.3`) and no
+ * ceiling, which made it strictly more permissive than its own fallback:
+ * `raycastPointCloud()` bounds depth to `maxDepth = 5.0`, and
+ * `FALLBACK_DEPTH_M` is 2.0, yet an unbounded SLAM hit was taken at face
+ * value. On a sparsely-tracked room scan that produced detections 18-26 m out
+ * — a sofa recorded 23 m away and a monitor 4.7 m in the air — because 8th
+ * Wall will happily return a distant or degenerate feature when the local map
+ * is thin.
+ *
+ * Matched to `raycastPointCloud()`'s existing `maxDepth` so the primary path
+ * and its fallback agree on what counts as a plausible distance. Rejecting
+ * here is not fatal: the caller falls through to the async hit-test, then the
+ * point-cloud raycast, then the camera-relative fallback.
+ *
+ * A room-scale bound by construction. Scanning a space genuinely deeper than
+ * this needs it raised, and that is a deliberate decision rather than a silent
+ * default — see the drift benchmark in ticket 0006 for the measurement that
+ * should set it.
+ */
+const MAX_HIT_DISTANCE_M = 5.0
+
 export interface ViewSize {
   width: number
   height: number
@@ -236,7 +261,7 @@ export async function resolveDetections(
           dist = 1.0
         }
       }
-      if (dist >= 0.3) {
+      if (dist >= 0.3 && dist <= MAX_HIT_DISTANCE_M) {
         if (isFiniteVec3(syncHit.position)) {
           hitPos = syncHit.position
           hitRot = ensureValidRotation(syncHit.rotation)
@@ -244,8 +269,10 @@ export async function resolveDetections(
         } else {
           console.warn('[resolver] Centroid hitTest rejected: non-finite position', JSON.stringify(syncHit.position))
         }
-      } else {
+      } else if (dist < 0.3) {
         console.warn(`[resolver] Centroid hitTest rejected: too close to camera (${dist.toFixed(3)}m)`)
+      } else {
+        console.warn(`[resolver] Centroid hitTest rejected: implausibly far (${dist.toFixed(2)}m > ${MAX_HIT_DISTANCE_M}m) — falling through`)
       }
     }
 
@@ -263,7 +290,7 @@ export async function resolveDetections(
             dist = 1.0
           }
         }
-        if (dist >= 0.3) {
+        if (dist >= 0.3 && dist <= MAX_HIT_DISTANCE_M) {
           if (isFiniteVec3(asyncHit.position)) {
             hitPos = asyncHit.position
             hitRot = ensureValidRotation(asyncHit.rotation)
@@ -271,8 +298,10 @@ export async function resolveDetections(
           } else {
             console.warn('[resolver] Async hitTest rejected: non-finite position', JSON.stringify(asyncHit.position))
           }
-        } else {
+        } else if (dist < 0.3) {
           console.warn(`[resolver] Async hitTest rejected: too close to camera (${dist.toFixed(3)}m)`)
+        } else {
+          console.warn(`[resolver] Async hitTest rejected: implausibly far (${dist.toFixed(2)}m > ${MAX_HIT_DISTANCE_M}m) — falling through`)
         }
       }
     }

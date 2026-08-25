@@ -166,18 +166,25 @@ export type ProjectSpatialFrame = {
 /**
  * One AR session's alignment onto a Place's {@link ProjectSpatialFrame}.
  *
- * `status` means:
+ * `status` is a measurement, not a label — wave 09 ticket 0004 restored the
+ * producer that ticket 0001 retired, so these words are now backed by an
+ * actual check performed at commit time in `src/ar/project-calibration.ts`:
+ * - `'verified'` — reachable only on the `'two-point-ground'` tier, and only
+ *   when this Place already had a stored two-point frame *and* the
+ *   re-measured landmark→marker separation matched its `separationM` within
+ *   `toleranceM`. `residualM` carries the measured difference.
  * - `'provisional'` — a frame is established, but its agreement with any
- *   previously recorded frame for this Place is unconfirmed. Every
- *   `'ground-tap-compass'` calibration is necessarily this, because a single
- *   ground anchor is project-space (0,0,0) by construction and so cannot be
- *   checked against itself.
- * - `'verified'` — reachable only on the `'two-point-ground'` tier, and only by
- *   re-measuring the landmark→marker separation against the stored reference
- *   within `toleranceM`. Values on older stored records were written by the
- *   #141-era build, where the label did not imply an actual check.
+ *   previously recorded frame for this Place is unconfirmed. Three ways to
+ *   land here: a Place's first calibration (nothing to compare against), a
+ *   `'ground-tap-compass'` fallback (a single ground anchor is project-space
+ *   (0,0,0) by construction and so cannot be checked against itself), or a
+ *   user overriding a separation mismatch — which is precisely the case where
+ *   the check ran and did *not* pass, so it must never report verified.
  * - `'uncalibrated'` — written by `src/export/gltf.ts`'s `?? 'uncalibrated'`
  *   fallback when a scan has no calibration at all.
+ *
+ * Values on records written by the #141-era build predate all of this, where
+ * `'verified'` did not imply any check had run.
  */
 export type ScanCalibration = {
   /** Maps this AR session's local coordinates into project space. */

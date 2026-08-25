@@ -136,6 +136,60 @@ export function anchorToProjectTransform(tapPos: Vec3, bearingDeg: number | null
   return rotation
 }
 
+/**
+ * Builds a `ScanCalibration.sessionToProject` matrix for the two-point
+ * ground calibration (wave 09 ticket 0004): the **landmark** becomes
+ * project-space origin (0,0,0) and the **heading marker** lands on the
+ * frame's forward (+Z) axis at `separationM` from it.
+ *
+ * The heading comes entirely from the landmark→marker geometry — the compass
+ * contributes nothing (ADR 0005). That is the whole point of the tier: a
+ * frame built this way is reproducible across sessions that started at
+ * different device yaws, which a compass-derived heading is not.
+ *
+ * `atan2(x, z)` is the Y-up convention already used by `composeYUpTransform`
+ * above and by `viewer.ts`'s `updateWorldHud()`, so all three agree on
+ * handedness. Delegates the matrix construction to
+ * {@link anchorToProjectTransform} rather than repeating its column-major
+ * translation arithmetic — the yaw is the only thing that differs.
+ *
+ * Both points are expected to be coplanar already (the caller projects them
+ * onto the established ground plane before calling); only x and z are read,
+ * so a stray `y` cannot tilt the frame even if that projection is skipped.
+ */
+export function twoPointToProjectTransform(landmark: Vec3, headingMarker: Vec3): number[] {
+  // The negation is load-bearing, not a fudge. `anchorToProjectTransform`
+  // reuses `composeYUpTransform`'s rotation *as-is* rather than inverting it,
+  // and that matrix maps a world direction into project space by rotating it
+  // by MINUS its `bearingDeg` argument — solving `R(b)·d = +Z` gives
+  // `d = (-sin b, 0, cos b)`, i.e. project +Z corresponds to the world
+  // direction at bearing `-b`.
+  //
+  // So to make the landmark→marker baseline (whose compass bearing is
+  // `twoPointHeadingDeg`) come out along project +Z, the value handed to that
+  // builder must be the baseline's bearing negated. Verified by
+  // `twoPointToProjectTransform: the heading marker lands on +Z at the
+  // recorded separation` in tests/unit/deno/anchor_calibration.test.ts, which
+  // fails by exactly this sign if the negation is dropped.
+  return anchorToProjectTransform(landmark, -twoPointHeadingDeg(landmark, headingMarker))
+}
+
+/** Compass-convention bearing, in degrees, of the landmark→marker baseline. */
+export function twoPointHeadingDeg(landmark: Vec3, headingMarker: Vec3): number {
+  return Math.atan2(headingMarker.x - landmark.x, headingMarker.z - landmark.z) * RAD_TO_DEG
+}
+
+/**
+ * Landmark→marker distance in metres, measured in the ground plane.
+ *
+ * Deliberately 2D: the two points are coplanar by construction, so folding in
+ * `dy` would be harmless arithmetic that implies a vertical component the
+ * ground projection has already removed.
+ */
+export function twoPointSeparationM(landmark: Vec3, headingMarker: Vec3): number {
+  return Math.hypot(headingMarker.x - landmark.x, headingMarker.z - landmark.z)
+}
+
 export function matrixTranslation(matrix: number[]): Vec3 {
   return {
     x: Number(matrix[12] ?? 0),

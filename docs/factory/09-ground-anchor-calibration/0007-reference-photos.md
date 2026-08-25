@@ -3,7 +3,8 @@
 > **Branch:** `feat/calibration-reference-photos`
 > **Commit style:** `feat(ar): summary`
 > **Design:** this ticket is the spec
-> **Dependencies:** 0002 (two-point schema), 0004 (the staged capture flow this hooks into).
+> **Dependencies:** 0002 (two-point schema) — **landed**. 0004 (the staged capture flow this
+> hooks into) — **landed**. This ticket is unblocked.
 
 ## Goal
 
@@ -28,6 +29,46 @@ A photo taken from where the user stood, with the exact tap point marked on it, 
 from recall into recognition. It is also the cheapest term to attack: the capture, encode, and
 upload machinery all already exist (see Pinned conventions) — this ticket is mostly wiring.
 
+## Why a photo and not the stored points themselves
+
+The obvious request is: the Place already has reference points, so draw them in AR when the
+user comes back. That is not achievable, and the reason belongs here so it is not re-proposed
+every time someone reads the schema.
+
+A committed two-point frame stores:
+
+```
+landmark:      { x: 0, y: 0, z: 0 }
+headingMarker: { x: 0, y: 0, z: separationM }
+```
+
+Those are project-space coordinates, and they are **tautological by construction** — the
+landmark *is* the origin and the marker *is* on +Z at `separationM`. They carry no information
+about where those points sit in the room.
+
+Drawing them in a new session requires a transform from that session's arbitrary local
+coordinates into project space. That transform is `sessionToProject` — precisely what
+calibration produces. So the overlay would need the alignment, and the alignment is what the
+overlay was supposed to help produce. No storage schema resolves this; bridging it is
+relocalization (image targets, VPS, or persistent cloud anchors), which ticket 0004's open
+questions already defer to a ticket of its own.
+
+A photo sidesteps the circularity entirely, because recognition needs no transform.
+
+## The return-visit flow
+
+1. Stage 1 shows **photo A** with its crosshair. The user walks there and taps → landmark placed.
+2. Stage 2 shows **photo B**. The user walks and taps → heading marker placed.
+3. A candidate `sessionToProject` now exists. The re-measured separation is checked against the
+   stored `separationM` within `toleranceM` (ticket 0004).
+4. **Only now** can the stored reference points be drawn, because only now does the transform
+   exist. Render both markers — and, where available, the previous scan — as confirmation the
+   user is standing in the same frame as last time.
+
+Step 4 is what satisfies "the reference points must show when the user opens the project
+again". They appear as **verification after re-placement**, not as guidance before it. That
+ordering is forced by the geometry rather than chosen, and the copy should not imply otherwise.
+
 ## Non-goals
 
 - Do not do image-based relocalization, feature matching, or any automatic pose recovery from
@@ -42,6 +83,9 @@ upload machinery all already exist (see Pinned conventions) — this ticket is m
 - Do not add photos to the `'ground-tap-compass'` fallback member. That tier has no
   cross-session verification story at all (ticket 0002); adding a re-acquisition aid to it
   would imply one.
+- Do not attempt to render the stored reference points as an AR overlay *before* calibration
+  completes — it is circular, for the reason above. Drawing them after step 3 is in scope and
+  required.
 - Do not build a photo gallery, editing, or re-shoot UI in the World Editor. Capture-side only.
 - Do not change `CaptureModule`'s existing encoding defaults or `captureFrame()`'s queue
   semantics.
@@ -201,6 +245,14 @@ string with `role: 'landmark' | 'headingMarker'`, `tapPoint`, `pose`), mirroring
 - [ ] A frame whose photos are missing or un-uploaded says so rather than showing an empty
       panel
 - [ ] Re-calibration replaces both photos rather than appending
+- [ ] `pointLabels` is captured alongside each photo and shown with it on return — a short
+      typed description ("north door frame") survives a photo that turns out ambiguous. The
+      field already exists in ticket 0002's schema and nothing currently populates it
+- [ ] Both committed markers stay rendered in the AR scene for the rest of the session, not
+      only the landmark. Ticket 0004 as shipped calls `dropCommittedOrigin()` for the landmark
+      alone, and `clearPlacement()` tears the heading marker's decal down at commit
+- [ ] After a successful separation check, both stored markers are drawn in the live scene as
+      confirmation (step 4 of the return-visit flow)
 - [ ] Photos are never read by any transform or verification code path
 - [ ] `npx tsc --noEmit`, `deno task check`, `deno task test` pass
 
@@ -246,6 +298,14 @@ npx playwright test tests/ar-scan.spec.ts
 
 ## Risks / potential issues
 
+- **Risk (this ticket's reason for existing):** `separationM` proves the two points were *the
+  right distance apart*, never that they were *the same two points*. Two wrong-but-equidistant
+  features pass. Tapping the correct pair in the **reverse order** also passes — while rotating
+  the frame exactly 180° — and the check reports `'verified'` in both cases. — **Mitigation:**
+  this is the failure photos and `pointLabels` exist to attack, and it is the argument for the
+  ticket rather than a footnote to it. The residual cannot detect it; only the user can, and
+  only if given something to recognise. Because order determines the frame's rotation, the panel
+  must make unmistakably clear which photo is A and which is B.
 - **Risk:** A reference photo creates false confidence — the user matches the photo's *view*
   and assumes the tap is therefore in the right place, when matching a wide shot by eye is
   worth perhaps tens of centimetres. — **Mitigation:** the crosshair is what makes it precise
@@ -289,3 +349,6 @@ npx playwright test tests/ar-scan.spec.ts
 11. [ ] `npx tsc --noEmit`, `deno task check`, `deno task test`, Playwright
 12. [ ] Run the two-device on-device check; record the `separationM` spread against 0006's
         Procedure 2 baseline
+13. [ ] Capture and store `pointLabels` per marker; show them beside the photos on return
+14. [ ] Keep both committed markers in the scene for the session, and draw the stored pair once
+        the separation check passes

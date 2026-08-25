@@ -1,0 +1,22 @@
+<!doctype html>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Camera check</title>
+<body style="font:16px system-ui;background:#061019;color:#eff0f0;padding:16px">
+<h2>Plain getUserMedia probe</h2>
+<div id="out">starting…</div>
+<video id="v" autoplay playsinline muted style="width:60vw;border:1px solid #72ddd4;margin-top:12px"></video>
+<script>
+const out = document.getElementById('out');
+const log = (m) => { out.innerHTML += '<br>' + m; console.warn('[camera-check] ' + m); };
+out.textContent = 'secure=' + window.isSecureContext + ' mediaDevices=' + !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+  .then((s) => {
+    document.getElementById('v').srcObject = s;
+    const t = s.getVideoTracks()[0];
+    log('OK — got stream: ' + t.label + ' ' + JSON.stringify(t.getSettings()));
+  })
+  .catch((e) => log('FAIL — ' + e.name + ': ' + e.message));
+navigator.mediaDevices.enumerateDevices()
+  .then((ds) => log('devices: ' + ds.filter(d => d.kind === 'videoinput').map(d => d.label || '(label hidden)').join(' | ')))
+  .catch((e) => log('enumerateDevices failed: ' + e));
+</script>

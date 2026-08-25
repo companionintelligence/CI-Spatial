@@ -1024,26 +1024,34 @@ async function main() {
     })
     if (calibration) {
       sessionCalibration = calibration.calibration
+      // `spatialFrame` means "the Place's durable frame CHANGED and must be
+      // persisted" — a first calibration, an upgrade from the one-point tier,
+      // or a deliberate override after a mismatch. Ticket 0004 widened this
+      // from #141's narrower "first calibration ever", so do not read its
+      // presence as a first-visit signal.
+      //
+      // It is deliberately absent when a stored two-point frame was merely
+      // *verified*: that frame is the reference the measurement was taken
+      // against, and rewriting it every visit would let it drift session by
+      // session — the exact failure the separation check exists to catch.
       if (calibration.spatialFrame) {
         selectedProject.spatialFrame = calibration.spatialFrame
         await projectStore.updateProject(selectedProject)
         await persistProjectSpatialFrame(selectedProject)
       }
-      // Branch on whether a frame was just created, not on `status` — status is
-      // now always 'provisional' (see project-calibration.ts). `spatialFrame` is
-      // returned only on a Place's first calibration, so its presence is the
-      // first-visit signal.
-      //
-      // The repeat-visit copy used to read "Project aligned to the existing
-      // anchor", which asserted an alignment nothing had checked. It now says
-      // what is actually true and what the user can act on: this Place already
-      // had an anchor, and only tapping the same physical spot keeps scans
-      // together.
-      overlay.setStatus(
-        calibration.spatialFrame
-          ? 'Project frame established. Start scanning.'
-          : 'Anchor placed — scans align only if it is the same physical spot.',
-      )
+      // Status is a measurement again on the two-point tier, so the copy can
+      // finally report something that was actually checked rather than
+      // asserting an alignment nothing verified.
+      const committed = calibration.calibration
+      if (committed.method === 'two-point-ground') {
+        overlay.setStatus(
+          committed.status === 'verified'
+            ? `Alignment verified — ${Math.abs(committed.residualM * 100).toFixed(0)} cm from this Place's stored pair.`
+            : 'Project frame set from two points. Start scanning.',
+        )
+      } else {
+        overlay.setStatus('Single-point anchor — scans align only if it is the same physical spot.')
+      }
     } else {
       overlay.setStatus('Scanning without project alignment')
     }

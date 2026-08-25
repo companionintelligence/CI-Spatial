@@ -30,6 +30,9 @@ type Point3 = { x: number; y: number; z: number }
 const MIN_POINT_DISTANCE_M = 0.08
 const MAX_POINT_DISTANCE_M = 50
 
+/** How long start() waits for /xr.js before giving up with a real error. */
+const XR_LOAD_TIMEOUT_MS = 10_000
+
 // XR8 is a global injected by xr.js — we declare it to satisfy TypeScript
 declare const XR8: {
   addCameraPipelineModule(mod: object): void
@@ -234,11 +237,23 @@ export class EighthWallProvider implements ARProvider {
   }
 
   async start(canvas: HTMLCanvasElement): Promise<void> {
-    // Wait for xr.js to finish loading if it hasn't yet
+    // Wait for xr.js to finish loading if it hasn't yet.
+    //
+    // Bounded deliberately: an unconditional await here never settles if
+    // /xr.js fails to load, so start() would hang forever with no error and
+    // no camera — indistinguishable from "still initialising". main.ts's
+    // waitForXR8() already times out for the same reason; this is the same
+    // guarantee one layer down.
     if (typeof XR8 === 'undefined') {
-      await new Promise<void>((resolve) =>
-        window.addEventListener('xrloaded', () => resolve(), { once: true }),
-      )
+      const loaded = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), XR_LOAD_TIMEOUT_MS)
+        window.addEventListener('xrloaded', () => { clearTimeout(timer); resolve(true) }, { once: true })
+      })
+      if (!loaded) {
+        throw new Error(
+          `8th Wall engine (/xr.js) did not load within ${XR_LOAD_TIMEOUT_MS} ms — the AR camera cannot start`,
+        )
+      }
     }
 
     // SLAM chunk may already be preloaded via data-preload-chunks="slam";
@@ -260,6 +275,32 @@ export class EighthWallProvider implements ARProvider {
     ;(window as unknown as { THREE: typeof THREE }).THREE = THREE
 
     XR8.addCameraPipelineModules([
+      // Diagnostics first, so it is installed before anything can fail.
+      //
+      // XR8.run() is fire-and-forget: it returns void and reports camera
+      // acquisition and pipeline errors only through these hooks. With
+      // neither wired up, a device that cannot open the camera showed a
+      // black canvas and nothing else — the only signal was the generic
+      // 5 s "pose not received" warning below, and the calibration overlay
+      // told the user to check the camera "isn't covered" when the real
+      // failure was that the camera was never successfully requested.
+      // Observed on a Galaxy Tab S8 Ultra, where Chrome never even raised
+      // its camera permission prompt. These log through console.error /
+      // console.warn so src/debug/remote-log.ts relays them off-device.
+      {
+        name: 'ci-scan-diagnostics',
+        onCameraStatusChange({ status }: { status: string }) {
+          if (status === 'failed') {
+            console.error('[8thwall] Camera failed to start — no video feed will render')
+          } else {
+            console.log(`[8thwall] Camera status: ${status}`)
+          }
+        },
+        onException(error: unknown) {
+          const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+          console.error('[8thwall] Pipeline exception —', detail, error)
+        },
+      },
       XR8.GlTextureRenderer.pipelineModule(), // draws camera feed to canvas
       XR8.Threejs.pipelineModule(), // world-locked scene for the calibration decal
       XR8.XrController.pipelineModule(), // enables SLAM 6-DoF tracking + pose
