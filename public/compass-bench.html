@@ -1,0 +1,181 @@
+<!doctype html>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Compass bench</title>
+<style>
+  body { font: 15px/1.45 system-ui, sans-serif; background: #061019; color: #eff0f0; padding: 14px; margin: 0; }
+  h1 { font-size: 17px; margin: 0 0 4px; color: #72ddd4; }
+  .hint { color: #93a1ad; font-size: 12px; margin: 0 0 12px; }
+  .block { border: 1px solid rgba(114,221,212,0.3); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+  .k { color: #93a1ad; }
+  .big { font-size: 26px; font-weight: 700; color: #72ddd4; }
+  .warn { color: #ff9b9b; }
+  button { font: inherit; padding: 9px 14px; margin-right: 8px; border-radius: 8px;
+           border: 1px solid rgba(114,221,212,0.6); background: rgba(114,221,212,0.14); color: #72ddd4; }
+  pre { white-space: pre-wrap; margin: 0; font: 13px/1.5 ui-monospace, monospace; }
+</style>
+<body>
+<h1>Compass bench</h1>
+<p class="hint">
+  Wave 09 / ticket 0006. Measures what the magnetometer actually does on this device, so the
+  compass-vs-geometry choice rests on numbers instead of assertions. Hold the tablet still and
+  in one orientation for a run; use <b>Mark</b> to snapshot a spot before moving to the next.
+</p>
+
+<div class="block">
+  <div><span class="k">bearing now</span></div>
+  <div class="big" id="now">—</div>
+  <div id="src" class="k">waiting for a reading…</div>
+</div>
+
+<div class="block">
+  <button id="reset">Reset run</button>
+  <button id="mark">Mark spot</button>
+</div>
+
+<div class="block">
+  <div><span class="k">this run</span></div>
+  <pre id="stats">no samples yet</pre>
+</div>
+
+<div class="block">
+  <div><span class="k">marked spots</span></div>
+  <pre id="marks">none</pre>
+</div>
+
+<script>
+(function () {
+  var samples = []          // bearings in degrees, chronological
+  var startedAt = Date.now()
+  var lastEvent = null
+  var sawAbsolute = false
+  var sawIos = false
+  var eventNames = {}
+  var marks = []
+
+  var nowEl = document.getElementById('now')
+  var srcEl = document.getElementById('src')
+  var statsEl = document.getElementById('stats')
+  var marksEl = document.getElementById('marks')
+
+  /**
+   * Circular statistics. A plain mean/stddev is wrong for bearings: 359 deg and
+   * 1 deg are two degrees apart, but average to 180. Everything below goes
+   * through the unit-vector form, which has no wrap discontinuity.
+   */
+  function circStats(degs) {
+    if (!degs.length) return null
+    var sx = 0, sy = 0
+    for (var i = 0; i < degs.length; i++) {
+      var r = degs[i] * Math.PI / 180
+      sx += Math.cos(r); sy += Math.sin(r)
+    }
+    sx /= degs.length; sy /= degs.length
+    var meanRad = Math.atan2(sy, sx)
+    var mean = (meanRad * 180 / Math.PI + 360) % 360
+    var R = Math.sqrt(sx * sx + sy * sy)               // resultant length, 0..1
+    // Circular standard deviation (Mardia): sqrt(-2 ln R).
+    var sd = R > 0 ? Math.sqrt(-2 * Math.log(Math.min(R, 1))) * 180 / Math.PI : 180
+    // Peak-to-peak as the widest signed deviation from the mean.
+    var lo = 0, hi = 0
+    for (var j = 0; j < degs.length; j++) {
+      var d = ((degs[j] - mean + 540) % 360) - 180
+      if (d < lo) lo = d
+      if (d > hi) hi = d
+    }
+    return { n: degs.length, mean: mean, sd: sd, lo: lo, hi: hi, span: hi - lo, R: R }
+  }
+
+  function fmt(s) {
+    if (!s) return 'no samples yet'
+    return 'samples   ' + s.n + '\n' +
+           'mean      ' + s.mean.toFixed(1) + ' deg\n' +
+           'circ sd   ' + s.sd.toFixed(2) + ' deg\n' +
+           'spread    ' + s.span.toFixed(2) + ' deg  (' + s.lo.toFixed(2) + ' .. +' + s.hi.toFixed(2) + ')\n' +
+           'R         ' + s.R.toFixed(5) + '   (1.0 = perfectly steady)'
+  }
+
+  function render() {
+    var all = circStats(samples)
+    var recent = circStats(samples.slice(-100))
+    var secs = ((Date.now() - startedAt) / 1000).toFixed(0)
+    var rate = samples.length ? (samples.length / Math.max(1, (Date.now() - startedAt) / 1000)).toFixed(1) : '0'
+    statsEl.textContent =
+      'elapsed   ' + secs + ' s   at ' + rate + ' Hz\n' +
+      '--- whole run ---\n' + fmt(all) +
+      '\n--- last ~100 samples ---\n' + fmt(recent)
+  }
+
+  function onOrientation(e) {
+    lastEvent = e
+    eventNames[e.type] = (eventNames[e.type] || 0) + 1
+    var bearing = null
+    var how = ''
+    if (typeof e.webkitCompassHeading === 'number') {
+      bearing = e.webkitCompassHeading
+      how = 'webkitCompassHeading (iOS, true north)'
+      sawIos = true
+    } else if (e.absolute && typeof e.alpha === 'number') {
+      bearing = (360 - e.alpha) % 360
+      how = 'alpha with absolute=true (Android, true north)'
+      sawAbsolute = true
+    } else if (typeof e.alpha === 'number') {
+      how = 'alpha but absolute=' + e.absolute + ' — NOT true north, ignored'
+    }
+
+    // Mirror geo-tracker.ts exactly: it only accepts the two forms above, so a
+    // relative-only device yields bearing null and the frame falls back to the
+    // AR session's arbitrary startup yaw.
+    srcEl.textContent = how + '   [' + Object.keys(eventNames).map(function (k) {
+      return k + ':' + eventNames[k]
+    }).join(' ') + ']'
+    if (bearing === null) {
+      nowEl.textContent = 'null'
+      nowEl.className = 'big warn'
+      return
+    }
+    nowEl.className = 'big'
+    nowEl.textContent = bearing.toFixed(1) + ' deg'
+    samples.push(bearing)
+    if (samples.length > 20000) samples.shift()
+  }
+
+  window.addEventListener('deviceorientationabsolute', onOrientation, { passive: true })
+  window.addEventListener('deviceorientation', onOrientation, { passive: true })
+
+  // iOS 13+ gates the sensor behind an explicit user gesture.
+  if (typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
+    var b = document.createElement('button')
+    b.textContent = 'Enable motion sensors'
+    b.onclick = function () { DeviceOrientationEvent.requestPermission().catch(function () {}) }
+    document.body.insertBefore(b, document.body.children[2])
+  }
+
+  document.getElementById('reset').onclick = function () {
+    samples = []; startedAt = Date.now(); render()
+  }
+  document.getElementById('mark').onclick = function () {
+    var s = circStats(samples.slice(-200))
+    if (!s) return
+    marks.push(s)
+    marksEl.textContent = marks.map(function (m, i) {
+      return '#' + (i + 1) + '  mean ' + m.mean.toFixed(1) + ' deg   sd ' + m.sd.toFixed(2) +
+             '   spread ' + m.span.toFixed(2) + '   n=' + m.n
+    }).join('\n')
+    // Spread between marks is the number that decides this: if the same physical
+    // heading reads differently from spot to spot, the magnetometer is being
+    // pulled by the building, not by where the device is pointing.
+    if (marks.length > 1) {
+      var means = marks.map(function (m) { return m.mean })
+      var between = circStats(means)
+      marksEl.textContent += '\n\nbetween marks: spread ' + between.span.toFixed(2) +
+        ' deg (sd ' + between.sd.toFixed(2) + ')'
+    }
+    samples = []; startedAt = Date.now()
+  }
+
+  setInterval(render, 500)
+  render()
+})()
+</script>
+</body>
