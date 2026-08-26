@@ -240,6 +240,48 @@ telemetry runs above — a real jam and a real healthy move — rather than
 synthetic fixtures, because this failure only appears on tired hardware and
 cannot be reproduced on demand.
 
+### The sign probe (why a "jam" is usually not a jam)
+
+Before declaring a jam the loop flips the correction sign once and drives again
+for a full stall budget. This is not defensive padding — it is the common case.
+
+Measured 2026-08-26. A move was reported jammed at pan −53.6 three times in a
+row, and the message told the operator to power-cycle. A raw `gimbal_nudge` of
++40°/s then moved it 20°, proving the hardware was fine. With the flip:
+
+```
+t=0.0–2.4s   pan −53.6   stuck, 6 stalled ticks  -> flip sign
+t=2.8s       pan −59.8   moving
+t=4.8s       pan −90.9
+t=6.9s       pan −122.7  converged
+```
+
+The correction sign is derived from an approximate Euler decomposition of the
+live quaternion, and it does not hold at every pose. When it is wrong the loop
+drives into a limit and sits there, which is indistinguishable from a jam by
+observation alone. The flip costs ~2.4s and turns a false diagnosis into a
+recovery.
+
+The state machine lives in `protocol/stall.mjs` as `createStallGuard()` rather
+than as flags in the control loop, because the inline version grew two
+control-flow bugs in one sitting — a `continue` that never commanded the
+flipped direction, and a missing `else` that flipped and gave up in the same
+tick. Both were invisible except as a nonsense "0 consecutive ticks" in the
+error string. 13 regression tests cover it.
+
+### Known pan limit on this rig
+
+As of 2026-08-26 the pan axis will not travel past about **−53.5°**. Three
+independent moves stalled there, and the sign probe confirmed neither direction
+gets past it. Usable range is roughly **−145° to −53.5°** — about 90°, which is
+enough for a sweep, but a scan grid spanning wider will stall at the boundary.
+
+The limit is not fixed across sessions: before a power-cycle earlier the same
+day it sat at **+75.7°** instead. That is consistent with a follow-mode range
+measured relative to wherever the handle was when the gimbal booted, not a
+mechanical stop — so re-measure it after any restart rather than hard-coding
+either number.
+
 ### When it fires
 
 `stalled: true` means the axis is jammed or at a limit. A longer `maxMs` will

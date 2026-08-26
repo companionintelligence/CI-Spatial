@@ -73,3 +73,52 @@ export function firstStallTick(samples) {
   }
   return -1;
 }
+
+/**
+ * Stall state machine for one closed-loop move.
+ *
+ * Encapsulated rather than left as loose flags in the control loop because the
+ * inline version grew two control-flow bugs in a single sitting: a `continue`
+ * that spun the loop without ever commanding the flipped direction, and then a
+ * missing `else` that flipped the sign and returned "jammed" in the same tick.
+ * Both were invisible in the happy path and only showed up as a nonsense
+ * "did not move for 0 consecutive ticks" in an error string. Three states and
+ * one transition is small enough to test exhaustively; the loop just asks.
+ *
+ * Verdicts:
+ *   'ok'         — keep driving
+ *   'flip-sign'  — stalled, but the correction sign has not been tried the
+ *                  other way yet. Flip and keep driving.
+ *   'jammed'     — stalled in both directions. Give up.
+ *
+ * The flip matters because the sign is derived from an approximate Euler
+ * decomposition that does not hold at every pose. Measured 2026-08-26: a move
+ * sat at pan -53.6 for three separate attempts and was reported jammed; with
+ * the flip it moved -53.6 -> -122.7 and converged in 6.9s. A "jam" that is
+ * really a sign error is the common case, not the rare one.
+ */
+export function createStallGuard() {
+  let stalled = 0;
+  let flipped = false;
+  let prev = null;
+  return {
+    /** Fold one sample; returns 'ok' | 'flip-sign' | 'jammed'. */
+    observe(cur) {
+      stalled = foldStall(stalled, prev, cur);
+      prev = cur;
+      if (stalled < STALL_TICKS_LIMIT) return 'ok';
+      if (!flipped) {
+        flipped = true;
+        // Reset so the flipped direction gets a full budget of its own before
+        // being judged — otherwise one leftover tick condemns it immediately.
+        stalled = 0;
+        return 'flip-sign';
+      }
+      return 'jammed';
+    },
+    /** Consecutive stalled ticks, for the diagnostic message. */
+    get stalledTicks() { return stalled; },
+    /** Whether the sign was flipped during this move. */
+    get flipped() { return flipped; },
+  };
+}

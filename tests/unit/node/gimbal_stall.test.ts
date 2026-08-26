@@ -16,6 +16,7 @@ import {
   movedDeg,
   foldStall,
   firstStallTick,
+  createStallGuard,
 } from '../../../subsystems/osmo-ble/protocol/stall.mjs'
 
 const s = (pan: number, tilt = 0) => ({ pan, tilt })
@@ -82,4 +83,58 @@ test('the first sample can never be a stall', () => {
 test('a run shorter than the limit is not a stall', () => {
   const brief = Array.from({ length: STALL_TICKS_LIMIT - 1 }, () => s(42))
   assert.equal(firstStallTick(brief), -1)
+})
+
+// ── The stall guard ──────────────────────────────────────────────────────────
+// This state machine exists because the same logic, written inline in the
+// control loop, grew two control-flow bugs in one sitting. Both were invisible
+// except as a nonsense number in an error string, so it is tested exhaustively.
+
+const feed = (guard: ReturnType<typeof createStallGuard>, pan: number, n: number) =>
+  Array.from({ length: n }, () => guard.observe({ pan, tilt: 0 }))
+
+test('guard: a moving axis is always ok', () => {
+  const g = createStallGuard()
+  const verdicts = MOVING.map((sample) => g.observe(sample))
+  assert.ok(verdicts.every((v) => v === 'ok'))
+  assert.equal(g.flipped, false)
+})
+
+test('guard: a stall asks for a sign flip before ever calling it jammed', () => {
+  const g = createStallGuard()
+  const verdicts = feed(g, 42, STALL_TICKS_LIMIT + 1)
+  assert.equal(verdicts.filter((v) => v === 'flip-sign').length, 1)
+  assert.ok(!verdicts.includes('jammed'), 'must not condemn on the first stall')
+  assert.equal(g.flipped, true)
+})
+
+test('guard: the flipped direction gets a full budget of its own', () => {
+  const g = createStallGuard()
+  feed(g, 42, STALL_TICKS_LIMIT + 1)          // first stall -> flip
+  // This is the bug that shipped briefly: a leftover count condemned the
+  // flipped direction immediately, reported as "0 consecutive ticks".
+  const next = feed(g, 42, STALL_TICKS_LIMIT - 1)
+  assert.ok(!next.includes('jammed'), 'flipped direction was condemned too early')
+})
+
+test('guard: stalling in both directions is jammed', () => {
+  const g = createStallGuard()
+  feed(g, 42, STALL_TICKS_LIMIT + 1)          // flip
+  const after = feed(g, 42, STALL_TICKS_LIMIT + 1)
+  assert.ok(after.includes('jammed'))
+})
+
+test('guard: it only ever flips once', () => {
+  const g = createStallGuard()
+  const all = [...feed(g, 42, STALL_TICKS_LIMIT + 1), ...feed(g, 42, STALL_TICKS_LIMIT * 3)]
+  assert.equal(all.filter((v) => v === 'flip-sign').length, 1)
+})
+
+test('guard: recovering after the flip never reports jammed', () => {
+  // The real 2026-08-26 recovery: stuck at -53.6, flipped, then moved away.
+  const g = createStallGuard()
+  feed(g, -53.6, STALL_TICKS_LIMIT + 1)       // stall -> flip-sign
+  const recovery = [-59.8, -74.5, -90.9, -105.8, -122.7]
+    .map((pan) => g.observe({ pan, tilt: 0 }))
+  assert.ok(recovery.every((v) => v === 'ok'), 'a recovered move must not be condemned')
 })

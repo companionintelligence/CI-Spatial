@@ -14,7 +14,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { WebSocketServer } from 'ws';
 import { OsmoBleTransport } from './ble-transport.mjs';
-import { foldStall, STALL_TICKS_LIMIT } from '../protocol/stall.mjs';
+import { createStallGuard } from '../protocol/stall.mjs';
 import { buildGimbalRecenter, buildGimbalAbsoluteAngle, buildGimbalSetMode, buildGimbalSpeedControl, buildGimbalStickControlEnable, buildGimbalResetAndCenter, buildRawCommand } from '../protocol/commands.mjs';
 import { GIMBAL_MODE } from '../protocol/constants.mjs';
 import { quaternionDelta, quatToGimbalControlDeg } from '../protocol/telemetry.mjs';
@@ -328,9 +328,7 @@ async function moveToClosedLoop({ yawDeg = 0, pitchDeg = 0, toleranceDeg = 3, sp
   let pitchSign = 1;
   let prevYawError = null;
   let prevPitchError = null;
-  let prevYaw = null;
-  let prevPitch = null;
-  let stalledTicks = 0;
+  const guard = createStallGuard();
 
   while (Date.now() - start < maxMs) {
     const quat = transport.lastQuaternion;
@@ -357,33 +355,35 @@ async function moveToClosedLoop({ yawDeg = 0, pitchDeg = 0, toleranceDeg = 3, sp
     // Still outside tolerance — so if nothing moved this tick, the axis is not
     // merely slow. Counted only while a correction is actually being commanded,
     // which is guaranteed here: we are past the convergence return above.
-    stalledTicks = foldStall(
-      stalledTicks,
-      prevYaw === null ? null : { pan: prevYaw, tilt: prevPitch },
-      { pan: yaw, tilt: pitch },
-    );
-    {
-      if (stalledTicks >= STALL_TICKS_LIMIT) {
-        // Leave the motors stopped rather than holding a speed the gimbal is
-        // ignoring — a wedged axis that frees itself should not lurch.
-        await transport.sendRaw(buildGimbalSpeedControl(transport.nextMsgId(), {}));
-        return {
-          converged: false,
-          timedOut: false,
-          stalled: true,
-          stallReason:
-            `pan/tilt did not move for ${stalledTicks} consecutive ticks while still `
-            + `${Math.abs(yawError).toFixed(1)}° from target — the axis is jammed or at a limit, `
-            + `not converging slowly. Recenter or power-cycle the gimbal; a longer maxMs will not help.`,
-          ticks: history.length,
-          finalYaw: yaw,
-          finalPitch: pitch,
-          history,
-        };
-      }
+    const verdict = guard.observe({ pan: yaw, tilt: pitch });
+    if (verdict === 'flip-sign') {
+      // Stalled, but only in the direction tried so far. The correction sign
+      // comes from an approximate Euler decomposition that does not hold at
+      // every pose; flipping recovers that case. Falls through to the drive
+      // code below so the flipped direction is actually commanded this tick.
+      yawSign *= -1;
+      pitchSign *= -1;
+    } else if (verdict === 'jammed') {
+      // Leave the motors stopped rather than holding a speed the gimbal is
+      // ignoring — a wedged axis that frees itself should not lurch.
+      await transport.sendRaw(buildGimbalSpeedControl(transport.nextMsgId(), {}));
+      return {
+        converged: false,
+        timedOut: false,
+        stalled: true,
+        signProbed: guard.flipped,
+        stallReason:
+          `pan/tilt stopped moving while still ${Math.abs(yawError).toFixed(1)}° from target, `
+          + `in BOTH correction directions (the sign was flipped and retried). The axis is `
+          + `jammed or at a limit; a longer maxMs will not help. Recenter, or power-cycle the `
+          + `gimbal. If a raw gimbal_nudge still moves it, the fault is in this loop, not the `
+          + `hardware.`,
+        ticks: history.length,
+        finalYaw: yaw,
+        finalPitch: pitch,
+        history,
+      };
     }
-    prevYaw = yaw;
-    prevPitch = pitch;
 
     const yawSpeed = Math.abs(yawError) > toleranceDeg ? Math.sign(yawError) * yawSign * speedDegPerSec : 0;
     const pitchSpeed = Math.abs(pitchError) > toleranceDeg ? Math.sign(pitchError) * pitchSign * speedDegPerSec : 0;
