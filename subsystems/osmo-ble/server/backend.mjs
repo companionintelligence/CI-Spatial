@@ -14,6 +14,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { WebSocketServer } from 'ws';
 import { OsmoBleTransport } from './ble-transport.mjs';
+import { foldStall, STALL_TICKS_LIMIT } from '../protocol/stall.mjs';
 import { buildGimbalRecenter, buildGimbalAbsoluteAngle, buildGimbalSetMode, buildGimbalSpeedControl, buildGimbalStickControlEnable, buildGimbalResetAndCenter, buildRawCommand } from '../protocol/commands.mjs';
 import { GIMBAL_MODE } from '../protocol/constants.mjs';
 import { quaternionDelta, quatToGimbalControlDeg } from '../protocol/telemetry.mjs';
@@ -304,6 +305,22 @@ function wrapDeg(d) {
  *      worse instead of better — self-correcting regardless of which way the mapping runs.
  *      (Observable in a real run: tick 2 often steps backwards once, then drives straight in.)
  */
+/**
+ * Closed-loop move, with stall detection.
+ *
+ * The loop used to spin until `maxMs` no matter what. Observed 2026-08-26: a
+ * move-to travelled 84.7° → 75.66°, hit a limit, and then sat at *exactly*
+ * 75.66 for the remaining 27 seconds while the error stayed at -50.7°. It
+ * reported `timedOut` — technically true, and useless: the caller cannot tell
+ * "the axis is jammed, stop asking" from "nearly there, needs longer", and the
+ * documented remedy was to eyeball the history array by hand.
+ *
+ * A wedged gimbal is the normal end state of a long session here (sweeps
+ * degraded 18 → 11 → 9 → 4 positions before jamming), so this is the common
+ * case, not an edge one. Detecting it costs one comparison per tick and turns
+ * 30 wasted seconds into ~2.5, per move, for every caller: move_to, sweep,
+ * grid capture and the CLI all route through this function.
+ */
 async function moveToClosedLoop({ yawDeg = 0, pitchDeg = 0, toleranceDeg = 3, speedDegPerSec = 25, tickMs = 250, settleMs = 150, maxMs = 8000 }) {
   const start = Date.now();
   const history = [];
@@ -311,6 +328,9 @@ async function moveToClosedLoop({ yawDeg = 0, pitchDeg = 0, toleranceDeg = 3, sp
   let pitchSign = 1;
   let prevYawError = null;
   let prevPitchError = null;
+  let prevYaw = null;
+  let prevPitch = null;
+  let stalledTicks = 0;
 
   while (Date.now() - start < maxMs) {
     const quat = transport.lastQuaternion;
@@ -331,8 +351,39 @@ async function moveToClosedLoop({ yawDeg = 0, pitchDeg = 0, toleranceDeg = 3, sp
 
     history.push({ tMs: Date.now() - start, yaw, pitch, yawError, pitchError });
     if (Math.abs(yawError) <= toleranceDeg && Math.abs(pitchError) <= toleranceDeg) {
-      return { converged: true, timedOut: false, ticks: history.length, finalYaw: yaw, finalPitch: pitch, history };
+      return { converged: true, timedOut: false, stalled: false, ticks: history.length, finalYaw: yaw, finalPitch: pitch, history };
     }
+
+    // Still outside tolerance — so if nothing moved this tick, the axis is not
+    // merely slow. Counted only while a correction is actually being commanded,
+    // which is guaranteed here: we are past the convergence return above.
+    stalledTicks = foldStall(
+      stalledTicks,
+      prevYaw === null ? null : { pan: prevYaw, tilt: prevPitch },
+      { pan: yaw, tilt: pitch },
+    );
+    {
+      if (stalledTicks >= STALL_TICKS_LIMIT) {
+        // Leave the motors stopped rather than holding a speed the gimbal is
+        // ignoring — a wedged axis that frees itself should not lurch.
+        await transport.sendRaw(buildGimbalSpeedControl(transport.nextMsgId(), {}));
+        return {
+          converged: false,
+          timedOut: false,
+          stalled: true,
+          stallReason:
+            `pan/tilt did not move for ${stalledTicks} consecutive ticks while still `
+            + `${Math.abs(yawError).toFixed(1)}° from target — the axis is jammed or at a limit, `
+            + `not converging slowly. Recenter or power-cycle the gimbal; a longer maxMs will not help.`,
+          ticks: history.length,
+          finalYaw: yaw,
+          finalPitch: pitch,
+          history,
+        };
+      }
+    }
+    prevYaw = yaw;
+    prevPitch = pitch;
 
     const yawSpeed = Math.abs(yawError) > toleranceDeg ? Math.sign(yawError) * yawSign * speedDegPerSec : 0;
     const pitchSpeed = Math.abs(pitchError) > toleranceDeg ? Math.sign(pitchError) * pitchSign * speedDegPerSec : 0;
@@ -348,7 +399,7 @@ async function moveToClosedLoop({ yawDeg = 0, pitchDeg = 0, toleranceDeg = 3, sp
 
   const quat = transport.lastQuaternion;
   const final = quat ? quatToGimbalControlDeg(quat) : { pan: null, tilt: null };
-  return { converged: false, timedOut: true, ticks: history.length, finalYaw: final.pan, finalPitch: final.tilt, history };
+  return { converged: false, timedOut: true, stalled: false, ticks: history.length, finalYaw: final.pan, finalPitch: final.tilt, history };
 }
 
 const routes = {
