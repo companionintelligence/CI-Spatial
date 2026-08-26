@@ -2665,7 +2665,13 @@ function updateGeoIndicator(fix: GeoFix): void {
 
   chip.style.display = 'flex'
   if (address) address.textContent = fix.address ?? `${fix.lat.toFixed(4)}, ${fix.lng.toFixed(4)}`
-  if (coords)  coords.textContent  = `${fix.lat.toFixed(5)}, ${fix.lng.toFixed(5)} ±${Math.round(fix.accuracy)}m`
+  if (coords) {
+    coords.textContent = `${fix.lat.toFixed(5)}, ${fix.lng.toFixed(5)} ±${Math.round(fix.accuracy)}m`
+    // Kept in the DOM and up to date either way — armed, it is a live readout;
+    // unarmed, it costs no height. See the #geo-coords rule in index.html for
+    // why the height matters.
+    coords.classList.toggle('debug-armed', new URLSearchParams(location.search).get('debug') === 'geo')
+  }
 
   if (needle && fix.bearing !== null) {
     needle.style.transform = `rotate(${fix.bearing}deg)`
