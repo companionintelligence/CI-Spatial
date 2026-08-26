@@ -57,7 +57,10 @@
     "ingest:photos": "node scripts/ingest-photos.mjs",
     "links:house": "node scripts/house-links.mjs",
     "test:house": "playwright test --project=api house-readiness",
-    "tune:detect": "node scripts/tune-splat-detect.mjs"
+    "tune:detect": "node scripts/tune-splat-detect.mjs",
+    "loop": "node scripts/loop.mjs",
+    "loop:full": "node scripts/loop.mjs --tier=5",
+    "loop:baseline": "node scripts/loop.mjs --only=ui-full --update-baseline"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",
