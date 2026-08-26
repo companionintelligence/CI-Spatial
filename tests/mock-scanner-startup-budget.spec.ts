@@ -1,0 +1,174 @@
+/**
+ * Scanner startup budget — the first-run path, held to measured limits.
+ *
+ * The startup had drifted into five full-screen tutorial steps (139 words of
+ * copy naming SLAM, VLM, Gaussian Splats and GLB) in front of a start screen,
+ * in front of a mandatory Place picker whose only non-creating button was
+ * labelled "Cancel". Nothing failed, so nothing caught it — the one spec that
+ * covered this screen (mock-ftue) had been red since #128 and CI never runs
+ * Playwright at all.
+ *
+ * These are budgets, not pixel snapshots: they say "the camera stays the
+ * subject and the words stay few" without freezing the design. Each ceiling
+ * sits just above the measured value at the time of writing, so a real
+ * regression trips it and a cosmetic tweak does not.
+ *
+ * Run: npx playwright test --project=chromium-mock mock-scanner-startup-budget
+ */
+import { test, expect, type Page } from '@playwright/test'
+
+test.use({
+  viewport: { width: 375, height: 812 },
+  deviceScaleFactor: 2,
+  isMobile: true,
+  hasTouch: true,
+})
+
+/** Words in an element's rendered text, ignoring collapsed whitespace. */
+async function wordCount(page: Page, selector: string): Promise<number> {
+  return page.evaluate((sel) => {
+    const el = document.querySelector(sel) as HTMLElement | null
+    if (!el) return 0
+    return (el.innerText || '').trim().split(/\s+/).filter(Boolean).length
+  }, selector)
+}
+
+/**
+ * Fraction of the viewport painted over by UI, as a percentage.
+ *
+ * Deliberately NOT elementFromPoint: the HUD is `pointer-events: none`, so a
+ * hit-test walks straight through it and reports the camera as unobstructed
+ * (measured 6.8% that way, against 23.6% actually painted). This rasterises
+ * the union of every visible element that paints a background — which is what
+ * "UI over the camera" means to someone holding the phone.
+ */
+async function occlusionPct(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const W = innerWidth, H = innerHeight, S = 8
+    const painted: DOMRect[] = []
+    const walk = (n: Element) => {
+      for (const e of Array.from(n.children)) {
+        const cs = getComputedStyle(e)
+        if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) continue
+        const r = e.getBoundingClientRect()
+        if (r.width < 2 || r.height < 2 || r.right <= 0 || r.bottom <= 0 || r.left >= W || r.top >= H) {
+          walk(e)
+          continue
+        }
+        const m = (cs.backgroundColor || '').match(/rgba?\(([^)]+)\)/)
+        const parts = m ? m[1].split(',') : []
+        const alpha = m ? (parts[3] !== undefined ? parseFloat(parts[3]) : 1) : 0
+        if (alpha > 0.05 || cs.backdropFilter !== 'none') painted.push(r)
+        walk(e)
+      }
+    }
+    walk(document.body)
+
+    const grid = new Set<string>()
+    for (const r of painted) {
+      const x0 = Math.max(0, r.left), x1 = Math.min(W, r.right)
+      const y0 = Math.max(0, r.top), y1 = Math.min(H, r.bottom)
+      for (let y = Math.floor(y0 / S) * S + S / 2; y < y1; y += S) {
+        for (let x = Math.floor(x0 / S) * S + S / 2; x < x1; x += S) {
+          if (x < x0 || y < y0) continue
+          grid.add(`${x},${y}`)
+        }
+      }
+    }
+    return (grid.size / (Math.ceil(W / S) * Math.ceil(H / S))) * 100
+  })
+}
+
+test.describe('scanner startup budget', () => {
+  test.setTimeout(90_000)
+
+  test('onboarding is short, plain, and jargon-free', async ({ page }) => {
+    await page.goto('/?mock=xr8&onboarding=1')
+    await expect(page.locator('#onboarding-overlay')).toBeVisible({ timeout: 15_000 })
+
+    // Two steps. This is the only thing between a first-run visitor and the
+    // camera; it went 3 → 5 once without anyone noticing.
+    await expect(page.locator('.onboard-step')).toHaveCount(2)
+    // The dots are the progress affordance — a mismatch silently lies about
+    // how much is left, which is exactly what a five-dot/five-step wall did.
+    await expect(page.locator('.onboard-dot')).toHaveCount(2)
+
+    const words = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('.onboard-desc'))
+        .reduce((a, e) => a + ((e as HTMLElement).textContent || '').trim().split(/\s+/).filter(Boolean).length, 0))
+    expect(words, 'total onboarding body words (was 139)').toBeLessThanOrEqual(60)
+
+    // Implementation vocabulary belongs in the repo, not on a first-run screen.
+    const copy = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('.onboard-title, .onboard-desc'))
+        .map(e => (e as HTMLElement).textContent || '').join(' '))
+    for (const term of ['SLAM', 'VLM', 'Gaussian', 'GLB', 'keyframe', 'pipeline']) {
+      expect(copy, `onboarding copy must not say "${term}"`).not.toMatch(new RegExp(term, 'i'))
+    }
+  })
+
+  test('reaching the camera takes three taps and stays under a word budget', async ({ page }) => {
+    await page.goto('/?mock=xr8&onboarding=1')
+    await expect(page.locator('#onboarding-overlay')).toBeVisible({ timeout: 15_000 })
+
+    const onboardingWords = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('.onboard-desc'))
+        .reduce((a, e) => a + ((e as HTMLElement).textContent || '').trim().split(/\s+/).filter(Boolean).length, 0))
+    const startWords = await wordCount(page, '#start-screen')
+    expect(onboardingWords + startWords, 'words shown before the camera (was 197)').toBeLessThanOrEqual(120)
+
+    // Tap 1 — skip the tutorial.
+    await page.locator('#onboard-skip').click()
+    // Tap 2 — choose the scan path.
+    await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
+    await page.locator('#start-ar-btn').click()
+
+    // Tap 3 — proceed without a Place. The label must read as "carry on", not
+    // as "abandon": with no saved Places and no GPS fix, this and "Create New
+    // Place Project" are the only choices, and a first-run visitor who reads
+    // this one as Cancel has no way to the camera that does not involve
+    // filling in a form they did not ask for.
+    const skip = page.locator('#place-skip-btn')
+    await expect(skip).toBeVisible({ timeout: 15_000 })
+    await expect(skip).not.toHaveText(/^cancel$/i)
+    await skip.click()
+
+    await expect(page.locator('#start-screen')).toHaveCount(0, { timeout: 15_000 })
+    await expect(page.locator('#scan-stats')).toHaveText(/\d+ pts/, { timeout: 25_000 })
+  })
+
+  test('the camera stays the subject once scanning', async ({ page }) => {
+    await page.goto('/?mock=xr8')
+    await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
+    await page.locator('#start-ar-btn').click()
+    // Wait for the sheet rather than clicking straight through it: the Place
+    // modal renders asynchronously (it reads the project store and waits on a
+    // geo fix), and under a loaded worker that is well past Playwright's
+    // default click timeout. Clicking blind passed alone and failed in the
+    // full-suite run.
+    const skip = page.locator('#place-skip-btn')
+    await expect(skip).toBeVisible({ timeout: 20_000 })
+    await skip.click()
+    await expect(page.locator('#scan-stats')).toHaveText(/\d+ pts/, { timeout: 30_000 })
+
+    const pct = await occlusionPct(page)
+    expect(pct, 'percent of the viewport painted over by UI (was 23.6)').toBeLessThanOrEqual(25)
+
+    // The geo chip carries two rows of placeholder text ("Locating…" /
+    // "Compass waiting") until a fix lands. Indoors a fix often never lands,
+    // so shipping it visible meant a permanent stuck-looking state; it now
+    // appears only when updateGeoIndicator() has something real to say.
+    await expect(page.locator('#geo-chip')).toBeHidden()
+
+    // The steady-state status must fit #status-row (~211px, about 25
+    // characters) on one line. "Tracking — tap to capture" wrapped, leaving
+    // "capture" dangling under the quality chip.
+    // Poll rather than sample once: setStatus() also carries transient notices
+    // (e.g. "Point cloud thinned to save memory"), so a single read can catch
+    // one mid-flight and fail on copy that is allowed to be long.
+    await expect.poll(
+      async () => ((await page.locator('#status-text').textContent()) ?? '').trim().length,
+      { timeout: 20_000, message: 'steady-state status copy must fit #status-row on one line' },
+    ).toBeLessThanOrEqual(28)
+  })
+})

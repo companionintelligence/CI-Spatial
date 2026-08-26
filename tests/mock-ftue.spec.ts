@@ -43,9 +43,9 @@ test.describe('FTUE two-path start screen', () => {
     await expect(upload).toBeVisible()
 
     // Distinct copy: each card names its path and its one-line subtext.
-    await expect(scan).toContainText('Scan a room')
-    await expect(scan).toContainText('walk the room')
-    await expect(upload).toContainText('Upload a video')
+    await expect(scan).toContainText('Scan a Place')
+    await expect(scan).toContainText('walk the space')
+    await expect(upload).toContainText('Upload Content')
     await expect(upload).toContainText('no AR needed')
 
     // Both cards clear a comfortable tap target (≥56px).
@@ -57,8 +57,19 @@ test.describe('FTUE two-path start screen', () => {
     // The file input exists, is scoped to video, and the upload card is its label.
     const input = page.locator('#upload-video-input')
     await expect(input).toHaveAttribute('type', 'file')
-    await expect(input).toHaveAttribute('accept', 'video/*')
-    await expect(upload).toHaveAttribute('for', 'upload-video-input')
+    // Photos as well as video since the photo-ingest path landed — assert the
+    // video capability rather than the exact list, so adding another still
+    // image type does not fail this test for no reason.
+    await expect(input).toHaveAttribute('accept', /video\/\*/)
+    // The upload card used to be a <label for="upload-video-input">; it is now
+    // a <button> that opens the picker from its click handler, because the
+    // Place modal has to run before the native picker appears. Assert the
+    // parts that still carry meaning — the input stays hidden and the card is
+    // a real button — rather than a `for` attribute that no longer exists.
+    // That the click actually reaches /ingest-video is covered end to end by
+    // the upload test below, which is the assertion worth having.
+    await expect(input).toBeHidden()
+    expect(await upload.evaluate((el) => el.tagName)).toBe('BUTTON')
 
     // #start-ar-btn stays a <button> — required for the iOS motion-permission
     // request to fire from a real user gesture.
@@ -100,6 +111,14 @@ test.describe('FTUE two-path start screen', () => {
     // the regression test for that tap being honoured rather than lost.
     await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
     await page.click('#start-ar-btn')
+
+    // Tapping Scan opens the Place picker before AR — it does not start AR
+    // directly. "Skip for now" is the proceed-without-a-Place path (the button
+    // formerly labelled "Cancel"); AR starts from there.
+    const placeSkip = page.locator('#place-skip-btn')
+    await expect(placeSkip).toBeVisible({ timeout: 15_000 })
+    await expect(placeSkip).toHaveText('Skip for now')
+    await placeSkip.click()
 
     // Start screen dismisses and the mock SLAM engine accumulates points.
     await expect(page.locator('#start-screen')).toHaveCount(0, { timeout: 10_000 })
