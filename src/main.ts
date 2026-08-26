@@ -1207,7 +1207,12 @@ async function main() {
       if (statsEl) statsEl.textContent = `${pointCloud.count} pts`
       // First points arriving means SLAM has locked — update status once
       if (pointCloud.count === added) {
-        overlay.setStatus('Tracking — tap to capture')
+        // Just "Tracking". #status-row is ~211px on a 375px viewport, which
+        // fits about 25 characters — "Tracking — tap to capture" wrapped to a
+        // second line with "capture" dangling under the SPARSE chip. The
+        // instruction was redundant anyway: the capture button is on screen,
+        // 78px across, directly below this panel.
+        overlay.setStatus('Tracking')
       }
     }
     // One-time notice when the voxel grid starts dropping points to cap memory
@@ -1731,7 +1736,13 @@ function mountPlacePicker(
         </details>
         <div class="place-sheet-actions">
           ${currentSelected ? `<button id="place-continue-btn" type="button" class="place-confirm">${escapeHtml(copy.confirm)}</button>` : ''}
-          <button id="place-skip-btn" type="button">Cancel</button>
+          <!-- Not "Cancel": this button proceeds without a Place (see the
+               handler below), and "Cancel" universally reads as "abandon what
+               I just tapped". A first-run visitor with no saved Places and no
+               GPS fix saw only "Create New Place Project" and "Cancel", so the
+               one button that leads to the camera looked like the one that
+               gives up on it. -->
+          <button id="place-skip-btn" type="button">Skip for now</button>
         </div>
       </div>
       <div id="place-nearby-popup" class="place-popup" hidden>
