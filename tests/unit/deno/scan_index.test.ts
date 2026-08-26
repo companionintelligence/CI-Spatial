@@ -204,6 +204,88 @@ Deno.test('loadSessionIndex: a missing sessions directory is an empty index, not
   })
 })
 
+
+Deno.test('loadSessionIndex: an unfinalized session gets a live keyframeCount from disk', async () => {
+  await withTempDir(async (dir) => {
+    const sessionsDir = `${dir}/sessions`
+    // The real shape: POST /sessions writes keyframeCount:0 and no
+    // finalizedAt; POST /sessions/:id/keyframes appends lines to
+    // keyframes.jsonl but never touches session.json.
+    await writeSession(sessionsDir, 'open1', { sessionId: 'open1', keyframeCount: 0 })
+    await Deno.writeTextFile(
+      `${sessionsDir}/open1/keyframes.jsonl`,
+      ['{"file":"kf-00000.jpg"}', '{"file":"kf-00001.jpg"}', '{"file":"kf-00002.jpg"}'].join('\n') + '\n',
+    )
+
+    const index = await loadSessionIndex(sessionsDir)
+    assertEquals(index.bySessionId.get('open1')?.['keyframeCount'], 3,
+      'a session abandoned before finalize must report what actually landed on disk, not its creation-time 0')
+  })
+})
+
+Deno.test('loadSessionIndex: a finalized session keeps its stored count, never re-reads keyframes.jsonl', async () => {
+  await withTempDir(async (dir) => {
+    const sessionsDir = `${dir}/sessions`
+    await writeSession(sessionsDir, 'done1', {
+      sessionId: 'done1',
+      keyframeCount: 11,
+      finalizedAt: '2026-08-26T00:00:00.000Z',
+    })
+    // Deliberately no keyframes.jsonl on disk at all — if the fix ever read it
+    // for a finalized session, this would throw inside liveKeyframeCount and
+    // (being caught) silently produce 0, masking the bug as a false pass. No
+    // file plus a preserved 11 is the strongest evidence the disk was never
+    // touched for this session.
+    const index = await loadSessionIndex(sessionsDir)
+    assertEquals(index.bySessionId.get('done1')?.['keyframeCount'], 11,
+      'finalize already computed the real count once — trust it, do not redo the work')
+  })
+})
+
+Deno.test('loadSessionIndex: an unfinalized session with no keyframes.jsonl yet stays 0, not a throw', async () => {
+  await withTempDir(async (dir) => {
+    const sessionsDir = `${dir}/sessions`
+    // A session that was just opened (POST /sessions) and has not received
+    // its first keyframe POST yet — keyframes.jsonl does not exist.
+    await writeSession(sessionsDir, 'fresh1', { sessionId: 'fresh1', keyframeCount: 0 })
+    const index = await loadSessionIndex(sessionsDir)
+    assertEquals(index.bySessionId.get('fresh1')?.['keyframeCount'], 0)
+  })
+})
+
+Deno.test('loadSessionIndex: a record with no keyframeCount field at all is left untouched', async () => {
+  await withTempDir(async (dir) => {
+    const sessionsDir = `${dir}/sessions`
+    // Not every session.json is a capture session — this must not gain a
+    // keyframeCount field it never had, for records this module already
+    // treats as arbitrary (see the sessionForScan tests below).
+    await writeSession(sessionsDir, 'other1', { glbFilename: 'wanted.glb', tag: 'good' })
+    const index = await loadSessionIndex(sessionsDir)
+    assertEquals(index.bySessionId.get('other1'), { glbFilename: 'wanted.glb', tag: 'good' })
+  })
+})
+
+Deno.test('loadSessionIndex: several unfinalized sessions are counted concurrently, each correctly', async () => {
+  await withTempDir(async (dir) => {
+    const sessionsDir = `${dir}/sessions`
+    const expected: Record<string, number> = { a: 2, b: 0, c: 5 }
+    for (const [id, n] of Object.entries(expected)) {
+      await writeSession(sessionsDir, id, { sessionId: id, keyframeCount: 999 })
+      if (n > 0) {
+        await Deno.writeTextFile(
+          `${sessionsDir}/${id}/keyframes.jsonl`,
+          Array.from({ length: n }, (_, i) => `{"file":"kf-${i}.jpg"}`).join('\n') + '\n',
+        )
+      }
+    }
+
+    const index = await loadSessionIndex(sessionsDir)
+    for (const [id, n] of Object.entries(expected)) {
+      assertEquals(index.bySessionId.get(id)?.['keyframeCount'], n, `session ${id}`)
+    }
+  })
+})
+
 Deno.test('loadSessionIndex: non-directory entries are ignored', async () => {
   await withTempDir(async (dir) => {
     const sessionsDir = `${dir}/sessions`
