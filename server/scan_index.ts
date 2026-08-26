@@ -27,6 +27,21 @@ function asString(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null
 }
 
+/**
+ * Non-empty line count in `keyframes.jsonl`, treated as 0 when the file does
+ * not exist yet. Matches `POST /sessions/:id/finalize`'s own counting logic
+ * exactly (`main.ts`), so a session reports the same number whether read live
+ * here or after finalize writes it to `session.json`.
+ */
+async function liveKeyframeCount(sessionsDir: string, sessionId: string): Promise<number> {
+  try {
+    const jsonl = await Deno.readTextFile(`${sessionsDir}/${sessionId}/keyframes.jsonl`)
+    return jsonl.split('\n').filter(Boolean).length
+  } catch {
+    return 0
+  }
+}
+
 export interface SessionIndex {
   /** session directory name → parsed session.json, in `Deno.readDir` order. */
   bySessionId: Map<string, Record<string, unknown>>
@@ -56,6 +71,9 @@ export async function loadSessionIndex(sessionsDir: string): Promise<SessionInde
   const bySessionId = new Map<string, Record<string, unknown>>()
   const byGlb = new Map<string, Record<string, unknown>>()
   const byTakeId = new Map<string, string[]>()
+  // Sessions whose session.json has never had finalize's real count written
+  // to it — see the live-count backfill below.
+  const needsLiveCount: string[] = []
 
   try {
     for await (const entry of Deno.readDir(sessionsDir)) {
@@ -65,6 +83,14 @@ export async function loadSessionIndex(sessionsDir: string): Promise<SessionInde
           await Deno.readTextFile(`${sessionsDir}/${entry.name}/session.json`),
         ) as Record<string, unknown>
         bySessionId.set(entry.name, record)
+        // Gated on the field already being present, not just on finalizedAt
+        // being absent — a record with no keyframeCount at all was never
+        // shaped like a capture session (a synthetic fixture, or a future
+        // session kind that doesn't track this), and must not gain one from
+        // nowhere.
+        if ('keyframeCount' in record && !asString(record['finalizedAt'])) {
+          needsLiveCount.push(entry.name)
+        }
         const glb = asString(record['glbFilename'])
         // First match in readDir order wins, matching the old sweep's early return.
         if (glb && !byGlb.has(glb)) byGlb.set(glb, record)
@@ -79,6 +105,31 @@ export async function loadSessionIndex(sessionsDir: string): Promise<SessionInde
       } catch { /* incomplete session dir */ }
     }
   } catch { /* sessions dir missing */ }
+
+  // `session.json`'s `keyframeCount` is written twice: 0 at creation
+  // (POST /sessions), and the real count only by POST /sessions/:id/finalize.
+  // A session that is still streaming, or was abandoned without ever calling
+  // finalize — tab closed, app backgrounded, phone locked mid-scan, all
+  // observed in practice — sits at its creation-time 0 forever, indistinguishable
+  // from a session that genuinely captured nothing. Backfill it here from the
+  // keyframe log itself, for exactly the subset that was never finalized.
+  //
+  // Bounded by how many sessions are currently open, not by history, so this
+  // does not reintroduce the O(scans × sessions) sweep this module exists to
+  // avoid (see the module doc) — a finalized session is trusted as-is and
+  // costs nothing extra, which is the common case for anything old enough to
+  // matter for that cost. Counted concurrently rather than one directory read
+  // at a time in the loop above, so a handful of open sessions cost one round
+  // trip's worth of latency, not N sequential ones.
+  if (needsLiveCount.length > 0) {
+    const counts = await Promise.all(
+      needsLiveCount.map((id) => liveKeyframeCount(sessionsDir, id)),
+    )
+    needsLiveCount.forEach((id, i) => {
+      const record = bySessionId.get(id)
+      if (record) record['keyframeCount'] = counts[i]
+    })
+  }
 
   return { bySessionId, byGlb, byTakeId }
 }
