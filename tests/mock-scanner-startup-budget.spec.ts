@@ -151,13 +151,9 @@ test.describe('scanner startup budget', () => {
     await skip.click()
     await expect(page.locator('#scan-stats')).toHaveText(/\d+ pts/, { timeout: 30_000 })
 
-    const pct = await occlusionPct(page)
-    expect(pct, 'percent of the viewport painted over by UI (was 23.6)').toBeLessThanOrEqual(25)
-
-    // The geo chip carries two rows of placeholder text ("Locating…" /
-    // "Compass waiting") until a fix lands. Indoors a fix often never lands,
-    // so shipping it visible meant a permanent stuck-looking state; it now
-    // appears only when updateGeoIndicator() has something real to say.
+    // No fix yet under mocks: the chip must be hidden, not showing "Locating…"
+    // / "Compass waiting" as if stuck. Asserted BEFORE the chip is populated
+    // below — order matters, these two assertions describe opposite states.
     await expect(page.locator('#geo-chip')).toBeHidden()
 
     // The steady-state status must fit #status-row (~211px, about 25
@@ -170,5 +166,22 @@ test.describe('scanner startup budget', () => {
       async () => ((await page.locator('#status-text').textContent()) ?? '').trim().length,
       { timeout: 20_000, message: 'steady-state status copy must fit #status-row on one line' },
     ).toBeLessThanOrEqual(28)
+
+    // Now measure the WORST case, not the convenient one. Under mocks there is
+    // never a GPS fix, so the HUD is at its smallest — which is exactly what
+    // made the desktop number (21.4%) look comfortable while a real phone with
+    // a fix measured 32.3% on the same build. Populate the chip the way
+    // updateGeoIndicator() does on hardware and hold the budget against that.
+    await page.evaluate(() => {
+      const chip = document.getElementById('geo-chip')
+      const address = document.getElementById('geo-address')
+      if (!chip || !address) return
+      address.textContent = '30902 Club House Drive, Laguna Niguel, California 92677'
+      chip.style.display = 'flex'
+    })
+
+    const pct = await occlusionPct(page)
+    expect(pct, 'viewport painted over by UI, geo chip populated (device measured 32.3 before)')
+      .toBeLessThanOrEqual(25)
   })
 })
