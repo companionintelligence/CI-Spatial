@@ -1178,6 +1178,21 @@ async function main() {
         ? 'Camera access denied. Please check your browser or OS permission settings and allow camera access.'
         : `AR failed to start: ${message}`,
     )
+    // Caught live 2026-08-26 on an XREAL companion device: navigator.xr
+    // reported immersive-ar supported, but requestSession() rejected with
+    // "The specified session configuration is not supported" because the
+    // device has no ARCore installed — isSessionSupported() answers whether
+    // the API exists, not whether a backing AR service does. The banner above
+    // was already correct and visible, but capture-btn/stream-btn/
+    // auto-capture-btn/person-capture-btn are wired in section 4, before this
+    // catch can run, and stayed fully interactive. Tapping "Stream keyframes"
+    // called kfStreamer.start(), which opens a real server session and flips
+    // the status to "Streaming keyframes — walk the room" — a confident,
+    // active-looking UI backed by a scanner.start() that section 6 below never
+    // reaches, so the session sits open forever with keyframeCount: 0. No
+    // frame will ever arrive to correct that status text.
+    disableCaptureControls('AR did not start — see the banner above')
+    overlay.setStatus(isPermission ? 'Camera access denied' : 'AR failed to start')
     return
   }
   // ── 6. Continuous SLAM point-cloud accumulation ──────────────────────────────
@@ -2772,5 +2787,28 @@ function showPermissionBanner(message: string): void {
   if (banner && msgEl) {
     msgEl.textContent = message
     banner.style.display = 'block'
+  }
+}
+
+/**
+ * Disables the buttons that start or extend a capture — the only ones whose
+ * static markup implies a live AR session is actually feeding them. Their
+ * click handlers are wired in section 4, unconditionally, before `provider
+ * .start()` runs — so without this a failed start left them fully
+ * interactive and able to open a server session that no frame would ever
+ * reach. `disabled` is enough on its own: browsers suppress click events,
+ * including scripted ones, on a disabled <button>.
+ *
+ * Navigation-only controls (viewer-link, gimbal-link, panel-toggle,
+ * finish-scan-btn/"Menu") are deliberately left alone — they don't imply a
+ * running session and Export/History stay useful for whatever was captured
+ * before the failure, if anything was.
+ */
+function disableCaptureControls(reason: string): void {
+  for (const id of ['capture-btn', 'stream-btn', 'auto-capture-btn', 'person-capture-btn']) {
+    const btn = document.getElementById(id) as HTMLButtonElement | null
+    if (!btn) continue
+    btn.disabled = true
+    btn.title = reason
   }
 }
