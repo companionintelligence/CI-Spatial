@@ -195,6 +195,59 @@ Other relevant tools: `get_orientation` (poll current facing), `gimbal_nudge` (i
 speed move + auto-stop, no positioning), `get_recent_frames` (raw telemetry), `plan_scan_grid`
 (see below).
 
+## Stall detection: telling a jam from a slow move
+
+`moveToClosedLoop` returns `stalled: true` when pan/tilt stop changing while the
+error is still outside tolerance. Before this existed the loop spun until
+`maxMs` regardless, and a jam and a nearly-there move were indistinguishable —
+both came back `timedOut`, and the documented remedy was to read the `history`
+array by eye.
+
+Measured on 2026-08-26, an OM6 mid-session:
+
+```
+move_to(yaw=25), maxMs=30000
+  t=0.0s   pan  84.72   error -59.7
+  t=1.2s   pan  76.38   error -51.4     <- travelling
+  t=2.4s   pan  75.65   error -50.7     <- hit a limit
+  t=2.8s   pan  75.65   error -50.7
+  ...      pan  75.66   error -50.7     <- 27 further seconds of this
+  t=29.8s  pan  75.66   error -50.7
+  => converged:false timedOut:true
+```
+
+Nothing about that result says "stop asking". It now returns after ~2.5s with
+`stalled: true` and a reason naming the remedy.
+
+**Thresholds** (`subsystems/osmo-ble/protocol/stall.mjs`): a tick that is really
+driving the motors moves pan 5–15°; a wedged axis reports ~0.005°. The
+`STALL_EPSILON_DEG = 0.25` cut sits two orders of magnitude above that noise
+floor and an order below the smallest real step, so the two populations do not
+overlap and it needs no tuning. `STALL_TICKS_LIMIT = 6` is ~2.4s at the default
+tick.
+
+This is the *common* end state, not an edge case — sweeps in one session
+degraded 18 → 11 → 9 → 4 positions before jamming. Every caller benefits:
+`gimbal_move_to`, `gimbal_sweep`, grid capture, and the CLI all route through
+this one function.
+
+Pan is compared with wrapping, because a sweep crosses ±180: unwrapped, one
+seam crossing reads as a 340° leap and resets the counter, so a gimbal that
+jammed just after the seam would keep looking alive.
+
+Regression tests (`npm run test:gimbal:stall`) run against the two verbatim
+telemetry runs above — a real jam and a real healthy move — rather than
+synthetic fixtures, because this failure only appears on tired hardware and
+cannot be reproduced on demand.
+
+### When it fires
+
+`stalled: true` means the axis is jammed or at a limit. A longer `maxMs` will
+not help. Recenter, or power-cycle the gimbal. If it has also stopped
+advertising over BLE (`scan_devices` shows no `likelyOsmo` device), that is the
+separate gimbal-side BLE wedge documented below, and needs the physical
+button-combo reset.
+
 ## Automated N-shot grid capture → Companion Scan's real ingest pipeline
 
 **The whole run is one command now.** The manual tool-by-tool sequence below still describes what

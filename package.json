@@ -60,7 +60,8 @@
     "tune:detect": "node scripts/tune-splat-detect.mjs",
     "loop": "node scripts/loop.mjs",
     "loop:full": "node scripts/loop.mjs --tier=5",
-    "loop:baseline": "node scripts/loop.mjs --only=ui-full --update-baseline"
+    "loop:baseline": "node scripts/loop.mjs --only=ui-full --update-baseline",
+    "test:gimbal:stall": "node --experimental-strip-types --no-warnings --test tests/unit/node/gimbal_stall.test.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",
