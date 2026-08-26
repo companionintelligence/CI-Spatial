@@ -719,6 +719,10 @@
       .layer-item:last-child,
       .job-row:last-child { border-bottom: none; }
 
+      /* A row whose QR is open owns the panel underneath it, so the hairline
+         that would separate them belongs to neither. */
+      .world-link-row:has(+ .world-link-qr:last-child) { border-bottom: none; }
+
       .world-link-row span,
       .layer-name,
       .job-title {
@@ -745,6 +749,72 @@
       .copy-link-btn:hover,
       .job-btn:hover,
       .transform-btn:hover { background: rgba(114,221,212,0.18); }
+
+      .world-link-actions {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        flex-shrink: 0;
+      }
+
+      .qr-link-btn {
+        border: 1px solid rgba(114,221,212,0.28);
+        background: rgba(114,221,212,0.11);
+        color: #72ddd4;
+        border-radius: 6px;
+        padding: 5px 8px;
+        font-size: 10px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .qr-link-btn:hover { background: rgba(114,221,212,0.18); }
+      .qr-link-btn.primary {
+        border-color: rgba(114,221,212,0.6);
+        background: rgba(114,221,212,0.2);
+        color: #d7f5f2;
+      }
+      .qr-link-btn.primary:hover { background: rgba(114,221,212,0.3); }
+
+      /* The scanner link is the one whose whole purpose is to reach a phone, so
+         it sits above the role rows with its own explainer instead of being a
+         fourth entry in a list of five. */
+      .scanner-share {
+        display: grid;
+        gap: 8px;
+        margin-bottom: 8px;
+        padding: 9px;
+        border: 1px solid rgba(114,221,212,0.32);
+        border-radius: 10px;
+        background: rgba(114,221,212,0.07);
+      }
+      .scanner-share-head { display: grid; gap: 3px; min-width: 0; }
+      .scanner-share-head span { font-size: 11px; font-weight: 800; color: var(--ci-mint); }
+      .scanner-share-head small { font-size: 9px; font-weight: 600; line-height: 1.35; color: var(--ci-muted); }
+      .scanner-share .world-link-actions { justify-content: flex-start; }
+
+      /* Share QR. The plate is fixed light with dark modules and does NOT flip
+         with the theme — decoders expect that contrast, and the CI palette here
+         reaches only the frame and the caption. See src/ui/qr-code.ts. */
+      .world-link-qr { display: grid; gap: 6px; justify-items: center; padding: 8px 0 10px; }
+      .qr-plate {
+        padding: 8px;
+        border: 2px solid rgba(114,221,212,0.62);
+        border-radius: 10px;
+        background: #ffffff;
+        line-height: 0;
+      }
+      .qr-plate svg { display: block; width: 100%; height: auto; max-width: 200px; }
+      /* The scanner code is the one a phone is actually pointed at, so it is
+         the biggest thing in the menu. */
+      .scanner-share .qr-plate svg { max-width: 240px; }
+      .qr-caption {
+        color: var(--ci-muted);
+        font-size: 9px;
+        font-weight: 600;
+        line-height: 1.4;
+        text-align: center;
+      }
+      .qr-caption b { color: var(--ci-mint); font-weight: 800; }
 
       .transform-grid {
         display: grid;
@@ -1328,7 +1398,11 @@
         position: absolute;
         top: calc(100% + 8px);
         right: 0;
-        width: 220px;
+        /* Wider than the 220px it used to be, and matched by the mobile
+           override below, so a share QR clears ~4 CSS px per module. A
+           token-bearing link is a version-7 symbol; squeeze it and phone
+           cameras stop acquiring it. */
+        width: 300px;
         padding: 10px;
         border: 1px solid rgba(114,221,212,.26);
         border-radius: 12px;
@@ -1961,7 +2035,7 @@
         #workspace-menu > summary { min-width:44px; width:44px; justify-content:center; padding:0; font-size:0; }
         #workspace-menu > summary::after { content:'☰'; margin:0; font-size:14px; }
         .view-menu-panel { position: fixed; top: 64px; right: 10px; width: min(270px, calc(100vw - 20px)); }
-        .share-menu-panel { position: fixed; top:64px; left:10px; width:min(260px, calc(100vw - 20px)); }
+        .share-menu-panel { position: fixed; top:64px; left:10px; width:min(300px, calc(100vw - 20px)); }
         .workspace-menu-panel { position:fixed; top:64px; right:10px; width:min(260px, calc(100vw - 20px)); }
 
         .mode-btn span {
