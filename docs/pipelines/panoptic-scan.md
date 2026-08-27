@@ -75,9 +75,19 @@ OneFormer's card says MIT if that review fails.
 
 ## Setup
 
+Ubuntu splits `ensurepip` out, so `python3 -m venv` fails without
+`apt install python3.N-venv` (sudo). [uv](https://astral.sh/uv) avoids that
+entirely — a single user-local binary that can also fetch its own Python, which
+matters here because torch/transformers do not yet support 3.14:
+
 ```bash
-python3 -m venv ~/.venvs/panoptic
-~/.venvs/panoptic/bin/pip install torch transformers pillow numpy
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv venv --python 3.12 ~/.venvs/panoptic
+uv pip install --python ~/.venvs/panoptic/bin/python torch torchvision transformers pillow numpy
+
+# (where `python3 -m venv` already works, that plus pip install of the same
+#  five packages is equivalent — uv is only avoiding the ensurepip problem.)
+
 mkdir -p ~/panoptic && cp scripts/panoptic_worker.py ~/panoptic/
 
 export PANOPTIC_PYTHON=~/.venvs/panoptic/bin/python
@@ -85,12 +95,60 @@ export PANOPTIC_DIR=~/panoptic
 # export PANOPTIC_MODEL=facebook/mask2former-swin-base-coco-panoptic   # optional
 ```
 
+**`torchvision` is not optional**, even though the worker never imports it:
+transformers' `AutoImageProcessor` requires it and fails at `from_pretrained()`
+rather than at import, so leaving it out reads as a transformers bug rather than
+a missing package.
+
 The weights download on first run (HF cache). `.env` is **not** read by the
 server — nothing passes `--env-file` — so export these into the shell that runs
 `npm start` (`set -a; . ./.env; set +a` works).
 
+Measured on an RTX 4080 Laptop (12 GB), Swin-L at fp16:
+
+| step | time |
+|---|---|
+| model download (once, ~850 MB) | ~30 s |
+| model load | ~4 s |
+| inference | **~0.7 s/frame** |
+| 8-frame session, end to end via the driver | **5.0 s** |
+
+**cuDNN.** Some torch wheels ship a cuDNN whose sublibraries disagree with the
+driver, and every conv dies with `CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH`
+(seen on `torch 2.13.0+cu130`). The worker sets
+`torch.backends.cudnn.enabled = False`, falling back to native CUDA kernels —
+that is where the 0.7 s/frame above was measured, so chasing a matching wheel is
+not worth it. Harmless when cuDNN is healthy.
+
 Check it end to end without a GPU: point the driver at a session and confirm the
 skip path reports the right remediation.
+
+## ⚠️ The checkpoint has no stuff/thing split — supply one to enable things
+
+Verified against `facebook/mask2former-swin-large-ade-panoptic` on real frames:
+`config` carries **no `thing_ids`**, and `post_process_panoptic_segmentation`
+returns only `{id, label_id, score, was_fused}`. `was_fused` is *not* a stuff
+flag — it means a segment was merged from several queries, and with
+`label_ids_to_fuse` unset (the default) transformers logs *"No instance will be
+fused"* and it is `False` for **every** segment, wall and floor included.
+
+So there is nothing in the model output to derive the split from, and guessing
+from the label string would be exactly the hand-copied taxonomy this design
+avoids. Without an operator-supplied list the worker reports `isThing: null`,
+which the TS side treats as stuff — safe, but **no segment reaches
+`thing_match`**. A real run on 8 keyframes: `thingCount: 0, stuffCount: 81`.
+
+To enable things, supply the ADE20K-150 split from a source you trust:
+
+```bash
+python ~/panoptic/panoptic_worker.py ... --thing-labels ~/panoptic/ade20k-things.json
+# ["chair", "swivel chair", "table", "desk", "cabinet", "lamp", "computer", ...]
+```
+
+Matching is case-insensitive on the label string. Getting that list from an
+authoritative source (Detectron2's ADE20K panoptic metadata is one) rather than
+from memory is the whole point — a wrong entry that marks `wall` a thing is the
+failure mode the next section describes.
 
 ## Stuff is deliberately kept out of `thing_match`
 
@@ -113,13 +171,19 @@ while mis-filing a wall as a thing pushes toward that un-prunable ceiling.
 
 ## Status
 
-Landed: the driver, the segment policy, the worker, and 14 tests that cover
+Landed: the driver, the segment policy, the worker, the `panoptic-scan`
+`WorldJob` type (extending `WorldJob`, not a new queue), and 14 tests covering
 every guard and the read-back with no model present.
 
-Not yet landed:
+Not yet landed — **lifting a 2-D mask centroid to a 3-D world position**, and
+feeding the result into `thing_match`.
 
-- The `panoptic-scan` `WorldJob` type (extends `WorldJob` — not a new queue).
-- Lifting a 2-D mask centroid to a 3-D world position. This needs real camera
-  intrinsics; `colmap-poses` now carries COLMAP's solved `fx/fy/cx/cy` in
-  `colmap.poses.json`, which is the prerequisite that was missing.
-- Feeding the lifted things into `thing_match`.
+That is a real design question rather than remaining typing.
+`src/spatial/resolver.ts` already does exactly this lifting for VLM detections
+(bbox centroid → hit-test against the SLAM map → point-cloud raycast fallback,
+with depth bounds learned from real failures), and reusing it is obviously right
+per ADR 0001 — but it is **client-side**: it needs a live `ARProvider` and
+`three`, while panoptic runs offline on stored keyframes. So either the resolver
+grows a headless path over a stored point cloud, or the lifting moves to capture
+time. Camera intrinsics are no longer the blocker: `colmap-poses` now carries
+COLMAP's solved `fx/fy/cx/cy` in `colmap.poses.json`.

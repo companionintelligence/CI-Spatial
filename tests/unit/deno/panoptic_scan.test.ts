@@ -44,10 +44,14 @@ Deno.test('an unknown isThing is treated as STUFF, not as a thing', () => {
   // MAX_THINGS_PER_WORLD, which throws and which nothing prunes.
   const out = splitPanopticSegments([{
     file: 'kf-00000.jpg',
-    segments: [seg({ isThing: undefined }), seg({ isThing: 'yes' }), seg({ isThing: 1 })],
+    // `null` is what the worker ACTUALLY emits: verified against
+    // facebook/mask2former-swin-large-ade-panoptic, whose config carries no
+    // thing_ids and whose segments_info is only {id, label_id, score,
+    // was_fused} — so there is nothing to derive the split from.
+    segments: [seg({ isThing: null }), seg({ isThing: undefined }), seg({ isThing: 'yes' }), seg({ isThing: 1 })],
   }])
   assertEquals(out.things.length, 0)
-  assertEquals(out.stuff.length, 3)
+  assertEquals(out.stuff.length, 4)
 })
 
 Deno.test('slivers below the pixel floor are dropped', () => {
