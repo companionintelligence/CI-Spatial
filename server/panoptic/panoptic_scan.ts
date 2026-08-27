@@ -74,6 +74,12 @@ export interface PanopticScanRunOptions {
   maxFrames?: number
   /** Smallest mask kept, in source pixels. */
   minSegmentPixels?: number
+  /**
+   * JSON list of labels that are discrete objects. Defaults to the generated
+   * `server/panoptic/ade20k-things.json`; pass '' to force the safe
+   * everything-is-stuff mode.
+   */
+  thingLabelsPath?: string
   sessionId?: string
   scanId?: string
   /** Test seam — same shape as splat_detect's, so the tests read alike. */
@@ -144,6 +150,20 @@ export async function runPanopticScan(opts: PanopticScanRunOptions): Promise<Pan
   const segmentsPath = opts.segmentsPath ?? `${opts.sessionDir}/panoptic.segments.json`
   const manifestPath = opts.manifestPath ?? `${opts.sessionDir}/panoptic.manifest.json`
   const workerPath = `${params.panopticDir}/panoptic_worker.py`
+  // Which labels are discrete objects. The checkpoint does not say (verified:
+  // no `thing_ids`, and `was_fused` is False for every segment), so without this
+  // the worker reports isThing=null and NOTHING reaches thing_match. The list is
+  // generated from the Mask2Former repo that trained the default checkpoint —
+  // see scripts/fetch-ade20k-things.mjs — so labels and weights agree.
+  // Resolved next to THIS module, not from the repo root: an earlier
+  // repo-relative guess pointed at a path that does not exist, and because a
+  // missing list falls back to the safe everything-is-stuff mode it failed
+  // silently — a run reported "0 things" that looked like an empty room.
+  // Hence `thingLabelsUsed` in the manifest below.
+  const thingLabelsPath = opts.thingLabelsPath ??
+    Deno.env.get('PANOPTIC_THING_LABELS') ??
+    new URL('./ade20k-things.json', import.meta.url).pathname
+  const haveThingLabels = thingLabelsPath !== '' && await exists(thingLabelsPath)
 
   const base: PanopticScanManifest = {
     schemaVersion: SCHEMA_VERSION,
@@ -192,6 +212,7 @@ export async function runPanopticScan(opts: PanopticScanRunOptions): Promise<Pan
     '--model', params.model,
     '--max-frames', String(params.maxFrames),
     '--min-segment-pixels', String(params.minSegmentPixels),
+    ...(haveThingLabels ? ['--thing-labels', thingLabelsPath] : []),
   ]
   let result: { code: number; stderr: string }
   try {
@@ -236,6 +257,7 @@ export async function runPanopticScan(opts: PanopticScanRunOptions): Promise<Pan
     framesSegmented: (payload.frames ?? []).length,
     thingCount: split.things.length,
     stuffCount: split.stuff.length,
+    thingLabelsUsed: haveThingLabels,
     segmentsPath: segmentsPath.split('/').pop() ?? segmentsPath,
   }, Date.now() - started)
 }

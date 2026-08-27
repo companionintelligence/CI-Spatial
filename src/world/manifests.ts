@@ -59,6 +59,15 @@ export interface PanopticScanManifest extends PipelineManifestBase {
   thingCount?: number
   /** Room-surface segments seen. Recorded, but never fed to thing_match. */
   stuffCount?: number
+  /**
+   * Whether a thing-label list was supplied.
+   *
+   * Without one the worker reports every segment as unknown, which is treated
+   * as stuff — so `thingCount: 0` means "things were disabled", not "this room
+   * has no objects". Those are very different, and indistinguishable without
+   * this flag: a path typo silently produced the former once already.
+   */
+  thingLabelsUsed?: boolean
   /** Basename of the landed per-frame segment JSON, relative to the session dir. */
   segmentsPath?: string
   params: {
