@@ -138,7 +138,11 @@ def main() -> int:
     # MAX_THINGS_PER_WORLD ceiling (silent, permanent).
     thing_labels: set[str] | None = None
     if args.thing_labels:
-        thing_labels = {str(x).strip().lower() for x in json.loads(args.thing_labels.read_text())}
+        raw = json.loads(args.thing_labels.read_text())
+        # Accept either a bare array or the generated {"things": [...]} object,
+        # so a hand-written list and scripts/fetch-ade20k-things.mjs output both work.
+        labels = raw["things"] if isinstance(raw, dict) else raw
+        thing_labels = {str(x).strip().lower() for x in labels}
         print(f"thing-labels: {len(thing_labels)} labels supplied", file=sys.stderr)
     else:
         print(
@@ -175,7 +179,10 @@ def main() -> int:
             segments.append(
                 {
                     "label": label,
-                    "isThing": (label.lower() in thing_labels) if thing_labels is not None else None,
+                    # .strip() matters: several ADE20K names carry trailing whitespace
+                    # ("bed ") and the supplied list is stripped, so an unstripped
+                    # compare silently filed a bed as a room surface.
+                    "isThing": (label.strip().lower() in thing_labels) if thing_labels is not None else None,
                     "score": float(info.get("score", 0.0)),
                     "areaPx": area,
                     "centroidPx": [float(xs.mean()), float(ys.mean())],
