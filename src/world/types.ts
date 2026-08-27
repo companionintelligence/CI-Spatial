@@ -663,6 +663,7 @@ export type {
   SplatAlignManifest,
   SplatTrainManifest,
   SplatDetectManifest,
+  PanopticScanManifest,
   SplatFinishManifest,
   SplatFinishSizes,
 } from './manifests.ts'
