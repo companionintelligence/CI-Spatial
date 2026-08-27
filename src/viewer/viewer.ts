@@ -6,6 +6,7 @@
  * sidecar EditPatch records on the Deno coordinator.
  */
 import * as THREE from 'three'
+import { matchesObjectFilter, parseObjectFilter } from './object-filter'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
@@ -193,6 +194,8 @@ let worldGroup: THREE.Group | null = null
 let groundGrid: THREE.GridHelper | null = null
 let labels: Label3D[] = []
 let labelsVisible = true
+/** Active object-label filter from the Views panel. Empty admits everything. */
+let objectFilter = parseObjectFilter('')
 let cloudVisible = true
 let detectionBoundsObjects: THREE.Object3D[] = []
 let detectionBoundsVisible = false
@@ -623,6 +626,9 @@ function updateLabels(): void {
 
 function isLabelVisible(label: Label3D): boolean {
   if (!labelsVisible || !globalLayerVisible.labels) return false
+  // The Views-panel text filter. Applied here rather than at label creation so
+  // typing re-filters the existing scene instead of forcing a world reload.
+  if (!matchesObjectFilter(label.text, objectFilter)) return false
   if (!label.scanId) return true
   const loaded = loadedScans.get(label.scanId)
   return loaded ? scanRendered(loaded) : true
@@ -3284,7 +3290,13 @@ function applyLayerVisibility(): void {
   }
 
   for (const label of labels) {
-    label.el.style.display = isLabelVisible(label) ? '' : 'none'
+    const visible = isLabelVisible(label)
+    label.el.style.display = visible ? '' : 'none'
+    // Hide the geometry as well when the text filter rejects it — a filter that
+    // only hid the caption would leave the boxes on screen and read as broken.
+    // Guarded on the filter being active so this never fights the layer
+    // toggles, which own object visibility the rest of the time.
+    if (!objectFilter.isEmpty && label.object) label.object.visible = visible
   }
 
   // OFF is 0.6, not 0.4. At 0.4 the label measured 2.88:1 against the HUD
@@ -4016,6 +4028,24 @@ viewToggle('view-toggle-labels')?.addEventListener('change', (event) => {
   labelsVisible = (event.target as HTMLInputElement).checked
   globalLayerVisible.labels = labelsVisible
   renderLayerPanel()
+  applyLayerVisibility()
+})
+
+// Object text filter. `input` rather than `change` so the scene narrows while
+// typing; re-running applyLayerVisibility is enough because isLabelVisible
+// consults the filter directly.
+document.getElementById('view-filter-objects')?.addEventListener('input', (event) => {
+  const raw = (event.target as HTMLInputElement).value
+  const wasActive = !objectFilter.isEmpty
+  objectFilter = parseObjectFilter(raw)
+  // Clearing the box must restore whatever the layer toggles say, so hand
+  // visibility back rather than leaving objects hidden by a filter that no
+  // longer exists.
+  if (wasActive && objectFilter.isEmpty) {
+    for (const label of labels) {
+      if (label.object) label.object.visible = true
+    }
+  }
   applyLayerVisibility()
 })
 
