@@ -87,6 +87,7 @@ import { runSplatTrain } from './splat/splat_train.ts'
 import { runSplatDetect } from './splat/splat_detect.ts'
 import { runSplatFinish } from './splat/splat_finish.ts'
 import { runSenseNovaVision, senseNovaTask } from './sensenova_vision.ts'
+import { runPanopticScan } from './panoptic/panoptic_scan.ts'
 import { configFromEnv as portalAuthConfig, registerPortalAuth } from './portal_auth.ts'
 import {
   configFromEnv as memoryPushConfig,
@@ -1618,12 +1619,13 @@ const WORLD_JOB_TYPES = new Set<WorldJobType>([
   'splat-detect',
   'splat-finish',
   'sensenova-vision',
+  'panoptic-scan',
   'person-4d-reconstruct',
   'memory-push',
   'export-world',
 ])
 
-const DEFAULT_WORKER_CAPABILITIES = ['cpu', 'onnx', 'ollama', 'open3d', 'splat', 'vggt', 'lingbot-map', 'sensenova-vision', '4d-capture']
+const DEFAULT_WORKER_CAPABILITIES = ['cpu', 'onnx', 'ollama', 'open3d', 'splat', 'vggt', 'lingbot-map', 'sensenova-vision', 'panoptic', '4d-capture']
 
 interface StoredScanInfo {
   filename: string
@@ -2693,6 +2695,11 @@ async function _dispatchWorldJob(slug: string, jobId: string): Promise<void> {
       return
     }
 
+    if (job.type === 'panoptic-scan') {
+      await _runPanopticScanJob(slug, jobId)
+      return
+    }
+
     if (job.type === 'person-4d-reconstruct') {
       await _runPerson4DJob(slug, jobId)
       return
@@ -3197,6 +3204,68 @@ async function _runSenseNovaVisionJob(slug: string, jobId: string): Promise<void
  *    a remediation string, matching BRUSH_BIN and LINGBOT_MAP_* — the appliance
  *    must not break because no GPU host is attached.
  */
+/**
+ * Panoptic segmentation over a session's streamed keyframes.
+ *
+ * Shaped like _runSenseNovaVisionJob: an optional GPU tool whose absence is a
+ * COMPLETED job carrying a remediation, not a failure — the appliance keeps
+ * working and the UI can tell the operator what to install. The `thingCount` /
+ * `stuffCount` split is surfaced in the artifact because they are handled
+ * differently downstream (see server/panoptic/panoptic_segments.ts).
+ */
+async function _runPanopticScanJob(slug: string, jobId: string): Promise<void> {
+  try {
+    const start = await claimSessionJob(slug, jobId)
+    if (!start) return
+    const { scan, sessionPath, payload } = start
+    const result = await runPanopticScan({
+      sessionDir: sessionPath,
+      model: asString(payload?.['model']) ?? undefined,
+      maxFrames: typeof payload?.['maxFrames'] === 'number' ? payload['maxFrames'] as number : undefined,
+      sessionId: scan.sessionId ?? undefined,
+      scanId: scan.scanId ?? undefined,
+    })
+
+    await commitWorldJob(slug, jobId, (currentJob, current) => {
+      currentJob.progress = 1
+      if (result.status === 'ok') {
+        currentJob.status = 'completed'
+        currentJob.result =
+          `Panoptic scan segmented ${result.framesSegmented ?? 0} frame(s): ` +
+          `${result.thingCount ?? 0} object segment(s), ${result.stuffCount ?? 0} surface segment(s).`
+        currentJob.artifacts = [{
+          type: 'panoptic-output',
+          label: `${scan.name} panoptic segments`,
+          metadata: {
+            model: result.model ?? null,
+            framesSegmented: result.framesSegmented ?? 0,
+            thingCount: result.thingCount ?? 0,
+            stuffCount: result.stuffCount ?? 0,
+            segmentsPath: result.segmentsPath ?? null,
+          },
+        }]
+        applyCompletedJobToWorld(currentJob, current)
+      } else if (result.status === 'skipped') {
+        currentJob.status = 'completed'
+        currentJob.result = `Panoptic scan skipped: ${result.remediation ?? result.skippedReason ?? 'runtime unavailable'}`
+        currentJob.artifacts = [{
+          type: 'panoptic-skip',
+          label: 'Panoptic runtime setup required',
+          metadata: { remediation: result.remediation ?? null, reason: result.skippedReason ?? null },
+        }]
+      } else {
+        currentJob.status = 'failed'
+        currentJob.error = result.error ?? 'panoptic worker failed'
+        currentJob.result = currentJob.error
+      }
+      currentJob.updatedAt = new Date().toISOString()
+    })
+  } catch (error) {
+    console.error('[panoptic] job failed:', error)
+    await failWorldJob(slug, jobId, errorMessage(error))
+  }
+}
+
 async function _runPerson4DJob(slug: string, jobId: string): Promise<void> {
   try {
     const start = await claimJobScan(slug, jobId)
@@ -3955,6 +4024,9 @@ function applyCompletedJobToWorld(job: WorldJob, world: WorldProject): void {
   else if (job.type === 'sensenova-vision') {
     scan.status = scan.qualitySummary?.status ?? 'ready'
   }
+  else if (job.type === 'panoptic-scan') {
+    scan.status = scan.qualitySummary?.status ?? 'ready'
+  }
   else if (job.type === 'person-4d-reconstruct') {
     scan.status = scan.qualitySummary?.status ?? 'ready'
   }
@@ -3990,6 +4062,8 @@ function jobResultFor(job: WorldJob): string {
       return 'Splat finished with splat-transform. The web-optimized .sog and .compressed.ply sidecars are ready for delivery.'
     case 'sensenova-vision':
       return 'SenseNova-Vision processed the scan keyframes and wrote task-specific visual geometry artifacts.'
+    case 'panoptic-scan':
+      return 'Panoptic segmentation labelled every pixel of the scan keyframes, separating discrete objects from room surfaces.'
     case 'person-4d-reconstruct':
       return 'Person reconstructed in 4D. The .4d/ sequence is available as a splat4d layer on the scan.'
     case 'memory-push':
