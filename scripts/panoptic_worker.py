@@ -54,6 +54,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-frames", type=int, default=64)
     p.add_argument("--min-segment-pixels", type=int, default=1500)
     p.add_argument(
+        "--thing-labels",
+        default=None,
+        type=Path,
+        help=(
+            "JSON array of label strings that are discrete objects. Without it "
+            "every segment is reported isThing=null, which the TS side treats as "
+            "stuff — safe, but nothing reaches thing_match."
+        ),
+    )
+    p.add_argument(
         "--device",
         default=None,
         help="torch device; defaults to cuda when available, else cpu",
@@ -72,6 +82,10 @@ def main() -> int:
     # Imported inside main so `--help` works in a venv that has not finished
     # installing, and so an import failure is a clean stderr message rather than
     # a traceback before argument parsing.
+    # torchvision is not imported here, but transformers' AutoImageProcessor
+    # requires it and fails at from_pretrained() rather than at import time —
+    # so name it explicitly in the hint below, or the error reads as a
+    # transformers bug rather than a missing install.
     try:
         import numpy as np
         import torch
@@ -79,13 +93,20 @@ def main() -> int:
         from transformers import AutoImageProcessor, Mask2FormerForUniversalSegmentation
     except ImportError as exc:  # pragma: no cover - environment-dependent
         print(f"panoptic worker: missing dependency: {exc}", file=sys.stderr)
-        print("install with: pip install torch transformers pillow numpy", file=sys.stderr)
+        print("install with: pip install torch torchvision transformers pillow numpy", file=sys.stderr)
         return 2
 
     frames_in = keyframes(args.session_dir, args.max_frames)
     if not frames_in:
         print(f"panoptic worker: no keyframes in {args.session_dir}", file=sys.stderr)
         return 3
+
+    # Some torch wheels ship a cuDNN whose sublibraries disagree with the driver
+    # and every conv dies with CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH. Disabling
+    # cuDNN falls back to native CUDA kernels — measured at 0.7 s/frame for
+    # Swin-L on a 4080, which is fast enough that chasing the wheel is not worth
+    # it. Harmless when cuDNN is healthy.
+    torch.backends.cudnn.enabled = False
 
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     # fp16 on GPU roughly halves both the weights and the peak activation, which
@@ -98,10 +119,33 @@ def main() -> int:
     model.to(device)
     model.eval()
 
-    # The checkpoint's own taxonomy. `id2label` is the source of truth for names,
-    # and the processor knows which ids are "things" for this dataset.
+    # The checkpoint's own taxonomy. `id2label` is the source of truth for names.
     id2label = model.config.id2label
-    thing_ids = set(getattr(model.config, "thing_ids", []) or [])
+
+    # ── The stuff/thing split is NOT in this checkpoint ──────────────────────
+    # Verified on facebook/mask2former-swin-large-ade-panoptic: config has no
+    # `thing_ids`, and post_process_panoptic_segmentation returns only
+    # {id, label_id, score, was_fused}. `was_fused` is NOT a stuff flag — it
+    # means the segment was merged from several queries, and with
+    # `label_ids_to_fuse` unset (the default) transformers logs "No instance
+    # will be fused" and it is False for EVERY segment, wall and floor included.
+    #
+    # So there is nothing here to infer the split from, and guessing from the
+    # label string would be the hand-copied taxonomy this worker exists to avoid.
+    # Absent an operator-supplied list, report `null` and let the TS side apply
+    # its unknown-counts-as-stuff rule: that loses object detections (visible,
+    # recoverable) rather than pushing walls toward thing_match's un-prunable
+    # MAX_THINGS_PER_WORLD ceiling (silent, permanent).
+    thing_labels: set[str] | None = None
+    if args.thing_labels:
+        thing_labels = {str(x).strip().lower() for x in json.loads(args.thing_labels.read_text())}
+        print(f"thing-labels: {len(thing_labels)} labels supplied", file=sys.stderr)
+    else:
+        print(
+            "thing-labels: none supplied — every segment reported isThing=null "
+            "(treated as stuff downstream). See docs/pipelines/panoptic-scan.md.",
+            file=sys.stderr,
+        )
 
     out_frames = []
     for path in frames_in:
@@ -127,12 +171,11 @@ def main() -> int:
             if area < args.min_segment_pixels:
                 continue
             ys, xs = np.nonzero(mask)
+            label = str(id2label.get(label_id, f"class_{label_id}"))
             segments.append(
                 {
-                    "label": str(id2label.get(label_id, f"class_{label_id}")),
-                    # Fall back to the processor's flag when the config has no
-                    # thing_ids; never guess from the label string.
-                    "isThing": bool(label_id in thing_ids) if thing_ids else bool(info.get("was_fused") is False),
+                    "label": label,
+                    "isThing": (label.lower() in thing_labels) if thing_labels is not None else None,
                     "score": float(info.get("score", 0.0)),
                     "areaPx": area,
                     "centroidPx": [float(xs.mean()), float(ys.mean())],
