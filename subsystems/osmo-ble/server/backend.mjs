@@ -14,7 +14,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { WebSocketServer } from 'ws';
 import { OsmoBleTransport } from './ble-transport.mjs';
-import { createStallGuard } from '../protocol/stall.mjs';
+import { createStallGuard, createWedgeGuard } from '../protocol/stall.mjs';
+import { computeCorrection, shouldFlipSign, poseAlreadyActedOn } from '../protocol/control.mjs';
 import { buildGimbalRecenter, buildGimbalAbsoluteAngle, buildGimbalSetMode, buildGimbalSpeedControl, buildGimbalStickControlEnable, buildGimbalResetAndCenter, buildRawCommand } from '../protocol/commands.mjs';
 import { GIMBAL_MODE } from '../protocol/constants.mjs';
 import { quaternionDelta, quatToGimbalControlDeg } from '../protocol/telemetry.mjs';
@@ -43,10 +44,9 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let gridRunning = false;
 /** Set by POST /api/grid-stop; the run loop checks it between positions and unwinds cleanly. */
 let gridCancelRequested = false;
-/** Pose movement below this (degrees) between consecutive timed-out moves reads as "not moving". */
-const STUCK_POSE_EPSILON_DEG = 1.5;
-/** How many such positions in a row before calling it a wedge. Two could be a tight corner. */
-const STUCK_POSITIONS_LIMIT = 3;
+// Run-level wedge detection lives in protocol/stall.mjs (createWedgeGuard), next to the
+// tick-level stall guard and its tests — see that file for the overheating incident that
+// made it a shared function rather than an inline check in one of the two capture paths.
 
 /**
  * Real macOS Bluetooth unpair, via blueutil's `--unpair` (EXPERIMENTAL per its own --help —
@@ -321,7 +321,44 @@ function wrapDeg(d) {
  * 30 wasted seconds into ~2.5, per move, for every caller: move_to, sweep,
  * grid capture and the CLI all route through this function.
  */
-async function moveToClosedLoop({ yawDeg = 0, pitchDeg = 0, toleranceDeg = 3, speedDegPerSec = 25, tickMs = 250, settleMs = 150, maxMs = 8000 }) {
+/**
+ * Command both axes to zero speed. Safe to call any time; never throws.
+ *
+ * The gimbal's speed command is a LATCH, not a pulse: it keeps driving at the commanded rate
+ * until something tells it otherwise. So every path that leaves a speed command outstanding
+ * leaves the motors running — including a thrown error, an aborted scan, and (the one that
+ * actually bit us) the BLE link simply going away, because `node --watch` restarted this
+ * process mid-move. On 2026-08-26 that cooked a real OM6 repeatedly: it would keep driving
+ * against its own end-stop long after the run was over, until it thermally shut itself off.
+ *
+ * Errors are swallowed deliberately — this runs on failure and shutdown paths where the
+ * transport may already be gone, and a throw here would mask the original fault.
+ */
+async function stopMotors() {
+  if (!transport.connected) return;
+  try {
+    await transport.sendRaw(buildGimbalSpeedControl(transport.nextMsgId(), {}));
+  } catch (err) {
+    console.warn(`[safety] could not stop motors: ${err.message}`);
+  }
+}
+
+/**
+ * Closed-loop move with a guaranteed stop.
+ *
+ * The drive loop is separated from this wrapper purely so the `finally` cannot be bypassed by
+ * any of driveClosedLoop's several early returns (converged, jammed, timed out) or by a throw
+ * out of the middle of a tick.
+ */
+async function moveToClosedLoop(opts) {
+  try {
+    return await driveClosedLoop(opts);
+  } finally {
+    await stopMotors();
+  }
+}
+
+async function driveClosedLoop({ yawDeg = 0, pitchDeg = 0, toleranceDeg = 3, speedDegPerSec = 25, tickMs = 250, settleMs = 150, maxMs = 8000 }) {
   const start = Date.now();
   const history = [];
   let yawSign = 1;
@@ -329,6 +366,8 @@ async function moveToClosedLoop({ yawDeg = 0, pitchDeg = 0, toleranceDeg = 3, sp
   let prevYawError = null;
   let prevPitchError = null;
   const guard = createStallGuard();
+
+  let actedOnPose = null;
 
   while (Date.now() - start < maxMs) {
     const quat = transport.lastQuaternion;
@@ -341,11 +380,31 @@ async function moveToClosedLoop({ yawDeg = 0, pitchDeg = 0, toleranceDeg = 3, sp
     // is what made every move-to run to timeout with a flat history. See
     // quatToGimbalControlDeg's comment for the measurements.
     const { pan: yaw, tilt: pitch } = quatToGimbalControlDeg(quat);
+
+    // Freshness gate, on the DERIVED pan/tilt rather than the raw quaternion.
+    //
+    // The gimbal re-sends its last orientation instead of staying quiet, so frames keep arriving
+    // carrying a measurement that has not changed. Acting on each arrival means issuing 2-3 full
+    // corrections against one real measurement, so each step travels 2-3x what the controller
+    // intended — that is the overshoot, and the limit cycle it produces is what the scanner
+    // reports as "Moving too fast".
+    //
+    // Gating on the quaternion does NOT work: q and -q encode the same rotation, and the device
+    // does emit both, so raw-value comparison sees "new data" for a pose that is bit-identical
+    // once decoded. pan/tilt is also the actual control input, so it is the honest thing to
+    // compare. Bit-identical degrees are unambiguous — real IMU noise never reproduces a float64
+    // exactly.
+    if (poseAlreadyActedOn({ yaw, pitch }, actedOnPose)) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(60, tickMs)));
+      continue;
+    }
+    actedOnPose = { yaw, pitch };
     const yawError = wrapDeg(yawDeg - yaw);
     const pitchError = pitchDeg - pitch;
 
-    if (prevYawError !== null && Math.abs(yawError) > Math.abs(prevYawError) + 0.5) yawSign *= -1;
-    if (prevPitchError !== null && Math.abs(pitchError) > Math.abs(prevPitchError) + 0.5) pitchSign *= -1;
+    // Sign-mapping correction — see shouldFlipSign() for why an overshoot must NOT count.
+    if (shouldFlipSign(yawError, prevYawError)) yawSign *= -1;
+    if (shouldFlipSign(pitchError, prevPitchError)) pitchSign *= -1;
 
     history.push({ tMs: Date.now() - start, yaw, pitch, yawError, pitchError });
     if (Math.abs(yawError) <= toleranceDeg && Math.abs(pitchError) <= toleranceDeg) {
@@ -385,8 +444,9 @@ async function moveToClosedLoop({ yawDeg = 0, pitchDeg = 0, toleranceDeg = 3, sp
       };
     }
 
-    const yawSpeed = Math.abs(yawError) > toleranceDeg ? Math.sign(yawError) * yawSign * speedDegPerSec : 0;
-    const pitchSpeed = Math.abs(pitchError) > toleranceDeg ? Math.sign(pitchError) * pitchSign * speedDegPerSec : 0;
+    // Proportional correction, not bang-bang — see computeCorrection().
+    const yawSpeed = computeCorrection(yawError, { toleranceDeg, speedDegPerSec, sign: yawSign });
+    const pitchSpeed = computeCorrection(pitchError, { toleranceDeg, speedDegPerSec, sign: pitchSign });
 
     await transport.sendRaw(buildGimbalSpeedControl(transport.nextMsgId(), { yawDegPerSec: yawSpeed, pitchDegPerSec: pitchSpeed }));
     await new Promise((resolve) => setTimeout(resolve, tickMs));
@@ -478,7 +538,12 @@ const routes = {
     // Motion commands only — a scan does not care about setMode/raw probes, and blocking
     // those would be surprising. 409 (conflict) rather than 400: the request is well-formed,
     // it just lost a race for a single physical resource.
-    if (gridRunning && (type === 'speed' || type === 'recenter' || type === 'resetAndCenter')) {
+    // An all-zero `speed` is a STOP, not a motion command, and must never be refused — refusing
+    // it means the one command that can save overheating motors is unavailable exactly while a
+    // scan is driving them.
+    const isStopCommand = type === 'speed'
+      && !['yawDegPerSec', 'pitchDegPerSec', 'rollDegPerSec'].some((k) => Number(params?.[k]) || 0);
+    if (gridRunning && !isStopCommand && (type === 'speed' || type === 'recenter' || type === 'resetAndCenter')) {
       return [409, {
         error: 'A scan is running and owns the gimbal — motion commands are rejected until it finishes.',
         remediation: 'Wait for the scan to finish, or stop it, before moving the gimbal by hand.',
@@ -558,8 +623,15 @@ const routes = {
     emit({ phase: 'start', total: grid.length, prefix });
     gridRunning = true;
     gridCancelRequested = false;
-    let stuckRun = 0;
-    let lastStuckPose = null;
+    const wedge = createWedgeGuard();
+    /** Remediation text for an aborted run; only called once the guard has tripped. */
+    const wedgeMessage = (move) =>
+      `Gimbal stopped moving — ${wedge.stuckPositions} consecutive positions ended at the same pose `
+      + `(pan ${move.finalYaw.toFixed(1)}, tilt ${move.finalPitch.toFixed(1)})`
+      + `${move.stalled === true ? ', with the move loop reporting the axis jammed' : ''}. `
+      + 'Stopping so the motors are not driven into a jam until they overheat. Hold '
+      + 'Shutter + Switch + Trigger together for ~1s to hardware-reset the gimbal, check the '
+      + 'phone is balanced in the cradle, then reconnect and re-run.';
     try {
       if (client) await client.open();
       for (const [i, target] of grid.entries()) {
@@ -584,6 +656,15 @@ const routes = {
           const entry = { position, target, converged: move.converged, ticks: move.ticks, pan: move.finalYaw, tilt: move.finalPitch, photoUrl: null, capturedBy: 'scanner-app' };
           results.push(entry);
           emit({ phase: 'captured', ...entry, total: grid.length });
+          if (wedge.observe(move)) {
+            emit({
+              phase: 'error',
+              error: `${wedgeMessage(move)} The ${results.length} position(s) captured so far are on disk.`,
+              captured: results.length,
+            });
+            res.end();
+            return;
+          }
           if (gridCancelRequested) {
             emit({ phase: 'error', error: `Scan stopped by request after ${results.length} position(s).`, captured: results.length });
             res.end();
@@ -613,37 +694,17 @@ const routes = {
         results.push(entry);
         emit({ phase: 'captured', ...entry, total: grid.length });
 
-        // Wedge detection. A gimbal whose BLE stack has locked up keeps streaming telemetry and
-        // keeps accepting writes — it just stops moving, so every move burns its full timeout
-        // and photographs the same view. Left unchecked this quietly spends the rest of a
-        // 105-position run capturing one frame over and over (observed twice on real hardware).
-        // The signature is unambiguous: consecutive non-converged moves whose reported pose
-        // barely changes. Bail with a remediation instead of grinding on.
-        if (!move.converged && move.finalYaw !== null && move.finalPitch !== null) {
-          if (lastStuckPose
-            && Math.abs(move.finalYaw - lastStuckPose.pan) < STUCK_POSE_EPSILON_DEG
-            && Math.abs(move.finalPitch - lastStuckPose.tilt) < STUCK_POSE_EPSILON_DEG) {
-            stuckRun += 1;
-          } else {
-            stuckRun = 1;
-          }
-          lastStuckPose = { pan: move.finalYaw, tilt: move.finalPitch };
-          if (stuckRun >= STUCK_POSITIONS_LIMIT) {
-            emit({
-              phase: 'error',
-              error: `Gimbal stopped moving — ${stuckRun} consecutive positions timed out at the same pose `
-                + `(pan ${move.finalYaw.toFixed(1)}, tilt ${move.finalPitch.toFixed(1)}). `
-                + 'Its Bluetooth stack has most likely wedged. Hold Shutter + Switch + Trigger '
-                + 'together for ~1s to hardware-reset it, reconnect, and re-run. '
-                + `The ${results.length} position(s) captured so far are on disk.`,
-              captured: results.length,
-            });
-            res.end();
-            return;
-          }
-        } else {
-          stuckRun = 0;
-          lastStuckPose = null;
+        // Wedge/jam detection — createWedgeGuard() in protocol/stall.mjs, shared with the
+        // movement-only path above rather than written inline here (that split is what let the
+        // scanner path run with no wedge check at all).
+        if (wedge.observe(move)) {
+          emit({
+            phase: 'error',
+            error: `${wedgeMessage(move)} The ${results.length} position(s) captured so far are on disk.`,
+            captured: results.length,
+          });
+          res.end();
+          return;
         }
 
         if (gridCancelRequested) {
@@ -657,6 +718,9 @@ const routes = {
       res.end();
       return;
     } finally {
+      // Before anything else: a run that ended early (wedge abort, stop request, thrown error)
+      // can still have a speed command latched. Leaving it is how the gimbal overheats.
+      await stopMotors();
       gridRunning = false;
       if (client) await client.close();
     }
@@ -827,3 +891,26 @@ wss.on('connection', (ws) => {
 server.listen(PORT, () => {
   console.log(`Osmo BLE backend: http://localhost:${PORT}  (WebSocket at /ws)`);
 });
+
+/**
+ * Stop the motors before this process goes away.
+ *
+ * `npm run backend` runs under `node --watch`, which SIGTERMs and respawns on every file save.
+ * Without this the gimbal keeps driving at whatever speed was latched when the process died —
+ * and because the BLE link drops with it, nothing can tell it to stop. Editing this very file
+ * mid-session is therefore enough to cook the hardware, which is exactly what happened on
+ * 2026-08-26 (several unexplained thermal shutdowns, each one right after a save).
+ *
+ * Registered for the signals `--watch`, Ctrl-C and a normal kill actually send. `exit` cannot
+ * be used: it is synchronous and the stop frame is an async BLE write.
+ */
+let shuttingDown = false;
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGUSR2']) {
+  process.on(signal, async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    gridCancelRequested = true;
+    await stopMotors();
+    process.exit(0);
+  });
+}

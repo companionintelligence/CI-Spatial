@@ -144,6 +144,11 @@ export async function buildBrushDataset(opts: BuildDatasetOptions): Promise<Buil
   // per-frame pose set, loaded lazily on the first record without one.
   // `undefined` = not yet loaded, `null` = load attempted and unavailable.
   let solvedPoses: Map<string, number[][]> | null | undefined
+  // The solver's fitted lens, if a pose job left one. Loaded once and eagerly,
+  // unlike the poses: it describes the CAMERA rather than any single frame, so
+  // it applies whether a given frame's pose came from capture or from the
+  // solver. Null on any session solved before colmap-poses emitted it.
+  const solvedCamera = await readSolvedCamera(sessionDir)
   const frames: NerfstudioFrame[] = []
   let dropped = 0
   let droppedNoPose = 0
@@ -187,7 +192,17 @@ export async function buildBrushDataset(opts: BuildDatasetOptions): Promise<Buil
     const destPath = `${imagesDir}/${file}`
     await materialiseImage(srcPath, destPath, bytes, imageMode)
 
-    const intr = deriveIntrinsics(rec.intrinsics ?? {}, w, h)
+    // Prefer the solver's fitted lens over the capture-time FOV approximation.
+    // `deriveIntrinsics` already prefers fx/fy/cx/cy when present and rescales
+    // them from the recorded size to this image's size — those fields simply had
+    // no producer until colmap-poses started emitting a `camera` block. Spread
+    // second so the solved values win, and keep the record's own width/height
+    // out of the way by taking the solver's, which is what its cx/cy are in.
+    const intr = deriveIntrinsics(
+      solvedCamera ? { ...(rec.intrinsics ?? {}), ...solvedCamera } : (rec.intrinsics ?? {}),
+      w,
+      h,
+    )
 
     frames.push({
       file_path: `images/${file}`,
@@ -404,6 +419,51 @@ export async function readSolvedPoses(sessionDir: string): Promise<Map<string, n
   for (const name of POSE_SOURCES) {
     const found = await readPoseFile(`${sessionDir}/${name}`)
     if (found) return found
+  }
+  return null
+}
+
+/**
+ * The solver's own camera intrinsics, when the pose file carries them.
+ *
+ * COLMAP fits f, cx, cy to the actual uploaded images, which beats
+ * `deriveIntrinsics`'s fallback in two ways that matter: the fallback has only
+ * the capture-time vertical FOV (which on 8th Wall's `?camerafit=cover` path
+ * describes a different frustum than the pixels that were uploaded), and it can
+ * only ever put the principal point at dead centre.
+ *
+ * Read in the same POSE_SOURCES order as `readSolvedPoses`, so the lens always
+ * comes from the same solver as the poses it is paired with — mixing them would
+ * describe one solver's cameras with another's lens. Returns null when no
+ * source carries a camera block, which is the normal case for a session solved
+ * before this was written and for LingBot-Map.
+ */
+export async function readSolvedCamera(
+  sessionDir: string,
+): Promise<{ fx: number; fy: number; cx: number; cy: number; width: number; height: number } | null> {
+  for (const name of POSE_SOURCES) {
+    let raw: string
+    try {
+      raw = await Deno.readTextFile(`${sessionDir}/${name}`)
+    } catch {
+      continue
+    }
+    let parsed: { camera?: Record<string, unknown> }
+    try {
+      parsed = JSON.parse(raw) as typeof parsed
+    } catch {
+      continue
+    }
+    const c = parsed.camera
+    if (!c) continue
+    const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null)
+    const fx = num(c['fx']), fy = num(c['fy']), width = num(c['width']), height = num(c['height'])
+    // cx/cy may legitimately sit anywhere inside the frame, so they are only
+    // required to be finite — not positive-nonzero like a focal length.
+    const cx = typeof c['cx'] === 'number' && Number.isFinite(c['cx']) ? c['cx'] : null
+    const cy = typeof c['cy'] === 'number' && Number.isFinite(c['cy']) ? c['cy'] : null
+    if (fx === null || fy === null || cx === null || cy === null || width === null || height === null) continue
+    return { fx, fy, cx, cy, width, height }
   }
   return null
 }

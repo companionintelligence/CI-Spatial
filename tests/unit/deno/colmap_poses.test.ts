@@ -17,6 +17,8 @@ import { assert } from 'jsr:@std/assert@^1.0.0/assert'
 import {
   buildPosesJson,
   estimateUpAxis,
+  colmapCameraModelParamCount,
+  parseCamerasBin,
   parseImagesBin,
   parsePoints3DBin,
   pointsToPly,
@@ -26,7 +28,7 @@ import {
   rotationToQuat,
 } from '../../../server/colmap/colmap_model.ts'
 import { isValidSessionDir, resolveParams, runColmapPoses } from '../../../server/colmap/colmap_poses.ts'
-import { openCvW2cToC2w, POSE_SOURCES, SEED_CLOUDS } from '../../../server/splat/splat_train_dataset.ts'
+import { deriveIntrinsics, openCvW2cToC2w, POSE_SOURCES, readSolvedCamera, SEED_CLOUDS } from '../../../server/splat/splat_train_dataset.ts'
 
 /** Encode one images.bin record the way COLMAP's writer lays it out. */
 function encodeImagesBin(
@@ -301,4 +303,160 @@ Deno.test('rotating the world keeps cameras and points in the same frame', () =>
   ]
   const cam = rotatePoint(R, rotPt)
   cam.forEach((v, i) => assert(close(v, world[i], 1e-6), `axis ${i}: ${v} vs ${world[i]}`))
+})
+
+/** Encode one cameras.bin record the way COLMAP's writer lays it out. */
+function encodeCamerasBin(
+  entries: Array<{ id: number; model: number; w: number; h: number; params: number[] }>,
+): Uint8Array {
+  const parts: Uint8Array[] = []
+  const head = new Uint8Array(8)
+  new DataView(head.buffer).setBigUint64(0, BigInt(entries.length), true)
+  parts.push(head)
+
+  for (const e of entries) {
+    const rec = new Uint8Array(4 + 4 + 8 + 8 + e.params.length * 8)
+    const dv = new DataView(rec.buffer)
+    let o = 0
+    dv.setUint32(o, e.id, true); o += 4
+    dv.setInt32(o, e.model, true); o += 4
+    dv.setBigUint64(o, BigInt(e.w), true); o += 8
+    dv.setBigUint64(o, BigInt(e.h), true); o += 8
+    for (const v of e.params) { dv.setFloat64(o, v, true); o += 8 }
+    parts.push(rec)
+  }
+  const total = parts.reduce((n, p) => n + p.length, 0)
+  const out = new Uint8Array(total)
+  let at = 0
+  for (const p of parts) { out.set(p, at); at += p.length }
+  return out
+}
+
+Deno.test('parseCamerasBin reads SIMPLE_RADIAL — the model colmap_poses actually requests', () => {
+  // colmap_poses.ts passes --ImageReader.camera_model SIMPLE_RADIAL, whose
+  // params are [f, cx, cy, k1]: one focal length shared by both axes.
+  const bytes = encodeCamerasBin([{ id: 1, model: 2, w: 720, h: 960, params: [812.5, 358.1, 483.7, -0.021] }])
+  const cams = parseCamerasBin(bytes)
+  assertEquals(cams.length, 1)
+  assertEquals(cams[0].fx, 812.5)
+  assertEquals(cams[0].fy, 812.5)
+  assertEquals(cams[0].width, 720)
+  assertEquals(cams[0].height, 960)
+  // The whole point of reading this file: a principal point that is NOT w/2, h/2.
+  assert(cams[0].cx !== 360)
+  assert(cams[0].cy !== 480)
+})
+
+Deno.test('parseCamerasBin reads PINHOLE with independent fx/fy', () => {
+  const bytes = encodeCamerasBin([{ id: 3, model: 1, w: 1280, h: 720, params: [900, 910, 640, 360] }])
+  const cams = parseCamerasBin(bytes)
+  assertEquals(cams[0].fx, 900)
+  assertEquals(cams[0].fy, 910)
+  assertEquals(cams[0].cameraId, 3)
+})
+
+Deno.test('parseCamerasBin walks multiple records of differing models', () => {
+  // Each model has a different params length, so a wrong stride would corrupt
+  // every record after the first rather than fail loudly.
+  const bytes = encodeCamerasBin([
+    { id: 1, model: 0, w: 640, h: 480, params: [500, 320, 240] },
+    { id: 2, model: 4, w: 800, h: 600, params: [700, 701, 400, 300, 0, 0, 0, 0] },
+  ])
+  const cams = parseCamerasBin(bytes)
+  assertEquals(cams.length, 2)
+  assertEquals(cams[1].cameraId, 2)
+  assertEquals(cams[1].fx, 700)
+  assertEquals(cams[1].fy, 701)
+})
+
+Deno.test('parseCamerasBin stops at an unknown model rather than misaligning', () => {
+  // An unknown model's params length is unknown, so there is no safe way to find
+  // the next record. Returning the good prefix beats inventing focal lengths
+  // from misaligned bytes, which would look plausible and be wrong.
+  const bytes = encodeCamerasBin([
+    { id: 1, model: 2, w: 720, h: 960, params: [800, 360, 480, 0] },
+    { id: 2, model: 99, w: 720, h: 960, params: [1, 2, 3] },
+  ])
+  const cams = parseCamerasBin(bytes)
+  assertEquals(cams.length, 1)
+  assertEquals(cams[0].cameraId, 1)
+})
+
+Deno.test('parseCamerasBin handles an empty model file', () => {
+  assertEquals(parseCamerasBin(encodeCamerasBin([])).length, 0)
+})
+
+Deno.test('camera model param counts match COLMAP', () => {
+  assertEquals(colmapCameraModelParamCount(0), 3)  // SIMPLE_PINHOLE f,cx,cy
+  assertEquals(colmapCameraModelParamCount(1), 4)  // PINHOLE fx,fy,cx,cy
+  assertEquals(colmapCameraModelParamCount(2), 4)  // SIMPLE_RADIAL f,cx,cy,k1
+  assertEquals(colmapCameraModelParamCount(3), 5)  // RADIAL f,cx,cy,k1,k2
+  assertEquals(colmapCameraModelParamCount(4), 8)  // OPENCV fx,fy,cx,cy,k1,k2,p1,p2
+  assertEquals(colmapCameraModelParamCount(99), null)
+})
+
+Deno.test('buildPosesJson carries the solved camera, and omits it when absent', () => {
+  const imgs = parseImagesBin(encodeImagesBin([{ id: 1, q: [1, 0, 0, 0], t: [0, 0, 0], cam: 1, name: 'kf-00000.jpg' }]))
+  const withCam = buildPosesJson(imgs, 'colmap', {
+    cameraId: 1, modelId: 2, width: 720, height: 960, fx: 812.5, fy: 812.5, cx: 358.1, cy: 483.7,
+  })
+  assertEquals(withCam.camera?.fx, 812.5)
+  assertEquals(withCam.camera?.cx, 358.1)
+  // Absent means "not solved" — distinguishable from solved-as-zero.
+  assertEquals(buildPosesJson(imgs).camera, undefined)
+})
+
+Deno.test('readSolvedCamera prefers COLMAP and ignores a camera-less pose file', async () => {
+  const dir = await Deno.makeTempDir()
+  try {
+    await Deno.writeTextFile(`${dir}/${POSE_SOURCES[0]}`, JSON.stringify({
+      tool: 'colmap',
+      camera: { fx: 800, fy: 800, cx: 355, cy: 470, width: 720, height: 960 },
+      frames: [],
+    }))
+    const cam = await readSolvedCamera(dir)
+    assertEquals(cam?.fx, 800)
+    assertEquals(cam?.cx, 355)
+
+    // A pose file with no camera block must not masquerade as a solved lens.
+    const bare = await Deno.makeTempDir()
+    await Deno.writeTextFile(`${bare}/${POSE_SOURCES[0]}`, JSON.stringify({ tool: 'colmap', frames: [] }))
+    assertEquals(await readSolvedCamera(bare), null)
+    await Deno.remove(bare, { recursive: true })
+  } finally {
+    await Deno.remove(dir, { recursive: true })
+  }
+})
+
+Deno.test('readSolvedCamera rejects a partial or nonsense camera block', async () => {
+  const dir = await Deno.makeTempDir()
+  try {
+    // Missing cy, and a zero focal length: either would silently produce a
+    // garbage lens if it were allowed through.
+    for (const cam of [
+      { fx: 800, fy: 800, cx: 355, width: 720, height: 960 },
+      { fx: 0, fy: 800, cx: 355, cy: 470, width: 720, height: 960 },
+    ]) {
+      await Deno.writeTextFile(`${dir}/${POSE_SOURCES[0]}`, JSON.stringify({ tool: 'colmap', camera: cam, frames: [] }))
+      assertEquals(await readSolvedCamera(dir), null)
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true })
+  }
+})
+
+Deno.test('a solved camera beats the FOV fallback, and rescales to the actual image', () => {
+  // The fallback can only ever centre the principal point; the solved lens does not.
+  const fallback = deriveIntrinsics({ fovYDeg: 64.577, width: 720, height: 960 }, 720, 960)
+  assertEquals(fallback.cx, 360)
+  assertEquals(fallback.cy, 480)
+
+  const solved = deriveIntrinsics({ fx: 812.5, fy: 812.5, cx: 358.1, cy: 483.7, width: 720, height: 960 }, 720, 960)
+  assertEquals(solved.cx, 358.1)
+  assertEquals(solved.flX, 812.5)
+
+  // Half-size image => every pixel quantity halves.
+  const half = deriveIntrinsics({ fx: 812.5, fy: 812.5, cx: 358.1, cy: 483.7, width: 720, height: 960 }, 360, 480)
+  assertEquals(half.flX, 406.25)
+  assertEquals(half.cx, 179.05)
 })

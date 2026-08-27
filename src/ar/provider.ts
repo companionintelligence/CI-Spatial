@@ -1,4 +1,5 @@
 import type * as THREE from 'three'
+import type { TrackingStatus } from './tracking-quality'
 
 /** 6-DoF camera pose from the AR runtime */
 export interface Pose {
@@ -79,6 +80,17 @@ export interface ARProvider {
    * Fixing that means surfacing the runtime's own status, not retitling this.
    */
   isTracking(): boolean
+
+  /**
+   * The runtime's OWN live tracking status — the thing `isTracking()` above
+   * explains it cannot give you.
+   *
+   * 8th Wall publishes this on every reality frame; `WebXRProvider` has no
+   * equivalent and reports `'UNKNOWN'`. Use `trackingIsUsable()`
+   * (`src/ar/tracking-quality.ts`) to judge it rather than comparing strings at
+   * call sites, so every caller agrees on what counts as degraded.
+   */
+  trackingStatus(): TrackingStatus
 
   /**
    * Vertical field-of-view in degrees for the AR camera.

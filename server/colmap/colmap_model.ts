@@ -1,11 +1,36 @@
 /**
  * Readers for COLMAP's binary sparse-model files.
  *
- * Only the two files the pose pipeline needs are parsed — `images.bin` (the
- * per-image extrinsics) and `points3D.bin` (the sparse cloud used to seed
- * Brush's splat init). `cameras.bin`, `rigs.bin` and `frames.bin` are left
- * alone: intrinsics already come from the keyframe records via
- * `deriveIntrinsics`, and the rig/frame tables carry nothing this path uses.
+ * Parses `images.bin` (the per-image extrinsics), `points3D.bin` (the sparse
+ * cloud used to seed Brush's splat init) and `cameras.bin` (the solved
+ * intrinsics). `rigs.bin` and `frames.bin` are left alone — the rig/frame
+ * tables carry nothing this path uses.
+ *
+ * **`cameras.bin` used to be skipped, on a premise that was false.** This
+ * header previously read "intrinsics already come from the keyframe records via
+ * `deriveIntrinsics`". They do not. `deriveIntrinsics`
+ * (`server/splat/splat_train_dataset.ts`) has an `fx`/`fy`/`cx`/`cy` branch that
+ * nothing ever populates: `src/capture/keyframes.ts` is the only writer of a
+ * keyframe's `intrinsics` block and it writes `{fovYDeg, aspect, width, height,
+ * sourceWidth, sourceHeight}` — verified against real captures on disk. So the
+ * fx/fy path is dead code and every reconstruction silently fell back to
+ * `fl = h / (2·tan(fovY/2))` with the principal point pinned at dead centre.
+ *
+ * That fallback is weaker than it looks:
+ *   - `fovYDeg` describes the DISPLAY frustum, not the uploaded pixels. Under
+ *     `?camerafit=cover` those differ, and `src/ar/eighthwall.ts`'s own header
+ *     spells out the consequence — "the reconstruction bends geometry to fit a
+ *     lens the camera does not have".
+ *   - Both providers initialise `_fovY = 60`, so a frame captured before the
+ *     first real projection carries a fabricated 60°.
+ *   - A real phone lens is not perfectly centred, and `cx = w/2, cy = h/2`
+ *     cannot express that.
+ *
+ * Meanwhile COLMAP is already solving the real thing: `colmap_poses.ts` runs
+ * feature extraction with `--ImageReader.single_camera 1
+ * --ImageReader.camera_model SIMPLE_RADIAL`, so it fits f, cx, cy and k1 to the
+ * ACTUAL uploaded JPEGs and writes them here. Reading them back is strictly
+ * better than deriving, and costs one more file parse.
  *
  * Convention note — this is the part that silently corrupts a reconstruction
  * if you get it wrong. COLMAP stores each image's pose as a quaternion +
@@ -31,6 +56,91 @@ export interface ColmapImage {
   cameraId: number
   /** Image path relative to COLMAP's `--image_path` root. */
   name: string
+}
+
+/** One camera's solved intrinsics, in pixels, for the image size COLMAP saw. */
+export interface ColmapCamera {
+  cameraId: number
+  /** COLMAP's numeric model id, kept so an unexpected model is reportable. */
+  modelId: number
+  width: number
+  height: number
+  /** Focal length in pixels, x and y. Equal for the single-focal models. */
+  fx: number
+  fy: number
+  /** Principal point in pixels — the whole reason to prefer this over w/2, h/2. */
+  cx: number
+  cy: number
+}
+
+/**
+ * How to read each COLMAP camera model's `params` array.
+ *
+ * Ids and orders are COLMAP's own (`src/colmap/sensor/models.h`). Only the
+ * models a phone capture can realistically produce are mapped; anything else
+ * returns null and the caller falls back to `deriveIntrinsics` rather than
+ * guessing at an unfamiliar parameterisation. SIMPLE_RADIAL (2) is what
+ * `colmap_poses.ts` actually requests.
+ */
+const CAMERA_MODELS: Record<number, { name: string; params: number; read: (p: number[]) => { fx: number; fy: number; cx: number; cy: number } }> = {
+  0: { name: 'SIMPLE_PINHOLE', params: 3, read: (p) => ({ fx: p[0]!, fy: p[0]!, cx: p[1]!, cy: p[2]! }) },
+  1: { name: 'PINHOLE', params: 4, read: (p) => ({ fx: p[0]!, fy: p[1]!, cx: p[2]!, cy: p[3]! }) },
+  2: { name: 'SIMPLE_RADIAL', params: 4, read: (p) => ({ fx: p[0]!, fy: p[0]!, cx: p[1]!, cy: p[2]! }) },
+  3: { name: 'RADIAL', params: 5, read: (p) => ({ fx: p[0]!, fy: p[0]!, cx: p[1]!, cy: p[2]! }) },
+  4: { name: 'OPENCV', params: 8, read: (p) => ({ fx: p[0]!, fy: p[1]!, cx: p[2]!, cy: p[3]! }) },
+}
+
+/** The number of `params` doubles COLMAP writes for a model id, or null if unknown. */
+export function colmapCameraModelParamCount(modelId: number): number | null {
+  return CAMERA_MODELS[modelId]?.params ?? null
+}
+
+/**
+ * Parse `cameras.bin`.
+ *
+ * Layout (little-endian), per COLMAP's `ReadCamerasBinary`:
+ *   u64                  number of cameras
+ *   repeated:
+ *     u32                camera_id
+ *     i32                model_id
+ *     u64                width
+ *     u64                height
+ *     f64 × num_params   model-specific parameters
+ *
+ * An unknown model id cannot be skipped safely — its parameter count is what
+ * tells us where the next record starts — so parsing stops there and returns
+ * what it has, rather than walking off into misaligned bytes and inventing
+ * plausible-looking focal lengths.
+ */
+export function parseCamerasBin(buf: Uint8Array): ColmapCamera[] {
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
+  let o = 0
+  const count = Number(dv.getBigUint64(o, true))
+  o += 8
+
+  const out: ColmapCamera[] = []
+  for (let i = 0; i < count; i++) {
+    const cameraId = dv.getUint32(o, true)
+    o += 4
+    const modelId = dv.getInt32(o, true)
+    o += 4
+    const width = Number(dv.getBigUint64(o, true))
+    o += 8
+    const height = Number(dv.getBigUint64(o, true))
+    o += 8
+
+    const model = CAMERA_MODELS[modelId]
+    if (!model) break
+
+    const params: number[] = []
+    for (let p = 0; p < model.params; p++) {
+      params.push(dv.getFloat64(o, true))
+      o += 8
+    }
+    const { fx, fy, cx, cy } = model.read(params)
+    out.push({ cameraId, modelId, width, height, fx, fy, cx, cy })
+  }
+  return out
 }
 
 /** One triangulated point from the sparse cloud. */
@@ -321,8 +431,9 @@ export function pointsToPly(points: ColmapPoint3D[]): Uint8Array {
  * paths are relative to its own image root, while the dataset builder keys
  * frames by the bare `kf-NNNNN.jpg` filename.
  */
-export function buildPosesJson(images: ColmapImage[], tool = 'colmap'): {
+export function buildPosesJson(images: ColmapImage[], tool = 'colmap', camera?: ColmapCamera): {
   tool: string
+  camera?: { fx: number; fy: number; cx: number; cy: number; width: number; height: number }
   frames: Array<{ file: string; cameraToWorld: number[][] }>
 } {
   const frames = images.map((img) => {
@@ -342,5 +453,16 @@ export function buildPosesJson(images: ColmapImage[], tool = 'colmap'): {
       ],
     }
   })
-  return { tool, frames }
+  // The solved intrinsics ride along with the poses deliberately: they were fit
+  // to these exact images, in this exact model, so splitting them into a second
+  // sidecar would let a consumer pair one solver's poses with another's lens.
+  // Omitted entirely when COLMAP gave us nothing usable, so a reader can tell
+  // "not solved" from "solved as zero".
+  return camera
+    ? {
+      tool,
+      camera: { fx: camera.fx, fy: camera.fy, cx: camera.cx, cy: camera.cy, width: camera.width, height: camera.height },
+      frames,
+    }
+    : { tool, frames }
 }

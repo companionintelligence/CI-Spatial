@@ -219,9 +219,14 @@ product-line lines.
 2. Wait ~1s.
 3. Send `SetPairingPIN` (sender=App, receiver=WiFi, cmdSet=0x07, cmdId=0x45), payload =
    `packString(identifier) + packString(pin)`.
-4. **The PIN is shown on the device's own screen during pairing — it is not a fixed default.**
-   Every hardcoded PIN found in the source repos (`"love"`, `"5160"`) was a leftover
-   development default from someone else's device, not a real secret to reuse.
+4. **The PIN, when one appears, is device-generated — it is not a fixed default.** Every
+   hardcoded PIN found in the source repos (`"love"`, `"5160"`) was a leftover development
+   default from someone else's device, not a real secret to reuse. Don't assume it appears on the
+   gimbal's own screen, though: on real hardware this has surfaced as a *macOS* Bluetooth
+   confirmation dialog instead, and on Linux/BlueZ, as of 2026-08-26, neither a device-screen PIN
+   nor a BlueZ agent prompt has been observed at all after `pair_trigger`. See the pairing gotcha
+   in [`GIMBAL_INTEGRATION.md`](../../docs/operations/GIMBAL_INTEGRATION.md) for the live findings
+   — this file only pins down the wire protocol, not what your OS actually shows you.
 5. Response payload byte: `0x01` = already paired, `0x02` = pairing required (wait for user
    approval on the device).
 

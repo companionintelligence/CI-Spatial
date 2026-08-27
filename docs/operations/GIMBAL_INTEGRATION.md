@@ -96,6 +96,81 @@ touching any code.** `paired: false` in `/api/status` does not tell you — that
 `ble-transport.mjs`'s own heuristic (`this._paired = true // latch write channel regardless`),
 not the OS bond state.
 
+**Update (2026-08-26) — on Linux, neither a device-screen PIN nor a BlueZ prompt appeared.**
+Retested from a fresh Linux host (BlueZ, not macOS): `scan_devices` → `connect` (clean service
+discovery, `fff5`/`fff3` both present as expected) → `pair_trigger` all completed without error,
+and the BLE connection stayed live throughout. But: no PIN appeared on the gimbal's own screen,
+and — with a `bluetoothctl` agent (`agent on` / `default-agent`) armed and watching *before* the
+trigger was sent — no OS-level pairing/confirmation request reached BlueZ either, unlike the
+macOS dialog reported above. `bluetoothctl info <mac>` confirmed `Paired: no, Bonded: no`
+throughout. So the 2026-08-21 "PIN is shown on the gimbal's own screen" claim (in Setup, below)
+was already superseded by the macOS finding above (it's an OS dialog, not a device PIN) — and
+this session found that even that OS-dialog path doesn't reproduce on Linux/BlueZ, at least not
+within a few seconds of the trigger write. Root cause is still open: candidates are the gimbal's
+screen being asleep (a purely physical state this session couldn't check), a platform difference
+in how BlueZ vs. macOS's Bluetooth stack surfaces (or suppresses) the device's pairing request, or
+this specific trigger not being sufficient on its own on this firmware. **Don't assume `pair()`
+has anything to confirm against on Linux until one of these is actually observed** — check the
+gimbal's screen is awake first, cheapest to rule out.
+
+**On Linux, an unbonded gimbal still drives its motors — the macOS "unbonded lockout" did not
+reproduce.** A first probe was misread: a single `gimbal_nudge(yaw=20°/s, 400ms)` moved the
+quaternion by only ~0.0002 (noise-level), which looks exactly like the macOS lockout signature and
+was briefly recorded here as one. It is not. Minutes later, still reporting `Paired: no` /
+`Bonded: no` in `bluetoothctl`, `gimbal_sweep` drove the device through **tens of degrees** of real
+pan across many steps, with telemetry streaming throughout — and the phone mounted in the cradle
+went from "Tracking lost" to 935 and then 3133 SLAM points purely from that motion. So on
+Linux/BlueZ the bond is **not** a precondition for motor control.
+
+What the failed nudge actually shows is a **short-pulse / low-speed no-op**, a different problem:
+one brief 400 ms pulse does nothing, while the closed loop's repeated sustained commands move the
+device fine. Suspected causes are motor ramp-up against a startup deadband, and the first write
+being spent latching the `fff5`-vs-`fff3` write candidate. **Don't diagnose a dead gimbal from a
+single short nudge** — issue a sustained or repeated command before concluding anything, and on
+Linux don't reach for the bond as the explanation.
+
+**Known gotcha — the speed command is a LATCH, and that is how the hardware overheats.**
+Found 2026-08-26, the first time this subsystem ran on Linux. The gimbal keeps driving at the
+last commanded rate until something tells it otherwise, and stops were only sent on the happy
+path. Nothing sent one on a thrown error, an aborted scan, or — the one that actually bit — the
+process simply exiting. `npm run backend` runs under `node --watch`, so **every file save
+restarted the backend mid-move, dropping the BLE link with the motors still latched**, after
+which nothing could reach the gimbal to stop it. It drove against its own end-stop until it
+thermally shut itself off, repeatedly, and the shutdowns looked mysterious because they happened
+seconds *after* the run appeared to end. Now: `stopMotors()` on every exit path of the move
+loop, in grid-capture's `finally`, and on SIGINT/SIGTERM/SIGHUP/SIGUSR2. An all-zero `speed` is
+also no longer refused by the scan interlock — refusing it meant the one command that can save
+overheating motors was unavailable exactly while a scan was driving them.
+
+**Known gotcha — wedge detection existed but the scanner path skipped it.** Same session. The
+grid loop aborts a run when consecutive positions end at the same pose, but the movement-only
+branch `continue`d past that check, which lived inline in the photo path — so **scanner/AR mode,
+the mode used for autonomous room scans, had no wedge detection at all**. A dome run took the
+gimbal through 10 consecutive positions all reporting pan 105.56 / tilt 27.18 (bit-identical),
+holding against the jam the whole way, and that is the run that cooked it. The guard is now
+`createWedgeGuard()` in `protocol/stall.mjs`, called from both paths, tested against that
+captured trace (`npm run test:gimbal:stall`).
+
+**Fixed 2026-08-26 — the control law was bang-bang, and acted 2-3x per measurement.** Three
+defects compounded, all now in `protocol/control.mjs` with tests (`npm run test:gimbal:control`):
+
+- **No proportional term.** `Math.sign(error) * speedDegPerSec` commanded a flat 25°/s whether
+  the error was 3° or 90°. One 250ms pulse is ~6° of travel against a 3° tolerance *half*-band,
+  so the controller's smallest possible step was about twice its own target window — it could
+  only land inside tolerance by luck, and otherwise limit-cycled at the step size. Now scaled by
+  error (`PROPORTIONAL_GAIN`), floored at `MIN_EFFECTIVE_SPEED_DEG_PER_SEC` because the motors
+  ignore very low speeds outright.
+- **Acting on stale measurements.** The gimbal re-sends its last orientation rather than staying
+  quiet, so frames keep arriving carrying an unchanged value, and the loop issued 2-3 full
+  corrections per real measurement — visible as bit-identical float64 angles on consecutive
+  ticks in any move history. Gate on the **derived pan/tilt**, not the quaternion: q and -q
+  encode the same rotation and the device emits both, so raw-value comparison sees "new data"
+  for an identical pose.
+- **The sign-flip unlearned correct signs.** It flipped whenever the error grew — but an
+  overshoot also grows the error, and there the error has changed *sign*, which
+  `Math.sign(error)` already handles. Flipping too reversed the command twice and drove hard the
+  wrong way. Only a growing error on the *same side* of zero is a wrong mapping.
+
 **Problem 2 — the closed-loop controller steered on a dead axis.** Even bonded, `move-to` still
 ran to timeout. Measured directly: physical pan moves the `roll` channel, while `yaw` sits pinned
 at exactly -90.00 ±0.05 regardless of how far the gimbal actually turns. `moveToClosedLoop` read
@@ -132,8 +207,12 @@ photo count instead of "however many the heuristics trigger," see the grid-captu
 3. Start the backend yourself, in a real terminal (see the architecture note above for why this
    can't be automated): `cd subsystems/osmo-ble && npm run backend`. First run needs Bluetooth
    granted to the Node process by macOS.
-4. From a Claude Code session in this project: `scan_devices` → `connect` → `pair` (PIN is shown
-   on the gimbal's own screen) → then `gimbal_sweep` or `gimbal_move_to` to drive it.
+4. From a Claude Code session in this project: `scan_devices` → `connect` → `pair_trigger`, then
+   check for a confirmation before calling `pair` — **not necessarily a PIN on the gimbal's own
+   screen.** On macOS this has shown up as an OS Bluetooth confirmation dialog instead (see the
+   pairing gotcha below); on Linux/BlueZ, as of 2026-08-26 neither a device PIN nor a BlueZ agent
+   prompt has been observed to appear at all. Check the gimbal's screen is awake before assuming
+   pairing is stuck. Once something confirms, proceed to `gimbal_sweep` or `gimbal_move_to`.
 
 ## Closed-loop positioning (`gimbal_move_to`, `gimbal_sweep`, `gimbal_recenter`)
 

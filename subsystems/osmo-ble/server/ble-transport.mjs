@@ -42,6 +42,15 @@ export class OsmoBleTransport extends EventEmitter {
     this._paired = false;
     this.frames = []; // rolling history of decoded frames, most recent last
     this.lastQuaternion = null;
+    /**
+     * When lastQuaternion was received (ms epoch), or 0 if never.
+     *
+     * Exists so a control loop can tell a FRESH sample from the one it already acted on.
+     * Quaternion frames arrive well slower than the closed loop's ~400ms tick, so without this
+     * the loop issues 2-3 full corrections against one reading and overshoots by that multiple
+     * — visible as bit-identical float64 angles on consecutive ticks in any move history.
+     */
+    this.lastQuaternionAt = 0;
   }
 
   get connected() {
@@ -121,7 +130,10 @@ export class OsmoBleTransport extends EventEmitter {
         this.frames.push(enriched);
         if (this.frames.length > MAX_FRAME_HISTORY) this.frames.shift();
         const quat = decodeQuaternion(frame);
-        if (quat) this.lastQuaternion = quat;
+        if (quat) {
+          this.lastQuaternion = quat;
+          this.lastQuaternionAt = enriched.at;
+        }
       }
       this.emit('frame', enriched);
     }

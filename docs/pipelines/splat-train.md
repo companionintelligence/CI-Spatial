@@ -88,6 +88,41 @@ export BRUSH_BIN=~/brush/target/release/brush-cli
 ~/brush/target/release/brush-cli --help
 ```
 
+**Verified on Linux, 2026-08-26 (first Linux setup of this pipeline).** Both halves install
+entirely under `$HOME` — no `sudo`, no system packages — which matters because the box this was
+done on has no passwordless sudo:
+
+```bash
+# Rust, user-local. The repo needs >= 1.95; stable resolved to 1.98.0.
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+. "$HOME/.cargo/env"
+git clone --depth 1 https://github.com/ArthurBrussee/brush ~/brush
+cd ~/brush && cargo build --release -p brush-cli      # 4m28s on an RTX 4080 laptop
+
+# COLMAP without apt: micromamba is a single user-local binary, conda-forge ships a CUDA build.
+curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj bin/micromamba
+export MAMBA_ROOT_PREFIX=$HOME/.local/micromamba
+./bin/micromamba create -y -n colmap -c conda-forge colmap   # got COLMAP 3.13.0 with CUDA
+```
+
+The resulting paths, which is what `BRUSH_BIN` / `COLMAP_BIN` want:
+
+```
+BRUSH_BIN=$HOME/brush/target/release/brush-cli
+COLMAP_BIN=$HOME/.local/micromamba/envs/colmap/bin/colmap
+```
+
+Two notes worth keeping:
+
+- **`.env` is not read by the server.** Nothing in `package.json` or `deno.json` passes
+  `--env-file`, and `server/main.ts` only ever calls `Deno.env.get`. Putting `BRUSH_BIN` in
+  `.env` alone does nothing — export it into the shell that runs `npm start`
+  (`set -a; . ./.env; set +a` works).
+- **Check the driver's flags against the build you got.** `server/splat/splat_train.ts` passes
+  `--total-train-iters`, `--sh-degree`, `--max-resolution`, `--export-every`, `--export-path`,
+  `--export-name` and `--eval-every`; all seven exist in the build above, but Brush is a moving
+  target and a missing flag surfaces as a training failure, not a config error.
+
 ## Camera poses are a prerequisite
 
 Brush trains from posed images, so every frame needs a camera pose. Keyframes
