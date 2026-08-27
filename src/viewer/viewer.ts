@@ -36,6 +36,7 @@ import { LAYER_LABELS, LAYER_ORDER, LAYERS_HIDDEN_BY_DEFAULT } from '../world/la
 import { buildAnchorMarker } from '../world/anchor-marker'
 import { registerPWA } from '../pwa'
 import { iconLabel } from '../ui/icons'
+import { qrCodeSvg } from '../ui/qr-code'
 import { EVENT, type EventPayload, type LegacyJobUpdateJob } from '../shared/events'
 import { WEBRTC_LIVE_ENABLED } from '../rtc/feature'
 import type {
@@ -3002,6 +3003,103 @@ function renderJobs(jobs: WorldJob[]): void {
   }
 }
 
+const SHARE_ROLE_LABELS: Record<string, string> = {
+  viewer: 'View only',
+  commenter: 'Comment',
+  editor: 'Edit',
+  scanner: 'Scanner',
+  owner: 'Owner',
+}
+
+/**
+ * The roles listed as plain rows, in ascending order of power. `scanner` is
+ * deliberately absent — it gets the standalone block above them, because it is
+ * the one link whose entire job is to reach a phone, and the empty world panel
+ * already tells the operator to go and open it there.
+ */
+const SHARE_ROLE_ROWS = ['viewer', 'commenter', 'editor', 'owner'] as const
+
+/** Collapses every open share QR. Populated fresh on each `loadShareLinks()`. */
+const shareQrClosers: Array<() => void> = []
+
+/** Monotonic, so `aria-controls` still resolves after a re-render. */
+let shareQrPanelSeq = 0
+
+function closeShareQrCodes(): void {
+  for (const close of shareQrClosers) close()
+}
+
+/** Copy-to-clipboard wiring, shared by the scanner block and the role rows. */
+function bindCopyLink(button: HTMLButtonElement, url: string): void {
+  button.addEventListener('click', () => {
+    void navigator.clipboard.writeText(url).then(() => {
+      button.textContent = 'Copied'
+      setTimeout(() => { button.textContent = 'Copy' }, 1200)
+    }).catch(() => {
+      button.textContent = 'Copy failed'
+      setTimeout(() => { button.textContent = 'Copy' }, 1200)
+    })
+  })
+}
+
+/**
+ * A click-gated QR disclosure for one share link.
+ *
+ * These URLs carry a bearer token — `scripts/house-links.mjs` calls them
+ * secrets and it is right: whoever holds one has that role until the member is
+ * revoked. A QR is worse than a clipboard for a secret, because a screen share
+ * re-encodes it perfectly and a photograph keeps it. So the symbol is never
+ * painted on load or on hover, only on an explicit click; only one is open at a
+ * time; and closing the Share menu collapses it again rather than leaving a
+ * credential on screen. `WorldMember.expiresAt` exists but nothing mints
+ * short-lived members yet, so the click gate is the whole mitigation today.
+ */
+function buildQrDisclosure(url: string, roleLabel: string, showLabel: string, size = 200): {
+  button: HTMLButtonElement
+  panel: HTMLDivElement
+} {
+  const panel = document.createElement('div')
+  panel.className = 'world-link-qr'
+  panel.id = `share-qr-${++shareQrPanelSeq}`
+  panel.hidden = true
+
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.className = 'qr-link-btn'
+  button.textContent = showLabel
+  button.title = `Show a scannable code for the ${roleLabel} link`
+  button.setAttribute('aria-expanded', 'false')
+  button.setAttribute('aria-controls', panel.id)
+
+  const close = (): void => {
+    if (panel.hidden) return
+    panel.hidden = true
+    panel.innerHTML = ''
+    button.textContent = showLabel
+    button.setAttribute('aria-expanded', 'false')
+  }
+  shareQrClosers.push(close)
+
+  button.addEventListener('click', () => {
+    const wasOpen = !panel.hidden
+    closeShareQrCodes()
+    if (wasOpen) return
+    try {
+      panel.innerHTML = `
+        <div class="qr-plate">${qrCodeSvg(url, { size, label: `${roleLabel} link` })}</div>
+        <div class="qr-caption">Anyone who scans this gets <b>${escHtml(roleLabel)}</b> access to this place until the link is revoked.</div>
+      `
+    } catch (error) {
+      panel.innerHTML = `<div class="layer-meta">QR unavailable: ${escHtml(errorMessage(error))}</div>`
+    }
+    panel.hidden = false
+    button.textContent = 'Hide code'
+    button.setAttribute('aria-expanded', 'true')
+  })
+
+  return { button, panel }
+}
+
 async function loadShareLinks(): Promise<void> {
   if (!world) return
   const target = document.getElementById('share-links')
@@ -3010,35 +3108,50 @@ async function loadShareLinks(): Promise<void> {
   try {
     const payload = await fetchJson<ShareLinksResponse>(`/worlds/${encodeURIComponent(world.shareSlug)}/share`)
     target.innerHTML = ''
-    const labels: Record<string, string> = {
-      viewer: 'View only',
-      commenter: 'Comment',
-      editor: 'Edit',
-      scanner: 'Scanner',
-      owner: 'Owner',
+    shareQrClosers.length = 0
+
+    const scannerUrl = payload.links['scanner']
+    if (scannerUrl) {
+      const block = document.createElement('div')
+      block.className = 'scanner-share'
+      const head = document.createElement('div')
+      head.className = 'scanner-share-head'
+      head.innerHTML = '<span>Scan with a phone</span><small>Point a phone camera here to capture into this place.</small>'
+      head.title = scannerUrl
+      const actions = document.createElement('div')
+      actions.className = 'world-link-actions'
+      const scannerQr = buildQrDisclosure(scannerUrl, SHARE_ROLE_LABELS['scanner'] ?? 'Scanner', 'Show QR', 240)
+      scannerQr.button.classList.add('primary')
+      const scannerCopy = document.createElement('button')
+      scannerCopy.type = 'button'
+      scannerCopy.className = 'copy-link-btn'
+      scannerCopy.textContent = 'Copy'
+      bindCopyLink(scannerCopy, scannerUrl)
+      actions.append(scannerQr.button, scannerCopy)
+      block.append(head, actions, scannerQr.panel)
+      target.appendChild(block)
     }
-    for (const role of ['viewer', 'commenter', 'editor', 'scanner', 'owner']) {
+
+    for (const role of SHARE_ROLE_ROWS) {
       const url = payload.links[role]
       if (!url) continue
       const row = document.createElement('div')
       row.className = 'world-link-row'
       const label = document.createElement('span')
-      label.textContent = labels[role] ?? role
+      const roleLabel = SHARE_ROLE_LABELS[role] ?? role
+      label.textContent = roleLabel
       label.title = url
+      const actions = document.createElement('div')
+      actions.className = 'world-link-actions'
+      const qr = buildQrDisclosure(url, roleLabel, 'QR')
       const copy = document.createElement('button')
+      copy.type = 'button'
       copy.className = 'copy-link-btn'
       copy.textContent = 'Copy'
-      copy.addEventListener('click', () => {
-        void navigator.clipboard.writeText(url).then(() => {
-          copy.textContent = 'Copied'
-          setTimeout(() => { copy.textContent = 'Copy' }, 1200)
-        }).catch(() => {
-          copy.textContent = 'Copy failed'
-          setTimeout(() => { copy.textContent = 'Copy' }, 1200)
-        })
-      })
-      row.append(label, copy)
-      target.appendChild(row)
+      bindCopyLink(copy, url)
+      actions.append(qr.button, copy)
+      row.append(label, actions)
+      target.append(row, qr.panel)
     }
   } catch (error) {
     target.innerHTML = `<div class="layer-meta">Share links unavailable: ${escHtml(errorMessage(error))}</div>`
@@ -3783,6 +3896,12 @@ document.getElementById('btn-queue-job')?.addEventListener('click', () => {
 
 document.getElementById('review-comment-submit')?.addEventListener('click', () => {
   void addReviewComment()
+})
+
+// Closing the Share menu collapses any open QR. The symbol encodes a bearer
+// token, so it should not survive the interaction that asked for it.
+document.getElementById('share-menu')?.addEventListener('toggle', (event) => {
+  if (!(event.currentTarget as HTMLDetailsElement).open) closeShareQrCodes()
 })
 
 document.querySelectorAll<HTMLButtonElement>('[data-workflow]').forEach((button) => {
