@@ -59,10 +59,22 @@ test.describe('WebXR session-start failure', () => {
     await expect(placeSkip).toBeVisible({ timeout: 15_000 })
     await placeSkip.click()
 
-    // The permission banner must carry the real error, not a generic
-    // camera-permission claim this device never triggered.
+    // The banner must explain the failure and offer the way out, and must not
+    // claim a camera-permission problem this device never had.
+    //
+    // It used to assert the raw exception text ("session configuration is not
+    // supported") appeared on screen. That was the bug, not the contract: a
+    // person who cannot run AR was handed a WebXR internals string, no retry,
+    // and no route to Upload Content — the one path their device CAN do. The
+    // raw message still goes to console.error for whoever is debugging; what
+    // reaches the screen is now a consequence plus a next step. Asserting the
+    // exception text here would re-require the defect.
     const banner = page.locator('#permission-error-msg')
-    await expect(banner).toContainText('session configuration is not supported', { timeout: 15_000 })
+    await expect(banner).toContainText('AR could not start', { timeout: 15_000 })
+    await expect(banner, 'the banner must point at the path this device can still use')
+      .toContainText('Upload Content')
+    await expect(banner, 'this device never hit a permission prompt — do not claim one')
+      .not.toContainText(/permission|denied|blocked/i)
 
     // The capture rail must be disabled — not merely present in the DOM,
     // which the old bug's buttons always were.
