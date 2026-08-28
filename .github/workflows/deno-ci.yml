@@ -36,7 +36,7 @@ concurrency:
 jobs:
   deno-test:
     name: deno check + test
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -66,7 +66,7 @@ jobs:
 
   detection-gate:
     name: detection regression gate (mock engine + path filter)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
         with:
