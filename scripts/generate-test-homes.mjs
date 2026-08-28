@@ -1,7 +1,8 @@
 /**
  * Generates 24 deterministic test-home scan GLBs matching the mobile
  * exporter's schema (point cloud + camera path + floor plane + detection
- * boxes with userData extras + geo metadata).
+ * boxes with userData extras + geo metadata), including the per-node
+ * provenance stamp `src/export/gltf.ts` writes onto every node it creates.
  *
  *   node scripts/generate-test-homes.mjs            → test-data/homes/
  *
@@ -19,6 +20,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Document, NodeIO } from '@gltf-transform/core'
 import { buildTestHomes, mulberry32 } from '../src/shared/test-homes.ts'
+import { NODE_PROVENANCE_KEYS } from '../src/shared/provenance.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const outDir = join(root, 'test-data', 'homes')
@@ -41,6 +43,59 @@ function capturedAtFor(index) {
   const base = Date.parse(FIXED_TIMESTAMP)
   return new Date(base + index * CAPTURE_STEP_MINUTES * 60_000).toISOString()
 }
+
+function sessionIdFor(index) {
+  return `session-test-home-${String(index).padStart(2, '0')}`
+}
+
+/**
+ * The provenance keys a *client* export stamps onto every node it writes,
+ * derived from `NODE_PROVENANCE_KEYS` rather than restated here (ADR 0001 —
+ * these fixtures claim to mirror the exporter, so they must not carry a second
+ * copy of its key names). Two exclusions, both straight from
+ * `src/shared/provenance.ts`:
+ *
+ *   scanId         server-stamped during the optimize pass, because it is
+ *                  derived from a filename the server chooses. A raw upload
+ *                  carries two fields; only `.opt.glb` and the LODs carry three.
+ *   captureIndex,
+ *   sourceScanIds  `DetectionProvenance`, not `ScanProvenance` — detection
+ *                  nodes only, handled at the detection site below.
+ */
+const SERVER_STAMPED_KEYS = ['scanId']
+const DETECTION_ONLY_KEYS = ['captureIndex', 'sourceScanIds']
+const CLIENT_NODE_KEYS = NODE_PROVENANCE_KEYS
+  .filter((k) => !SERVER_STAMPED_KEYS.includes(k) && !DETECTION_ONLY_KEYS.includes(k))
+  .sort()
+
+/**
+ * The per-node stamp, mirroring `src/export/gltf.ts`'s
+ * `const nodeProvenance: ScanProvenance = { sessionId, capturedAt }` — one
+ * value per home, shared by every node and by the scene extras, exactly as the
+ * exporter shares one `capturedAt` across a whole export.
+ *
+ * The check is the reason `CLIENT_NODE_KEYS` is derived instead of written
+ * out: this file is `.mjs`, so `ScanProvenance` cannot type-check the object
+ * literal the way it does in the exporter. Should `provenance.ts` grow a
+ * client-written key, generation fails here rather than quietly shipping 24
+ * fixtures that under-test it — which is how `sessionId`/`capturedAt` came to
+ * be missing from every fixture while the contract documented them.
+ */
+function nodeProvenanceFor(index) {
+  const stamp = {
+    sessionId: sessionIdFor(index),
+    capturedAt: capturedAtFor(index),
+  }
+  const written = Object.keys(stamp).sort()
+  if (written.join(',') !== CLIENT_NODE_KEYS.join(',')) {
+    throw new Error(
+      `[test-homes] node provenance drifted from src/shared/provenance.ts: ` +
+      `writing [${written}], contract expects [${CLIENT_NODE_KEYS}]`,
+    )
+  }
+  return stamp
+}
+
 const io = new NodeIO()
 const homes = buildTestHomes()
 
@@ -120,7 +175,11 @@ function buildHomeGlb(home) {
   const buffer = doc.createBuffer()
   const scene = doc.createScene('room-scan')
 
-  const sessionId = `session-test-home-${String(home.index).padStart(2, '0')}`
+  const sessionId = sessionIdFor(home.index)
+  // Stamped onto every node below, not just the detections: `roomName`/
+  // `floorName` are place labels, not identity — two walkthroughs of one room
+  // both write `Room_studio-a`. See src/shared/provenance.ts.
+  const nodeProvenance = nodeProvenanceFor(home.index)
   scene.setExtras({
     generator: 'ci-xr-scan-test-data',
     version: '2.0',
@@ -144,9 +203,9 @@ function buildHomeGlb(home) {
   })
 
   const roomNode = doc.createNode(`Room_${home.slug}`)
-    .setExtras({ type: 'room', roomName: `Room_${home.slug}`, floorName: 'Floor_Ground' })
+    .setExtras({ type: 'room', roomName: `Room_${home.slug}`, floorName: 'Floor_Ground', ...nodeProvenance })
   const floorGroup = doc.createNode('Floor_Ground')
-    .setExtras({ type: 'floor', floorName: 'Floor_Ground' })
+    .setExtras({ type: 'floor', floorName: 'Floor_Ground', ...nodeProvenance })
   floorGroup.addChild(roomNode)
   scene.addChild(floorGroup)
 
@@ -157,7 +216,7 @@ function buildHomeGlb(home) {
     .setAttribute('POSITION', posAcc).setAttribute('COLOR_0', colAcc)
   const cloudNode = doc.createNode('point-cloud')
     .setMesh(doc.createMesh('point-cloud').addPrimitive(cloudPrim))
-    .setExtras({ type: 'slam_feature_points', count })
+    .setExtras({ type: 'slam_feature_points', count, ...nodeProvenance })
   roomNode.addChild(cloudNode)
 
   // Camera path (mode 3 = LINE_STRIP): elliptical walk at eye height
@@ -173,7 +232,7 @@ function buildHomeGlb(home) {
   const pathPrim = doc.createPrimitive().setMode(3).setAttribute('POSITION', pathAcc)
   roomNode.addChild(doc.createNode('camera-path')
     .setMesh(doc.createMesh('camera-path').addPrimitive(pathPrim))
-    .setExtras({ type: 'camera_trajectory', poseCount: pathSteps }))
+    .setExtras({ type: 'camera_trajectory', poseCount: pathSteps, ...nodeProvenance }))
 
   // Floor plane (two triangles)
   const fw = W / 2 + 0.4, fd = D / 2 + 0.4
@@ -187,10 +246,14 @@ function buildHomeGlb(home) {
     .setMaterial(floorMat)
   roomNode.addChild(doc.createNode('floor-plane')
     .setMesh(doc.createMesh('floor-plane').addPrimitive(floorPrim))
-    .setExtras({ objectType: 'estimated_floor', tag: 'floor', y: 0, widthM: fw * 2, depthM: fd * 2 }))
+    .setExtras({
+      objectType: 'estimated_floor', tag: 'floor', y: 0, widthM: fw * 2, depthM: fd * 2,
+      ...nodeProvenance,
+    }))
 
   // Detection boxes
-  const detectionsNode = doc.createNode('detections').setExtras({ type: 'detections' })
+  const detectionsNode = doc.createNode('detections')
+    .setExtras({ type: 'detections', ...nodeProvenance })
   roomNode.addChild(detectionsNode)
   const cube = unitCube(doc, buffer)
   home.furniture.forEach((item, i) => {
@@ -213,6 +276,11 @@ function buildHomeGlb(home) {
         description: `test fixture ${item.label} (${home.name})`,
         worldPos: { x: item.position[0], y: item.position[1], z: item.position[2] },
         dimensions: { w: item.size[0], h: item.size[1], d: item.size[2] },
+        ...nodeProvenance,
+        // `captureIndex` is deliberately absent: these detections come from
+        // synthetic ground truth (`FurnitureItem`), which models no capture
+        // event. provenance.ts asks for omission rather than null so a
+        // consumer can tell "not attributed" from "attributed to nothing".
         sourceScanIds: [sessionId],
       })
     detectionsNode.addChild(node)
@@ -252,7 +320,7 @@ for (const home of homes) {
 
   const labels = home.furniture.map((f) => f.label)
   const meta = {
-    sessionId: `session-test-home-${String(home.index).padStart(2, '0')}`,
+    sessionId: sessionIdFor(home.index),
     scanName: home.name,
     detectionCount: home.furniture.length,
     labels,
