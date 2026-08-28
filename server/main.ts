@@ -88,6 +88,7 @@ import { runSplatDetect } from './splat/splat_detect.ts'
 import { runSplatFinish } from './splat/splat_finish.ts'
 import { runSenseNovaVision, senseNovaTask } from './sensenova_vision.ts'
 import { runPanopticScan } from './panoptic/panoptic_scan.ts'
+import { runPanopticLift } from './panoptic/panoptic_lift.ts'
 import { configFromEnv as portalAuthConfig, registerPortalAuth } from './portal_auth.ts'
 import {
   configFromEnv as memoryPushConfig,
@@ -1620,6 +1621,7 @@ const WORLD_JOB_TYPES = new Set<WorldJobType>([
   'splat-finish',
   'sensenova-vision',
   'panoptic-scan',
+  'panoptic-lift',
   'person-4d-reconstruct',
   'memory-push',
   'export-world',
@@ -2718,6 +2720,11 @@ async function _dispatchWorldJob(slug: string, jobId: string): Promise<void> {
       return
     }
 
+    if (job.type === 'panoptic-lift') {
+      await _runPanopticLiftJob(slug, jobId)
+      return
+    }
+
     if (job.type === 'person-4d-reconstruct') {
       await _runPerson4DJob(slug, jobId)
       return
@@ -3280,6 +3287,85 @@ async function _runPanopticScanJob(slug: string, jobId: string): Promise<void> {
     })
   } catch (error) {
     console.error('[panoptic] job failed:', error)
+    await failWorldJob(slug, jobId, errorMessage(error))
+  }
+}
+
+/**
+ * Lift `panoptic-scan`'s 2D segments into world space.
+ *
+ * Reports `completed` for a skip, exactly as the scan stage does — a session
+ * with no segments file has not failed, it has not been segmented yet, and the
+ * remediation says which job to run first.
+ *
+ * The interesting case is a run that succeeds while placing nothing. That is
+ * not a failure either: a gimbal dome rotates in place, so parallax is near
+ * zero (measured 0.881 m max baseline across 17 cameras), and refusing to
+ * invent depths is the designed behaviour. The result string therefore always
+ * carries the undetermined count alongside the confident one — "44 seen, 0
+ * placed" has to read as an honest outcome, not as silence.
+ */
+async function _runPanopticLiftJob(slug: string, jobId: string): Promise<void> {
+  try {
+    const start = await claimSessionJob(slug, jobId)
+    if (!start) return
+    const { scan, sessionPath, payload } = start
+
+    const result = await runPanopticLift({
+      sessionDir: sessionPath,
+      scanGlbPath: `${SCANS_DIR}/${scan.filename}`,
+      minSegmentPixels: typeof payload?.['minSegmentPixels'] === 'number'
+        ? payload['minSegmentPixels'] as number
+        : undefined,
+      sessionId: scan.sessionId ?? undefined,
+      scanId: scan.scanId ?? undefined,
+    })
+
+    await commitWorldJob(slug, jobId, (currentJob, current) => {
+      currentJob.progress = 1
+      if (result.status === 'ok') {
+        currentJob.status = 'completed'
+        const placed = result.confidentCount ?? 0
+        const seen = result.segmentCount ?? 0
+        currentJob.result = placed > 0
+          ? `Placed ${placed} of ${seen} object segment(s) in the room` +
+            `${result.medianConfidence != null ? ` (median confidence ${result.medianConfidence.toFixed(2)})` : ''}.` +
+            `${(result.undeterminedCount ?? 0) > 0 ? ` ${result.undeterminedCount} could not be placed.` : ''}`
+          : `Saw ${seen} object segment(s) but could not place any of them. ` +
+            `A capture that rotates in place has almost no parallax, so depth is not recoverable from it — ` +
+            `walk the room to give the scan a baseline.`
+        currentJob.artifacts = [{
+          type: 'panoptic-lift-output',
+          label: `${scan.name} placed objects`,
+          metadata: {
+            segmentCount: seen,
+            confidentCount: placed,
+            lowConfidenceCount: result.lowConfidenceCount ?? 0,
+            undeterminedCount: result.undeterminedCount ?? 0,
+            medianConfidence: result.medianConfidence ?? null,
+            pointCount: result.pointCount ?? 0,
+            reasons: result.reasons ?? {},
+            detectionsPath: result.detectionsPath ?? null,
+          },
+        }]
+        applyCompletedJobToWorld(currentJob, current)
+      } else if (result.status === 'skipped') {
+        currentJob.status = 'completed'
+        currentJob.result = `Object placement skipped: ${result.remediation ?? result.skippedReason ?? 'inputs unavailable'}`
+        currentJob.artifacts = [{
+          type: 'panoptic-lift-skip',
+          label: 'Object placement needs a panoptic scan first',
+          metadata: { remediation: result.remediation ?? null, reason: result.skippedReason ?? null },
+        }]
+      } else {
+        currentJob.status = 'failed'
+        currentJob.error = result.error ?? 'panoptic lift failed'
+        currentJob.result = currentJob.error
+      }
+      currentJob.updatedAt = new Date().toISOString()
+    })
+  } catch (error) {
+    console.error('[panoptic-lift] job failed:', error)
     await failWorldJob(slug, jobId, errorMessage(error))
   }
 }
@@ -4082,6 +4168,8 @@ function jobResultFor(job: WorldJob): string {
       return 'SenseNova-Vision processed the scan keyframes and wrote task-specific visual geometry artifacts.'
     case 'panoptic-scan':
       return 'Panoptic segmentation labelled every pixel of the scan keyframes, separating discrete objects from room surfaces.'
+    case 'panoptic-lift':
+      return 'Panoptic object segments were placed in the room by casting each one against the scan point cloud. A segment whose depth could not be recovered is recorded as unplaced rather than guessed.'
     case 'person-4d-reconstruct':
       return 'Person reconstructed in 4D. The .4d/ sequence is available as a splat4d layer on the scan.'
     case 'memory-push':

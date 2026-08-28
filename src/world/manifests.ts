@@ -100,11 +100,26 @@ export interface PanopticLiftManifest extends PipelineManifestBase {
   sessionDir: string
   /** Thing segments read from the panoptic-scan sidecar. */
   segmentCount?: number
-  /** Segments that produced a world position at or above the confidence floor. */
+  /**
+   * Segments that produced a trusted world position — at or above the
+   * confidence floor. `confidentCount + undeterminedCount === segmentCount`;
+   * those two partition the set and are the only pair that does.
+   */
   confidentCount?: number
-  /** Determinate but below the floor — a position exists, it is not trusted. */
+  /**
+   * Determinate but below the floor: a position was computed and is not
+   * trusted, so it is NOT published as a Thing.
+   *
+   * A SUBSET of `undeterminedCount`, not a third bucket beside it — it is also
+   * the `'low-confidence'` entry in `reasons`. Adding all three together
+   * double-counts (a real run read 6 + 5 + 44 against 50 segments, which is
+   * what prompted this note).
+   */
   lowConfidenceCount?: number
-  /** Segments with no answer at all. Broken down by `reasons`. */
+  /**
+   * Segments that yielded no publishable position, for any reason. Exactly
+   * partitioned by `reasons`, whose values sum to this.
+   */
   undeterminedCount?: number
   /** Count per LiftReason, e.g. { 'no-geometry': 2, unsupported: 33 }. */
   reasons?: Record<string, number>

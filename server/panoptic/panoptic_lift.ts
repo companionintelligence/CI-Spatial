@@ -60,6 +60,7 @@
  * the whole class of error.
  */
 import { Document, NodeIO, Primitive } from '@gltf-transform/core'
+import { resolve } from '@std/path'
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions'
 // @ts-ignore — draco3dgltf ships no type declarations
 import draco3d from 'draco3dgltf'
@@ -290,9 +291,19 @@ function median(values: number[]): number | undefined {
  */
 export async function runPanopticLift(opts: PanopticLiftRunOptions): Promise<PanopticLiftManifest> {
   const started = Date.now()
+  // Resolved here rather than trusted from the caller, for the reason
+  // splat_train_dataset.ts:158 now does the same: SCANS_DIR defaults to
+  // './scans', so every path the WorldJob runner hands a stage is relative.
+  // That cost the splat pipeline every run it ever attempted — a relative
+  // symlink target resolved against the link's own directory, and Brush saw an
+  // empty dataset. Nothing here writes symlinks, but the sidecar paths below
+  // are derived from these and land next to the GLB, so the same class of
+  // silent misplacement applies. Callers stay free to pass relative paths.
+  const sessionDir = resolve(opts.sessionDir)
+  const scanGlbPath = resolve(opts.scanGlbPath)
   const minSegmentPixels = opts.minSegmentPixels ?? MIN_SEGMENT_PIXELS
-  const segmentsPath = opts.segmentsPath ?? `${opts.sessionDir}/panoptic.segments.json`
-  const glbBase = opts.scanGlbPath.replace(/\.glb$/, '')
+  const segmentsPath = opts.segmentsPath ? resolve(opts.segmentsPath) : `${sessionDir}/panoptic.segments.json`
+  const glbBase = scanGlbPath.replace(/\.glb$/, '')
   const detectionsPath = opts.detectionsPath ?? `${glbBase}.panoptic.detections.json`
   const manifestPath = opts.manifestPath ?? `${glbBase}.panoptic-lift.manifest.json`
 
@@ -301,7 +312,7 @@ export async function runPanopticLift(opts: PanopticLiftRunOptions): Promise<Pan
     tool: 'panoptic-lift',
     status: 'skipped',
     createdAt: new Date().toISOString(),
-    sessionDir: opts.sessionDir,
+    sessionDir: sessionDir,
     params: {
       minSegmentPixels,
       minConfidence: MIN_CONFIDENCE,
@@ -350,13 +361,13 @@ export async function runPanopticLift(opts: PanopticLiftRunOptions): Promise<Pan
 
   // 2. The cloud.
   const readCloud = opts._readCloud ?? readCloudFromGlb
-  const cloud = await readCloud(opts.scanGlbPath)
+  const cloud = await readCloud(scanGlbPath)
   if (!cloud || cloud.count === 0) {
     return finish(manifestPath, {
       ...base,
       segmentCount: split.things.length,
       pointCount: cloud?.count ?? 0,
-      skippedReason: `no point cloud in ${opts.scanGlbPath.split('/').pop()}`,
+      skippedReason: `no point cloud in ${scanGlbPath.split('/').pop()}`,
       remediation: 'Lifting needs the scan\'s accumulated points; re-capture with room scanning enabled, or run a colmap-poses job to produce a sparse cloud.',
     }, Date.now() - started)
   }
@@ -364,7 +375,7 @@ export async function runPanopticLift(opts: PanopticLiftRunOptions): Promise<Pan
   // 3. Poses + the pixel frame the centroids are in. Both keyed on `file`,
   //    which is the join the worker and the streamer already agree on.
   const records = new Map<string, KeyframeRecord>()
-  for (const rec of await readKeyframes(opts.sessionDir)) {
+  for (const rec of await readKeyframes(sessionDir)) {
     if (typeof rec.file === 'string') records.set(rec.file, rec)
   }
 
@@ -379,7 +390,7 @@ export async function runPanopticLift(opts: PanopticLiftRunOptions): Promise<Pan
     if (dims.has(file)) return dims.get(file)!
     let out: { w: number; h: number } | null = null
     try {
-      out = readJpegDimensions(await Deno.readFile(`${opts.sessionDir}/${file}`))
+      out = readJpegDimensions(await Deno.readFile(`${sessionDir}/${file}`))
     } catch {
       out = null
     }
@@ -497,6 +508,6 @@ export async function runPanopticLift(opts: PanopticLiftRunOptions): Promise<Pan
     ...(confidences.length > 0 ? { medianConfidence: median(confidences)! } : {}),
     pointCount: cloud.count,
     detectionsPath: detectionsPath.split('/').pop() ?? detectionsPath,
-    cloudSource: opts.scanGlbPath.split('/').pop() ?? opts.scanGlbPath,
+    cloudSource: scanGlbPath.split('/').pop() ?? scanGlbPath,
   }, Date.now() - started)
 }
