@@ -13,6 +13,7 @@
 import { createEighthWallProvider } from './ar/eighthwall'
 import { createWebXRProvider, WebXRProvider, isImmersiveARSupported } from './ar/webxr'
 import type { ARProvider, Pose } from './ar/provider'
+import { trackingIsUsable } from './ar/tracking-quality'
 import { RoomScanner } from './ar/scanner'
 import { runProjectCalibration } from './ar/project-calibration'
 import { PointCloud } from './scene/pointcloud'
@@ -77,6 +78,8 @@ function poseIsFinite(pose: Pose): boolean {
 // One-time HUD notices — module-level so repeated triggers stay quiet
 let quotaWarningShown = false
 let decimationNoticeShown = false
+/** One-shot log the first time degraded tracking suppresses point recording. */
+let degradedTrackingNoticeShown = false
 
 // Last verdict state written to the HUD, so the 750 ms scanner tick only
 // touches the DOM when the verdict or its recommendation actually changes.
@@ -1205,8 +1208,26 @@ async function main() {
   // readiness step is real scanning, in the same AR session frame, so the
   // points it collects belong in the scan anyway.
   scanner.start(provider, (frame) => {
-    const inserted = pointCloud.add(frame.points)
+    // Only record geometry while the runtime says its own tracking is good.
+    //
+    // This used to be unconditional, while the pose history one line below was
+    // already gated — so a session that degraded to LIMITED stopped recording
+    // poses but kept pouring points into the cloud from a frame that had
+    // drifted. Measured on one gimbal dome of a single room: 80.7% of points
+    // within 3m of the median centre, yet a total extent of 60.9 x 39.0 x 48.7m.
+    // The debris is what sets the bounding box, so every downstream metric fit
+    // inherits a scale that is wrong by an order of magnitude.
+    //
+    // `provider.isTracking()` cannot express this (it latches on first pose);
+    // `trackingStatus()` is the runtime's own live signal. Fails open, so
+    // WebXR — which reports UNKNOWN — is unaffected.
+    const trackingUsable = trackingIsUsable(provider.trackingStatus())
+    const inserted = trackingUsable ? pointCloud.add(frame.points) : []
     const added = inserted.length
+    if (!trackingUsable && !degradedTrackingNoticeShown) {
+      degradedTrackingNoticeShown = true
+      console.warn(`[scan] tracking degraded (${provider.trackingStatus()}) — not recording points until it recovers`)
+    }
     if (provider.isTracking() && poseIsFinite(frame.pose)) poseHistory.push(frame.pose)
 
     // Live geometry is available only when the experimental flag is enabled.

@@ -25,6 +25,7 @@
  */
 import * as THREE from 'three'
 import type { ARProvider, HitResult, Pose, RawFrame } from './provider'
+import type { TrackingStatus } from './tracking-quality'
 import { DEFAULT_GRID_SIZE, DEFAULT_INTERVAL_MS as SCAN_INTERVAL_MS } from './scanner'
 
 /**
@@ -619,6 +620,16 @@ export class WebXRProvider implements ARProvider {
     // "actually locked on" for its own purpose (aiming the hit-test probe grid).
     // Reuse it here instead of a second, looser notion of "tracking".
     return this.session !== null && this._haveRealProjection
+  }
+
+  /**
+   * WebXR exposes no per-frame tracking-quality signal equivalent to 8th Wall's
+   * `trackingStatus`, so this is honestly `'UNKNOWN'` rather than a guess
+   * synthesised from pose continuity. `trackingIsUsable()` fails open on
+   * `'UNKNOWN'`, so this runtime keeps accumulating points exactly as before.
+   */
+  trackingStatus(): TrackingStatus {
+    return 'UNKNOWN'
   }
 
   getCameraFovY(): number {

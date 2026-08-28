@@ -122,3 +122,59 @@ export function createStallGuard() {
     get flipped() { return flipped; },
   };
 }
+
+/** Pose movement below this (degrees) between consecutive non-converged MOVES reads as "not moving". */
+export const STUCK_POSE_EPSILON_DEG = 1.5;
+
+/** How many such positions in a row before calling the whole run wedged. Two could be a tight corner. */
+export const STUCK_POSITIONS_LIMIT = 3;
+
+/**
+ * Run-level wedge detection: the grid-scan analogue of createStallGuard().
+ *
+ * createStallGuard() judges TICKS within one move. This judges MOVES within one
+ * scan run, and exists because those are genuinely different failures: a single
+ * move can legitimately fall short (tight corner, tolerance a hair too small),
+ * but a whole run whose consecutive moves all end at the *same* pose is a gimbal
+ * that has stopped moving, and every further position just drives the motors
+ * into the jam.
+ *
+ * That is not hypothetical. On 2026-08-26 a movement-only run took an OM6
+ * through 10 consecutive positions all reporting pan 105.56 / tilt 27.18 —
+ * bit-identical — because the movement-only branch `continue`d past the inline
+ * wedge check that then lived only in the photo path. The motors held against
+ * the jam for the whole run and the gimbal overheated and shut itself off. The
+ * guard is a shared function now precisely so a second caller cannot skip it.
+ *
+ * `stalled` (from moveToClosedLoop, whose own createStallGuard already probed
+ * BOTH correction directions) is the strongest available signal, so it counts
+ * on its own; otherwise fall back to comparing poses.
+ */
+export function createWedgeGuard() {
+  let stuckRun = 0;
+  let lastPose = null;
+  return {
+    /**
+     * Fold one completed move. Returns true when the run should abort.
+     *
+     * A converged move clears the count: progress anywhere means the gimbal is
+     * alive, so a later jam gets a full budget of its own rather than inheriting
+     * stale suspicion.
+     */
+    observe(move) {
+      if (move.converged || move.finalYaw == null || move.finalPitch == null) {
+        stuckRun = 0;
+        lastPose = null;
+        return false;
+      }
+      const poseRepeated = lastPose !== null
+        && Math.abs(wrapDeg(move.finalYaw - lastPose.pan)) < STUCK_POSE_EPSILON_DEG
+        && Math.abs(move.finalPitch - lastPose.tilt) < STUCK_POSE_EPSILON_DEG;
+      stuckRun = (move.stalled === true || poseRepeated) ? stuckRun + 1 : 1;
+      lastPose = { pan: move.finalYaw, tilt: move.finalPitch };
+      return stuckRun >= STUCK_POSITIONS_LIMIT;
+    },
+    /** Consecutive stuck positions, for the diagnostic message. */
+    get stuckPositions() { return stuckRun; },
+  };
+}

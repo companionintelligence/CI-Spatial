@@ -28,7 +28,9 @@
  */
 import { isServerSessionId } from '../../src/shared/session-id.ts'
 import { isRunnable } from '../exec_probe.ts'
+import type { ColmapCamera } from './colmap_model.ts'
 import {
+  parseCamerasBin,
   parseImagesBin,
   parsePoints3DBin,
   pointsToPly,
@@ -270,8 +272,27 @@ export async function runColmapPoses(opts: ColmapPosesRunOptions): Promise<Colma
     pts = pts.map((pt) => ({ ...pt, xyz: rotatePoint(Q, pt.xyz) }))
   }
 
+  // Carry COLMAP's SOLVED intrinsics alongside the poses.
+  //
+  // Feature extraction ran with `--single_camera 1 --camera_model SIMPLE_RADIAL`
+  // (see the args above), so COLMAP fit f, cx, cy and k1 to these actual images.
+  // Until now that fit was written to cameras.bin and thrown away, and every
+  // consumer fell back to `deriveIntrinsics`, which only has the capture-time
+  // vertical FOV and therefore assumes a perfectly centred principal point — and
+  // on 8th Wall's `?camerafit=cover` path that FOV describes a different frustum
+  // than the uploaded pixels. Reading the solved values is strictly better.
+  //
+  // Absent or unparseable cameras.bin is not fatal: omitting the block puts
+  // consumers back on the old fallback rather than failing a good reconstruction.
+  let camera: ColmapCamera | undefined
+  try {
+    camera = parseCamerasBin(await Deno.readFile(`${modelDir}/cameras.bin`))[0]
+  } catch {
+    camera = undefined
+  }
+
   const posesPath = `${sessionDir}/colmap.poses.json`
-  await Deno.writeTextFile(posesPath, JSON.stringify(buildPosesJson(images), null, 2))
+  await Deno.writeTextFile(posesPath, JSON.stringify(buildPosesJson(images, 'colmap', camera), null, 2))
 
   let pointCloudPath: string | undefined
   let pointCount = 0

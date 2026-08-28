@@ -9,7 +9,7 @@
     "dev": "vite --host",
     "build": "tsc --noEmit && vite build",
     "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",
-    "verify": "deno task check && deno task test && tsc --noEmit && npm run typecheck:tests && npm run test:pipeline:graph && npm run test:editor:pick && npm run test:store && npm run test:resolver && npm run test:provenance && npm run test:detection-gate && npm run test:model-provisioning && npm run test:router && npm run test:clock-sync && npm run test:clip-validation && npm run test:splat4d",
+    "verify": "deno task check && deno task test && tsc --noEmit && npm run typecheck:tests && npm run test:pipeline:graph && npm run test:editor:pick && npm run test:store && npm run test:resolver && npm run test:provenance && npm run test:detection-gate && npm run test:model-provisioning && npm run test:router && npm run test:clock-sync && npm run test:clip-validation && npm run test:splat4d && npm run test:gimbal:stall && npm run test:gimbal:control && npm run test:tracking:quality",
     "test:pipeline:graph": "node --experimental-strip-types --no-warnings --test tests/unit/node/pipeline_detection_graph.test.ts",
     "test:editor:pick": "node --experimental-strip-types --no-warnings --test tests/unit/node/editor_pick.test.ts",
     "test:store": "node --experimental-strip-types --no-warnings --test tests/unit/node/detection_store.test.ts",
@@ -61,7 +61,10 @@
     "loop": "node scripts/loop.mjs",
     "loop:full": "node scripts/loop.mjs --tier=5",
     "loop:baseline": "node scripts/loop.mjs --only=ui-full --update-baseline",
-    "test:gimbal:stall": "node --experimental-strip-types --no-warnings --test tests/unit/node/gimbal_stall.test.ts"
+    "test:gimbal:stall": "node --experimental-strip-types --no-warnings --test tests/unit/node/gimbal_stall.test.ts",
+    "test:gimbal:control": "node --experimental-strip-types --no-warnings --test tests/unit/node/gimbal_control.test.ts",
+    "audit:scan": "node --experimental-strip-types --no-warnings scripts/audit-scan-glb.mjs",
+    "test:tracking:quality": "node --experimental-strip-types --no-warnings --test tests/unit/node/tracking_quality.test.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",

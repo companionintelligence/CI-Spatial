@@ -17,6 +17,8 @@ import {
   foldStall,
   firstStallTick,
   createStallGuard,
+  createWedgeGuard,
+  STUCK_POSITIONS_LIMIT,
 } from '../../../subsystems/osmo-ble/protocol/stall.mjs'
 
 const s = (pan: number, tilt = 0) => ({ pan, tilt })
@@ -137,4 +139,70 @@ test('guard: recovering after the flip never reports jammed', () => {
   const recovery = [-59.8, -74.5, -90.9, -105.8, -122.7]
     .map((pan) => g.observe({ pan, tilt: 0 }))
   assert.ok(recovery.every((v) => v === 'ok'), 'a recovered move must not be condemned')
+})
+
+/**
+ * Run-level wedge detection (createWedgeGuard).
+ *
+ * The fixture below is the real 2026-08-26 movement-only run: ten consecutive
+ * positions that every one of them ended at pan 105.56363203199156 /
+ * tilt 27.183930105588214 — bit-identical, because the gimbal had stopped
+ * moving entirely. The run kept going anyway (the movement-only branch
+ * `continue`d past the wedge check, which at the time lived only in the
+ * photo-capture path), so the motors held against the jam for all ten
+ * positions and the gimbal overheated and shut itself off mid-run.
+ */
+const FROZEN_POSE = { pan: 105.56363203199156, tilt: 27.183930105588214 }
+const frozenMove = (over: Partial<Record<string, unknown>> = {}) => ({
+  converged: false,
+  stalled: false,
+  finalYaw: FROZEN_POSE.pan,
+  finalPitch: FROZEN_POSE.tilt,
+  ...over,
+})
+
+test('wedge: the real frozen-pose run aborts instead of grinding on', () => {
+  const w = createWedgeGuard()
+  const verdicts = Array.from({ length: 10 }, () => w.observe(frozenMove()))
+  const firstAbort = verdicts.indexOf(true)
+  assert.equal(firstAbort, STUCK_POSITIONS_LIMIT - 1, 'must abort on the limit-th stuck position')
+  assert.ok(firstAbort < 9, 'must not run all ten positions into the jam')
+})
+
+test('wedge: a jammed move counts on its own, without needing a repeated pose', () => {
+  // moveToClosedLoop's own stall guard already probed both correction
+  // directions before reporting stalled, so it is a stronger signal than
+  // pose-comparison and must not require a second sample to be believed.
+  const w = createWedgeGuard()
+  const moving = [10, 40, 70]
+  const verdicts = moving.map((pan) =>
+    w.observe({ converged: false, stalled: true, finalYaw: pan, finalPitch: 0 }))
+  assert.deepEqual(verdicts, [false, false, true])
+})
+
+test('wedge: a converged move clears the count', () => {
+  const w = createWedgeGuard()
+  w.observe(frozenMove())
+  w.observe(frozenMove())
+  assert.equal(w.observe({ converged: true, finalYaw: 0, finalPitch: 0 }), false)
+  // Progress means the gimbal is alive, so a later jam starts a fresh budget.
+  assert.equal(w.observe(frozenMove()), false)
+  assert.equal(w.observe(frozenMove()), false)
+  assert.equal(w.observe(frozenMove()), true)
+})
+
+test('wedge: merely falling short at DIFFERENT poses is not a wedge', () => {
+  // A move can legitimately miss tolerance while still travelling. Aborting on
+  // that would kill healthy runs on a tight tolerance.
+  const w = createWedgeGuard()
+  const verdicts = [10, 30, 55, 80, 110].map((pan) =>
+    w.observe({ converged: false, stalled: false, finalYaw: pan, finalPitch: 0 }))
+  assert.ok(verdicts.every((v) => v === false), 'a moving-but-short run must not abort')
+})
+
+test('wedge: a pose repeat across the ±180 seam still counts as stuck', () => {
+  const w = createWedgeGuard()
+  const verdicts = [179.9, -179.9, 179.95].map((pan) =>
+    w.observe({ converged: false, stalled: false, finalYaw: pan, finalPitch: 0 }))
+  assert.equal(verdicts[2], true, 'wrap-around must not read as a 360° leap')
 })
