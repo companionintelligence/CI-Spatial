@@ -15,6 +15,16 @@
  * pin both halves: the guidance still reaches the user, and it no longer
  * competes for the line that reports events.
  *
+ * The same tick had two more writers left behind, fixed later: the
+ * tracking-lost / moving-too-fast sentences, which now render in
+ * `#quality-motion-hint` beside the drift badge that abbreviates them. And
+ * because "no per-tick writer touches this node" is a property every future
+ * edit can quietly break, `setStatus(text, 'sticky')` now holds the line for
+ * ~4s so a 750 ms writer cannot stomp a capture result even if one reappears.
+ * That hold is unit-tested in tests/unit/node/status_line.test.ts, which does
+ * not need a browser; what needs one is the property below — that during a
+ * real scan nothing writes the line behind the user's back.
+ *
  * Run: npx playwright test --project=chromium-mock mock-status-line
  */
 import { test, expect } from '@playwright/test'
@@ -22,6 +32,9 @@ import { test, expect } from '@playwright/test'
 // Two scanner ticks plus headroom — long enough that a per-tick writer would
 // certainly have clobbered anything we put in the status line.
 const TWO_TICKS_MS = 2_000
+
+/** The motion sentences that used to be written straight to #status-text. */
+const MOTION_SENTENCE = /Tracking lost — move slowly|Moving too fast — slow down/
 
 /** The recommendations quality-monitor.ts can produce for a short mock scan. */
 const RECOMMENDATION = /Collect more tracking points|Sweep the room more slowly|Stream RGB keyframes|Rescan sparse|Add light|Move slower|reflective/i
@@ -40,6 +53,14 @@ test.describe('HUD status line during a scan', () => {
     await page.goto('/?mock=xr8')
     await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
     await page.click('#start-ar-btn')
+    // Start AR opens place selection first — "Every new capture starts by
+    // confirming its place" (src/main.ts). Nothing here is about places, and a
+    // fresh profile has none, so take the skip the sheet itself offers. Without
+    // this the session never begins and every assertion below times out on an
+    // empty HUD.
+    const skip = page.locator('#place-skip-btn')
+    await expect(skip).toBeVisible({ timeout: 30_000 })
+    await skip.click()
     // Points accumulating means the scanner tick is running, which is the
     // thing under test.
     await expect(page.locator('#scan-stats')).toHaveText(/\d+ pts/, { timeout: 30_000 })
@@ -73,6 +94,31 @@ test.describe('HUD status line during a scan', () => {
 
     await page.waitForTimeout(TWO_TICKS_MS)
     await expect(page.locator('#status-text')).toHaveText(marker)
+  })
+
+  test('motion warnings never reach the status line', async ({ page }) => {
+    await startScanning(page)
+
+    // The sentence has a home, and it is inside the quality HUD next to the
+    // drift badge that abbreviates it. Asserted structurally because the mock
+    // provider's scripted walk peaks at ~0.48 m/s (`Math.sin(t * 0.4) * 1.2`
+    // in public/test-fixtures/xr8-mock.js) and quality-monitor.ts only calls
+    // drift 'high' above 0.8 m/s — so the warning cannot be provoked here,
+    // only kept off the line it used to erase.
+    await expect(page.locator('#quality-overlay #quality-motion-hint')).toHaveCount(1)
+
+    // Sample across many ticks rather than checking once: a per-tick writer
+    // would land in at least one of these.
+    const seen: string[] = []
+    for (let i = 0; i < 12; i++) {
+      seen.push(await page.locator('#status-text').innerText())
+      await page.waitForTimeout(400)
+    }
+
+    expect(
+      seen.filter((t) => MOTION_SENTENCE.test(t)),
+      'motion state belongs in #quality-motion-hint, not the status line',
+    ).toEqual([])
   })
 
   test('the guidance line is not rewritten on every tick', async ({ page }) => {
