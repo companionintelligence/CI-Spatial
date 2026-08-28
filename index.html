@@ -2166,6 +2166,14 @@
             <div id="quality-light-badge"  style="display:none;align-items:center;background:rgba(40,40,40,0.9);border:1px solid rgba(255,255,255,0.18);border-radius:4px;padding:2px 6px;font-size:11px;font-weight:700;color:#fff;"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" style="margin-right:4px;flex-shrink:0"><path d="M20.4 14.6A8.6 8.6 0 0 1 9.4 3.6a8.6 8.6 0 1 0 11 11z"/></svg><span>Low light</span></div>
             <div id="quality-refl-badge"   style="display:none;align-items:center;background:rgba(114,221,212,0.9);border-radius:4px;padding:2px 6px;font-size:11px;font-weight:700;color:#000;">✦ Reflections</div>
           </div>
+          <!-- Long form of the drift badge above, plus the tracking-lost case
+               it has no glyph for. Deliberately its own line rather than
+               #status-text: this is motion state recomputed on every 750ms
+               scanner tick, and writing it into the status line erased every
+               capture result and error within one tick. Same reasoning as
+               #verdict-hint. -->
+          <div id="quality-motion-hint" aria-live="polite"
+            style="display:none;font-size:11px;line-height:1.4;color:#ffb74d;font-weight:600;margin-top:3px;max-width:34ch;"></div>
           <div id="quality-missing" style="display:none;font-size:10px;color:rgba(255,180,0,0.85);font-weight:600;margin-top:2px;"></div>
         </div>
 
