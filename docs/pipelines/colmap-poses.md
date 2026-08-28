@@ -92,9 +92,9 @@ failure — the server keeps running and the UI explains what to install.
 
 | Env | Default | Purpose |
 |---|---|---|
-| `COLMAP_BIN` | `colmap` (PATH) | Binary location |
-| `COLMAP_FEATURE_TYPE` | `SIFT` | `ALIKED_N16ROT` / `ALIKED_N32` also work |
-| `COLMAP_MATCHER_TYPE` | `SIFT_BRUTEFORCE` | Pair with the feature type |
+| `COLMAP_BIN` | `colmap` (PATH, then `~/.local/micromamba/envs/colmap/bin/colmap`) | Binary location. The fallback is the sudo-less install in [`splat-train.md`](splat-train.md) § Setup, which is not on PATH unless the env is activated. |
+| `COLMAP_FEATURE_TYPE` | `SIFT` | `FeatureExtractorType` is a strict enum. On the conda-forge COLMAP 3.13.0 our setup installs, `SIFT` is the only accepted value — `ALIKED`, `ALIKED_N16ROT` and `ALIKED_N32` are all rejected with `Unknown string value … for enum: FeatureExtractorType` (exit 1). Check your own build before overriding. |
+| `COLMAP_MATCHER_TYPE` | `SIFT` | Same enum story: `SIFT_BRUTEFORCE` (the previous default) aborts on 3.13.0. Brute force is what SIFT matching does by default anyway. |
 | `COLMAP_MAX_IMAGE_SIZE` | `1600` | Longest edge fed to feature extraction |
 | `SPLAT_TRAIN_AUTO_POSES` | `1` | `0` disables auto-chaining from `splat-train` |
 

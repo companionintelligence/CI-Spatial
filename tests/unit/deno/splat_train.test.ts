@@ -14,6 +14,7 @@ import {
   isValidSessionDir,
   resolveParams,
   runSplatTrain,
+  stderrTail,
 } from '../../../server/splat/splat_train.ts'
 import {
   deriveIntrinsics,
@@ -303,6 +304,67 @@ Deno.test('buildBrushDataset drops frames whose image is missing and reports the
   await Deno.remove(tmp, { recursive: true })
 })
 
+// ─── Relative paths (the shape the world-job runner actually passes) ─────────
+//
+// Every fixture above hands the converter an ABSOLUTE path, because
+// `Deno.makeTempDir()` returns one — and that is precisely why a total pipeline
+// failure passed this suite. server/main.ts defaults SCANS_DIR to './scans', so
+// the real caller passes './scans/sessions/sess-…'; the converter used that
+// string verbatim as a symlink TARGET, which the kernel resolves against the
+// directory holding the link (`brush-dataset/images/`), not our cwd. All 17
+// links on the 17-frame session landed dangling, Brush reported "dataset
+// contains no usable training views", and the manifest kept only "brush exited
+// 1". These two tests pin the resolution, not the symptom.
+
+/** Run `fn` with the process cwd temporarily moved to `dir`. */
+async function withCwd(dir: string, fn: () => Promise<void>): Promise<void> {
+  const previous = Deno.cwd()
+  Deno.chdir(dir)
+  try {
+    await fn()
+  } finally {
+    Deno.chdir(previous)
+  }
+}
+
+Deno.test('buildBrushDataset materialises READABLE images from a relative sessionDir', async () => {
+  const tmp = await Deno.makeTempDir({ prefix: 'splat-rel-' })
+  // Nest the session so the relative path has real depth, like ./scans/sessions/<id>.
+  const root = `${tmp}/scans/sessions`
+  await Deno.mkdir(root, { recursive: true })
+  await makeSession(root, { frames: 3 })
+
+  await withCwd(tmp, async () => {
+    const result = await buildBrushDataset({ sessionDir: './scans/sessions/sess-conv-test' })
+    assertEquals(result.frameCount, 3)
+    // stat() follows symlinks: a dangling link throws here, a real file does not.
+    // This is the assertion that fails on the pre-fix converter.
+    for await (const entry of Deno.readDir(result.imagesDir)) {
+      const info = await Deno.stat(`${result.imagesDir}/${entry.name}`)
+      assert(info.isFile, `${entry.name} must resolve to a real file`)
+      assert(info.size > 0, `${entry.name} must be non-empty`)
+    }
+    assert(result.datasetDir.startsWith('/'), 'datasetDir must come back absolute')
+    assert(result.imagesDir.startsWith('/'), 'imagesDir must come back absolute')
+  })
+  await Deno.remove(tmp, { recursive: true })
+})
+
+Deno.test('buildBrushDataset returns an absolute datasetDir even when given a relative one', async () => {
+  // The export path is derived from datasetDir, and brush-cli --help documents
+  // --export-path as "relative to the dataset's parent directory" — so a
+  // relative datasetDir writes the trained .ply into <sessionDir>/<that path>
+  // and `findExportedPly` reports "no .ply" AFTER a full training run.
+  const tmp = await Deno.makeTempDir({ prefix: 'splat-rel-ds-' })
+  await makeSession(tmp)
+  await withCwd(tmp, async () => {
+    const result = await buildBrushDataset({ sessionDir: './sess-conv-test', datasetDir: './ds' })
+    assertEquals(result.datasetDir, `${await Deno.realPath(tmp)}/ds`)
+    assert(result.transformsPath.startsWith('/'))
+  })
+  await Deno.remove(tmp, { recursive: true })
+})
+
 // ─── Pose fallback (video-ingest sessions) ───────────────────────────────────
 
 /** Write a pose-LESS keyframe session (video-ingest style: records carry no pose). */
@@ -373,14 +435,76 @@ Deno.test('runSplatTrain surfaces a brush failure as an error manifest with the 
     sessionDir,
     outputPlyPath: `${tmp}/scan.splat.ply`,
     brushBin: Deno.execPath(),
-    _spawn: async () => ({ code: 1, stderr: 'Error: Unsupported nerfstudio camera_model `PINHOLE`' }),
+    _spawn: async () => ({
+      code: 1,
+      stderr: 'wgpu: picked DiscreteGpu\nError: Error when decoding format: dataset contains no usable training views',
+    }),
   })
   assertEquals(result.status, 'error')
   assertEquals(result.exitCode, 1)
-  assertStringIncludes(result.log ?? '', 'PINHOLE')
+  assertStringIncludes(result.log ?? '', 'no usable training views')
   const manifest = JSON.parse(await Deno.readTextFile(`${tmp}/scan.splat-train.manifest.json`))
   assertEquals(manifest.status, 'error')
   assertStringIncludes(manifest.error, 'brush exited 1')
+  // The manifest is the only durable record of the run — `log` is returned and
+  // then dropped. A bare "brush exited 1" is where the first real splat-train
+  // job's trail ended; Brush's own diagnosis has to survive onto disk.
+  assertStringIncludes(manifest.error, 'no usable training views')
+  assertStringIncludes(manifest.remediation ?? '', Deno.execPath())
+  await Deno.remove(tmp, { recursive: true })
+})
+
+Deno.test('stderrTail keeps the END of the stream and caps its length', () => {
+  // Brush logs adapter selection and training progress before it fails, so the
+  // head of stderr is never the diagnosis.
+  assertEquals(
+    stderrTail('wgpu adapter: DiscreteGpu\n\nError: dataset contains no usable training views\n'),
+    'wgpu adapter: DiscreteGpu | Error: dataset contains no usable training views',
+  )
+  assertEquals(stderrTail(''), '')
+  assertEquals(stderrTail('   \n\n  '), '')
+  assertEquals(stderrTail('a\nb\nc\nd\ne'), 'c | d | e')
+  assertEquals(stderrTail('x'.repeat(50), 10).length, 10)
+})
+
+Deno.test('runSplatTrain explains a zero-exit run that produced no .ply', async () => {
+  // The expensive failure mode: it fires only after a full training run, so the
+  // message has to name the cause seen in practice (a non-absolute
+  // --export-path, which Brush resolves against the dataset's parent dir)
+  // rather than leaving the reader with "produced no .ply".
+  const tmp = await Deno.makeTempDir({ prefix: 'splat-noply-' })
+  const sessionDir = await makeSession(tmp)
+  const result = await runSplatTrain({
+    sessionDir,
+    outputPlyPath: `${tmp}/scan.splat.ply`,
+    brushBin: Deno.execPath(),
+    _spawn: async () => ({ code: 0, stderr: '' }), // trains "fine", exports nothing
+  })
+  assertEquals(result.status, 'error')
+  const manifest = JSON.parse(await Deno.readTextFile(`${tmp}/scan.splat-train.manifest.json`))
+  assertStringIncludes(manifest.error, 'no .ply')
+  assertStringIncludes(manifest.remediation ?? '', 'export-path')
+  await Deno.remove(tmp, { recursive: true })
+})
+
+Deno.test('runSplatTrain records an absolute sessionDir on the manifest', async () => {
+  // A manifest that says './scans/sessions/sess-…' is only meaningful to a
+  // reader who also knows the server's cwd.
+  const tmp = await Deno.makeTempDir({ prefix: 'splat-abs-' })
+  await makeSession(tmp)
+  await withCwd(tmp, async () => {
+    const result = await runSplatTrain({
+      sessionDir: './sess-conv-test',
+      outputPlyPath: `${tmp}/scan.splat.ply`,
+      brushBin: '/this/binary/definitely/does/not/exist',
+    })
+    assertEquals(result.status, 'skipped')
+    assert(result.manifest.sessionDir.startsWith('/'), `got ${result.manifest.sessionDir}`)
+    assertStringIncludes(result.manifest.sessionDir, 'sess-conv-test')
+    // The skip must name the build command and the env var, like colmap's does.
+    assertStringIncludes(result.manifest.remediation ?? '', 'cargo build --release -p brush-cli')
+    assertStringIncludes(result.manifest.remediation ?? '', 'BRUSH_BIN')
+  })
   await Deno.remove(tmp, { recursive: true })
 })
 
@@ -408,27 +532,56 @@ Deno.test('runSplatTrain lands the highest-iteration export among decoys', async
 
 // ─── Env-gated real-Brush end-to-end ──────────────────────────────────────────
 
-// Runs ONLY with BRUSH_E2E=1: a ~200-iter real train on the fixture session.
+// Runs ONLY with BRUSH_E2E=1: a ~200-iter real train on a local session.
 // Mock-spawn tests cannot catch real CLI contract drift — the PINHOLE
 // camera_model bug shipped precisely because nothing exercised the actual
-// binary. Takes ~10-30s on an idle GPU. Requires the fixture session and a
-// built brush-cli (BRUSH_BIN or the default path).
+// binary, and so did the relative-path bug above, which no mock could see
+// because `_spawn` never reads the images. Takes ~10-30s on an idle GPU.
+// Requires a built brush-cli (BRUSH_BIN or the default path).
+//
+// The session is DISCOVERED, not hardcoded: this test used to point at
+// `scans/sessions/sess-fixture-lingbot`, which does not exist in this repo
+// (scans/ is gitignored — .gitignore:68), so the one test that would have
+// caught the relative-path failure could not run even when asked. Set
+// SPLAT_E2E_SESSION to pin a specific session id.
+async function richestSession(): Promise<string | null> {
+  const root = `${Deno.cwd()}/scans/sessions`
+  const pinned = Deno.env.get('SPLAT_E2E_SESSION')
+  if (pinned) return `${root}/${pinned}`
+  let best: { dir: string; frames: number } | null = null
+  try {
+    for await (const entry of Deno.readDir(root)) {
+      if (!entry.isDirectory || !entry.name.startsWith('sess-')) continue
+      let frames = 0
+      for await (const file of Deno.readDir(`${root}/${entry.name}`)) {
+        if (file.isFile && /^kf-\d+\.jpg$/.test(file.name)) frames++
+      }
+      // COLMAP's own floor is 3 frames; below that there is nothing to solve.
+      if (frames >= 3 && (!best || frames > best.frames)) best = { dir: `${root}/${entry.name}`, frames }
+    }
+  } catch {
+    return null
+  }
+  return best?.dir ?? null
+}
+
 Deno.test({
-  name: 'BRUSH_E2E: real brush-cli trains the fixture session end-to-end',
+  name: 'BRUSH_E2E: real brush-cli trains a local session end-to-end',
   ignore: Deno.env.get('BRUSH_E2E') !== '1',
   fn: async () => {
-    const fixture = `${Deno.cwd()}/scans/sessions/sess-fixture-lingbot`
-    try {
-      await Deno.stat(`${fixture}/keyframes.jsonl`)
-    } catch {
-      throw new Error('fixture session missing — copy scans/sessions/sess-fixture-lingbot in first')
+    const source = await richestSession()
+    if (!source) {
+      throw new Error(
+        'no session under scans/sessions/ has >=3 kf-*.jpg — capture one with the scanner, ' +
+          'or set SPLAT_E2E_SESSION to a session id that does',
+      )
     }
     const tmp = await Deno.makeTempDir({ prefix: 'splat-e2e-' })
-    // Train on a copy so the shared fixture never accumulates dataset dirs.
-    const sessionDir = `${tmp}/sess-fixture-lingbot`
+    // Train on a copy so the real session never accumulates dataset dirs.
+    const sessionDir = `${tmp}/${source.split('/').pop()}`
     await Deno.mkdir(sessionDir, { recursive: true })
-    for await (const entry of Deno.readDir(fixture)) {
-      if (entry.isFile) await Deno.copyFile(`${fixture}/${entry.name}`, `${sessionDir}/${entry.name}`)
+    for await (const entry of Deno.readDir(source)) {
+      if (entry.isFile) await Deno.copyFile(`${source}/${entry.name}`, `${sessionDir}/${entry.name}`)
     }
     const result = await runSplatTrain({
       sessionDir,
@@ -437,7 +590,7 @@ Deno.test({
       maxResolution: 320,
       evalEvery: 200,
     })
-    assertEquals(result.status, 'ok')
+    assertEquals(result.status, 'ok', `${result.manifest.error ?? result.manifest.skippedReason ?? ''}`)
     assert((result.gaussianCount ?? 0) > 0, 'expected a non-empty splat')
     const bytes = await Deno.readFile(`${tmp}/scan.splat.ply`)
     assertEquals(new TextDecoder().decode(bytes.subarray(0, 3)), 'ply')

@@ -139,6 +139,20 @@ Both write the same format, so `buildBrushDataset` reads either through one
 path (ADR 0001); COLMAP is tried first because it is the one that can run
 anywhere. See [`colmap-poses.md`](colmap-poses.md).
 
+**A live scanner session needs no solver at all.** All 17 keyframes of
+`sess-a7e2f642` carry a capture-time `pose`, so `buildBrushDataset` never
+raises "no camera poses" and COLMAP is never spawned. A missing COLMAP is
+therefore *not* a splat-train blocker for scanner captures — only for
+`photo-ingest` / video sessions. Read a `COLMAP binary not found` skip as "this
+session had no poses", not "the splat pipeline is unconfigured".
+
+`colmap-poses` looks for its binary on PATH and then at
+`~/.local/micromamba/envs/colmap/bin/colmap` — the sudo-less install the Setup
+section above prescribes, which is *not* on PATH unless you activate the env.
+Before that fallback existed, a box that had followed our own instructions
+still reported "COLMAP binary not found" (measured: `which colmap` fails here
+while that path is COLMAP 3.13.0 with CUDA). `COLMAP_BIN` still overrides both.
+
 ## Data path — session → Nerfstudio dataset
 
 `splat_train_dataset.ts` writes a `brush-dataset/` subdirectory inside the
@@ -183,6 +197,37 @@ The positional dataset argument auto-disables Brush's GUI (headless). The GPU
 is pinned via `CUBECL_WGPU_DEFAULT_DEVICE=$BRUSH_DEVICE` in the child's env.
 Brush does not write a manifest — the driver counts gaussians from the exported
 PLY header and writes the `splat-train` manifest itself.
+
+### Every path that reaches Brush is absolute — deliberately
+
+`SCANS_DIR` defaults to the *relative* `./scans` (`server/main.ts`), so the
+world-job runner hands the driver `./scans/sessions/sess-…`. Both places that
+string used to travel to resolve it against something other than the server's
+cwd, and both failed silently rather than loudly:
+
+- **Image symlinks.** `brush-dataset/images/kf-*.jpg` are symlinks into the
+  session. A relative *target* resolves against the directory holding the link,
+  so every link landed dangling (`images/./scans/sessions/…`). Creating a
+  dangling symlink is not an error on POSIX, so the dataset looked fine;
+  Brush reported `dataset contains no usable training views (all images missing
+  or filtered out)` and exited 1. Measured on the 17-frame session
+  `sess-a7e2f642`: 17 frames written, 0 readable.
+- **`--export-path`.** `brush-cli --help`: *"Path is relative to the dataset's
+  parent directory (or CWD if unavailable)"* — not to our cwd and not to the
+  dataset dir. A relative export path therefore writes the trained `.ply` to
+  `<sessionDir>/<the-relative-path>/…`, `findExportedPly` sees an empty
+  `exports/`, and the run reports "produced no `.ply`" on a **zero** exit code
+  — throwing away a completed multi-minute train.
+
+`runSplatTrain` and `buildBrushDataset` each call `resolve()` on their inputs
+on the way in, so callers may keep passing relative paths and everything
+downstream (symlink targets, the CLI's dataset argument, the manifest's
+`sessionDir`) is absolute. `materialiseImage` additionally `stat()`s each link
+it creates and falls back to a byte copy if it does not resolve, so a dangling
+image can no longer reach the trainer from any direction. Two Deno tests pin
+this (`buildBrushDataset materialises READABLE images from a relative
+sessionDir`, `…returns an absolute datasetDir…`); both fail against the
+pre-`resolve()` converter.
 
 ## Triggering a training run from the editor
 
@@ -242,14 +287,45 @@ The driver never hard-crashes the server; every run writes a manifest:
 | `status` | When | UI shows |
 |----------|------|----------|
 | `ok` | Brush produced a `.ply` | Gaussian count + splat layer link |
-| `skipped` | `BRUSH_BIN` missing/unrunnable, or the scan has no keyframes | `skippedReason` + a `remediation` hint |
+| `skipped` | `BRUSH_BIN` missing/unrunnable, the scan has no keyframes, or a pose solve was needed and COLMAP is absent | `skippedReason` + a `remediation` hint |
 | `error` | Dataset build failed, Brush exited non-zero, or no `.ply` was exported | Error message + stderr tail |
+
+Every `error` branch puts a diagnosis on the **manifest**, not only in the
+returned log: the manifest is the durable record, and `result.log` is dropped
+after the job commits. A non-zero exit records `brush exited <code>: <last
+lines of Brush's stderr>`. This is not cosmetic — the first `splat-train` job
+ever run in this repo recorded exactly `"error": "brush exited 1"` and nothing
+else, while the stderr it discarded said `dataset contains no usable training
+views`, which names the actual cause (see "Every path that reaches Brush is
+absolute").
+
+## Troubleshooting
+
+| Symptom (in the manifest) | Cause | Fix |
+|---|---|---|
+| `skipped`: `Brush binary not found or not executable: …` | No Brush build at `BRUSH_BIN`/the default path | Build it — see Setup. This is the only prerequisite for a session captured with SLAM poses. |
+| `skipped`: `COLMAP binary not found: colmap` | A pose-less session (photo/video ingest) auto-chained `colmap-poses` | Install COLMAP or set `COLMAP_BIN` (see [`colmap-poses.md`](colmap-poses.md)). Sessions streamed from the scanner already carry poses and never reach this. |
+| `skipped`: `only N keyframe(s) in session` | Fewer than 3 frames | Capture more, walking between viewpoints. |
+| `error`: `brush exited 1: … no usable training views …` | The dataset's `images/` entries do not resolve | Should be impossible now (see the absolute-paths section). Check `ls -lL <session>/brush-dataset/images/` for dangling links. |
+| `error`: `brush exited 0 but produced no .ply in …` | Export landed outside the export dir | `find <session> -name 'splat_*.ply'` — a relative `--export-path` got through. |
+| `error`: `no camera poses: …` with `SPLAT_TRAIN_AUTO_POSES=0` | Auto-chaining disabled | Queue `colmap-poses` on the session by hand, then re-queue `splat-train`. |
+| `error`: `feature_extractor failed (exit 1): … Failed to parse options …` | COLMAP option name/enum the installed build rejects | COLMAP validates option names *and* enum members strictly and aborts the step. Two were wrong against 3.13.0 and are fixed (`--SiftExtraction.max_image_size`, matcher type `SIFT`); if your build rejects another, `COLMAP_FEATURE_TYPE` / `COLMAP_MATCHER_TYPE` / `COLMAP_MAX_IMAGE_SIZE` override them. |
+| `ok` from `colmap-poses`, but a bad splat | Sparse registration | `ok` only means COLMAP registered *at least one* image. Compare `registeredImages` against `frameCount` in `colmap-poses.manifest.json` — a 17-frame sweep of ours solved only **3 images / 5 points**, which is a capture problem (wide baselines, heavy JPEG compression), not a tooling one. |
 
 ## Tests
 
 ```bash
 # Deno unit tests — driver validation, arg assembly, dataset converter, skip fallback
 npm run test:splat:unit
+
+# Real brush-cli, ~200 iterations, on a session already on this box. Opt-in:
+# it needs a GPU and a built Brush, so it is `ignore`d unless BRUSH_E2E=1.
+# It DISCOVERS the session with the most kf-*.jpg under scans/sessions/
+# (SPLAT_E2E_SESSION=<sessionId> pins one); scans/ is gitignored, so there is
+# no committed fixture to point at — an earlier hardcoded fixture path meant
+# this test could not run even when asked for.
+BRUSH_E2E=1 deno test --allow-read --allow-write --allow-env --allow-run \
+  --filter BRUSH_E2E tests/unit/deno/splat_train.test.ts
 
 # Playwright integration — synthetic fixture + UI + screenshots
 npm run test:splat:make-fixture      # one-time (re-run after edits)
@@ -264,11 +340,18 @@ in CI, but the served-`.ply` → `SplatMesh` data path is identical to a real ru
 
 ## Limitations
 
-- A real end-to-end Brush training run has **not** been exercised in CI —
-  feasibility was proven by a manual spike (a training run produced a valid
-  `.ply` on this box). The integration wiring, dataset conversion, artifact
-  serving, and viewer load are all tested; the actual `brush-cli` spawn is
-  covered only by the synthetic fixture + the injected-spawn unit test.
+- A real end-to-end Brush training run is still **not** exercised in CI: CI has
+  no GPU, so the `BRUSH_E2E` test above is opt-in and the automated coverage is
+  the synthetic fixture + injected-spawn unit tests. Note what that costs —
+  a mock `_spawn` never reads the dataset's images, so no mock test can see a
+  broken `images/` directory. The relative-path failure above therefore passed
+  the entire suite while making every real run impossible. Run `BRUSH_E2E=1`
+  locally after touching the dataset converter or the CLI arguments.
+- Measured on this box (Linux, RTX 4080 laptop, 2026-08-28), through the real
+  world-job code path with the runner's own relative `SCANS_DIR`: session
+  `sess-a7e2f642` (17 posed keyframes) → **92,216 gaussians, 14 MB `.ply`,
+  79.6 s** at the default 15,000 iterations / SH degree 2 / 1280 px. Only
+  `BRUSH_BIN`'s default path was needed; nothing was configured.
 - **The splat has no metres.** Brush inherits the pose solver's frame, and
   monocular SfM is scale-blind — COLMAP's output is correct only up to an
   unknown scale factor, at an arbitrary origin. `colmap-poses` gravity-aligns

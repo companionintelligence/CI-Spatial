@@ -671,6 +671,7 @@ export type {
   SplatTrainManifest,
   SplatDetectManifest,
   PanopticScanManifest,
+  PanopticLiftManifest,
   SplatFinishManifest,
   SplatFinishSizes,
 } from './manifests.ts'

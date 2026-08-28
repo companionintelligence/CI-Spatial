@@ -79,6 +79,52 @@ export interface PanopticScanManifest extends PipelineManifestBase {
   }
 }
 
+/**
+ * panoptic_lift.ts's manifest — the 2D-segment-to-3D-position stage.
+ *
+ * Splitting this from `panoptic-scan` rather than folding it into that job is a
+ * cost decision: the segmenter is a GPU pass over up to 64 keyframes, and its
+ * `panoptic.segments.json` is already on disk. Re-tuning the depth policy must
+ * not mean re-running Mask2Former.
+ *
+ * The three counts are the point of this manifest, not decoration. "A room with
+ * 6 things" and "a room where 44 objects were seen and could not be placed" are
+ * completely different facts about a scan, and without the split they look
+ * identical from outside — the same failure `thingLabelsUsed` above exists to
+ * prevent. On the one real session measured (sess-a7e2f642, 50 thing segments,
+ * 5330 points, coverageScore 0.0027) the split is 4 confident / 7
+ * low-confidence / 39 with no answer at all.
+ */
+export interface PanopticLiftManifest extends PipelineManifestBase {
+  tool: 'panoptic-lift'
+  sessionDir: string
+  /** Thing segments read from the panoptic-scan sidecar. */
+  segmentCount?: number
+  /** Segments that produced a world position at or above the confidence floor. */
+  confidentCount?: number
+  /** Determinate but below the floor — a position exists, it is not trusted. */
+  lowConfidenceCount?: number
+  /** Segments with no answer at all. Broken down by `reasons`. */
+  undeterminedCount?: number
+  /** Count per LiftReason, e.g. { 'no-geometry': 2, unsupported: 33 }. */
+  reasons?: Record<string, number>
+  /** Median confidence across the confident set. Absent when that set is empty. */
+  medianConfidence?: number
+  /** Points in the cloud the rays were cast against. */
+  pointCount?: number
+  /** Basename of the written detections sidecar, relative to the scans dir. */
+  detectionsPath?: string
+  /** Which artifact supplied the cloud, for provenance. */
+  cloudSource?: string
+  params: {
+    minSegmentPixels: number
+    minConfidence: number
+    minDepthM: number
+    maxDepthM: number
+    minClusterPoints: number
+  }
+}
+
 /** splat_train.ts's manifest — the Brush CLI driver. */
 export interface SplatTrainManifest extends PipelineManifestBase {
   tool: 'brush'

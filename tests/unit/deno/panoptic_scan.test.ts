@@ -95,6 +95,39 @@ Deno.test('label whitespace is trimmed so fusion does not see two vocabularies',
   assertEquals(out.things[0].label, 'chair')
 })
 
+Deno.test('the mask bbox and centroid-on-mask flag are carried through when present', () => {
+  // Both feed the 3-D lift: the bbox gives a tighter angular footprint for an
+  // elongated mask, and the flag lets a centroid that is not on its own object
+  // abstain instead of measuring whatever is behind it. See
+  // docs/pipelines/panoptic-scan.md — "Lifting a segment to a world position".
+  const out = splitPanopticSegments([{
+    file: 'kf-00000.jpg',
+    segments: [seg({ bboxPx: [10, 20, 110, 520], centroidOnMask: false })],
+  }])
+  assertEquals(out.things[0].bboxPx, [10, 20, 110, 520])
+  assertEquals(out.things[0].centroidOnMask, false)
+})
+
+Deno.test('an absent bbox or flag stays absent — never defaulted', () => {
+  // A segments file written before the worker emitted these is still a good
+  // file; re-running costs a GPU pass over up to 64 frames. `undefined` means
+  // "not reported", and the lift must not read that as `false`.
+  const out = splitPanopticSegments([{ file: 'kf-00000.jpg', segments: [seg()] }])
+  assertEquals(out.things[0].bboxPx, undefined)
+  assertEquals(out.things[0].centroidOnMask, undefined)
+})
+
+Deno.test('a malformed bbox is dropped while the segment survives', () => {
+  // A defective box must not take a good detection with it, and must not reach
+  // the lift, where an inverted box would collapse the cone to nothing and read
+  // as 'no-geometry'.
+  for (const bboxPx of [[10, 10, 0, 0], [1, 2, 3], 'nope', [1, 2, 3, Number.NaN], null]) {
+    const out = splitPanopticSegments([{ file: 'kf-00000.jpg', segments: [seg({ bboxPx })] }])
+    assertEquals(out.things.length, 1, `bbox ${JSON.stringify(bboxPx)} dropped the segment`)
+    assertEquals(out.things[0].bboxPx, undefined)
+  }
+})
+
 // ── driver guards ───────────────────────────────────────────────────────────
 
 Deno.test('a missing python is skipped with a remediation, never an error', async () => {

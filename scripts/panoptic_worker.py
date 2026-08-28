@@ -175,6 +175,7 @@ def main() -> int:
             if area < args.min_segment_pixels:
                 continue
             ys, xs = np.nonzero(mask)
+            cx, cy = float(xs.mean()), float(ys.mean())
             label = str(id2label.get(label_id, f"class_{label_id}"))
             segments.append(
                 {
@@ -185,7 +186,25 @@ def main() -> int:
                     "isThing": (label.strip().lower() in thing_labels) if thing_labels is not None else None,
                     "score": float(info.get("score", 0.0)),
                     "areaPx": area,
-                    "centroidPx": [float(xs.mean()), float(ys.mean())],
+                    "centroidPx": [cx, cy],
+                    # Mask extent, [x0, y0, x1, y1] inclusive. The 3-D lift derives
+                    # the segment's angular footprint from areaPx as
+                    # atan(sqrt(area/pi)/fl_y), which assumes the mask is a disc. A
+                    # curtain or a bed is nothing like a disc, and the bbox is the
+                    # cheap correction — free here (np.nonzero is already computed),
+                    # and optional downstream so an older segments file still lifts.
+                    "bboxPx": [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())],
+                    # Is the centroid actually ON the object?
+                    #
+                    # A mean of the mask's pixel coordinates is not a point of the
+                    # mask when the mask is concave or split into parts — a curtain
+                    # either side of a window, or two cabinets merged into one
+                    # segment, put the centroid in the gap BETWEEN them. The 3-D
+                    # lift casts a ray through that centroid, so a false here means
+                    # the ray measures whatever is visible through the hole and
+                    # reports it with full confidence. Cheap to check, impossible to
+                    # recover later, so it is reported rather than inferred.
+                    "centroidOnMask": bool(mask[int(round(cy)), int(round(cx))]),
                 }
             )
 

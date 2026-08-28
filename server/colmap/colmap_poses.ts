@@ -80,11 +80,53 @@ export interface ColmapPosesResult {
 /** GPU feature extraction needs a display on most hosts; CPU is the portable default. */
 const USE_GPU = '0'
 
+/**
+ * Where to look for COLMAP when nobody named a binary and PATH has none.
+ *
+ * COLMAP's documented install on a box without sudo is the user-local
+ * micromamba env in docs/pipelines/splat-train.md § Setup, and that env is NOT
+ * on PATH unless you activate it — so on the machine that followed our own
+ * instructions, `which colmap` fails while COLMAP 3.13.0 (with CUDA) sits at
+ * the path below. Reporting "not found" there is a false negative that reads
+ * like a missing tool. This mirrors splat_train.ts's DEFAULT_BRUSH_BIN, which
+ * points at `~/brush/target/release/brush-cli` for exactly the same reason —
+ * one convention, not a new one (ADR 0001): the documented install path is a
+ * fallback, never an override. COLMAP_BIN still wins over everything.
+ */
+const FALLBACK_COLMAP_BINS = [
+  `${Deno.env.get('HOME') ?? '~'}/.local/micromamba/envs/colmap/bin/colmap`,
+]
+
+/**
+ * Resolve `colmapBin` to something runnable, or null.
+ *
+ * An explicit binary (opts.colmapBin / COLMAP_BIN) is taken at its word and
+ * only probed; the bare default `colmap` means "find one", so it tries PATH
+ * and then the documented install paths above.
+ */
+export async function resolveColmapBin(colmapBin: string): Promise<string | null> {
+  if (colmapBin !== 'colmap') return (await isRunnable(colmapBin)) ? colmapBin : null
+  if (await which('colmap')) return 'colmap'
+  for (const candidate of FALLBACK_COLMAP_BINS) {
+    if (await isRunnable(candidate)) return candidate
+  }
+  return null
+}
+
 export function resolveParams(opts: ColmapPosesRunOptions) {
   return {
     colmapBin: opts.colmapBin ?? Deno.env.get('COLMAP_BIN') ?? 'colmap',
     featureType: opts.featureType ?? Deno.env.get('COLMAP_FEATURE_TYPE') ?? 'SIFT',
-    matcherType: opts.matcherType ?? Deno.env.get('COLMAP_MATCHER_TYPE') ?? 'SIFT_BRUTEFORCE',
+    // `SIFT`, not `SIFT_BRUTEFORCE`: FeatureMatcherType is an enum, and COLMAP
+    // rejects an unknown member outright (`Failed to parse options - Unknown
+    // string value: SIFT_BRUTEFORCE for enum: FeatureMatcherType.` → exit 1,
+    // measured on the conda-forge COLMAP 3.13.0 our setup docs install). Probed
+    // the whole plausible set against that build — SIFT is the only accepted
+    // value; SIFT_BRUTEFORCE / BRUTE_FORCE / ALIKED / LIGHTGLUE /
+    // ALIKED_LIGHTGLUE are all rejected. Brute force is what SIFT matching does
+    // by default anyway (SiftMatching.cpu_brute_force_matcher), so the old name
+    // asked for the behaviour we still get, in a spelling nothing accepts.
+    matcherType: opts.matcherType ?? Deno.env.get('COLMAP_MATCHER_TYPE') ?? 'SIFT',
     maxImageSize: intFromEnv('COLMAP_MAX_IMAGE_SIZE', opts.maxImageSize ?? 1600),
   }
 }
@@ -123,15 +165,21 @@ export async function runColmapPoses(opts: ColmapPosesRunOptions): Promise<Colma
 
   // A missing COLMAP is a *skip*, not an error: the server keeps running and
   // the UI shows a remediation, matching how splat_train treats a missing Brush.
-  const onPath = params.colmapBin === 'colmap' ? await which('colmap') : await isRunnable(params.colmapBin)
-  if (!onPath) {
+  const resolvedBin = await resolveColmapBin(params.colmapBin)
+  if (!resolvedBin) {
     return finish(manifestPath, {
       ...base,
       status: 'skipped',
-      skippedReason: `COLMAP binary not found: ${params.colmapBin}`,
+      skippedReason: params.colmapBin === 'colmap'
+        ? `COLMAP binary not found on PATH or at ${FALLBACK_COLMAP_BINS.join(', ')}`
+        : `COLMAP binary not found: ${params.colmapBin}`,
       remediation: 'Install COLMAP (`brew install colmap` / `apt install colmap`) or set COLMAP_BIN.',
     }, 0, '', started)
   }
+  // Record what we actually ran, not what we were asked for — `base.params` is
+  // this same object, so a manifest from a fallback-resolved run names the
+  // binary a reader can re-run by hand.
+  params.colmapBin = resolvedBin
 
   // COLMAP wants an image root it owns. Keyframes are hardlinked (falling back
   // to a copy across devices) into a workspace so the session dir keeps its
@@ -173,7 +221,19 @@ export async function runColmapPoses(opts: ColmapPosesRunOptions): Promise<Colma
   const step = async (label: string, args: string[]): Promise<string | null> => {
     const { code, stderr } = await spawn(params.colmapBin, args)
     logs.push(`[${label}] exit=${code}\n${stderr}`)
-    return code === 0 ? null : `${label} failed (exit ${code})`
+    if (code === 0) return null
+    // Carry COLMAP's own last words into the message that reaches the manifest.
+    // `logs` is only returned to the caller and then dropped, so a manifest
+    // reading `feature_extractor failed (exit 1)` is a dead end — that is
+    // exactly how the two option-name bugs fixed in this file (see the
+    // `--SiftExtraction.max_image_size` and matcher-type comments) stayed
+    // invisible for as long as they did. The last
+    // lines, not the first: COLMAP logs progress before it complains.
+    // (splat_train.ts has the same-shaped `stderrTail`; it is not imported here
+    // because splat_train.ts already imports THIS module — sharing it would
+    // make the two files circular for two lines of string handling.)
+    const tail = stderr.split('\n').map((l) => l.trim()).filter(Boolean).slice(-2).join(' | ')
+    return tail ? `${label} failed (exit ${code}): ${tail.slice(-400)}` : `${label} failed (exit ${code})`
   }
 
   let err = await step('feature_extractor', [
@@ -184,7 +244,18 @@ export async function runColmapPoses(opts: ColmapPosesRunOptions): Promise<Colma
     '--ImageReader.camera_model', 'SIMPLE_RADIAL',
     '--FeatureExtraction.type', params.featureType,
     '--FeatureExtraction.use_gpu', USE_GPU,
-    '--FeatureExtraction.max_image_size', String(params.maxImageSize),
+    // `max_image_size` lives under SiftExtraction, NOT FeatureExtraction —
+    // COLMAP 3.12 moved the extractor-generic options (type, use_gpu,
+    // num_threads, gpu_index) to the `FeatureExtraction.*` prefix and left the
+    // SIFT-specific ones behind. Getting this wrong is not a warning: COLMAP
+    // aborts the whole step. Measured against the build this repo's own setup
+    // instructions produce (COLMAP 3.13.0 from conda-forge):
+    //   E … option_manager.cc:976] Failed to parse options - unrecognised
+    //   option '--FeatureExtraction.max_image_size'.  → exit 1, 40ms,
+    // i.e. every colmap-poses run failed before extracting a single feature.
+    // `--SiftExtraction.max_image_size` is also the spelling every pre-3.12
+    // release accepts, so it is the compatible choice, not just the working one.
+    '--SiftExtraction.max_image_size', String(params.maxImageSize),
   ])
   if (err) return finish(manifestPath, { ...base, status: 'error', error: err }, 2, logs.join('\n'), started)
 
