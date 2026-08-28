@@ -180,6 +180,10 @@ const containers = [
   ['Material', root.listMaterials()],
   ['Accessor', root.listAccessors()],
   ['Texture', root.listTextures()],
+  // Primitives are dedup candidates too, and they are not reachable from any
+  // root.list*() call — they hang off their Mesh, so a key parked here would
+  // have slipped past the four containers above.
+  ['Primitive', root.listMeshes().flatMap((mesh) => mesh.listPrimitives())],
 ]
 for (const [kind, list] of containers) {
   for (const item of list) {
