@@ -39,6 +39,7 @@ import type { CalibrationReferencePhoto } from './world/types'
 import { isQueuedOffline } from './shared/offline-queue'
 import type { AreaKind, PlaceArea, PlaceType } from './world/types'
 import { AROverlay } from './ui/overlay'
+import { writeStatus, type StatusPriority } from './ui/status-line'
 import { SidePanel, type ExportOutcome } from './ui/panel'
 import { SessionHistory } from './ui/history'
 import { exportToGLB } from './export/gltf'
@@ -84,6 +85,8 @@ let degradedTrackingNoticeShown = false
 // Last verdict state written to the HUD, so the 750 ms scanner tick only
 // touches the DOM when the verdict or its recommendation actually changes.
 let lastVerdictKey: string | null = null
+/** Last text written to #quality-motion-hint — see updateQualityOverlay(). */
+let lastMotionHint: string | null = null
 
 async function main() {
   const searchParams = new URLSearchParams(location.search)
@@ -460,7 +463,7 @@ async function main() {
   // Shared capture handler used by both the manual button and auto-capture
   async function doCapture() {
     if (captureInFlight) {
-      overlay.setStatus('Capture already processing...')
+      overlay.setStatus('Capture already processing...', 'sticky')
       return
     }
 
@@ -468,13 +471,13 @@ async function main() {
     setCaptureBusy(true)
 
     if (!provider.isTracking()) {
-      overlay.setStatus('Tracking warming up...')
+      overlay.setStatus('Tracking warming up...', 'sticky')
       const trackingReady = await waitForTracking(provider, TRACKING_WAIT_MS)
       if (!trackingReady) {
-        overlay.setStatus('Capturing without stable tracking...')
+        overlay.setStatus('Capturing without stable tracking...', 'sticky')
       }
     }
-    overlay.setStatus('Capturing next frame...')
+    overlay.setStatus('Capturing next frame...', 'sticky')
     // Named before the try so the catch can reach them: the frame is stored by
     // then, and the failure path's job is to mark that record and decide whether
     // its image is worth holding — not to mourn it.
@@ -504,7 +507,7 @@ async function main() {
       // record still says "webgpu" (what was attempted), not "server".
       const capturePersisted = store.putCapture({ captureIndex, timestamp, pose, blob, engine: router.path })
 
-      overlay.setStatus('Analysing…')
+      overlay.setStatus('Analysing…', 'sticky')
 
       // Show indeterminate analysis progress bar
       const progFill = document.getElementById('progress-bar-fill')
@@ -519,11 +522,11 @@ async function main() {
       const quality = await frameQuality
       updateQualityOverlay(qualityMonitor.tick(provider, pointCloud))
       if (quality.uniformFrame) {
-        overlay.setStatus('Camera feed unavailable — close Chrome, reopen the app, then retry')
+        overlay.setStatus('Camera feed unavailable — close Chrome, reopen the app, then retry', 'sticky')
         throw new Error('Camera frame is uniform; the live camera feed is not available')
       }
-      if (quality.lowLight)   overlay.setStatus('⚠ Low light — add more lighting')
-      if (quality.reflective) overlay.setStatus('⚠ Reflective surface detected')
+      if (quality.lowLight)   overlay.setStatus('⚠ Low light — add more lighting', 'sticky')
+      if (quality.reflective) overlay.setStatus('⚠ Reflective surface detected', 'sticky')
 
       const rawDets = await router.infer(blob)
 
@@ -531,7 +534,7 @@ async function main() {
       if (progFill) progFill.classList.remove('analyzing')
       if (progWrap) progWrap.classList.remove('visible')
 
-      overlay.setStatus(`${rawDets.length} object${rawDets.length === 1 ? '' : 's'} detected`)
+      overlay.setStatus(`${rawDets.length} object${rawDets.length === 1 ? '' : 's'} detected`, 'sticky')
 
       // Snapshot a Three.js camera from the current SLAM pose for frustum raycasting.
       // This gives the resolver a proper projection matrix at the moment of capture.
@@ -589,6 +592,7 @@ async function main() {
       queueAutoSave()
       overlay.setStatus(
         `${store.detections.size} object${store.detections.size === 1 ? '' : 's'} · ${pointCloud.count} pts`,
+        'sticky',
       )
     } catch (e) {
       clearAnalysisProgress()
@@ -618,20 +622,20 @@ async function main() {
         // actionable HUD guidance instead of a generic "failed" message.
         switch (e.code) {
           case 'timeout':
-            overlay.setStatus('Server took too long — try again or move closer')
+            overlay.setStatus('Server took too long — try again or move closer', 'sticky')
             break
           case 'network':
-            overlay.setStatus(navigator.onLine ? 'Server unreachable — is Tailscale connected?' : 'You are offline')
+            overlay.setStatus(navigator.onLine ? 'Server unreachable — is Tailscale connected?' : 'You are offline', 'sticky')
             break
           case 'model-loading':
-            overlay.setStatus('Model warming up — retry in a few seconds')
+            overlay.setStatus('Model warming up — retry in a few seconds', 'sticky')
             break
           case 'model-failed':
           case 'unavailable':
-            overlay.setStatus(`Server inference unavailable${router.hasWebGPU ? ' — try WebGPU in the panel' : ''}`)
+            overlay.setStatus(`Server inference unavailable${router.hasWebGPU ? ' — try WebGPU in the panel' : ''}`, 'sticky')
             break
           default:
-            overlay.setStatus('Capture failed — try again')
+            overlay.setStatus('Capture failed — try again', 'sticky')
         }
       } else if (e instanceof WebGpuInferenceError) {
         // On-device failed. The image was never sent anywhere — see
@@ -642,24 +646,24 @@ async function main() {
         // left the device.
         switch (e.code) {
           case 'timeout':
-            overlay.setStatus('On-device inference timed out — nothing was sent. Try again, or switch to Server.')
+            overlay.setStatus('On-device inference timed out — nothing was sent. Try again, or switch to Server.', 'sticky')
             break
           case 'not-provisioned':
-            overlay.setStatus('On-device model not downloaded yet — open the panel to download it, or switch to Server.')
+            overlay.setStatus('On-device model not downloaded yet — open the panel to download it, or switch to Server.', 'sticky')
             break
           default:
-            overlay.setStatus('On-device inference failed — nothing was sent. Try again, or switch to Server.')
+            overlay.setStatus('On-device inference failed — nothing was sent. Try again, or switch to Server.', 'sticky')
         }
       } else {
         const message = e instanceof Error ? e.message : String(e)
         const name = e instanceof Error ? e.name : ''
 
         if (name === 'NotAllowedError' || message.includes('NotAllowedError')) {
-          overlay.setStatus('Camera access denied — check browser settings')
+          overlay.setStatus('Camera access denied — check browser settings', 'sticky')
         } else if (message.includes('Camera frame is uniform')) {
           // Keep the recovery instruction from the frame-validity guard visible;
           // this is a camera lifecycle problem, not an inference failure.
-          overlay.setStatus('Camera feed unavailable — close Chrome, reopen the app, then retry')
+          overlay.setStatus('Camera feed unavailable — close Chrome, reopen the app, then retry', 'sticky')
         } else if (message.includes('Camera stream stalled')) {
           // WebXRProvider detected the companion getUserMedia stream had frozen
           // (see docs/factory/04-capture-path-truthfulness/0005) and refused to
@@ -667,7 +671,7 @@ async function main() {
           // A background re-acquire may already have fixed it by the time this
           // renders — if so the next capture just works — but this message
           // must stay honest for the case where it didn't.
-          overlay.setStatus('Camera feed frozen — restart the scan to continue')
+          overlay.setStatus('Camera feed frozen — restart the scan to continue', 'sticky')
         } else if (message.includes('Timed out')) {
           // Check if the timeout is actually due to denied camera permission
           let denied = false
@@ -679,11 +683,11 @@ async function main() {
           } catch { /* permissions API may not support camera query */ }
           overlay.setStatus(denied
             ? 'Camera access denied — check browser settings'
-            : 'Camera frame timed out — tap once more')
+            : 'Camera frame timed out — tap once more', 'sticky')
         } else if (name === 'TypeError' || message.includes('NetworkError') || message.includes('Failed to fetch') || message.includes('network')) {
-          overlay.setStatus('Inference requires network — switch to WebGPU in settings for offline use')
+          overlay.setStatus('Inference requires network — switch to WebGPU in settings for offline use', 'sticky')
         } else {
-          overlay.setStatus('Capture failed — try again')
+          overlay.setStatus('Capture failed — try again', 'sticky')
         }
       }
       console.error('[capture]', e)
@@ -1258,12 +1262,16 @@ async function main() {
     }
     updatePoseReadout(frame.pose, provider.isTracking())
 
-    // Update quality overlay on every scanner tick
+    // Update quality overlay on every scanner tick.
+    //
+    // The tracking-lost / moving-too-fast sentences used to be written to
+    // #status-text from right here, on every one of these 750 ms ticks, which
+    // erased whatever the capture path had just reported. They are motion
+    // state, not events, so they now render beside the drift badge that
+    // already summarises them — see updateQualityOverlay().
     const snap = qualityMonitor.tick(provider, pointCloud)
     updateQualityOverlay(snap)
     updateVerdictUI()
-    if (snap.trackingLost) overlay.setStatus('Tracking lost — move slowly')
-    else if (snap.driftRisk === 'high') overlay.setStatus('⚠ Moving too fast — slow down')
   })
   console.log('[main] Room scanner started')
 
@@ -1549,21 +1557,26 @@ async function main() {
 
 function setupStatusOverlay() {
   return {
-    setStatus(text: string) {
-      const el = document.getElementById('status-text')
-      if (el) el.textContent = text
+    /**
+     * Pass `'sticky'` for a message the user must be able to read — see
+     * ./ui/status-line.ts. Shares its hold with `AROverlay.setStatus`, because
+     * both write the same `#status-text` node.
+     */
+    setStatus(text: string, priority: StatusPriority = 'normal') {
+      writeStatus(document.getElementById('status-text'), text, priority)
     },
     setProgress(pct: number | null, label?: string) {
       const wrap = document.getElementById('progress-bar-wrap')
       const fill = document.getElementById('progress-bar-fill')
-      const statusEl = document.getElementById('status-text')
       if (!wrap || !fill) return
       if (pct === null) {
         wrap.classList.remove('visible')
       } else {
         wrap.classList.add('visible')
         fill.style.width = `${Math.round(pct * 100)}%`
-        if (label && statusEl) statusEl.textContent = label
+        // Normal priority: a progress stage is state, and must not displace a
+        // held message reporting what just happened.
+        if (label) writeStatus(document.getElementById('status-text'), label)
       }
     },
   }
@@ -2450,6 +2463,7 @@ function updateQualityOverlay(snap: import('./capture/quality-monitor').QualityS
   const lightBadge   = overlay.querySelector<HTMLElement>('#quality-light-badge')
   const reflBadge    = overlay.querySelector<HTMLElement>('#quality-refl-badge')
   const missingText  = overlay.querySelector<HTMLElement>('#quality-missing')
+  const motionHint   = overlay.querySelector<HTMLElement>('#quality-motion-hint')
 
   if (coverageFill) {
     const pct = Math.round(snap.coverageScore * 100)
@@ -2461,6 +2475,25 @@ function updateQualityOverlay(snap: import('./capture/quality-monitor').QualityS
   if (driftBadge) {
     driftBadge.style.display = snap.driftRisk !== 'low' ? 'flex' : 'none'
     driftBadge.textContent = snap.driftRisk === 'high' ? '⚡ Fast' : '↗ Speed'
+  }
+
+  // The long form of what the drift badge abbreviates, plus the tracking-lost
+  // case the badge has no glyph for. Lives here rather than in #status-text
+  // because it is refreshed on every 750 ms scanner tick — exactly the
+  // property that made it erase every capture result and error message.
+  if (motionHint) {
+    const motionText = snap.trackingLost
+      ? 'Tracking lost — move slowly'
+      : snap.driftRisk === 'high'
+        ? '⚠ Moving too fast — slow down'
+        : ''
+    // aria-live, so an unconditional per-tick write would re-announce the same
+    // sentence twice a second. Same reasoning as updateVerdictUI().
+    if (motionText !== lastMotionHint) {
+      lastMotionHint = motionText
+      motionHint.textContent = motionText
+      motionHint.style.display = motionText ? 'block' : 'none'
+    }
   }
   if (lightBadge) lightBadge.style.display = snap.lowLight ? 'flex' : 'none'
   if (reflBadge)  reflBadge.style.display  = snap.reflectiveSurface ? 'flex' : 'none'

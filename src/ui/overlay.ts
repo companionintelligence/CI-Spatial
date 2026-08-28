@@ -12,6 +12,7 @@
 import * as THREE from 'three'
 import type { ARProvider } from '../ar/provider'
 import type { DetectionStore } from '../scene/store'
+import { writeStatus, type StatusPriority } from './status-line'
 
 declare const XR8: {
   addCameraPipelineModule(mod: object): void
@@ -97,8 +98,13 @@ export class AROverlay {
     this.tickPins(camera)
   }
 
-  setStatus(text: string): void {
-    this.statusText.textContent = text
+  /**
+   * Write the status line. Pass `'sticky'` for a message the user must be able
+   * to read — a capture result or failure — so a per-tick writer cannot stomp
+   * it inside 750 ms. See ./status-line.ts.
+   */
+  setStatus(text: string, priority: StatusPriority = 'normal'): void {
+    writeStatus(this.statusText, text, priority)
   }
 
   setProgress(pct: number | null, label?: string): void {
@@ -107,7 +113,9 @@ export class AROverlay {
     } else {
       this.progressWrap.classList.add('visible')
       this.progressFill.style.width = `${Math.round(pct * 100)}%`
-      if (label) this.statusText.textContent = label
+      // Normal priority: a progress stage is state, and must not displace a
+      // held message reporting what just happened.
+      if (label) writeStatus(this.statusText, label)
     }
   }
 
