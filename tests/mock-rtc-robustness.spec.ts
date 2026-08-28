@@ -17,6 +17,7 @@
  * Run: npx playwright test --project=chromium-mock mock-rtc-robustness
  */
 import { test, expect, type Page } from '@playwright/test'
+import { startArScan } from './support/start-scan'
 
 /** Count RTCPeerConnection constructions and closes in the page. */
 async function instrumentPeerConnections(page: Page): Promise<void> {
@@ -60,10 +61,7 @@ async function recordSignalSockets(page: Page): Promise<void> {
 }
 
 async function startBroadcasting(page: Page, room: string): Promise<void> {
-  await page.goto(`/?mock=xr8&world=${encodeURIComponent(room)}`)
-  await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
-  await page.click('#start-ar-btn')
-  await expect(page.locator('#scan-stats')).toHaveText(/\d+ pts/, { timeout: 30_000 })
+  await startArScan(page, { url: `/?mock=xr8&world=${encodeURIComponent(room)}` })
   await page.click('#panel-toggle')
   await page.locator('#side-panel').waitFor({ state: 'visible', timeout: 10_000 })
   await page.click('#panel-stream-btn')

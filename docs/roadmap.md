@@ -13,9 +13,14 @@ product model and migration rules live in
 
 ## Shipped
 
-Everything below is implemented on `main` and exercised by the test suite (35
-Playwright specs in `tests/`, 33 Deno unit tests in `tests/unit/deno/`, and 12
-Node unit tests in `tests/unit/node/`). The TypeScript codebase compiles clean.
+Everything below is implemented on `main` and covered by a spec in one of the
+three suites (`tests/*.spec.ts` under Playwright, `tests/unit/deno/`,
+`tests/unit/node/`). The TypeScript codebase compiles clean. **The Playwright
+suite does not run green**: a set of its specs has been failing for long enough
+to be baselined in `tests/known-failures.json`, so "shipped" here means
+implemented and specced, not that every spec passes today. See
+[testing/TEST_INFRA.md](testing/TEST_INFRA.md) § "The development loop and the
+known-failures baseline" for what that file is and how the gate uses it.
 
 ### Capture (phone)
 

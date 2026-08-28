@@ -39,6 +39,46 @@ export interface PipelineManifestBase {
   scanId?: string
 }
 
+/**
+ * panoptic_scan.ts's manifest — the per-keyframe panoptic segmenter.
+ *
+ * Panoptic means every pixel gets exactly one label, so a run yields BOTH
+ * discrete objects ("things": chair, table, lamp) and room surfaces ("stuff":
+ * wall, floor, ceiling). They are counted separately here because they are
+ * handled separately downstream: things become WorldDetections and flow into
+ * `thing_match`, stuff does not. See `panoptic_segments.ts` for why.
+ */
+export interface PanopticScanManifest extends PipelineManifestBase {
+  tool: 'panoptic'
+  sessionDir: string
+  /** The HF model id the worker loaded, echoed back for provenance. */
+  model?: string
+  /** Keyframes the worker actually segmented. */
+  framesSegmented?: number
+  /** Discrete-object segments kept across all frames, before fusion. */
+  thingCount?: number
+  /** Room-surface segments seen. Recorded, but never fed to thing_match. */
+  stuffCount?: number
+  /**
+   * Whether a thing-label list was supplied.
+   *
+   * Without one the worker reports every segment as unknown, which is treated
+   * as stuff — so `thingCount: 0` means "things were disabled", not "this room
+   * has no objects". Those are very different, and indistinguishable without
+   * this flag: a path typo silently produced the former once already.
+   */
+  thingLabelsUsed?: boolean
+  /** Basename of the landed per-frame segment JSON, relative to the session dir. */
+  segmentsPath?: string
+  params: {
+    python: string
+    panopticDir: string
+    model: string
+    maxFrames: number
+    minSegmentPixels: number
+  }
+}
+
 /** splat_train.ts's manifest — the Brush CLI driver. */
 export interface SplatTrainManifest extends PipelineManifestBase {
   tool: 'brush'

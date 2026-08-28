@@ -13,19 +13,15 @@
  * Run: npx playwright test --project=chromium-mock mock-xr8-scan
  */
 import { test, expect } from '@playwright/test'
+import { startArScan } from './support/start-scan'
 
 test.describe('XR8 mock scan flow', () => {
   test.setTimeout(90_000)
 
   test('boots the mock engine and accumulates SLAM points', async ({ page }) => {
-    await page.goto('/?mock=xr8')
-    // Enabled, not just visible — the button paints long before main.ts
-    // attaches its click handler, and only enablement signals it is live.
-    await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
-    await page.click('#start-ar-btn')
-
-    // Mock dispatches xrloaded → provider starts → points accumulate
-    await expect(page.locator('#scan-stats')).toHaveText(/\d+ pts/, { timeout: 20_000 })
+    // Mock dispatches xrloaded → provider starts → points accumulate, which is
+    // where startArScan leaves off.
+    await startArScan(page)
     const first = await page.locator('#scan-stats').textContent()
     await page.waitForTimeout(2500)
     const later = await page.locator('#scan-stats').textContent()
@@ -33,10 +29,7 @@ test.describe('XR8 mock scan flow', () => {
   })
 
   test('capture → mock inference → detections land in the store', async ({ page }) => {
-    await page.goto('/?mock=xr8')
-    await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
-    await page.click('#start-ar-btn')
-    await expect(page.locator('#scan-stats')).toHaveText(/\d+ pts/, { timeout: 20_000 })
+    await startArScan(page)
 
     // Give tracking a moment to reach NORMAL, then capture
     await page.waitForTimeout(1500)

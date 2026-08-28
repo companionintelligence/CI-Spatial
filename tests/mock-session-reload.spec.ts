@@ -16,6 +16,7 @@
  * Run: npx playwright test --project=chromium-mock mock-session-reload
  */
 import { test, expect, type Page } from '@playwright/test'
+import { startArScan } from './support/start-scan'
 
 // The database name is load-bearing and deliberately not renameable — see the
 // "Do not rename" table in CLAUDE.md. Reading it here doubles as a check that
@@ -53,10 +54,7 @@ async function bootComplete(page: Page): Promise<void> {
 
 /** Scan until at least one detection has landed in the store. */
 async function scanAndCapture(page: Page): Promise<void> {
-  await page.goto('/?mock=xr8')
-  await bootComplete(page)
-  await page.click('#start-ar-btn')
-  await expect(page.locator('#scan-stats')).toHaveText(/\d+ pts/, { timeout: 30_000 })
+  await startArScan(page)
   await page.waitForTimeout(1_500)   // let tracking reach NORMAL before capturing
   await page.click('#capture-btn')
 

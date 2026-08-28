@@ -28,6 +28,7 @@
  * Run: npx playwright test --project=chromium-mock mock-status-line
  */
 import { test, expect } from '@playwright/test'
+import { startArScan } from './support/start-scan'
 
 // Two scanner ticks plus headroom — long enough that a per-tick writer would
 // certainly have clobbered anything we put in the status line.
@@ -50,20 +51,9 @@ test.describe('HUD status line during a scan', () => {
   test.setTimeout(90_000)
 
   async function startScanning(page: import('@playwright/test').Page) {
-    await page.goto('/?mock=xr8')
-    await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
-    await page.click('#start-ar-btn')
-    // Start AR opens place selection first — "Every new capture starts by
-    // confirming its place" (src/main.ts). Nothing here is about places, and a
-    // fresh profile has none, so take the skip the sheet itself offers. Without
-    // this the session never begins and every assertion below times out on an
-    // empty HUD.
-    const skip = page.locator('#place-skip-btn')
-    await expect(skip).toBeVisible({ timeout: 30_000 })
-    await skip.click()
-    // Points accumulating means the scanner tick is running, which is the
-    // thing under test.
-    await expect(page.locator('#scan-stats')).toHaveText(/\d+ pts/, { timeout: 30_000 })
+    // Points accumulating (startArScan's default wait) means the scanner tick
+    // is running, which is the thing under test.
+    await startArScan(page)
   }
 
   test('quality guidance goes to its own line, not the status line', async ({ page }) => {

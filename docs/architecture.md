@@ -363,7 +363,7 @@ Places/projects carry role-scoped membership (`MemberRole`: `owner | editor | co
 
 ### World Job Types & Processing (`/worlds/:slug/jobs`)
 
-The `/worlds/:slug/jobs` queue runs **asynchronous** world jobs (`WorldJobType`, status `queued | processing | completed | failed`) — this is the real job queue; `GET /jobs` is only the legacy `optimize-scan` compatibility shim described in the route table above. World jobs are distinct from the synchronous `/process-scan` actions (`object-count`, `scene-description`, `floor-plan`). Thirteen job types:
+The `/worlds/:slug/jobs` queue runs **asynchronous** world jobs (`WorldJobType`, status `queued | processing | completed | failed`) — this is the real job queue; `GET /jobs` is only the legacy `optimize-scan` compatibility shim described in the route table above. World jobs are distinct from the synchronous `/process-scan` actions (`object-count`, `scene-description`, `floor-plan`). Nineteen job types — the `WorldJobType` union in [`src/world/types.ts`](../src/world/types.ts), mirrored by `WORLD_JOB_TYPES` in `server/main.ts` (the set that validates `POST /worlds/:slug/jobs`):
 
 | Job type | Worker / method | Produces |
 |---|---|---|
@@ -373,15 +373,23 @@ The `/worlds/:slug/jobs` queue runs **asynchronous** world jobs (`WorldJobType`,
 | `merge-points` | multi-scan point fusion | merged point cloud |
 | `semantic-pass` | VLM re-pass over frames | detection/label layers |
 | `depth-reconstruct` | monocular depth | depth layer |
+| `thing-correspondence` | `runThingCorrespondence` over the world's detections (in-process, no external tool) | `world.things` + `world.thingObservations`, plus a `thing-correspondence-summary` artifact |
 | `lingbot-map-reconstruct` | LingBot-Map (Python, `LINGBOT_MAP_PYTHON` / `LINGBOT_MAP_MODEL_PATH`) | `*.point-cloud.ply` + `*.poses.json` + manifest |
-| `pipelines/splat-train` | **Brush** (wgpu/AMD, GPU-pinned) 3D Gaussian Splatting | `*.splat.ply` |
+| `colmap-poses` | COLMAP (`COLMAP_BIN`) — the CPU counterpart to `lingbot-map-reconstruct`, writing the same two artifacts so `buildBrushDataset` consumes either through one path | session `poses.json` + sparse seed cloud + `colmap-poses.manifest.json` |
+| `splat-train` | **Brush** (wgpu/AMD, GPU-pinned) 3D Gaussian Splatting | `*.splat.ply` |
+| `splat-align` | Umeyama similarity fit from the scan's two-point ground calibration | `*.splat-align.manifest.json` (transform / metric scale / fit residual) |
 | `splat-detect` | **OWLv2** open-vocabulary detection over the splat | `*.interactions.json` (3D boxes) |
 | `splat-finish` | **@playcanvas/splat-transform** web-delivery compression | `*.sog` + `*.compressed.ply` |
+| `person-4d-reconstruct` | delegates off-box to `subsystems/4d-capture/` (`FDANYONE_HOST`); the only runner that does not compute locally — see [ADR 0006](adr/0006-person-capture-is-a-calibrated-take-and-densification-is-a-subsystem.md) and [`pipelines/4d-person.md`](pipelines/4d-person.md) | `<base>.4d/` per-timestep splat sequence + `*.4d-capture.manifest.json` |
+| `sensenova-vision` | optional SenseNova-Vision worker (`SENSENOVA_DIR` / `SENSENOVA_MODEL_PATH`, run through WSL on Windows) | task-dependent files under `<SCANS_DIR>/.sensenova/<jobId>/`, indexed by a `sensenova-output` artifact |
+| `panoptic-scan` | optional GPU panoptic segmenter (`PANOPTIC_PYTHON` / `PANOPTIC_DIR`) — see [`pipelines/panoptic-scan.md`](pipelines/panoptic-scan.md) | per-keyframe segments, split into `thingCount` objects and `stuffCount` room surfaces |
 | `memory-push` | CI-Server `/v1/events` push (`server/memory_push.ts`) | a `capture.scan` memory event with the GLB attached |
 | `export-world` | world composition | combined GLB + semantic JSON |
 | `optimize-scan` | `server/pipeline.ts` (quantize / Draco / point-cloud LODs) | `*.opt.glb` + `*.lodN.glb` + `*.manifest.json` |
 
-The editor's Queue-Job dropdown exposes ten of these. The other three are reached differently: `splat-detect` is fired from the Splat Toolbox section, `optimize-scan` is queued automatically on every upload (never manually — and filtered out of the Processing Queue panel; see [`product/UX_FLOW.md`](product/UX_FLOW.md) § Phase 3), and `memory-push` has no UI entry point at all, only the generic `POST /worlds/:slug/jobs` API. Many runners emit a **plan/placeholder** artifact and report a "hint" when the real worker (Brush, LingBot-Map Python, Open3D) is not wired via env vars — the planned-vs-real distinction is intentional so the queue works end-to-end in CI.
+Seven of these — `ingest`, `extract-layers`, `align-scan`, `merge-points`, `semantic-pass`, `depth-reconstruct`, `export-world` — have no dedicated runner and complete through the pump's shared placeholder path (ADR 0003 "Placeholder WorldJobTypes"). Of the twelve that do, several emit a **plan/placeholder** artifact and report a "hint" when the real worker (Brush, COLMAP, LingBot-Map Python, SenseNova, the panoptic segmenter, the 4d-capture host) is not wired via env vars — an absent optional tool is a *completed* job carrying a remediation, never a failure, so the queue works end-to-end in CI and on a box with no GPU.
+
+The editor's Queue-Job dropdown exposes thirteen of them (`viewer.html` § `#job-type`); the Splat Toolbox additionally fires `splat-train` and `splat-detect` with its own payload. The other six are reached differently: `optimize-scan` is queued automatically on every upload (never manually — and filtered out of the Processing Queue panel; see [`product/UX_FLOW.md`](product/UX_FLOW.md) § Phase 3), and `colmap-poses`, `splat-align`, `panoptic-scan`, `person-4d-reconstruct` and `memory-push` have no UI entry point at all, only the generic `POST /worlds/:slug/jobs` API.
 
 ### Scan Optimization Pipeline (`server/pipeline.ts`, dispatched as a WorldJob)
 

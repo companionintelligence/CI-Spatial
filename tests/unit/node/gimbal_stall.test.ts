@@ -19,6 +19,7 @@ import {
   createStallGuard,
   createWedgeGuard,
   STUCK_POSITIONS_LIMIT,
+  NO_PROGRESS_DEG,
 } from '../../../subsystems/osmo-ble/protocol/stall.mjs'
 
 const s = (pan: number, tilt = 0) => ({ pan, tilt })
@@ -205,4 +206,85 @@ test('wedge: a pose repeat across the ±180 seam still counts as stuck', () => {
   const verdicts = [179.9, -179.9, 179.95].map((pan) =>
     w.observe({ converged: false, stalled: false, finalYaw: pan, finalPitch: 0 }))
   assert.equal(verdicts[2], true, 'wrap-around must not read as a 360° leap')
+})
+
+/**
+ * Pan driven into its mechanical limit, verbatim from a `gimbal_move_to` on an
+ * OM6 on 2026-08-28 (target yaw -120). Pairs are [pan, |yawErr| + |pitchErr|].
+ *
+ * The shape is what makes it interesting: mostly flat at -145.8, with two 3.9°
+ * excursions where the motor shoves against the stop and the stop springs it
+ * straight back. The error never leaves 28.1 ± 0.1.
+ */
+const LIMIT_SPRING_BACK: Array<[number, number]> = [
+  [-146.398, 28.673], [-150.024, 32.295], [-145.751, 28.023], [-145.728, 28.020],
+  [-145.735, 28.050], [-145.766, 28.111], [-145.781, 28.129], [-145.788, 28.146],
+  [-145.761, 28.112], [-149.695, 32.035], [-145.833, 28.170], [-145.806, 28.149],
+  [-145.823, 28.162],
+]
+
+/** A healthy move from the same session — a recenter that closed 31° in 7.8s. */
+const CONVERGING: Array<[number, number]> = [
+  [-159.45, 182.86], [-168.32, 188.26], [-159.98, 176.96], [-152.86, 167.27],
+  [-151.92, 164.14], [-150.23, 160.51], [-149.99, 158.32], [-148.52, 154.81],
+  [-147.48, 151.85],
+]
+
+const replay = (samples: Array<[number, number]>) => {
+  const g = createStallGuard()
+  const verdicts = samples.map(([pan, err]) => g.observe({ pan, tilt: -2.3 }, err))
+  return { guard: g, verdicts }
+}
+
+test('a spring-loaded limit is not caught by tick counting alone', () => {
+  // Documents WHY netProgressDeg exists rather than a bigger STALL_TICKS_LIMIT.
+  // The verdict machine needs 12 ticks (flip, then condemn); the two spring-back
+  // excursions reset the count, so 13 real ticks still only reach 'flip-sign'.
+  const { verdicts } = replay(LIMIT_SPRING_BACK)
+  assert.ok(verdicts.includes('flip-sign'), 'the flat stretch must at least trip a sign flip')
+  assert.ok(!verdicts.includes('jammed'), 'tick counting alone does not reach jammed here')
+})
+
+test('a move that closed no distance is jammed, however its ticks counted', () => {
+  const { guard } = replay(LIMIT_SPRING_BACK)
+  assert.ok(guard.netProgressDeg < NO_PROGRESS_DEG,
+    `expected < ${NO_PROGRESS_DEG}°, got ${guard.netProgressDeg.toFixed(2)}°`)
+})
+
+test('a slow but genuinely converging move is never called jammed', () => {
+  // The regression that matters in the other direction: this one also times out
+  // without converging, and must still read as "give it longer", not "jammed".
+  const { guard, verdicts } = replay(CONVERGING)
+  assert.ok(guard.netProgressDeg > NO_PROGRESS_DEG,
+    `expected > ${NO_PROGRESS_DEG}°, got ${guard.netProgressDeg.toFixed(2)}°`)
+  assert.ok(!verdicts.includes('jammed'))
+})
+
+test('the two populations are far apart, so the threshold needs no tuning', () => {
+  const jammed = replay(LIMIT_SPRING_BACK).guard.netProgressDeg
+  const healthy = replay(CONVERGING).guard.netProgressDeg
+  assert.ok(healthy > jammed * 20,
+    `expected a wide margin, got jammed ${jammed.toFixed(2)}° vs healthy ${healthy.toFixed(2)}°`)
+})
+
+test('progress folding ignores displacement that goes nowhere', () => {
+  // Same pose every tick, but oscillating well above STALL_EPSILON_DEG — the
+  // exact pattern a mechanical stop produces, and the one movedDeg() reads as
+  // healthy motion.
+  const g = createStallGuard()
+  const verdicts = []
+  for (let i = 0; i < 20; i++) {
+    verdicts.push(g.observe({ pan: i % 2 ? 100 : 104, tilt: 0 }, i % 2 ? 40 : 44))
+  }
+  // movedDeg() reads 4° of travel on every one of those ticks — 76° over the
+  // run. netProgressDeg is first-minus-best, so the whole run only ever credits
+  // the single 44° → 40° excursion: it is bounded by the oscillation, not by
+  // how long the gimbal sits in it.
+  assert.equal(g.netProgressDeg, 4)
+  const longer = createStallGuard()
+  for (let i = 0; i < 40; i++) {
+    longer.observe({ pan: i % 2 ? 100 : 104, tilt: 0 }, i % 2 ? 40 : 44)
+  }
+  assert.equal(longer.netProgressDeg, 4, 'twice the ticks close no further distance')
+  assert.ok(verdicts.includes('jammed'), 'and the oscillation still condemns the move')
 })

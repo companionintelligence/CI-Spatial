@@ -18,6 +18,7 @@
  */
 import { test, expect, type Page } from '@playwright/test'
 import { QUEUED_OFFLINE_HEADER } from '../src/shared/offline-queue'
+import { startArScan } from './support/start-scan'
 
 test.use({
   // No service worker for this spec. Since the cert flag landed (#95) the
@@ -43,13 +44,9 @@ test.use({
  * itself the cancel path — so callers say which one they want.
  */
 async function scanThenOpenPanel(page: Page, confirmLowQuality = true): Promise<void> {
-  page.on('dialog', (dialog) => {
-    void (confirmLowQuality ? dialog.accept() : dialog.dismiss()).catch(() => {})
-  })
-  await page.goto('/?mock=xr8')
-  await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
-  await page.click('#start-ar-btn')
-  await expect(page.locator('#scan-stats')).toHaveText(/\d+ pts/, { timeout: 30_000 })
+  // The handler has to be registered before the navigation, so it is passed in
+  // rather than attached here.
+  await startArScan(page, { confirmLowQuality })
   await page.waitForTimeout(1_200)
   await page.click('#capture-btn')
   await expect

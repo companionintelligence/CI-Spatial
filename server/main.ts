@@ -87,6 +87,7 @@ import { runSplatTrain } from './splat/splat_train.ts'
 import { runSplatDetect } from './splat/splat_detect.ts'
 import { runSplatFinish } from './splat/splat_finish.ts'
 import { runSenseNovaVision, senseNovaTask } from './sensenova_vision.ts'
+import { runPanopticScan } from './panoptic/panoptic_scan.ts'
 import { configFromEnv as portalAuthConfig, registerPortalAuth } from './portal_auth.ts'
 import {
   configFromEnv as memoryPushConfig,
@@ -1618,12 +1619,13 @@ const WORLD_JOB_TYPES = new Set<WorldJobType>([
   'splat-detect',
   'splat-finish',
   'sensenova-vision',
+  'panoptic-scan',
   'person-4d-reconstruct',
   'memory-push',
   'export-world',
 ])
 
-const DEFAULT_WORKER_CAPABILITIES = ['cpu', 'onnx', 'ollama', 'open3d', 'splat', 'vggt', 'lingbot-map', 'sensenova-vision', '4d-capture']
+const DEFAULT_WORKER_CAPABILITIES = ['cpu', 'onnx', 'ollama', 'open3d', 'splat', 'vggt', 'lingbot-map', 'sensenova-vision', 'panoptic', '4d-capture']
 
 interface StoredScanInfo {
   filename: string
@@ -1782,7 +1784,16 @@ async function listStoredScans(): Promise<StoredScanInfo[]> {
   for (let i = 0; i < names.length; i += SCAN_LIST_CONCURRENCY) {
     const batch = await Promise.all(
       names.slice(i, i + SCAN_LIST_CONCURRENCY).map(async (filename) => {
-        const stat = await Deno.stat(`${SCANS_DIR}/${filename}`)
+        // A scan deleted between readDir and stat is simply gone from the
+        // listing — it is not a reason to fail the whole call, and callers
+        // like `readWorldUnlocked` treat a throw here as a world-load error.
+        let stat: Deno.FileInfo
+        try {
+          stat = await Deno.stat(`${SCANS_DIR}/${filename}`)
+        } catch (err) {
+          if (err instanceof Deno.errors.NotFound) return null
+          throw err
+        }
         return {
           filename,
           size: stat.size,
@@ -1793,7 +1804,7 @@ async function listStoredScans(): Promise<StoredScanInfo[]> {
     )
     // Batches are appended in order, so `scans` keeps Deno.readDir order and the
     // stable sort below breaks uploadedAt ties exactly as it did before.
-    scans.push(...batch)
+    scans.push(...batch.filter((scan): scan is StoredScanInfo => scan !== null))
   }
 
   scans.sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt))
@@ -2091,7 +2102,14 @@ async function readWorldUnlocked(slug: string): Promise<WorldProject> {
     ensureWorldProjectCollections(world)
     await refreshWorldScans(world)
     return world
-  } catch {
+  } catch (err) {
+    // Only "there is no world file yet" may synthesize. A bare catch also
+    // swallowed transient I/O errors from `refreshWorldScans` (which touches
+    // disk on every read), and since `updateWorld` writes whatever this
+    // returns back over the real file, one such error permanently replaced
+    // every thing, observation and comment with synthesizeWorld's empty
+    // collections. Anything else rethrows and surfaces as a 500.
+    if (!(err instanceof Deno.errors.NotFound)) throw err
     return synthesizeWorld(safe)
   }
 }
@@ -2118,7 +2136,10 @@ function loadProjectWorld(projectId: string): Promise<WorldProject> {
       if (world.projectId !== projectId) return await synthesizeWorld(slug, projectId)
       await refreshWorldScans(world)
       return world
-    } catch {
+    } catch (err) {
+      // Same narrowing as `readWorldUnlocked`, for the same reason: only a
+      // missing file may synthesize over a project's stored world.
+      if (!(err instanceof Deno.errors.NotFound)) throw err
       return synthesizeWorld(slug, projectId)
     }
   })
@@ -2293,10 +2314,9 @@ const lastScanIdCollisionLogged = new Map<string, string>()
  * id (`a.b.glb` and `a-b.glb` both become `scan-a-b`). `migrate_scan_ids.ts`
  * refuses to run over a world with this collision; it throws, which is the
  * right call for a one-shot, human-attended script. It is NOT the right call
- * here: `refreshWorldScans` runs inside `readWorldUnlocked`'s try/catch,
- * which treats ANY thrown error as "no world file" and silently replaces the
- * response with a freshly synthesized empty world — throwing here would make
- * the failure mode worse, not better.
+ * here: `refreshWorldScans` runs inside `readWorldUnlocked`, so throwing
+ * would turn a lossy id into a 500 on every read of that world — the failure
+ * mode would be worse, not better.
  *
  * So this only warns, throttled per-slug so it doesn't repeat on every GET.
  * It does not attempt to resolve the collision (there is no safe automatic
@@ -2690,6 +2710,11 @@ async function _dispatchWorldJob(slug: string, jobId: string): Promise<void> {
 
     if (job.type === 'sensenova-vision') {
       await _runSenseNovaVisionJob(slug, jobId)
+      return
+    }
+
+    if (job.type === 'panoptic-scan') {
+      await _runPanopticScanJob(slug, jobId)
       return
     }
 
@@ -3197,6 +3222,68 @@ async function _runSenseNovaVisionJob(slug: string, jobId: string): Promise<void
  *    a remediation string, matching BRUSH_BIN and LINGBOT_MAP_* — the appliance
  *    must not break because no GPU host is attached.
  */
+/**
+ * Panoptic segmentation over a session's streamed keyframes.
+ *
+ * Shaped like _runSenseNovaVisionJob: an optional GPU tool whose absence is a
+ * COMPLETED job carrying a remediation, not a failure — the appliance keeps
+ * working and the UI can tell the operator what to install. The `thingCount` /
+ * `stuffCount` split is surfaced in the artifact because they are handled
+ * differently downstream (see server/panoptic/panoptic_segments.ts).
+ */
+async function _runPanopticScanJob(slug: string, jobId: string): Promise<void> {
+  try {
+    const start = await claimSessionJob(slug, jobId)
+    if (!start) return
+    const { scan, sessionPath, payload } = start
+    const result = await runPanopticScan({
+      sessionDir: sessionPath,
+      model: asString(payload?.['model']) ?? undefined,
+      maxFrames: typeof payload?.['maxFrames'] === 'number' ? payload['maxFrames'] as number : undefined,
+      sessionId: scan.sessionId ?? undefined,
+      scanId: scan.scanId ?? undefined,
+    })
+
+    await commitWorldJob(slug, jobId, (currentJob, current) => {
+      currentJob.progress = 1
+      if (result.status === 'ok') {
+        currentJob.status = 'completed'
+        currentJob.result =
+          `Panoptic scan segmented ${result.framesSegmented ?? 0} frame(s): ` +
+          `${result.thingCount ?? 0} object segment(s), ${result.stuffCount ?? 0} surface segment(s).`
+        currentJob.artifacts = [{
+          type: 'panoptic-output',
+          label: `${scan.name} panoptic segments`,
+          metadata: {
+            model: result.model ?? null,
+            framesSegmented: result.framesSegmented ?? 0,
+            thingCount: result.thingCount ?? 0,
+            stuffCount: result.stuffCount ?? 0,
+            segmentsPath: result.segmentsPath ?? null,
+          },
+        }]
+        applyCompletedJobToWorld(currentJob, current)
+      } else if (result.status === 'skipped') {
+        currentJob.status = 'completed'
+        currentJob.result = `Panoptic scan skipped: ${result.remediation ?? result.skippedReason ?? 'runtime unavailable'}`
+        currentJob.artifacts = [{
+          type: 'panoptic-skip',
+          label: 'Panoptic runtime setup required',
+          metadata: { remediation: result.remediation ?? null, reason: result.skippedReason ?? null },
+        }]
+      } else {
+        currentJob.status = 'failed'
+        currentJob.error = result.error ?? 'panoptic worker failed'
+        currentJob.result = currentJob.error
+      }
+      currentJob.updatedAt = new Date().toISOString()
+    })
+  } catch (error) {
+    console.error('[panoptic] job failed:', error)
+    await failWorldJob(slug, jobId, errorMessage(error))
+  }
+}
+
 async function _runPerson4DJob(slug: string, jobId: string): Promise<void> {
   try {
     const start = await claimJobScan(slug, jobId)
@@ -3955,6 +4042,9 @@ function applyCompletedJobToWorld(job: WorldJob, world: WorldProject): void {
   else if (job.type === 'sensenova-vision') {
     scan.status = scan.qualitySummary?.status ?? 'ready'
   }
+  else if (job.type === 'panoptic-scan') {
+    scan.status = scan.qualitySummary?.status ?? 'ready'
+  }
   else if (job.type === 'person-4d-reconstruct') {
     scan.status = scan.qualitySummary?.status ?? 'ready'
   }
@@ -3990,6 +4080,8 @@ function jobResultFor(job: WorldJob): string {
       return 'Splat finished with splat-transform. The web-optimized .sog and .compressed.ply sidecars are ready for delivery.'
     case 'sensenova-vision':
       return 'SenseNova-Vision processed the scan keyframes and wrote task-specific visual geometry artifacts.'
+    case 'panoptic-scan':
+      return 'Panoptic segmentation labelled every pixel of the scan keyframes, separating discrete objects from room surfaces.'
     case 'person-4d-reconstruct':
       return 'Person reconstructed in 4D. The .4d/ sequence is available as a splat4d layer on the scan.'
     case 'memory-push':
@@ -5021,11 +5113,29 @@ async function rewriteProjectReferences(sourceProjectId: string, targetProjectId
 
 console.log(`[server] CORS origin prefix: ${ALLOWED_ORIGIN_PREFIX}`)
 
+/**
+ * WebSocket upgrades bypass CORS entirely — the browser sends the request and
+ * hands the socket to the page without a preflight — so without this any page
+ * on the internet could open /events or /rtc-signal against the user's machine
+ * and watch them scan. Same allowlist as the CORS middleware, deliberately:
+ * a non-browser client (no Origin header at all) keeps working as before.
+ */
+function rejectDisallowedWsOrigin(
+  c: { req: { header: (name: string) => string | undefined } },
+): Response | null {
+  const origin = c.req.header('origin')
+  if (!origin || isAllowedOrigin(origin)) return null
+  console.warn(`[server] WebSocket upgrade rejected for origin: ${origin}`)
+  return new Response('Forbidden origin', { status: 403 })
+}
+
 // ── Server event stream — /events ─────────────────────────────────────────────
 // Broadcast-only WebSocket: scan uploads, job transitions, session lifecycle.
 // The desktop viewer subscribes to refresh its scan list live.
 
 app.get('/events', (c) => {
+  const rejected = rejectDisallowedWsOrigin(c)
+  if (rejected) return rejected
   const { socket, response } = Deno.upgradeWebSocket(c.req.raw)
   socket.addEventListener('open', () => {
     eventSockets.add(socket)
@@ -5074,6 +5184,8 @@ app.get('/events', (c) => {
 const rtcRooms = new Map<string, RtcRoom>()
 
 app.get('/rtc-signal', (c) => {
+  const rejected = rejectDisallowedWsOrigin(c)
+  if (rejected) return rejected
   const url = new URL(c.req.url)
   const roleParam = url.searchParams.get('role')
   const role: RtcRole = roleParam === 'phone' ? 'phone' : roleParam === 'capture' ? 'capture' : 'viewer'

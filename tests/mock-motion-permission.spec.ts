@@ -17,6 +17,7 @@
  * Run: npx playwright test --project=chromium-mock mock-motion-permission
  */
 import { test, expect, type Page } from '@playwright/test'
+import { startArScan } from './support/start-scan'
 
 test.use({
   viewport: { width: 393, height: 852 },
@@ -39,9 +40,9 @@ async function stubPermissionApi(page: Page, outcome: 'granted' | 'denied' | 're
 }
 
 async function startAR(page: Page): Promise<void> {
-  await page.goto('/?mock=xr8')
-  await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
-  await page.click('#start-ar-btn')
+  // waitForPoints: false — the whole point of these cases is that AR may never
+  // reach a scan, so #scan-stats is not the signal to wait on. The banner is.
+  await startArScan(page, { waitForPoints: false })
 }
 
 test.describe('motion permission', () => {

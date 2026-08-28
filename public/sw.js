@@ -75,6 +75,19 @@ const MAX_QUEUE_AGE_MS = 24 * 60 * 60 * 1000
 /** Replay attempts before a request is given up on and dropped. */
 const MAX_FLUSH_ATTEMPTS = 5
 
+/**
+ * Statuses below 500 a later replay could still answer differently, so the
+ * queued body is kept and the failure counted as an attempt.
+ *
+ * The flush used to delete on any status under 500, which meant an expired
+ * world token (401), a token the client re-mints on its next load (403), a
+ * request timeout (408) or a rate limit (429) permanently destroyed a scan the
+ * user had been told was saved and would sync. Everything else under 500 is a
+ * genuine rejection — replaying the same bytes gets the same answer — including
+ * 413, which no retry can shrink.
+ */
+const RETRIABLE_FLUSH_STATUSES = [401, 403, 408, 429]
+
 const QUEUEABLE_WRITE_PREFIXES = [
   '/upload-scan',
   '/sessions',
@@ -303,11 +316,26 @@ async function runQueueFlush() {
         headers: new Headers(item.headers),
         body: item.body,
       })
-      if (response.ok || response.status < 500) {
+      if (response.ok) {
         await idbDelete(db, item.id)
-        await notifyClients({ type: 'offline-flushed', queueId: item.id, ok: response.ok, status: response.status })
-      } else {
+        await notifyClients({ type: 'offline-flushed', queueId: item.id, ok: true, status: response.status })
+      } else if (response.status >= 500 || RETRIABLE_FLUSH_STATUSES.includes(response.status)) {
         await recordFailedAttempt(db, item, `${response.status}`)
+      } else {
+        // Permanent, so the body does go — but under its own message type.
+        // 'offline-flushed' reads as a delivered upload everywhere it lands, so
+        // reporting a dropped body through it is indistinguishable from success;
+        // this notice is the only sign the user gets that the scan is gone.
+        await idbDelete(db, item.id)
+        await notifyClients({
+          type: 'offline-rejected',
+          queueId: item.id,
+          url: item.url,
+          status: response.status,
+          message: response.status === 413
+            ? 'A queued upload was too large for the server and could not be saved.'
+            : `The server rejected a queued upload (${response.status}) — it could not be saved.`,
+        })
       }
     } catch (error) {
       await recordFailedAttempt(db, item, error instanceof Error ? error.message : String(error))

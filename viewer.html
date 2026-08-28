@@ -2209,6 +2209,7 @@
           <summary>Views</summary>
           <div class="view-menu-panel">
             <span class="view-menu-heading">Scene visibility</span>
+            <label class="view-mode-row" title="Show only matching objects. Comma or space separated; prefix a term with - to hide it, e.g. -wall -floor"><span>Filter objects</span><input class="ci-input" id="view-filter-objects" type="search" placeholder="chair, desk  ·  -wall" aria-label="Filter objects by label" /></label>
             <label class="view-mode-row"><span>Render mode</span><select class="ci-select" id="view-mode-select" aria-label="View type"><option value="solid">Solid</option><option value="points">Points</option><option value="wireframe">Wireframe</option><option value="semantic">Semantic</option></select></label>
             <label class="view-toggle"><span>GIS map</span><input id="view-toggle-map" type="checkbox" /></label>
             <label class="view-toggle"><span>Hit points</span><input id="view-toggle-points" type="checkbox" checked /></label>
@@ -2415,7 +2416,7 @@
                 <summary><span><span class="layer-tool-name">LingBot-Map</span><span class="layer-tool-hint">View a streamed reconstruction and camera path.</span></span></summary>
                 <div class="layer-tool-body">
                 <div id="lingbot-map-status" class="layer-meta" style="margin:12px 0 6px;">
-                  Run the <code>lingbot-map-reconstruct</code> job to densify the selected scan.
+                  Select a scan to see the dense points and camera path reconstructed from the keyframes it streamed.
                 </div>
                 <label class="layer-row" style="display:flex;align-items:center;gap:8px;">
                   <input type="checkbox" id="lingbot-map-points-toggle" />
@@ -2455,7 +2456,7 @@
                 <summary><span><span class="layer-tool-name">Splat tools</span><span class="layer-tool-hint">Train, inspect, and detect objects in Gaussian splats.</span></span></summary>
                 <div class="layer-tool-body">
                 <div id="splat-layer-status" class="layer-meta" style="margin:12px 0 6px;">
-                  Run the <code>splat-train</code> job to train a Gaussian splat for the selected scan.
+                  Select a scan to see its photoreal splat, or build one with “Train splat” below.
                 </div>
                 <div id="splat-layer-stats" class="layer-meta" style="margin-bottom:8px;"></div>
 

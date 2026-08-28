@@ -49,6 +49,13 @@ export type WorldJobType =
    */
   | 'person-4d-reconstruct'
   | 'sensenova-vision'
+  /**
+   * Per-keyframe panoptic segmentation: every pixel labelled, yielding both
+   * discrete objects and room surfaces. Optional GPU tool — absent runtime
+   * completes with a remediation rather than failing (see
+   * docs/pipelines/panoptic-scan.md).
+   */
+  | 'panoptic-scan'
   | 'memory-push'
   | 'export-world'
   | 'optimize-scan'
@@ -663,6 +670,7 @@ export type {
   SplatAlignManifest,
   SplatTrainManifest,
   SplatDetectManifest,
+  PanopticScanManifest,
   SplatFinishManifest,
   SplatFinishSizes,
 } from './manifests.ts'

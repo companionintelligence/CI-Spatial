@@ -20,16 +20,14 @@
  * Run: npx playwright test --project=chromium-mock mock-pin-edit
  */
 import { test, expect } from '@playwright/test'
+import { startArScan } from './support/start-scan'
 
 const EDIT_BTN = 'button[title="Edit label & description"]'
 
 /** Drive the XR8 mock until at least one detection card exists in the panel. */
 async function scanUntilDetection(page: import('@playwright/test').Page) {
   // ?mock=xr8 alone skips the onboarding overlay, so the scan flow is not gated.
-  await page.goto('/?mock=xr8')
-  await expect(page.locator('#start-ar-btn')).toBeVisible({ timeout: 20_000 })
-  await page.click('#start-ar-btn')
-  await expect(page.locator('#scan-stats')).toHaveText(/\d+ pts/, { timeout: 30_000 })
+  await startArScan(page)
   await page.waitForTimeout(1500)
 
   // Capture until the store has at least one object (the mock feed is deterministic,

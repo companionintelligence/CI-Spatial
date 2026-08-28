@@ -1,34 +1,16 @@
 {
   "note": "Tests already failing when the loop was introduced. The loop gates on CHANGE, not on this list being empty. Shrink it; never grow it without saying why.",
-  "updatedAt": "2026-08-26",
+  "updatedAt": "2026-08-28",
+  "lastReview": "28 → 9. Twenty entries were never bugs: since PR #205 a Scan tap opens the Place picker before AR, and the specs that had not learned to click #place-skip-btn stalled on an empty #scan-stats before reaching any real assertion. They share tests/support/start-scan.ts now and were re-run green. Every entry below was re-run after that fix and still fails on its own merits. One entry is new — mock-ui-desktop '07 render modes' — confirmed failing on two separate runs with 'Scan GLB has no scene graph'; '04 Layers tab', which it replaces, now passes.",
   "knownFailures": [
     "mock-editor-homes.spec.ts › editor with test-home data › picking a semantic object resolves to the LOD, and TransformControls attaches to it",
-    "mock-export-outcome.spec.ts › export outcome reporting › a queued-offline upload reads as queued, not failed",
-    "mock-export-outcome.spec.ts › export outcome reporting › a real upload still reports success and reveals the editor link",
-    "mock-export-outcome.spec.ts › export outcome reporting › a server rejection does not read as success",
-    "mock-export-outcome.spec.ts › export outcome reporting › backing out of the low-quality confirm reads as cancelled, not exported",
-    "mock-motion-permission.spec.ts › motion permission › a denial the user taps is surfaced, not swallowed",
-    "mock-motion-permission.spec.ts › motion permission › a platform without the API shows no banner",
-    "mock-motion-permission.spec.ts › motion permission › a rejected request is surfaced too",
-    "mock-motion-permission.spec.ts › motion permission › granting shows no banner",
-    "mock-pin-edit.spec.ts › pin edit round-trip › a label containing a double quote survives edit → save → reopen",
     "mock-rtc-robustness.spec.ts › live-feed robustness › a dropped signal socket backs off instead of hammering",
     "mock-rtc-robustness.spec.ts › live-feed robustness › a malformed relay frame does not break the viewer",
     "mock-rtc-robustness.spec.ts › live-feed robustness › an overlapping viewer does not strand the previous peer connection",
     "mock-rtc-room.spec.ts › live-feed room rendezvous › a different room does not see that phone",
     "mock-rtc-room.spec.ts › live-feed room rendezvous › the editor shows the room it is actually using",
     "mock-rtc-room.spec.ts › live-feed room rendezvous › the phone joins the room named by ?world=, not \"default\"",
-    "mock-session-reload.spec.ts › clearing a session does not resurrect an older scan on reload",
-    "mock-session-reload.spec.ts › scan persistence across a reload › a reload continues the session rather than forking it",
-    "mock-session-reload.spec.ts › scan persistence across a reload › detections come back after a reload",
     "mock-splat-toolbox.spec.ts › Web scanner walkthrough-video upload › start screen shows the upload control and POSTs to /ingest-video",
-    "mock-status-line.spec.ts › HUD status line during a scan › a transient status message survives the scanner tick",
-    "mock-status-line.spec.ts › HUD status line during a scan › quality guidance goes to its own line, not the status line",
-    "mock-status-line.spec.ts › HUD status line during a scan › the guidance line is not rewritten on every tick",
-    "mock-two-point-calibration.spec.ts › two-point calibration › a return visit shows each stage its own photo, and draws the stored pair once the separation matches",
-    "mock-ui-desktop.spec.ts › desktop editor flow screenshots › 04 Layers tab",
-    "mock-ui-mobile.spec.ts › mobile scanner flow screenshots › 05 live scanning HUD (tracking)",
-    "mock-xr8-scan.spec.ts › XR8 mock scan flow › boots the mock engine and accumulates SLAM points",
-    "mock-xr8-scan.spec.ts › XR8 mock scan flow › capture → mock inference → detections land in the store"
+    "mock-ui-desktop.spec.ts › desktop editor flow screenshots › 07 render modes (points, semantic)"
   ]
 }
