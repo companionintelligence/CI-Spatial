@@ -14,16 +14,34 @@
  *   curl http://localhost:9222/json                    # find tab WS URL
  *   node scripts/iwdp-console.mjs ws://localhost:9222/devtools/page/2
  */
+import fs from 'node:fs'
 import { defineConfig, devices } from '@playwright/test'
 
 // Same variable name/default as main.ts and vite.config.ts (see docs/foundation-updates/0002
 // for the hostname precedent this follows). Only this default-URL construction reads it —
 // individual specs derive their target from VITE_URL when set (the established override).
 const VITE_PORT = process.env['VITE_PORT'] ?? '5173'
-const BASE_URL = process.env['VITE_URL']
-  ?? (process.env['TAILSCALE_HOSTNAME']
-    ? `https://${process.env['TAILSCALE_HOSTNAME']}:${VITE_PORT}`
-    : `https://liambook.capybara-ulmer.ts.net:${VITE_PORT}`)
+
+// Mirrors vite.config.ts's resolveHostname() — env, then a cert file in the repo
+// root, then the historical default. It has to: the URL this config hands the
+// browser must be the one Vite is actually serving, and a hostname hardcoded to
+// one developer's machine resolves nowhere else, so page.goto() fails with
+// ERR_SSL_PROTOCOL_ERROR before a single assertion runs. The `tailscale status`
+// probe vite.config.ts does between those two steps is deliberately not copied:
+// this file is imported for every `playwright test` invocation, including
+// --list, and a 3s subprocess timeout per run is not worth it when the cert
+// file it would agree with is sitting right there.
+function resolveHostname(): string {
+  const fromEnv = process.env['TAILSCALE_HOSTNAME'] ?? process.env['VITE_HOSTNAME']
+  if (fromEnv) return fromEnv
+  try {
+    const crt = fs.readdirSync(process.cwd()).find((f) => f.endsWith('.ts.net.crt'))
+    if (crt) return crt.replace(/\.crt$/, '')
+  } catch { /* unreadable cwd — fall through */ }
+  return 'liambook.capybara-ulmer.ts.net'
+}
+
+const BASE_URL = process.env['VITE_URL'] ?? `https://${resolveHostname()}:${VITE_PORT}`
 
 // Escape hatch for hosts where `npx playwright install` is unsupported but a
 // compatible Chromium build already exists in the cache, e.g.

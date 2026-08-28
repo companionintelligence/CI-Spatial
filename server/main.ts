@@ -1784,7 +1784,16 @@ async function listStoredScans(): Promise<StoredScanInfo[]> {
   for (let i = 0; i < names.length; i += SCAN_LIST_CONCURRENCY) {
     const batch = await Promise.all(
       names.slice(i, i + SCAN_LIST_CONCURRENCY).map(async (filename) => {
-        const stat = await Deno.stat(`${SCANS_DIR}/${filename}`)
+        // A scan deleted between readDir and stat is simply gone from the
+        // listing — it is not a reason to fail the whole call, and callers
+        // like `readWorldUnlocked` treat a throw here as a world-load error.
+        let stat: Deno.FileInfo
+        try {
+          stat = await Deno.stat(`${SCANS_DIR}/${filename}`)
+        } catch (err) {
+          if (err instanceof Deno.errors.NotFound) return null
+          throw err
+        }
         return {
           filename,
           size: stat.size,
@@ -1795,7 +1804,7 @@ async function listStoredScans(): Promise<StoredScanInfo[]> {
     )
     // Batches are appended in order, so `scans` keeps Deno.readDir order and the
     // stable sort below breaks uploadedAt ties exactly as it did before.
-    scans.push(...batch)
+    scans.push(...batch.filter((scan): scan is StoredScanInfo => scan !== null))
   }
 
   scans.sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt))
@@ -2093,7 +2102,14 @@ async function readWorldUnlocked(slug: string): Promise<WorldProject> {
     ensureWorldProjectCollections(world)
     await refreshWorldScans(world)
     return world
-  } catch {
+  } catch (err) {
+    // Only "there is no world file yet" may synthesize. A bare catch also
+    // swallowed transient I/O errors from `refreshWorldScans` (which touches
+    // disk on every read), and since `updateWorld` writes whatever this
+    // returns back over the real file, one such error permanently replaced
+    // every thing, observation and comment with synthesizeWorld's empty
+    // collections. Anything else rethrows and surfaces as a 500.
+    if (!(err instanceof Deno.errors.NotFound)) throw err
     return synthesizeWorld(safe)
   }
 }
@@ -2120,7 +2136,10 @@ function loadProjectWorld(projectId: string): Promise<WorldProject> {
       if (world.projectId !== projectId) return await synthesizeWorld(slug, projectId)
       await refreshWorldScans(world)
       return world
-    } catch {
+    } catch (err) {
+      // Same narrowing as `readWorldUnlocked`, for the same reason: only a
+      // missing file may synthesize over a project's stored world.
+      if (!(err instanceof Deno.errors.NotFound)) throw err
       return synthesizeWorld(slug, projectId)
     }
   })
@@ -2295,10 +2314,9 @@ const lastScanIdCollisionLogged = new Map<string, string>()
  * id (`a.b.glb` and `a-b.glb` both become `scan-a-b`). `migrate_scan_ids.ts`
  * refuses to run over a world with this collision; it throws, which is the
  * right call for a one-shot, human-attended script. It is NOT the right call
- * here: `refreshWorldScans` runs inside `readWorldUnlocked`'s try/catch,
- * which treats ANY thrown error as "no world file" and silently replaces the
- * response with a freshly synthesized empty world — throwing here would make
- * the failure mode worse, not better.
+ * here: `refreshWorldScans` runs inside `readWorldUnlocked`, so throwing
+ * would turn a lossy id into a 500 on every read of that world — the failure
+ * mode would be worse, not better.
  *
  * So this only warns, throttled per-slug so it doesn't repeat on every GET.
  * It does not attempt to resolve the collision (there is no safe automatic
@@ -5095,11 +5113,29 @@ async function rewriteProjectReferences(sourceProjectId: string, targetProjectId
 
 console.log(`[server] CORS origin prefix: ${ALLOWED_ORIGIN_PREFIX}`)
 
+/**
+ * WebSocket upgrades bypass CORS entirely — the browser sends the request and
+ * hands the socket to the page without a preflight — so without this any page
+ * on the internet could open /events or /rtc-signal against the user's machine
+ * and watch them scan. Same allowlist as the CORS middleware, deliberately:
+ * a non-browser client (no Origin header at all) keeps working as before.
+ */
+function rejectDisallowedWsOrigin(
+  c: { req: { header: (name: string) => string | undefined } },
+): Response | null {
+  const origin = c.req.header('origin')
+  if (!origin || isAllowedOrigin(origin)) return null
+  console.warn(`[server] WebSocket upgrade rejected for origin: ${origin}`)
+  return new Response('Forbidden origin', { status: 403 })
+}
+
 // ── Server event stream — /events ─────────────────────────────────────────────
 // Broadcast-only WebSocket: scan uploads, job transitions, session lifecycle.
 // The desktop viewer subscribes to refresh its scan list live.
 
 app.get('/events', (c) => {
+  const rejected = rejectDisallowedWsOrigin(c)
+  if (rejected) return rejected
   const { socket, response } = Deno.upgradeWebSocket(c.req.raw)
   socket.addEventListener('open', () => {
     eventSockets.add(socket)
@@ -5148,6 +5184,8 @@ app.get('/events', (c) => {
 const rtcRooms = new Map<string, RtcRoom>()
 
 app.get('/rtc-signal', (c) => {
+  const rejected = rejectDisallowedWsOrigin(c)
+  if (rejected) return rejected
   const url = new URL(c.req.url)
   const roleParam = url.searchParams.get('role')
   const role: RtcRole = roleParam === 'phone' ? 'phone' : roleParam === 'capture' ? 'capture' : 'viewer'

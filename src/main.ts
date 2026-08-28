@@ -78,8 +78,13 @@ function poseIsFinite(pose: Pose): boolean {
 // One-time HUD notices — module-level so repeated triggers stay quiet
 let quotaWarningShown = false
 let decimationNoticeShown = false
-/** One-shot log the first time degraded tracking suppresses point recording. */
-let degradedTrackingNoticeShown = false
+/**
+ * True while degraded tracking is suppressing point recording. Live state, not
+ * a one-shot: it is read by updateVerdictUI() on every scanner tick, so it has
+ * to clear the moment tracking recovers or the HUD would keep telling someone
+ * who is now recording fine that they are not.
+ */
+let recordingPaused = false
 
 // Last verdict state written to the HUD, so the 750 ms scanner tick only
 // touches the DOM when the verdict or its recommendation actually changes.
@@ -146,10 +151,9 @@ async function main() {
    * Place picker: the modal (#place-sheet, z-index 80) covers the start screen
    * (z-index 20), so `showArHelp()`'s #ar-help line and the disabled Start
    * button are both written where nothing can see them — and then the confirm
-   * tap runs beginArSession(), which removes #start-screen and #ar-help with
-   * it, replaces the status with "Starting AR…", and resolves a gate that
-   * nothing is awaiting any more. Observed as: tap "Scan This Place", AR never
-   * starts, no error anywhere.
+   * tap runs beginArSession(), which overwrites that Start button line with
+   * "Starting AR…" and resolves a gate that nothing is awaiting any more.
+   * Observed as: tap "Scan This Place", AR never starts, no error anywhere.
    */
   let arRuntimeError: string | null = null
   const beginArSession = async () => {
@@ -171,7 +175,14 @@ async function main() {
     const p1 = (DeviceOrientationEvent as unknown as PermAPI).requestPermission?.()
     const p2 = (DeviceMotionEvent as unknown as PermAPI).requestPermission?.()
 
-    document.getElementById('start-screen')?.remove()
+    // The start screen is torn down only once `provider.start()` has actually
+    // resolved (section 5), not here. Removing it up front meant a device with
+    // no working AR runtime landed on a dark screen holding a raw exception,
+    // with no retry and no route back to Upload Content — the one path that
+    // phone can still take, and it had just been deleted. Report progress on
+    // the button that was tapped, since #status-text sits behind this screen.
+    const startStatus = document.querySelector<HTMLElement>('#start-ar-btn .start-path-status')
+    if (startStatus) startStatus.textContent = 'Starting AR…'
     overlay.setStatus('Starting AR…')
 
     const permissionChecks = [p1, p2].filter((p): p is Promise<string> => p !== undefined)
@@ -1176,11 +1187,30 @@ async function main() {
     const isPermission = name === 'NotAllowedError'
       || name === 'SecurityError'
       || /permission|denied|NotAllowedError/i.test(message)
-    showPermissionBanner(
-      isPermission
-        ? 'Camera access denied. Please check your browser or OS permission settings and allow camera access.'
-        : `AR failed to start: ${message}`,
-    )
+    // Echoing `message` handed the reader the runtime's own sentence — "The
+    // specified session configuration is not supported" — which names no
+    // consequence and no next step. The raw string stays in the console.error
+    // above, where it is still the thing worth reporting a bug with.
+    const consequence = isPermission
+      ? 'Camera access is blocked, so the scanner cannot see the room.'
+      : 'AR could not start on this device, so there is nothing for the scanner to track.'
+    const nextStep = isPermission
+      ? 'Allow camera access for this site in your browser or phone settings and reload, or use Upload Content to add a video or photos from this Place instead.'
+      : 'Use Upload Content to add a walkthrough video or photos from this Place instead — it builds the same map, no AR needed.'
+    // The start screen is still standing on this path, and it is what the
+    // reader is looking at: #permission-error-banner lives inside #ar-overlay
+    // (z-index 10), which paints *under* #start-screen (z-index 20). So say it
+    // on the start screen — on the button that was tapped, and in #ar-help,
+    // the line already reserved there for "why AR isn't happening" — right
+    // beside the Upload Content card the next step points at. The banner is
+    // still written for the case where the start screen is already gone.
+    setStartButtonState('unavailable', isPermission ? 'Camera access is blocked' : 'AR could not start on this device')
+    const arHelp = document.getElementById('ar-help')
+    if (arHelp) {
+      arHelp.textContent = `${consequence} ${nextStep}`
+      arHelp.hidden = false
+    }
+    showPermissionBanner(`${consequence} ${nextStep}`)
     // Caught live 2026-08-26 on an XREAL companion device: navigator.xr
     // reported immersive-ar supported, but requestSession() rejected with
     // "The specified session configuration is not supported" because the
@@ -1194,10 +1224,14 @@ async function main() {
     // active-looking UI backed by a scanner.start() that section 6 below never
     // reaches, so the session sits open forever with keyframeCount: 0. No
     // frame will ever arrive to correct that status text.
-    disableCaptureControls('AR did not start — see the banner above')
+    disableCaptureControls('AR did not start — live capture is unavailable')
     overlay.setStatus(isPermission ? 'Camera access denied' : 'AR failed to start')
     return
   }
+  // Only now is the start screen no longer the user's way out: AR is running,
+  // so the live camera behind it is the thing to look at. A spec asserts this
+  // (tests/mock-ftue.spec.ts expects #start-screen gone once scanning begins).
+  document.getElementById('start-screen')?.remove()
   // ── 6. Continuous SLAM point-cloud accumulation ──────────────────────────────
   // Started BEFORE calibration, not after. The calibration flow's
   // environment-scan step gates anchor placement on a settled ground-plane
@@ -1224,9 +1258,16 @@ async function main() {
     const trackingUsable = trackingIsUsable(provider.trackingStatus())
     const inserted = trackingUsable ? pointCloud.add(frame.points) : []
     const added = inserted.length
-    if (!trackingUsable && !degradedTrackingNoticeShown) {
-      degradedTrackingNoticeShown = true
-      console.warn(`[scan] tracking degraded (${provider.trackingStatus()}) — not recording points until it recovers`)
+    // A console warning is invisible to someone walking their kitchen. The only
+    // on-screen tell that recording had stopped was the #scan-stats counter no
+    // longer climbing, in 11px type, while #status-text still read "Tracking".
+    // updateVerdictUI() below turns this into the #verdict-hint line, on this
+    // same tick — and clears it again on the tick tracking recovers.
+    if (recordingPaused !== !trackingUsable) {
+      recordingPaused = !trackingUsable
+      console.warn(recordingPaused
+        ? `[scan] tracking degraded (${provider.trackingStatus()}) — not recording points until it recovers`
+        : '[scan] tracking recovered — recording points again')
     }
     if (provider.isTracking() && poseIsFinite(frame.pose)) poseHistory.push(frame.pose)
 
@@ -1498,9 +1539,15 @@ async function main() {
 
   function updateVerdictUI(): void {
     const summary = currentQualitySummary()
-    const hintText = summary.status !== 'ready' && summary.recommendations.length > 0
-      ? `⚠ ${summary.recommendations[0]}`
-      : ''
+    // Suppressed recording outranks any quality recommendation: the
+    // recommendations advise on a scan that is still being captured, and this
+    // says it is not being captured at all. Named in what the person can act on
+    // — not the tracking enum, which means nothing to someone in their kitchen.
+    const hintText = recordingPaused
+      ? '⚠ Not recording — move slowly and point at something with more detail'
+      : summary.status !== 'ready' && summary.recommendations.length > 0
+        ? `⚠ ${summary.recommendations[0]}`
+        : ''
 
     // Runs on every 750 ms scanner tick, and both targets are announced to
     // screen readers — rewriting them unchanged re-announces the same sentence

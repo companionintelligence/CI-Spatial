@@ -14,6 +14,7 @@
  *     npx playwright test --project=chromium-mock mock-ui-mobile
  */
 import { test, expect } from '@playwright/test'
+import { startArScan } from './support/start-scan'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -77,9 +78,9 @@ test.describe('mobile scanner flow screenshots', () => {
 
   test('05 live scanning HUD (tracking)', async ({ page }) => {
     page.on('pageerror', (err) => console.error('[page]', err))
-    await page.goto('/?mock=xr8')
-    await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
-    await page.click('#start-ar-btn')
+    // waitForPoints: false — these are documentation shots, and each does its
+    // own best-effort wait for whatever it needs to render below.
+    await startArScan(page, { waitForPoints: false })
 
     // Wait for the scripted SLAM mock to accumulate points / lock tracking.
     await page.waitForFunction(() => {
@@ -94,9 +95,9 @@ test.describe('mobile scanner flow screenshots', () => {
 
   test('06 capture + latest-scan dialog', async ({ page }) => {
     page.on('pageerror', (err) => console.error('[page]', err))
-    await page.goto('/?mock=xr8')
-    await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
-    await page.click('#start-ar-btn')
+    // waitForPoints: false — these are documentation shots, and each does its
+    // own best-effort wait for whatever it needs to render below.
+    await startArScan(page, { waitForPoints: false })
     await page.waitForFunction(() => /[1-9]\d*/.test(document.getElementById('scan-stats')?.textContent ?? ''),
       { timeout: 30_000 }).catch(() => {})
     await page.waitForTimeout(1200)
@@ -109,9 +110,9 @@ test.describe('mobile scanner flow screenshots', () => {
 
   test('07 detections side panel', async ({ page }) => {
     page.on('pageerror', (err) => console.error('[page]', err))
-    await page.goto('/?mock=xr8')
-    await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
-    await page.click('#start-ar-btn')
+    // waitForPoints: false — these are documentation shots, and each does its
+    // own best-effort wait for whatever it needs to render below.
+    await startArScan(page, { waitForPoints: false })
     await page.waitForFunction(() => /[1-9]\d*/.test(document.getElementById('scan-stats')?.textContent ?? ''),
       { timeout: 30_000 }).catch(() => {})
     await page.waitForTimeout(1000)
@@ -126,9 +127,9 @@ test.describe('mobile scanner flow screenshots', () => {
 
   test('08 history drawer', async ({ page }) => {
     page.on('pageerror', (err) => console.error('[page]', err))
-    await page.goto('/?mock=xr8')
-    await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
-    await page.click('#start-ar-btn')
+    // waitForPoints: false — these are documentation shots, and each does its
+    // own best-effort wait for whatever it needs to render below.
+    await startArScan(page, { waitForPoints: false })
     await page.waitForTimeout(2500)
     await page.click('#history-btn')
     await page.locator('#history-drawer').waitFor({ state: 'visible', timeout: 10_000 }).catch(() => {})

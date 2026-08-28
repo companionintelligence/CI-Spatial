@@ -15,6 +15,7 @@
  */
 import { test, expect, type Page } from '@playwright/test'
 import { ONBOARDING_KEY } from '../src/shared/storage-keys'
+import { dismissPlacePicker } from './support/start-scan'
 
 // 5173 here is just the last-resort default (matches VITE_PORT's own default in
 // main.ts/vite.config.ts). Set VITE_URL to point at a differently-ported instance.
@@ -43,6 +44,9 @@ async function clickStartAR(page: Page) {
   // click handler at the top of boot; wait for that rather than for paint.
   await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
   await page.locator('#start-ar-btn').click()
+  // Not startArScan: callers here navigate themselves, to BASE_URL rather than
+  // the mock runtime, so only the picker step is shared.
+  await dismissPlacePicker(page)
 }
 
 // ── App load ──────────────────────────────────────────────────────────────────

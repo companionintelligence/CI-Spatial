@@ -29,6 +29,21 @@ export const STALL_EPSILON_DEG = 0.25;
 /** Consecutive stalled ticks before declaring a jam (~2.4s at a 400ms tick). */
 export const STALL_TICKS_LIMIT = 6;
 
+/**
+ * Distance a whole move must close before it counts as having gone anywhere.
+ *
+ * Deliberately NOT STALL_EPSILON_DEG: that is a per-tick noise floor, two orders
+ * of magnitude below a real step, and applying it to a whole move calls a gimbal
+ * healthy for drifting a fraction of a degree over ten seconds. The two
+ * populations are far apart when measured across a move — on 2026-08-28 a real
+ * jam against a pan limit closed 0.65° in 11.4s while a healthy move in the same
+ * session closed 31.0° in 7.8s — so anything in between separates them, and 2°
+ * sits an order of magnitude clear of both. It is also below the 3° default
+ * tolerance, so a move that legitimately crept to just outside its deadband is
+ * not condemned.
+ */
+export const NO_PROGRESS_DEG = 2.0;
+
 /** Shortest signed distance between two angles, in degrees. */
 export function wrapDeg(deg) {
   let d = deg;
@@ -59,6 +74,37 @@ export function movedDeg(prev, cur) {
 export function foldStall(stalledTicks, prev, cur) {
   if (!prev) return 0;
   return movedDeg(prev, cur) < STALL_EPSILON_DEG ? stalledTicks + 1 : 0;
+}
+
+/**
+ * Fold one sample into a running stall count, judged by PROGRESS rather than
+ * displacement.
+ *
+ * Why this exists alongside foldStall: displacement asks "did it move?", which a
+ * spring-loaded mechanical stop answers "yes" forever. Measured on an OM6 on
+ * 2026-08-28, driving pan into its physical limit at -145.8°:
+ *
+ *   tick 7353  pan -145.761   <- six flat ticks, foldStall trips, sign flips
+ *   tick 8355  pan -149.694   <- the flip shoves it 3.9° INTO the stop
+ *   tick 9355  pan -145.833   <- the stop springs it 3.9° straight back
+ *
+ * Both excursions clear STALL_EPSILON_DEG, so foldStall reset to zero twice and
+ * the move burned its whole 12s budget holding a speed against the stop — the
+ * exact overheating condition the guard exists to prevent. The gimbal was never
+ * closer to its target than on the first tick.
+ *
+ * Net progress has no such blind spot: an oscillation that returns to the same
+ * pose improves nothing, so `best` never advances and the count keeps climbing.
+ * Only a real approach to the target — a new best by more than the same epsilon
+ * used above — resets it.
+ *
+ * Returns `{ stalled, best }`; pass `best` back in on the next tick. Seed it
+ * with `null`, which primes on the first sample without judging it.
+ */
+export function foldProgress(stalledTicks, best, errorDeg) {
+  if (best === null || best === undefined) return { stalled: 0, best: errorDeg };
+  if (errorDeg < best - STALL_EPSILON_DEG) return { stalled: 0, best: errorDeg };
+  return { stalled: stalledTicks + 1, best: Math.min(best, errorDeg) };
 }
 
 /**
@@ -101,10 +147,26 @@ export function createStallGuard() {
   let stalled = 0;
   let flipped = false;
   let prev = null;
+  let best = null;
+  let first = null;
   return {
-    /** Fold one sample; returns 'ok' | 'flip-sign' | 'jammed'. */
-    observe(cur) {
-      stalled = foldStall(stalled, prev, cur);
+    /**
+     * Fold one sample; returns 'ok' | 'flip-sign' | 'jammed'.
+     *
+     * `errorDeg` — total absolute distance still to travel — is optional only
+     * for backward compatibility with callers written before the spring-back
+     * case was understood (see foldProgress). Pass it: without it this falls
+     * back to displacement, which a mechanical stop defeats.
+     */
+    observe(cur, errorDeg) {
+      if (typeof errorDeg === 'number') {
+        if (first === null) first = errorDeg;
+        const next = foldProgress(stalled, best, errorDeg);
+        stalled = next.stalled;
+        best = next.best;
+      } else {
+        stalled = foldStall(stalled, prev, cur);
+      }
       prev = cur;
       if (stalled < STALL_TICKS_LIMIT) return 'ok';
       if (!flipped) {
@@ -120,6 +182,23 @@ export function createStallGuard() {
     get stalledTicks() { return stalled; },
     /** Whether the sign was flipped during this move. */
     get flipped() { return flipped; },
+    /**
+     * Total distance closed since the move began, in degrees. Negative or ~0
+     * means the gimbal never got nearer its target than when it started.
+     *
+     * This exists because the 'jammed' verdict is unreachable on a default
+     * budget: it needs STALL_TICKS_LIMIT ticks to flip the sign and that many
+     * again to condemn it — 12 ticks, ~10.6s at the ~880ms tick rate measured
+     * on 2026-08-28 — against a default maxMs of 8000 (~9 ticks). So a real jam
+     * times out reporting `stalled: false`, which reads to every caller as
+     * "converging slowly, try a longer budget", and the motors are handed
+     * straight back to the stop. Three consecutive moves into a pan limit that
+     * day reported exactly that. A timeout that closed no distance at all is a
+     * jam whatever the tick count says, and callers should say so.
+     */
+    get netProgressDeg() {
+      return first === null || best === null ? 0 : first - best;
+    },
   };
 }
 

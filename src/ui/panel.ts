@@ -186,7 +186,15 @@ export class SidePanel {
     clearBtn.className = 'panel-btn-ghost panel-btn-danger'
     clearBtn.id = 'panel-clear-session-btn'
     clearBtn.textContent = 'Clear session'
-    clearBtn.addEventListener('click', async () => { await this.store.clear() })
+    // One unconfirmed tap, in the same footer as Export, deleted this session's
+    // detections and every captured frame from IndexedDB. Navigating away from
+    // exactly that data already raises a confirm (src/main.ts), so the button
+    // that destroys it outright should not be the quieter of the two — same
+    // pattern, same wording, so the two agree.
+    clearBtn.addEventListener('click', async () => {
+      if (!confirm('Clear this scan? Unsaved progress will be lost.')) return
+      await this.store.clear()
+    })
     this.footer.appendChild(clearBtn)
 
     const streamBtn = document.createElement('button')

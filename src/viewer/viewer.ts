@@ -674,9 +674,17 @@ async function loadWorldProject(): Promise<void> {
     const results = await Promise.allSettled(scopedWorld.scans.map(enqueueScanLoad))
     const loadedCount = results.filter(result => result.status === 'fulfilled').length
     if (loadedCount > 0 && worldGroup) {
-      fitCamera(worldGroup)
-      const first = scopedWorld.scans.find(scan => loadedScans.get(scan.scanId)?.loaded)
-      if (first) selectScan(first.scanId, false, false)
+      // Scans are laid out at their real ENU offsets, which run to hundreds of
+      // metres apart, so framing the union of them left every room a few pixels
+      // wide — the first frame of the editor was a black screen with a grid.
+      // Frame one scan instead, the most recently captured one, because the room
+      // the user just walked is the one they opened this for. The union fit stays
+      // as the fallback for when no single scan resolves.
+      const newest = scopedWorld.scans
+        .filter(scan => loadedScans.get(scan.scanId)?.loaded)
+        .sort((a, b) => (Date.parse(b.capturedAt ?? '') || 0) - (Date.parse(a.capturedAt ?? '') || 0))[0]
+      if (newest) selectScan(newest.scanId, true, false)
+      else fitCamera(worldGroup)
     } else {
       const placeholder = document.getElementById('viewer-placeholder')!
       placeholder.style.display = 'flex'
@@ -1018,7 +1026,7 @@ function renderThingsPanel(): void {
   const summary = document.getElementById('things-panel-summary')
   if (!list || !summary || !world) return
 
-  const byLabel = new Map<string, { count: number; confidence: number | null; scanId: string }>()
+  const byLabel = new Map<string, { count: number; confidence: number | null; item: InventoryItem }>()
   for (const scan of world.scans.filter(scanInTimeline)) {
     for (const item of inventoryItems(scan.scanId)) {
       const key = item.label.trim().toLocaleLowerCase()
@@ -1027,7 +1035,9 @@ function renderThingsPanel(): void {
         current.count += 1
         current.confidence = Math.max(current.confidence ?? 0, item.confidence ?? 0) || null
       } else {
-        byLabel.set(key, { count: 1, confidence: item.confidence, scanId: scan.scanId })
+        // The first observation is what the row goes to, so keep the whole item —
+        // focusItem() needs its position, not just the scan it was seen in.
+        byLabel.set(key, { count: 1, confidence: item.confidence, item })
       }
     }
   }
@@ -1043,7 +1053,7 @@ function renderThingsPanel(): void {
     button.className = 'things-list-item'
     const confidence = thing.confidence == null ? '' : ` · ${Math.round(thing.confidence * 100)}%`
     button.innerHTML = `<strong>${escHtml(label)}</strong><span>${thing.count} observation${thing.count === 1 ? '' : 's'}${confidence}</span>`
-    button.addEventListener('click', () => selectScan(thing.scanId, true, false))
+    button.addEventListener('click', () => focusItem(thing.item))
     list.appendChild(button)
   }
 }
@@ -2006,7 +2016,7 @@ async function refreshLingBotMapPanel(scanId: string): Promise<void> {
     try {
       const fetched = await fetchLingBotMapArtifacts(scan, (url) => fetch(withAccessToken(url)))
       if (!fetched) {
-        status.textContent = 'No LingBot-Map manifest yet. Queue the lingbot-map-reconstruct job to create one.'
+        status.textContent = 'Nothing reconstructed for this scan yet — its dense points and camera path appear here once the keyframes it streamed have been processed.'
         stats.textContent = ''
         return
       }
@@ -2076,7 +2086,7 @@ async function refreshSplatLayerPanel(scanId: string): Promise<void> {
     try {
       const fetched = await fetchScanSplatLayer(scan, (url) => fetch(withAccessToken(url)))
       if (!fetched) {
-        status.textContent = 'No trained splat yet. Queue the splat-train job to create one.'
+        status.textContent = 'No photoreal splat for this scan yet — use “Train splat” below to build one.'
         stats.textContent = ''
         if (toggle) toggle.checked = false
         return
@@ -2766,7 +2776,7 @@ function appendOutlinerScan(parent: HTMLElement, scan: ScanManifest, items: Inve
     thing.className = 'scene-tree-thing'
     const confidence = item.confidence == null ? '' : ` · ${Math.round(item.confidence * 100)}%`
     thing.innerHTML = `<span>${escHtml(item.label)}</span><small>${formatItemPosition(item.position)}${confidence}</small>`
-    thing.addEventListener('click', () => selectScan(scan.scanId, true, false))
+    thing.addEventListener('click', () => focusItem(item))
     things.appendChild(thing)
   }
   parent.appendChild(things)
@@ -3592,6 +3602,53 @@ function fitCamera(object: THREE.Object3D): void {
   camera.position.set(center.x + distance * 0.65, center.y + distance * 0.45, center.z + distance * 0.85)
   controls.target.copy(center)
   controls.update()
+}
+
+// Arm's length from the thing, near enough that it fills the view and far enough
+// that the surface it sits on is still readable as context.
+const ITEM_FOCUS_DISTANCE_M = 2.5
+
+/**
+ * Go to one identified thing, rather than to the scan that contains it.
+ * fitCamera() on the owning scan frames a whole room-sized point cloud with the
+ * thing somewhere inside it — unhighlighted, and as often as not behind a wall —
+ * which is the opposite of what "find my drill" asks for. So: select the scan
+ * without fitting it, put the orbit target on the thing, and pull the camera back
+ * along the direction the viewer is already looking so the move reads as an
+ * approach rather than a cut to an unrelated angle. The highlight is what makes it
+ * findable once you are there; it needs the object the item came from, which only
+ * exists for a loaded scan.
+ */
+function focusItem(item: InventoryItem): void {
+  selectScan(item.scanId, false, false)
+  if (!camera || !controls) return
+
+  const target = new THREE.Vector3(item.position.x, item.position.y, item.position.z)
+  const direction = new THREE.Vector3()
+  camera.getWorldDirection(direction)
+  if (direction.lengthSq() === 0) direction.set(0, 0, -1)
+  camera.position.copy(target).addScaledVector(direction, -ITEM_FOCUS_DISTANCE_M)
+  controls.target.copy(target)
+  controls.update()
+
+  const loaded = loadedScans.get(item.scanId)
+  if (!loaded?.loaded) return
+  const match = findObjectByTargetId(loaded.root, itemTargetId(item))
+  if (match) selectEditableObject(match, false)
+}
+
+/**
+ * The 3D node an inventory item points at. A 'detection' item is already keyed by
+ * the node's stable object id; a 'thing' is keyed by thingId, which no node
+ * carries — its observations hold the targetId that does. Prefer the observation
+ * from the item's own scan, since the same thing seen in two rooms has two nodes.
+ */
+function itemTargetId(item: InventoryItem): string {
+  if (item.source !== 'thing') return item.id
+  const observations = world?.thingObservations ?? []
+  const observation = observations.find(obs => obs.thingId === item.id && obs.scanId === item.scanId)
+    ?? observations.find(obs => obs.thingId === item.id)
+  return observation?.targetId ?? item.id
 }
 
 // ─── Utilities ───────────────────────────────────────────────────────────────

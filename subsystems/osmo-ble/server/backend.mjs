@@ -14,7 +14,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { WebSocketServer } from 'ws';
 import { OsmoBleTransport } from './ble-transport.mjs';
-import { createStallGuard, createWedgeGuard } from '../protocol/stall.mjs';
+import { createStallGuard, createWedgeGuard, NO_PROGRESS_DEG } from '../protocol/stall.mjs';
 import { computeCorrection, shouldFlipSign, poseAlreadyActedOn } from '../protocol/control.mjs';
 import { buildGimbalRecenter, buildGimbalAbsoluteAngle, buildGimbalSetMode, buildGimbalSpeedControl, buildGimbalStickControlEnable, buildGimbalResetAndCenter, buildRawCommand } from '../protocol/commands.mjs';
 import { GIMBAL_MODE } from '../protocol/constants.mjs';
@@ -414,7 +414,14 @@ async function driveClosedLoop({ yawDeg = 0, pitchDeg = 0, toleranceDeg = 3, spe
     // Still outside tolerance — so if nothing moved this tick, the axis is not
     // merely slow. Counted only while a correction is actually being commanded,
     // which is guaranteed here: we are past the convergence return above.
-    const verdict = guard.observe({ pan: yaw, tilt: pitch });
+    // Judged on remaining distance, not displacement: driving pan into a
+    // mechanical stop makes the gimbal twitch and spring back several degrees a
+    // tick without ever getting closer, which a displacement test reads as
+    // healthy movement (see foldProgress in protocol/stall.mjs).
+    const verdict = guard.observe(
+      { pan: yaw, tilt: pitch },
+      Math.abs(yawError) + Math.abs(pitchError),
+    );
     if (verdict === 'flip-sign') {
       // Stalled, but only in the direction tried so far. The correction sign
       // comes from an approximate Euler decomposition that does not hold at
@@ -459,7 +466,35 @@ async function driveClosedLoop({ yawDeg = 0, pitchDeg = 0, toleranceDeg = 3, spe
 
   const quat = transport.lastQuaternion;
   const final = quat ? quatToGimbalControlDeg(quat) : { pan: null, tilt: null };
-  return { converged: false, timedOut: true, stalled: false, ticks: history.length, finalYaw: final.pan, finalPitch: final.tilt, history };
+
+  // A timeout that closed no distance is a jam, whatever the tick counter says.
+  // The 'jammed' verdict above needs 12 ticks (flip, then condemn) and a tick
+  // costs ~880ms on real hardware, so it cannot be reached inside the default
+  // 8000ms budget — every genuine jam lands here instead, and reporting
+  // `stalled: false` tells the caller to retry with a longer budget, which
+  // just holds the motors against the stop for longer. Measured 2026-08-28:
+  // three consecutive moves into a pan limit each reported timedOut with
+  // stalled:false while the error sat at 28.1° ± 0.1 for the whole run.
+  const stuck = guard.netProgressDeg < NO_PROGRESS_DEG;
+  return {
+    converged: false,
+    timedOut: true,
+    stalled: stuck,
+    signProbed: guard.flipped,
+    ...(stuck
+      ? {
+        stallReason:
+          `pan/tilt closed ${guard.netProgressDeg.toFixed(2)}° of distance in `
+          + `${history.length} ticks — the gimbal never got nearer its target than when the `
+          + `move began. It is jammed or at a mechanical limit; a longer maxMs will not help. `
+          + `Recenter, clear whatever the mount is against, or power-cycle the gimbal.`,
+      }
+      : {}),
+    ticks: history.length,
+    finalYaw: final.pan,
+    finalPitch: final.tilt,
+    history,
+  };
 }
 
 const routes = {

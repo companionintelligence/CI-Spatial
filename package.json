@@ -25,6 +25,7 @@
     "server": "deno run --watch --allow-net --allow-read --allow-write --allow-env --allow-ffi --allow-run server/main.ts",
     "start": "concurrently --raw --names \"infer,vite\" -c \"cyan,green\" \"npm run server\" \"npm run dev\"",
     "gen-icons": "node scripts/generate-icons.mjs",
+    "prepare": "git config core.hooksPath .githooks",
     "postinstall": "node scripts/copy-draco.mjs && node scripts/copy-ort-wasm.mjs && node scripts/postinstall-hint.mjs",
     "smoke:pipeline": "node scripts/smoke-pipeline.mjs",
     "test:lingbot:glb": "node --experimental-strip-types --no-warnings --test tests/unit/node/lingbot_map_glb.test.ts",

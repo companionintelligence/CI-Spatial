@@ -65,6 +65,36 @@ The E2E test suite is driven by **Playwright**.
     npx playwright test tests/ar-scan.spec.ts --project=webkit-desktop
     ```
 
+### The development loop and the known-failures baseline
+
+Running the Playwright suite raw is not a useful gate right now: a set of specs
+has been red for a long time, so a run that fails on all of them every time
+teaches you to ignore the result. `scripts/loop.mjs` (`npm run loop`) is the
+gate that works instead. It runs tiers in order — types, Deno units, contract
+gates, the startup-budget UI specs — and stops at the first failure, because a
+type error makes every downstream result meaningless.
+
+`tests/known-failures.json` is that loop's **baseline**: a list of
+Playwright test ids (spec file + full title) that were already failing when the
+loop was introduced. The loop does not require the list to be empty. It fails on
+a **change** in either direction:
+
+- a failure not in the baseline — a regression you just introduced;
+- a baselined test that now passes — which is how the list shrinks instead of
+  quietly becoming permanent.
+
+```bash
+npm run loop            # tiers 0-3, the fast pre-commit loop
+npm run loop:full       # through tier 5 — adds the reconstruction check and the
+                        # whole mock suite, gated on change rather than on green
+npm run loop:baseline   # re-record the baseline from a full mock run
+```
+
+Only run `loop:baseline` deliberately, and say why in the commit — it accepts
+whatever is red at that moment as the new normal, so an accidental run buries a
+regression instead of reporting it. The file's own `note` field states the rule:
+shrink it; never grow it without saying why.
+
 ---
 
 ## 2. Environment Variables

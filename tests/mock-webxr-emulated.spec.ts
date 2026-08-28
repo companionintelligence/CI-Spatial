@@ -11,6 +11,7 @@
  * Run: npx playwright test --project=chromium-mock mock-webxr-emulated
  */
 import { test, expect } from '@playwright/test'
+import { dismissPlacePicker } from './support/start-scan'
 
 test.describe('WebXR emulated scanner', () => {
   test.setTimeout(60_000)
@@ -41,6 +42,10 @@ test.describe('WebXR emulated scanner', () => {
     // The button only becomes enabled once its click handler is attached.
     await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
     await page.click('#start-ar-btn')
+
+    // Not startArScan: the __iwerDevice poll above has to happen between the
+    // navigation and the tap, so only the picker step is shared.
+    await dismissPlacePicker(page)
 
     // Status must not report AR-unavailable, and the session should reach
     // the WebXR provider (tracking active ⇒ capture UI stays enabled).
