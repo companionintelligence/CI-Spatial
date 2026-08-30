@@ -192,5 +192,7 @@ cost of the version strings and the torch blocks.
 
 - ADR 0007 — the toolchain survey this doc grew out of, including the end-to-end timings.
 - ADR 0006 — why 4D person capture is a subsystem rather than a local job.
+- `docs/operations/AR_DEVICE_SUPPORT.md` — the same treatment for phones: which devices can run
+  the live scanner, measured from the phone's own remote console.
 - `docs/operations/COLMAP_SETUP.md` — the micromamba install that `which colmap` cannot see.
 - `docs/pipelines/splat-train.md` — Brush and Spirula setup.

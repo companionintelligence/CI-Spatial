@@ -15,6 +15,7 @@ Contract with the driver (stable — the TS tests assert on it):
 
     {
       "model": "facebook/mask2former-swin-large-ade-panoptic",
+      "thingSource": "class-id",
       "frames": [
         {"file": "kf-00000.jpg",
          "segments": [
@@ -29,6 +30,10 @@ here. Which of ADE20K's 150 classes are "stuff" is the checkpoint's business; a
 hand-copied table would be a second, silently-wrong copy of it — and the split
 matters, because the TS side feeds things into `thing_match` and deliberately
 does not feed stuff (see panoptic_segments.ts for why that would be harmful).
+
+`thingSource` says HOW the split was decided — "class-id", "label-string" or
+"none" — because those are not equally trustworthy and used to be
+indistinguishable from outside. See `resolve_thing_split` below.
 
 Setup: see docs/pipelines/panoptic-scan.md.
 """
@@ -58,9 +63,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         type=Path,
         help=(
-            "JSON array of label strings that are discrete objects. Without it "
-            "every segment is reported isThing=null, which the TS side treats as "
-            "stuff — safe, but nothing reaches thing_match."
+            "Which classes are discrete objects: either the generated object "
+            "(thingIds + names + things — matched by class id, which survives a "
+            "checkpoint renaming a class) or a bare JSON array of label strings. "
+            "Without it every segment is reported isThing=null, which the TS side "
+            "treats as stuff — safe, but nothing reaches thing_match."
         ),
     )
     p.add_argument(
@@ -95,6 +102,76 @@ def _import_device_resolver():
 def keyframes(session_dir: Path, limit: int) -> list[Path]:
     names = sorted(p for p in session_dir.iterdir() if p.is_file() and KEYFRAME_RE.match(p.name))
     return names[:limit]
+
+
+def label_aliases(name: str) -> set[str]:
+    """Every string a checkpoint might plausibly use for one taxonomy entry.
+
+    ADE20K names carry comma-separated synonyms ("computer, computing machine,
+    ..."), and a checkpoint's id2label may use either the whole string or the
+    leading one.
+    """
+    n = name.strip().lower()
+    head = n.split(",")[0].strip()
+    return {n, head} - {""}
+
+
+# How much of a checkpoint's vocabulary must match the supplied taxonomy's own
+# names before its class *ids* are trusted.
+#
+# Measured, on the checkpoints this driver can actually be pointed at:
+#
+#   facebook/mask2former-swin-large-ade-panoptic    150 labels, 140/150 agree (93%)
+#   facebook/mask2former-swin-large-ade-semantic    150 labels, same ADE20K-150 vocabulary
+#   facebook/mask2former-swin-base-coco-panoptic    133 labels — different size, rejected first
+#   facebook/mask2former-swin-large-cityscapes-...   19 labels — different size, rejected first
+#
+# So the two outcomes are 93% and "wrong size", with nothing in between: any
+# threshold inside that gap behaves identically, and 2/3 leaves room for upstream
+# to rename a few more synonyms without silently downgrading the split. It is NOT
+# tuned to make a number look good — 93% is what the one supported checkpoint
+# scores, and all ten disagreements are documented synonyms of the same class
+# (see scripts/fetch-ade20k-things.mjs).
+TAXONOMY_AGREEMENT = 2 / 3
+
+
+def resolve_thing_split(raw, id2label: dict[int, str]):
+    """Decide how to tell things from stuff, and report which way it went.
+
+    Returns `(thing_ids, thing_labels, source, note)`. `source` is one of
+    "class-id" / "label-string" / "none" and lands in the output JSON, because
+    the three are not equally trustworthy and used to be indistinguishable from
+    outside: a name compare against this checkpoint silently files eight
+    isthing=1 ADE20K classes as room surface (windowpane, bathtub, railing,
+    streetlight, television receiver, airplane, apparel, ashcan) because the
+    Mask2Former repo and the HF checkpoint name them differently. Class ids are
+    exact — but only once the checkpoint is *shown* to be that taxonomy, since
+    id 8 is `windowpane` in ADE20K and something else entirely in COCO.
+    """
+    labels = raw.get("things", raw) if isinstance(raw, dict) else raw
+    thing_labels = {str(x).strip().lower() for x in labels}
+    ids = raw.get("thingIds") if isinstance(raw, dict) else None
+    names = raw.get("names") if isinstance(raw, dict) else None
+
+    if not ids or not names:
+        return None, thing_labels, "label-string", (
+            f"{len(thing_labels)} label string(s) supplied; the list carries no class ids, "
+            "so a checkpoint that renames a class files it as room surface — "
+            "re-run scripts/fetch-ade20k-things.mjs to get ids"
+        )
+
+    names = {int(k): str(v) for k, v in names.items()}
+    agree = sum(1 for i, lab in id2label.items() if str(lab).strip().lower() in label_aliases(names.get(i, "")))
+    if len(names) != len(id2label) or agree < TAXONOMY_AGREEMENT * max(len(id2label), 1):
+        return None, thing_labels, "label-string", (
+            f"class ids NOT used: checkpoint has {len(id2label)} classes against {len(names)} "
+            f"in the list, and {agree} name(s) agree — this is not that taxonomy, so the split "
+            f"falls back to matching {len(thing_labels)} label string(s) and may be wrong"
+        )
+
+    return {int(i) for i in ids}, thing_labels, "class-id", (
+        f"{len(ids)} thing class id(s); taxonomy confirmed by {agree}/{len(id2label)} label names"
+    )
 
 
 def main() -> int:
@@ -157,7 +234,9 @@ def main() -> int:
     model.eval()
 
     # The checkpoint's own taxonomy. `id2label` is the source of truth for names.
-    id2label = model.config.id2label
+    # Keys normalised to int: they arrive as strings from a JSON config on some
+    # transformers versions, and an int/str mix makes every id lookup below miss.
+    id2label = {int(k): v for k, v in model.config.id2label.items()}
 
     # ── The stuff/thing split is NOT in this checkpoint ──────────────────────
     # Verified on facebook/mask2former-swin-large-ade-panoptic: config has no
@@ -173,14 +252,16 @@ def main() -> int:
     # its unknown-counts-as-stuff rule: that loses object detections (visible,
     # recoverable) rather than pushing walls toward thing_match's un-prunable
     # MAX_THINGS_PER_WORLD ceiling (silent, permanent).
+    thing_ids: set[int] | None = None
     thing_labels: set[str] | None = None
+    thing_source = "none"
     if args.thing_labels:
+        # Accept either a bare array or the generated {"thingIds": …, "things": […]}
+        # object, so a hand-written list and scripts/fetch-ade20k-things.mjs output
+        # both work — the object form is the one that can be matched by class id.
         raw = json.loads(args.thing_labels.read_text())
-        # Accept either a bare array or the generated {"things": [...]} object,
-        # so a hand-written list and scripts/fetch-ade20k-things.mjs output both work.
-        labels = raw["things"] if isinstance(raw, dict) else raw
-        thing_labels = {str(x).strip().lower() for x in labels}
-        print(f"thing-labels: {len(thing_labels)} labels supplied", file=sys.stderr)
+        thing_ids, thing_labels, thing_source, note = resolve_thing_split(raw, id2label)
+        print(f"thing-labels: matched by {thing_source} — {note}", file=sys.stderr)
     else:
         print(
             "thing-labels: none supplied — every segment reported isThing=null "
@@ -219,8 +300,13 @@ def main() -> int:
                     "label": label,
                     # .strip() matters: several ADE20K names carry trailing whitespace
                     # ("bed ") and the supplied list is stripped, so an unstripped
-                    # compare silently filed a bed as a room surface.
-                    "isThing": (label.strip().lower() in thing_labels) if thing_labels is not None else None,
+                    # compare silently filed a bed as a room surface. The id path
+                    # sidesteps naming entirely and is preferred when available.
+                    "isThing": (
+                        (label_id in thing_ids)
+                        if thing_ids is not None
+                        else ((label.strip().lower() in thing_labels) if thing_labels is not None else None)
+                    ),
                     "score": float(info.get("score", 0.0)),
                     "areaPx": area,
                     "centroidPx": [cx, cy],
@@ -248,8 +334,32 @@ def main() -> int:
         out_frames.append({"file": path.name, "segments": segments})
         print(f"{path.name}: {len(segments)} segments", file=sys.stderr)
 
+    # One line per label, most-seen first — for a hand-run of this worker, which
+    # is how the docs say to debug it. Printed rather than persisted: the TS side
+    # owns the counting policy (server/panoptic/panoptic_segments.ts) and a second
+    # persisted tally computed here would be the second, silently-diverging copy
+    # ADR 0001 is about. Under the driver this stderr is piped and only kept on a
+    # non-zero exit, so the same distribution is logged again from the TS side —
+    # "30 of these 38 sightings are the same ledge" is the fact that changes what
+    # the counts mean, and it must reach a run through the job system too.
+    tally: dict[tuple[str, object], int] = {}
+    for frame in out_frames:
+        for seg in frame["segments"]:
+            key = (seg["label"], seg["isThing"])
+            tally[key] = tally.get(key, 0) + 1
+    print(
+        f"labels: {sum(tally.values())} segment(s) over {len(out_frames)} frame(s), "
+        f"{len(tally)} distinct label(s):",
+        file=sys.stderr,
+    )
+    for (lab, is_thing), n in sorted(tally.items(), key=lambda kv: (-kv[1], kv[0][0])):
+        kind = "thing" if is_thing else ("stuff" if is_thing is False else "unknown")
+        print(f"  {n:>4}  {kind:<7} {lab}", file=sys.stderr)
+
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps({"model": args.model, "frames": out_frames}, indent=2))
+    args.out.write_text(
+        json.dumps({"model": args.model, "thingSource": thing_source, "frames": out_frames}, indent=2)
+    )
     return 0
 
 

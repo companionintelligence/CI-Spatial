@@ -12,10 +12,17 @@ import { assertEquals } from 'jsr:@std/assert@^1.0.0/equals'
 import { assert } from 'jsr:@std/assert@^1.0.0/assert'
 import { assertStringIncludes } from 'jsr:@std/assert@^1.0.0/string-includes'
 
-import { parseDeviceLine, resolveParams, runPanopticScan } from '../../../server/panoptic/panoptic_scan.ts'
 import {
+  parseDeviceLine,
+  resolveParams,
+  runPanopticScan,
+  runReportLines,
+} from '../../../server/panoptic/panoptic_scan.ts'
+import {
+  formatSegmentSummary,
   MIN_SEGMENT_PIXELS,
   splitPanopticSegments,
+  summarizePanopticSegments,
 } from '../../../server/panoptic/panoptic_segments.ts'
 
 const seg = (over: Record<string, unknown> = {}) => ({
@@ -433,5 +440,129 @@ Deno.test('a failed run still records the backend — that is when it matters mo
     assertEquals(m.deviceVendor, 'CPU')
   } finally {
     await Deno.remove(dir, { recursive: true })
+  }
+})
+
+// ── what the counts mean ────────────────────────────────────────────────────
+//
+// Measured on the 48-frame synthetic fixture: 38 thing segments, 30 of which
+// are the label `step` — one ledge seen thirty times. Nothing merges sightings
+// across frames (it cannot: the lift has no metric pose on these captures), so
+// these assertions pin the counts to what they actually are.
+
+Deno.test('one object seen in many frames is many sightings and one object', () => {
+  const frames = Array.from({ length: 30 }, (_, i) => ({
+    file: `kf-${String(i).padStart(5, '0')}.jpg`,
+    segments: [seg({ label: 'step' })],
+  }))
+  const s = summarizePanopticSegments(splitPanopticSegments(frames).things)
+  assertEquals(s.sightings, 30)
+  assertEquals(s.frames, 30)
+  assertEquals(s.labels, [{ label: 'step', sightings: 30, maxPerFrame: 1 }])
+  // The whole point: 30 sightings support a claim of exactly one object.
+  assertEquals(s.distinctObjectsAtLeast, 1)
+})
+
+Deno.test('two of a label in one frame prove two objects', () => {
+  // A per-frame maximum is the only distinct-object evidence available without
+  // world positions — two chairs visible at once cannot be one chair.
+  const s = summarizePanopticSegments(splitPanopticSegments([
+    { file: 'kf-00000.jpg', segments: [seg(), seg(), seg({ label: 'lamp' })] },
+    { file: 'kf-00001.jpg', segments: [seg(), seg({ label: 'lamp' }), seg({ label: 'lamp' })] },
+  ]).things)
+  assertEquals(s.sightings, 6)
+  assertEquals(s.labels, [
+    { label: 'chair', sightings: 3, maxPerFrame: 2 },
+    { label: 'lamp', sightings: 3, maxPerFrame: 2 },
+  ])
+  assertEquals(s.distinctObjectsAtLeast, 4)
+})
+
+Deno.test('an empty run summarises to zero, not to a shrug', () => {
+  const s = summarizePanopticSegments([])
+  assertEquals(s, { frames: 0, sightings: 0, labels: [], distinctObjectsAtLeast: 0 })
+})
+
+Deno.test('the summary line never puts the sighting count next to the word object', () => {
+  const frames = Array.from({ length: 30 }, (_, i) => ({
+    file: `kf-${String(i).padStart(5, '0')}.jpg`,
+    segments: [seg({ label: 'step' })],
+  }))
+  const line = formatSegmentSummary('object', summarizePanopticSegments(splitPanopticSegments(frames).things))
+  assertStringIncludes(line, '30 object sighting(s)')
+  assertStringIncludes(line, 'at least 1 distinct object(s), not 30')
+})
+
+// ── how the thing/stuff split was decided ───────────────────────────────────
+
+Deno.test('a run reports its counts as sightings and says nothing is wrong on the id path', () => {
+  const split = splitPanopticSegments([{
+    file: 'kf-00000.jpg',
+    segments: [seg(), seg({ label: 'wall', isThing: false })],
+  }])
+  const lines = runReportLines(split, 'class-id', true)
+  assertEquals(lines.length, 2)
+  assertStringIncludes(lines[0], '1 object sighting(s)')
+  assertStringIncludes(lines[1], '1 surface sighting(s)')
+})
+
+Deno.test('a fall back to label-string matching is reported, not swallowed', () => {
+  // The failure this catches: matching the checkpoint's label strings against
+  // the generated list files eight isthing=1 ADE20K classes as room surface,
+  // and `thingLabelsUsed: true` is satisfied by that run too — so the manifest
+  // alone cannot tell the two apart.
+  const lines = runReportLines({ things: [], stuff: [], dropped: 0 }, 'label-string', true)
+  assertEquals(lines.length, 3)
+  assertStringIncludes(lines[2], 'fell back to matching label strings')
+  assertStringIncludes(lines[2], 'fetch-ade20k-things.mjs')
+})
+
+Deno.test('a worker that reports no split source is called out as an older worker', () => {
+  const lines = runReportLines({ things: [], stuff: [], dropped: 0 }, undefined, true)
+  assertStringIncludes(lines[2], 'predates the class-id match')
+})
+
+Deno.test('with no thing list, a zero object count is reported as disabled, not as an empty room', () => {
+  const lines = runReportLines({ things: [], stuff: [], dropped: 0 }, undefined, false)
+  assertStringIncludes(lines[2], 'the split was disabled, not that the room is empty')
+})
+
+Deno.test('dropped segments are reported rather than quietly absorbed', () => {
+  const lines = runReportLines({ things: [], stuff: [], dropped: 4 }, 'class-id', true)
+  assertStringIncludes(lines[2], '4 segment(s) dropped')
+})
+
+// ── the taxonomy the split is decided from ──────────────────────────────────
+
+Deno.test('the generated thing list carries class ids, because the checkpoint renames eight thing classes', async () => {
+  // The bug this pins: `facebook/mask2former-swin-large-ade-panoptic`'s own
+  // id2label names eight isthing=1 ADE20K classes differently from the
+  // Mask2Former repo the list is generated from, so a label-string match filed
+  // every one of them as a room surface — measured: a real phone capture lost 7
+  // `windowpane` and 1 `ashcan` sighting out of 119. Class ids are the stable
+  // key; these are the eight, by id and by the name the checkpoint uses.
+  const RENAMED: [number, string][] = [
+    [8, 'windowpane'],
+    [37, 'bathtub'],
+    [38, 'railing'],
+    [87, 'streetlight'],
+    [89, 'television receiver'],
+    [90, 'airplane'],
+    [92, 'apparel'],
+    [138, 'ashcan'],
+  ]
+  const list = JSON.parse(
+    await Deno.readTextFile(new URL('../../../server/panoptic/ade20k-things.json', import.meta.url)),
+  ) as { thingIds?: number[]; names?: Record<string, string>; things?: string[] }
+
+  assertEquals(Object.keys(list.names ?? {}).length, 150, 'names must cover all of ADE20K-150')
+  assertEquals(list.thingIds?.length, 100, 'ADE20K panoptic flags 100 of its 150 classes isthing=1')
+  const byName = new Set((list.things ?? []).map((s) => s.trim().toLowerCase()))
+  for (const [id, checkpointLabel] of RENAMED) {
+    assert(list.thingIds?.includes(id), `class ${id} (${checkpointLabel}) must be a thing id`)
+    assert(
+      !byName.has(checkpointLabel),
+      `${checkpointLabel} now matches by name too — good, but the id path is still the one that must decide`,
+    )
   }
 })

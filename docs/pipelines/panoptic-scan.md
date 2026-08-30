@@ -9,6 +9,10 @@ A second stage then lifts each object segment to a 3-D world position — or say
 which ones it cannot place, and why. See
 [Lifting a segment to a world position](#lifting-a-segment-to-a-world-position).
 
+Read [`thingCount` is a count of sightings, not of
+objects](#thingcount-is-a-count-of-sightings-not-of-objects) before quoting a
+number from this stage: it counts one object once per keyframe it appears in.
+
 - Driver: [`server/panoptic/panoptic_scan.ts`](../../server/panoptic/panoptic_scan.ts)
 - Policy: [`server/panoptic/panoptic_segments.ts`](../../server/panoptic/panoptic_segments.ts)
 - Worker: [`scripts/panoptic_worker.py`](../../scripts/panoptic_worker.py)
@@ -142,19 +146,56 @@ So there is nothing in the model output to derive the split from, and guessing
 from the label string would be exactly the hand-copied taxonomy this design
 avoids. Without an operator-supplied list the worker reports `isThing: null`,
 which the TS side treats as stuff — safe, but **no segment reaches
-`thing_match`**. A real run on 8 keyframes: `thingCount: 0, stuffCount: 81`.
+`thing_match`**. A real run on the 17-keyframe phone capture with no list:
+`thingCount: 0, stuffCount: 169, thingLabelsUsed: false`.
 
 To enable things, supply the ADE20K-150 split from a source you trust:
 
 ```bash
+node scripts/fetch-ade20k-things.mjs        # → server/panoptic/ade20k-things.json
 python ~/panoptic/panoptic_worker.py ... --thing-labels ~/panoptic/ade20k-things.json
-# ["chair", "swivel chair", "table", "desk", "cabinet", "lamp", "computer", ...]
 ```
 
-Matching is case-insensitive on the label string. Getting that list from an
-authoritative source (Detectron2's ADE20K panoptic metadata is one) rather than
-from memory is the whole point — a wrong entry that marks `wall` a thing is the
-failure mode the next section describes.
+### Match by class id, not by label string
+
+The generated list carries three things: `thingIds` (the 100 ADE20K-150 classes
+flagged `isthing=1` upstream), `names` (all 150 upstream names) and `things`
+(the same 100 by name, plus each name's leading synonym). **`thingIds` is the
+one that decides**, and that is not a tidiness preference — matching by name was
+wrong on eight classes:
+
+| id | Mask2Former repo | checkpoint `id2label` |
+| --- | --- | --- |
+| 8 | `window ` | `windowpane` |
+| 37 | `tub` | `bathtub` |
+| 38 | `rail` | `railing` |
+| 87 | `street lamp` | `streetlight` |
+| 89 | `tv` | `television receiver` |
+| 90 | `plane` | `airplane` |
+| 92 | `clothes` | `apparel` |
+| 138 | `trash can` | `ashcan` |
+
+All eight are `isthing=1`, so a name compare filed every one of them as a room
+surface. Measured on the 17-frame phone capture: **111 object sightings by name,
+119 by class id** — the eight recovered are 7 × `windowpane` and 1 × `ashcan`,
+a window and a bin that were being reported as wall. Overall 140 of the
+checkpoint's 150 names agree with the repo's; the other two disagreements
+(`pool`/`swimming pool`, `falls`/`waterfall`) are `isthing=0` either way.
+
+An id is only meaningful within one taxonomy — id 8 is `windowpane` in ADE20K
+and something else entirely in COCO — so the worker *proves* the checkpoint is
+that taxonomy before trusting one: same class count, and ≥ 2/3 of names
+matching. The supported checkpoints score 150 labels / 140 agree
+(`…-ade-panoptic`, `…-ade-semantic`) against 133 (`…-coco-panoptic`) and 19
+(`…-cityscapes-panoptic`), which fail on size before the name check runs — so
+the threshold sits in an empty gap rather than being fitted to anything.
+
+When the proof fails, matching falls back to the label strings and **says so**:
+the worker prints `thing-labels: matched by label-string — class ids NOT used: …`,
+writes `"thingSource": "label-string"` at the top of `panoptic.segments.json`,
+and the driver logs a `[panoptic]` warning naming the fix. That matters because
+`thingLabelsUsed: true` on the manifest is satisfied by the wrong path too: it
+only says a list was *found*.
 
 ## Stuff is deliberately kept out of `thing_match`
 
@@ -174,6 +215,135 @@ metadata — never a table hand-copied into this repo), and
 `splitPanopticSegments` keeps the two apart. A segment whose flag is **unknown
 counts as stuff**: mis-filing a chair as stuff loses one visible detection,
 while mis-filing a wall as a thing pushes toward that un-prunable ceiling.
+
+## `thingCount` is a count of sightings, not of objects
+
+One physical object appears in many keyframes as many segments, and **nothing
+in this stage merges them**. `thingCount: 38` on the 48-frame fixture is 38
+sightings; 30 of them are the label `step`, which is one ledge seen thirty
+times. Read as objects it overstates that room by about an order of magnitude.
+
+Merging properly needs each sighting's world position, and that is exactly what
+the lift cannot supply on these captures — a video keyframe carries no metric
+capture pose (0 of 48) and solved SfM poses are scale-free, so the lift places
+nothing (see [the measurement below](#measured-on-a-video-ingest-capture-0-of-29-placed-for-two-structural-reasons)).
+Merging on 2-D evidence instead — label plus bbox overlap between neighbouring
+frames — was **deliberately not done**: it cannot re-identify an object that
+leaves the frame and is revisited, so it would replace one honest over-count
+with an authoritative-looking number wrong by an unknown factor.
+
+What *is* provable with no 3-D at all: if a single frame shows four `cabinet`
+segments, the room holds at least four cabinets. `summarizePanopticSegments`
+sums that per-frame maximum over labels into `distinctObjectsAtLeast`, and the
+driver logs it on every run:
+
+```
+[panoptic] …: 38 object sighting(s) of 6 label(s) over 33 frame(s) —
+             at least 8 distinct object(s), not 38; step×30, table×3, towel×2, …
+```
+
+It is a lower bound on distinct *segment identities*. It is only a bound on
+objects where the label is right — on the synthetic fixture four of the eight
+are `towel`, `bench`, `door` and `flag` read off untextured noise.
+
+### Measured label distributions
+
+Three sessions, current code, `--min-segment-pixels 1500`. "max/frame" is the
+most sightings of that label in any one frame — the per-label lower bound.
+
+#### `sess-video-20260830-054518` — 48 frames, synthetic room (38 object sightings, ≥ 8 objects)
+
+| sightings | max/frame | kind | label | score min–max |
+| ---: | ---: | --- | --- | --- |
+| 47 | 1 | stuff | `floor` | 0.92–1.00 |
+| 46 | 1 | stuff | `wall` | 0.75–1.00 |
+| 30 | 1 | stuff | `ceiling` | 0.61–1.00 |
+| 30 | 2 | thing | `step` | 0.51–0.95 |
+| 10 | 1 | stuff | `rug` | 0.53–0.94 |
+| 3 | 2 | stuff | `sky` | 0.61–0.99 |
+| 3 | 2 | thing | `table` | 0.50–0.73 |
+| 2 | 1 | thing | `towel` | 0.70–0.99 |
+| 1 | 1 | thing | `bench` | 0.59–0.59 |
+| 1 | 1 | thing | `cabinet` | 0.63–0.63 |
+| 1 | 1 | thing | `door` | 0.92–0.92 |
+
+#### `sess-video-20260830-033839` — 32 frames, same synthetic room (30 object sightings, ≥ 9 objects)
+
+| sightings | max/frame | kind | label | score min–max |
+| ---: | ---: | --- | --- | --- |
+| 31 | 1 | stuff | `wall` | 0.82–1.00 |
+| 30 | 1 | stuff | `floor` | 0.96–1.00 |
+| 21 | 2 | thing | `step` | 0.51–0.95 |
+| 20 | 1 | stuff | `ceiling` | 0.65–1.00 |
+| 7 | 1 | stuff | `rug` | 0.56–0.92 |
+| 3 | 1 | thing | `table` | 0.60–0.82 |
+| 1 | 1 | thing | `bench` | 0.57–0.57 |
+| 1 | 1 | thing | `chair` | 0.67–0.67 |
+| 1 | 1 | thing | `door` | 0.57–0.57 |
+| 1 | 1 | thing | `flag` | 0.53–0.53 |
+| 1 | 1 | stuff | `sky` | 1.00–1.00 |
+| 1 | 1 | thing | `towel` | 0.99–0.99 |
+| 1 | 1 | thing | `windowpane` | 0.72–0.72 |
+
+#### `sess-a7e2f642-…` — 17 frames, real phone capture (119 object sightings, ≥ 29 objects)
+
+| sightings | max/frame | kind | label | score min–max |
+| ---: | ---: | --- | --- | --- |
+| 24 | 4 | thing | `cabinet` | 0.52–0.99 |
+| 17 | 1 | stuff | `floor` | 0.99–1.00 |
+| 17 | 1 | stuff | `wall` | 0.96–1.00 |
+| 15 | 4 | thing | `swivel chair` | 0.58–0.99 |
+| 11 | 1 | thing | `bag` | 0.72–0.96 |
+| 11 | 1 | stuff | `ceiling` | 0.93–1.00 |
+| 11 | 2 | thing | `door` | 0.59–0.91 |
+| 10 | 2 | thing | `desk` | 0.65–0.98 |
+| 7 | 2 | thing | `box` | 0.53–0.83 |
+| 7 | 1 | thing | `curtain` | 0.79–0.97 |
+| 7 | 1 | thing | `windowpane` | 0.63–0.97 |
+| 6 | 2 | thing | `chair` | 0.54–0.93 |
+| 5 | 1 | thing | `bed ` | 0.72–0.99 |
+| 4 | 1 | stuff | `crt screen` | 0.55–0.90 |
+| 4 | 1 | thing | `table` | 0.54–0.91 |
+| 3 | 1 | thing | `computer` | 0.55–0.88 |
+| 3 | 1 | thing | `person` | 0.68–0.83 |
+| 1 | 1 | thing | `ashcan` | 0.52–0.52 |
+| 1 | 1 | stuff | `blind` | 0.83–0.83 |
+| 1 | 1 | thing | `column` | 0.94–0.94 |
+| 1 | 1 | thing | `mirror` | 0.79–0.79 |
+| 1 | 1 | thing | `monitor` | 0.53–0.53 |
+| 1 | 1 | thing | `seat` | 0.51–0.51 |
+| 1 | 1 | thing | `signboard` | 0.56–0.56 |
+
+The two synthetic sessions are a grey box with a floating cube and a ledge: good
+geometry, almost no semantics. The ledge takes `step` for 30 of 38 and 21 of 30
+object sightings, and `towel` / `bench` / `flag` / `door` are read off untextured
+noise. The real capture is the opposite — 19 labels, most of them plausible for
+the room, and the misreads (`person`, `column`, `signboard`) are singletons.
+**Use the phone capture, not the fixtures, to judge anything semantic.**
+
+### Why there is no confidence floor and no higher area floor
+
+Both were considered against the distributions above and both were rejected,
+because neither separates the wrong labels from the right ones:
+
+- **Confidence.** Mask2Former's `post_process_panoptic_segmentation` already
+  drops everything below 0.5, so the observed minimum over all three sessions is
+  0.504 — a 0.5 floor is a no-op, and anything above it is fitted to these three
+  captures. The ranking also runs the wrong way: the synthetic room's
+  highest-scoring segments are its wrong ones (`sky` 1.00 indoors, `towel` 0.99,
+  `door` 0.92 in a room with no door), while a real cabinet on the phone capture
+  scores 0.52.
+- **Area.** On the real capture the *correct* things are the small ones —
+  `swivel chair` median 5,370 px, `box` 3,207 px, `monitor` 2,343 px — while the
+  synthetic room's misreads are large (`bench` 131,461 px, `door` 234,644 px).
+  Any floor high enough to cut the misreads deletes most of the real capture's
+  true objects. `MIN_SEGMENT_PIXELS` stays at 1500 (0.22 % of a 720×960 phone
+  keyframe, 0.13 % of a 1440×810 video-ingest one), which exists to drop
+  boundary slivers with meaningless centroids — not to judge labels.
+
+A filter that deletes true positives and keeps confident false ones is not a
+quality gate. What a misread needs is a second view of the same surface (the
+lift), not a threshold tuned against two fixtures.
 
 ## Lifting a segment to a world position
 
@@ -457,6 +627,14 @@ Landed: the segmentation driver, the segment policy, the worker, the
 `panoptic-scan` `WorldJob` type (extending `WorldJob`, not a new queue), and 14
 tests covering every guard and the read-back with no model present.
 
+Landed since, from running all three sessions above end to end: the class-id
+thing/stuff match and its taxonomy proof (`thingIds`/`names` in the generated
+list, `thingSource` in `panoptic.segments.json`, the fall-back warning),
+`summarizePanopticSegments`/`formatSegmentSummary` and the per-run `[panoptic]`
+log line that states the counts as sightings with a distinct-object lower bound,
+and 20 more Deno tests — 34 in `tests/unit/deno/panoptic_scan.test.ts`, still
+with no model, venv or GPU present.
+
 Landed here: the lift — `src/shared/panoptic_lift.ts` (pure geometry +
 confidence, Deno- and `three`-free per ADR 0002), `server/panoptic/panoptic_lift.ts`
 (the driver), `PanopticLiftManifest` extending `PipelineManifestBase` in its
@@ -483,7 +661,15 @@ manifest of a run that placed nothing.
    simply false (the captures do walk; a video ingest has 13.6 units of camera
    baseline). The `skipped` branch four lines below already forwards
    `result.remediation`; the `ok` branch should do the same.
-3. **`detectionLikesForWorld` does not read the detections sidecar.** It remains
+3. **The scan manifest has nowhere to put the honest count.** `thingCount` /
+   `stuffCount` are sightings, and `PanopticScanManifest` in
+   `src/world/manifests.ts` carries no field for `distinctObjectsAtLeast` or for
+   `thingSource` — so both currently reach an operator only through the
+   `[panoptic]` log line, not through the job artifact the editor shows. Three
+   fields on that interface (and their pass-through in `_runPanopticScanJob`)
+   would close it; the counting and the wording already exist and are tested in
+   `panoptic_segments.ts`.
+4. **`detectionLikesForWorld` does not read the detections sidecar.** It remains
    the single aggregation point into `runThingCorrespondence` (ADR 0001), and it
    should gather `<base>.panoptic.detections.json` with `targetId` set to
    `` `${scan.scanId}:panoptic:${file}:${segmentIndex}` `` so a re-lift updates

@@ -20,6 +20,8 @@ import {
   runSpirulaTrain,
   SPIRULA_CAMERA_MODEL,
 } from '../../../server/splat/spirula_train.ts'
+import { DEFAULT_MAX_SPLATS } from '../../../server/splat/splat_train.ts'
+import { assertStringIncludes } from 'jsr:@std/assert@^1.0.0/string-includes'
 
 const BASE = { sessionDir: '/x/sess-1-a', outputPlyPath: '/x/a.splat.ply' }
 
@@ -31,6 +33,7 @@ Deno.test('resolveSpirulaParams honours explicit overrides over env defaults', (
     preset: '360-camera',
     quality: 'ultra',
     device: 'NVIDIA',
+    capMax: 250_000,
   }, '/opt/spirula')
   assertEquals(p, {
     spirulaBin: '/opt/spirula',
@@ -39,6 +42,7 @@ Deno.test('resolveSpirulaParams honours explicit overrides over env defaults', (
     shDegree: 1,
     preset: '360-camera',
     quality: 'ultra',
+    capMax: 250_000,
   })
 })
 
@@ -52,6 +56,11 @@ Deno.test('resolveSpirulaParams defaults match Brush so an A/B is like-for-like'
   assertEquals(p.preset, '3dgs')
   assertEquals(p.quality, 'medium')
   assertEquals(p.device, '')
+  // The gaussian budget is the half of the A/B that was never matched: the
+  // first comparison on this box read Spirula's untouched 1,000,000-splat
+  // default as a Spirula property. Both backends now default to the same
+  // number, from one definition.
+  assertEquals(p.capMax, DEFAULT_MAX_SPLATS)
 })
 
 Deno.test('buildSpirulaArgs assembles the headless CLI in a stable order', () => {
@@ -64,6 +73,7 @@ Deno.test('buildSpirulaArgs assembles the headless CLI in a stable order', () =>
     '--num-iterations', '12000',
     '--sh-degree', '2',
     '--quality', 'medium',
+    '--cap-max', '1000000',
     '--output-dir-prefix', '/data/ds/spirula-out',
     '--output-dir-name', 'run',
     '--disable-viewer', '1',
@@ -283,5 +293,109 @@ Deno.test('runSpirulaTrain reports an ok-but-empty run rather than a false succe
 
   assertEquals(result.status, 'error')
   assert(result.manifest.error?.includes('produced no splat.ply'))
+  await Deno.remove(tmp, { recursive: true })
+})
+
+// ─── The splat's own quality verdict, identical in shape to Brush's ───────────
+
+/** A minimal binary xyz PLY — the same helper splat_train.test.ts uses. */
+function xyzPly(rows: number[][]): Uint8Array {
+  const header = new TextEncoder().encode(
+    'ply\nformat binary_little_endian 1.0\n' +
+      `element vertex ${rows.length}\n` +
+      'property float x\nproperty float y\nproperty float z\nend_header\n',
+  )
+  const body = new Uint8Array(rows.length * 12)
+  const view = new DataView(body.buffer)
+  rows.forEach((r, i) => {
+    view.setFloat32(i * 12, r[0], true)
+    view.setFloat32(i * 12 + 4, r[1], true)
+    view.setFloat32(i * 12 + 8, r[2], true)
+  })
+  const out = new Uint8Array(header.length + body.length)
+  out.set(header)
+  out.set(body, header.length)
+  return out
+}
+
+/** Write `rows` where the real binary puts its checkpoint. */
+function spawnWriting(rows: number[][]) {
+  return async (_bin: string, args: string[]) => {
+    const prefix = args[args.indexOf('--output-dir-prefix') + 1]
+    const ckpt = `${prefix}/run/step-000015000.ckpt`
+    await Deno.mkdir(ckpt, { recursive: true })
+    await Deno.writeFile(`${ckpt}/splat.ply`, xyzPly(rows))
+    return { code: 0, stderr: '' }
+  }
+}
+
+Deno.test('a zero-gaussian checkpoint is an error, exactly as it is for Brush', async () => {
+  // The two backends must not disagree about what counts as success: a caller
+  // reading <scan>.splat-train.manifest.json cannot be expected to know which
+  // one wrote it.
+  const tmp = await Deno.makeTempDir({ prefix: 'spirula-empty-' })
+  const sessionDir = `${tmp}/sess-test-empty2`
+  await writeTinySession(sessionDir)
+  const result = await runSpirulaTrain({
+    sessionDir,
+    outputPlyPath: `${tmp}/scan.splat.ply`,
+    spirulaBin: Deno.execPath(),
+    _spawn: spawnWriting([]),
+  })
+  assertEquals(result.status, 'error')
+  assertStringIncludes(result.manifest.error ?? '', '0 gaussians')
+  assert(result.manifest.remediation)
+  await Deno.remove(tmp, { recursive: true })
+})
+
+Deno.test('an ok Spirula run carries a verdict under the SAME manifest key as Brush', async () => {
+  const tmp = await Deno.makeTempDir({ prefix: 'spirula-quality-' })
+  const sessionDir = `${tmp}/sess-test-quality`
+  await writeTinySession(sessionDir)
+  await Deno.writeFile(
+    `${sessionDir}/colmap.point-cloud.ply`,
+    xyzPly([[0, 0, 0], [10, 0, 0], [0, 10, 0], [0, 0, 10], [10, 10, 10]]),
+  )
+  const rows: number[][] = []
+  for (let i = 0; i < 2000; i++) rows.push([(i % 11), ((i / 11 | 0) % 11), ((i / 121 | 0) % 11)])
+
+  const result = await runSpirulaTrain({
+    sessionDir,
+    outputPlyPath: `${tmp}/scan.splat.ply`,
+    spirulaBin: Deno.execPath(),
+    _spawn: spawnWriting(rows),
+  })
+  assertEquals(result.status, 'ok')
+  const manifest = JSON.parse(await Deno.readTextFile(`${tmp}/scan.splat-train.manifest.json`))
+  assertEquals(manifest.tool, 'spirula')
+  assertEquals(manifest.quality.degenerate, false)
+  assertEquals(manifest.quality.status, 'ready')
+  // `params.quality` is the --quality preset that was ASKED for; the top-level
+  // one is the verdict on what came back. They are different questions.
+  assertEquals(manifest.params.quality, 'medium')
+  assertEquals(manifest.params.capMax, DEFAULT_MAX_SPLATS)
+  await Deno.remove(tmp, { recursive: true })
+})
+
+Deno.test('a sprawling Spirula splat is flagged with the same reason code', async () => {
+  const tmp = await Deno.makeTempDir({ prefix: 'spirula-sprawl-' })
+  const sessionDir = `${tmp}/sess-test-sprawl`
+  await writeTinySession(sessionDir)
+  await Deno.writeFile(
+    `${sessionDir}/colmap.point-cloud.ply`,
+    xyzPly([[0, 0, 0], [1, 1, 1], [0, 1, 0], [1, 0, 1]]),
+  )
+  const rows: number[][] = []
+  for (let i = 0; i < 2000; i++) rows.push([(i % 200), ((i * 7) % 200), ((i * 13) % 200)])
+
+  const result = await runSpirulaTrain({
+    sessionDir,
+    outputPlyPath: `${tmp}/scan.splat.ply`,
+    spirulaBin: Deno.execPath(),
+    _spawn: spawnWriting(rows),
+  })
+  assertEquals(result.status, 'ok')
+  assertEquals(result.quality?.degenerate, true)
+  assert(result.quality?.reasons.includes('sprawls-beyond-seed'))
   await Deno.remove(tmp, { recursive: true })
 })
