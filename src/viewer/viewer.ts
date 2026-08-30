@@ -23,8 +23,10 @@ import { fetchScanSplatLayer, disposeScanSplatLayer, splatPlyUrl, splatManifestU
 import { fetchScanDetectLayer, type ScanDetectLayer } from './splat-detect-layer'
 import {
   fetchScanPanopticLayer,
+  placementVerdictOf,
   summarizePanopticLayer,
   unplacedReasonLine,
+  type PlacementVerdict,
   type ScanPanopticLayer,
 } from './panoptic-layer'
 import { buildTrainJobRequest, buildDetectJobRequest } from './splat-toolbox'
@@ -2461,6 +2463,28 @@ const scanPanopticLayers = new Map<string, ScanPanopticLayer>()
 let panopticVisible = true
 
 /**
+ * Scans whose placement sidecars have actually been asked for.
+ *
+ * `scanPanopticLayers` alone cannot answer "has anything tried to place objects
+ * in this scan?" — a miss there means either "asked, and there is no result on
+ * disk" or "never asked", and those are exactly the two the Things list has to
+ * tell apart: the first is a finished answer, the second is not an answer at
+ * all. This records the asking. Cleared alongside the layer in
+ * `discardPanopticLayer`, so a re-lift is re-probed rather than reported from a
+ * stale absence.
+ */
+const panopticProbed = new Set<string>()
+
+/**
+ * Why this scan shows no placed objects, or null when it shows some (or when
+ * nothing has looked yet, which is not a claim we are entitled to make).
+ */
+function placementVerdictFor(scanId: string): PlacementVerdict | null {
+  if (!panopticProbed.has(scanId)) return null
+  return placementVerdictOf(scanPanopticLayers.get(scanId) ?? null)
+}
+
+/**
  * Whether this scan's lift has already run, according to the world's own job
  * history.
  *
@@ -2490,8 +2514,19 @@ async function ensureScanPanopticLayer(scanId: string): Promise<ScanPanopticLaye
   if (!scan) return null
 
   const layer = await fetchScanPanopticLayer(scan, (url) => fetch(withAccessToken(url)))
+  // Record the probe before the null return: "asked and got nothing" is the
+  // finding the Things list renders as "nothing has looked yet", and it is only
+  // sound because we got here.
+  panopticProbed.add(scanId)
+  if (layer) scanPanopticLayers.set(scanId, layer)
+  // Every outcome of this probe — including "objects were placed", which
+  // RETRACTS a note the synchronous render already drew — changes what the
+  // Things list should say about this scan, and this is the only moment that is
+  // known. Observed without it: selecting a scan drew "nothing has looked yet"
+  // and left it standing after six objects had loaded. Once per scan per
+  // session, and only for scans something asked about.
+  renderItemsPanel()
   if (!layer) return null
-  scanPanopticLayers.set(scanId, layer)
 
   if (layer.markers.length > 0) {
     const root = ensureScanRootInWorld(scan)
@@ -2535,8 +2570,10 @@ async function refreshPanopticPanel(scanId: string): Promise<void> {
   if (selectedScanId !== scanId) return
 
   if (!layer) {
-    status.textContent = 'No objects have been placed in this scan yet. '
-      + 'Placement needs segmented frames and a scanned point cloud to cast them against.'
+    // Same sentence the Things list shows for this scan — one wording for one
+    // state, rather than a second copy of it that can drift (ADR 0001).
+    const verdict = placementVerdictOf(null)!
+    status.textContent = `${verdict.headline} ${verdict.detail}`
     if (reasons) reasons.textContent = ''
     if (toggle) toggle.checked = panopticVisible
     return
@@ -2566,6 +2603,9 @@ function setPanopticVisible(visible: boolean): void {
  * so a scan's own detection captions survive.
  */
 function discardPanopticLayer(scanId: string): void {
+  // Ahead of the early return: a scan probed and found to have no result at all
+  // still has to be re-probed after a re-lift, and it never had a cached layer.
+  panopticProbed.delete(scanId)
   const layer = scanPanopticLayers.get(scanId)
   if (!layer) return
   const markers = new Set(layer.markers.map(marker => marker.object))
@@ -3080,6 +3120,26 @@ function scanDateLabel(scan: ScanManifest): string {
     : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
+/**
+ * Render one scan's "why there is nothing here" note into the outliner.
+ *
+ * A plain `<div>`, not a `.scene-tree-thing`: those are buttons that focus the
+ * camera on a position, and this note exists precisely because there is no
+ * position to focus on. `not-attempted` is styled apart from the rest because
+ * it is the only one that is a not-yet rather than a cannot — the distinction
+ * this note was added to draw, so it must survive a glance.
+ */
+function appendPlacementNote(parent: HTMLElement, verdict: PlacementVerdict): void {
+  const note = document.createElement('div')
+  note.className = 'scene-tree-note'
+  note.classList.toggle('pending', verdict.block === 'not-attempted')
+  note.innerHTML = `
+    <span>${escHtml(verdict.headline)}</span>
+    <small>${escHtml(verdict.detail)}</small>
+  `
+  parent.appendChild(note)
+}
+
 function appendOutlinerScan(parent: HTMLElement, scan: ScanManifest, items: InventoryItem[]): void {
   const row = document.createElement('button')
   row.type = 'button'
@@ -3093,7 +3153,18 @@ function appendOutlinerScan(parent: HTMLElement, scan: ScanManifest, items: Inve
   row.addEventListener('click', () => selectScan(scan.scanId, true, false))
   parent.appendChild(row)
 
-  if (items.length === 0) return
+  if (items.length === 0) {
+    // An empty Things list under a good-looking reconstruction is the one place
+    // a person goes looking for an explanation, and until now it had none — a
+    // capture that structurally CANNOT locate objects and one whose placement
+    // simply has not run yet were the same blank row. Only rendered when the
+    // scan's sidecars have actually been read (`placementVerdictFor` returns
+    // null otherwise), and never when objects were placed, so a phone scan that
+    // works is untouched.
+    const verdict = placementVerdictFor(scan.scanId)
+    if (verdict) appendPlacementNote(parent, verdict)
+    return
+  }
   const things = createOutlinerGroup('things', 'Things', `${items.length} identified`, scan.scanId === selectedScanId)
   for (const item of items.sort((a, b) => a.label.localeCompare(b.label))) {
     const thing = document.createElement('button')

@@ -171,10 +171,15 @@ export const MARGINAL_LABEL_SUFFIX = 'unsure'
 
 /** Human phrasing for why a segment was not placed. Outcomes, not job names. */
 const REASON_TEXT: Record<string, string> = {
-  'no-pose': 'the frame had no camera pose',
+  'no-pose': 'the frame does not record where the camera was',
   'degenerate-camera': 'the camera pose was unusable',
   'centroid-off-mask': 'the ray missed the object',
   'no-geometry': 'nothing was scanned behind it',
+  // Added after a forced run on solved poses reported 23 of these and the line
+  // rendered the bare slug at the reader. Phrased as a distance problem, not a
+  // units one: 'out of the depth range' is what the reader can see in the
+  // viewport, and `placementVerdictOf` carries the units explanation.
+  'out-of-range': 'everything behind it sat outside the range the scan measures in',
   'unsupported': 'too few scanned points to fix a depth',
   'depth-ambiguous': 'its depth was smeared over too wide a range',
   'multi-surface': 'two surfaces at different depths were equally likely',
@@ -329,36 +334,218 @@ export async function fetchScanPanopticLayer(
 }
 
 /**
+ * Why a scan has no objects placed in it — grouped by what the reader would
+ * have to DO differently, not by the lift's nine internal reasons.
+ *
+ * Several reasons collapse to one action ('no-geometry' and 'unsupported' are
+ * both "scan more of the room"), and two that sound alike need opposite
+ * actions: 'out-of-range' is a scale problem no amount of re-scanning fixes,
+ * while 'no-geometry' is exactly a coverage problem. That split is the whole
+ * point of the type — see the `out-of-range` note in src/shared/panoptic_lift.ts,
+ * which cost an evening to find.
+ */
+export type PlacementBlock =
+  /** Nothing has looked for objects in this scan yet. */
+  | 'not-attempted'
+  /** The frames do not record where the camera was. The video-upload case. */
+  | 'no-capture-poses'
+  /** Room shape exists, but not at a real-world size, so distances mean nothing. */
+  | 'no-real-world-scale'
+  /** Not enough of the room is scanned behind the objects. */
+  | 'thin-geometry'
+  /** Positions were computed and none was trustworthy. */
+  | 'weak-placements'
+  /** The frames were read and held no discrete objects. */
+  | 'nothing-found'
+  /** Placement was attempted and errored. */
+  | 'failed'
+  /** Determinate but none of the above — the reason line carries the detail. */
+  | 'other'
+
+export interface PlacementVerdict {
+  block: PlacementBlock
+  /** One short sentence — the thing a non-expert reads first. */
+  headline: string
+  /** What was measured and what, if anything, would change it. */
+  detail: string
+}
+
+/**
+ * The reason that accounts for most of the unplaced segments, or null.
+ *
+ * A single dominant reason is what the copy keys off, because a run is
+ * overwhelmingly one-sided in practice: 33 of 44 'unsupported' on the phone
+ * capture, 29 of 29 'no-pose' on the video, 23 of 29 'out-of-range' on the
+ * video forced onto solved poses. Ties resolve to whichever `Object.entries`
+ * yields first, which is stable for a manifest read back from disk.
+ */
+export function dominantReason(manifest: PanopticLiftManifest): string | null {
+  let top: string | null = null
+  let topCount = 0
+  for (const [reason, count] of Object.entries(manifest.reasons ?? {})) {
+    if (count > topCount) {
+      top = reason
+      topCount = count
+    }
+  }
+  return top
+}
+
+const BLOCK_BY_REASON: Record<string, PlacementBlock> = {
+  'no-pose': 'no-capture-poses',
+  'degenerate-camera': 'no-capture-poses',
+  'out-of-range': 'no-real-world-scale',
+  'no-geometry': 'thin-geometry',
+  'unsupported': 'thin-geometry',
+  'low-confidence': 'weak-placements',
+  'depth-ambiguous': 'weak-placements',
+  'multi-surface': 'weak-placements',
+}
+
+/**
+ * Say why a scan shows nothing placed, in the words of someone standing in the
+ * room rather than someone running the pipeline.
+ *
+ * Returns null when the scan DID place objects — there is nothing to explain,
+ * and a scan that worked must read exactly as it did before this existed.
+ * `null` for `layer` means the lift sidecars were asked for and are not there,
+ * which is a different situation from every other branch here and is the one
+ * case the caller cannot get from a manifest.
+ *
+ * ## Why the manifest's own `remediation` is not printed
+ *
+ * The envelope carries one (`liftRemediation`, src/shared/panoptic_lift.ts:745),
+ * and reconstruction-quality.ts is right to prefer the producer's own words
+ * over composed ones. This one cannot be forwarded as written: it is addressed
+ * to whoever runs the pipeline, in its vocabulary — "solved (SfM) poses",
+ * "a capture-frame cloud", "the 0.5-5.0 m depth window", "run a colmap-poses
+ * job". Every clause of it is true and none of it is actionable by a person who
+ * uploaded a video, so the same measured facts are restated below in terms of
+ * what they did and what they could do instead. The mapping is one-to-one with
+ * `liftRemediation`'s switch, so the two cannot drift apart silently.
+ */
+export function placementVerdictOf(layer: ScanPanopticLayer | null): PlacementVerdict | null {
+  if (!layer) {
+    return {
+      block: 'not-attempted',
+      headline: 'Nothing has looked for things in this scan yet.',
+      detail: 'The room itself is here — it just has not been read for objects, '
+        + 'so there is nothing to list. Nothing is wrong with the scan.',
+    }
+  }
+  if (layer.placedCount > 0) return null
+
+  const m = layer.manifest
+  if (m.status === 'skipped') {
+    // Two structural cases cover every skip the driver writes: `pointCount` is
+    // 0 exactly when the cloud was the missing input, and absent when the
+    // segments were.
+    return m.pointCount === 0
+      ? {
+        block: 'thin-geometry',
+        headline: 'There is no scanned shape here to put things against.',
+        detail: 'Locating an object means measuring how far away its surface is, '
+          + 'and this scan has no surfaces recorded yet. The room has to be built '
+          + 'before anything can be placed inside it.',
+      }
+      : {
+        block: 'not-attempted',
+        headline: 'This scan’s pictures have not been read for objects yet.',
+        detail: 'Nothing has looked at the frames to say what is in them, so there '
+          + 'is nothing to place. Nothing is wrong with the scan.',
+      }
+  }
+  if (m.status === 'error') {
+    return {
+      block: 'failed',
+      headline: 'Placing objects in this scan failed.',
+      detail: m.error ?? 'No reason was recorded.',
+    }
+  }
+
+  const seen = m.segmentCount ?? layer.unplacedCount
+  if (seen === 0) {
+    return {
+      block: 'nothing-found',
+      headline: 'No objects were found in this scan’s pictures.',
+      detail: 'The frames were read and held no distinct things — only surfaces '
+        + 'like walls, floors and ceilings.',
+    }
+  }
+
+  const objects = `${seen} object${seen === 1 ? '' : 's'}`
+  const block = BLOCK_BY_REASON[dominantReason(m) ?? ''] ?? 'other'
+  switch (block) {
+    case 'no-capture-poses':
+      // The measured fact, not an inference about the source: keyframes.jsonl
+      // for both video sessions on disk records {index, file, timestamp} and
+      // nothing else — 0 of 32 and 0 of 48 frames carry a pose, against 17 of
+      // 17 on a phone capture. Solved camera positions are not a substitute and
+      // are deliberately not offered as one: they have no real-world size, which
+      // is the 'no-real-world-scale' case below.
+      return {
+        block,
+        headline: 'This scan cannot say where things are.',
+        detail: `Its ${objects} were recognised in the pictures, but the pictures only `
+          + 'record what the camera saw — not where the camera was standing. Without that '
+          + 'there is nothing to measure a position against. This is normal for a scan '
+          + 'built from an uploaded video: a video can rebuild the shape of a room, but it '
+          + 'cannot locate anything inside it. Walking the room with the phone scanner '
+          + 'records both at once, and that is what puts things on the map.',
+      }
+    case 'no-real-world-scale':
+      // Measured on sess-video-20260830-033839 forced onto solved camera
+      // positions: 23 of 29 segments 'out-of-range', cones holding a median of
+      // 109 points at depths of 3.6-18.1 in a unitless frame. The geometry is
+      // there; the numbers are not metres.
+      return {
+        block,
+        headline: 'This scan’s room has no real-world size.',
+        detail: `Each of its ${objects} was traced to a surface, but the room was rebuilt `
+          + 'from pictures alone, which fixes its shape and not how big it is. "Two metres '
+          + 'away" has no meaning in it, so no position can be trusted. Scanning the room '
+          + 'with the phone measures real distances as it goes, and things can be placed in '
+          + 'that from the start.',
+      }
+    case 'thin-geometry':
+      return {
+        block,
+        headline: `Saw ${objects} but could not work out how far away any of them were.`,
+        detail: 'Too little of the room is scanned where those objects are, so there is no '
+          + 'surface to measure against. Scan again more slowly, pointing the camera at the '
+          + 'objects themselves rather than sweeping past them.',
+      }
+    case 'weak-placements':
+      return {
+        block,
+        headline: `Worked out where ${objects} might be, but trusted none of it.`,
+        detail: 'Each one came out either too vague or split between two possible distances. '
+          + 'A slower second pass over the same area, closer to the objects, is what '
+          + 'sharpens this.',
+      }
+    default:
+      return {
+        block: 'other',
+        headline: `Saw ${objects} in this scan’s pictures and could not place any of them.`,
+        detail: unplacedReasonLine(m) || 'No reason was recorded.',
+      }
+  }
+}
+
+/**
  * One sentence about what the lift achieved for this scan.
  *
  * Names outcomes, never job types: "run panoptic-lift" is not a thing a person
- * reading a room can act on, whereas "walk the room" is.
+ * reading a room can act on, whereas "walk the room" is. Every "nothing was
+ * placed" case defers to `placementVerdictOf` so the layers panel and the
+ * Things list cannot say two different things about one scan (ADR 0001).
  */
 export function summarizePanopticLayer(layer: ScanPanopticLayer): string {
+  const verdict = placementVerdictOf(layer)
+  if (verdict) return `${verdict.headline} ${verdict.detail}`
+
   const m = layer.manifest
-  if (m.status === 'skipped') {
-    // Deliberately not the manifest's own `remediation`: it is written for an
-    // operator and names the job to run next, which is not something a person
-    // looking at a room can act on. Two structural cases cover every skip the
-    // driver writes — `pointCount` is 0 exactly when the cloud was the missing
-    // input, and absent when the segments were.
-    return m.pointCount === 0
-      ? 'Nothing to place objects against yet: this scan has no point cloud. '
-        + 'The room has to be reconstructed before anything can be placed in it.'
-      : 'This scan’s frames have not been read for objects yet, so there is nothing to place.'
-  }
-  if (m.status === 'error') {
-    return `Object placement failed: ${m.error ?? 'unknown error'}`
-  }
-
   const seen = m.segmentCount ?? layer.placedCount + layer.unplacedCount
-  if (seen === 0) return 'No discrete objects were found in this scan’s frames.'
-  if (layer.placedCount === 0) {
-    return `Saw ${seen} object${seen === 1 ? '' : 's'} in the frames but could not place any of them. ` +
-      'A capture that rotates in place has almost no parallax, so depth is not recoverable from it — ' +
-      'walk the room to give the scan a baseline.'
-  }
-
   const marginal = layer.markers.filter(marker => marker.tier === 'marginal').length
   const parts = [
     `Placed ${layer.placedCount} of ${seen} object${seen === 1 ? '' : 's'}`,

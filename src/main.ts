@@ -64,6 +64,12 @@ import { iconLabel } from './ui/icons'
 import { ONBOARDING_KEY, PLACE_SELECTION_SESSION_KEY } from './shared/storage-keys'
 import { hasDebugFlag } from './shared/debug-flags'
 import { formatPoseDelta, poseDelta } from './capture/pose-delta'
+import {
+  UPLOAD_RESULT_NOTE,
+  uploadExpectation,
+  uploadExpectationLine,
+  type ScanCapability,
+} from './capture/upload-expectation'
 import * as THREE from 'three'
 
 const CAPTURE_FRAME_TIMEOUT_MS = 8000
@@ -76,6 +82,20 @@ let requestPlaceSelection:
 // Upload selection is wired before IndexedDB and Place data finish loading, so
 // retain its current target in module state for the upload handler.
 let uploadPlaceTarget: { projectId: string | null; areaId: string | null } = { projectId: null, areaId: null }
+/**
+ * Whether recommending a live scan is honest advice on this device.
+ *
+ * Read by the upload path, which has to name an alternative to an upload's one
+ * real limitation (it builds the room but places nothing in it) and must not
+ * say "walk the room instead" to someone holding a phone that has already been
+ * found unable to. Starts 'unknown' because wireContentUpload() runs at the top
+ * of main(), before the secure-context check and long before an AR runtime
+ * exists — a tap can genuinely arrive before there is an answer.
+ *
+ * Written from the preflight verdict rather than re-derived here, so there is
+ * one notion of "can this device scan" (src/ar/preflight.ts) and not a second.
+ */
+let scanCapability: ScanCapability = 'unknown'
 
 function poseIsFinite(pose: Pose): boolean {
   return Number.isFinite(pose.position.x)
@@ -1838,6 +1858,13 @@ function mountPlacePicker(
       ? 'Nothing within 100 m · opens the full list'
       : `${nearby.length} place${nearby.length === 1 ? '' : 's'} within 100 m · nearest first`
     const copy = PLACE_MODAL_COPY[currentPurpose]
+    // The last screen before the native file picker opens, and the only one on
+    // the upload path that can hold more than a line — so the full version of
+    // what an upload builds goes here, where it is still a choice rather than
+    // an explanation for a result that already came back empty. Built fresh on
+    // every render because `scanCapability` can settle after this sheet was
+    // first constructed.
+    const expectation = currentPurpose === 'upload' ? uploadExpectation(scanCapability) : null
     const areaCount = currentSelected?.areas?.length ?? 0
     const areaHint = !currentSelected
       ? 'Pick a place first'
@@ -1848,6 +1875,12 @@ function mountPlacePicker(
     sheet.innerHTML = `
       <div class="place-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="place-title">
         <div class="place-sheet-title" id="place-title">${escapeHtml(copy.title)}</div>
+        ${expectation ? `
+        <div id="place-upload-note" class="place-upload-note">
+          <b>${escapeHtml(expectation.title)}</b>
+          ${escapeHtml(expectation.builds)} ${escapeHtml(expectation.limit)}
+          <span>${escapeHtml(expectation.alternative)}</span>
+        </div>` : ''}
         <div id="place-location-status" class="place-location-status"></div>
         <div class="place-selected-status${currentSelected ? '' : ' is-empty'}">
           <span class="place-selected-label">Selected project</span>
@@ -2397,6 +2430,14 @@ function setStartButtonState(state: 'ready' | 'unavailable', label?: string): vo
   btn.disabled = state !== 'ready'
   btn.removeAttribute('aria-busy')   // no longer booting, either way
 
+  // Every dead end funnels through here — insecure context, no AR runtime, a
+  // failed start — so this is the one place that catches them all, including
+  // the ones that return before the preflight probe ever runs. Only the
+  // negative is taken: 'ready' fires in section 0, before an AR runtime has
+  // been created, and would be claiming a scan is possible on evidence that
+  // is only "the button's click handler is attached".
+  if (state === 'unavailable') scanCapability = 'unavailable'
+
   const status = btn.querySelector<HTMLElement>('.start-path-status')
   if (status && state === 'unavailable') {
     status.textContent = label ?? 'Not available on this device'
@@ -2461,8 +2502,20 @@ function wireContentUpload(): void {
   // picker directly (an unassigned upload) rather than a dead click with no
   // feedback — this is the same "no Place" path Cancel already allows.
   uploadCard?.addEventListener('click', () => {
-    if (requestPlaceSelection) requestPlaceSelection(() => input.click(), 'upload')
-    else input.click()
+    if (requestPlaceSelection) {
+      // The sheet carries the expectation itself (see the upload branch in
+      // mountPlacePicker's render), so nothing is written here — the status
+      // line under the card would be behind the sheet anyway.
+      requestPlaceSelection(() => input.click(), 'upload')
+      return
+    }
+    // No sheet on this path — it is the insecure-context / still-booting
+    // fallback — so the picker opens over a start screen that has said only
+    // the card's one-line version. Put the full version in the status line
+    // first: it is what the user comes back to once the picker closes, and it
+    // is still before a byte has been uploaded.
+    if (progress) progress.textContent = uploadExpectationLine(scanCapability)
+    input.click()
   })
 
   input.addEventListener('change', () => {
@@ -2499,9 +2552,13 @@ function wireContentUpload(): void {
         try { result = JSON.parse(xhr.responseText) as typeof result } catch { /* ignore */ }
         if (progress) {
           const dropNote = result.droppedBlurry ? ` ${result.droppedBlurry} blurry photo${result.droppedBlurry === 1 ? '' : 's'} skipped.` : ''
+          // Repeated here, briefly, because this line is read seconds before
+          // the editor opens on a reconstruction with an empty object list —
+          // the one moment an expectation set a minute ago has most likely
+          // been forgotten.
           progress.textContent = result.frameCount
-            ? `Uploaded — ${result.frameCount} keyframes extracted.${dropNote}`
-            : 'Uploaded — processing started.'
+            ? `Uploaded — ${result.frameCount} keyframes extracted.${dropNote} ${UPLOAD_RESULT_NOTE}`
+            : `Uploaded — processing started. ${UPLOAD_RESULT_NOTE}`
         }
         if (openLink) {
           openLink.href = uploadPlaceTarget.projectId
@@ -2598,6 +2655,12 @@ function cameraLightSource(): HTMLVideoElement | null {
 function applyPreflightToStartScreen(verdict: PreflightVerdict): void {
   if (verdict.outcome === 'unavailable') {
     setStartButtonState('unavailable', verdict.headline)
+  } else if (verdict.canScan) {
+    // Reached only after an AR runtime was actually created (section 3), so
+    // this is a good deal more than the API answering yes — enough to offer
+    // "walk the room instead" to someone about to upload. Still not a promise:
+    // if the session then fails, the start-failure path downgrades it above.
+    scanCapability = 'available'
   }
   // `caveat` and not `canScan`: the case worth showing is a verdict that says
   // yes and should still be read — a browser advertising AR support on a device
