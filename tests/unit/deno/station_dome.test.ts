@@ -84,8 +84,11 @@ Deno.test('one station is refused: pure rotation cannot be reconstructed', () =>
   assertEquals(assessment.verdict, 'single-station')
   assert(assessment.remediation !== null)
   assertStringIncludes(assessment.remediation, 'Move the tripod')
-  // The refusal names the measurement it rests on.
-  assertStringIncludes(assessment.reason, '3 of 17')
+  // The refusal names the measurement it rests on — and it must be THIS rig's
+  // own measurement. 3-of-17 is a handheld near-in-place run (ADR 0007); quoting
+  // it beside "on this rig" would attribute another setup's result to the gimbal.
+  assertStringIncludes(assessment.reason, '4 of 9')
+  assertStringIncludes(assessment.reason, 'this rig')
 })
 
 Deno.test('two stations is accepted as the minimum that can work, with a warning', () => {

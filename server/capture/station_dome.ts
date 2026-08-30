@@ -217,7 +217,14 @@ export function summarizeStationCoverage(jsonl: string): StationCoverage {
  * The honesty gate. A single-station capture cannot reconstruct, and saying so
  * here — while the operator is still in the room with the tripod — is the whole
  * value: the alternative is a COLMAP run that fails confusingly twenty minutes
- * later, having registered 3 of 17 images.
+ * later.
+   *
+   * The figure quoted at the operator is this rig's own: a single narrow sweep
+   * registered 4 of 9 images, with 29 of 36 pairs diagnosed PLANAR_OR_PANORAMIC
+   * (docs/operations/GIMBAL_INTEGRATION.md). It deliberately is NOT the 3-of-17
+   * figure used elsewhere in the tree — that is a handheld near-in-place run
+   * (ADR 0007), so quoting it beside "this rig" would attribute someone else's
+   * measurement to this hardware.
  */
 export function assessStationCoverage(coverage: StationCoverage): StationAssessment {
   const stationCount = coverage.stations.length
@@ -267,7 +274,7 @@ export function assessStationCoverage(coverage: StationCoverage): StationAssessm
       reason:
         `Every one of these ${coverage.frameCount} photo(s) was taken from the same spot. A camera ` +
         'turning on the spot sees the room from one place only, so there is nothing for the scan to ' +
-        'measure depth against — measured on this exact setup, a single spot placed 3 of 17 photos in 3D.',
+        'measure depth against — measured on this rig, a single sweep placed 4 of 9 photos in 3D.',
       remediation:
         `Move the tripod to a different spot in the room and sweep again — that move is what gives the ` +
         `scan its depth. Two spots is the least that can work; ${MEASURED_GOOD_STATIONS} spread around ` +
