@@ -30,7 +30,17 @@
  * MAKES the output panoptic — is post-graph Python that would have to be
  * reimplemented by hand. Revisit ONNX only if this ever needs to run in-browser.
  */
-import type { PanopticScanManifest } from '../../src/world/types.ts'
+// Straight from manifests.ts rather than through src/world/types.ts's re-export
+// block: that block is `export type { … }`, and isComputeDevice/COMPUTE_DEVICES
+// are values. manifests.ts is the canonical home either way.
+import {
+  COMPUTE_DEVICES,
+  type ComputeDevice,
+  type IndexedCudaDevice,
+  isComputeDevice,
+  isIndexedCudaDevice,
+  type PanopticScanManifest,
+} from '../../src/world/manifests.ts'
 import { isRunnable } from '../exec_probe.ts'
 import { splitPanopticSegments, MIN_SEGMENT_PIXELS, type RawPanopticFrame } from './panoptic_segments.ts'
 export type { PanopticScanManifest }
@@ -54,6 +64,9 @@ const DEFAULT_PANOPTIC_MODEL = 'facebook/mask2former-swin-large-ade-panoptic'
 /** Keyframes to segment per run, unless overridden. */
 const DEFAULT_MAX_FRAMES = 64
 
+/** Let the worker choose, which is what it did before this was an option. */
+const DEFAULT_DEVICE: ComputeDevice = 'auto'
+
 /** Manifest schema version — bump when a consumer-visible field changes. */
 const SCHEMA_VERSION = 1
 
@@ -72,6 +85,22 @@ export interface PanopticScanRunOptions {
   model?: string
   /** Cap on keyframes segmented. Falls back to env PANOPTIC_MAX_FRAMES. */
   maxFrames?: number
+  /**
+   * Torch backend to ask the worker for. Falls back to env PANOPTIC_DEVICE,
+   * then 'auto' — which is what shipped before this option existed, so an
+   * absent value spawns the exact same command line as it always did.
+   *
+   * The reason to ever set it: on a box with CUDA the worker takes it, and
+   * there was no way to say "not right now" when the GPU is busy with a splat
+   * train or the driver is wedged. 'cpu' is that escape hatch.
+   *
+   * `cuda:1` is accepted as well as the four named values, because
+   * panoptic_worker.py's `--device` is free-form and
+   * `_torch_device.resolve_torch_device` honours an index verbatim. The
+   * lingbot-map driver deliberately does NOT accept one: its worker pins
+   * argparse `choices`.
+   */
+  device?: ComputeDevice | IndexedCudaDevice
   /** Smallest mask kept, in source pixels. */
   minSegmentPixels?: number
   /**
@@ -141,7 +170,34 @@ export function resolveParams(opts: PanopticScanRunOptions): PanopticScanManifes
     model: opts.model ?? Deno.env.get('PANOPTIC_MODEL') ?? DEFAULT_PANOPTIC_MODEL,
     maxFrames: opts.maxFrames ?? Number(Deno.env.get('PANOPTIC_MAX_FRAMES') ?? DEFAULT_MAX_FRAMES),
     minSegmentPixels: opts.minSegmentPixels ?? MIN_SEGMENT_PIXELS,
+    // Kept verbatim, unvalidated: runPanopticScan turns an unrecognised value
+    // into a skip, and that skip is only actionable if the manifest still shows
+    // what was actually written.
+    device: opts.device ?? Deno.env.get('PANOPTIC_DEVICE') ?? DEFAULT_DEVICE,
   }
+}
+
+/**
+ * Read the backend out of the line panoptic_worker.py prints:
+ *
+ *     device: cuda (NVIDIA CUDA, fp16) — requested explicitly
+ *
+ * stderr is the whole channel available. The worker's `panoptic.segments.json`
+ * carries `model` but no device. stderr is also the only channel that survives
+ * the case most worth asking about: a CUDA OOM exits non-zero having written no
+ * JSON at all, and "was this even on the GPU?" is the first question about it.
+ *
+ * Vendor is kept separately because the device string cannot carry it — a ROCm
+ * torch runs on "cuda", so 'cuda' alone never says whose GPU it was. Tolerates
+ * a bare `device: cpu` with no parenthetical, so an older worker still reports
+ * something rather than nothing.
+ */
+export function parseDeviceLine(
+  stderr: string,
+): { resolvedDevice: string; deviceVendor?: string } | undefined {
+  const m = /^device:[ \t]*(\S+)(?:[ \t]*\(([^,)]+)[,)])?/m.exec(stderr)
+  if (!m) return undefined
+  return { resolvedDevice: m[1], ...(m[2] ? { deviceVendor: m[2].trim() } : {}) }
 }
 
 export async function runPanopticScan(opts: PanopticScanRunOptions): Promise<PanopticScanManifest> {
@@ -178,6 +234,18 @@ export async function runPanopticScan(opts: PanopticScanRunOptions): Promise<Pan
   }
 
   // 1. Runtime guards. Missing tooling is a skip, never an error.
+  if (!isComputeDevice(params.device) && !isIndexedCudaDevice(params.device)) {
+    // Caught here rather than left to torch: an unrecognised string reaches the
+    // worker as `--device cude`, and torch's own error for that arrives as a
+    // traceback tail on an `error` manifest, which reads like the model broke
+    // rather than like a typo in one env var.
+    return finish(manifestPath, {
+      ...base,
+      skippedReason: `unrecognised device: ${params.device}`,
+      remediation:
+        `Set PANOPTIC_DEVICE to one of ${COMPUTE_DEVICES.join(', ')} (or cuda:N), or unset it for auto.`,
+    }, Date.now() - started)
+  }
   if (!(await isRunnable(params.python))) {
     return finish(manifestPath, {
       ...base,
@@ -213,6 +281,11 @@ export async function runPanopticScan(opts: PanopticScanRunOptions): Promise<Pan
     '--max-frames', String(params.maxFrames),
     '--min-segment-pixels', String(params.minSegmentPixels),
     ...(haveThingLabels ? ['--thing-labels', thingLabelsPath] : []),
+    // Omitted on 'auto' rather than passed through: the worker's own line is
+    // `device = args.device or (…)`, so a literal "auto" would be handed to
+    // torch verbatim. Omitting keeps the default run byte-identical to what it
+    // was before this option existed.
+    ...(params.device === 'auto' ? [] : ['--device', params.device]),
   ]
   let result: { code: number; stderr: string }
   try {
@@ -226,6 +299,10 @@ export async function runPanopticScan(opts: PanopticScanRunOptions): Promise<Pan
       error: e instanceof Error ? e.message : String(e),
     }, Date.now() - started)
   }
+  // Whatever the worker said it picked, before any exit-code branch: on the
+  // failing paths stderr is the only thing that survives, and that is exactly
+  // where "was this even on the GPU?" gets asked.
+  const reported = parseDeviceLine(result.stderr)
   if (result.code !== 0) {
     // Keep the stderr tail: a CUDA OOM and a bad model id are the two most
     // likely failures and are indistinguishable from the exit code alone.
@@ -233,6 +310,7 @@ export async function runPanopticScan(opts: PanopticScanRunOptions): Promise<Pan
     return finish(manifestPath, {
       ...base,
       status: 'error',
+      ...reported,
       error: `panoptic worker exited ${result.code}${tail ? `: ${tail}` : ''}`,
     }, Date.now() - started)
   }
@@ -246,6 +324,7 @@ export async function runPanopticScan(opts: PanopticScanRunOptions): Promise<Pan
     return finish(manifestPath, {
       ...base,
       status: 'error',
+      ...reported,
       error: `panoptic worker exited 0 but wrote no readable ${segmentsPath}: ${e instanceof Error ? e.message : String(e)}`,
     }, Date.now() - started)
   }
@@ -258,6 +337,7 @@ export async function runPanopticScan(opts: PanopticScanRunOptions): Promise<Pan
     thingCount: split.things.length,
     stuffCount: split.stuff.length,
     thingLabelsUsed: haveThingLabels,
+    ...reported,
     segmentsPath: segmentsPath.split('/').pop() ?? segmentsPath,
   }, Date.now() - started)
 }

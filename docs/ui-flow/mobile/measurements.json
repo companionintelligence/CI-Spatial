@@ -1,0 +1,62 @@
+{
+  "ftueSteps": 2,
+  "startScreen": {
+    "viewportHeight": 852,
+    "pathsBottom": 618,
+    "overflowsViewport": false
+  },
+  "placeSheetPanel": {
+    "viewportHeight": 852,
+    "panelHeight": 435,
+    "panelScrollHeight": 433,
+    "panelTop": 208,
+    "panelBottom": 644,
+    "lastActionBottom": 629,
+    "lastActionBelowFold": false,
+    "panelOverflowsViewport": false
+  },
+  "placeNewForm@393x852": {
+    "viewport": "393x852",
+    "panelHeight": 366,
+    "panelScrollHeight": 364,
+    "panelTop": 243,
+    "panelBottom": 609,
+    "saveButtonBottom": 594,
+    "saveButtonBelowFold": false,
+    "panelOverflowsViewport": false,
+    "panelScrollsInternally": false
+  },
+  "placeNewForm@375x667": {
+    "viewport": "375x667",
+    "panelHeight": 366,
+    "panelScrollHeight": 364,
+    "panelTop": 151,
+    "panelBottom": 517,
+    "saveButtonBottom": 502,
+    "saveButtonBelowFold": false,
+    "panelOverflowsViewport": false,
+    "panelScrollsInternally": false
+  },
+  "placeNewForm@375x667+focus": {
+    "viewport": "375x667",
+    "panelHeight": 366,
+    "panelScrollHeight": 364,
+    "panelTop": 151,
+    "panelBottom": 517,
+    "saveButtonBottom": 502,
+    "saveButtonBelowFold": false,
+    "panelOverflowsViewport": false,
+    "panelScrollsInternally": false
+  },
+  "placeNewForm@375x340 (keyboard simulated)": {
+    "viewport": "375x340",
+    "panelHeight": 316,
+    "panelScrollHeight": 364,
+    "panelTop": 12,
+    "panelBottom": 328,
+    "saveButtonBottom": 363,
+    "saveButtonBelowFold": true,
+    "panelOverflowsViewport": false,
+    "panelScrollsInternally": true
+  }
+}

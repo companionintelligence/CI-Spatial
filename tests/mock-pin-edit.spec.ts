@@ -21,11 +21,15 @@
  */
 import { test, expect } from '@playwright/test'
 import { startArScan } from './support/start-scan'
+import { requireUsableInferenceEngine } from './support/inference-engine'
 
 const EDIT_BTN = 'button[title="Edit label & description"]'
 
 /** Drive the XR8 mock until at least one detection card exists in the panel. */
 async function scanUntilDetection(page: import('@playwright/test').Page) {
+  // The poll below waits 60 s for a detection that a server with no vision
+  // engine can never produce. Say so in a second instead. See ./support/inference-engine.
+  await requireUsableInferenceEngine()
   // ?mock=xr8 alone skips the onboarding overlay, so the scan flow is not gated.
   await startArScan(page)
   await page.waitForTimeout(1500)

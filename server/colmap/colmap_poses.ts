@@ -25,6 +25,10 @@
  * reprojection error). The first pass's largest model is chosen by registered
  * image count, because COLMAP emits models in arbitrary order and `0` is not
  * reliably the best one.
+ *
+ * A run that finishes is not the same as a run that worked, and this driver used
+ * to conflate them — see `ColmapReconstructionQuality` and
+ * `DEFAULT_MIN_REGISTRATION_RATIO` for the measurement that now separates them.
  */
 import { isServerSessionId } from '../../src/shared/session-id.ts'
 import { isRunnable } from '../exec_probe.ts'
@@ -41,6 +45,7 @@ import {
   rotateImagePose,
 } from './colmap_model.ts'
 import type { ColmapPosesManifest } from '../../src/world/manifests.ts'
+import type { ScanReviewStatus } from '../../src/world/types.ts'
 
 export interface ColmapPosesRunOptions {
   /** Absolute path to the session directory (scans/sessions/<id>). */
@@ -64,15 +69,80 @@ export interface ColmapPosesRunOptions {
 
 export type ColmapPosesStatus = 'ok' | 'skipped' | 'error'
 
+/** Why a solve was judged degenerate. Codes, so a caller can branch without parsing prose. */
+export type ColmapQualityReason = 'low-registration-ratio' | 'too-few-points'
+
+/**
+ * How good the solve that just succeeded actually is.
+ *
+ * Why this is a field and not a fourth `status` value: on 2026-08-30 a run over
+ * a 17-keyframe phone capture registered 3 images and triangulated 1 point, and
+ * reported `status: 'ok'` — indistinguishable from the same night's video
+ * session, which registered 32 of 32 with 9362 points. COLMAP did not fail
+ * there; it ran every step, exited 0, and wrote a real `colmap.poses.json`. So
+ * `'error'` would be a lie (the tool worked) and `'skipped'` would be a bigger
+ * one (it ran). What was missing was never a status value — it was the
+ * measurement. That is ADR 0005 rule 3 read the other way round: rather than
+ * widen the vocabulary to cover a claim nothing backs, attach the measurement
+ * that lets the existing `'ok'` be true and the caller decide.
+ *
+ * `status` reuses `ScanReviewStatus` ('ready' | 'needs-review' | 'needs-rescan')
+ * rather than inventing a private good/bad enum: that type is already this
+ * repo's word for "how usable is this capture, and does the operator need to go
+ * back", ADR 0005 names it as a member of the same verdict family, and ADR 0001
+ * says reuse it. Only two of its three values are reachable today — see
+ * `assessColmapQuality` for why 'needs-review' has no measurement behind it yet.
+ */
+export interface ColmapReconstructionQuality {
+  /** `registeredImages / frameCount`, 0..1, rounded to 3 dp for the manifest. */
+  registrationRatio: number
+  /**
+   * The one flag a caller must check before treating the poses as real.
+   * Kept alongside `status` deliberately: a boolean cannot be got wrong by
+   * comparing against the wrong string literal, and `status === 'needs-rescan'`
+   * is exactly this. It is derived, never set independently.
+   */
+  degenerate: boolean
+  status: ScanReviewStatus
+  reasons: ColmapQualityReason[]
+  /** What the verdict was measured against, so a manifest explains its own verdict. */
+  thresholds: ColmapQualityThresholds
+}
+
+export interface ColmapQualityThresholds {
+  minRegistrationRatio: number
+  minPoints3D: number
+}
+
+/**
+ * `ColmapPosesManifest` plus the quality verdict.
+ *
+ * The verdict belongs in `src/world/manifests.ts` beside the rest of the
+ * manifest shape; it is declared here only because that file is owned by
+ * another change in flight. Moving `ColmapReconstructionQuality` /
+ * `ColmapQualityReason` / `ColmapQualityThresholds` there and adding a
+ * `quality?: ColmapReconstructionQuality` field to `ColmapPosesManifest` makes
+ * this alias collapse to nothing, with no call-site edits.
+ */
+export type ColmapPosesManifestWithQuality = ColmapPosesManifest & {
+  quality?: ColmapReconstructionQuality
+}
+
 export interface ColmapPosesResult {
   status: ColmapPosesStatus
-  manifest: ColmapPosesManifest
+  manifest: ColmapPosesManifestWithQuality
   /** Absolute path of the written poses.json, when status is 'ok'. */
   posesPath?: string
   /** Absolute path of the written seed cloud, when points were triangulated. */
   pointCloudPath?: string
   registeredImages?: number
   pointCount?: number
+  /**
+   * Present whenever the solver actually produced a model, i.e. whenever
+   * `status === 'ok'`. Callers that gate on `status !== 'ok'` alone are the
+   * reason the 3-of-17 run reached the trainer.
+   */
+  quality?: ColmapReconstructionQuality
   log: string
   exitCode: number
 }
@@ -129,6 +199,137 @@ export function resolveParams(opts: ColmapPosesRunOptions) {
     matcherType: opts.matcherType ?? Deno.env.get('COLMAP_MATCHER_TYPE') ?? 'SIFT',
     maxImageSize: intFromEnv('COLMAP_MAX_IMAGE_SIZE', opts.maxImageSize ?? 1600),
   }
+}
+
+/**
+ * Fraction of the offered keyframes that must end up posed.
+ *
+ * The runs this was measured against, all on 2026-08-30, all `status: 'ok'`:
+ *
+ *   sess-video-20260830-033839   32/32 registered (1.000), 9362 points  — trained fine
+ *   sess-video-…    (re-run)     32/32 registered (1.000), 9366 points  — stable
+ *   sess-a7e2f642-…              3/17  registered (0.176), 1 point      — useless
+ *   sess-a7e2f642-… (re-run)     2/17  registered (0.118), 159 points   — useless
+ *
+ * The re-runs matter more than the count suggests. The good capture reproduced
+ * to within four points; the bad one did not reproduce at all — same 17 images,
+ * same binary, and the mapper landed on a different model, because its RANSAC
+ * initialisation is stochastic and a capture this weak has no dominant solution
+ * to converge on. So the *ratio* is the stable signal on a bad capture and the
+ * point count is not: 159 points would have cleared the floor below, and only
+ * the ratio caught that run. Keep both gates; do not collapse them.
+ *
+ * Points an order of magnitude apart do not locate a boundary: every value
+ * in (0.18, 1.00) separates them equally well, so this number is chosen on what
+ * it *means*, not on where the data splits. Below 0.6, more than a third of the
+ * walked path has no pose at all, so the splat can only ever cover a fragment of
+ * the room the operator believes they scanned — and the poses that remain come
+ * from one small cluster of views, which is the failure mode above rather than a
+ * milder version of it. Picking 0.6 also leaves headroom for the ordinary loss
+ * of a few motion-blurred frames at turns (the good run lost none, so the real
+ * headroom is unmeasured and 0.6 is the conservative read of that).
+ *
+ * ADR 0005 rule 5 wants tolerances measured rather than chosen. Two datapoints
+ * is not a measurement of a boundary, and pretending otherwise would be the
+ * same dishonesty this gate exists to fix — so the number is overridable
+ * (COLMAP_MIN_REGISTRATION_RATIO) and should be re-derived once there are
+ * enough runs to plot registration ratio against whether the splat was usable.
+ */
+export const DEFAULT_MIN_REGISTRATION_RATIO = 0.6
+
+/**
+ * Triangulated points below which the model has no structure, whatever the ratio.
+ *
+ * The 3-of-17 run triangulated exactly 1 point. A reconstruction can register a
+ * high *fraction* of a short session and still be that empty, which the ratio
+ * gate above would wave through — hence a second, independent floor. Downstream,
+ * this cloud seeds Brush and is one half of the Umeyama correspondence in
+ * `SplatAlignManifest`; neither can do anything with single digits.
+ *
+ * 100 is deliberately low, and this floor is the weaker of the two: the good run
+ * clears it by ~2 orders of magnitude (9362), but the bad capture's re-run
+ * produced 159 and cleared it as well. Setting it high enough to have caught
+ * that would be fitting a threshold to one stochastic sample, so it stays where
+ * it only ever catches the unambiguous case — a model with no structure at all —
+ * and the ratio does the real work. Override with COLMAP_MIN_POINTS3D; 0
+ * disables the check.
+ */
+export const DEFAULT_MIN_POINTS_3D = 100
+
+export function resolveQualityThresholds(): ColmapQualityThresholds {
+  return {
+    minRegistrationRatio: numFromEnv('COLMAP_MIN_REGISTRATION_RATIO', DEFAULT_MIN_REGISTRATION_RATIO),
+    minPoints3D: numFromEnv('COLMAP_MIN_POINTS3D', DEFAULT_MIN_POINTS_3D),
+  }
+}
+
+/**
+ * Judge a completed solve. Pure, so the thresholds can be exercised directly.
+ *
+ * Only 'ready' and 'needs-rescan' come out of this today. A 'needs-review' band
+ * — "posed enough to look at, not enough to trust" — is plausible and is left
+ * unreachable on purpose: there is no run on record that landed between the two
+ * measured cases, so any boundary for it would be invented, and ADR 0005 rule 5
+ * is explicit that a tolerance set on intuition is worse than no check. The
+ * value stays in the union so adding that band later needs evidence, not a type
+ * change.
+ */
+export function assessColmapQuality(
+  input: { registeredImages: number; frameCount: number; pointCount: number },
+  thresholds: ColmapQualityThresholds = resolveQualityThresholds(),
+): ColmapReconstructionQuality {
+  const ratio = input.frameCount > 0 ? input.registeredImages / input.frameCount : 0
+  const reasons: ColmapQualityReason[] = []
+  if (ratio < thresholds.minRegistrationRatio) reasons.push('low-registration-ratio')
+  if (input.pointCount < thresholds.minPoints3D) reasons.push('too-few-points')
+
+  const degenerate = reasons.length > 0
+  return {
+    registrationRatio: Math.round(ratio * 1000) / 1000,
+    degenerate,
+    status: degenerate ? 'needs-rescan' : 'ready',
+    reasons,
+    thresholds,
+  }
+}
+
+/**
+ * Say what went wrong in the words of someone holding a phone in a room.
+ *
+ * The real cause on 2026-08-30 was a dim, low-texture room — SIFT found 50–330
+ * features per frame where a well-lit textured one gives thousands — so the fix
+ * is light, texture and parallax, in that order. "Structure-from-motion failed
+ * to converge" is true and useless; nobody can act on it, and the operator who
+ * needs it is the one standing in the room that produced it.
+ */
+export function degenerateRemediation(
+  quality: ColmapReconstructionQuality,
+  input: { registeredImages: number; frameCount: number; pointCount: number },
+): string {
+  const facts: string[] = []
+  if (quality.reasons.includes('low-registration-ratio')) {
+    facts.push(
+      `only ${input.registeredImages} of ${input.frameCount} photos could be placed in 3D ` +
+      `(${Math.round(quality.registrationRatio * 100)}%, and at least ` +
+      `${Math.round(quality.thresholds.minRegistrationRatio * 100)}% is needed)`,
+    )
+  }
+  if (quality.reasons.includes('too-few-points')) {
+    facts.push(
+      `the scan found ${input.pointCount} point(s) of shared detail between photos ` +
+      `(at least ${quality.thresholds.minPoints3D} is needed)`,
+    )
+  }
+  return (
+    `This scan came out too thin to use: ${facts.join(', and ')}. ` +
+    'That almost always means the room was too dark or too plain for the camera to ' +
+    'recognise the same spot in two photos. To re-scan: turn on every light and open the ' +
+    'blinds; aim at things with visible pattern and detail — bookshelves, pictures, ' +
+    'furniture, a patterned rug — rather than bare walls, plain floors or anything ' +
+    'shiny; and walk sideways through the room as you scan instead of turning on the ' +
+    'spot, because the camera needs to see the same object from two different places to ' +
+    'work out how far away it is. Move slowly enough that nothing blurs.'
+  )
 }
 
 /** Shares `SESSION_ID_RE` with the other drivers rather than re-deriving it. */
@@ -373,6 +574,13 @@ export async function runColmapPoses(opts: ColmapPosesRunOptions): Promise<Colma
     pointCount = pts.length
   }
 
+  // Judge the solve before reporting it. The outputs above are written either
+  // way — a degenerate model is still the most useful thing to look at when
+  // diagnosing why a capture failed, and deleting it would leave the operator
+  // with a verdict and nothing to check it against.
+  const counts = { registeredImages: images.length, frameCount: linked, pointCount }
+  const quality = assessColmapQuality(counts)
+
   return finish(manifestPath, {
     ...base,
     status: 'ok',
@@ -382,7 +590,13 @@ export async function runColmapPoses(opts: ColmapPosesRunOptions): Promise<Colma
     pointCount,
     upAxis,
     gravityAligned: Boolean(upAxis),
-  }, 0, logs.join('\n'), started, { posesPath, pointCloudPath, registeredImages: images.length, pointCount })
+    quality,
+    // `remediation` is the envelope's existing "how do I fix this" slot, and it
+    // is what splat_train already forwards and the UI already renders — so a
+    // degenerate solve reaches a human through a path that exists rather than a
+    // new one (ADR 0001). Left unset on a good solve: nothing to remedy.
+    ...(quality.degenerate ? { remediation: degenerateRemediation(quality, counts) } : {}),
+  }, 0, logs.join('\n'), started, { posesPath, pointCloudPath, registeredImages: images.length, pointCount, quality })
 }
 
 /**
@@ -443,13 +657,13 @@ async function which(bin: string): Promise<boolean> {
 
 async function finish(
   manifestPath: string,
-  manifest: ColmapPosesManifest,
+  manifest: ColmapPosesManifestWithQuality,
   exitCode: number,
   log: string,
   started: number,
   extra: Partial<ColmapPosesResult> = {},
 ): Promise<ColmapPosesResult> {
-  const withTiming: ColmapPosesManifest = { ...manifest, timing: { elapsedMs: Date.now() - started } }
+  const withTiming: ColmapPosesManifestWithQuality = { ...manifest, timing: { elapsedMs: Date.now() - started } }
   try {
     await Deno.writeTextFile(manifestPath, JSON.stringify(withTiming, null, 2))
   } catch {
@@ -463,4 +677,16 @@ function intFromEnv(name: string, fallback: number): number {
   if (!raw) return fallback
   const n = Number.parseInt(raw, 10)
   return Number.isFinite(n) && n > 0 ? n : fallback
+}
+
+/**
+ * Like `intFromEnv`, but fractional and admitting zero — the thresholds need
+ * 0.6, and `COLMAP_MIN_POINTS3D=0` is the documented way to disable that gate.
+ * `intFromEnv`'s `n > 0` would silently turn both of those into the default.
+ */
+function numFromEnv(name: string, fallback: number): number {
+  const raw = Deno.env.get(name)
+  if (!raw) return fallback
+  const n = Number.parseFloat(raw)
+  return Number.isFinite(n) && n >= 0 ? n : fallback
 }

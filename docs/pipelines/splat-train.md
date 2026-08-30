@@ -1,4 +1,4 @@
-# Splat training (Brush)
+# Splat training (Brush, or Spirula Studio)
 
 This document walks through the end-to-end integration between Companion-Scan
 sessions and [Brush](https://github.com/ArthurBrussee/brush) — a fast,
@@ -9,6 +9,11 @@ converts a scan's keyframe session into a Nerfstudio dataset, spawns the Brush
 CLI over it, lands the exported INRIA 3DGS `.ply` as a scan sidecar, and
 surfaces it as an auto-loading **Trained Splat** layer in the Companion Scan
 Spatial Editor.
+
+Brush is the default trainer and everything below describes it. A second,
+interchangeable trainer — Spirula Studio — can be selected with
+`SPLAT_BACKEND=spirula`; see [Backends](#backends) for the licence constraint
+that shapes that integration, the setup, and a measured A/B.
 
 ## Architecture
 
@@ -43,6 +48,8 @@ Mobile app   ──upload .glb──►  Deno server  ──fork──►  brush
 | `scripts/make-splat-fixture.mjs` | Synthesises a valid 3DGS `.ply` + manifest fixture for the integration test (Brush can't run in CI). |
 | `tests/mock-splat-train.spec.ts` | Playwright integration test + screenshot capture. |
 | `splat_train.test.ts` | Deno unit tests for the driver + dataset converter. |
+| `server/splat/spirula_train.ts` | The alternative backend: same options, same manifest fields, same skip/error/ok contract, spawning Spirula Studio instead of Brush. See [Backends](#backends). |
+| `spirula_train.test.ts` | Deno unit tests for the Spirula driver — arg assembly, binary resolution, checkpoint discovery, skip/error contract. |
 
 ## Environment variables
 
@@ -53,6 +60,8 @@ Mobile app   ──upload .glb──►  Deno server  ──fork──►  brush
 | `BRUSH_TRAIN_ITERS` | `15000` | Total training iterations. |
 | `BRUSH_SH_DEGREE` | `2` | Spherical-harmonic degree of the splats. |
 | `BRUSH_MAX_RES` | `1280` | Max image resolution loaded into training. |
+
+See [Backends](#backends) for `SPLAT_BACKEND` and the `SPIRULA_*` variables.
 
 ## Setup (one time, on the inference box)
 
@@ -286,18 +295,163 @@ The driver never hard-crashes the server; every run writes a manifest:
 
 | `status` | When | UI shows |
 |----------|------|----------|
-| `ok` | Brush produced a `.ply` | Gaussian count + splat layer link |
-| `skipped` | `BRUSH_BIN` missing/unrunnable, the scan has no keyframes, or a pose solve was needed and COLMAP is absent | `skippedReason` + a `remediation` hint |
-| `error` | Dataset build failed, Brush exited non-zero, or no `.ply` was exported | Error message + stderr tail |
+| `ok` | The trainer produced a `.ply` | Gaussian count + splat layer link |
+| `skipped` | `BRUSH_BIN` (or `SPIRULA_BIN`) missing/unrunnable, the scan has no keyframes, or a pose solve was needed and COLMAP is absent | `skippedReason` + a `remediation` hint |
+| `error` | Dataset build failed, the trainer exited non-zero, or no `.ply` was exported | Error message + stderr tail |
 
 Every `error` branch puts a diagnosis on the **manifest**, not only in the
 returned log: the manifest is the durable record, and `result.log` is dropped
 after the job commits. A non-zero exit records `brush exited <code>: <last
-lines of Brush's stderr>`. This is not cosmetic — the first `splat-train` job
+lines of Brush's stderr>`; the Spirula driver records the same, and additionally
+falls back to the stdout tail when a failing run left stderr empty (Spirula
+splits its streams — progress on stdout, diagnosis on stderr). This is not cosmetic — the first `splat-train` job
 ever run in this repo recorded exactly `"error": "brush exited 1"` and nothing
 else, while the stderr it discarded said `dataset contains no usable training
 views`, which names the actual cause (see "Every path that reaches Brush is
 absolute").
+
+## Backends
+
+`splat-train` is one job type with two interchangeable trainers. `SPLAT_BACKEND`
+picks which binary `_runSplatTrainJob` spawns:
+
+| `SPLAT_BACKEND` | Driver | Binary |
+|---|---|---|
+| `brush` (default, and any unset/unrecognised value) | `server/splat/splat_train.ts` | `brush-cli` |
+| `spirula` | `server/splat/spirula_train.ts` | `spirula` (Spirula Studio) |
+
+It is a backend switch, not a second job type, because nothing downstream
+differs: both drivers land `<base>.splat.ply` plus a
+`<base>.splat-train.manifest.json`, and `splat-finish` / `splat-detect` consume
+those by name. A `splat-train-spirula` job would have duplicated the whole chain
+to change one argv (ADR 0001). The manifest's `tool` field says which trainer
+actually ran (`"brush"` or `"spirula"`). An unrecognised value falls back to
+Brush rather than failing the job — a typo'd env var must not stop a fleet from
+reconstructing.
+
+### Licensing — process invocation only
+
+[Spirula Studio](https://github.com/harry7557558/spirula-studio) is **GPL-3.0**;
+this repo ships under a restrictive Commercial Standard License. The only
+permitted coupling is the one this repo already uses for Brush and COLMAP:
+**invoke a prebuilt binary as a separate process** — argv in, files out.
+
+- No Spirula source is vendored, translated, or adapted into this repo, and none
+  may be. Not a function, not a shader, not a header.
+- The binary is **not committed**. It is resolved at runtime from `SPIRULA_BIN`
+  or a small fallback list, and its absence is a `skipped` manifest with a
+  remediation, never a crash.
+- Everything the driver knows about the CLI came from `spirula --help` /
+  `spirula train --help` and from running it — not from reading its source.
+
+### Setup
+
+Download a prebuilt release; **do not build from source** (it needs the Vulkan
+SDK). Releases carry a `*-ubuntu-vulkan-x86_64.zip` for Linux, plus Windows and
+occasional macOS assets.
+
+```bash
+# 1. Fetch and unzip a release, user-local. Verify the sha256 the release page
+#    publishes for the asset before running it.
+mkdir -p ~/opt/spirula && cd ~/opt/spirula
+curl -LO https://github.com/harry7557558/spirula-studio/releases/download/v2026.8.28/spirula-2026.8.28-ubuntu-vulkan-x86_64.zip
+sha256sum spirula-2026.8.28-ubuntu-vulkan-x86_64.zip   # 4231faa3…b372b59 for this asset
+unzip -o spirula-2026.8.28-ubuntu-vulkan-x86_64.zip && chmod +x spirula
+
+# 2. Nothing else to configure: ~/opt/spirula/spirula is the first fallback path.
+#    Select the backend per-run or in the server's environment:
+export SPLAT_BACKEND=spirula
+
+# 3. Sanity-check. It prints its adapter list at startup, which is also how you
+#    learn the index/name to give SPIRULA_DEVICE on a multi-GPU host.
+~/opt/spirula/spirula train --help
+```
+
+It needs a Vulkan loader and an ICD (`libvulkan.so.1` plus e.g.
+`/usr/share/vulkan/icd.d/nvidia_icd.json`) — no CUDA toolkit, no Python.
+
+| Var | Default | Used by |
+|-----|---------|---------|
+| `SPLAT_BACKEND` | `brush` | Server — which trainer a `splat-train` job spawns. |
+| `SPIRULA_BIN` | *(unset → first runnable of `~/opt/spirula/spirula`, `~/.local/bin/spirula`, `/usr/local/bin/spirula`)* | Server — the Spirula binary. Missing/unrunnable ⇒ `skipped` + remediation. |
+| `SPIRULA_DEVICE` | *(unset)* | Forwarded as `--device` only when set (an index or a name substring). Leave unset on a single-GPU host; Spirula picks the discrete adapter over integrated and `llvmpipe` on its own. |
+| `SPIRULA_TRAIN_ITERS` | `15000` | `--num-iterations`. Mirrors `BRUSH_TRAIN_ITERS`, not Spirula's own `30000`. |
+| `SPIRULA_SH_DEGREE` | `2` | `--sh-degree`. Mirrors `BRUSH_SH_DEGREE`, not Spirula's own `3`. |
+| `SPIRULA_PRESET` | `3dgs` | The positional preset. `360-camera`, `in-the-wild`, `synthetic`, `linear-color` and `meshing` also exist; `360-camera` is the reason this backend is interesting for equirectangular captures. |
+| `SPIRULA_QUALITY` | `medium` | `--quality` — the splat budget (`low`/`medium`/`high`/`ultra`). |
+
+The iteration and SH defaults are deliberately Brush's rather than Spirula's: a
+backend switch must change the trainer, not the training budget, or every
+comparison measures the wrong thing.
+
+There is no `SPIRULA_MAX_RES`. Spirula has no image max-resolution flag anywhere
+in its 194-flag `--help-all`; it trains at the dataset's native size, and that
+difference is load-bearing when reading the numbers below.
+
+### Dataset: one converter, two camera-model spellings
+
+Spirula reads the same Nerfstudio layout `splat_train_dataset.ts` already writes
+for Brush, with exactly one incompatibility. Its parser rejects
+`"camera_model": "PERSPECTIVE"` — the spelling Brush's own docs use for a
+distortion-free pinhole:
+
+```
+error: NerfstudioParser: unsupported camera model PERSPECTIVE
+```
+
+Measured against the 32-frame `sess-video-20260830-033839` dataset by feeding
+each spelling to `spirula train --data-format nerfstudio --num-iterations 1`:
+
+| `camera_model` | Brush | Spirula |
+|---|---|---|
+| `PERSPECTIVE` | yes | **no** — parser error above, exit 1 |
+| `OPENCV` | yes | yes |
+| `PINHOLE` | no | yes |
+| `SIMPLE_PINHOLE` | no | yes |
+
+So `buildBrushDataset` gained a `cameraModel` option (default `PERSPECTIVE`, so
+Brush is untouched) rather than growing a second converter, and the Spirula
+driver asks for `OPENCV`. The geometry written is byte-identical either way —
+the option names the lens model, it does not change a single intrinsic. The two
+backends also build into different directories (`brush-dataset/` vs
+`spirula-dataset/`) so a run of one never clobbers the other's
+`transforms.json`.
+
+### Output layout
+
+Spirula has no export flag. It writes checkpoints as
+`<output-dir-prefix>/<name>/step-<9 digits>.ckpt/{state.tar,splat.ply}`, and
+`splat.ply` is a standard INRIA 3DGS PLY (`element vertex N`, `f_dc_*`,
+`f_rest_*`) — so the same `countPlyVertices` reads it and the same viewer loads
+it. The driver picks the highest-numbered checkpoint that actually contains a
+`splat.ply`.
+
+Two flags are passed unconditionally and are not exposed as options:
+`--disable-viewer 1 --keep-viewer-alive 0`. Spirula defaults
+`--keep-viewer-alive` to **1**, i.e. it stays running to serve a web viewer on
+port 7007 after training finishes. A `WorldJob` that spawned it without these
+would never return.
+
+### Measured A/B
+
+Both runs: the same 32-keyframe session `sess-video-20260830-033839` (a
+walkthrough video ingest, COLMAP-solved 32/32 with a 140 KB sparse seed cloud),
+same box (RTX 4080 Laptop, 12 GB), 15000 iterations, SH degree 2.
+
+| | Brush | Spirula (`3dgs`, `--quality medium`) |
+|---|---|---|
+| Wall time | 166 s | **142 s** |
+| Gaussians | 246,838 | 997,855 |
+| `.ply` size | 37.5 MB | 163.6 MB |
+| Training resolution | ≤ 1280 long edge (`BRUSH_MAX_RES`) | native |
+
+Read with care — this is not "Spirula is 4× better". Spirula reached its
+`--cap-max` splat budget of 1,000,000 (997,855 of it) while Brush densified to a
+quarter of that, and Spirula trained at native resolution while Brush downscaled
+to 1280. It is faster *and* denser here, but the 163 MB sidecar is a real
+downstream cost: `splat-finish` compresses it, and a scan's `.ply` is served
+over the wire. Lower `SPIRULA_QUALITY` before assuming the default budget is the
+right one for a room scan.
 
 ## Troubleshooting
 
@@ -317,6 +471,12 @@ absolute").
 ```bash
 # Deno unit tests — driver validation, arg assembly, dataset converter, skip fallback
 npm run test:splat:unit
+
+# The Spirula backend's unit tests. NOT in test:splat:unit (that script names
+# its three files explicitly) — `deno task test` sweeps the whole directory and
+# does pick them up.
+deno test --allow-read --allow-write --allow-env --allow-run \
+  tests/unit/deno/spirula_train.test.ts
 
 # Real brush-cli, ~200 iterations, on a session already on this box. Opt-in:
 # it needs a GPU and a built Brush, so it is `ignore`d unless BRUSH_E2E=1.

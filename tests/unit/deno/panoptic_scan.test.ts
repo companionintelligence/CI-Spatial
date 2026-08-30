@@ -12,7 +12,7 @@ import { assertEquals } from 'jsr:@std/assert@^1.0.0/equals'
 import { assert } from 'jsr:@std/assert@^1.0.0/assert'
 import { assertStringIncludes } from 'jsr:@std/assert@^1.0.0/string-includes'
 
-import { runPanopticScan, resolveParams } from '../../../server/panoptic/panoptic_scan.ts'
+import { parseDeviceLine, resolveParams, runPanopticScan } from '../../../server/panoptic/panoptic_scan.ts'
 import {
   MIN_SEGMENT_PIXELS,
   splitPanopticSegments,
@@ -265,4 +265,173 @@ Deno.test('explicit options beat env, and the model default is the ADE20K panopt
   // ADE20K because its 150 classes ARE an indoor-room ontology, which is what
   // this app's domain model is about.
   assertStringIncludes(resolveParams({ sessionDir: '/tmp/x' }).model, 'ade')
+})
+
+// ── device selection ────────────────────────────────────────────────────────
+
+Deno.test('device defaults to auto, and env loses to an explicit option', () => {
+  const prev = Deno.env.get('PANOPTIC_DEVICE')
+  try {
+    Deno.env.delete('PANOPTIC_DEVICE')
+    assertEquals(resolveParams({ sessionDir: '/tmp/x' }).device, 'auto')
+    Deno.env.set('PANOPTIC_DEVICE', 'cpu')
+    assertEquals(resolveParams({ sessionDir: '/tmp/x' }).device, 'cpu')
+    assertEquals(resolveParams({ sessionDir: '/tmp/x', device: 'cuda' }).device, 'cuda')
+  } finally {
+    if (prev === undefined) Deno.env.delete('PANOPTIC_DEVICE')
+    else Deno.env.set('PANOPTIC_DEVICE', prev)
+  }
+})
+
+Deno.test('the default run spawns the worker with no --device at all', async () => {
+  // The guarantee this option had to keep: nothing passed must produce exactly
+  // the command line that shipped before it existed. `--device auto` would not
+  // — the worker's own line is `device = args.device or (...)`, so it would
+  // hand torch the literal string "auto".
+  const prev = Deno.env.get('PANOPTIC_DEVICE')
+  const dir = await Deno.makeTempDir()
+  try {
+    Deno.env.delete('PANOPTIC_DEVICE')
+    await Deno.writeTextFile(`${dir}/panoptic_worker.py`, '')
+    await Deno.writeTextFile(`${dir}/kf-00000.jpg`, 'x')
+    let seenArgs: string[] = []
+    await runPanopticScan({
+      sessionDir: dir,
+      python: '/bin/sh',
+      panopticDir: dir,
+      _spawn: (_bin, args) => {
+        seenArgs = args
+        return Promise.resolve({ code: 1, stderr: '' })
+      },
+    })
+    assert(!seenArgs.includes('--device'), `unexpected --device in ${JSON.stringify(seenArgs)}`)
+  } finally {
+    if (prev === undefined) Deno.env.delete('PANOPTIC_DEVICE')
+    else Deno.env.set('PANOPTIC_DEVICE', prev)
+    await Deno.remove(dir, { recursive: true })
+  }
+})
+
+Deno.test('a non-auto device reaches the worker, indexed CUDA included', async () => {
+  // cuda:1 is not in COMPUTE_DEVICES but panoptic_worker.py's --device is
+  // free-form and _torch_device.resolve_torch_device honours an index verbatim,
+  // so rejecting it here would be the driver refusing what its worker accepts.
+  for (const device of ['cpu', 'cuda', 'mps', 'cuda:1'] as const) {
+    const dir = await Deno.makeTempDir()
+    try {
+      await Deno.writeTextFile(`${dir}/panoptic_worker.py`, '')
+      await Deno.writeTextFile(`${dir}/kf-00000.jpg`, 'x')
+      let seenArgs: string[] = []
+      const m = await runPanopticScan({
+        sessionDir: dir,
+        python: '/bin/sh',
+        panopticDir: dir,
+        device,
+        _spawn: (_bin, args) => {
+          seenArgs = args
+          return Promise.resolve({ code: 1, stderr: '' })
+        },
+      })
+      assertEquals(m.status, 'error', `${device} was gated instead of spawned`)
+      assertEquals(seenArgs[seenArgs.indexOf('--device') + 1], device)
+    } finally {
+      await Deno.remove(dir, { recursive: true })
+    }
+  }
+})
+
+Deno.test('an unrecognised device is skipped with a remediation, not handed to torch', async () => {
+  // A typo'd env var reaching torch comes back as a traceback tail on an
+  // `error` manifest, which reads like the model broke.
+  const dir = await Deno.makeTempDir()
+  try {
+    const m = await runPanopticScan({
+      sessionDir: dir,
+      python: '/bin/sh',
+      panopticDir: dir,
+      device: 'cude' as never,
+    })
+    assertEquals(m.status, 'skipped')
+    assertStringIncludes(m.skippedReason ?? '', 'cude')
+    assertStringIncludes(m.remediation ?? '', 'PANOPTIC_DEVICE')
+    // The typo has to survive into the manifest or the remediation is unusable.
+    assertEquals(m.params.device, 'cude')
+  } finally {
+    await Deno.remove(dir, { recursive: true })
+  }
+})
+
+Deno.test('parseDeviceLine reads the line panoptic_worker.py actually prints', () => {
+  // Verbatim from scripts/panoptic_worker.py:
+  //   print(f"device: {dev.label} — {dev.reason}", file=sys.stderr)
+  // with label = f"{device} ({vendor}, {'fp16' if fp16_ok else 'fp32'})".
+  assertEquals(
+    parseDeviceLine('kf-00000.jpg: 3 segments\ndevice: cuda (NVIDIA CUDA, fp16) — requested explicitly\n'),
+    { resolvedDevice: 'cuda', deviceVendor: 'NVIDIA CUDA' },
+  )
+  assertEquals(
+    parseDeviceLine('device: cuda:1 (AMD ROCm, fp16) — requested explicitly'),
+    { resolvedDevice: 'cuda:1', deviceVendor: 'AMD ROCm' },
+  )
+  // Vendor is what separates AMD from NVIDIA — both run on the device string
+  // "cuda", so resolvedDevice alone cannot say whose GPU it was.
+  assertEquals(
+    parseDeviceLine('device: mps (Apple MPS, fp16) — no CUDA; Apple MPS available')?.deviceVendor,
+    'Apple MPS',
+  )
+  // A worker predating the parenthetical still reports something.
+  assertEquals(parseDeviceLine('device: cpu'), { resolvedDevice: 'cpu' })
+  assertEquals(parseDeviceLine('Traceback (most recent call last)'), undefined)
+})
+
+Deno.test('a good run records which backend actually ran', async () => {
+  const dir = await Deno.makeTempDir()
+  try {
+    await Deno.writeTextFile(`${dir}/panoptic_worker.py`, '')
+    await Deno.writeTextFile(`${dir}/kf-00000.jpg`, 'x')
+    const m = await runPanopticScan({
+      sessionDir: dir,
+      python: '/bin/sh',
+      panopticDir: dir,
+      _spawn: async () => {
+        await Deno.writeTextFile(`${dir}/panoptic.segments.json`, JSON.stringify({
+          frames: [{ file: 'kf-00000.jpg', segments: [seg()] }],
+        }))
+        return { code: 0, stderr: 'device: cuda (NVIDIA CUDA, fp16) — requested explicitly\n' }
+      },
+    })
+    assertEquals(m.status, 'ok')
+    assertEquals(m.resolvedDevice, 'cuda')
+    assertEquals(m.deviceVendor, 'NVIDIA CUDA')
+    // Requested and resolved are different facts: 'auto' was asked for.
+    assertEquals(m.params.device, 'auto')
+  } finally {
+    await Deno.remove(dir, { recursive: true })
+  }
+})
+
+Deno.test('a failed run still records the backend — that is when it matters most', async () => {
+  // A CUDA OOM writes no segments JSON, so stderr is the only thing left, and
+  // "was this even on the GPU?" is the first question asked about a slow or
+  // dead run: 0.7 s/frame on the 4080 versus minutes per frame on CPU.
+  const dir = await Deno.makeTempDir()
+  try {
+    await Deno.writeTextFile(`${dir}/panoptic_worker.py`, '')
+    await Deno.writeTextFile(`${dir}/kf-00000.jpg`, 'x')
+    const m = await runPanopticScan({
+      sessionDir: dir,
+      python: '/bin/sh',
+      panopticDir: dir,
+      _spawn: () =>
+        Promise.resolve({
+          code: 1,
+          stderr: 'device: cpu (CPU, fp32) — no CUDA and no MPS available\nMemoryError',
+        }),
+    })
+    assertEquals(m.status, 'error')
+    assertEquals(m.resolvedDevice, 'cpu')
+    assertEquals(m.deviceVendor, 'CPU')
+  } finally {
+    await Deno.remove(dir, { recursive: true })
+  }
 })

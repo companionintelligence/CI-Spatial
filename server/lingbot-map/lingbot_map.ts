@@ -10,6 +10,7 @@
  * child, and surfaces a structured result for the world-job coordinator to
  * persist. All model-specific logic lives in the Python worker.
  */
+import { COMPUTE_DEVICES, type ComputeDevice, isComputeDevice } from '../../src/world/manifests.ts'
 import { isServerSessionId } from '../../src/shared/session-id.ts'
 
 // Lazy-imported inside runLingBotMapReconstruction so the Deno-only unit
@@ -35,8 +36,17 @@ export interface LingBotMapRunOptions {
   keyframeInterval?: number
   /** Cap the number of frames fed to the model (default 512). */
   maxFrames?: number
-  /** Auto/cpu/cuda — auto chooses cuda when available. */
-  device?: 'auto' | 'cpu' | 'cuda'
+  /**
+   * Torch backend to ask the worker for; falls back to env LINGBOT_MAP_DEVICE,
+   * then 'auto'. Shares `ComputeDevice` with panoptic_scan.ts rather than
+   * re-declaring the union here — this used to be a local
+   * `'auto' | 'cpu' | 'cuda'`, which is now wrong twice over: the worker is
+   * gaining Apple 'mps', and a ROCm torch already asks for 'cuda' (it reports
+   * torch.cuda.is_available() === true), so 'cuda' never meant NVIDIA.
+   *
+   * 'auto' is a request, not an answer — see `resolvedDevice` on the result.
+   */
+  device?: ComputeDevice
   /**
    * Optional GLB sidecar destination. When provided AND the run produces a
    * point cloud, the PLY is converted to a GLB POINTS primitive and written
@@ -66,6 +76,23 @@ export interface LingBotMapResult {
   glbSidecarPath?: string
   /** Number of points in the GLB sidecar (may differ from PLY after quantisation). */
   glbPointCount?: number
+  /**
+   * The backend the worker reported actually using, read back from the
+   * manifest's `params.resolvedDevice` — which scripts/lingbot_map_worker.py
+   * already writes, so this is a read of an existing contract, not a new one.
+   *
+   * Distinct from the requested device: `_torch_device.resolve_torch_device`
+   * downgrades an unreachable backend to CPU rather than raising, so a run that
+   * asked for the GPU and silently got the CPU is otherwise indistinguishable
+   * from one that got it — and that is minutes per frame versus 0.7 s.
+   */
+  resolvedDevice?: string
+  /**
+   * Vendor behind that backend — 'NVIDIA CUDA', 'AMD ROCm', 'Apple MPS', 'CPU'
+   * — from the manifest's `params.deviceVendor`. `resolvedDevice` cannot carry
+   * it: a ROCm torch runs on the device string "cuda".
+   */
+  deviceVendor?: string
   /** Stderr text from the worker — useful for surfacing in the UI. */
   log: string
   /** Subprocess exit code (0/2/3 per the Python contract). */
@@ -114,11 +141,25 @@ export async function runLingBotMapReconstruction(
 
   const python = opts.python ?? Deno.env.get('LINGBOT_MAP_PYTHON') ?? 'python3'
   const modelPath = opts.modelPath ?? Deno.env.get('LINGBOT_MAP_MODEL_PATH') ?? ''
+  // Named for the LINGBOT_MAP_* family it joins, and matching BRUSH_DEVICE's
+  // <tool>_DEVICE shape rather than inventing a new one (ADR 0001).
+  const device = opts.device ?? Deno.env.get('LINGBOT_MAP_DEVICE') ?? 'auto'
+  if (!isComputeDevice(device)) {
+    // Gated before the spawn, like isValidSessionDir above: the worker's
+    // argparse would reject it too, but as an exit-2 with no manifest, which
+    // surfaces as "worker exited 2 without writing a manifest" — a shape that
+    // reads like a broken install rather than a typo in one env var.
+    return _failure(
+      opts.sessionDir,
+      `unrecognised device "${device}" — set LINGBOT_MAP_DEVICE to one of ${COMPUTE_DEVICES.join(', ')}, or unset it for auto`,
+      2,
+    )
+  }
 
   let cmd: Deno.Command
   try {
     cmd = new Deno.Command(python, {
-      args: buildWorkerArgs({ ...opts, modelPath }),
+      args: buildWorkerArgs({ ...opts, modelPath, device }),
       stdout: 'piped',
       stderr: 'piped',
     })
@@ -139,6 +180,8 @@ export async function runLingBotMapReconstruction(
   let manifestStatus: LingBotMapStatus = 'error'
   let skippedReason: string | undefined
   let errorMsg: string | undefined
+  let resolvedDevice: string | undefined
+  let deviceVendor: string | undefined
   try {
     const manifest = JSON.parse(await Deno.readTextFile(manifestFile)) as Record<string, unknown>
     const status = manifest.status
@@ -147,6 +190,13 @@ export async function runLingBotMapReconstruction(
     }
     if (typeof manifest.skippedReason === 'string') skippedReason = manifest.skippedReason
     if (typeof manifest.error === 'string') errorMsg = manifest.error
+    const manifestParams = manifest.params
+    if (manifestParams && typeof manifestParams === 'object') {
+      const rd = (manifestParams as Record<string, unknown>).resolvedDevice
+      if (typeof rd === 'string' && rd) resolvedDevice = rd
+      const dv = (manifestParams as Record<string, unknown>).deviceVendor
+      if (typeof dv === 'string' && dv) deviceVendor = dv
+    }
   } catch {
     // Manifest missing => unrecoverable; preserve exit code + log
     errorMsg = errorMsg ?? `worker exited ${output.code} without writing a manifest`
@@ -180,6 +230,8 @@ export async function runLingBotMapReconstruction(
     pointCloudFile: manifestStatus === 'ok' ? 'lingbot-map.point-cloud.ply' : undefined,
     posesFile: manifestStatus === 'ok' ? 'lingbot-map.poses.json' : undefined,
     manifestFile: 'lingbot-map.manifest.json',
+    resolvedDevice,
+    deviceVendor,
     glbSidecarPath,
     glbPointCount,
     log,

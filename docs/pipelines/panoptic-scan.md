@@ -94,7 +94,7 @@ uv pip install --python ~/.venvs/panoptic/bin/python torch torchvision transform
 # (where `python3 -m venv` already works, that plus pip install of the same
 #  five packages is equivalent — uv is only avoiding the ensurepip problem.)
 
-mkdir -p ~/panoptic && cp scripts/panoptic_worker.py ~/panoptic/
+mkdir -p ~/panoptic && cp scripts/panoptic_worker.py scripts/_torch_device.py ~/panoptic/
 
 export PANOPTIC_PYTHON=~/.venvs/panoptic/bin/python
 export PANOPTIC_DIR=~/panoptic

@@ -62,6 +62,11 @@ COPY src/shared/ ./src/shared/
 # A miss here is invisible at build time and only shows up as a 500 from the
 # ingest routes in a real install.
 COPY scripts/lingbot_map_worker.py ./scripts/lingbot_map_worker.py
+# Both Python workers import this sibling for device selection (NVIDIA/AMD/
+# Apple/CPU). Omitting it does not fail the build — the workers degrade to
+# 'skipped' with a copy hint at run time, which reads like a missing GPU tool
+# rather than a missing file. Keep it beside the workers.
+COPY scripts/_torch_device.py ./scripts/_torch_device.py
 COPY scripts/ingest-video.mjs ./scripts/ingest-video.mjs
 COPY scripts/ingest-photos.mjs ./scripts/ingest-photos.mjs
 COPY scripts/ingest-quality.mjs ./scripts/ingest-quality.mjs

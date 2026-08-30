@@ -17,6 +17,7 @@
  */
 import { test, expect, type Page } from '@playwright/test'
 import { startArScan } from './support/start-scan'
+import { requireUsableInferenceEngine } from './support/inference-engine'
 
 // The database name is load-bearing and deliberately not renameable — see the
 // "Do not rename" table in CLAUDE.md. Reading it here doubles as a check that
@@ -54,6 +55,9 @@ async function bootComplete(page: Page): Promise<void> {
 
 /** Scan until at least one detection has landed in the store. */
 async function scanAndCapture(page: Page): Promise<void> {
+  // The poll below waits 45 s for a detection that a server with no vision
+  // engine can never produce. Say so in a second instead. See ./support/inference-engine.
+  await requireUsableInferenceEngine()
   await startArScan(page)
   await page.waitForTimeout(1_500)   // let tracking reach NORMAL before capturing
   await page.click('#capture-btn')

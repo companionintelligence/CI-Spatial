@@ -14,6 +14,7 @@
  */
 import { test, expect } from '@playwright/test'
 import { startArScan } from './support/start-scan'
+import { requireUsableInferenceEngine } from './support/inference-engine'
 
 test.describe('XR8 mock scan flow', () => {
   test.setTimeout(90_000)
@@ -29,6 +30,10 @@ test.describe('XR8 mock scan flow', () => {
   })
 
   test('capture → mock inference → detections land in the store', async ({ page }) => {
+    // The poll below waits 45 s for a detection that a server with no vision
+    // engine can never produce. Say so in a second instead — and only here, not
+    // in a beforeAll: the SLAM-points test above passes without one.
+    await requireUsableInferenceEngine()
     await startArScan(page)
 
     // Give tracking a moment to reach NORMAL, then capture

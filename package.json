@@ -9,7 +9,7 @@
     "dev": "vite --host",
     "build": "tsc --noEmit && vite build",
     "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",
-    "verify": "deno task check && deno task test && tsc --noEmit && npm run typecheck:tests && npm run test:pipeline:graph && npm run test:editor:pick && npm run test:store && npm run test:resolver && npm run test:provenance && npm run test:detection-gate && npm run test:model-provisioning && npm run test:router && npm run test:clock-sync && npm run test:clip-validation && npm run test:splat4d && npm run test:gimbal:stall && npm run test:gimbal:control && npm run test:tracking:quality && npm run test:object:filter && npm run test:status-line && npm run test:panoptic:lift",
+    "verify": "deno task check && deno task test && tsc --noEmit && npm run typecheck:tests && npm run test:pipeline:graph && npm run test:editor:pick && npm run test:store && npm run test:resolver && npm run test:provenance && npm run test:detection-gate && npm run test:model-provisioning && npm run test:router && npm run test:clock-sync && npm run test:clip-validation && npm run test:splat4d && npm run test:gimbal:stall && npm run test:gimbal:control && npm run test:tracking:quality && npm run test:object:filter && npm run test:status-line && npm run test:panoptic:lift && npm run test:wake-lock && npm run test:ar:preflight && npm run test:scan:lighting",
     "test:pipeline:graph": "node --experimental-strip-types --no-warnings --test tests/unit/node/pipeline_detection_graph.test.ts",
     "test:editor:pick": "node --experimental-strip-types --no-warnings --test tests/unit/node/editor_pick.test.ts",
     "test:store": "node --experimental-strip-types --no-warnings --test tests/unit/node/detection_store.test.ts",
@@ -22,6 +22,8 @@
     "test:clip-validation": "node --experimental-strip-types --no-warnings --test tests/unit/node/clip_validation.test.ts",
     "test:splat4d": "node --experimental-strip-types --no-warnings --test tests/unit/node/splat4d_window.test.ts",
     "test:status-line": "node --experimental-strip-types --no-warnings --test tests/unit/node/status_line.test.ts",
+    "test:ar:preflight": "node --experimental-strip-types --no-warnings --test tests/unit/node/ar_preflight.test.ts",
+    "test:scan:lighting": "node --experimental-strip-types --no-warnings --test tests/unit/node/scan_lighting.test.ts",
     "preview": "vite preview --host",
     "server": "deno run --watch --allow-net --allow-read --allow-write --allow-env --allow-ffi --allow-run server/main.ts",
     "start": "concurrently --raw --names \"infer,vite\" -c \"cyan,green\" \"npm run server\" \"npm run dev\"",
@@ -33,7 +35,7 @@
     "test:lingbot:fetch-video": "node scripts/fetch-lingbot-test-video.mjs",
     "test:lingbot:make-fixture": "node scripts/make-lingbot-fixture.mjs",
     "test:splat:make-fixture": "node scripts/make-splat-fixture.mjs",
-    "test:splat:unit": "deno test --allow-read --allow-write --allow-env --allow-run tests/unit/deno/splat_train.test.ts tests/unit/deno/splat_detect.test.ts tests/unit/deno/splat_finish.test.ts",
+    "test:splat:unit": "deno test --allow-read --allow-write --allow-env --allow-run tests/unit/deno/splat_train.test.ts tests/unit/deno/splat_detect.test.ts tests/unit/deno/splat_finish.test.ts tests/unit/deno/splat_align.test.ts tests/unit/deno/splat_train_colmap_args.test.ts tests/unit/deno/spirula_train.test.ts",
     "test:mock:unit": "deno test --allow-read --allow-env --allow-net tests/unit/deno/inference_mock.test.ts",
     "test:auth:unit": "deno test --allow-read --allow-write --allow-env --allow-net --allow-run tests/unit/deno/portal_auth.test.ts tests/unit/deno/memory_push.test.ts tests/unit/deno/lingbot_map.test.ts",
     "test:deno": "deno task test",
@@ -68,7 +70,8 @@
     "audit:scan": "node --experimental-strip-types --no-warnings scripts/audit-scan-glb.mjs",
     "test:tracking:quality": "node --experimental-strip-types --no-warnings --test tests/unit/node/tracking_quality.test.ts",
     "test:object:filter": "node --experimental-strip-types --no-warnings --test tests/unit/node/object_filter.test.ts",
-    "test:panoptic:lift": "node --experimental-strip-types --no-warnings --test tests/unit/node/panoptic_lift.test.ts"
+    "test:panoptic:lift": "node --experimental-strip-types --no-warnings --test tests/unit/node/panoptic_lift.test.ts",
+    "test:wake-lock": "node --experimental-strip-types --no-warnings --test tests/unit/node/wake_lock.test.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",

@@ -1,0 +1,5 @@
+# Rendered on demand by make-walkthrough.mjs, not committed — same policy as the
+# lingbot-map reference clip. Regenerate with:
+#   node tests/fixtures/video-ingest/make-walkthrough.mjs
+*.mp4
+.frames/

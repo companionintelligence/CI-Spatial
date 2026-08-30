@@ -19,7 +19,7 @@ import type { LiveFeed } from './livefeed'
 import { loadSemanticAsset, createMediumPolyAsset } from './assets'
 import { fetchLingBotMapArtifacts, type LingBotMapOverlay } from './lingbot-map'
 import { attachSparkRenderer, loadSplat, disposeSplat, type LoadedSplat } from './splat-viewer'
-import { fetchScanSplatLayer, disposeScanSplatLayer, splatPlyUrl, splatManifestUrl, splatSogUrl, formatFinishStats, type ScanSplatLayer } from './splat-layer'
+import { fetchScanSplatLayer, disposeScanSplatLayer, splatPlyUrl, splatManifestUrl, splatSogUrl, formatFinishStats, formatAlignmentStatus, type ScanSplatLayer } from './splat-layer'
 import { fetchScanDetectLayer, type ScanDetectLayer } from './splat-detect-layer'
 import { buildTrainJobRequest, buildDetectJobRequest } from './splat-toolbox'
 import { buildThingObservationIndex, resolveThingTagsForScan } from '../shared/thing_tags'
@@ -32,6 +32,7 @@ import {
   QUALITY_TIER_BLURBS,
   type QualityTier,
 } from './quality-tier'
+import { fetchReconstructionQuality, formatReconstructionVerdict } from './reconstruction-quality'
 import { distanceM, enuToGeo, hasGeoPose, matrixTranslation } from '../world/geo'
 import { LAYER_LABELS, LAYER_ORDER, LAYERS_HIDDEN_BY_DEFAULT } from '../world/layers'
 import { buildAnchorMarker } from '../world/anchor-marker'
@@ -242,11 +243,14 @@ async function ensureSplat4DLayer(scanId: string, scan: ScanManifest) {
   const { createSplat4DLayer } = await import('./splat4d-layer')
   const layer = await createSplat4DLayer(scanId, scan.filename, {
     onFrame: (mesh) => {
-      const loadedScan = loadedScans.get(scanId)
-      if (!loadedScan || !mesh) return
+      if (!mesh) return
       // Attach under the scan root, exactly where the static splat goes, so the
       // transform gizmo and the scan's visibility apply to the sequence too.
-      if (mesh.mesh.parent !== loadedScan.root) loadedScan.root.add(mesh.mesh)
+      // ensureScanRootInWorld, not loadedScans.get(): a person capture is the
+      // other scan kind that routinely has no GLB, so its root is exactly the
+      // detached one that made the static splat invisible.
+      const root = ensureScanRootInWorld(scan)
+      if (root && mesh.mesh.parent !== root) root.add(mesh.mesh)
     },
   })
   if (layer) scanSplat4DLayers.set(scanId, layer)
@@ -1895,6 +1899,51 @@ async function refreshQualityPanel(scanId: string): Promise<void> {
     next.textContent = nextStep ?? ''
     next.hidden = !nextStep
   }
+
+  void renderReconstructionVerdict(scan)
+}
+
+/**
+ * Say whether the camera actually tracked through this capture, under the tier.
+ *
+ * The tier cannot answer that: it lights "Reconstructed" (and then "Photoreal")
+ * off the *presence* of an `ok` manifest, and a COLMAP run that registers 3 of
+ * 17 keyframes with one triangulated point is `ok` too — it ran every step and
+ * exited 0. That solve and a 32-of-32 one rendered the same three words here
+ * until the verdict landed on the manifest, which is the specific gap this
+ * fills.
+ *
+ * Fire-and-forget on purpose: the verdict is one extra sentence, and the
+ * stepper above must not wait on it to light up.
+ */
+async function renderReconstructionVerdict(scan: ScanManifest): Promise<void> {
+  const box = document.getElementById('quality-verdict')
+  const headline = document.getElementById('quality-verdict-headline')
+  const detail = document.getElementById('quality-verdict-detail')
+  if (!box || !headline || !detail) return
+
+  const hide = () => { box.hidden = true; box.removeAttribute('data-tone') }
+  if (!scan.sessionId) return hide()
+
+  const manifest = await fetchReconstructionQuality(
+    scan.sessionId,
+    (url) => fetch(withAccessToken(url)),
+  )
+  // A later selection may have superseded this async read, exactly as in
+  // refreshQualityPanel — otherwise a slow fetch for scan A paints its verdict
+  // over scan B.
+  if (selectedScanId !== scan.scanId) return
+
+  const verdict = formatReconstructionVerdict(manifest)
+  // No manifest is the ordinary case, not a failure: a scan whose poses came
+  // from the device's own tracker never runs the solver. Show nothing rather
+  // than an absence.
+  if (!verdict) return hide()
+
+  headline.textContent = verdict.headline
+  detail.textContent = verdict.detail
+  box.dataset['tone'] = verdict.tone
+  box.hidden = false
 }
 
 /** True when the scan's LingBot-Map reconstruction manifest exists and is ok. */
@@ -2060,11 +2109,92 @@ function setLingBotPathVisible(visible: boolean): void {
 
 // ─── Trained splat layer (splat-train job output) ─────────────────────────────
 
+/**
+ * Give a splat somewhere in the *scene* to hang from, even when the scan has no
+ * GLB.
+ *
+ * `loadScanIntoWorld` handles a 404 on `scan.glbUrl` by parking the scan on a
+ * **detached** `THREE.Group`; `integrateScanRoot` is what calls
+ * `worldGroup.add(root)`, and it only runs on the success path. That is right
+ * for a scan with nothing to show, and it silently swallowed the one scan that
+ * did. Measured in this editor on 2026-08-29 against the fixture session
+ * `sess-video-20260830-033839` — a 37.5 MB trained splat, 246,838 gaussians,
+ * `/scans/sess-video-20260830-033839.glb` → 404: the panel said "Trained splat
+ * ready — 246,838 gaussians", "Show trained splat" ticked on, and the viewport
+ * stayed empty, because `loadedScan.root.add(mesh)` had parented it to that
+ * orphan group. Nothing errored. That is the worst version of this bug — the UI
+ * reports success for a mesh nobody can see.
+ *
+ * A splat-only scan is a real scan, not a broken one: video and photo ingest
+ * both reach Photoreal without ever producing a GLB. So adopt the orphan root
+ * rather than refuse it, stamping the same identity/placement `integrateScanRoot`
+ * puts on a GLB root — minus its GLB-derived layer collection, which has nothing
+ * to collect from here.
+ *
+ * `loaded` is set true deliberately, and it is the one field worth arguing
+ * about. It gates two things that must now be true: `integrateScanRoot` removes
+ * `previous.root` from `worldGroup` only when `previous.loaded` — with false,
+ * a GLB arriving later would leave this root in the scene forever alongside the
+ * new one — and `loadScanIntoWorld`'s catch keeps a live root only when
+ * `previous.loaded`, which is exactly what a re-load failure should do here.
+ * The field means "this scan has a root in the world", not "a GLB parsed".
+ */
+function ensureScanRootInWorld(scan: ScanManifest): THREE.Group | null {
+  if (!worldGroup) return null
+  const existing = loadedScans.get(scan.scanId)
+  if (existing?.root.parent) return existing.root
+
+  const root = existing?.root ?? new THREE.Group()
+  root.name = scan.name || scan.filename
+  root.userData['scanId'] = scan.scanId
+  root.userData['filename'] = scan.filename
+  root.userData['scope'] = 'scan-root'
+  root.userData['objectId'] = scan.scanId
+  applyMatrix(root, scan.localToWorld)
+  assignStableObjectIds(root, scan.scanId)
+  worldGroup.add(root)
+
+  const inTimeWindow = existing?.inTimeWindow ?? scanInTimeline(scan)
+  // NOT `existing.visible`. The orphan record `loadScanIntoWorld` leaves behind
+  // on a 404 carries `visible: false`, and that is bookkeeping for "there is
+  // nothing to show", not a choice anyone made — the scan-list checkbox is
+  // rendered `checked = true` unconditionally right beside it. Inheriting the
+  // false made the adopted root `root.visible = false`: the splat mesh loaded,
+  // attached, and reported "ready" with its own toggle on, and the viewport was
+  // still empty. Measured — this was the second invisible-splat cause, hiding
+  // behind the first. So the checkbox, which is what the user actually sees and
+  // can actually have changed, is the source of truth.
+  const checkbox = scanItems.get(scan.scanId)?.querySelector<HTMLInputElement>('.scan-visible')
+  const visible = checkbox ? checkbox.checked : true
+  root.visible = scanRendered({ visible, inTimeWindow })
+  loadedScans.set(scan.scanId, {
+    manifest: scan,
+    root,
+    layerNodes: existing?.layerNodes ?? new Map(),
+    points: existing?.points ?? [],
+    visible,
+    inTimeWindow,
+    loaded: true,
+  })
+  // The list still carries loadScanIntoWorld's "No geometry yet — ingested,
+  // awaiting reconstruction" from the 404. That was true a moment ago and is
+  // not any more: the photoreal reconstruction is the thing that just arrived,
+  // and telling the user to run a reconstruct job for a scan that already has
+  // one is the empty-state failure this pass exists to stop repeating.
+  setScanStatus(scan.scanId, 'Photoreal splat only — no mesh geometry for this scan.')
+  return root
+}
+
 async function refreshSplatLayerPanel(scanId: string): Promise<void> {
   const status = document.getElementById('splat-layer-status')
   const stats = document.getElementById('splat-layer-stats')
   const toggle = document.getElementById('splat-layer-toggle') as HTMLInputElement | null
   if (!status || !stats) return
+  // One reset for every exit below. These elements are reused across scan
+  // selections, so an alignment tooltip left over from the previous scan would
+  // describe a splat that is no longer on screen; only the success branch
+  // writes it back.
+  stats.title = ''
   const scan = world?.scans.find(s => s.scanId === scanId)
   if (!scan) {
     status.textContent = 'Select a scan to see its trained Gaussian splat.'
@@ -2094,8 +2224,8 @@ async function refreshSplatLayerPanel(scanId: string): Promise<void> {
       layer = fetched
       scanSplatLayers.set(scanId, layer)
       if (layer.loaded) {
-        const loadedScan = loadedScans.get(scanId)
-        if (loadedScan) loadedScan.root.add(layer.loaded.mesh)
+        const root = ensureScanRootInWorld(scan)
+        if (root) root.add(layer.loaded.mesh)
         layer.loaded.mesh.visible = scanSplatVisible
       }
     } catch (e) {
@@ -2104,6 +2234,15 @@ async function refreshSplatLayerPanel(scanId: string): Promise<void> {
       stats.textContent = ''
       return
     }
+  }
+
+  // Re-parent on every pass, not only on first load: a GLB that arrives later
+  // makes integrateScanRoot swap the scan root out, taking the cached splat
+  // mesh with it. The check is a pointer comparison, so the common case (root
+  // unchanged) costs nothing.
+  if (layer.loaded) {
+    const root = ensureScanRootInWorld(scan)
+    if (root && layer.loaded.mesh.parent !== root) root.add(layer.loaded.mesh)
   }
 
   // A person capture may also carry a 4D sequence. Attached here rather than in
@@ -2136,7 +2275,21 @@ async function refreshSplatLayerPanel(scanId: string): Promise<void> {
       ? `Trained in ${(m.timing.elapsedMs / 1000).toFixed(1)}s on ${m.frameCount ?? '?'} frames.`
       : ''
     const finishLine = formatFinishStats(layer.finish)
-    stats.textContent = [trainedLine, finishLine].filter(Boolean).join(' ')
+    // Whether what is on screen is at real-world size. `formatAlignmentStatus`
+    // has composed this sentence since splat-align landed and nothing has ever
+    // rendered it — the panel counted gaussians and said nothing about scale,
+    // which is why the fixture's splat renders many times the size of the room
+    // it was captured in with no explanation anywhere. The measured sentence is
+    // used verbatim when there IS a fit; when there isn't, its reason is a
+    // diagnostic ("no splat-align manifest available…") that belongs in the
+    // tooltip, not in the line a non-expert reads.
+    const alignLine = layer.alignment?.state === 'aligned'
+      ? formatAlignmentStatus(layer.alignment)
+      : layer.alignment
+        ? 'Not measured against the real room yet, so it may appear much larger or smaller than life size.'
+        : ''
+    stats.textContent = [trainedLine, finishLine, alignLine].filter(Boolean).join(' ')
+    stats.title = layer.alignment ? formatAlignmentStatus(layer.alignment) : ''
     if (toggle) toggle.checked = scanSplatVisible
     setSplatDownloadLink(scan, layer)
   } else if (m.status === 'skipped') {

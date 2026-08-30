@@ -66,9 +66,30 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--device",
         default=None,
-        help="torch device; defaults to cuda when available, else cpu",
+        help=(
+            "torch device: auto (default), cpu, cuda, cuda:N, mps. auto prefers "
+            "CUDA/ROCm, then Apple MPS, then cpu. Anything else is passed to "
+            "torch unvalidated. See scripts/_torch_device.py."
+        ),
     )
     return p.parse_args()
+
+
+def _import_device_resolver():
+    """Load the shared resolver, tolerating the copy-one-file deployment.
+
+    docs/pipelines/panoptic-scan.md installs this worker with
+    `cp scripts/panoptic_worker.py ~/panoptic/`, so `_torch_device.py` lives
+    next to it rather than on an installed package path. `python worker.py`
+    already puts that directory on sys.path, but `PANOPTIC_DIR` can be reached
+    other ways, so fall back to an explicit sibling lookup before giving up.
+    """
+    try:
+        from _torch_device import resolve_torch_device
+    except ImportError:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from _torch_device import resolve_torch_device
+    return resolve_torch_device
 
 
 def keyframes(session_dir: Path, limit: int) -> list[Path]:
@@ -96,23 +117,39 @@ def main() -> int:
         print("install with: pip install torch torchvision transformers pillow numpy", file=sys.stderr)
         return 2
 
+    try:
+        resolve_torch_device = _import_device_resolver()
+    except ImportError as exc:  # pragma: no cover - deployment-dependent
+        print(f"panoptic worker: shared device resolver not importable: {exc}", file=sys.stderr)
+        print(
+            "copy scripts/_torch_device.py next to panoptic_worker.py in PANOPTIC_DIR "
+            "(see docs/pipelines/panoptic-scan.md — Setup)",
+            file=sys.stderr,
+        )
+        return 2
+
     frames_in = keyframes(args.session_dir, args.max_frames)
     if not frames_in:
         print(f"panoptic worker: no keyframes in {args.session_dir}", file=sys.stderr)
         return 3
 
+    # One resolver, shared with lingbot_map_worker.py — see scripts/_torch_device.py
+    # for why NVIDIA, ROCm, MPS and CPU are told apart the way they are. Printed
+    # because a Mac silently falling back to CPU used to look like a slow model
+    # rather than a missing backend.
+    dev = resolve_torch_device(torch, args.device)
+    print(f"device: {dev.label} — {dev.reason}", file=sys.stderr)
+    device = dev.device
+    dtype = dev.dtype(torch)
+
     # Some torch wheels ship a cuDNN whose sublibraries disagree with the driver
     # and every conv dies with CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH. Disabling
     # cuDNN falls back to native CUDA kernels — measured at 0.7 s/frame for
     # Swin-L on a 4080, which is fast enough that chasing the wheel is not worth
-    # it. Harmless when cuDNN is healthy.
-    torch.backends.cudnn.enabled = False
-
-    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    # fp16 on GPU roughly halves both the weights and the peak activation, which
-    # is what keeps Swin-L inside a 12GB card. CPU stays fp32: fp16 on CPU is
-    # slower, not faster.
-    dtype = torch.float16 if device.startswith("cuda") else torch.float32
+    # it. Harmless when cuDNN is healthy. Now gated on the CUDA path: it was
+    # unconditional, which does nothing on CPU or MPS since neither touches cuDNN.
+    if dev.wants_cudnn_workaround():
+        torch.backends.cudnn.enabled = False
 
     processor = AutoImageProcessor.from_pretrained(args.model)
     model = Mask2FormerForUniversalSegmentation.from_pretrained(args.model, torch_dtype=dtype)

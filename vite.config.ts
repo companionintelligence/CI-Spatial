@@ -55,12 +55,30 @@ console.log(`[vite] Hostname: ${HOSTNAME} (via ${HOSTNAME_SOURCE})`)
 const API_TARGET = process.env.API_TARGET ?? 'http://localhost:8000'
 const WS_TARGET = API_TARGET.replace(/^http/, 'ws')
 
-// Tailscale's macOS app (sandboxed CLI) writes certs to the container Data dir.
-// If present, use them — these are Let's Encrypt certs trusted by all devices.
+// Where `tailscale cert` leaves its output differs per platform, and a miss here
+// is not cosmetic: without a trusted cert a phone cannot use getUserMedia, so the
+// whole capture path is dead on that device. These are Let's Encrypt certs and
+// are trusted by every Tailscale device, unlike the self-signed fallback.
+//
+// The list was macOS + one Linux path until it was measured on Windows and on a
+// systemd distro, where both missed. Ordered cheapest/most-specific first; the
+// cwd entry last is what a plain `tailscale cert <host>` in the repo root writes,
+// and is the case that actually holds on this dev box.
 function tailscaleCert(): { cert: Buffer; key: Buffer } | null {
   const candidates = [
+    // macOS: the App Store build is sandboxed and writes into its container.
     `${os.homedir()}/Library/Containers/io.tailscale.ipn.macos/Data/${HOSTNAME}`,
+    // Linux/BSD: the historical state dir, still used by the static packages.
     `/var/db/tailscale/certs/${HOSTNAME}`,
+    // Linux: the systemd/deb/rpm default since 1.34 — absent from this list until
+    // now, so distro installs silently fell through to the self-signed cert.
+    `/var/lib/tailscale/certs/${HOSTNAME}`,
+    // Windows: the service writes under ProgramData. Resolved from the env var
+    // rather than hardcoding C:\ProgramData, which is wrong on relocated installs.
+    ...(process.platform === 'win32' && process.env['ProgramData']
+      ? [`${process.env['ProgramData']}\\Tailscale\\certs\\${HOSTNAME}`]
+      : []),
+    // Anywhere: whatever `tailscale cert <host>` wrote into the working dir.
     `${process.cwd()}/${HOSTNAME}`,
   ]
   for (const base of candidates) {

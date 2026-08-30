@@ -74,11 +74,31 @@ export interface NerfstudioFrame {
   h: number
 }
 
+/**
+ * Camera-model spellings this module can stamp into `transforms.json`.
+ *
+ * The two trainers do NOT accept the same set, and the intersection is a
+ * single name — measured on the 32-frame sess-video-20260830-033839 dataset
+ * by feeding each spelling to `spirula train --data-format nerfstudio
+ * --num-iterations 1`:
+ *
+ *   name              Brush   Spirula
+ *   PERSPECTIVE       yes     "error: NerfstudioParser: unsupported camera model PERSPECTIVE"
+ *   OPENCV            yes     yes  (32 cameras, 9362 seed points)
+ *   PINHOLE           no      yes
+ *   SIMPLE_PINHOLE    no      yes
+ *
+ * So 'OPENCV' would in principle serve both — but our intrinsics are
+ * distortion-free, and 'PERSPECTIVE' is the name Brush's own docs use for
+ * that, so the Brush default stays as it was and Spirula asks for 'OPENCV'.
+ */
+export type NerfstudioCameraModel = 'PERSPECTIVE' | 'OPENCV' | 'PINHOLE' | 'SIMPLE_PINHOLE'
+
 export interface NerfstudioTransforms {
   // Brush's nerfstudio loader accepts only 'PERSPECTIVE' (pinhole),
   // 'OPENCV', or 'OPENCV_FISHEYE' — NOT the COLMAP name 'PINHOLE'
   // (brush-dataset/src/formats/nerfstudio.rs resolve_camera_model).
-  camera_model: 'PERSPECTIVE' | 'OPENCV'
+  camera_model: NerfstudioCameraModel
   /** Provenance so a re-run / debugging can trace which session produced this. */
   ci_source?: { sessionId: string; frameCount: number; generatedAt: string }
   /** Path (relative to transforms.json) to the seed point cloud, when present. */
@@ -106,6 +126,16 @@ export interface BuildDatasetOptions {
    * (e.g. cross-device). 'copy' forces a byte copy.
    */
   imageMode?: 'symlink' | 'copy'
+  /**
+   * Which spelling of the pinhole camera model to stamp into
+   * `transforms.json`. Defaults to 'PERSPECTIVE' — what Brush wants, and what
+   * every caller before the Spirula backend existed relied on. Spirula's
+   * parser rejects that exact string, so `spirula_train.ts` passes 'OPENCV';
+   * see NerfstudioCameraModel for the measured compatibility table. The
+   * geometry written is identical either way — this names the lens model, it
+   * does not change a single intrinsic.
+   */
+  cameraModel?: NerfstudioCameraModel
 }
 
 export interface BuildDatasetResult {
@@ -275,7 +305,7 @@ export async function buildBrushDataset(opts: BuildDatasetOptions): Promise<Buil
 
   const transforms: NerfstudioTransforms = {
     // Our WebXR intrinsics are distortion-free pinhole → 'PERSPECTIVE'.
-    camera_model: 'PERSPECTIVE',
+    camera_model: opts.cameraModel ?? 'PERSPECTIVE',
     ci_source: {
       sessionId: sessionDir.split('/').filter(Boolean).pop() ?? '',
       frameCount: frames.length,

@@ -363,7 +363,7 @@ Places/projects carry role-scoped membership (`MemberRole`: `owner | editor | co
 
 ### World Job Types & Processing (`/worlds/:slug/jobs`)
 
-The `/worlds/:slug/jobs` queue runs **asynchronous** world jobs (`WorldJobType`, status `queued | processing | completed | failed`) — this is the real job queue; `GET /jobs` is only the legacy `optimize-scan` compatibility shim described in the route table above. World jobs are distinct from the synchronous `/process-scan` actions (`object-count`, `scene-description`, `floor-plan`). Nineteen job types — the `WorldJobType` union in [`src/world/types.ts`](../src/world/types.ts), mirrored by `WORLD_JOB_TYPES` in `server/main.ts` (the set that validates `POST /worlds/:slug/jobs`):
+The `/worlds/:slug/jobs` queue runs **asynchronous** world jobs (`WorldJobType`, status `queued | processing | completed | failed`) — this is the real job queue; `GET /jobs` is only the legacy `optimize-scan` compatibility shim described in the route table above. World jobs are distinct from the synchronous `/process-scan` actions (`object-count`, `scene-description`, `floor-plan`). **Twenty** job types — the `WorldJobType` union in [`src/world/types.ts`](../src/world/types.ts). `WORLD_JOB_TYPES` in `server/main.ts` (the set that validates `POST /worlds/:slug/jobs`) lists nineteen of them: `optimize-scan` is deliberately absent, because it is enqueued internally on every upload and is not something a client may queue by name.
 
 | Job type | Worker / method | Produces |
 |---|---|---|
@@ -375,21 +375,22 @@ The `/worlds/:slug/jobs` queue runs **asynchronous** world jobs (`WorldJobType`,
 | `depth-reconstruct` | monocular depth | depth layer |
 | `thing-correspondence` | `runThingCorrespondence` over the world's detections (in-process, no external tool) | `world.things` + `world.thingObservations`, plus a `thing-correspondence-summary` artifact |
 | `lingbot-map-reconstruct` | LingBot-Map (Python, `LINGBOT_MAP_PYTHON` / `LINGBOT_MAP_MODEL_PATH`) | `*.point-cloud.ply` + `*.poses.json` + manifest |
-| `colmap-poses` | COLMAP (`COLMAP_BIN`) — the CPU counterpart to `lingbot-map-reconstruct`, writing the same two artifacts so `buildBrushDataset` consumes either through one path | session `poses.json` + sparse seed cloud + `colmap-poses.manifest.json` |
-| `splat-train` | **Brush** (wgpu/AMD, GPU-pinned) 3D Gaussian Splatting | `*.splat.ply` |
+| `colmap-poses` | COLMAP (`COLMAP_BIN`, else PATH, else the micromamba install path) — the CPU counterpart to `lingbot-map-reconstruct`, writing the same two artifacts so `buildBrushDataset` consumes either through one path. Also attaches a `quality` verdict (`registrationRatio` / `degenerate` / `status` / `reasons`), because a solve that ran and exited 0 still reports `status: "ok"` on a capture with one triangulated point | session `poses.json` + sparse seed cloud + `colmap-poses.manifest.json` |
+| `splat-train` | 3D Gaussian Splatting through **one of two interchangeable drivers**, selected by `SPLAT_BACKEND`: **Brush** (wgpu, default) or **Spirula Studio** (Vulkan, `SPLAT_BACKEND=spirula`). One job type, one manifest shape, one output path — only the child process differs ([ADR 0007](adr/0007-splat-backends-are-selectable-and-a-rotation-only-sweep-is-not-a-reconstruction-capture.md)); the manifest's `tool` field records which ran | `*.splat.ply` + `*.splat-train.manifest.json` |
 | `splat-align` | Umeyama similarity fit from the scan's two-point ground calibration | `*.splat-align.manifest.json` (transform / metric scale / fit residual) |
 | `splat-detect` | **OWLv2** open-vocabulary detection over the splat | `*.interactions.json` (3D boxes) |
 | `splat-finish` | **@playcanvas/splat-transform** web-delivery compression | `*.sog` + `*.compressed.ply` |
 | `person-4d-reconstruct` | delegates off-box to `subsystems/4d-capture/` (`FDANYONE_HOST`); the only runner that does not compute locally — see [ADR 0006](adr/0006-person-capture-is-a-calibrated-take-and-densification-is-a-subsystem.md) and [`pipelines/4d-person.md`](pipelines/4d-person.md) | `<base>.4d/` per-timestep splat sequence + `*.4d-capture.manifest.json` |
 | `sensenova-vision` | optional SenseNova-Vision worker (`SENSENOVA_DIR` / `SENSENOVA_MODEL_PATH`, run through WSL on Windows) | task-dependent files under `<SCANS_DIR>/.sensenova/<jobId>/`, indexed by a `sensenova-output` artifact |
 | `panoptic-scan` | optional GPU panoptic segmenter (`PANOPTIC_PYTHON` / `PANOPTIC_DIR`) — see [`pipelines/panoptic-scan.md`](pipelines/panoptic-scan.md) | per-keyframe segments, split into `thingCount` objects and `stuffCount` room surfaces |
+| `panoptic-lift` | in-process lift of `panoptic-scan`'s 2D thing segments into world space, by casting each segment centroid against the scan's own point cloud (`server/panoptic/panoptic_lift.ts`; policy in `src/shared/panoptic_lift.ts`). Split from `panoptic-scan` because the two fail for unrelated reasons — segmentation needs a venv and a GPU, the lift needs a scan GLB with geometry | `*.panoptic.detections.json` + `*.panoptic-lift.manifest.json` |
 | `memory-push` | CI-Server `/v1/events` push (`server/memory_push.ts`) | a `capture.scan` memory event with the GLB attached |
 | `export-world` | world composition | combined GLB + semantic JSON |
 | `optimize-scan` | `server/pipeline.ts` (quantize / Draco / point-cloud LODs) | `*.opt.glb` + `*.lodN.glb` + `*.manifest.json` |
 
-Seven of these — `ingest`, `extract-layers`, `align-scan`, `merge-points`, `semantic-pass`, `depth-reconstruct`, `export-world` — have no dedicated runner and complete through the pump's shared placeholder path (ADR 0003 "Placeholder WorldJobTypes"). Of the twelve that do, several emit a **plan/placeholder** artifact and report a "hint" when the real worker (Brush, COLMAP, LingBot-Map Python, SenseNova, the panoptic segmenter, the 4d-capture host) is not wired via env vars — an absent optional tool is a *completed* job carrying a remediation, never a failure, so the queue works end-to-end in CI and on a box with no GPU.
+Seven of these — `ingest`, `extract-layers`, `align-scan`, `merge-points`, `semantic-pass`, `depth-reconstruct`, `export-world` — have no dedicated runner and complete through the pump's shared placeholder path (ADR 0003 "Placeholder WorldJobTypes"). Of the thirteen that do, several emit a **plan/placeholder** artifact and report a "hint" when the real worker (Brush or Spirula, COLMAP, LingBot-Map Python, SenseNova, the panoptic segmenter, the 4d-capture host) is not wired via env vars — an absent optional tool is a *completed* job carrying a remediation, never a failure, so the queue works end-to-end in CI and on a box with no GPU.
 
-The editor's Queue-Job dropdown exposes thirteen of them (`viewer.html` § `#job-type`); the Splat Toolbox additionally fires `splat-train` and `splat-detect` with its own payload. The other six are reached differently: `optimize-scan` is queued automatically on every upload (never manually — and filtered out of the Processing Queue panel; see [`product/UX_FLOW.md`](product/UX_FLOW.md) § Phase 3), and `colmap-poses`, `splat-align`, `panoptic-scan`, `person-4d-reconstruct` and `memory-push` have no UI entry point at all, only the generic `POST /worlds/:slug/jobs` API.
+The editor's Queue-Job dropdown exposes thirteen of them (`viewer.html` § `#job-type`); the Splat Toolbox additionally fires `splat-train` and `splat-detect` with its own payload. The other seven are reached differently: `optimize-scan` is queued automatically on every upload (never manually — and filtered out of the Processing Queue panel; see [`product/UX_FLOW.md`](product/UX_FLOW.md) § Phase 3), and `colmap-poses`, `splat-align`, `panoptic-scan`, `panoptic-lift`, `person-4d-reconstruct` and `memory-push` have no UI entry point at all, only the generic `POST /worlds/:slug/jobs` API.
 
 ### Scan Optimization Pipeline (`server/pipeline.ts`, dispatched as a WorldJob)
 
@@ -506,7 +507,23 @@ is **not** auto-loaded. Values below come from `.env.example`:
 - `INFER_MAX_IMAGE_BYTES`: reject inbound inference images larger than this (defaults to `12000000`).
 - `WORLD_STRICT_AUTH`: set to `1` to enforce role-token auth on world routes (default: anonymous access allowed).
 - `LINGBOT_MAP_PYTHON` / `LINGBOT_MAP_MODEL_PATH`: wire the real LingBot-Map reconstruction worker.
+- `SPLAT_BACKEND`: which trainer `splat-train` spawns — `brush` (default) or `spirula`. Unrecognised values fall back to `brush` rather than failing the job.
+- `BRUSH_BIN` / `SPIRULA_BIN` / `COLMAP_BIN`: the three reconstruction binaries. All three are *overrides*, not requirements — each resolver falls back to a documented install path and reports `skipped` with a remediation when nothing is runnable.
 - `VITE_URL`, `CHROMIUM_EXECUTABLE_PATH`: dev/test convenience.
+
+`.env.example` is the complete list and the one that stays in sync with the code; the entries above are only the ones a deployment usually touches.
+
+**Binary resolution is not `PATH` resolution.** The reconstruction tools are installed
+per-user in places a login shell does not search — COLMAP in a micromamba env, Brush in a
+cargo target dir, Spirula unzipped under `~/opt`. `command -v` therefore reports nothing on a
+box where all three are installed and working, which is a false negative that reads exactly
+like a missing dependency and has already cost hours of debugging. Each resolver probes its
+documented install path after `PATH` (`resolveColmapBin`, `DEFAULT_BRUSH_BIN`,
+`FALLBACK_SPIRULA_BINS`), and every manifest records the absolute binary that actually ran —
+that field, not `which`, is the authority on what a given artifact was produced by. ffmpeg is
+the inverse case: it *is* on `PATH`, but the server resolves it from the `PATH` it was
+started with, so installing it without restarting the server leaves ingest failing while a
+fresh shell looks fine.
 
 Timelines and shipped-vs-planned status are tracked in [`roadmap.md`](roadmap.md), not here.
 
@@ -576,6 +593,43 @@ Where bbox values are 0–1 normalized to image dimensions.
 
 Vision models tuned for structured/OCR-style output (e.g. `moondream`,
 LFM2.5-VL) follow this reliably; `server/prompt.ts` parses and validates the array.
+
+### Splat trainers are a selectable backend, not a second job type
+
+`splat-train` picks between Brush and Spirula Studio with one `SPLAT_BACKEND` ternary
+(`server/main.ts:230-232`, `:3547-3549`) rather than gaining a `splat-train-spirula` job type.
+Nothing downstream differs — both land `<base>.splat.ply` and `<base>.splat-train.manifest.json`,
+and `splat-finish` / `splat-detect` consume those by name — so a second job type would have
+duplicated the whole chain to change one argv list (ADR 0001). Backend choice becomes a
+deployment variable instead of a code change, and the manifest's `tool` field carries which
+driver produced an artifact so a later "why does this look different" is answerable.
+
+Spirula is GPL-3.0 and this repo is not. The only coupling is process invocation — a
+separately-downloaded prebuilt binary, argv in, files out, exactly as Brush and COLMAP are
+already invoked. No Spirula source is vendored, adapted, or linked, and no binary is bundled
+into the image. That boundary, the deferred licence review, and the facts that would change
+the analysis are in [ADR 0007](adr/0007-splat-backends-are-selectable-and-a-rotation-only-sweep-is-not-a-reconstruction-capture.md);
+do not re-derive them here. Brush stays the default until an A/B on our own data says otherwise.
+
+### Reconstruction quality is measured, not assumed
+
+Monocular SfM needs the camera to be in two different *places* to triangulate anything; a
+rotation-only sweep leaves the rays collinear and the geometry degenerate (COLMAP's own name
+for it is `PLANAR_OR_PANORAMIC`). Measured on this repo's own sessions: a translating
+walkthrough registered **32 / 32** frames with 9362 points, while a near-in-place handheld
+capture of the same room class registered **3 / 17** with a single triangulated point — and
+*both* reported `status: "ok"`, because COLMAP ran every step and exited 0 in both.
+
+`'ok'` was not the wrong value; the missing thing was never a status. So rather than widen the
+status vocabulary to cover a claim nothing backs, `colmap-poses` attaches the measurement:
+`quality.registrationRatio`, a derived `quality.degenerate` boolean, a `quality.status` reusing
+`ScanReviewStatus` from `src/world/types.ts` (ADR 0001 — this repo already has a word for "how
+usable is this capture"), `quality.reasons`, and `quality.thresholds` so a manifest explains
+its own verdict. Defaults are a 0.6 registration ratio and a 100-point floor, both overridable;
+the ratio is the load-bearing gate, because on a weak capture COLMAP's stochastic RANSAC
+initialisation makes the point count irreproducible while the ratio stays low across re-runs
+(`server/colmap/colmap_poses.ts:204-256`). The capture-side consequence — walk the camera,
+don't spin it — is in the README under *Capture geometry*.
 
 ### Privacy & CI positioning
 

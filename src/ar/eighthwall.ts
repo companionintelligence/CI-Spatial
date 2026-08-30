@@ -35,6 +35,7 @@
 import * as THREE from 'three'
 import type { ARProvider, HitResult, Pose, RawFrame } from './provider'
 import type { TrackingStatus } from './tracking-quality'
+import { FIRST_POSE_TIMEOUT_MS, firstFrameVerdict, type PreflightVerdict } from './preflight'
 
 type Point3 = { x: number; y: number; z: number }
 
@@ -267,6 +268,16 @@ export class EighthWallProvider implements ARProvider {
   private _lastTrackingStatus = ''
   private _diagLogged = false
   /**
+   * Preflight subscriber and the state its verdict is made from.
+   *
+   * `_sessionStartedMs` is when `start()` armed the pose timer; `_preflightRuled`
+   * records that the timer has already fired, so the only thing that can speak
+   * after it is a late pose taking a warning back (see `_emitPreflight`).
+   */
+  private _onPreflight: ((verdict: PreflightVerdict) => void) | null = null
+  private _sessionStartedMs = 0
+  private _preflightRuled = false
+  /**
    * Camera vertical field-of-view in degrees, read from the projection matrix
    * the SLAM engine publishes each frame (`_syncReality()` below). 60 is only
    * the value before the first frame lands.
@@ -337,6 +348,11 @@ export class EighthWallProvider implements ARProvider {
     if (!this._slamReady) {
       console.log(`[8thwall] SLAM ready — first pose received via ${label}`)
       this._slamReady = true
+      // Only worth saying if the 5 s timer already ruled against this device:
+      // that is the "recovered late" case, and the HUD is currently showing a
+      // warning it should stop showing. Before the timer fires, silence — a
+      // session that starts normally has nothing to report.
+      if (this._preflightRuled) this._emitPreflight()
     }
 
     // Camera intrinsics → vertical FOV.
@@ -734,13 +750,42 @@ export class EighthWallProvider implements ARProvider {
       }))
     }, 4000)
 
-    // Diagnostics only: captures may proceed without stable tracking after the
-    // caller's wait timeout, but isTracking() should mean a real pose arrived.
+    // The preflight verdict. This is the same 5 s pose timer that has always
+    // been here — it used to end at a console.warn, which is invisible to
+    // someone holding a phone in their kitchen, and on the Beam Pro that warning
+    // was the ONLY report that the engine had accepted XR8.run(), acquired a
+    // 960x720 camera track, and then never emitted a single frame.
+    //
+    // `_videoW` is what separates that dead pipeline from a room SLAM simply
+    // cannot lock onto: it is set from the engine's own videoWidth hook, so a
+    // zero here is exactly the `frame: "unreported"` the aspect diagnostic
+    // above prints. The judgement itself lives in firstFrameVerdict() so it is
+    // testable without an AR session.
+    this._sessionStartedMs = performance.now()
     setTimeout(() => {
+      this._preflightRuled = true
       if (!this._slamReady) {
         console.warn('[8thwall] Pose not received in 5 s — capture can continue, but scan geometry will be sparse')
       }
-    }, 5000)
+      this._emitPreflight()
+    }, FIRST_POSE_TIMEOUT_MS)
+  }
+
+  /**
+   * Register the preflight subscriber. Call before `start()`: the timer that
+   * produces the verdict is armed inside it.
+   */
+  onPreflightVerdict(cb: (verdict: PreflightVerdict) => void): void {
+    this._onPreflight = cb
+  }
+
+  private _emitPreflight(): void {
+    if (!this._onPreflight) return
+    this._onPreflight(firstFrameVerdict({
+      sawCameraFrame: this._videoW > 0 && this._videoH > 0,
+      sawPose: this._slamReady,
+      elapsedMs: performance.now() - this._sessionStartedMs,
+    }))
   }
 
   stop(): void {
