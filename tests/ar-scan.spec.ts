@@ -54,7 +54,7 @@ async function clickStartAR(page: Page) {
 test.describe('App loads', () => {
   test('page renders start screen', async ({ page }) => {
     await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
-    await expect(page.locator('#start-title')).toHaveText('Companion Scan')
+    await expect(page.locator('#start-title')).toHaveText('Spatial Memory')
     await expect(page.locator('#start-ar-btn')).toBeVisible()
     await expect(page.locator('#start-ar-btn')).toContainText('Scan a room')
   })
