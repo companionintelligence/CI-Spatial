@@ -170,19 +170,39 @@ function setScanActive(active) {
   for (const el of [els.recenter, els.landscape, els.stickToggle, els.capture, els.captureBoth]) {
     if (el) el.disabled = active || !lastConnected;
   }
-  if (els.gridRun) els.gridRun.disabled = active || !lastConnected;
+  // The grid is closed-loop, so it restores on the streaming tier — not on `lastConnected`,
+  // which is only "a handle exists". See setConnectedControlsEnabled.
+  if (els.gridRun) els.gridRun.disabled = active || !lastStreaming;
 }
 
 // Tracked so setScanActive can restore the right state when a scan ends: "enabled" is the AND
 // of connected and not-scanning, and neither alone is enough to decide it.
 let lastConnected = false;
+let lastStreaming = false;
 
-function setConnectedControlsEnabled(enabled) {
-  lastConnected = enabled;
-  for (const el of [els.disconnect, els.pin, els.pair, els.recenter, els.landscape, els.stickToggle, els.gridRun, els.capture, els.captureBoth, ...els.modeButtons, els.rawSend, ...testButtons]) {
-    el.disabled = !enabled;
+/**
+ * Enable controls by what the link can actually do, in two tiers.
+ *
+ * `linked` — a GATT handle exists, so commands go out. Everything that only WRITES stays
+ * available at this tier, deliberately including the joystick: a gimbal that has stopped
+ * reporting is a gimbal whose motors may well be latched and driving, and taking the manual
+ * controls away exactly then removes the operator's only way to stop it.
+ *
+ * `streaming` — notifications are arriving. Only this tier unlocks the things that READ
+ * telemetry back: the grid run (closed-loop per position) and the test-matrix probes (whose
+ * whole verdict is a before/after pose comparison). Offering those over a silent link is what
+ * produced captures that looked complete and were photographed blind.
+ */
+function setConnectedControlsEnabled(linked, streaming = linked) {
+  lastConnected = linked;
+  lastStreaming = streaming;
+  for (const el of [els.disconnect, els.pin, els.pair, els.recenter, els.landscape, els.stickToggle, els.capture, els.captureBoth, ...els.modeButtons, els.rawSend]) {
+    el.disabled = !linked;
   }
-  els.joystickPad.classList.toggle('disabled', !enabled);
+  for (const el of [els.gridRun, ...testButtons]) {
+    el.disabled = !streaming;
+  }
+  els.joystickPad.classList.toggle('disabled', !linked);
   // A reconnect mid-scan must not hand the joystick back — re-apply the scan lock last.
   if (scanActive) setScanActive(true);
 }
@@ -224,14 +244,71 @@ function forgetDevice() {
   }
 }
 
-// Runs once per page load, the first time we learn the backend is up but not connected to a
-// gimbal. Tries the remembered device id first (fast, no scan); if that fails — the device is
-// off, out of range, or its id changed — forgets it and falls back to a fresh scan, connecting
-// to the top-ranked (likelyOsmo, then strongest rssi) result.
-let autoconnectAttempted = false;
+/**
+ * Render the backend's link state honestly, and decide whether to try to fix it.
+ *
+ * The status line used to read `backend: connected` off a flag that meant "a connect call
+ * returned", so a link that had never subscribed to a characteristic — no telemetry, ever —
+ * looked identical to a working one, and the page never retried because it believed it was
+ * already connected. `link` now distinguishes the two, and `linkDetail` carries the backend's
+ * own sentence about what is wrong, rather than this file guessing at it.
+ */
+function renderLinkStatus(msg) {
+  const link = msg.link ?? (msg.connected ? 'streaming' : 'disconnected');
+  const streaming = link === 'streaming';
+  const linked = streaming || link === 'linked';
+  setConnectedControlsEnabled(linked, streaming);
+
+  if (streaming) {
+    els.status.textContent = `backend: streaming telemetry${msg.paired ? ', paired' : ''}`;
+  } else if (link === 'linked') {
+    // Named as the problem it is. This is the state that used to read "connected".
+    els.status.textContent = `backend: LINKED BUT NOT STREAMING — ${msg.linkDetail ?? 'no telemetry is arriving'}`;
+  } else {
+    els.status.textContent = `backend: ${link}`;
+  }
+
+  if (streaming) {
+    linkedButSilentLogged = false;
+    return;
+  }
+  // A scan owns the gimbal; re-establishing its link underneath it would be worse than the
+  // silence. The run's own telemetry check (backend driveClosedLoop) stops it instead.
+  if (msg.scanning) return;
+  if (link === 'linked' && !linkedButSilentLogged) {
+    linkedButSilentLogged = true;
+    log(`Link is up but no telemetry is arriving — ${msg.linkDetail ?? ''} Reconnecting.`, 'warn');
+  }
+  tryAutoconnect();
+}
+let linkedButSilentLogged = false;
+
+// Runs when the backend is up but the link is not streaming — either no gimbal at all, or one
+// linked with no telemetry, which is just as broken and used to be indistinguishable. Tries the
+// remembered device id first (fast, no scan); if that fails — the device is off, out of range,
+// or its id changed — forgets it and falls back to a fresh scan, connecting to the top-ranked
+// (likelyOsmo, then strongest rssi) result.
+//
+// Rate-limited rather than once-per-page-load: a link that comes up without telemetry has to be
+// retried, but retrying every status frame would hammer the BLE stack (and each attempt drops
+// and re-opens a real GATT connection). One attempt at a time, RETRY_CONNECT_MS apart.
+const RETRY_CONNECT_MS = 15000;
+let autoconnectInFlight = false;
+let autoconnectLastAt = 0;
 async function tryAutoconnect() {
-  if (autoconnectAttempted) return;
-  autoconnectAttempted = true;
+  if (autoconnectInFlight) return;
+  if (Date.now() - autoconnectLastAt < RETRY_CONNECT_MS) return;
+  autoconnectInFlight = true;
+  autoconnectLastAt = Date.now();
+  try {
+    await runAutoconnect();
+  } finally {
+    autoconnectInFlight = false;
+    autoconnectLastAt = Date.now();
+  }
+}
+
+async function runAutoconnect() {
 
   let deviceId;
   try {
@@ -299,9 +376,7 @@ function connectWs() {
   ws.addEventListener('message', (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === 'status') {
-      setConnectedControlsEnabled(msg.connected);
-      els.status.textContent = `backend: ${msg.connected ? 'connected' : 'not connected'}${msg.paired ? ', paired' : ''}`;
-      if (!msg.connected) tryAutoconnect();
+      renderLinkStatus(msg);
     } else if (msg.type === 'grid-progress') {
       renderGridProgress(msg);
     } else if (msg.type === PHONE_TELEMETRY) {
