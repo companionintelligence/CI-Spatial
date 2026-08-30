@@ -1838,6 +1838,125 @@
         font-weight: 700;
       }
       .tripod-wide-btn[hidden] { display: none; }
+      .tripod-wide-btn:disabled {
+        opacity: 0.45;
+        border-color: rgba(255, 255, 255, 0.18);
+        color: var(--ci-muted);
+        background: rgba(255, 255, 255, 0.04);
+      }
+      /* The second answer to the measurement question. Quiet rather than
+         hidden: skipping is a real outcome — a capture with no measurement is
+         a good capture of the shape of a room — so it is a plain button beside
+         the primary one, not a link buried under it. */
+      .tripod-plain-btn {
+        display: block;
+        width: 100%;
+        min-height: 36px;
+        margin: 0 0 10px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 7px;
+        color: var(--ci-muted);
+        background: transparent;
+        font-size: 13px;
+      }
+      .tripod-plain-btn[hidden] { display: none; }
+
+      /* The measured distance — the one number that turns a capture of a shape
+         into a capture of a room.
+
+         The unit is the hazard: a reading in feet is arithmetically
+         indistinguishable from a reading in metres downstream and is wrong by
+         3.28x. So there is no unit selector to leave on the wrong setting —
+         the reading is entered as metres AND centimetres, each box carrying
+         its unit in the layout where it cannot be scrolled past. */
+      .tripod-measure {
+        margin: 0 0 10px;
+        padding: 11px 11px 1px;
+        border: 1px solid rgba(114, 221, 212, 0.3);
+        border-radius: 9px;
+        background: rgba(114, 221, 212, 0.06);
+      }
+      .tripod-measure[hidden] { display: none; }
+      .tripod-measure-q {
+        margin: 0 0 6px;
+        font-family: var(--ci-font-display);
+        font-size: 17px;
+        font-weight: 500;
+        color: var(--ci-text);
+      }
+      .tripod-measure-row {
+        display: flex;
+        gap: 10px;
+        margin: 0 0 8px;
+      }
+      .tripod-unit {
+        display: flex;
+        flex: 1;
+        align-items: baseline;
+        gap: 6px;
+        padding: 6px 9px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 7px;
+        background: rgba(0, 0, 0, 0.28);
+      }
+      .tripod-unit input {
+        width: 100%;
+        min-width: 0;
+        border: 0;
+        color: var(--ci-text);
+        background: transparent;
+        font-family: var(--ci-font-display);
+        font-size: 22px;
+        font-weight: 600;
+      }
+      .tripod-unit input:focus { outline: none; }
+      /* The unit sits inside the box with the number, permanently. It is the
+         reason a wrong unit is hard to enter: there is nothing to set. */
+      .tripod-unit span {
+        flex: none;
+        color: var(--ci-mint);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+      /* The reading, restated, plus the same length in feet — the only check a
+         person can perform against the tape in their hand. */
+      .tripod-measure-echo {
+        margin: 0 0 8px;
+        min-height: 16px;
+        font-size: 12px;
+        line-height: 1.45;
+        color: var(--ci-muted);
+      }
+      .tripod-measure-echo[data-tone='ok'] { color: #72ddd4; }
+      .tripod-measure-echo[data-tone='warn'] { color: #ffcf8b; }
+      .tripod-measure-unit {
+        margin: 0 0 10px;
+        color: var(--ci-muted);
+        font-size: 11px;
+        line-height: 1.45;
+      }
+      /* What this capture knows about its own size, shown the moment the
+         answer exists. */
+      .tripod-size {
+        display: grid;
+        gap: 3px;
+        margin: 0 0 10px;
+        padding: 9px 10px;
+        border-left: 2px solid rgba(255, 255, 255, 0.2);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.05);
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--ci-muted);
+      }
+      .tripod-size[hidden] { display: none; }
+      .tripod-size b { color: var(--ci-text); }
+      .tripod-size[data-tone='ok'] {
+        border-left-color: rgba(114, 221, 212, 0.6);
+        background: rgba(114, 221, 212, 0.08);
+      }
+      .tripod-size[data-tone='ok'] b { color: #72ddd4; }
       /* Shown only while finishing is refused, so the Send button never sits
          next to an unexplained disabled state. */
       .tripod-blocked {

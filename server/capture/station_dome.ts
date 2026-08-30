@@ -360,3 +360,65 @@ export async function stationCaptureBlockReason(sessionPath: string): Promise<st
     ? `${assessment.reason} ${assessment.remediation}`
     : assessment.reason
 }
+
+/**
+ * The keyframe field `scripts/ingest-photos.mjs` writes the original upload
+ * filename into. It is the only durable link between "the third file the phone
+ * posted" and "kf-00002.jpg", because that script re-orders frames by EXIF
+ * capture time and drops blurry ones — so the k-th upload is routinely not the
+ * k-th keyframe, and matching by position would label frames with a station
+ * they were not shot from.
+ */
+export const SOURCE_PHOTO_FIELD = 'sourcePhoto'
+
+export interface StationLabelResult {
+  /** Records that gained a station index. */
+  labelled: number
+  /** Records the map had nothing for — a frame the photo ingest dropped, or an unlabelled upload. */
+  unlabelled: number
+}
+
+/**
+ * Stamp `station` onto an already-ingested session's keyframes.jsonl.
+ *
+ * The keyframe *upload* route needs none of this: it spreads the poster's meta
+ * into the record verbatim, so a gimbal client's `station` is already there.
+ * This exists for the photo path, where the frames pass through an ingest
+ * script that renames and re-orders them — the app's tripod capture posts its
+ * photos through that route, and without this the station index the operator
+ * supplied dies in the upload buffer.
+ *
+ * Rewrites in place, preserving every other field and every unparseable line
+ * exactly as found: a line this cannot read is a line it must not destroy.
+ */
+export async function applyStationLabels(
+  sessionPath: string,
+  stationBySourcePhoto: Map<string, number>,
+): Promise<StationLabelResult> {
+  const path = `${sessionPath}/keyframes.jsonl`
+  const raw = await Deno.readTextFile(path)
+  let labelled = 0
+  let unlabelled = 0
+  const out = raw.split('\n').map((line) => {
+    const trimmed = line.trim()
+    if (trimmed.length === 0) return line
+    let record: unknown
+    try {
+      record = JSON.parse(trimmed)
+    } catch {
+      return line
+    }
+    if (!record || typeof record !== 'object' || Array.isArray(record)) return line
+    const meta = record as Record<string, unknown>
+    const source = meta[SOURCE_PHOTO_FIELD]
+    const station = typeof source === 'string' ? stationBySourcePhoto.get(source) : undefined
+    if (station === undefined) {
+      unlabelled += 1
+      return line
+    }
+    labelled += 1
+    return JSON.stringify({ ...meta, station })
+  })
+  await Deno.writeTextFile(path, out.join('\n'))
+  return { labelled, unlabelled }
+}

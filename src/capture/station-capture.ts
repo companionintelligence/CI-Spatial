@@ -31,6 +31,10 @@
  * their living room with a tripod needs to know which spot they are on and
  * when to pick it up, and nothing else.
  */
+// With the extension, because this module is loaded three ways: by Vite, by
+// `tsc --noEmit`, and by `node --experimental-strip-types` in the unit tests —
+// and the last of those does not resolve an extensionless relative import.
+import { formatSpotDistance } from './spot-distance.ts'
 
 /**
  * Fewest spots that can produce a room. Below this the capture is not "a bit
@@ -82,13 +86,44 @@ export interface StationCaptureState {
    * counted.
    */
   readonly lastSweepEmpty: boolean
+  /**
+   * The one measured length, or the operator's decision not to give one.
+   *
+   * `null` means the question has not been answered yet, which is why
+   * {@link skipDistance} exists rather than leaving it null: "I am not
+   * measuring this" and "I have not been asked" have to be different states,
+   * or the screen asks again every time it re-renders.
+   */
+  readonly measurement: SpotMeasurement | null
 }
+
+/**
+ * The answer to "how far apart were those two spots?".
+ *
+ * Skipping is an outcome, not a failure. A capture with no measurement is a
+ * good capture of the shape of a room — it simply has no size, and
+ * {@link sizeVerdict} says so rather than treating it as an error.
+ */
+export type SpotMeasurement =
+  | { kind: 'measured', fromSpot: number, toSpot: number, metres: number }
+  | { kind: 'skipped' }
+
+/**
+ * The spot after which the measurement is asked for, and the pair it is about.
+ *
+ * The second, because that is the first moment two spots exist and the walk
+ * between them just happened — the person is standing at spot 2 with spot 1
+ * still in sight, which is the only moment measuring it costs nothing. Asking
+ * at the end would mean walking back across the room to find a spot that is no
+ * longer marked by anything.
+ */
+export const MEASURE_AFTER_SPOTS = 2
 
 export function createStationCapture(target: number = STATION_RECOMMENDED): StationCaptureState {
   const clamped = Number.isFinite(target)
     ? Math.min(STATION_MAX, Math.max(STATION_MIN, Math.round(target)))
     : STATION_RECOMMENDED
-  return { target: clamped, phase: 'ready', spots: [], pending: 0, lastSweepEmpty: false }
+  return { target: clamped, phase: 'ready', spots: [], pending: 0, lastSweepEmpty: false, measurement: null }
 }
 
 /** Start the sweep at the current spot. */
@@ -140,6 +175,60 @@ export function nextSpot(state: StationCaptureState): StationCaptureState {
   if (state.phase !== 'move') return state
   const target = Math.min(STATION_MAX, Math.max(state.target, state.spots.length + 1))
   return { ...state, target, phase: 'ready', pending: 0, lastSweepEmpty: false }
+}
+
+/**
+ * Whether the measurement question is the thing on screen right now.
+ *
+ * True at the pause after the second spot — phase 'move', where the sweep is
+ * finished and the tripod has not been picked up yet — and again if the
+ * operator re-opens it ({@link clearDistance}). Never during a sweep: the
+ * phone is panning across the room and the one instruction that matters there
+ * is "leave it alone".
+ *
+ * Unanswered, it comes back at the next pause rather than being lost, which is
+ * why it is a `null` measurement and not a flag that has been consumed.
+ */
+export function shouldAskDistance(state: StationCaptureState): boolean {
+  return state.measurement === null
+    && state.phase === 'move'
+    && state.spots.length >= MEASURE_AFTER_SPOTS
+}
+
+/**
+ * Record the measured length, in metres.
+ *
+ * The metres are validated in `spot-distance.ts` — this refuses only the
+ * shapes that must never reach the state at all, because a stored zero or NaN
+ * would travel with the capture and be indistinguishable from a real reading.
+ */
+export function recordDistance(state: StationCaptureState, metres: number): StationCaptureState {
+  if (!Number.isFinite(metres) || metres <= 0) return state
+  if (state.spots.length < MEASURE_AFTER_SPOTS) return state
+  return { ...state, measurement: { kind: 'measured', fromSpot: 1, toSpot: MEASURE_AFTER_SPOTS, metres } }
+}
+
+/** "I am not measuring this." A complete answer, and the capture goes on. */
+export function skipDistance(state: StationCaptureState): StationCaptureState {
+  if (state.measurement?.kind === 'measured') return state
+  return { ...state, measurement: { kind: 'skipped' } }
+}
+
+/**
+ * Ask again — the way back from a skip, and the only way to correct a reading.
+ *
+ * Kept as its own function rather than letting `recordDistance` overwrite,
+ * because re-opening the question is a thing the screen does and replacing a
+ * saved number behind the operator's back is not.
+ */
+export function clearDistance(state: StationCaptureState): StationCaptureState {
+  if (state.phase === 'done') return state
+  return { ...state, measurement: null }
+}
+
+/** The measured length in metres, or null when there is not one. */
+export function measuredMetres(state: StationCaptureState): number | null {
+  return state.measurement?.kind === 'measured' ? state.measurement.metres : null
 }
 
 export interface FinishVerdict {
@@ -227,12 +316,76 @@ export function currentSpot(state: StationCaptureState): number {
  */
 export const TRIPOD_PATH_SUMMARY =
   'A phone on a tripod sweeps the room from a few spots. No AR, so it runs on phones the live scanner cannot. '
-  + 'It rebuilds the shape of the room; how big it is stays unmeasured.'
+  + 'It rebuilds the shape of the room; how big it is stays unmeasured unless you measure one distance yourself.'
 
 /** Why one sweep is not a capture. Shown up front, and again if finish is refused. */
 export const WHY_SEVERAL_SPOTS =
   'One spot on its own cannot be rebuilt — the room only comes together once the tripod has moved between sweeps. '
   + `${STATION_MIN} spots is the least that works; ${STATION_RECOMMENDED} is what we test with.`
+
+/**
+ * The measurement question, as it appears on screen.
+ *
+ * A table rather than branches for the same reason `capture-intent.ts`'s COPY
+ * is: every line is a claim someone acts on with a tape measure in their hand,
+ * and they are only checkable side by side.
+ *
+ * `unitNote` is the one that matters. A reading in feet is accepted by the
+ * arithmetic and is wrong by 3.28x with nothing downstream able to notice, so
+ * the size of the error is stated in the place the error would be made —
+ * "three times too big" is a thing a person can picture, where "use metric" is
+ * a thing they can skim.
+ */
+export const DISTANCE_PROMPT = {
+  question: `How far apart are spot 1 and spot ${MEASURE_AFTER_SPOTS}?`,
+  why: 'Measure the floor between the two spots you have just used. That one length is what gives the room its real size.',
+  unitNote: 'Metres and centimetres. A reading in feet typed in here would make the room about three times too big.',
+  how: 'A tape is best. Pacing it works too — an ordinary step is about three quarters of a metre.',
+  save: 'Save this measurement',
+  skip: 'Skip — no measurement',
+  reopen: 'Add a measurement',
+} as const
+
+export interface SizeVerdict {
+  /**
+   * Whether this capture carries a real-world size.
+   *
+   * `capture-intent.ts`'s TRUE_TO_SIZE answers the same question about a
+   * METHOD, and answers `false` for the tripod path — correctly, because the
+   * method on its own measures nothing. This is the per-capture answer, and it
+   * is the only one that can be true here: a tripod capture is true to size if
+   * and only if someone measured something.
+   */
+  trueToSize: boolean
+  headline: string
+  detail: string
+}
+
+/**
+ * What this capture will and will not know about size, said plainly.
+ *
+ * Shown the moment the answer changes — when the measurement is saved, when it
+ * is skipped, and again on the screen that sends the capture — because "the
+ * size of this room is not measured" is only useful while it can still be
+ * acted on.
+ */
+export function sizeVerdict(state: StationCaptureState): SizeVerdict {
+  const metres = measuredMetres(state)
+  if (metres !== null) {
+    return {
+      trueToSize: true,
+      headline: 'This one comes back at its real size',
+      detail: `Spot 1 to spot ${MEASURE_AFTER_SPOTS} is ${formatSpotDistance(metres)}, and that goes with the photos. `
+        + 'One measured length is all it takes to size the whole room.',
+    }
+  }
+  return {
+    trueToSize: false,
+    headline: 'Right shape, unmeasured size',
+    detail: 'Nothing has been measured, so the room comes back the right shape at a size nothing knows. '
+      + `Measuring spot 1 to spot ${MEASURE_AFTER_SPOTS} is what changes that.`,
+  }
+}
 
 /** Where to put them. One sentence, because it is one idea. */
 export const SPREAD_HINT =
@@ -269,7 +422,11 @@ export function stationGuidance(state: StationCaptureState): StationGuidance {
     return {
       step,
       headline: 'Capture sent',
-      detail: `${totalPhotos(state)} photos from ${state.spots.length} spots are uploading. The line under the cards reports how it goes.`,
+      // Past tense on purpose: this screen is reached once the photos have
+      // actually gone over, not when they were handed to something that might
+      // send them. "are uploading" was true of the old hand-off and would be a
+      // small lie now.
+      detail: `${totalPhotos(state)} photos from ${state.spots.length} spots have gone over. The line under the cards reports how it goes.`,
       primary: null,
       tone: 'normal',
     }

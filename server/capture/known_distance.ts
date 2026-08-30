@@ -431,3 +431,95 @@ function centroid(points: Vec3Tuple[]): Vec3Tuple {
 function distance(a: Vec3Tuple, b: Vec3Tuple): number {
   return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2])
 }
+
+// ─── Where a tape reading lives between the room and the job ─────────────────
+
+/**
+ * The session record's field holding the operator's tape readings.
+ *
+ * `session.json` rather than a sidecar of its own, per ADR 0001: a measurement
+ * is a fact about the *capture* — which spots the tripod stood at and how far
+ * apart they were — and the session record is already the durable home for
+ * that. Every route that finalizes a session rewrites it as `{...record, ...}`,
+ * so the field survives finalization without any of them knowing about it, and
+ * `GET /sessions/:id` surfaces it for free.
+ */
+export const KNOWN_DISTANCES_FIELD = 'knownDistances'
+
+export type ParsedMeasurements =
+  | { ok: true; measurements: DistanceMeasurement[] }
+  | { ok: false; error: string }
+
+/**
+ * Validate an untrusted `[{ from, to, metres }]` payload.
+ *
+ * Absent and empty are both `ok` with no measurements — "this capture has not
+ * been measured" is a legitimate state, and the refusal that matters
+ * ({@link solveKnownDistanceFrame}'s) already says it in the operator's words.
+ * Anything *present but malformed* is rejected here instead: a `metres` that
+ * arrived as the string `"3.4"`, or a pair naming one spot twice, would sail
+ * into the solver as a number-shaped nothing and come back as a confident
+ * size. The whole tier exists because a wrong scale is worse than no scale.
+ */
+export function parseDistanceMeasurements(raw: unknown): ParsedMeasurements {
+  if (raw === undefined || raw === null) return { ok: true, measurements: [] }
+  if (!Array.isArray(raw)) {
+    return { ok: false, error: 'measurements must be a list of { from, to, metres } readings' }
+  }
+  const measurements: DistanceMeasurement[] = []
+  for (const [i, entry] of raw.entries()) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return { ok: false, error: `measurement ${i} is not a { from, to, metres } reading` }
+    }
+    const { from, to, metres } = entry as Record<string, unknown>
+    if (typeof from !== 'string' || from.length === 0 || typeof to !== 'string' || to.length === 0) {
+      return { ok: false, error: `measurement ${i} must name the two spots it was taken between` }
+    }
+    if (from === to) {
+      return { ok: false, error: `measurement ${i} names ${describe(from)} at both ends, which measures nothing` }
+    }
+    if (typeof metres !== 'number' || !Number.isFinite(metres) || !(metres > 0)) {
+      return { ok: false, error: `measurement ${i} must carry a positive distance in metres` }
+    }
+    measurements.push({ from, to, metres })
+  }
+  return { ok: true, measurements }
+}
+
+/**
+ * The measurements recorded against a session, or none.
+ *
+ * A malformed stored value reads as none rather than throwing: the job that
+ * calls this then skips with the tier's own "no measured distance was
+ * supplied" remediation, which is a better thing to put in front of an
+ * operator than a parse error from a file they have never seen.
+ */
+export async function readKnownDistances(sessionDir: string): Promise<DistanceMeasurement[]> {
+  let record: Record<string, unknown>
+  try {
+    record = JSON.parse(await Deno.readTextFile(`${sessionDir}/session.json`)) as Record<string, unknown>
+  } catch {
+    return []
+  }
+  const parsed = parseDistanceMeasurements(record[KNOWN_DISTANCES_FIELD])
+  return parsed.ok ? parsed.measurements : []
+}
+
+/**
+ * Record measurements against a session, replacing whatever was there.
+ *
+ * Replace rather than append: re-measuring is how an operator corrects a wrong
+ * reading, and an append would keep the wrong one in the least-squares fit
+ * forever. Throws when the session record cannot be read — a measurement
+ * against a session that does not exist has nowhere to be true.
+ */
+export async function writeKnownDistances(
+  sessionDir: string,
+  measurements: DistanceMeasurement[],
+): Promise<DistanceMeasurement[]> {
+  const path = `${sessionDir}/session.json`
+  const record = JSON.parse(await Deno.readTextFile(path)) as Record<string, unknown>
+  record[KNOWN_DISTANCES_FIELD] = measurements
+  await Deno.writeTextFile(path, JSON.stringify(record, null, 2))
+  return measurements
+}

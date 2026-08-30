@@ -71,19 +71,33 @@ import {
   type ScanCapability,
 } from './capture/upload-expectation'
 import {
+  DISTANCE_PROMPT,
   TRIPOD_PATH_SUMMARY,
   WHY_SEVERAL_SPOTS,
   addPhotos,
   beginSweep,
+  clearDistance,
   createStationCapture,
   endSweep,
   finishCapture,
   finishVerdict,
   nextSpot,
+  recordDistance,
+  shouldAskDistance,
+  sizeVerdict,
+  skipDistance,
   stationGuidance,
   totalPhotos,
   type StationCaptureState,
 } from './capture/station-capture'
+import { readSpotDistance, spotDistanceEcho } from './capture/spot-distance'
+import {
+  filesFor,
+  knownDistancesFor,
+  planStationFrames,
+  stationsFor,
+  type KnownDistance,
+} from './capture/station-upload'
 import {
   deviceFromProbe,
   resolveCapture,
@@ -117,6 +131,31 @@ let uploadPlaceTarget: { projectId: string | null; areaId: string | null } = { p
  * the handler behaves exactly as it always has.
  */
 let pendingPhotoIntake: ((files: File[]) => void) | null = null
+/**
+ * What a tripod capture adds to the one upload, held for the single send that
+ * claims it.
+ *
+ * The same borrowing as `pendingPhotoIntake`, at the other end of the flow.
+ * Tripod Scan's photos go out through `wireContentUpload()`'s handler like any
+ * other photo set — same endpoint, same Place target, same progress line — and
+ * these are the two fields that make them a capture of a room rather than a
+ * pile of pictures: which spot each photo came from, and the one measured
+ * length. Without them the server cannot refuse a capture taken from a single
+ * spot and cannot size the result, which is what used to happen to every
+ * capture the app made itself.
+ *
+ * `settle` is how the tripod sheet learns what became of them, so the two
+ * screens reporting the same upload cannot disagree.
+ */
+let pendingUploadExtras:
+  | {
+      stations: number[]
+      knownDistances: KnownDistance[]
+      /** Replaces the generic success line with one worded for this capture. */
+      successLine: (frameCount: number) => string
+      settle: (ok: boolean, message: string) => void
+    }
+  | null = null
 /**
  * Whether recommending a live scan is honest advice on this device.
  *
@@ -2647,6 +2686,12 @@ function wireContentUpload(): void {
       input.value = ''
       return
     }
+    // Claimed for exactly one send, and cleared before anything can go wrong:
+    // a tripod capture's spot numbers must never be attached to the next,
+    // unrelated, upload of a few photos.
+    const extras = pendingUploadExtras
+    pendingUploadExtras = null
+
     if (btn) btn.setAttribute('aria-disabled', 'true')
     if (openLink) openLink.hidden = true
     if (progress) progress.textContent = 'Uploading… 0%'
@@ -2657,6 +2702,14 @@ function wireContentUpload(): void {
     form.append('name', oneVideo ? files[0]!.name.replace(/\.[^.]+$/, '') : `Photo set ${new Date().toLocaleDateString()}`)
     if (uploadPlaceTarget.projectId) form.append('projectId', uploadPlaceTarget.projectId)
     if (uploadPlaceTarget.areaId) form.append('areaId', uploadPlaceTarget.areaId)
+    if (extras && !oneVideo) {
+      // The two fields that make this a capture of a room rather than a pile of
+      // photos: which spot each one was taken from, positionally against
+      // `files`, and the one measured length. Sent on the same request as the
+      // photos so they cannot arrive without each other.
+      form.append('stations', JSON.stringify(extras.stations))
+      if (extras.knownDistances.length > 0) form.append('knownDistances', JSON.stringify(extras.knownDistances))
+    }
 
     const xhr = new XMLHttpRequest()
     xhr.open('POST', oneVideo ? '/ingest-video' : '/ingest-photos')
@@ -2669,16 +2722,18 @@ function wireContentUpload(): void {
       if (xhr.status >= 200 && xhr.status < 300) {
         let result: { frameCount?: number; droppedBlurry?: number } = {}
         try { result = JSON.parse(xhr.responseText) as typeof result } catch { /* ignore */ }
-        if (progress) {
-          const dropNote = result.droppedBlurry ? ` ${result.droppedBlurry} blurry photo${result.droppedBlurry === 1 ? '' : 's'} skipped.` : ''
-          // Repeated here, briefly, because this line is read seconds before
-          // the editor opens on a reconstruction with an empty object list —
-          // the one moment an expectation set a minute ago has most likely
-          // been forgotten.
-          progress.textContent = result.frameCount
+        const dropNote = result.droppedBlurry ? ` ${result.droppedBlurry} blurry photo${result.droppedBlurry === 1 ? '' : 's'} skipped.` : ''
+        // A tripod capture words its own result, because the thing worth
+        // saying about it is whether it came back with a real size — and
+        // UPLOAD_RESULT_NOTE's promise ("nothing catalogued") is about an
+        // upload of someone else's pictures, not about this.
+        const line = extras
+          ? `${extras.successLine(result.frameCount ?? 0)}${dropNote}`
+          : result.frameCount
             ? `Uploaded — ${result.frameCount} keyframes extracted.${dropNote} ${UPLOAD_RESULT_NOTE}`
             : `Uploaded — processing started. ${UPLOAD_RESULT_NOTE}`
-        }
+        if (progress) progress.textContent = line
+        extras?.settle(true, line)
         if (openLink) {
           openLink.href = uploadPlaceTarget.projectId
             ? `/editor?project=${encodeURIComponent(uploadPlaceTarget.projectId)}`
@@ -2693,12 +2748,15 @@ function wireContentUpload(): void {
           if (xhr.status === 413 && body.maxBytes) message += ` (max ${(body.maxBytes / 1e6).toFixed(0)} MB)`
         } catch { /* keep default */ }
         if (progress) progress.textContent = message
+        extras?.settle(false, message)
       }
       input.value = ''
     })
     xhr.addEventListener('error', () => {
       if (btn) btn.removeAttribute('aria-disabled')
-      if (progress) progress.textContent = 'Upload failed — check your connection.'
+      const message = 'Upload failed — check your connection.'
+      if (progress) progress.textContent = message
+      extras?.settle(false, message)
       input.value = ''
     })
     xhr.send(form)
@@ -2851,14 +2909,29 @@ function mountTripodCapture(): void {
   if (!card || !input) return
 
   let state: StationCaptureState = createStationCapture()
-  /** Every photo handed over so far, sent as one set when the capture ends. */
-  let collected: File[] = []
+  /**
+   * The photos, kept BY SPOT rather than in one pile.
+   *
+   * This is the whole difference between a tripod capture and a bag of photos.
+   * The server can refuse a capture taken from a single spot, group the frames
+   * into viewpoints, and size the room from one measured length — and every one
+   * of those needs to know which spot each photo came from. A flat File[] threw
+   * that away before anything left the phone.
+   *
+   * It mirrors `state.spots` exactly: `spotFiles[i]` is the photos behind
+   * `state.spots[i]`, and `pendingFiles` is the sweep in progress, committed
+   * only where `endSweep` commits its count.
+   */
+  let spotFiles: File[][] = []
+  let pendingFiles: File[] = []
   /**
    * A one-off message that outranks the finish refusal in the same slot —
    * "those were not photos", "this browser cannot hand them over". Cleared by
    * the next action, so it never outlives the thing it is about.
    */
   let notice: string | null = null
+  /** True while the capture is on the wire, so a second tap cannot send it twice. */
+  let sending = false
 
   const sheet = document.createElement('div')
   sheet.id = 'tripod-sheet'
@@ -2879,6 +2952,29 @@ function mountTripodCapture(): void {
         <span id="tripod-tally-spots"></span>
         <span id="tripod-tally-photos"></span>
       </div>
+      <div id="tripod-measure" class="tripod-measure" hidden>
+        <div class="tripod-measure-q">${escapeHtml(DISTANCE_PROMPT.question)}</div>
+        <p class="tripod-detail">${escapeHtml(DISTANCE_PROMPT.why)} ${escapeHtml(DISTANCE_PROMPT.how)}</p>
+        <div class="tripod-measure-row">
+          <label class="tripod-unit" for="tripod-metres">
+            <input id="tripod-metres" type="number" inputmode="numeric" min="0" max="25" step="1" autocomplete="off">
+            <span>metres</span>
+          </label>
+          <label class="tripod-unit" for="tripod-centimetres">
+            <input id="tripod-centimetres" type="number" inputmode="numeric" min="0" max="99" step="1" autocomplete="off">
+            <span>centimetres</span>
+          </label>
+        </div>
+        <p id="tripod-measure-echo" class="tripod-measure-echo" aria-live="polite"></p>
+        <p class="tripod-measure-unit">${escapeHtml(DISTANCE_PROMPT.unitNote)}</p>
+        <button id="tripod-measure-save" type="button" class="tripod-wide-btn">${escapeHtml(DISTANCE_PROMPT.save)}</button>
+        <button id="tripod-measure-skip" type="button" class="tripod-plain-btn">${escapeHtml(DISTANCE_PROMPT.skip)}</button>
+      </div>
+      <div id="tripod-size" class="tripod-size" hidden>
+        <b id="tripod-size-headline"></b>
+        <span id="tripod-size-detail"></span>
+      </div>
+      <button id="tripod-measure-open" type="button" class="tripod-plain-btn" hidden>${escapeHtml(DISTANCE_PROMPT.reopen)}</button>
       <button id="tripod-add" type="button" class="tripod-wide-btn" hidden></button>
       <button id="tripod-send" type="button" class="tripod-wide-btn" hidden></button>
       <p id="tripod-blocked" class="tripod-blocked" hidden></p>
@@ -2896,16 +2992,54 @@ function mountTripodCapture(): void {
   const detailEl = sheet.querySelector<HTMLElement>('#tripod-detail')!
   const tallySpotsEl = sheet.querySelector<HTMLElement>('#tripod-tally-spots')!
   const tallyPhotosEl = sheet.querySelector<HTMLElement>('#tripod-tally-photos')!
+  const measureEl = sheet.querySelector<HTMLElement>('#tripod-measure')!
+  const metresInput = sheet.querySelector<HTMLInputElement>('#tripod-metres')!
+  const cmInput = sheet.querySelector<HTMLInputElement>('#tripod-centimetres')!
+  const echoEl = sheet.querySelector<HTMLElement>('#tripod-measure-echo')!
+  const saveBtn = sheet.querySelector<HTMLButtonElement>('#tripod-measure-save')!
+  const skipBtn = sheet.querySelector<HTMLButtonElement>('#tripod-measure-skip')!
+  const reopenBtn = sheet.querySelector<HTMLButtonElement>('#tripod-measure-open')!
+  const sizeEl = sheet.querySelector<HTMLElement>('#tripod-size')!
+  const sizeHeadlineEl = sheet.querySelector<HTMLElement>('#tripod-size-headline')!
+  const sizeDetailEl = sheet.querySelector<HTMLElement>('#tripod-size-detail')!
   const addBtn = sheet.querySelector<HTMLButtonElement>('#tripod-add')!
   const sendBtn = sheet.querySelector<HTMLButtonElement>('#tripod-send')!
   const blockedEl = sheet.querySelector<HTMLElement>('#tripod-blocked')!
   const primaryBtn = sheet.querySelector<HTMLButtonElement>('#tripod-primary')!
   const closeBtn = sheet.querySelector<HTMLButtonElement>('#tripod-close')!
 
+  /**
+   * The echo under the two boxes: the reading restated, and the same length in
+   * feet.
+   *
+   * The feet half is the only check that catches the failure this whole entry
+   * is shaped around. A distance given in feet is arithmetically indetectable
+   * downstream — a room 3.28x too big is a perfectly self-consistent room — so
+   * the number is read back in the unit that would be wrong, where the person
+   * holding the tape can see it disagree.
+   */
+  const renderEcho = () => {
+    const reading = readSpotDistance(metresInput.value, cmInput.value)
+    if (reading.ok) {
+      echoEl.textContent = spotDistanceEcho(reading)
+      echoEl.dataset.tone = 'ok'
+      saveBtn.disabled = false
+      return
+    }
+    echoEl.textContent = reading.empty ? '' : reading.reason
+    echoEl.dataset.tone = reading.empty ? '' : 'warn'
+    saveBtn.disabled = true
+  }
+
   const render = () => {
     const guidance = stationGuidance(state)
     const verdict = finishVerdict(state)
     const done = state.spots.length
+    // The measurement is asked once, at the first pause after the second spot,
+    // and it takes the screen while it is being asked: both answers are one
+    // tap, and leaving "carry on" visible beside them is how a question gets
+    // answered by accident.
+    const asking = shouldAskDistance(state)
 
     // The "why more than one spot" note is worth the whole top of the sheet
     // before the first spot exists, and is in the way after: from spot two on,
@@ -2936,16 +3070,33 @@ function mountTripodCapture(): void {
     const photos = totalPhotos(state)
     tallyPhotosEl.innerHTML = `<b>${photos}</b> photo${photos === 1 ? '' : 's'}`
 
+    measureEl.hidden = !asking
+    if (asking) renderEcho()
+
+    // What this capture will know about its own size, said the moment the
+    // answer exists and again on the screen that sends it — the last point at
+    // which "nothing measured this" can still be acted on.
+    const size = sizeVerdict(state)
+    const showSize = state.measurement !== null && (state.phase === 'move' || state.phase === 'done')
+    sizeEl.hidden = !showSize
+    sizeEl.dataset.tone = size.trueToSize ? 'ok' : 'plain'
+    sizeHeadlineEl.textContent = size.headline
+    sizeDetailEl.textContent = size.detail
+
+    // The way back from a skip. Offered rather than nagged: the question has
+    // been answered, and this is the door left open beside the answer.
+    reopenBtn.hidden = asking || state.phase === 'done' || state.measurement?.kind !== 'skipped'
+
     const sweeping = state.phase === 'sweeping'
-    addBtn.hidden = !sweeping
+    addBtn.hidden = asking || !sweeping
     addBtn.textContent = state.pending === 0
       ? "Add this spot's photos"
       : `Add more — ${state.pending} from this spot`
 
-    sendBtn.hidden = state.phase === 'done' || !verdict.ok
+    sendBtn.hidden = asking || sending || state.phase === 'done' || !verdict.ok
     sendBtn.textContent = `Send ${done} spots as one capture`
 
-    primaryBtn.hidden = guidance.primary === null
+    primaryBtn.hidden = asking || sending || guidance.primary === null
     primaryBtn.textContent = guidance.primary ?? ''
     closeBtn.textContent = state.phase === 'done' ? 'Close' : 'Continue later'
 
@@ -2961,8 +3112,48 @@ function mountTripodCapture(): void {
   primaryBtn.addEventListener('click', () => {
     notice = null
     if (state.phase === 'ready') state = beginSweep(state)
-    else if (state.phase === 'sweeping') state = endSweep(state)
-    else if (state.phase === 'move') state = nextSpot(state)
+    else if (state.phase === 'sweeping') {
+      const before = state.spots.length
+      state = endSweep(state)
+      // The files commit exactly where the count does. An empty sweep advances
+      // nothing, so its (empty) pile is dropped and the spot stays open —
+      // anything else would leave photos filed under a spot that does not
+      // exist, which is the same lie in a different place.
+      if (state.spots.length > before) {
+        spotFiles = [...spotFiles, pendingFiles]
+      }
+      pendingFiles = []
+    } else if (state.phase === 'move') state = nextSpot(state)
+    render()
+  })
+
+  for (const box of [metresInput, cmInput]) box.addEventListener('input', renderEcho)
+
+  saveBtn.addEventListener('click', () => {
+    const reading = readSpotDistance(metresInput.value, cmInput.value)
+    // Belt and braces: the button is disabled while the reading is not
+    // acceptable, and a saved number that was never accepted would travel with
+    // the capture as if it had been measured.
+    if (!reading.ok) {
+      renderEcho()
+      return
+    }
+    notice = null
+    state = recordDistance(state, reading.metres)
+    render()
+  })
+
+  skipBtn.addEventListener('click', () => {
+    notice = null
+    state = skipDistance(state)
+    render()
+  })
+
+  reopenBtn.addEventListener('click', () => {
+    notice = null
+    metresInput.value = ''
+    cmInput.value = ''
+    state = clearDistance(state)
     render()
   })
 
@@ -2977,7 +3168,7 @@ function mountTripodCapture(): void {
         // the sweep both stay exactly where they were.
         notice = 'Those were not photos, so this spot is unchanged. Pick the images the sweep took.'
       } else {
-        collected = [...collected, ...photos]
+        pendingFiles = [...pendingFiles, ...photos]
         state = addPhotos(state, photos.length)
         if (photos.length < files.length) {
           notice = `${files.length - photos.length} file(s) were not photos and were left out.`
@@ -2996,20 +3187,49 @@ function mountTripodCapture(): void {
       render()
       return
     }
+    if (sending) return
+
     // Handing the files back to the one uploader, rather than posting them
     // here: that handler already knows the Place target, the endpoint, the
-    // progress line and every failure message. DataTransfer is how a File[]
-    // becomes an input's FileList; if it is missing, say so instead of
+    // progress percentage and every failure message. DataTransfer is how a
+    // File[] becomes an input's FileList; if it is missing, say so instead of
     // pretending the capture went anywhere.
     if (typeof DataTransfer === 'undefined') {
       notice = 'This browser will not let the app hand the photos to the uploader. Use Upload Content and pick all of the spots’ photos together.'
       render()
       return
     }
+
+    // What is new is what goes WITH them. The photos used to leave as one flat
+    // set with no record of which spot each came from, so a capture the app
+    // made itself was indistinguishable from a bag of holiday snaps: the
+    // server could not refuse one taken from a single spot, and had nothing to
+    // size the room with. Both ride on the same request as the photos.
+    const frames = planStationFrames(spotFiles)
+    const spots = spotFiles.length
+    const size = sizeVerdict(state)
+    sending = true
+    pendingUploadExtras = {
+      stations: stationsFor(frames),
+      knownDistances: knownDistancesFor(state.measurement, spots),
+      successLine: frameCount =>
+        `Sent — ${frameCount || frames.length} photos from ${spots} spots. ${size.headline}.`,
+      settle: (ok, message) => {
+        sending = false
+        // A refused or failed upload registered nothing, so nothing may look
+        // as though it did: the capture stays exactly where it was, with the
+        // same Send button and the same photos still in hand.
+        notice = ok ? null : message
+        if (ok) state = finishCapture(state)
+        render()
+      },
+    }
+    // The sheet is over the progress line under the cards, so it says the same
+    // thing itself rather than leaving a screen with every button gone.
+    notice = `Sending ${frames.length} photos from ${spots} spots…`
     const transfer = new DataTransfer()
-    for (const file of collected) transfer.items.add(file)
+    for (const file of filesFor(frames)) transfer.items.add(file)
     input.files = transfer.files
-    state = finishCapture(state)
     render()
     input.dispatchEvent(new Event('change'))
   })
@@ -3021,7 +3241,10 @@ function mountTripodCapture(): void {
     // later", and losing four spots' photos to a mistapped Close would be
     // unrecoverable — the photos are only in this page's memory.
     state = createStationCapture()
-    collected = []
+    spotFiles = []
+    pendingFiles = []
+    metresInput.value = ''
+    cmInput.value = ''
     notice = null
     render()
   })

@@ -745,6 +745,23 @@ const solverSlab = (z: number, n: number) => slab(z, n).map((v, i) => (i % 3 ===
 /** An identity OpenCV world-to-camera — i.e. the camera at the solver origin. */
 const IDENTITY_W2C = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]]
 
+/**
+ * A row-major 4x4 applied to a point — the arithmetic a consumer of
+ * `metricFrame.toScanFrame` does, written out here so the round-trip is
+ * checked against the published numbers rather than against the driver's own
+ * helper.
+ */
+function applyRowMajor4(
+  m: number[],
+  p: { x: number; y: number; z: number },
+): { x: number; y: number; z: number } {
+  return {
+    x: m[0] * p.x + m[1] * p.y + m[2] * p.z + m[3],
+    y: m[4] * p.x + m[5] * p.y + m[6] * p.z + m[7],
+    z: m[8] * p.x + m[9] * p.y + m[10] * p.z + m[11],
+  }
+}
+
 async function writeSolvedPoses(sessionDir: string, files: string[]): Promise<void> {
   await Deno.writeTextFile(
     `${sessionDir}/colmap.poses.json`,
@@ -801,7 +818,7 @@ Deno.test('with no measured metric frame, a solved camera track still places not
   })
 })
 
-Deno.test('a verified metric frame lets a solved camera track place objects, in real metres', async () => {
+Deno.test('a verified metric frame places objects in real metres, and says how to get back to the scan\'s own frame', async () => {
   await withTmp(async (tmp) => {
     const sessionDir = await makeSession(
       tmp,
@@ -841,6 +858,129 @@ Deno.test('a verified metric frame lets a solved camera track place objects, in 
     assertEquals(sidecar.metricFrame?.scale, ALIGN_SCALE)
     assertEquals(sidecar.metricFrame?.residualM, 0.02)
     assertEquals(sidecar.metricFrame?.source, 'scan.splat-align.manifest.json')
+
+    // ── the contract, in numbers ────────────────────────────────────────────
+    //
+    // Those metres are NOT coordinates in the scan GLB, and until this field
+    // existed nothing said so: the viewer hung its markers off the scan root —
+    // the GLB's own frame — and used worldPos verbatim, so this very fixture
+    // drew a marker at (10, 1, 0) for an object whose points are at (0, 0, 12).
+    // 10.05 m away, in a 12-unit room. `toScanFrame` is the statement of the
+    // relationship, and it is exact: 1/0.25 = 4 on the diagonal, and the
+    // alignment's (10, 1, -3) carried back through it.
+    assertEquals(sidecar.metricFrame?.toScanFrame, [
+      4, 0, 0, -40,
+      0, 4, 0, -4,
+      0, 0, 4, 12,
+      0, 0, 0, 1,
+    ])
+    // And it round-trips onto the geometry rather than merely being consistent
+    // with itself: the position, carried back, lands on the slab the ray
+    // actually hit — 40 points at solver z = +12, centred on (0, 0).
+    const back = applyRowMajor4(sidecar.metricFrame!.toScanFrame, d.worldPos)
+    assert(Math.abs(back.x) < 0.05, `x back in the scan's frame was ${back.x}`)
+    assert(Math.abs(back.y) < 0.05, `y back in the scan's frame was ${back.y}`)
+    assert(Math.abs(back.z - 12) < 0.05, `z back in the scan's frame was ${back.z}`)
+  })
+})
+
+Deno.test('the frame declaration survives a rotated alignment — it is the inverse, not the transform again', async () => {
+  await withTmp(async (tmp) => {
+    // The fixture above cannot tell R from R-transpose, because its rotation is
+    // the identity. Publishing `projectTransform`'s own rotation instead of its
+    // inverse would pass every assertion there and put a marker on the wrong
+    // side of the room here. So: a quarter turn about Y, which maps a solver
+    // (x, y, z) to (z, y, -x).
+    //
+    //   slab           (0, 0, 12) -> 0.25*(12, 0, 0) + (10, 1, -3) = (13, 1, -3) m
+    //   camera centre  (0, 0,  0) ->                                 (10, 1, -3) m
+    //
+    // — still 3.0 m in front of the camera, and still 12 units away in the
+    // scan's own frame, which is what the round-trip below has to recover.
+    const yaw = [
+      0, 0, ALIGN_SCALE, 10,
+      0, ALIGN_SCALE, 0, 1,
+      -ALIGN_SCALE, 0, 0, -3,
+      0, 0, 0, 1,
+    ]
+    const sessionDir = await makeSession(
+      tmp,
+      [{ file: 'kf-00000.jpg' }],
+      [{ file: 'kf-00000.jpg', label: 'chair', score: 0.94 }],
+    )
+    await writeSolvedPoses(sessionDir, ['kf-00000.jpg'])
+    await Deno.writeTextFile(
+      `${tmp}/scan.splat-align.manifest.json`,
+      alignManifest({ projectTransform: yaw }),
+    )
+
+    const detectionsPath = `${tmp}/scan.panoptic.detections.json`
+    const m = await runPanopticLift({
+      sessionDir,
+      scanGlbPath: `${tmp}/scan.glb`,
+      detectionsPath,
+      _readCloud: cloudSeam(solverSlab(12, 40)),
+    })
+    assertEquals(m.confidentCount, 1)
+
+    const sidecar = await readSidecar(detectionsPath)
+    const d = sidecar.detections[0]
+    assert(d.worldPos, 'expected a world position')
+    assert(Math.abs(d.worldPos.x - 13) < 0.05, `x was ${d.worldPos.x}`)
+    assert(Math.abs(d.worldPos.y - 1) < 0.05, `y was ${d.worldPos.y}`)
+    assert(Math.abs(d.worldPos.z + 3) < 0.05, `z was ${d.worldPos.z}`)
+
+    // (1/s)·R-transpose, and the translation carried through it. Using R would
+    // give the third row (-4, 0, 0) and land the round-trip at z = -12: the
+    // right distance, the opposite direction, and nothing to see it by.
+    assertEquals(sidecar.metricFrame?.toScanFrame, [
+      0, 0, -4, -12,
+      0, 4, 0, -4,
+      4, 0, 0, -40,
+      0, 0, 0, 1,
+    ])
+    const back = applyRowMajor4(sidecar.metricFrame!.toScanFrame, d.worldPos)
+    assert(Math.abs(back.x) < 0.05, `x back in the scan's frame was ${back.x}`)
+    assert(Math.abs(back.y) < 0.05, `y back in the scan's frame was ${back.y}`)
+    assert(Math.abs(back.z - 12) < 0.05, `z back in the scan's frame was ${back.z}`)
+  })
+})
+
+Deno.test('a tracked capture declares no frame, because its metres already ARE the scan\'s frame', async () => {
+  await withTmp(async (tmp) => {
+    // The other half of the contract, and the reason `metricFrame` can mean
+    // "the frames differ" by its presence alone. A capture whose keyframes
+    // carry a pose lifts against the cloud untransformed, so worldPos IS a
+    // coordinate in the scan GLB — a consumer drawing it verbatim is right,
+    // and one hunting for a transform would find none because there is none.
+    const sessionDir = await makeSession(
+      tmp,
+      [{ file: 'kf-00000.jpg', pose: { position: { x: 0, y: 0, z: 0 } } }],
+      [{ file: 'kf-00000.jpg', label: 'chair', score: 0.94 }],
+    )
+    // The alignment is on disk and is deliberately ignored: this capture never
+    // needed one, and applying it would move every position off the geometry.
+    await Deno.writeTextFile(`${tmp}/scan.splat-align.manifest.json`, alignManifest())
+
+    const detectionsPath = `${tmp}/scan.panoptic.detections.json`
+    const m = await runPanopticLift({
+      sessionDir,
+      scanGlbPath: `${tmp}/scan.glb`,
+      detectionsPath,
+      _readCloud: cloudSeam(slab(3, 40)),
+    })
+    assertEquals(m.confidentCount, 1)
+
+    const sidecar = await readSidecar(detectionsPath)
+    const d = sidecar.detections[0]
+    assertEquals(sidecar.metricFrame, undefined, 'the frames are the same, so nothing is declared')
+    assertEquals(d.cameraSource, undefined)
+    assert(d.worldPos, 'expected a world position')
+    // The slab sits at (0, 0, -3) in the cloud, i.e. in the GLB, and that is
+    // exactly what the sidecar says — no scale, no offset, nothing to undo.
+    assert(Math.abs(d.worldPos.x) < 0.05, `x was ${d.worldPos.x}`)
+    assert(Math.abs(d.worldPos.y) < 0.05, `y was ${d.worldPos.y}`)
+    assert(Math.abs(d.worldPos.z + 3) < 0.05, `z was ${d.worldPos.z}`)
   })
 })
 

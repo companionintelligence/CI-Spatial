@@ -15,6 +15,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  DISTANCE_PROMPT,
+  MEASURE_AFTER_SPOTS,
   SPREAD_HINT,
   STATION_MAX,
   STATION_MIN,
@@ -24,12 +26,18 @@ import {
   WHY_SEVERAL_SPOTS,
   addPhotos,
   beginSweep,
+  clearDistance,
   createStationCapture,
   currentSpot,
   endSweep,
   finishCapture,
   finishVerdict,
+  measuredMetres,
   nextSpot,
+  recordDistance,
+  shouldAskDistance,
+  sizeVerdict,
+  skipDistance,
   stationGuidance,
   stationStatusLine,
   totalPhotos,
@@ -289,4 +297,116 @@ test('no copy prints implementation vocabulary at the user', () => {
       assert.doesNotMatch(copy, new RegExp(term, 'i'), `copy must not say "${term}": ${copy}`)
     }
   }
+})
+
+// ── the one measured length ─────────────────────────────────────────────────
+//
+// A tripod capture reconstructs a room that is an exact similarity of the real
+// one and has no idea how big it is. One measured distance between two of the
+// spots is what fixes that, and it is the only thing on this path that can.
+// These tests hold two properties: it is asked for at the one moment measuring
+// it is free, and skipping it is an outcome rather than an error.
+
+test('the measurement is asked for at the first pause after the second spot', () => {
+  // Not before — two spots have to exist for there to be a distance between
+  // them — and not at the end, when the spots are no longer marked by anything
+  // and finding them means walking back across the room.
+  assert.equal(shouldAskDistance(createStationCapture()), false)
+  assert.equal(shouldAskDistance(withSpots(1)), false, 'one spot is not a pair')
+  assert.equal(MEASURE_AFTER_SPOTS, 2)
+  assert.equal(shouldAskDistance(withSpots(2)), true)
+  assert.equal(shouldAskDistance(beginSweep(nextSpot(withSpots(2)))), false, 'never during a sweep')
+})
+
+test('a saved measurement is what makes this capture true to size, and it says so', () => {
+  const measured = recordDistance(withSpots(2), 3.4)
+  assert.equal(measuredMetres(measured), 3.4)
+  assert.equal(shouldAskDistance(measured), false, 'answered once is answered')
+
+  const size = sizeVerdict(measured)
+  assert.equal(size.trueToSize, true)
+  assert.match(size.detail, /3 m 40 cm/, 'the number is restated with its unit, never bare')
+  assert.match(size.detail, /spot 1 to spot 2/i, 'and names which two spots it is between')
+
+  // The claim exists only where it is earned: the same capture without the
+  // measurement must not make it.
+  const unmeasured = sizeVerdict(skipDistance(withSpots(2)))
+  assert.equal(unmeasured.trueToSize, false)
+  assert.match(unmeasured.detail, /not been measured|nothing has been measured/i)
+})
+
+test('skipping the measurement is a complete answer, and the capture is still good', () => {
+  // The first-class outcome. A capture with no measurement is a good capture of
+  // the shape of a room — it must not be refused, blocked, or asked again.
+  const skipped = skipDistance(withSpots(2))
+  assert.equal(shouldAskDistance(skipped), false)
+  assert.equal(measuredMetres(skipped), null)
+  const sent = finishCapture(sweep(nextSpot(skipped), 12))
+  assert.equal(sent.phase, 'done', 'a skipped measurement cannot block sending')
+  assert.equal(sizeVerdict(sent).trueToSize, false)
+})
+
+test('a skipped measurement can be re-opened, and a saved one cannot be lost silently', () => {
+  const skipped = skipDistance(withSpots(2))
+  assert.equal(shouldAskDistance(clearDistance(skipped)), true, 'the way back from a skip')
+  // Skipping after saving must not throw the number away — the only way to
+  // replace a reading is to deliberately re-open the question.
+  const measured = recordDistance(withSpots(2), 3.4)
+  assert.equal(measuredMetres(skipDistance(measured)), 3.4)
+  assert.equal(measuredMetres(clearDistance(measured)), null)
+})
+
+test('a measurement that is not a measurement never reaches the capture', () => {
+  // A stored zero or NaN would travel with the photos and be indistinguishable
+  // from a real reading, which is the exact shape of "reporting success it did
+  // not earn" on this path.
+  const two = withSpots(2)
+  for (const bad of [0, -3, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.equal(measuredMetres(recordDistance(two, bad)), null, `${bad} was stored`)
+  }
+  assert.equal(measuredMetres(recordDistance(withSpots(1), 3.4)), null, 'nothing to measure between yet')
+})
+
+test('the measurement survives the rest of the capture', () => {
+  let state = recordDistance(withSpots(2), 3.4)
+  state = sweep(nextSpot(state), 12)
+  state = finishCapture(state)
+  assert.equal(state.phase, 'done')
+  assert.equal(measuredMetres(state), 3.4, 'the number must reach the send')
+  assert.equal(sizeVerdict(state).trueToSize, true)
+})
+
+test('the measurement copy makes the unit unmissable and never prints machinery', () => {
+  // A reading in feet is accepted by the arithmetic and is wrong by 3.28x with
+  // nothing downstream able to notice, so the size of the mistake is stated
+  // where the mistake would be made.
+  assert.match(DISTANCE_PROMPT.unitNote, /metres/i)
+  assert.match(DISTANCE_PROMPT.unitNote, /feet/i)
+  assert.match(DISTANCE_PROMPT.unitNote, /three times/i)
+  assert.match(DISTANCE_PROMPT.question, /spot 1 and spot 2/i)
+  assert.match(DISTANCE_PROMPT.skip, /skip/i)
+
+  const banned = [
+    'pose', 'SfM', 'COLMAP', 'parallax', 'VIO', 'SLAM', 'keyframe', 'segment',
+    'pipeline', 'job', 'metric scale', 'panoptic', 'splat', 'photogrammetry',
+    'baseline', 'registered', 'degenerate', 'station', 'dome', 'calibrat',
+  ]
+  const copy = [
+    ...Object.values(DISTANCE_PROMPT),
+    ...[sizeVerdict(recordDistance(withSpots(2), 3.4)), sizeVerdict(skipDistance(withSpots(2)))]
+      .flatMap(size => [size.headline, size.detail]),
+  ]
+  for (const line of copy) {
+    for (const term of banned) {
+      assert.doesNotMatch(line, new RegExp(term, 'i'), `copy must not say "${term}": ${line}`)
+    }
+  }
+})
+
+test('the path summary now says how a size can be had, without promising one', () => {
+  // It must still refuse the claim capture_intent.test.ts refuses for this
+  // method, while naming the one thing that would change the answer.
+  assert.doesNotMatch(TRIPOD_PATH_SUMMARY, /true size|true to size|to scale|actual size|in met(re|er)s|life-?size/i)
+  assert.match(TRIPOD_PATH_SUMMARY, /unmeasured|not measured/i)
+  assert.match(TRIPOD_PATH_SUMMARY, /measure one distance/i)
 })

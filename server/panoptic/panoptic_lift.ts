@@ -93,6 +93,59 @@
  * raw there would place every point 2.47x out from the origin, silently and
  * plausibly. Applying the accumulated world matrix costs nothing and removes
  * the whole class of error.
+ *
+ * ── What frame `worldPos` is in, and how a viewer gets out of it ─────────────
+ *
+ * ONE frame, stated once: **`worldPos` is always in the project's metric
+ * frame — real metres.** That is not a preference, it is forced. Every position
+ * this stage writes converges at `detectionLikesForWorld`, and `thing_match`
+ * fuses those across scans inside `THING_MATCH_RADIUS_M` (0.75 m). A radius in
+ * metres compared against numbers that are not metres is not "approximate", it
+ * is meaningless — and it fails by MERGING two different objects or SPLITTING
+ * one, both of which look like a plausible answer. So the unit is fixed at the
+ * consumer, and the producer has to meet it.
+ *
+ * For an ordinary tracked capture that costs nothing: the tracker's frame is
+ * already metric, the cloud was accumulated in it, and `worldPos` lands in the
+ * scan GLB's own frame as it always did.
+ *
+ * A capture lifted from solved cameras is the case where the two frames come
+ * apart. Its `<base>.glb` holds the solver's seed cloud in solver units, and
+ * the rays are cast against `transformCloud(cloud, projectTransform)` — so
+ * `worldPos` is metres, and the untouched GLB beside it is not. A viewer
+ * drawing a marker at those coordinates inside the GLB's frame puts it
+ * somewhere the object is not: with the measured 0.4798 m/unit solve, four
+ * times too close to the origin and offset by the whole alignment translation.
+ *
+ * The alternative — writing `worldPos` back in the cloud's frame so a viewer
+ * could use it verbatim — was rejected, and the reason is the paragraph above.
+ * It would hand `thing_match` solver units at a metre radius. Rescuing that
+ * would mean every consumer multiplying by a scale before comparing, i.e. the
+ * unit conversion scattered across the system instead of resolved here, and
+ * the first consumer to forget it fails silently.
+ *
+ * So the frame is declared instead of moved. `metricFrame` is present in the
+ * sidecar EXACTLY when `worldPos`'s frame differs from the scan GLB's own
+ * frame, and it carries `toScanFrame`: the row-major 4x4 that maps a `worldPos`
+ * back into the GLB's frame. Absent means the two frames are the same. A
+ * consumer that measures distances (thing_match) reads `worldPos` verbatim; a
+ * consumer that DRAWS inside the GLB (src/viewer/panoptic-layer.ts) applies
+ * `toScanFrame` first. The inverse is composed here from the rotation and
+ * scale `readMetricFrame` already validated, rather than left to each reader
+ * to invert sixteen numbers off disk — a reader that inverts a matrix it did
+ * not check is one shear away from a wrong bearing with no symptom.
+ *
+ * Note what `toScanFrame` does NOT have to undo: the GLB's node hierarchy. The
+ * cloud is read through its accumulated world matrices (previous section), so
+ * "the GLB's frame" here means glTF scene coordinates — which is exactly the
+ * frame the viewer's scan root draws in, that node's scale 2.470 already
+ * applied on both sides. The 2.47x error the previous section describes cannot
+ * come back in through this door.
+ *
+ * None of this loosens the refusals above. A size-only frame is still turned
+ * away before any of it: a `toScanFrame` derived from an arbitrary heading
+ * about an arbitrary origin would draw markers in a perfectly self-consistent
+ * place that is not where the objects are.
  */
 import { Document, NodeIO, Primitive } from '@gltf-transform/core'
 import { resolve } from '@std/path'
@@ -130,8 +183,15 @@ import {
 
 export type { PanopticLiftManifest }
 
-/** Manifest schema version — bump when a consumer-visible field changes. */
-const SCHEMA_VERSION = 1
+/**
+ * Manifest schema version — bump when a consumer-visible field changes.
+ *
+ * 2 added `metricFrame.toScanFrame`. A version-1 sidecar that carries a
+ * `metricFrame` at all is one whose `worldPos` is in a frame it never named,
+ * so a viewer cannot draw it — see the header. That is a readable distinction
+ * precisely because this number moved.
+ */
+const SCHEMA_VERSION = 2
 
 /**
  * Largest alignment residual, in metres, this stage will place an object
@@ -392,6 +452,39 @@ function transformCloud(
 }
 
 /**
+ * The map BACK: a point in project metres → the scan GLB's own frame.
+ *
+ * Row-major 4x4, published as `metricFrame.toScanFrame` so a consumer drawing
+ * inside the GLB has the one thing it cannot safely derive for itself.
+ *
+ * Composed, not inverted numerically. `frame.transform` is s·R with a
+ * translation, and `readMetricFrame` has already proved the R part orthonormal
+ * and right-handed and the s part finite and positive — so the exact inverse is
+ * (1/s)·Rᵀ applied to (q - t), with no conditioning to worry about and no way
+ * for a near-singular general inverse to return something plausible. A reader
+ * running a general 4x4 inversion on numbers it had not checked would get the
+ * same answer here and a quietly wrong one on a malformed manifest.
+ */
+function inverseSimilarity(frame: MetricFrame): number[] {
+  const inv = 1 / frame.scale
+  const r = frame.rotation
+  const t = [frame.transform[3], frame.transform[7], frame.transform[11]]
+  // (1/s)·Rᵀ — row i of the inverse's 3x3 is column i of R, scaled.
+  const a = [
+    [inv * r[0][0], inv * r[1][0], inv * r[2][0]],
+    [inv * r[0][1], inv * r[1][1], inv * r[2][1]],
+    [inv * r[0][2], inv * r[1][2], inv * r[2][2]],
+  ]
+  const shift = a.map((row) => -(row[0] * t[0] + row[1] * t[1] + row[2] * t[2]))
+  return [
+    a[0][0], a[0][1], a[0][2], shift[0],
+    a[1][0], a[1][1], a[1][2], shift[1],
+    a[2][0], a[2][1], a[2][2], shift[2],
+    0, 0, 0, 1,
+  ]
+}
+
+/**
  * A solved camera-to-world, re-expressed as a RIGID camera-to-project matrix.
  *
  * The alignment's scale belongs on the translation and nowhere else. Its 3x3
@@ -479,8 +572,19 @@ export interface PanopticDetectionsSidecar {
    * needed one. Present exactly when some record carries `cameraSource:
    * 'solved'`, and it is what makes those positions auditable: the same
    * transform, applied again, has to reproduce them.
+   *
+   * It is also the frame declaration every reader of `worldPos` depends on —
+   * see the header. Present means `worldPos` is NOT in the scan GLB's frame,
+   * and `toScanFrame` is the way back into it; absent means the two frames are
+   * the same. Either way `worldPos` itself is metres.
    */
-  metricFrame?: { source: string; scale: number; residualM: number }
+  metricFrame?: {
+    source: string
+    scale: number
+    residualM: number
+    /** Row-major 4x4: a `worldPos` → the scan GLB's own frame. */
+    toScanFrame: number[]
+  }
   detections: PanopticDetectionRecord[]
 }
 
@@ -877,7 +981,16 @@ export async function runPanopticLift(opts: PanopticLiftRunOptions): Promise<Pan
     // keyframes — and a sidecar that advertised an alignment behind zero
     // positions would be claiming provenance for work that never happened.
     ...(metric && out.some((record) => record.cameraSource === 'solved')
-      ? { metricFrame: { source: metric.source, scale: metric.scale, residualM: metric.residualM } }
+      ? {
+        metricFrame: {
+          source: metric.source,
+          scale: metric.scale,
+          residualM: metric.residualM,
+          // The frame declaration, not decoration: without it a viewer has
+          // metric coordinates and no way to know they are not the GLB's.
+          toScanFrame: inverseSimilarity(metric),
+        },
+      }
       : {}),
     detections: out,
   }
