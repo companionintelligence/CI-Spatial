@@ -61,7 +61,7 @@ import {
 } from './world/world_job_pump.ts'
 import { withWorldLock } from './world/world_lock.ts'
 import { legacyScanId, safeSlug, scanIdFor } from './scan_id.ts'
-import { newServerSessionId, resolveSessionDir, sessionDirPath } from './session_id.ts'
+import { isServerSessionId, newServerSessionId, resolveSessionDir, sessionDirPath } from './session_id.ts'
 import {
   parseReferencePhotoMeta,
   projectMediaDirPath,
@@ -1660,6 +1660,19 @@ app.post('/ingest-video', async (c) => {
 // droppedBlurry }.
 const INGEST_PHOTOS_SCRIPT = localScriptPath('./scripts/ingest-photos.mjs')
 
+/**
+ * `YYYYMMDD-HHMMSS`, in UTC — the stamp half of a photo-ingest session id.
+ *
+ * Same shape `scripts/ingest-photos.mjs` produces, so a directory listing still
+ * sorts and reads the way it always has. See the minting site in
+ * `POST /ingest-photos` for why the server names the session rather than the
+ * script.
+ */
+function uploadStamp(at: Date = new Date()): string {
+  const digits = at.toISOString().slice(0, 19).replace(/[-T:]/g, '')
+  return `${digits.slice(0, 8)}-${digits.slice(8, 14)}`
+}
+
 app.post('/ingest-photos', async (c) => {
   // Guard oversized uploads up front via Content-Length (before buffering).
   const contentLength = Number(c.req.header('content-length') ?? '')
@@ -1791,10 +1804,44 @@ app.post('/ingest-photos', async (c) => {
       index += 1
     }
 
+    // ── One upload, one session ───────────────────────────────────────────
+    //
+    // Left to itself the ingest script names the session after the EXIF capture
+    // time of the earliest photo in the batch (`sess-photo-<date>-<time>`).
+    // That is right for what it was written for — re-ingesting a photo archive
+    // from the command line, where landing the same photos in the same session
+    // twice is the desired, idempotent behaviour. It is wrong here. This route
+    // is a *capture*, and on 2026-08-30 two different tripod sweeps that shared
+    // their earliest photo minted the same id, `sess-photo-20260830-120349`,
+    // both times: the second upload's `mkdir -p` found the first's directory,
+    // overwrote its `kf-*.jpg` in place, and returned that id as if it were new
+    // — with a frameCount describing the second batch and any surplus frames of
+    // the first still sitting beside them. Two distinct captures must not share
+    // an id; nothing here asked to resume the earlier one, and no caller can
+    // tell that it did.
+    //
+    // So the server names the session and the script is told what to call it,
+    // which leaves its own default (and the archive workflow that depends on
+    // it) untouched. The stamp is upload time rather than capture time, and
+    // nothing is lost by that: `session.json.capturedAt` still carries the EXIF
+    // t0 the script derives. The random tail is what makes it unique — two
+    // uploads within the same second are otherwise indistinguishable.
+    const mintedSessionId = `sess-photo-${uploadStamp()}-${crypto.randomUUID().slice(0, 8)}`
+    if (!isServerSessionId(mintedSessionId)) {
+      return c.json({ error: 'could not mint a session id for this upload' }, 500)
+    }
+
     // Run the ingest script; the LAST stdout line is JSON
     // { sessionId, frameCount, sessionDir, droppedBlurry, … }.
     const cmd = new Deno.Command('node', {
-      args: [INGEST_PHOTOS_SCRIPT, tmpDir, '--scans-dir', SCANS_DIR, '--sessions-dir', SESSIONS_DIR, '--single-session', 'true'],
+      args: [
+        INGEST_PHOTOS_SCRIPT,
+        tmpDir,
+        '--scans-dir', SCANS_DIR,
+        '--sessions-dir', SESSIONS_DIR,
+        '--single-session', 'true',
+        '--session-id', mintedSessionId,
+      ],
       stdout: 'piped',
       stderr: 'piped',
     })
@@ -1818,6 +1865,12 @@ app.post('/ingest-photos', async (c) => {
     const frameCount = parsed.frameCount ?? 0
     if (!sessionId || !sessionDir(sessionId)) {
       return c.json({ error: `ingest returned an invalid session id: ${sessionId}` }, 500)
+    }
+    if (sessionId !== mintedSessionId) {
+      // Not fatal — the id below is used consistently either way — but it means
+      // the uniqueness guarantee above did not hold, which is the defect this
+      // route just fixed coming back. Say so where it will be read.
+      console.warn(`[ingest-photos] ingest ignored --session-id: asked for ${mintedSessionId}, got ${sessionId}`)
     }
     // The server's own resolver, not the script's reported path: one function
     // owns the sessions-directory layout, and the guard above already proved
@@ -2779,16 +2832,31 @@ async function refreshWorldScans(world: WorldProject): Promise<void> {
         if (job.scanId === scan.scanId) job.scanId = next.scanId
       }
     }
+    // A verdict on the capture outranks the status derived from what is on
+    // disk. `scanManifestFromStored` reads the GLB's meta sidecar, which knows
+    // about capture quality and nothing about whether the reconstruction that
+    // wrote the GLB was any good — so its bare 'ready' would silently undo the
+    // 'needs-rescan' a completed job just recorded, on the very next
+    // GET /worlds/:slug. Measured 2026-08-30 on a tripod dome that never moved:
+    // the colmap-poses job wrote 'needs-rescan', the editor's next poll put it
+    // back to 'ready'. This is the same rule the missing-file branch above
+    // already states — 'needs-review'/'needs-rescan' are verdicts, true
+    // whether or not geometry exists — applied on the branch where the file IS
+    // there. A later job that re-judges the scan sets the field itself, so the
+    // verdict is sticky, not permanent.
+    const verdictHeld = next.status === 'ready' &&
+      (scan.status === 'needs-rescan' || scan.status === 'needs-review')
+    const nextStatus = verdictHeld ? scan.status : next.status
     changed = changed
       || scan.scanId !== next.scanId
       || scan.projectId !== next.projectId
-      || scan.status !== next.status
+      || scan.status !== nextStatus
       || scan.geoDistanceM !== next.geoDistanceM
       || !!scan.geoOutlier !== !!next.geoOutlier
       || scan.frameSetUrl !== next.frameSetUrl
       || JSON.stringify(scan.qualitySummary ?? null) !== JSON.stringify(next.qualitySummary ?? null)
       || JSON.stringify(scan.layerIndex) !== JSON.stringify(next.layerIndex)
-    return { ...scan, ...next, localToWorld: scan.localToWorld, name: scan.name || next.name }
+    return { ...scan, ...next, status: nextStatus, localToWorld: scan.localToWorld, name: scan.name || next.name }
   }).filter((scan): scan is ScanManifest => scan !== null)
 
   if (removedForProjectMismatch.length > 0) {
@@ -3700,10 +3768,20 @@ async function _runColmapPosesJob(slug: string, jobId: string): Promise<void> {
       currentJob.progress = 1
       if (result.status === 'ok') {
         currentJob.status = 'completed'
+        // 'completed' is right — the solver ran every step and wrote real files
+        // — but the sentence a person reads must not stop at the image count.
+        // A capture shot from one spot registers every frame and triangulates
+        // thousands of points, so "registered 12 image(s), 4410 point(s)" is a
+        // success story about a scan that cannot be used (see
+        // ColmapReconstructionQuality). The verdict rides on the same line.
+        const degenerate = result.quality?.degenerate === true
         currentJob.result =
           `COLMAP registered ${result.registeredImages ?? 0} image(s), ` +
           `${result.pointCount ?? 0} point(s)` +
-          (result.glbPath ? `, and wrote ${scan.filename} from the seed cloud` : '')
+          (result.glbPath ? `, and wrote ${scan.filename} from the seed cloud` : '') +
+          (degenerate
+            ? `. This capture needs re-taking: ${result.manifest.remediation ?? 'the solve came out degenerate.'}`
+            : '')
         if (measuredDistances > 0) {
           const alignJob = createWorldJob(current, 'splat-align', scan.scanId, {
             source: 'auto-chain',
@@ -3722,6 +3800,12 @@ async function _runColmapPosesJob(slug: string, jobId: string): Promise<void> {
               sessionId,
               registeredImages: result.registeredImages ?? null,
               pointCount: result.pointCount ?? null,
+              // The verdict and what backs it, so a reader of the job does not
+              // have to open the manifest to find out whether to trust it.
+              degenerate: result.quality?.degenerate ?? null,
+              reviewStatus: result.quality?.status ?? null,
+              degenerateReasons: result.quality?.reasons ?? null,
+              stationBaseline: result.quality?.baseline ?? null,
             },
           },
           // The scan's own GLB, not a sidecar: this is the file `scan.glbUrl`
@@ -3736,6 +3820,16 @@ async function _runColmapPosesJob(slug: string, jobId: string): Promise<void> {
             : []),
         ]
         applyCompletedJobToWorld(currentJob, current)
+        // …and then say what the solve actually found. `applyCompletedJobToWorld`
+        // promotes a session scan to 'ready' the moment a GLB exists, which is a
+        // claim about geometry — and a degenerate solve writes a GLB like any
+        // other. Leaving it at 'ready' is the same unearned success the quality
+        // verdict exists to stop, one layer up. `needs-rescan` is `ScanReviewStatus`'s
+        // existing word for it, already a legal `ScanManifestStatus`.
+        if (result.quality?.degenerate) {
+          const degenerateScan = scanForJob(currentJob, current)
+          if (degenerateScan) degenerateScan.status = result.quality.status
+        }
       } else if (result.status === 'skipped') {
         currentJob.status = 'completed'
         currentJob.result = `COLMAP skipped: ${result.manifest.skippedReason ?? 'unknown reason'}`

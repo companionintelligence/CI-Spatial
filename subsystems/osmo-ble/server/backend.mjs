@@ -21,6 +21,7 @@ import { buildGimbalRecenter, buildGimbalAbsoluteAngle, buildGimbalSetMode, buil
 import { GIMBAL_MODE } from '../protocol/constants.mjs';
 import { quaternionDelta, quatToGimbalControlDeg } from '../protocol/telemetry.mjs';
 import { AndroidMcpClient, capturePhoto, planGrid } from './android-capture.mjs';
+import { resolveCaptureDevice, describeCaptureDevice } from './device-config.mjs';
 import { PHONE_TELEMETRY, isPhoneTelemetry, normalizePhoneTelemetry } from '../protocol/phone_telemetry.mjs';
 import { STREAM_STALE_MS } from '../protocol/link_state.mjs';
 
@@ -954,8 +955,6 @@ const routes = {
       }];
     }
 
-    const deviceUrl = body.deviceUrl ?? process.env.ANDROID_MCP_URL;
-    const deviceToken = body.deviceToken ?? process.env.ANDROID_MCP_TOKEN;
     // Movement-only: sweep the grid but take no photos over MCP. The phone runs the scanner
     // web app instead, which captures its own keyframes AND tags each with an AR pose from
     // the device's visual-inertial odometry.
@@ -969,8 +968,13 @@ const routes = {
     // Note the scanner fires a keyframe every `minRotationDeg` (default 20°) of rotation, so a
     // grid whose pan step is smaller than that will not produce one keyframe per position.
     const capturePhotos = body.capturePhotos !== false;
-    if (capturePhotos && !deviceUrl) return [400, { error: 'deviceUrl is required (or set ANDROID_MCP_URL)' }];
-    if (capturePhotos && !deviceToken) return [400, { error: 'deviceToken is required (or set ANDROID_MCP_TOKEN) — see .env.example' }];
+    // Resolved before the gimbal is touched, not at the first photo: a run that sweeps eleven
+    // positions and only then discovers it has no token has already spent the operator's time
+    // and left the rig somewhere unhelpful. An explicit deviceUrl/deviceToken in the body still
+    // wins; otherwise this reads .mcp.json for the URL and the per-device ANDROID_MCP_TOKEN_*
+    // for the token (see device-config.mjs).
+    const device = capturePhotos ? resolveCaptureDevice(body) : null;
+    if (device && !device.ok) return [400, { error: device.error, remediation: device.remediation }];
     const refusal = linkRefusal('stream');
     if (refusal) return refusal;
     if (gridRunning) return [409, { error: 'A capture is already running and owns the gimbal.', remediation: 'Stop it (POST /api/grid-stop) before starting another.' }];
@@ -995,7 +999,7 @@ const routes = {
     const perStation = grid.length;
     const total = perStation * stationsPlanned;
     const prefix = body.prefix ?? `grid-${Date.now()}`;
-    const client = capturePhotos ? new AndroidMcpClient({ url: deviceUrl, token: deviceToken }) : null;
+    const client = capturePhotos ? new AndroidMcpClient({ url: device.url, token: device.token }) : null;
 
     res.writeHead(200, {
       'Content-Type': 'application/x-ndjson',
@@ -1022,6 +1026,10 @@ const routes = {
       perStation,
       stationsPlanned,
       prefix,
+      // Which phone is being driven, so a run whose photos land somewhere unexpected can be
+      // traced to the device that took them. Name and URL only — the token that authorises the
+      // connection is never put on this stream, in a manifest, or in an error.
+      capturedBy: capturePhotos ? { device: device.device, deviceUrl: device.url } : 'scanner-app',
       // The plan is on the wire so a capture can be read back later without re-deriving it —
       // "which station was bad" is the first question when a solve fails, and it is
       // unanswerable if nobody wrote down where the columns were.
@@ -1250,12 +1258,14 @@ const routes = {
   // section's own caveat — so callers should treat it as best-effort, not verified.
   'POST /api/capture-photo': async (req) => {
     const body = await readJsonBody(req);
-    const deviceUrl = body.deviceUrl ?? process.env.ANDROID_MCP_URL;
-    const deviceToken = body.deviceToken ?? process.env.ANDROID_MCP_TOKEN;
-    if (!deviceUrl) return [400, { error: 'deviceUrl is required (or set ANDROID_MCP_URL)' }];
-    if (!deviceToken) return [400, { error: 'deviceToken is required (or set ANDROID_MCP_TOKEN) — see .env.example' }];
+    // An explicit deviceUrl/deviceToken in the body still wins; with neither, the URL comes
+    // from .mcp.json's android-* entry and the token from that device's own
+    // ANDROID_MCP_TOKEN_<DEVICE> (see device-config.mjs). Unconfigured, this still refuses —
+    // with a remediation naming the variable to set, not a bare "deviceToken is required".
+    const device = resolveCaptureDevice(body);
+    if (!device.ok) return [400, { error: device.error, remediation: device.remediation }];
     const prefix = body.prefix ?? `shot-${Date.now()}`;
-    const client = new AndroidMcpClient({ url: deviceUrl, token: deviceToken });
+    const client = new AndroidMcpClient({ url: device.url, token: device.token });
     const shots = [];
     try {
       await client.open();
@@ -1279,11 +1289,22 @@ const routes = {
         }) });
       }
     } catch (err) {
-      return [500, { error: String(err.message || err), shots }];
+      return [500, { error: String(err.message || err), device: device.device, shots }];
     } finally {
       await client.close();
     }
-    return [200, { shots }];
+    // device/deviceUrl only — never device.token.
+    return [200, { device: device.device, deviceUrl: device.url, shots }];
+  },
+
+  // Is the backend actually able to drive a camera, and which one? A preflight, so an operator
+  // can settle the configuration before the rig is on a tripod in the middle of a room — the
+  // alternative is discovering it from a refused capture, which is how a whole dome ended up
+  // being shuttled by hand on 2026-08-29. Reports the device name, its URL, and the NAME of
+  // the variable the token came from; never the token itself.
+  'GET /api/capture-device': async (req, url) => {
+    const device = url.searchParams.get('device');
+    return [200, describeCaptureDevice(device ? { device } : {})];
   },
 
   // Which capture session did a movement-only sweep actually feed?

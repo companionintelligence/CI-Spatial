@@ -31,10 +31,14 @@ import {
 import type { ColmapPosesRunOptions } from '../../../server/colmap/colmap_poses.ts'
 import {
   assessColmapQuality,
+  cameraCentres,
   DEFAULT_MIN_POINTS_3D,
   DEFAULT_MIN_REGISTRATION_RATIO,
+  DEFAULT_MIN_STATION_SEPARATION_RATIO,
   degenerateRemediation,
+  frameFingerprint,
   isValidSessionDir,
+  measureStationBaseline,
   resolveParams,
   resolveQualityThresholds,
   runColmapPoses,
@@ -483,7 +487,7 @@ const GOOD_RUN = { registeredImages: 32, frameCount: 32, pointCount: 9362 }
 const BAD_RUN = { registeredImages: 3, frameCount: 17, pointCount: 1 }
 
 Deno.test('assessColmapQuality passes the measured good solve', () => {
-  const q = assessColmapQuality(GOOD_RUN, { minRegistrationRatio: 0.6, minPoints3D: 100 })
+  const q = assessColmapQuality(GOOD_RUN, { minRegistrationRatio: 0.6, minPoints3D: 100, minStationSeparationRatio: DEFAULT_MIN_STATION_SEPARATION_RATIO })
   assertEquals(q.degenerate, false)
   assertEquals(q.status, 'ready')
   assertEquals(q.registrationRatio, 1)
@@ -491,7 +495,7 @@ Deno.test('assessColmapQuality passes the measured good solve', () => {
 })
 
 Deno.test('assessColmapQuality condemns the measured 3-of-17 solve', () => {
-  const q = assessColmapQuality(BAD_RUN, { minRegistrationRatio: 0.6, minPoints3D: 100 })
+  const q = assessColmapQuality(BAD_RUN, { minRegistrationRatio: 0.6, minPoints3D: 100, minStationSeparationRatio: DEFAULT_MIN_STATION_SEPARATION_RATIO })
   assertEquals(q.degenerate, true)
   assertEquals(q.status, 'needs-rescan')
   assertEquals(q.registrationRatio, 0.176)
@@ -550,7 +554,7 @@ Deno.test('quality thresholds are overridable, including disabling the point flo
 })
 
 Deno.test('the remediation tells a non-expert what to do in the room', () => {
-  const q = assessColmapQuality(BAD_RUN, { minRegistrationRatio: 0.6, minPoints3D: 100 })
+  const q = assessColmapQuality(BAD_RUN, { minRegistrationRatio: 0.6, minPoints3D: 100, minStationSeparationRatio: DEFAULT_MIN_STATION_SEPARATION_RATIO })
   const msg = degenerateRemediation(q, BAD_RUN)
   // The real cause on 2026-08-30 was a dim, low-texture room (50–330 SIFT
   // features per frame), so light, texture and parallax are the three things
@@ -767,6 +771,348 @@ Deno.test('no GLB destination means no GLB — the pre-existing behaviour', asyn
     assertEquals(result.glbError, undefined)
     const written = JSON.parse(await Deno.readTextFile(`${dir}/sess-photo-stub/colmap-poses.manifest.json`))
     assertEquals(written.glbPath, undefined)
+  } finally {
+    await Deno.remove(dir, { recursive: true })
+  }
+})
+
+// ─── The baseline gate: did the tripod actually move? ─────────────────────────
+//
+// Measured on a real gimbal-on-a-tripod dome, 2026-08-30. The same room, the
+// same 6 pan columns, twice, 12 photos declared as 2 spots each time:
+//
+//                          within-spot spread   spot separation   ratio
+//   RUN A (tripod NOT moved)   5.19 / 5.01           0.106        0.020
+//   RUN B (tripod moved 1.8m)  0.069 / 0.139         9.863        70.9
+//
+// RUN A came back 12/12 registered, 4410 points, registrationRatio 1.000,
+// degenerate false, status 'ready' — every existing gate passed a capture that
+// cannot support a reconstruction at all. RUN B is the opposite trap: a weak
+// but valid solve (9/12, 372 points, a real room with blank walls) that must
+// keep passing. Both numbers appear literally below so a future change to the
+// threshold has to argue with the evidence.
+
+/** Camera centres for `n` frames at the given x offsets, via the real conversion. */
+function centresAt(files: string[], xs: number[]): Map<string, [number, number, number]> {
+  // Identity rotation, so the OpenCV world-to-camera translation is -centre.
+  const images = files.map((name, i) => ({
+    imageId: i + 1,
+    qvec: [1, 0, 0, 0] as [number, number, number, number],
+    tvec: [-xs[i], 0, 0] as [number, number, number],
+    cameraId: 1,
+    name,
+  }))
+  return cameraCentres(images)
+}
+
+Deno.test('cameraCentres inverts the pose rather than reading the translation', () => {
+  // A 90° yaw about Y with a non-zero translation: -Rᵀ·t is (0, 0, -1) while t
+  // is (1, 0, 0), so a reader that took the translation column for the camera
+  // centre would place this camera a unit away along the wrong axis — a
+  // plausible, wrong answer, and one the identity rotations every other test
+  // here uses cannot expose.
+  const s = Math.SQRT1_2
+  const centres = cameraCentres([
+    { imageId: 1, qvec: [s, 0, s, 0], tvec: [1, 0, 0], cameraId: 1, name: 'kf-00000.jpg' },
+  ])
+  const c = centres.get('kf-00000.jpg')!
+  assert(
+    close(c[0], 0, 1e-9) && close(c[1], 0, 1e-9) && close(c[2], -1, 1e-9),
+    `centre was ${JSON.stringify(c)}, expected (0, 0, -1)`,
+  )
+})
+
+Deno.test('measureStationBaseline sees RUN A standing still and RUN B moving', () => {
+  const spot0 = ['kf-00000.jpg', 'kf-00001.jpg', 'kf-00002.jpg']
+  const spot1 = ['kf-00003.jpg', 'kf-00004.jpg', 'kf-00005.jpg']
+  const viewpoints = [{ id: 'station-0', files: spot0 }, { id: 'station-1', files: spot1 }]
+
+  // RUN A: the two spots' centroids land 0.1 apart while each spot's own photos
+  // are scattered 5 across — the solve cannot tell the spots from the noise.
+  const runA = new Map([
+    ...centresAt(spot0, [-5, 5, 0]),
+    ...centresAt(spot1, [-4.9, 5.1, 0.1]),
+  ])
+  const a = measureStationBaseline(runA, viewpoints)!
+  assertEquals(a.stationCount, 2)
+  assertEquals(a.placedFrameCount, 6)
+  assert(close(a.maxSpread, Math.sqrt(50 / 3), 1e-3), `spread was ${a.maxSpread}`)
+  assert(close(a.minSeparation, 0.1, 1e-9), `separation was ${a.minSeparation}`)
+  assert(a.separationRatio !== null && a.separationRatio < 1, `ratio was ${a.separationRatio}`)
+
+  // RUN B: the same photos, taken from spots 10 apart.
+  const runB = new Map([
+    ...centresAt(spot0, [-0.05, 0.05, 0]),
+    ...centresAt(spot1, [9.95, 10.05, 10]),
+  ])
+  const b = measureStationBaseline(runB, viewpoints)!
+  assert(close(b.minSeparation, 10, 1e-9), `separation was ${b.minSeparation}`)
+  assert(b.separationRatio !== null && b.separationRatio > 1, `ratio was ${b.separationRatio}`)
+})
+
+Deno.test('a walkthrough has no spots to measure between, and is not judged on them', () => {
+  // No station labels → no viewpoints → nothing measurable. The null must read
+  // as "not asked", never as "asked and fine".
+  assertEquals(measureStationBaseline(centresAt(['kf-00000.jpg'], [0]), []), null)
+  // One spot placed is not a baseline either: it takes two to be apart.
+  assertEquals(
+    measureStationBaseline(centresAt(['kf-00000.jpg'], [0]), [
+      { id: 'station-0', files: ['kf-00000.jpg'] },
+      { id: 'station-1', files: ['kf-00009.jpg'] }, // never registered
+    ]),
+    null,
+  )
+})
+
+Deno.test('one camera per spot leaves the ratio unmeasurable rather than infinite', () => {
+  // JSON.stringify(Infinity) is `null` anyway; saying null deliberately is the
+  // difference between "not measurable" and a number that got mangled in transit.
+  const b = measureStationBaseline(
+    new Map([...centresAt(['kf-00000.jpg'], [0]), ...centresAt(['kf-00001.jpg'], [3])]),
+    [{ id: 'station-0', files: ['kf-00000.jpg'] }, { id: 'station-1', files: ['kf-00001.jpg'] }],
+  )!
+  assertEquals(b.maxSpread, 0)
+  assertEquals(b.separationRatio, null)
+  assertEquals(assessColmapQuality({ registeredImages: 2, frameCount: 2, pointCount: 500, baseline: b }).degenerate, false)
+})
+
+Deno.test('RUN A: 12/12 registered and 4410 points is still degenerate without a baseline', () => {
+  const q = assessColmapQuality({
+    registeredImages: 12,
+    frameCount: 12,
+    pointCount: 4410,
+    baseline: { stationCount: 2, placedFrameCount: 12, minSeparation: 0.106, maxSpread: 5.19, separationRatio: 0.0204 },
+  })
+  // The two older gates see nothing wrong, and that is the point.
+  assertEquals(q.registrationRatio, 1)
+  assertEquals(q.reasons, ['no-station-baseline'])
+  assertEquals(q.degenerate, true)
+  assertEquals(q.status, 'needs-rescan')
+  // The verdict carries the measurement that produced it (ADR 0005 rule 3).
+  assertEquals(q.baseline?.separationRatio, 0.0204)
+  assertEquals(q.thresholds.minStationSeparationRatio, DEFAULT_MIN_STATION_SEPARATION_RATIO)
+})
+
+Deno.test('RUN B: a weak but real solve with a genuine baseline passes', () => {
+  // 9 of 12 and 372 points — a real room has blank walls, and this must not be
+  // held to the synthetic fixture's 36/36 and 9,914 points.
+  const q = assessColmapQuality({
+    registeredImages: 9,
+    frameCount: 12,
+    pointCount: 372,
+    baseline: { stationCount: 2, placedFrameCount: 9, minSeparation: 9.863, maxSpread: 0.139, separationRatio: 70.9568 },
+  })
+  assertEquals(q.reasons, [])
+  assertEquals(q.degenerate, false)
+  assertEquals(q.status, 'ready')
+})
+
+Deno.test('the baseline threshold is overridable like the other two', () => {
+  const prev = Deno.env.get('COLMAP_MIN_STATION_SEPARATION_RATIO')
+  try {
+    assertEquals(resolveQualityThresholds().minStationSeparationRatio, DEFAULT_MIN_STATION_SEPARATION_RATIO)
+    Deno.env.set('COLMAP_MIN_STATION_SEPARATION_RATIO', '0.01')
+    const t = resolveQualityThresholds()
+    assertEquals(t.minStationSeparationRatio, 0.01)
+    const runA = {
+      registeredImages: 12,
+      frameCount: 12,
+      pointCount: 4410,
+      baseline: { stationCount: 2, placedFrameCount: 12, minSeparation: 0.106, maxSpread: 5.19, separationRatio: 0.0204 },
+    }
+    assertEquals(assessColmapQuality(runA, t).degenerate, false, 'a loosened gate must actually loosen')
+  } finally {
+    if (prev === undefined) Deno.env.delete('COLMAP_MIN_STATION_SEPARATION_RATIO')
+    else Deno.env.set('COLMAP_MIN_STATION_SEPARATION_RATIO', prev)
+  }
+})
+
+Deno.test('the baseline remediation tells the operator to move the tripod', () => {
+  const runA = {
+    registeredImages: 12,
+    frameCount: 12,
+    pointCount: 4410,
+    baseline: { stationCount: 2, placedFrameCount: 12, minSeparation: 0.106, maxSpread: 5.19, separationRatio: 0.0204 },
+  }
+  const msg = degenerateRemediation(assessColmapQuality(runA), runA)
+  for (const cue of ['move it', 'spots', 'never really moved']) {
+    assert(msg.toLowerCase().includes(cue), `remediation must mention "${cue}": ${msg}`)
+  }
+  // It must not recycle the dark-room advice: the room was fine, the tripod
+  // was not moved, and telling someone to turn the lights on wastes their time.
+  assert(!msg.includes('turn on every light'), `wrong advice for this failure: ${msg}`)
+  for (const jargon of ['baseline', 'parallax', 'structure-from-motion', 'sfm', 'colmap', 'pose']) {
+    assert(!msg.toLowerCase().includes(jargon), `remediation must avoid jargon "${jargon}": ${msg}`)
+  }
+  // The numbers that back the claim travel with it.
+  assert(msg.includes('0.106') && msg.includes('5.19'), msg)
+})
+
+// ─── Not solving one capture and reporting another's answer ───────────────────
+
+Deno.test('frameFingerprint changes with the bytes, not just the count', async () => {
+  const dir = await Deno.makeTempDir()
+  try {
+    const names = ['kf-00000.jpg', 'kf-00001.jpg']
+    await Deno.writeFile(`${dir}/kf-00000.jpg`, new Uint8Array([1, 2, 3]))
+    await Deno.writeFile(`${dir}/kf-00001.jpg`, new Uint8Array([4, 5, 6]))
+    const first = await frameFingerprint(dir, names)
+    assertEquals(await frameFingerprint(dir, names), first, 'unchanged frames must fingerprint the same')
+    // The RUN A → RUN B case: same count, same names, same sizes, different photos.
+    await Deno.writeFile(`${dir}/kf-00001.jpg`, new Uint8Array([4, 5, 7]))
+    assert(await frameFingerprint(dir, names) !== first, 'changed pixels must change the fingerprint')
+  } finally {
+    await Deno.remove(dir, { recursive: true })
+  }
+})
+
+/**
+ * A stubbed COLMAP that behaves the way the real one does over a workspace
+ * somebody else's capture left behind: `mapper` writes a model only when the
+ * sparse directory has none, because the feature database it reads is keyed by
+ * image *filename* and already holds the previous capture's features under
+ * those same names. That is precisely how RUN B's photos produced RUN A's
+ * answer in 4.8 s.
+ *
+ * The model it does write is derived from the first byte of the first
+ * keyframe, so "which capture is this?" is answerable from the images alone.
+ */
+function replayingSpawn(): (bin: string, args: string[]) => Promise<{ code: number; stderr: string }> {
+  return async (_bin, args) => {
+    if (args[0] !== 'mapper') return { code: 0, stderr: '' }
+    const out = args[args.indexOf('--output_path') + 1]
+    const imagesDir = args[args.indexOf('--image_path') + 1]
+    for await (const entry of Deno.readDir(out)) {
+      if (entry.isDirectory) return { code: 0, stderr: '' } // a model is already here — leave it
+    }
+    const marker = (await Deno.readFile(`${imagesDir}/kf-00000.jpg`))[0]
+    const registered = marker === 0xa1 ? 12 : 9
+    const points = marker === 0xa1 ? 4410 : 372
+    const model = `${out}/0`
+    await Deno.mkdir(model, { recursive: true })
+    await Deno.writeFile(
+      `${model}/images.bin`,
+      encodeImagesBin(
+        Array.from({ length: registered }, (_, i) => ({
+          id: i + 1,
+          q: [1, 0, 0, 0],
+          t: [i, 0, 0],
+          cam: 1,
+          name: `kf-${String(i).padStart(5, '0')}.jpg`,
+        })),
+      ),
+    )
+    await Deno.writeFile(`${model}/points3D.bin`, encodePoints3DBin(points))
+    return { code: 0, stderr: '' }
+  }
+}
+
+/** Write 12 keyframes whose bytes identify the capture they came from. */
+async function writeCapture(sessionDir: string, marker: number): Promise<void> {
+  for (let i = 0; i < 12; i++) {
+    await Deno.writeFile(
+      `${sessionDir}/kf-${String(i).padStart(5, '0')}.jpg`,
+      new Uint8Array([marker, 0xd8, i]),
+    )
+  }
+}
+
+Deno.test('a re-run over changed frames re-solves instead of replaying the last answer', async () => {
+  const dir = await Deno.makeTempDir()
+  const sessionDir = `${dir}/sess-photo-replay`
+  await Deno.mkdir(sessionDir)
+  try {
+    await writeCapture(sessionDir, 0xa1)
+    const first = await runColmapPoses({ sessionDir, colmapBin: Deno.execPath(), _spawn: replayingSpawn() })
+    assertEquals(first.registeredImages, 12)
+    assertEquals(first.pointCount, 4410)
+    assertEquals(first.manifest.reusedWorkspace, false)
+
+    // Re-queued over the SAME frames: reuse is legitimate here and stays.
+    const again = await runColmapPoses({ sessionDir, colmapBin: Deno.execPath(), _spawn: replayingSpawn() })
+    assertEquals(again.manifest.reusedWorkspace, true)
+    assertEquals(again.manifest.inputFingerprint, first.manifest.inputFingerprint)
+
+    // A different capture, same 12 filenames — the case that shipped RUN A's
+    // answer for RUN B's photos.
+    await writeCapture(sessionDir, 0xb2)
+    const second = await runColmapPoses({ sessionDir, colmapBin: Deno.execPath(), _spawn: replayingSpawn() })
+    assertEquals(second.manifest.reusedWorkspace, false, 'changed frames must not reuse the old workspace')
+    assert(
+      second.manifest.inputFingerprint !== first.manifest.inputFingerprint,
+      'the fingerprint is what makes the change visible',
+    )
+    assertEquals(second.registeredImages, 9, 'the second solve must describe the second capture')
+    assertEquals(second.pointCount, 372)
+  } finally {
+    await Deno.remove(dir, { recursive: true })
+  }
+})
+
+Deno.test('the whole run condemns a capture that never left the spot', async () => {
+  const dir = await Deno.makeTempDir()
+  const sessionDir = `${dir}/sess-photo-tripod`
+  await Deno.mkdir(sessionDir)
+  try {
+    // Six photos from each of two declared spots, and a solve that places all
+    // twelve — but places both spots on top of each other (x = ±5 about the
+    // same centroid, 0.1 apart), which is RUN A.
+    const xs = [-5, -3, -1, 1, 3, 5, -4.9, -2.9, -0.9, 1.1, 3.1, 5.1]
+    const records = xs.map((_, i) =>
+      JSON.stringify({
+        index: i,
+        file: `kf-${String(i).padStart(5, '0')}.jpg`,
+        timestamp: i,
+        sourcePhoto: `${i}.jpg`,
+        station: i < 6 ? 0 : 1,
+      })
+    )
+    await Deno.writeTextFile(`${sessionDir}/keyframes.jsonl`, records.join('\n') + '\n')
+    for (let i = 0; i < 12; i++) {
+      await Deno.writeFile(`${sessionDir}/kf-${String(i).padStart(5, '0')}.jpg`, new Uint8Array([0xff, 0xd8, i]))
+    }
+
+    const result = await runColmapPoses({
+      sessionDir,
+      colmapBin: Deno.execPath(),
+      _spawn: async (_bin, args) => {
+        if (args[0] === 'mapper') {
+          const out = args[args.indexOf('--output_path') + 1]
+          const model = `${out}/0`
+          await Deno.mkdir(model, { recursive: true })
+          await Deno.writeFile(
+            `${model}/images.bin`,
+            encodeImagesBin(xs.map((x, i) => ({
+              id: i + 1,
+              q: [1, 0, 0, 0],
+              t: [-x, 0, 0], // identity rotation ⇒ centre = -t = x
+              cam: 1,
+              name: `kf-${String(i).padStart(5, '0')}.jpg`,
+            }))),
+          )
+          await Deno.writeFile(`${model}/points3D.bin`, encodePoints3DBin(4410))
+        }
+        return { code: 0, stderr: '' }
+      },
+    })
+
+    // Everything the old gates look at is perfect, and the verdict is still no.
+    assertEquals(result.status, 'ok')
+    assertEquals(result.registeredImages, 12)
+    assertEquals(result.pointCount, 4410)
+    assertEquals(result.quality?.registrationRatio, 1)
+    assertEquals(result.quality?.reasons, ['no-station-baseline'])
+    assertEquals(result.quality?.degenerate, true)
+    assertEquals(result.quality?.status, 'needs-rescan')
+
+    const written = JSON.parse(await Deno.readTextFile(`${sessionDir}/colmap-poses.manifest.json`))
+    assertEquals(written.quality.reasons, ['no-station-baseline'])
+    assertEquals(written.quality.baseline.stationCount, 2)
+    assert(written.quality.baseline.separationRatio < 1, JSON.stringify(written.quality.baseline))
+    assert(
+      String(written.remediation).toLowerCase().includes('move it'),
+      `the envelope slot the UI already renders must carry the fix: ${written.remediation}`,
+    )
   } finally {
     await Deno.remove(dir, { recursive: true })
   }
