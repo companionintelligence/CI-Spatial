@@ -136,6 +136,24 @@ export type LiftReason =
   | 'centroid-off-mask'
   /** No cloud point fell inside the segment's cone at all. */
   | 'no-geometry'
+  /**
+   * The cone hit geometry, but every one of those points was outside
+   * [MIN_DEPTH_M, MAX_DEPTH_M].
+   *
+   * Split out of 'no-geometry' because the two demand opposite fixes and were
+   * indistinguishable in the manifest. Measured on sess-video-20260830-033839
+   * (COLMAP: 32 registered images, 9362 points) with the solver's own poses:
+   * 23 of 29 thing segments reported 'no-geometry', which reads as "the cloud
+   * is too sparse". It is not — those same 23 cones hold 1 to 605 points each
+   * (median 109) at depths of 3.6 to 18.1 along the ray, and the window threw
+   * all of them away. The cloud is dense; it is in the SfM solver's arbitrary
+   * unit, not metres, so a metre window means nothing against it.
+   *
+   * A run dominated by this reason is a units/alignment problem, and
+   * `liftRemediation` says so. A run dominated by 'no-geometry' is a coverage
+   * problem. One reason for both cost an evening.
+   */
+  | 'out-of-range'
   /** Points were there, but no depth cluster reached MIN_CLUSTER_POINTS. */
   | 'unsupported'
   /** The nearest supported cluster is smeared wider than MAX_CLUSTER_SPREAD_M. */
@@ -158,6 +176,15 @@ export interface LiftDebug {
   spreadM: number | null
   /** Confidence as computed, even when the gate rejected it. */
   rawConfidence: number | null
+  /**
+   * Nearest in-cone hit ignoring the depth window, along the ray.
+   *
+   * Filled only when the windowed cone came back empty — the one case where it
+   * tells you something the other fields cannot: whether there was nothing to
+   * hit, or plenty to hit at a distance the window does not believe in. Null
+   * whenever `conePoints > 0`, since then the window is not the constraint.
+   */
+  nearestDepthM: number | null
 }
 
 export interface LiftResult {
@@ -483,6 +510,47 @@ export function gatherCone(
   return out
 }
 
+/**
+ * Nearest forward in-cone hit with the depth window removed, or null when the
+ * cone is genuinely empty.
+ *
+ * A second pass over the cloud, and deliberately only run when `gatherCone`
+ * returned nothing: at that point the segment is already lost, and the only
+ * remaining question is which of the two very different failures it was. Paying
+ * one extra O(count) scan per already-failed segment to answer that is cheap
+ * next to re-running a pipeline blind — 23 of the 29 segments measured on
+ * sess-video-20260830-033839 needed exactly this answer and could not give it.
+ *
+ * `depth > 0` rather than `>= MIN_DEPTH_M` on purpose: the point of this probe
+ * is to see what the window rejected, so it must not apply the window.
+ */
+export function nearestConeHitDepth(
+  ray: CameraRay,
+  positions: Float32Array | readonly number[],
+  count: number,
+  halfAngleRad: number,
+): number | null {
+  if (!(count > 0) || !(halfAngleRad > 0)) return null
+  const tan = Math.tan(halfAngleRad)
+  const ox = ray.origin.x, oy = ray.origin.y, oz = ray.origin.z
+  const rx = ray.direction.x, ry = ray.direction.y, rz = ray.direction.z
+  let best: number | null = null
+  for (let i = 0; i < count; i++) {
+    const px = positions[i * 3]
+    const py = positions[i * 3 + 1]
+    const pz = positions[i * 3 + 2]
+    if (!isFiniteNum(px) || !isFiniteNum(py) || !isFiniteNum(pz)) continue
+    const vx = px - ox, vy = py - oy, vz = pz - oz
+    const depth = vx * rx + vy * ry + vz * rz
+    if (!(depth > 0)) continue
+    if (best !== null && depth >= best) continue
+    const ex = vx - depth * rx, ey = vy - depth * ry, ez = vz - depth * rz
+    if (Math.hypot(ex, ey, ez) > depth * tan) continue
+    best = depth
+  }
+  return best
+}
+
 interface DepthCluster {
   points: ConePoint[]
   /** Mean depth along the ray. */
@@ -577,6 +645,7 @@ export function liftSegment(
     depthM: null,
     spreadM: null,
     rawConfidence: null,
+    nearestDepthM: null,
   }
 
   const ray = cameraRay(input.camera, input.centroidPx?.[0], input.centroidPx?.[1])
@@ -595,6 +664,13 @@ export function liftSegment(
   const cone = gatherCone(ray, positions, count, halfAngle)
   debug.conePoints = cone.length
   if (cone.length === 0) {
+    // Ask the cheaper question before reporting the harder one: is the cone
+    // empty, or merely empty INSIDE the window? See `nearestConeHitDepth`.
+    const nearest = nearestConeHitDepth(ray, positions, count, halfAngle)
+    if (nearest !== null) {
+      debug.nearestDepthM = nearest
+      return { worldPos: null, confidence: null, reason: 'out-of-range', debug }
+    }
     return { worldPos: null, confidence: null, reason: 'no-geometry', debug }
   }
 
@@ -646,4 +722,62 @@ export function liftSegment(
   }
 
   return { worldPos: winner.centroid, confidence, debug }
+}
+
+/**
+ * What to do about a lift that placed nothing, from the reason histogram.
+ *
+ * A run that abstains on every segment is a legitimate answer, but "0 of 29
+ * placed" plus a reason tally is a diagnosis a reader has to make themselves,
+ * and the two runs measured tonight both looked identical at that level while
+ * needing entirely different fixes. So the dominant reason picks the sentence.
+ *
+ * Deliberately only consulted when NOTHING was placed. A run that placed some
+ * segments and abstained on others is working as designed — every scan has
+ * objects it cannot see — and appending a remediation to it would train readers
+ * to ignore the field on the runs that do need it.
+ *
+ * `remediation` is the envelope's existing "how do I fix this" slot, already
+ * forwarded by the job runner and rendered by the UI, so this reaches a human
+ * through a path that exists (the same reasoning colmap_poses.ts gives for
+ * reusing it on a degenerate solve) rather than a new one.
+ */
+export function liftRemediation(
+  reasons: Readonly<Record<string, number>>,
+  opts: { hasSolvedPoses: boolean },
+): string | undefined {
+  let top: string | null = null
+  let topN = 0
+  for (const [k, n] of Object.entries(reasons)) {
+    if (n > topN) {
+      top = k
+      topN = n
+    }
+  }
+  if (top === null || topN === 0) return undefined
+  switch (top) {
+    case 'no-pose':
+      // Measured: both video-ingest sessions on disk write keyframes.jsonl
+      // records of {index, file, timestamp} and nothing else — 0 of 32 and 0 of
+      // 48 frames carry a pose. A video has no tracker, so this is structural
+      // for that source, not a dropped field.
+      return opts.hasSolvedPoses
+        ? 'No frame carries a capture pose, so no ray could be cast. This session DOES have solved (SfM) poses, which are not a substitute: they are in the solver\'s own frame and arbitrary scale, and lifting them against a capture-frame cloud would place things in the wrong space and the wrong unit. Lift needs poses and a metric cloud in one frame — capture with AR tracking on, or align the reconstruction to metres first.'
+        : 'No frame carries a capture pose, so no ray could be cast. Re-capture with AR tracking enabled (a plain video ingest records timestamps only).'
+    case 'out-of-range':
+      // See the 'out-of-range' reason: dense cones at 3.6-18.1 units against a
+      // 0.5-5.0 m window is a unit mismatch, and no threshold here fixes it.
+      return 'Every cone hit geometry, and all of it fell outside the 0.5-5.0 m depth window. That is the signature of a cloud that is not in metres — a raw SfM reconstruction is scale-free — not of a bad capture. Lift against a metric cloud, or scale the reconstruction to metres first.'
+    case 'no-geometry':
+      return 'The cloud has no points along these segments\' rays. Re-scan the room with the camera pointed at the objects, or run a reconstruction job to produce a denser cloud.'
+    case 'unsupported':
+      return `The cloud is too thin to support a surface: no depth cluster reached ${MIN_CLUSTER_POINTS} points. A denser cloud (a longer scan, or a splat/COLMAP reconstruction) is what changes this.`
+    case 'low-confidence':
+      // Not a threshold to lower: everything here was determinate and graded
+      // badly. The sidecar keeps each rejected segment's numbers, so the fix is
+      // to look at them, not to move MIN_CONFIDENCE.
+      return `Positions were computed for these segments but every one scored under ${MIN_CONFIDENCE}. Each rejected segment's support, spread and depth are in the detections sidecar — read those before considering the floor wrong.`
+    default:
+      return undefined
+  }
 }

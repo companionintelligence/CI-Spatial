@@ -123,14 +123,30 @@ def _try_import_torch() -> tuple[Any, str | None]:
 
 
 def _try_import_lingbot() -> tuple[Any, str | None]:
+    """Import the upstream model, against the API it actually ships.
+
+    This used to do `from lingbot_map.models.lingbot_map import LingBotMap` and
+    then `LingBotMap.from_pretrained(path)`. Neither exists: measured against
+    Robbyant/lingbot-map at 2026-08-30, the package exposes `GCTStream`
+    (Geometric Context Transformer) in `models.gct_stream` / `.gct_stream_window`,
+    and the checkpoint is a plain torch archive loaded by hand — see the
+    upstream `demo.py:load_model`, which this mirrors. `load_and_preprocess_images`
+    and `pose_encoding_to_extri_intri` were already correct.
+
+    Windowed vs streaming is upstream's own switch; streaming is the default
+    there and is what a walkthrough session is, so that is the default here too.
+    """
     try:
-        from lingbot_map.models.lingbot_map import LingBotMap as _LingBotMap
+        if os.environ.get("LINGBOT_MAP_MODE", "streaming") == "windowed":
+            from lingbot_map.models.gct_stream_window import GCTStream as _GCTStream
+        else:
+            from lingbot_map.models.gct_stream import GCTStream as _GCTStream
         from lingbot_map.utils.load_fn import load_and_preprocess_images
         from lingbot_map.utils.pose_enc import pose_encoding_to_extri_intri
 
         return (
             {
-                "LingBotMap": _LingBotMap,
+                "GCTStream": _GCTStream,
                 "load_and_preprocess_images": load_and_preprocess_images,
                 "pose_encoding_to_extri_intri": pose_encoding_to_extri_intri,
             },
@@ -291,12 +307,54 @@ def run(args: argparse.Namespace) -> int:
     print(f"[lingbot-map] device: {dev.label} — {dev.reason}", file=sys.stderr)
 
     try:
-        LingBotMap = mods["LingBotMap"]
+        GCTStream = mods["GCTStream"]
         load_and_preprocess_images = mods["load_and_preprocess_images"]
         pose_encoding_to_extri_intri = mods["pose_encoding_to_extri_intri"]
 
+        # Same measured cuDNN fault the panoptic worker documents on this box:
+        # a forward pass raises CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH from the
+        # first conv2d, because the installed cuDNN sublibraries disagree with the
+        # version this torch wheel was built against. Disabling cuDNN falls back to
+        # native CUDA kernels — slower per layer, but it runs, and chasing a matched
+        # wheel is not worth it. Harmless where cuDNN is healthy, and a no-op on
+        # CPU/MPS which never touch it.
+        if dev.wants_cudnn_workaround():
+            torch.backends.cudnn.enabled = False
+
         print(f"[lingbot-map] loading model from {args.model_path} on {device}", file=sys.stderr)
-        model = LingBotMap.from_pretrained(args.model_path).to(device).eval()  # type: ignore[attr-defined]
+        # Mirrors upstream demo.py:load_model. The checkpoint is a torch archive,
+        # not a HF snapshot, so it is constructed then loaded — and with
+        # strict=False, because upstream itself tolerates missing/unexpected keys
+        # across its three published checkpoints (lingbot-map, -long, -stage1).
+        # `kv_cache_scale_frames` is upstream's documented lever for limited VRAM
+        # ("--num_scale_frames 2 ... shrinks the activation peak of the initial
+        # scale phase"; their default is 8). Measured here: at 8 this OOMs on an
+        # idle 12 GB 4080 even with 8 frames and autocast, because the peak is set
+        # by the scale phase rather than by the frame count. Overridable for hosts
+        # with more headroom, where a higher value is more accurate.
+        scale_frames = int(os.environ.get("LINGBOT_MAP_SCALE_FRAMES", "2"))
+        model = GCTStream(  # type: ignore[operator]
+            img_size=args.image_size,
+            patch_size=DEFAULT_PATCH_SIZE,
+            kv_cache_scale_frames=scale_frames,
+            use_sdpa=True,  # FlashInfer is optional upstream; SDPA is the fallback
+        )
+        ckpt = torch.load(args.model_path, map_location=device, weights_only=False)
+        state_dict = ckpt.get("model", ckpt) if isinstance(ckpt, dict) else ckpt
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        if missing:
+            print(f"[lingbot-map] checkpoint missing {len(missing)} key(s)", file=sys.stderr)
+        if unexpected:
+            print(f"[lingbot-map] checkpoint has {len(unexpected)} unexpected key(s)", file=sys.stderr)
+        # Weights stay fp32; mixed precision is applied at the forward pass via
+        # autocast below. A blanket `.to(dtype=float16)` was tried first and
+        # fails here: this model keeps LayerNorm weights in fp32, so a half input
+        # raises "expected scalar type Float but found Half". autocast is the
+        # right tool — it halves activation memory (the actual pressure: a
+        # 24-frame run OOMed with 11.28 GB allocated on an idle 12 GB card) while
+        # leaving the norm layers alone.
+        model = model.to(device).eval()
+        print(f"[lingbot-map] model on {dev.label}", file=sys.stderr)
 
         paths = [str(session_dir / f.file) for f in sampled]
         images = load_and_preprocess_images(
@@ -310,7 +368,12 @@ def run(args: argparse.Namespace) -> int:
 
         print(f"[lingbot-map] streaming inference over {len(paths)} frames", file=sys.stderr)
         with torch.no_grad():
-            output = model(images)  # type: ignore[operator]
+            if dev.fp16_ok:
+                # halves activation memory; norm layers stay fp32 automatically
+                with torch.autocast(device_type=device.split(":")[0], dtype=torch.float16):
+                    output = model(images)  # type: ignore[operator]
+            else:
+                output = model(images)  # type: ignore[operator]
 
         # ── Extract poses + point cloud from the model output ──────────────
         # LingBotMap returns a dict with `pose_enc`, `world_points`, and

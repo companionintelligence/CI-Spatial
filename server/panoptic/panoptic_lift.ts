@@ -67,6 +67,7 @@ import draco3d from 'draco3dgltf'
 
 import type { PanopticLiftManifest } from '../../src/world/types.ts'
 import {
+  liftRemediation,
   liftSegment,
   MAX_DEPTH_M,
   MIN_CLUSTER_POINTS,
@@ -80,6 +81,7 @@ import {
   poseToMatrix,
   readJpegDimensions,
   readKeyframes,
+  readSolvedPoses,
   recordHasPose,
 } from '../splat/splat_train_dataset.ts'
 import {
@@ -125,6 +127,12 @@ export interface PanopticDetectionRecord {
   conePoints?: number
   clusterPoints?: number
   spreadM?: number
+  /**
+   * Nearest in-cone hit with the depth window removed, metres along the ray.
+   * Present only on an 'out-of-range' record, which is the only case where the
+   * window rather than the cloud is what rejected the segment.
+   */
+  nearestDepthM?: number
 }
 
 export interface PanopticDetectionsSidecar {
@@ -463,6 +471,7 @@ export async function runPanopticLift(opts: PanopticLiftRunOptions): Promise<Pan
     if (result.debug.clusterPoints > 0) record.clusterPoints = result.debug.clusterPoints
     if (result.debug.depthM !== null) record.depthM = result.debug.depthM
     if (result.debug.spreadM !== null) record.spreadM = result.debug.spreadM
+    if (result.debug.nearestDepthM !== null) record.nearestDepthM = result.debug.nearestDepthM
 
     if (result.worldPos && result.confidence !== null) {
       record.worldPos = result.worldPos
@@ -497,6 +506,25 @@ export async function runPanopticLift(opts: PanopticLiftRunOptions): Promise<Pan
     }, Date.now() - started)
   }
 
+  // 6. A run that placed nothing is still `ok` — the segmenter ran, the rays
+  //    were cast, and every abstention is recorded. But "0 of 29" plus a reason
+  //    tally is a diagnosis the reader has to make, and the two real runs
+  //    measured on this repo's sessions looked identical at that level while
+  //    needing entirely different fixes (no capture pose vs a non-metric
+  //    cloud). So the dominant reason picks a sentence. Only when NOTHING was
+  //    placed — see `liftRemediation`.
+  //
+  //    `readSolvedPoses` is consulted only in that case, and only to tell the
+  //    two no-pose situations apart: "this session has SfM poses that are
+  //    deliberately not used" is a different instruction to an operator than
+  //    "nothing solved this session at all". It is the same reader the splat
+  //    dataset builder already uses, not a second pose-file format (ADR 0001).
+  let remediation: string | undefined
+  if (confidences.length === 0) {
+    const hasSolvedPoses = reasons['no-pose'] ? (await readSolvedPoses(sessionDir)) !== null : false
+    remediation = liftRemediation(reasons, { hasSolvedPoses })
+  }
+
   return finish(manifestPath, {
     ...base,
     status: 'ok',
@@ -509,5 +537,6 @@ export async function runPanopticLift(opts: PanopticLiftRunOptions): Promise<Pan
     pointCount: cloud.count,
     detectionsPath: detectionsPath.split('/').pop() ?? detectionsPath,
     cloudSource: scanGlbPath.split('/').pop() ?? scanGlbPath,
+    ...(remediation ? { remediation } : {}),
   }, Date.now() - started)
 }

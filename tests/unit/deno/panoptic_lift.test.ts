@@ -523,6 +523,110 @@ Deno.test('the manifest reasons account for every segment that got no position',
   })
 })
 
+// ── a run that placed nothing must say what to do about it ──────────────────
+
+Deno.test('a video-ingest session lifts nothing, and the manifest says which fix applies', async () => {
+  await withTmp(async (tmp) => {
+    // The measured production state, reproduced: both video-ingest sessions on
+    // disk (sess-video-20260830-033839, 32 frames; -054518, 48 frames) write
+    // keyframes.jsonl records of {index, file, timestamp} and nothing else, so
+    // recordHasPose is false for every frame and 0 of 29 / 0 of 38 thing
+    // segments can be lifted. A tally of {'no-pose': 3} is true but reads like
+    // a bug in the join; the remediation has to name the structural cause.
+    const sessionDir = await makeSession(
+      tmp,
+      [{ file: 'kf-00000.jpg' }, { file: 'kf-00001.jpg' }],
+      [
+        { file: 'kf-00000.jpg', label: 'chair' },
+        { file: 'kf-00000.jpg', label: 'table' },
+        { file: 'kf-00001.jpg', label: 'chair' },
+      ],
+    )
+    await Deno.writeTextFile(
+      `${sessionDir}/colmap.poses.json`,
+      JSON.stringify({
+        frames: [
+          { file: 'kf-00000.jpg', cameraToWorld: [[1, 0, 0, 5], [0, 1, 0, 5], [0, 0, 1, 5]] },
+          { file: 'kf-00001.jpg', cameraToWorld: [[1, 0, 0, 6], [0, 1, 0, 5], [0, 0, 1, 5]] },
+        ],
+      }),
+    )
+    const m = await runPanopticLift({
+      sessionDir,
+      scanGlbPath: `${tmp}/scan.glb`,
+      detectionsPath: `${tmp}/s.panoptic.detections.json`,
+      _readCloud: cloudSeam(slab(2.0, 40)),
+    })
+
+    assertEquals(m.status, 'ok', 'abstaining on everything is an answer, not a failure')
+    assertEquals(m.confidentCount, 0)
+    assertEquals(m.reasons?.['no-pose'], 3)
+    assert(m.remediation, 'a run that placed nothing must say what would change that')
+    // This session HAS solved poses, and the whole point is that they are not a
+    // substitute. The sentence has to say why, or an operator wires them in.
+    assertStringIncludes(m.remediation, 'scale')
+  })
+})
+
+Deno.test('a run that placed something carries no remediation, however much it abstained', async () => {
+  await withTmp(async (tmp) => {
+    // Every scan has objects it cannot see. Appending advice to a working run
+    // would train readers to ignore the field on the runs that need it.
+    const sessionDir = await makeSession(
+      tmp,
+      [{ file: 'kf-00000.jpg', pose: { position: { x: 0, y: 0, z: 0 } } }, { file: 'kf-00001.jpg' }],
+      [
+        { file: 'kf-00000.jpg', label: 'chair' },
+        { file: 'kf-00001.jpg', label: 'lamp' },
+      ],
+    )
+    const m = await runPanopticLift({
+      sessionDir,
+      scanGlbPath: `${tmp}/scan.glb`,
+      detectionsPath: `${tmp}/s.panoptic.detections.json`,
+      _readCloud: cloudSeam(slab(2.0, 40)),
+    })
+    assertEquals(m.confidentCount, 1)
+    assert(m.undeterminedCount! > 0)
+    assertEquals(m.remediation, undefined)
+  })
+})
+
+Deno.test('a cloud outside the depth window is out-of-range, with the depth that proves it', async () => {
+  await withTmp(async (tmp) => {
+    // Measured on sess-video-20260830-033839 against its own COLMAP cloud and
+    // poses: 23 of 29 segments came back 'no-geometry' while their cones held
+    // 1-605 points each at 3.6-18.1 along the ray. "Too sparse" and "not in
+    // metres" demand opposite fixes and must not share a reason.
+    const sessionDir = await makeSession(
+      tmp,
+      [{ file: 'kf-00000.jpg', pose: { position: { x: 0, y: 0, z: 0 } } }],
+      [{ file: 'kf-00000.jpg', label: 'chair' }],
+    )
+    const detectionsPath = `${tmp}/s.panoptic.detections.json`
+    const m = await runPanopticLift({
+      sessionDir,
+      scanGlbPath: `${tmp}/scan.glb`,
+      detectionsPath,
+      // A dense, perfectly good surface — 12.0 units away. In metres that is
+      // past MAX_DEPTH_M; in a scale-free SfM unit it may be the far wall.
+      _readCloud: cloudSeam(slab(12.0, 200, 0.5)),
+    })
+
+    assertEquals(m.confidentCount, 0)
+    assertEquals(m.reasons?.['out-of-range'], 1)
+    assert(m.remediation)
+    assertStringIncludes(m.remediation, 'metre')
+
+    const sidecar = await readSidecar(detectionsPath)
+    const rec = sidecar.detections[0]
+    assertEquals(rec.worldPos, null)
+    assertEquals(rec.reason, 'out-of-range')
+    assertEquals(rec.conePoints, undefined, 'the windowed cone really was empty')
+    assert(rec.nearestDepthM !== undefined && Math.abs(rec.nearestDepthM - 12.0) < 0.5, `got ${rec.nearestDepthM}`)
+  })
+})
+
 Deno.test('the manifest lands on disk next to the scan', async () => {
   await withTmp(async (tmp) => {
     const sessionDir = await makeSession(

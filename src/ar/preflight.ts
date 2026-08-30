@@ -93,8 +93,14 @@ export interface PreflightVerdict {
 }
 
 /** The sentence every dead end ends with. Upload Content builds the same map. */
+// "the same map" was wrong, and wrong in the direction that costs the user time:
+// an upload rebuilds the room's shape but places no objects in it. Measured on a
+// real video capture — 29 segments seen, 0 placed, because a video records no
+// per-frame camera position and object depth cannot be recovered without one.
+// Every verdict this is appended to has already concluded the device cannot scan,
+// so it must not end by recommending scanning.
 const UPLOAD_NEXT_STEP =
-  'Use Upload Content to add a walkthrough video or photos from this Place instead — it builds the same map, no AR needed.'
+  'Use Upload Content to add a walkthrough video or photos from this Place instead — it rebuilds the room in 3D. It will not catalogue objects: only walking the room with a phone places those, which this device cannot do.'
 
 export interface ProbeEnv {
   /** `window.isSecureContext` — camera, WebXR and IndexedDB all require it. */

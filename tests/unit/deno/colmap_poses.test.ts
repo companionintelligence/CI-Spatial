@@ -13,6 +13,7 @@
  */
 import { assertEquals } from 'jsr:@std/assert@^1.0.0/equals'
 import { assert } from 'jsr:@std/assert@^1.0.0/assert'
+import { assertRejects } from 'jsr:@std/assert@^1.0.0/rejects'
 
 import {
   buildPosesJson,
@@ -27,6 +28,7 @@ import {
   rotationBetween,
   rotationToQuat,
 } from '../../../server/colmap/colmap_model.ts'
+import type { ColmapPosesRunOptions } from '../../../server/colmap/colmap_poses.ts'
 import {
   assessColmapQuality,
   DEFAULT_MIN_POINTS_3D,
@@ -589,6 +591,14 @@ function encodePoints3DBin(n: number): Uint8Array {
  */
 async function runWithStubbedModel(
   opts: { keyframes: number; registered: number; points: number },
+  // The GLB half of the run, when a test wants it. `_buildScanGlb` is stubbed
+  // rather than real because the real builder imports
+  // @gltf-transform/functions, which eagerly loads `sharp` and cannot come up
+  // under `deno task test` — the GLB's *contents* are covered by
+  // tests/unit/node/lingbot_map_glb.test.ts, which runs under Node for exactly
+  // that reason. What is covered here is the wiring: what the driver hands the
+  // builder, where the bytes land, and what a failed build does to the run.
+  glb: Pick<ColmapPosesRunOptions, 'glbOutPath' | 'glbProvenance' | '_buildScanGlb'> = {},
 ): Promise<{ dir: string; result: Awaited<ReturnType<typeof runColmapPoses>> }> {
   const dir = await Deno.makeTempDir()
   const sessionDir = `${dir}/sess-photo-stub`
@@ -605,6 +615,7 @@ async function runWithStubbedModel(
   }))
 
   const result = await runColmapPoses({
+    ...glb,
     sessionDir,
     colmapBin: Deno.execPath(), // any runnable binary: the spawn is stubbed below
     _spawn: async (_bin, args) => {
@@ -657,6 +668,105 @@ Deno.test('a healthy solve carries a ready verdict and no remediation', async ()
     // Absent, not empty-string: "nothing to remedy" must not read as advice.
     assertEquals(written.remediation, undefined)
     assertEquals(written.quality.reasons, [])
+  } finally {
+    await Deno.remove(dir, { recursive: true })
+  }
+})
+
+/**
+ * The gap this stage closes: a video- or photo-ingest scan advertises
+ * `<sessionId>.glb` from the moment it is registered, and nothing on the COLMAP
+ * path ever wrote that file. Measured 2026-08-30 on sess-video-20260830-033839
+ * — colmap.point-cloud.ply (140 KB, 9362 points), a 37.5 MB trained splat, and
+ * no GLB — so the editor 404'd and panoptic-lift raycast against nothing.
+ */
+Deno.test('a solved seed cloud becomes the scan GLB, with node-level provenance', async () => {
+  const outDir = await Deno.makeTempDir()
+  const glbOutPath = `${outDir}/scan-stub.glb`
+  const handed: Array<{ ply: Uint8Array; extras: Record<string, unknown>; options: unknown }> = []
+
+  const { dir, result } = await runWithStubbedModel(
+    { keyframes: 12, registered: 12, points: 4000 },
+    {
+      glbOutPath,
+      glbProvenance: {
+        sessionId: 'sess-video-20260830-033839',
+        scanId: 'scan-sess-video-20260830-033839',
+        capturedAt: '2026-08-30T03:38:40.398Z',
+      },
+      _buildScanGlb: (ply, extras, options) => {
+        handed.push({ ply, extras: extras as unknown as Record<string, unknown>, options })
+        return Promise.resolve({ bytes: new Uint8Array([0x67, 0x6c, 0x54, 0x46]), pointCount: 4000, quantized: false })
+      },
+    },
+  )
+  try {
+    assertEquals(result.status, 'ok')
+    assertEquals(result.glbPath, glbOutPath)
+    assertEquals(result.glbPointCount, 4000)
+    assertEquals(result.glbError, undefined)
+    assertEquals((await Deno.readFile(glbOutPath)).length, 4)
+
+    assertEquals(handed.length, 1)
+    // The bytes handed over are the seed cloud that was just written, not a
+    // re-serialisation of it — the whole point of reusing one PLY reader.
+    assertEquals(new TextDecoder().decode(handed[0].ply.subarray(0, 3)), 'ply')
+    // Provenance the lift and the editor both read off the node.
+    assertEquals(handed[0].extras.source, 'colmap')
+    assertEquals(handed[0].extras.sessionId, 'sess-video-20260830-033839')
+    assertEquals(handed[0].extras.scanId, 'scan-sess-video-20260830-033839')
+    assertEquals(handed[0].extras.capturedAt, '2026-08-30T03:38:40.398Z')
+    assertEquals(handed[0].extras.pointCount, 4000)
+    assertEquals(handed[0].extras.poseCount, 12)
+    // Unquantized: this GLB *is* the scan, and a reader that takes POSITION at
+    // face value must see metres. See LingBotMapGlbOptions.quantize.
+    assertEquals(handed[0].options, { quantize: false })
+
+    const written = JSON.parse(await Deno.readTextFile(`${dir}/sess-photo-stub/colmap-poses.manifest.json`))
+    assertEquals(written.glbPath, glbOutPath)
+    assertEquals(written.glbError, undefined)
+  } finally {
+    await Deno.remove(dir, { recursive: true })
+    await Deno.remove(outDir, { recursive: true })
+  }
+})
+
+Deno.test('a GLB that will not build does not fail a good solve', async () => {
+  const outDir = await Deno.makeTempDir()
+  const glbOutPath = `${outDir}/scan-stub.glb`
+  const { dir, result } = await runWithStubbedModel(
+    { keyframes: 12, registered: 12, points: 4000 },
+    { glbOutPath, _buildScanGlb: () => Promise.reject(new Error('gltf-transform exploded')) },
+  )
+  try {
+    // The poses and the PLY are the canonical artifacts; the GLB is the
+    // sidecar-shaped concern, exactly as in lingbot_map.ts. Demoting a solved
+    // reconstruction to 'error' over a failed conversion would throw away the
+    // poses the splat chain needs.
+    assertEquals(result.status, 'ok')
+    assertEquals(result.registeredImages, 12)
+    assertEquals(result.glbPath, undefined)
+    assert(result.glbError?.includes('gltf-transform exploded'))
+    // And no truncated file left at the URL the scan advertises.
+    await assertRejects(() => Deno.stat(glbOutPath))
+
+    const written = JSON.parse(await Deno.readTextFile(`${dir}/sess-photo-stub/colmap-poses.manifest.json`))
+    assertEquals(written.status, 'ok')
+    assertEquals(written.glbPath, undefined)
+    assert(String(written.glbError).includes('gltf-transform exploded'))
+  } finally {
+    await Deno.remove(dir, { recursive: true })
+    await Deno.remove(outDir, { recursive: true })
+  }
+})
+
+Deno.test('no GLB destination means no GLB — the pre-existing behaviour', async () => {
+  const { dir, result } = await runWithStubbedModel({ keyframes: 12, registered: 12, points: 4000 })
+  try {
+    assertEquals(result.glbPath, undefined)
+    assertEquals(result.glbError, undefined)
+    const written = JSON.parse(await Deno.readTextFile(`${dir}/sess-photo-stub/colmap-poses.manifest.json`))
+    assertEquals(written.glbPath, undefined)
   } finally {
     await Deno.remove(dir, { recursive: true })
   }

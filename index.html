@@ -1649,6 +1649,38 @@
         text-transform: uppercase;
       }
 
+      /* Upload path only: what the upload will and will not build, directly
+         under the title so it is read before the file picker opens rather than
+         after a reconstruction comes back with an empty object list. Warmer
+         than an error and cooler than the accent — uploading is a legitimate
+         choice, so this is information, not a warning. */
+      .place-upload-note {
+        margin: 0 0 10px;
+        padding: 10px 11px;
+        border-left: 2px solid rgba(114, 221, 212, 0.55);
+        border-radius: 8px;
+        background: rgba(114, 221, 212, 0.07);
+        color: var(--ci-text);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .place-upload-note b {
+        display: block;
+        margin-bottom: 3px;
+        color: #72ddd4;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+      /* The alternative is the actionable half, so it does not read as more
+         fine print than the limit above it. */
+      .place-upload-note span {
+        display: block;
+        margin-top: 5px;
+        color: var(--ci-muted);
+      }
+
       .place-empty {
         margin: 0 0 10px;
         color: var(--ci-muted);
@@ -2144,12 +2176,20 @@
           </span>
         </button>
 
-        <!-- Path 2 — the location modal runs before opening the native picker. -->
+        <!-- Path 2 — the location modal runs before opening the native picker,
+             and carries the full version of the sentence below (see
+             uploadExpectation() in src/capture/upload-expectation.ts). This
+             copy said "no AR needed", which is true of the room's shape and
+             silently wrong about the things in it: an uploaded video registers
+             every frame and rebuilds the room, and places 0 of 29 objects,
+             because its frames do not record where the camera was standing.
+             Kept short deliberately — this is inside the startup word budget
+             that tests/mock-scanner-startup-budget.spec.ts holds. -->
         <button id="start-upload-card" class="start-path" type="button" aria-label="Upload content from a Place">
           <span class="start-path-icon" aria-hidden="true"><svg width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="5" width="18" height="14" rx="1.8"/><path d="M8 5v14M16 5v14M3 9.7h5M3 14.3h5M16 9.7h5M16 14.3h5"/></svg></span>
           <span class="start-path-copy">
             <span id="upload-video-btn" class="start-path-title">Upload Content</span>
-            <span class="start-path-sub">Add a walkthrough video or photo set from a Place — no AR needed.</span>
+            <span class="start-path-sub">A video or photos rebuild the room in 3D. Objects are only placed by walking the room with a phone.</span>
           </span>
         </button>
         <input id="upload-video-input" type="file" accept="video/*,image/jpeg,image/png,image/webp" multiple style="display:none;" />
