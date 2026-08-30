@@ -70,6 +70,29 @@ import {
   uploadExpectationLine,
   type ScanCapability,
 } from './capture/upload-expectation'
+import {
+  TRIPOD_PATH_SUMMARY,
+  WHY_SEVERAL_SPOTS,
+  addPhotos,
+  beginSweep,
+  createStationCapture,
+  endSweep,
+  finishCapture,
+  finishVerdict,
+  nextSpot,
+  stationGuidance,
+  totalPhotos,
+  type StationCaptureState,
+} from './capture/station-capture'
+import {
+  deviceFromProbe,
+  resolveCapture,
+  withoutLiveCapture,
+  type CaptureControlId,
+  type CaptureSubject,
+  type DeviceCapture,
+  type MethodPlan,
+} from './capture/capture-intent'
 import * as THREE from 'three'
 
 const CAPTURE_FRAME_TIMEOUT_MS = 8000
@@ -82,6 +105,18 @@ let requestPlaceSelection:
 // Upload selection is wired before IndexedDB and Place data finish loading, so
 // retain its current target in module state for the upload handler.
 let uploadPlaceTarget: { projectId: string | null; areaId: string | null } = { projectId: null, areaId: null }
+/**
+ * A claim on the shared file input, held while Tripod Scan is collecting one
+ * spot's photos.
+ *
+ * There is exactly one `#upload-video-input` and one `uploadPlaceTarget`, and
+ * both paths want the same two things — pick photos, send them to this Place —
+ * so the tripod path borrows the input rather than adding a second one beside
+ * it. The consumer is what tells the change handler which of the two asked:
+ * set, the files go to the station loop and nothing is uploaded yet; unset,
+ * the handler behaves exactly as it always has.
+ */
+let pendingPhotoIntake: ((files: File[]) => void) | null = null
 /**
  * Whether recommending a live scan is honest advice on this device.
  *
@@ -96,6 +131,36 @@ let uploadPlaceTarget: { projectId: string | null; areaId: string | null } = { p
  * one notion of "can this device scan" (src/ar/preflight.ts) and not a second.
  */
 let scanCapability: ScanCapability = 'unknown'
+
+/**
+ * What the person said they are capturing. The start screen's only question.
+ *
+ * 'room' rather than null: a screen that shows nothing until it is answered has
+ * added a tap for everyone to spare the few whose answer is different, and the
+ * three-tap path to the camera (tests/mock-scanner-startup-budget.spec.ts) is
+ * budgeted, same as the words are.
+ */
+let captureSubject: CaptureSubject = 'room'
+
+/**
+ * What this device has actually been found able to do — the other half of the
+ * recommendation.
+ *
+ * Both live rungs start `'unknown'`, which is the honest state before anything
+ * has been probed and is deliberately NOT `'no'`: `resolveCapture()` still
+ * recommends an unproven live capture (hedged in words), for the same reason
+ * `probeVerdict()` answers 'warming-up' — routing a phone away from a session
+ * that was about to work is as wrong as promising one that never will.
+ * `secureContext` is knowable synchronously and never changes.
+ */
+let captureDevice: DeviceCapture = {
+  secureContext: window.isSecureContext,
+  nativeAr: 'unknown',
+  browserAr: 'unknown',
+}
+
+/** Whether the methods that were not recommended are on screen. */
+let captureMoreOpen = false
 
 function poseIsFinite(pose: Pose): boolean {
   return Number.isFinite(pose.position.x)
@@ -147,6 +212,16 @@ async function main() {
   // Walkthrough-video upload — a server-side path that needs no AR runtime or
   // secure context, so wire it before the isSecureContext bail-out below.
   wireContentUpload()
+  // Tripod Scan, for the same reason: no AR runtime is involved in it at all,
+  // and the phones this path exists for are the ones where the boot below
+  // gives up. It borrows the input wireContentUpload() just wired, so it
+  // follows it.
+  mountTripodCapture()
+  // The question that decides which of the three above is put in front of the
+  // person. Wired here for the same reason they are: it has to work on the
+  // devices where the boot below returns early, which is precisely where
+  // choosing the wrong path costs the most.
+  mountCaptureIntent()
 
   // Camera, WebXR, and IndexedDB all need a secure context; fail fast with
   // actionable guidance instead of a cascade of cryptic permission errors.
@@ -523,13 +598,19 @@ async function main() {
   // knowable now goes on the start screen, beside the Upload Content card that
   // is the alternative — including the honest caveat when the only evidence we
   // have is a browser saying "yes" that a Beam Pro also says.
-  const probe = probeVerdict({
+  const probeEnv = {
     secureContext: window.isSecureContext,
     xr8Loaded: xr8Available,
     webxrApi: typeof navigator.xr !== 'undefined',
     immersiveArAdvertised,
-  })
+  }
+  const probe = probeVerdict(probeEnv)
   applyPreflightToStartScreen(probe)
+  // The same probe, read a second way: the verdict says whether to warn, this
+  // says which method to put in front of the person. One `ProbeEnv`, two
+  // readers — deviceFromProbe() is where the reading happens, so the rule that
+  // an advertised AR session is not a proven one lives in one tested place.
+  setCaptureDevice(deviceFromProbe(probeEnv))
 
   // ── 4. AR Overlay & Capture setup ──────────────────────────────────────────
   keyframes = new KeyframeStreamer(provider)
@@ -1781,7 +1862,7 @@ async function resolveInitialProject(projectStore: ProjectStore): Promise<Projec
  * compile error here rather than a silently mislabelled dialog. Same reasoning
  * as `DebugFlag` in src/shared/debug-flags.ts.
  */
-export type PlaceSelectionPurpose = 'scan' | 'upload'
+export type PlaceSelectionPurpose = 'scan' | 'upload' | 'tripod'
 
 const PLACE_MODAL_COPY: Record<PlaceSelectionPurpose, { title: string; confirm: string; verb: string }> = {
   // `verb` completes the sentence "<verb> the whole place" / "<verb> Kitchen"
@@ -1790,6 +1871,11 @@ const PLACE_MODAL_COPY: Record<PlaceSelectionPurpose, { title: string; confirm: 
   // button, one level down, where it is easier to miss.
   scan: { title: 'Scanner location', confirm: 'Scan This Place', verb: 'Scanning' },
   upload: { title: 'Upload location', confirm: 'Upload to This Place', verb: 'Uploading to' },
+  // Tripod Scan ends in the same upload as the second card and lands in the
+  // same Place, so it asks the same question — but "Uploading to" is the wrong
+  // verb for someone who has not captured anything yet, and this is the screen
+  // where they choose the room they are about to walk a tripod around.
+  tripod: { title: 'Tripod scan location', confirm: 'Sweep This Place', verb: 'Sweeping' },
 }
 
 /**
@@ -2438,6 +2524,13 @@ function setStartButtonState(state: 'ready' | 'unavailable', label?: string): vo
   // is only "the button's click handler is attached".
   if (state === 'unavailable') scanCapability = 'unavailable'
 
+  // Close the live rungs and let the resolver pick again, so the screen ends up
+  // recommending something that can still run rather than a dead card with an
+  // apology under it. Done here rather than at each call site for the reason
+  // above: this is where every dead end ends up, including the ones that return
+  // before the preflight probe runs.
+  if (state === 'unavailable') setCaptureDevice(withoutLiveCapture(captureDevice))
+
   const status = btn.querySelector<HTMLElement>('.start-path-status')
   if (status && state === 'unavailable') {
     status.textContent = label ?? 'Not available on this device'
@@ -2446,17 +2539,32 @@ function setStartButtonState(state: 'ready' | 'unavailable', label?: string): vo
 
 /**
  * Fills and reveals the #ar-help hint on the start screen when no AR runtime
- * is available — per-platform guidance for getting a working session.
+ * is available: how to get a live capture working on THIS platform, if the
+ * person wants one.
+ *
+ * It used to carry a second sentence naming the path that still works here.
+ * That is now `renderCaptureChoice()`'s job, and it does it better — it names
+ * the method for the subject the person actually chose, and it puts it on a
+ * card they can press rather than in prose. Two lines saying it was not
+ * redundancy on a screen with a word budget
+ * (tests/mock-scanner-startup-budget.spec.ts); it was the second one arguing
+ * with the first.
+ *
+ * What is left is the only thing this line still knows that the resolver does
+ * not: this is remediation, not a route — a trip to Safari or an app store,
+ * which on some phones ends with a phone that still cannot do it (the Beam Pro
+ * has no AR service to install). So it is short, and it is not the primary
+ * thing on the screen.
  */
 function showArHelp(): void {
   setStartButtonState('unavailable')
   const ua = navigator.userAgent
   const isIOS = /iPhone|iPad|iPod/i.test(ua)
   const plain = isIOS
-    ? 'Open in Safari for 8th Wall SLAM, or install HelloXR for native WebXR'
+    ? 'To capture live, open this page in Safari, or install HelloXR.'
     : /Android/i.test(ua)
-      ? 'Use Chrome 90+ with Google Play Services for AR'
-      : 'Open this URL on a phone: ' + location.origin
+      ? 'Live capture needs Chrome with Play Services for AR.'
+      : `To capture live, open this on a phone: ${location.origin}`
 
   const el = document.getElementById('ar-help')
   if (!el) {
@@ -2470,9 +2578,8 @@ function showArHelp(): void {
   }
 
   if (isIOS) {
-    el.innerHTML = 'Open in Safari for 8th Wall SLAM, or install '
-      + '<a href="https://apps.apple.com/us/app/helloxr/id6757726359" style="color:var(--ci-accent);">HelloXR</a>'
-      + ' for native WebXR'
+    el.innerHTML = 'To capture live, open this page in Safari, or install '
+      + '<a href="https://apps.apple.com/us/app/helloxr/id6757726359" style="color:var(--ci-accent);">HelloXR</a>.'
   } else {
     el.textContent = plain
   }
@@ -2521,6 +2628,18 @@ function wireContentUpload(): void {
   input.addEventListener('change', () => {
     const files = [...(input.files ?? [])]
     if (files.length === 0) return
+    // Tripod Scan is collecting one spot's photos through this same input (see
+    // pendingPhotoIntake). Hand them over and upload nothing: that capture is
+    // sent as one set at the end, and a per-spot upload would produce three to
+    // five unrelated captures of the same room.
+    if (pendingPhotoIntake) {
+      const consume = pendingPhotoIntake
+      // Cleared before the value is reset, so the reset cannot re-enter here.
+      pendingPhotoIntake = null
+      input.value = ''
+      consume(files)
+      return
+    }
     const allPhotos = files.every(file => file.type.startsWith('image/'))
     const oneVideo = files.length === 1 && files[0]!.type.startsWith('video/')
     if (!allPhotos && !oneVideo) {
@@ -2584,6 +2703,344 @@ function wireContentUpload(): void {
     })
     xhr.send(form)
   })
+}
+
+/** The three start-screen controls a method can be run from. */
+const CAPTURE_CONTROLS: readonly CaptureControlId[] = [
+  'start-ar-btn', 'start-tripod-card', 'start-upload-card',
+]
+
+/**
+ * Draw the start screen from the answer to "what are you capturing?" and what
+ * this device has been found able to do.
+ *
+ * Everything decided here comes out of `resolveCapture()`
+ * (src/capture/capture-intent.ts), which is pure and unit-tested — including
+ * the invariant this screen used to break: some method is always recommended.
+ * A phone that failed the AR probe used to be left looking at a disabled
+ * primary card and a line of prose pointing at the weakest path on the screen.
+ *
+ * The cards themselves are the ones that were already there, under the same
+ * ids: one method per control, its words rewritten for the subject, because
+ * "film as you walk round the room" and "take 20 photos right around it" are
+ * the same button and not the same instruction.
+ */
+function renderCaptureChoice(): void {
+  // The start screen is removed once AR is actually running (section 5), and
+  // the preflight/verdict paths that call this can fire after that.
+  const paths = document.getElementById('start-paths')
+  if (!paths) return
+
+  const rec = resolveCapture(captureSubject, captureDevice)
+
+  for (const chip of document.querySelectorAll<HTMLButtonElement>('.capture-subject')) {
+    chip.setAttribute('aria-pressed', String(chip.dataset.subject === captureSubject))
+  }
+
+  // A video and a photo set are the same tap, so the first plan to claim a
+  // control keeps it — otherwise the second would overwrite the words of the
+  // recommendation itself.
+  const byControl = new Map<CaptureControlId, MethodPlan>()
+  for (const plan of [rec.best, ...rec.alternatives]) {
+    if (!byControl.has(plan.control)) byControl.set(plan.control, plan)
+  }
+
+  let alternatives = 0
+  for (const id of CAPTURE_CONTROLS) {
+    const el = document.getElementById(id)
+    if (!el) continue
+    const plan = byControl.get(id)
+    if (!plan) {
+      // Not merely un-recommended: this one cannot run here at all, so it is
+      // not behind "Other ways" either. An alternative that dead-ends is worse
+      // than no alternative.
+      el.hidden = true
+      el.dataset.recommended = 'false'
+      continue
+    }
+    const isBest = id === rec.best.control
+    if (!isBest) alternatives++
+    const title = el.querySelector<HTMLElement>('.start-path-title')
+    const sub = el.querySelector<HTMLElement>('.start-path-sub')
+    // textContent, not innerHTML: #upload-video-btn is the title span itself,
+    // and replacing the element would take its id with it.
+    if (title) title.textContent = plan.title
+    if (sub) sub.textContent = `${plan.action} ${plan.result}`
+    el.setAttribute('aria-label', `${plan.title} — ${plan.action} ${plan.result}`)
+    el.dataset.recommended = String(isBest)
+    el.hidden = !isBest && !captureMoreOpen
+  }
+
+  const more = document.getElementById('capture-more') as HTMLButtonElement | null
+  if (more) {
+    // A toggle that reveals nothing is worse than no toggle.
+    more.hidden = alternatives === 0
+    more.textContent = captureMoreOpen ? 'Fewer ways' : 'Other ways'
+    more.setAttribute('aria-expanded', String(captureMoreOpen))
+  }
+
+  const note = document.getElementById('capture-note')
+  if (note) {
+    note.textContent = rec.note ?? ''
+    note.hidden = rec.note === null
+  }
+}
+
+/**
+ * Record what has been learned about the device, and redraw.
+ *
+ * Merged rather than replaced because the two facts arrive from different
+ * places at different times — the probe (section 3b) and a runtime verdict
+ * (the `provider.start()` catch, and every other dead end via
+ * `setStartButtonState`) — and neither knows the other's answer.
+ */
+function setCaptureDevice(next: Partial<DeviceCapture>): void {
+  captureDevice = { ...captureDevice, ...next }
+  renderCaptureChoice()
+}
+
+/**
+ * Wire the subject question and the "Other ways" disclosure.
+ *
+ * Called at the top of main(), beside the two paths that need no AR runtime,
+ * so the screen is answerable on the devices where the boot below gives up —
+ * on an insecure context main() returns before an AR runtime is ever created,
+ * and this screen still has to recommend something.
+ */
+function mountCaptureIntent(): void {
+  for (const chip of document.querySelectorAll<HTMLButtonElement>('.capture-subject')) {
+    chip.addEventListener('click', () => {
+      const subject = chip.dataset.subject as CaptureSubject | undefined
+      if (!subject || subject === captureSubject) return
+      captureSubject = subject
+      // The list was opened about the previous subject; leaving it open would
+      // show a set of methods answering a question that has changed.
+      captureMoreOpen = false
+      renderCaptureChoice()
+    })
+  }
+
+  document.getElementById('capture-more')?.addEventListener('click', () => {
+    captureMoreOpen = !captureMoreOpen
+    renderCaptureChoice()
+  })
+
+  renderCaptureChoice()
+}
+
+/**
+ * Tripod Scan — the third capture path, and the station loop that guides it.
+ *
+ * The operator sweeps the room from one spot, carries the tripod, and sweeps
+ * again, three to five times. All four questions that loop raises are on this
+ * screen at all times: which spot they are on, whether the sweep is running,
+ * whether they may move yet, and whether the capture is finished. The rules
+ * behind it — a sweep that produced nothing is not a spot, and fewer than
+ * three spots is not a room — live in src/capture/station-capture.ts, where
+ * they are testable without a browser.
+ *
+ * It borrows rather than builds: the Place picker chooses where this capture
+ * belongs (`'tripod'` purpose), `#upload-video-input` collects the photos, and
+ * the finished set goes out through the existing upload handler by dispatching
+ * a `change` on that same input — so the tripod path adds no second uploader,
+ * no second Place target, and no second progress line.
+ */
+function mountTripodCapture(): void {
+  const card = document.getElementById('start-tripod-card')
+  const input = document.getElementById('upload-video-input') as HTMLInputElement | null
+  if (!card || !input) return
+
+  let state: StationCaptureState = createStationCapture()
+  /** Every photo handed over so far, sent as one set when the capture ends. */
+  let collected: File[] = []
+  /**
+   * A one-off message that outranks the finish refusal in the same slot —
+   * "those were not photos", "this browser cannot hand them over". Cleared by
+   * the next action, so it never outlives the thing it is about.
+   */
+  let notice: string | null = null
+
+  const sheet = document.createElement('div')
+  sheet.id = 'tripod-sheet'
+  sheet.className = 'place-sheet'
+  sheet.hidden = true
+  sheet.innerHTML = `
+    <div class="place-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="tripod-headline">
+      <div class="place-sheet-title">Tripod Scan · <span id="tripod-step"></span></div>
+      <div id="tripod-intro" class="place-upload-note">
+        <b>What this path is for</b>
+        ${escapeHtml(TRIPOD_PATH_SUMMARY)}
+        <span>${escapeHtml(WHY_SEVERAL_SPOTS)}</span>
+      </div>
+      <ol id="tripod-dots" class="project-calibration-steps"></ol>
+      <div id="tripod-headline" class="tripod-headline" aria-live="polite"></div>
+      <p id="tripod-detail" class="tripod-detail"></p>
+      <div class="tripod-tally">
+        <span id="tripod-tally-spots"></span>
+        <span id="tripod-tally-photos"></span>
+      </div>
+      <button id="tripod-add" type="button" class="tripod-wide-btn" hidden></button>
+      <button id="tripod-send" type="button" class="tripod-wide-btn" hidden></button>
+      <p id="tripod-blocked" class="tripod-blocked" hidden></p>
+      <div class="place-sheet-actions">
+        <button id="tripod-primary" type="button" class="place-confirm"></button>
+        <button id="tripod-close" type="button">Close</button>
+      </div>
+    </div>`
+  document.body.appendChild(sheet)
+
+  const introEl = sheet.querySelector<HTMLElement>('#tripod-intro')!
+  const stepEl = sheet.querySelector<HTMLElement>('#tripod-step')!
+  const dotsEl = sheet.querySelector<HTMLElement>('#tripod-dots')!
+  const headlineEl = sheet.querySelector<HTMLElement>('#tripod-headline')!
+  const detailEl = sheet.querySelector<HTMLElement>('#tripod-detail')!
+  const tallySpotsEl = sheet.querySelector<HTMLElement>('#tripod-tally-spots')!
+  const tallyPhotosEl = sheet.querySelector<HTMLElement>('#tripod-tally-photos')!
+  const addBtn = sheet.querySelector<HTMLButtonElement>('#tripod-add')!
+  const sendBtn = sheet.querySelector<HTMLButtonElement>('#tripod-send')!
+  const blockedEl = sheet.querySelector<HTMLElement>('#tripod-blocked')!
+  const primaryBtn = sheet.querySelector<HTMLButtonElement>('#tripod-primary')!
+  const closeBtn = sheet.querySelector<HTMLButtonElement>('#tripod-close')!
+
+  const render = () => {
+    const guidance = stationGuidance(state)
+    const verdict = finishVerdict(state)
+    const done = state.spots.length
+
+    // The "why more than one spot" note is worth the whole top of the sheet
+    // before the first spot exists, and is in the way after: from spot two on,
+    // the operator is standing in a room holding a tripod and needs the step,
+    // not the rationale they have already acted on. It comes back if the
+    // capture is reset, which is the only time it is unread again.
+    introEl.hidden = done > 0
+    stepEl.textContent = guidance.step
+    headlineEl.textContent = guidance.headline
+    headlineEl.dataset.tone = guidance.tone
+    detailEl.textContent = guidance.detail
+
+    // One marker per planned spot, filled in as they are captured. The count
+    // is the plan, not the photos: this is the row that answers "how much of
+    // this is left to carry the tripod through".
+    dotsEl.replaceChildren(...Array.from({ length: state.target }, (_, i) => {
+      const li = document.createElement('li')
+      li.textContent = String(i + 1)
+      // Nothing is marked active while the tripod is being carried: no spot is
+      // being worked then, and lighting up the next one contradicts the title
+      // above it, which is still reporting the spot that just finished.
+      const working = state.phase === 'ready' || state.phase === 'sweeping'
+      li.dataset.state = i < done ? 'done' : i === done && working ? 'active' : ''
+      return li
+    }))
+
+    tallySpotsEl.textContent = `${done} of ${state.target} spots`
+    const photos = totalPhotos(state)
+    tallyPhotosEl.innerHTML = `<b>${photos}</b> photo${photos === 1 ? '' : 's'}`
+
+    const sweeping = state.phase === 'sweeping'
+    addBtn.hidden = !sweeping
+    addBtn.textContent = state.pending === 0
+      ? "Add this spot's photos"
+      : `Add more — ${state.pending} from this spot`
+
+    sendBtn.hidden = state.phase === 'done' || !verdict.ok
+    sendBtn.textContent = `Send ${done} spots as one capture`
+
+    primaryBtn.hidden = guidance.primary === null
+    primaryBtn.textContent = guidance.primary ?? ''
+    closeBtn.textContent = state.phase === 'done' ? 'Close' : 'Continue later'
+
+    // The refusal belongs on the screen where stopping is the live question —
+    // the tripod is down, the sweep is finished, and "can I call it a day?" is
+    // exactly what is being asked. Elsewhere it is stale advice, and it is the
+    // short form because the long one is already on screen, four lines up.
+    const blocked = notice ?? (!verdict.ok && state.phase === 'move' ? verdict.short : null)
+    blockedEl.textContent = blocked ?? ''
+    blockedEl.hidden = blocked === null
+  }
+
+  primaryBtn.addEventListener('click', () => {
+    notice = null
+    if (state.phase === 'ready') state = beginSweep(state)
+    else if (state.phase === 'sweeping') state = endSweep(state)
+    else if (state.phase === 'move') state = nextSpot(state)
+    render()
+  })
+
+  addBtn.addEventListener('click', () => {
+    notice = null
+    // Claims the shared input for one pick. wireContentUpload()'s change
+    // handler routes here instead of uploading while this is set.
+    pendingPhotoIntake = (files) => {
+      const photos = files.filter(file => file.type.startsWith('image/'))
+      if (photos.length === 0) {
+        // Nothing was added, so nothing may look as if it was: the tally and
+        // the sweep both stay exactly where they were.
+        notice = 'Those were not photos, so this spot is unchanged. Pick the images the sweep took.'
+      } else {
+        collected = [...collected, ...photos]
+        state = addPhotos(state, photos.length)
+        if (photos.length < files.length) {
+          notice = `${files.length - photos.length} file(s) were not photos and were left out.`
+        }
+      }
+      render()
+    }
+    input.click()
+  })
+
+  sendBtn.addEventListener('click', () => {
+    notice = null
+    const verdict = finishVerdict(state)
+    if (!verdict.ok) {
+      notice = `${verdict.headline}. ${verdict.detail}`
+      render()
+      return
+    }
+    // Handing the files back to the one uploader, rather than posting them
+    // here: that handler already knows the Place target, the endpoint, the
+    // progress line and every failure message. DataTransfer is how a File[]
+    // becomes an input's FileList; if it is missing, say so instead of
+    // pretending the capture went anywhere.
+    if (typeof DataTransfer === 'undefined') {
+      notice = 'This browser will not let the app hand the photos to the uploader. Use Upload Content and pick all of the spots’ photos together.'
+      render()
+      return
+    }
+    const transfer = new DataTransfer()
+    for (const file of collected) transfer.items.add(file)
+    input.files = transfer.files
+    state = finishCapture(state)
+    render()
+    input.dispatchEvent(new Event('change'))
+  })
+
+  closeBtn.addEventListener('click', () => {
+    sheet.hidden = true
+    if (state.phase !== 'done') return
+    // Only a sent capture resets. Closing part-way through is "continue
+    // later", and losing four spots' photos to a mistapped Close would be
+    // unrecoverable — the photos are only in this page's memory.
+    state = createStationCapture()
+    collected = []
+    notice = null
+    render()
+  })
+
+  const open = () => {
+    notice = null
+    render()
+    sheet.hidden = false
+  }
+
+  card.addEventListener('click', () => {
+    // Same fallback as the upload card: the picker is only wired deep inside
+    // main(), after the secure-context check, so an early tap (or an insecure
+    // page) must still reach the loop rather than dying silently.
+    if (requestPlaceSelection) requestPlaceSelection(open, 'tripod')
+    else open()
+  })
+
+  render()
 }
 
 function setCaptureBusy(busy: boolean): void {

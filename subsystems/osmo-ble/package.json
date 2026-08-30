@@ -9,7 +9,7 @@
     "backend": "node --watch server/backend.mjs",
     "mcp": "node server/mcp-server.mjs",
     "cli": "node server/cli.mjs",
-    "test:protocol": "node protocol/duml.test.mjs"
+    "test:protocol": "node --test protocol/duml.test.mjs protocol/dome.test.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

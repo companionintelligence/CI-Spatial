@@ -35,18 +35,53 @@
  * provenance, and it converges at `detectionLikesForWorld` — one aggregation
  * point, not a second data model (ADR 0001).
  *
- * ── Why solved poses are NOT used as a fallback here ─────────────────────────
+ * ── When a solved camera track may be used, and when it may not ──────────────
  *
  * `buildBrushDataset` falls back from a capture pose to `readSolvedPoses`
  * (COLMAP / LingBot-Map) per frame. That is right for a trainer, which only
- * needs cameras consistent with each other, and wrong here. Monocular SfM
- * reconstructs only up to an unknown scale, at an arbitrary origin and heading
- * — the reason `SplatAlignManifest` exists at all (src/world/manifests.ts). A
- * position lifted from a COLMAP pose against the capture-frame scan cloud is
- * not merely imprecise, it is in a different space and a different unit, and
- * `thing_match` would fuse it against real metres at a 0.75 m radius. So the
- * pairing is fixed: capture poses with the scan's own cloud, and a frame with
- * no capture pose is an honest 'no-pose', not a guess.
+ * needs cameras consistent with each other. Here it is right only under a
+ * condition, and the condition is the whole of it.
+ *
+ * Monocular SfM reconstructs only up to an unknown scale, at an arbitrary
+ * origin and heading — the reason `SplatAlignManifest` exists at all
+ * (src/world/manifests.ts). A position lifted from a COLMAP pose with nothing
+ * to fix that scale is not merely imprecise, it is in a different space and a
+ * different unit, and `thing_match` would fuse it against real metres at a
+ * 0.75 m radius. But that objection is entirely about the ABSENCE of a metric
+ * frame, and it lapses exactly when one exists: a verified `splat-align`
+ * manifest carries `projectTransform` (solver space → project metres, the
+ * scale already folded in) together with the `residualM` that says how well it
+ * actually fits. Carried through that, a solved camera IS in the right space
+ * and the right unit, and so is the cloud it is cast against.
+ *
+ * So the rule is:
+ *
+ *   - a frame with a capture pose lifts against the capture-frame cloud,
+ *     unchanged from before;
+ *   - a capture where NO frame carries a capture pose may lift from its solved
+ *     cameras, but only through an alignment that verified, whose residual
+ *     clears {@link MAX_ALIGN_RESIDUAL_M}, and whose `determined` block says it
+ *     pinned down all four of size, up, heading and origin — and only with the
+ *     cloud carried through that same transform first;
+ *   - missing, unverified, too-loose, or size-only alignment is an honest
+ *     'no-pose', as it always was. Nothing is placed on a frame this stage
+ *     cannot name in metres AND locate in the Place.
+ *
+ * That last clause is not belt-and-braces. `SplatAlignManifest.determined`
+ * exists because a `'known-distance'` frame ships a full 4x4 whose heading and
+ * origin are whatever the camera solve happened to choose, and its own doc
+ * requires a consumer that places one scan beside another to check them first.
+ * `thing_match` fusing these positions across scans is exactly that.
+ *
+ * The no-capture-pose test is per CAPTURE, not per frame, and that is
+ * load-bearing rather than caution. The camera and the cloud have to be in one
+ * space. A capture that tracked accumulated its cloud in the tracker's frame;
+ * a capture that did not tracked nothing, and its `<base>.glb` was built from
+ * the solver's own seed cloud in the run that wrote the poses
+ * (server/colmap/colmap_poses.ts:606-651), so cloud and cameras share a frame
+ * by construction. Pairing one solved camera against a tracker-frame cloud
+ * would be the original error in a new place — so a single posed frame
+ * anywhere in the capture keeps the whole capture on the capture-pose pairing.
  *
  * ── Why the cloud is read through the node hierarchy ─────────────────────────
  *
@@ -65,7 +100,8 @@ import { ALL_EXTENSIONS } from '@gltf-transform/extensions'
 // @ts-ignore — draco3dgltf ships no type declarations
 import draco3d from 'draco3dgltf'
 
-import type { PanopticLiftManifest } from '../../src/world/types.ts'
+import type { PanopticLiftManifest, SplatAlignManifest } from '../../src/world/types.ts'
+import { THING_MATCH_RADIUS_M } from '../thing_match.ts'
 import {
   liftRemediation,
   liftSegment,
@@ -81,6 +117,7 @@ import {
   poseToMatrix,
   readJpegDimensions,
   readKeyframes,
+  readSolvedCamera,
   readSolvedPoses,
   recordHasPose,
 } from '../splat/splat_train_dataset.ts'
@@ -95,6 +132,294 @@ export type { PanopticLiftManifest }
 
 /** Manifest schema version — bump when a consumer-visible field changes. */
 const SCHEMA_VERSION = 1
+
+/**
+ * Largest alignment residual, in metres, this stage will place an object
+ * through.
+ *
+ * Derived from `THING_MATCH_RADIUS_M`, not chosen against it from memory: that
+ * 0.75 m is the distance inside which `thing_match` decides two sightings are
+ * the same object, so it is the entire error budget a lifted position has. An
+ * alignment residual is not one segment's bad luck — it is a systematic offset
+ * applied to EVERY position the frame produces, on top of whatever the ray and
+ * the cluster got wrong. A fifth of the budget is what is allowed to go to the
+ * frame, leaving the rest to the geometry that actually varies per segment.
+ *
+ * This is deliberately tighter than `splat_align`'s own
+ * `DEFAULT_MAX_RESIDUAL_M` (0.25 m), and the two are answering different
+ * questions. That one asks "do these two camera tracks describe the same
+ * physical path at all" and is loose on purpose; this one asks "may objects be
+ * placed in this frame", and 0.25 m is a third of the fusion radius — too much
+ * of it to hand to a constant offset before a single ray has been cast.
+ *
+ * Per ADR 0005 rule 5 this is a budget allocation against a known constant,
+ * NOT a measured placement-repeatability figure; measuring that would need a
+ * ground-truthed capture placed repeatedly, which nothing here has run.
+ */
+export const MAX_ALIGN_RESIDUAL_M = THING_MATCH_RADIUS_M / 5
+
+// ─── The metric frame ────────────────────────────────────────────────────────
+//
+// Everything below is the ONE place coupled to `SplatAlignManifest`'s field
+// names. A shape change upstream lands here and nowhere else in this file:
+// the rest of the stage only ever sees a `MetricFrame`.
+
+/** A verified alignment, reduced to exactly what lifting needs. */
+interface MetricFrame {
+  /** Row-major 4x4, solver space → project metres, scale already folded in. */
+  transform: number[]
+  /** That transform's rotation with the scale divided out, row-major 3x3. */
+  rotation: number[][]
+  /** Metres per solver unit. */
+  scale: number
+  /** The measurement that backs the claim (ADR 0005 rule 3). */
+  residualM: number
+  /** Basename of the sidecar it came from, for the audit trail. */
+  source: string
+}
+
+/**
+ * The frame, or the reason there is none — the caller has to be able to say
+ * which of "never aligned", "aligned and refused" and "aligned too loosely"
+ * happened, because those are three different next actions for an operator.
+ *
+ * `next` carries that action with the reason rather than leaving the caller to
+ * infer it, because one of these refusals inverts the obvious advice: a frame
+ * that fixes size but not heading or origin is exactly what measuring another
+ * distance produces, so telling that operator to go and measure would send
+ * them back to the same refusal.
+ */
+type MetricFrameLookup =
+  | { frame: MetricFrame }
+  | { frame: null; why: string; next: string }
+
+/** The action for every refusal whose fix really is "take a measurement". */
+const MEASURE_NEXT =
+  'Measure this capture against one known real-world distance to establish that frame, then run object placement again.'
+
+/** A 16-number row-major matrix, or null. Anything else is not a transform. */
+function matrix16(value: unknown): number[] | null {
+  if (!Array.isArray(value) || value.length !== 16) return null
+  return value.every((n) => typeof n === 'number' && Number.isFinite(n)) ? value as number[] : null
+}
+
+/**
+ * The proper rotation inside a similarity's 3x3 block, row-major, or null.
+ *
+ * `projectTransform` is s·R — splat-align folds the Umeyama scale into the
+ * rotation — so dividing by the reported `scale` should leave an orthonormal
+ * block. Every part of that is checked rather than assumed, for the reason
+ * `memory_push.ts`'s `similarityRotationQuat` checks the same three things:
+ * these are sixteen numbers read off disk, and a non-uniform, sheared or
+ * reflected block would still happily rotate a ray — into the wrong direction,
+ * plausibly, with no symptom. 1e-3 is far tighter than any real skew and far
+ * looser than JSON round-tripping of a matrix that was built as s·R.
+ */
+function similarityRotation(m: number[], scale: number): number[][] | null {
+  const r = [
+    [m[0] / scale, m[1] / scale, m[2] / scale],
+    [m[4] / scale, m[5] / scale, m[6] / scale],
+    [m[8] / scale, m[9] / scale, m[10] / scale],
+  ]
+  for (const row of r) {
+    if (Math.abs(Math.hypot(row[0], row[1], row[2]) - 1) > 1e-3) return null
+  }
+  const dot = (a: number[], b: number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+  if (Math.abs(dot(r[0], r[1])) > 1e-3) return null
+  if (Math.abs(dot(r[0], r[2])) > 1e-3) return null
+  if (Math.abs(dot(r[1], r[2])) > 1e-3) return null
+  const det = r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1]) -
+    r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0]) +
+    r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0])
+  // A reflection maps a right-handed camera basis to a left-handed one, which
+  // silently mirrors every ray. No such transform is a rigid motion.
+  if (!(det > 0)) return null
+  return r
+}
+
+/**
+ * Read the session's metric alignment, if it has one that may be trusted.
+ *
+ * Both paths `splat_align.ts:defaultManifestPath` writes to are tried, in its
+ * own preference order: beside the splat/scan when there was one, else in the
+ * session dir where the inputs live.
+ *
+ * `status === 'ok'` already encodes the aligner's own gates — enough
+ * correspondences, a non-degenerate camera path, a residual inside the limit
+ * it ran with — so those are not re-litigated here. What IS added is the
+ * placement-specific bar {@link MAX_ALIGN_RESIDUAL_M}, which is tighter than
+ * the loosest residual an 'ok' can carry, plus the shape checks any sixteen
+ * numbers off disk need before they steer a ray.
+ */
+export async function readMetricFrame(sessionDir: string, glbBase: string): Promise<MetricFrameLookup> {
+  let align: SplatAlignManifest | null = null
+  let source = ''
+  for (const path of [`${glbBase}.splat-align.manifest.json`, `${sessionDir}/splat-align.manifest.json`]) {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(await Deno.readTextFile(path))
+    } catch {
+      continue
+    }
+    // `typeof [] === 'object'`, so an array would sail through and read as a
+    // manifest whose every field is undefined — the same trap `readManifest`
+    // in memory_push.ts guards.
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      align = parsed as SplatAlignManifest
+      source = path.split('/').pop() ?? path
+      break
+    }
+  }
+  if (!align) {
+    return { frame: null, why: 'nothing has measured this capture against a real-world distance yet', next: MEASURE_NEXT }
+  }
+  if (align.status !== 'ok') {
+    return {
+      frame: null,
+      why: `the measurement of this capture did not verify (${align.skippedReason ?? align.status})`,
+      next: MEASURE_NEXT,
+    }
+  }
+  // `determined` says which of the similarity's seven degrees of freedom the
+  // fit actually pinned down, and `SplatAlignManifest`'s own note on it
+  // (src/world/manifests.ts:342-355) is prescriptive: "a consumer that places
+  // one scan beside another must check `heading` and `origin` here first — a
+  // scale-only frame is exactly as arbitrary in those axes as no frame at all".
+  // This stage IS that consumer. Every position it writes converges at
+  // `detectionLikesForWorld`, and `thing_match` then fuses those across scans
+  // at THING_MATCH_RADIUS_M. A `'known-distance'` frame states a SIZE and not a
+  // placement — splat_align.ts publishes `heading: false, origin: false` on it
+  // deliberately — so carrying a camera through one would put objects in real
+  // metres at an arbitrary bearing about an arbitrary origin. That is the
+  // confidently-wrong answer this whole gate exists to refuse, and it is worse
+  // than the honest 'no-pose' because every number in it looks right.
+  //
+  // Absent reads as all four determined, and only for `'umeyama'`: that is
+  // exactly what the field's doc says an older manifest is. The
+  // `'known-distance'` driver always writes the block, so one without it is
+  // malformed rather than old.
+  const determined = align.determined ??
+    (align.tool === 'known-distance' ? null : { scale: true, up: true, heading: true, origin: true })
+  if (!determined) {
+    return {
+      frame: null,
+      why: 'the measurement never recorded what it pinned down, so it cannot be trusted to place anything',
+      next: MEASURE_NEXT,
+    }
+  }
+  if (!determined.scale || !determined.up || !determined.heading || !determined.origin) {
+    const missing = [
+      determined.scale ? null : 'how big it is',
+      determined.up ? null : 'which way is up',
+      determined.heading ? null : 'which way it faces',
+      determined.origin ? null : 'where it sits',
+    ].filter((s): s is string => s !== null)
+    return {
+      frame: null,
+      why: `the measurement does not fix ${missing.join(' or ')}, so anything placed in it could not be matched ` +
+        'against the rest of this Place',
+      // NOT "go and measure a distance": a measured distance is what produced
+      // this frame, and another one would produce the same one again. What is
+      // missing is where the capture sits in the Place, which is the World
+      // Editor's two-point flow (server/capture/known_distance.ts:31-38).
+      next: 'Place this capture in the room in the World Editor — mark two points on it whose real positions are ' +
+        'known — then run object placement again.',
+    }
+  }
+  const scale = align.scale
+  if (typeof scale !== 'number' || !Number.isFinite(scale) || !(scale > 0)) {
+    return { frame: null, why: 'the measurement records no usable metres-per-unit', next: MEASURE_NEXT }
+  }
+  const residualM = align.residualM
+  // No residual means it never reported how wrong it is. That is not a pass.
+  if (typeof residualM !== 'number' || !Number.isFinite(residualM)) {
+    return {
+      frame: null,
+      why: 'the measurement never reported how far off it is, so it cannot be trusted to place anything',
+      next: MEASURE_NEXT,
+    }
+  }
+  if (!(residualM <= MAX_ALIGN_RESIDUAL_M)) {
+    return {
+      frame: null,
+      why: `the measurement is off by ${residualM.toFixed(3)} m, over the ${MAX_ALIGN_RESIDUAL_M.toFixed(2)} m this stage will place through`,
+      next: 'Measure this capture against a known real-world distance again, more carefully, then run object placement again.',
+    }
+  }
+  const transform = matrix16(align.projectTransform)
+  if (!transform) return { frame: null, why: 'the measurement carries no usable transform', next: MEASURE_NEXT }
+  const rotation = similarityRotation(transform, scale)
+  if (!rotation) {
+    return {
+      frame: null,
+      why: 'the measurement\'s transform is not a uniform scale times a rotation',
+      next: MEASURE_NEXT,
+    }
+  }
+  return { frame: { transform, rotation, scale, residualM, source } }
+}
+
+/** Row-major 4x4 applied to a point. */
+function applyRowMajor(m: number[], x: number, y: number, z: number): [number, number, number] {
+  return [
+    m[0] * x + m[1] * y + m[2] * z + m[3],
+    m[4] * x + m[5] * y + m[6] * z + m[7],
+    m[8] * x + m[9] * y + m[10] * z + m[11],
+  ]
+}
+
+/**
+ * The cloud, carried out of solver units into project metres.
+ *
+ * The cloud moves, not the thresholds: MIN_DEPTH_M / MAX_DEPTH_M /
+ * MAX_CLUSTER_SPREAD_M are all metres, and so is the `depthM` the sidecar
+ * reports. Scaling the cloud once here keeps every one of those meaning what
+ * its name says, instead of scattering a unit conversion through the policy
+ * module — which is also why `params` in the manifest still reads in metres.
+ */
+function transformCloud(
+  cloud: { positions: Float32Array; count: number },
+  m: number[],
+): { positions: Float32Array; count: number } {
+  const out = new Float32Array(cloud.count * 3)
+  for (let i = 0; i < cloud.count; i++) {
+    const p = applyRowMajor(m, cloud.positions[i * 3], cloud.positions[i * 3 + 1], cloud.positions[i * 3 + 2])
+    out[i * 3] = p[0]
+    out[i * 3 + 1] = p[1]
+    out[i * 3 + 2] = p[2]
+  }
+  return { positions: out, count: cloud.count }
+}
+
+/**
+ * A solved camera-to-world, re-expressed as a RIGID camera-to-project matrix.
+ *
+ * The alignment's scale belongs on the translation and nowhere else. Its 3x3
+ * block is s·R, and leaving the s on the camera basis would both scale the
+ * unit ray `cameraRay` builds (harmless, it renormalises) and blow past
+ * `decomposeCamera`'s basis-length sanity check for any scale outside
+ * (0.5, 2.0) — the measured 0.4798 m/unit solve is already outside it. So the
+ * rotation is composed scale-free and only the camera centre goes through the
+ * full transform.
+ */
+function solvedCameraInProject(c2w: number[][] | undefined, frame: MetricFrame): number[][] | null {
+  if (!c2w || c2w.length < 3) return null
+  for (let i = 0; i < 3; i++) {
+    if (!Array.isArray(c2w[i]) || c2w[i].length < 4 || !c2w[i].slice(0, 4).every((v) => Number.isFinite(v))) return null
+  }
+  const centre = applyRowMajor(frame.transform, c2w[0][3], c2w[1][3], c2w[2][3])
+  const out: number[][] = []
+  for (let r = 0; r < 3; r++) {
+    const row: number[] = []
+    for (let c = 0; c < 3; c++) {
+      row.push(frame.rotation[r][0] * c2w[0][c] + frame.rotation[r][1] * c2w[1][c] + frame.rotation[r][2] * c2w[2][c])
+    }
+    row.push(centre[r])
+    out.push(row)
+  }
+  out.push([0, 0, 0, 1])
+  return out
+}
 
 /**
  * One lifted (or deliberately unlifted) segment.
@@ -133,6 +458,14 @@ export interface PanopticDetectionRecord {
    * window rather than the cloud is what rejected the segment.
    */
   nearestDepthM?: number
+  /**
+   * Where this record's camera came from. Absent means the capture's own
+   * tracker, which is the ordinary case; 'solved' means a reconstructed camera
+   * carried through the sidecar's `metricFrame` — see the header. A reader who
+   * wants to know why one capture's positions are more or less trustworthy
+   * than another's should not have to infer it from the session's file list.
+   */
+  cameraSource?: 'solved'
 }
 
 export interface PanopticDetectionsSidecar {
@@ -141,6 +474,13 @@ export interface PanopticDetectionsSidecar {
   sessionId?: string
   scanId?: string
   generatedAt: string
+  /**
+   * The verified alignment that put this capture in metres, when the lift
+   * needed one. Present exactly when some record carries `cameraSource:
+   * 'solved'`, and it is what makes those positions auditable: the same
+   * transform, applied again, has to reproduce them.
+   */
+  metricFrame?: { source: string; scale: number; residualM: number }
   detections: PanopticDetectionRecord[]
 }
 
@@ -406,6 +746,32 @@ export async function runPanopticLift(opts: PanopticLiftRunOptions): Promise<Pan
     return out
   }
 
+  // 3b. The camera source for this capture, decided once — see the header's
+  //     rule. A single tracked frame anywhere means the cloud is in the
+  //     tracker's frame, so solved cameras are off the table for the whole
+  //     capture; only a capture that tracked nothing can reach the alignment
+  //     path, and only if the alignment verified.
+  const solved = [...records.values()].some(recordHasPose) ? null : await readSolvedPoses(sessionDir)
+  let metric: MetricFrame | null = null
+  let metricRefusal: { why: string; next: string } | undefined
+  let rayCloud = cloud
+  if (solved) {
+    const lookup = await readMetricFrame(sessionDir, glbBase)
+    if (lookup.frame) {
+      metric = lookup.frame
+      rayCloud = transformCloud(cloud, lookup.frame.transform)
+    } else {
+      metricRefusal = { why: lookup.why, next: lookup.next }
+    }
+  }
+  // COLMAP fits f, cx, cy to the images it actually solved, which beats
+  // deriveIntrinsics' 55-degree default for a capture whose keyframes.jsonl
+  // records carry no intrinsics at all — the measured state of both
+  // video-ingest sessions on disk. `deriveIntrinsics` still owns the rescale
+  // to the JPEG's real pixels, so this is one more source for it, not a second
+  // lens path (ADR 0001).
+  const solvedCamera = metric ? await readSolvedCamera(sessionDir) : null
+
   // 4. Lift, counting per frame so segmentIndex is stable across re-runs:
   //    splitPanopticSegments preserves the worker's order, and the worker walks
   //    `segments_info` in a fixed order for a given segments file. That makes
@@ -434,7 +800,14 @@ export async function runPanopticLift(opts: PanopticLiftRunOptions): Promise<Pan
 
     const rec = records.get(seg.file)
     const size = await dimsFor(seg.file)
-    if (!rec || !recordHasPose(rec) || !size) {
+    // The capture's own tracker first, then — only when this capture has a
+    // verified metric frame — its solved camera carried into that frame.
+    const cameraToWorld = rec && recordHasPose(rec)
+      ? poseToMatrix(rec.pose ?? {})
+      : metric
+      ? solvedCameraInProject(solved?.get(seg.file), metric)
+      : null
+    if (!cameraToWorld || !size) {
       // A join failure, not a geometry verdict — `liftSegment` never produces
       // this — but it shares the reason field so a reader of the sidecar has
       // one list of reasons to consult rather than two.
@@ -443,12 +816,18 @@ export async function runPanopticLift(opts: PanopticLiftRunOptions): Promise<Pan
       out.push(record)
       continue
     }
+    const fromSolved = !(rec && recordHasPose(rec))
+    if (fromSolved) record.cameraSource = 'solved'
 
-    const intr = deriveIntrinsics(rec.intrinsics ?? {}, size.w, size.h)
+    const intr = deriveIntrinsics(
+      (fromSolved ? solvedCamera : null) ?? rec?.intrinsics ?? {},
+      size.w,
+      size.h,
+    )
     const result = liftSegment(
       {
         camera: {
-          cameraToWorld: poseToMatrix(rec.pose ?? {}),
+          cameraToWorld,
           flX: intr.flX,
           flY: intr.flY,
           cx: intr.cx,
@@ -463,8 +842,8 @@ export async function runPanopticLift(opts: PanopticLiftRunOptions): Promise<Pan
         ...(seg.bboxPx ? { bboxPx: seg.bboxPx } : {}),
         ...(seg.centroidOnMask !== undefined ? { centroidOnMask: seg.centroidOnMask } : {}),
       },
-      cloud.positions,
-      cloud.count,
+      rayCloud.positions,
+      rayCloud.count,
     )
 
     if (result.debug.conePoints > 0) record.conePoints = result.debug.conePoints
@@ -492,6 +871,14 @@ export async function runPanopticLift(opts: PanopticLiftRunOptions): Promise<Pan
     ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
     ...(opts.scanId ? { scanId: opts.scanId } : {}),
     generatedAt: new Date().toISOString(),
+    // Keyed off a record that actually used it, not off the frame having been
+    // read. A capture can clear every alignment gate and still lift nothing
+    // from a solved camera — the solve may simply carry none of these
+    // keyframes — and a sidecar that advertised an alignment behind zero
+    // positions would be claiming provenance for work that never happened.
+    ...(metric && out.some((record) => record.cameraSource === 'solved')
+      ? { metricFrame: { source: metric.source, scale: metric.scale, residualM: metric.residualM } }
+      : {}),
     detections: out,
   }
   try {
@@ -519,10 +906,26 @@ export async function runPanopticLift(opts: PanopticLiftRunOptions): Promise<Pan
   //    deliberately not used" is a different instruction to an operator than
   //    "nothing solved this session at all". It is the same reader the splat
   //    dataset builder already uses, not a second pose-file format (ADR 0001).
+  //
+  //    One case liftRemediation cannot diagnose, because it is about a file
+  //    outside this session's own inputs: a capture that HAS a solved camera
+  //    track and was refused the metric frame that would let it be used. That
+  //    is not "re-capture with tracking on" — the capture is fine and the
+  //    missing piece is one measurement — so it gets its own sentence.
   let remediation: string | undefined
   if (confidences.length === 0) {
-    const hasSolvedPoses = reasons['no-pose'] ? (await readSolvedPoses(sessionDir)) !== null : false
+    const hasSolvedPoses = reasons['no-pose'] ? solved !== null || (await readSolvedPoses(sessionDir)) !== null : false
     remediation = liftRemediation(reasons, { hasSolvedPoses })
+    if (metricRefusal && reasons['no-pose']) {
+      // The next action comes from the refusal itself, not from this sentence.
+      // One of them inverts the obvious advice — a frame that fixed size but
+      // not heading or origin is what measuring another distance produces — so
+      // a fixed "go and measure" tail here would send that operator straight
+      // back to the same refusal.
+      remediation = 'No frame carries a camera position from the capture itself. This capture does have a ' +
+        'reconstructed camera track, but nothing in a reconstruction fixes real-world scale, or where the room ' +
+        `sits, so it can place objects only once a verified frame does — ${metricRefusal.why}. ${metricRefusal.next}`
+    }
   }
 
   return finish(manifestPath, {

@@ -24,6 +24,9 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
+// The same arc the backend plans and validates against — imported so a plan this tool hands an
+// agent can never be one the backend then refuses (or worse, one the gimbal tries).
+import { planDomePans, unreachablePans, PAN_ARC_START_DEG, PAN_ARC_END_DEG, PAN_ARC_CENTER_DEG, PAN_ARC_SPAN_DEG, DEFAULT_PAN_SPAN_DEG, MIN_STATIONS_FOR_PARALLAX } from '../protocol/dome.mjs';
 
 const BACKEND_URL = process.env.OSMO_BACKEND_URL || 'http://localhost:8788';
 
@@ -299,30 +302,59 @@ function createMcpServer() {
     {
       title: 'Plan a yaw/pitch grid scan',
       description:
-        'Pure planning helper, no device interaction (works even before connecting) — computes an evenly-spaced yawCount x pitchCount grid of absolute (yawDeg, pitchDeg) targets across the given ranges, in a serpentine (boustrophedon) order that minimizes total travel between consecutive steps. Feed each returned target into gimbal_move_to, interleaving a photo-capture tool call after each one, to drive a fully automated N-position scan (e.g. the default 3x3 = 9 targets for a "9 photos" sweep). Does not itself move anything or take photos.',
+        'Pure planning helper, no device interaction (works even before connecting) — computes one STATION\'s dome: an evenly-spaced yawCount x pitchCount grid of absolute (yawDeg, pitchDeg) targets in a serpentine (boustrophedon) order that minimizes travel between consecutive steps. Feed each target into gimbal_move_to, interleaving a photo-capture call. TWO things this deliberately will not let you plan. (1) Yaw is planned along the gimbal\'s REACHABLE ARC (+82 degrees round through 180 to about -100) and centred on 171 (straight back), not on 0: the OM6 cannot rotate through the front, and a move into that stop does not error — it twitches against the limit while the controller holds a speed command against it, which has thermally shut a real unit down. yawRangeDeg is a WIDTH, clamped to the 178-degree arc; it is not a -x..+x pair, because that spelling is how the dead zone got requested. (2) One dome is not a capture. A dome swept from a single tripod position is pure rotation with no translational baseline — measured on real COLMAP runs, that registers 3 of 17 images, while 5 domes from 5 spots register 36 of 36. Plan 3-5 stations, moving the tripod between them and NOT in a straight line, and drive them with POST /api/grid-capture {stations: N} (which pauses between domes) rather than by looping this tool from one spot.',
       inputSchema: {
-        yawCount: z.number().int().min(1).max(10).optional().describe('Number of yaw positions (default 3)'),
-        pitchCount: z.number().int().min(1).max(10).optional().describe('Number of pitch positions (default 3)'),
-        yawRangeDeg: z.number().min(1).max(160).optional().describe('Total yaw span, centered on 0 (default 40, i.e. -20..+20)'),
-        pitchRangeDeg: z.number().min(1).max(120).optional().describe('Total pitch span, centered on 0 (default 30, i.e. -15..+15)'),
+        yawCount: z.number().int().min(1).max(20).optional().describe('Number of yaw columns (default 7)'),
+        pitchCount: z.number().int().min(1).max(10).optional().describe('Number of pitch rows (default 2)'),
+        yawRangeDeg: z.number().min(1).max(178).optional().describe(`Total yaw WIDTH along the reachable arc, centred on yawCenterDeg (default ${DEFAULT_PAN_SPAN_DEG}); clamped to the ${PAN_ARC_SPAN_DEG}-degree arc`),
+        yawCenterDeg: z.number().min(-180).max(180).optional().describe(`Centre of the dome (default ${PAN_ARC_CENTER_DEG}, straight back). Must be inside ${PAN_ARC_START_DEG}..180..${PAN_ARC_END_DEG}`),
+        pitchRangeDeg: z.number().min(1).max(50).optional().describe('Total pitch span, centered on -10 (default 30, i.e. -25..+5)'),
+        stations: z.number().int().min(1).max(12).optional().describe('How many tripod positions this dome will be repeated from (default 1). Only annotates the result — the pause between stations lives in POST /api/grid-capture.'),
       },
     },
-    async ({ yawCount, pitchCount, yawRangeDeg, pitchRangeDeg }) => {
-      const yCount = yawCount ?? 3;
-      const pCount = pitchCount ?? 3;
-      const yRange = yawRangeDeg ?? 40;
+    async ({ yawCount, pitchCount, yawRangeDeg, yawCenterDeg, pitchRangeDeg, stations }) => {
+      const yCount = yawCount ?? 7;
+      const pCount = pitchCount ?? 2;
       const pRange = pitchRangeDeg ?? 30;
-      const yawSteps = Array.from({ length: yCount }, (_, i) => (yCount === 1 ? 0 : -yRange / 2 + (yRange * i) / (yCount - 1)));
-      const pitchSteps = Array.from({ length: pCount }, (_, i) => (pCount === 1 ? 0 : -pRange / 2 + (pRange * i) / (pCount - 1)));
+      const stationCount = stations ?? 1;
+      let dome;
+      try {
+        dome = planDomePans({ centerDeg: yawCenterDeg, spanDeg: yawRangeDeg ?? DEFAULT_PAN_SPAN_DEG, count: yCount });
+      } catch (err) {
+        return errorResult(err);
+      }
+      // Pitch is centred on -10, not 0: the useful information in a room is below the horizon
+      // (floor, furniture, where walls meet), and tilt's measured travel is asymmetric anyway —
+      // it converges to about -40 but jams near +16.
+      const pitchSteps = Array.from({ length: pCount }, (_, i) => (pCount === 1 ? -10 : -10 - pRange / 2 + (pRange * i) / (pCount - 1)));
       const targets = [];
       let index = 0;
       for (let row = 0; row < pCount; row++) {
-        const cols = row % 2 === 0 ? yawSteps.map((v, i) => [i, v]) : yawSteps.map((v, i) => [i, v]).reverse();
+        const cols = row % 2 === 0 ? dome.pans.map((v, i) => [i, v]) : dome.pans.map((v, i) => [i, v]).reverse();
         for (const [col, yawDeg] of cols) {
-          targets.push({ index: index++, row, col, yawDeg: Math.round(yawDeg * 10) / 10, pitchDeg: Math.round(pitchSteps[row] * 10) / 10 });
+          targets.push({ index: index++, row, col, yawDeg, pitchDeg: Math.round(pitchSteps[row] * 10) / 10 });
         }
       }
-      return textResult({ totalTargets: targets.length, targets });
+      // Belt and braces on the invariant this tool exists to hold: the planner already
+      // guarantees it, and an agent acting on a bad plan drives real motors into a real stop.
+      const unreachable = unreachablePans(targets.map((t) => t.yawDeg));
+      if (unreachable.length) return errorResult(new Error(`planner produced ${unreachable.length} target(s) in the dead zone — this is a bug, do not drive them`));
+      return textResult({
+        totalTargets: targets.length,
+        perStation: targets.length,
+        stations: stationCount,
+        totalAcrossStations: targets.length * stationCount,
+        yaw: { centerDeg: dome.centerDeg, spanDeg: dome.spanDeg, clampedFromDeg: dome.clampedFrom, reachableArc: dome.arc },
+        ...(stationCount < MIN_STATIONS_FOR_PARALLAX
+          ? {
+            warning:
+              'One station only. A dome from a single spot is pure rotation — no translational '
+              + 'baseline, so structure-from-motion cannot triangulate: measured, 3 of 17 images '
+              + 'registered. Repeat this dome from 3-5 tripod positions (not collinear).',
+          }
+          : {}),
+        targets,
+      });
     }
   );
 

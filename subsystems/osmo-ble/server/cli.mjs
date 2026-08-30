@@ -20,6 +20,10 @@
 import { readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+// The backend's own planners, imported rather than reimplemented, so a --dry-run can never
+// disagree with what a real run would do and the CLI cannot offer a plan the backend refuses.
+import { planGrid } from './android-capture.mjs';
+import { planDomePans, unreachablePans, MIN_STATIONS_FOR_PARALLAX, PAN_ARC_START_DEG, PAN_ARC_END_DEG } from '../protocol/dome.mjs';
 
 const BACKEND_URL = process.env.OSMO_BACKEND_URL || 'http://localhost:8788';
 const STATE_FILE = fileURLToPath(new URL('../.cli-state.json', import.meta.url));
@@ -112,9 +116,26 @@ Motion / commands:
   recenter-probe [--duration seconds]    Shorthand for: probe recenter --stop-type none
 
 Automated capture:
-  grid [--pans 120,145,170] [--tilts -10,0,10]
+  grid [--stations N]                     Sweep a dome, PAUSE while you carry the tripod to the
+                                          next spot, sweep again. 3-5 stations for a room.
+                                          A dome from ONE spot is pure rotation and cannot be
+                                          reconstructed — measured, 3/17 images registered;
+                                          5 stations registered 36/36. Default 1, which this
+                                          tool will tell you is not a capture.
+       [--station-labels a,b,c]           Names for the stations (default station-01, ...).
+                                          Each becomes a subdirectory under --out.
+       [--pan-center DEG] [--pan-span DEG] [--pan-step DEG]
+                                          Dome width, clamped to the gimbal's reachable pan arc
+                                          (+82° round through 180° to -100° — it cannot rotate
+                                          through the front). Default: 150° centred on 171°.
+       [--pans 120,145,170] [--tilts -25,0]
+                                          Explicit columns/rows instead. Any pan in the dead
+                                          zone is refused, not attempted.
        [--device-url URL] [--device-token TOK]   (default: ANDROID_MCP_URL / ANDROID_MCP_TOKEN)
        [--out DIR]                        Download the photos here (default: ./grid-<timestamp>)
+                                          One subdirectory per station, plus a manifest.json
+                                          rewritten as each frame lands — stop after 3 of 5
+                                          stations and what is on disk is still 3 whole domes.
        [--ingest URL]                     POST them to a CI-Spatial /ingest-photos when done
        [--movement-only] [--dwell ms]     Sweep WITHOUT taking photos — the phone's scanner
                                           web app captures pose-tagged keyframes instead.
@@ -128,6 +149,10 @@ Automated capture:
        [--tolerance deg] [--max ms] [--resolution WxH] [--quality N] [--dry-run]
                                           Move -> photo at every grid position, in serpentine
                                           order. --dry-run prints the plan and exits.
+       [--yes]                            Advance between stations without waiting for Enter —
+                                          only for a rig that is not being carried. The pause
+                                          is the point; skipping it captures every station from
+                                          the same spot, which is the degenerate case.
 
 Telemetry:
   frames [--limit N]                     Recent raw DUML frames (default 50)
@@ -294,23 +319,90 @@ async function main() {
 
     case 'grid': {
       const nums = (v, fallback) => (v === undefined ? fallback : String(v).split(',').map(Number));
-      const pans = nums(flags.pans, [120, 145, 170]);
-      const tilts = nums(flags.tilts, [-10, 0, 10]);
+      const num = (v) => (v === undefined ? undefined : Number(v));
+      const tilts = nums(flags.tilts, [-25, 0]);
+      const stationsPlanned = Math.max(1, Math.trunc(Number(flags.stations ?? 1)) || 1);
+      const stationLabels = flags['station-labels']
+        ? String(flags['station-labels']).split(',').map((s) => s.trim()).filter(Boolean)
+        : null;
+
+      // Pan columns: an explicit list if given, otherwise the same centre/span planner the
+      // backend uses, imported rather than reimplemented so a dry run and a real run cannot
+      // disagree about where the gimbal is going.
+      let pans;
+      let panPlan = null;
+      if (flags.pans !== undefined) {
+        pans = nums(flags.pans);
+        const bad = unreachablePans(pans);
+        if (bad.length) {
+          throw new Error(
+            `${bad.length} of ${pans.length} pan column(s) are in the gimbal's dead zone `
+            + `(${bad.map((b) => `${b.pan}°`).join(', ')}). Pan travels ${PAN_ARC_START_DEG}° round `
+            + `through 180° to ${PAN_ARC_END_DEG}° and cannot rotate through the front; driving into `
+            + 'the stop jams it. Use --pan-center/--pan-span and the plan is clamped for you.',
+          );
+        }
+      } else {
+        panPlan = planDomePans({
+          centerDeg: num(flags['pan-center']),
+          spanDeg: num(flags['pan-span']),
+          stepDeg: num(flags['pan-step']) ?? 15,
+        });
+        pans = panPlan.pans;
+        if (panPlan.clampedFrom) {
+          console.error(`(pan span trimmed ${panPlan.clampedFrom}° -> ${panPlan.spanDeg}°: that is the whole reachable arc)`);
+        }
+      }
+
+      const grid = planGrid({ pans, tilts });
 
       if (flags['dry-run']) {
-        // planGrid is the backend's own function, imported rather than reimplemented, so a
-        // dry run can never disagree with what a real run would do.
-        const { planGrid } = await import('./android-capture.mjs');
-        const grid = planGrid({ pans, tilts });
-        print(grid.map((g, i) => `  ${i + 1}: pan=${g.pan} tilt=${g.tilt}`).join('\n'));
-        console.error(`\n(${grid.length} positions, serpentine. Drop --dry-run to run it.)`);
+        for (let s = 1; s <= stationsPlanned; s++) {
+          console.error(`\n${stationLabels?.[s - 1] ?? `station-${String(s).padStart(2, '0')}`}:`);
+          print(grid.map((g, i) => `  ${i + 1}: pan=${g.pan} tilt=${g.tilt}`).join('\n'));
+          if (s < stationsPlanned) console.error('  --- pause: carry the tripod to the next spot ---');
+        }
+        console.error(`\n(${stationsPlanned} station(s) x ${grid.length} positions = ${stationsPlanned * grid.length}, serpentine.`);
+        console.error(` pan ${panPlan ? `${panPlan.spanDeg}° centred on ${panPlan.centerDeg}°` : `[${pans.join(', ')}]`}, all inside the reachable arc.`);
+        if (stationsPlanned < MIN_STATIONS_FOR_PARALLAX) {
+          console.error(` WARNING: ${stationsPlanned} station has no translational baseline — a dome from one spot is pure`);
+          console.error(' rotation and registered 3 of 17 images in COLMAP. Use --stations 3..5.)');
+        } else {
+          console.error(' Drop --dry-run to run it.)');
+        }
         return;
       }
 
       const outDir = flags.out || `grid-${new Date().toISOString().replace(/[:.]/g, '-')}`;
-      console.error(`Running ${pans.length * tilts.length} positions — this takes a few minutes.`);
-      console.error(`(Streaming progress below; each photo downloads to ${outDir}/ as its position finishes — a later failure only costs what comes after it.)\n`);
+      console.error(`Running ${stationsPlanned} station(s) x ${grid.length} positions — this takes a few minutes per station.`);
+      console.error(`(Streaming progress below; each photo downloads to ${outDir}/<station>/ as its position finishes — a later failure only costs what comes after it.)\n`);
+      if (stationsPlanned < MIN_STATIONS_FOR_PARALLAX) {
+        console.error('WARNING: one station only. A dome swept from a single spot is pure rotation — no');
+        console.error('translational baseline, nothing for structure-from-motion to triangulate. Measured:');
+        console.error('3 of 17 images registered. Pass --stations 3 (or more) to capture something solvable.\n');
+      }
       mkdirSync(outDir, { recursive: true });
+
+      // The manifest is rewritten after every frame and every station rather than composed at
+      // the end, and that is the whole answer to "what does a run stopped after 3 of 5 stations
+      // leave behind". At any instant the directory describes itself: which stations exist,
+      // which frames belong to which, and whether the run had finished. A manifest written only
+      // on the happy path would make every interrupted run — the stop button, a dead battery, a
+      // Ctrl-C — indistinguishable from a directory of loose JPEGs.
+      const manifest = {
+        prefix: null,
+        startedAt: new Date().toISOString(),
+        finishedAt: null,
+        backend: BACKEND_URL,
+        plan: { pans, tilts, stationsPlanned, perStation: grid.length },
+        stations: [],
+        complete: false,
+        usable: false,
+        reason: 'Run in progress — this file is rewritten as each frame lands.',
+      };
+      const manifestPath = `${outDir}/manifest.json`;
+      const writeManifest = () => writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+      writeManifest();
 
       // Streamed NDJSON, not one buffered response (see backend.mjs's grid-capture handler for
       // why): a multi-minute request that sends zero bytes until the very end reads as a hung
@@ -326,6 +418,8 @@ async function main() {
           body: JSON.stringify({
             pans,
             tilts,
+            stations: stationsPlanned,
+            ...(stationLabels ? { stationLabels } : {}),
             deviceUrl: flags['device-url'],
             deviceToken: flags['device-token'],
             toleranceDeg: flags.tolerance ? Number(flags.tolerance) : undefined,
@@ -344,12 +438,19 @@ async function main() {
         throw new Error(`Can't reach the backend at ${BACKEND_URL} — start it with "npm run backend" in a real terminal (${err.message})`);
       }
       if (!gridRes.ok && !gridRes.body) throw new Error(`Backend returned HTTP ${gridRes.status}`);
+      // A 4xx never streams — it is a rejected plan (a pan column in the dead zone, a missing
+      // device token), and its body is one JSON object, not NDJSON. Reading it as a stream
+      // would print a parse error over the top of a perfectly clear message.
+      if (!gridRes.ok) {
+        const rejected = await gridRes.json().catch(() => ({}));
+        throw new Error(`${rejected.error || `HTTP ${gridRes.status}`}${rejected.remediation ? `\n  ${rejected.remediation}` : ''}`);
+      }
 
       const files = [];
-      let total = pans.length * tilts.length;
-      let converged = 0;
-      let sawDone = false;
-      let sawError = null;
+      let total = grid.length * stationsPlanned;
+      let final = null;
+      /** Stations already prompted for, so the 5-second heartbeats do not re-ask. */
+      const prompted = new Set();
       let buf = '';
       for await (const chunk of gridRes.body) {
         buf += Buffer.from(chunk).toString('utf8');
@@ -359,57 +460,123 @@ async function main() {
           buf = buf.slice(nl + 1);
           if (!line.trim()) continue;
           const event = JSON.parse(line);
+
           if (event.phase === 'start') {
             total = event.total;
+            manifest.prefix = event.prefix;
+            manifest.plan = { ...manifest.plan, ...event.plan, perStation: event.perStation, stationsPlanned: event.stationsPlanned };
+            writeManifest();
+          } else if (event.phase === 'station-start') {
+            mkdirSync(`${outDir}/${event.stationLabel}`, { recursive: true });
+            manifest.stations.push({ station: event.station, label: event.stationLabel, positions: 0, converged: 0, frames: [] });
+            writeManifest();
+            console.error(`\n── station ${event.station}/${event.stationsPlanned} (${event.stationLabel}) ──`);
+          } else if (event.phase === 'awaiting-station') {
+            if (prompted.has(event.nextStation)) continue;
+            prompted.add(event.nextStation);
+            console.error('');
+            console.error(`  MOVE THE TRIPOD to station ${event.nextStation} of ${event.stationsPlanned}.`);
+            console.error('  Somewhere the previous stations can see and that can see them, and NOT in a line');
+            console.error('  with them — collinear stations share one baseline and stay degenerate.');
+            if (!event.linkUp) console.error('  WARNING: the BLE link to the gimbal has dropped. Reconnect before advancing.');
+            try {
+              if (flags.yes) {
+                console.error('  (--yes: advancing without waiting. Every station from the same spot is the degenerate case.)');
+              } else if (!process.stdin.isTTY) {
+                // Printed once, not on every 5-second heartbeat: a non-interactive caller is
+                // usually a log, and the instruction does not get truer by repetition.
+                console.error(`  Not a terminal — advance with:  curl -XPOST ${BACKEND_URL}/api/grid-advance`);
+                continue;
+              } else {
+                console.error('  Press Enter when it is down and level (Ctrl-C to stop here — the stations already captured are complete).');
+                await new Promise((resolve) => {
+                  process.stdin.resume();
+                  process.stdin.once('data', () => { process.stdin.pause(); resolve(); });
+                });
+              }
+              await api('POST', '/api/grid-advance');
+            } catch (err) {
+              // A refused advance is recoverable (a dropped BLE link is the expected cause), so
+              // clear the prompt flag and let the next heartbeat ask again rather than leaving
+              // the run parked with nobody about to try.
+              console.error(`  Could not advance: ${err.message}`);
+              prompted.delete(event.nextStation);
+            }
           } else if (event.phase === 'captured') {
-            console.error(`  ${String(event.position).padStart(2)}: pan=${(event.pan ?? 0).toFixed(1)} tilt=${(event.tilt ?? 0).toFixed(1)}  ${event.converged ? 'converged' : 'NOT converged'} (${event.ticks} ticks)`);
-            if (event.converged) converged++;
+            console.error(`  ${String(event.stationPosition).padStart(2)}: pan=${(event.pan ?? 0).toFixed(1)} tilt=${(event.tilt ?? 0).toFixed(1)}  ${event.converged ? 'converged' : 'NOT converged'} (${event.ticks} ticks)`);
+            const station = manifest.stations.find((s) => s.station === event.station);
+            const frame = {
+              station: event.station,
+              stationLabel: event.stationLabel,
+              stationPosition: event.stationPosition,
+              position: event.position,
+              target: event.target,
+              pan: event.pan,
+              tilt: event.tilt,
+              converged: event.converged,
+              ticks: event.ticks,
+              files: [],
+            };
             // Movement-only positions carry no photoUrl: this backend deliberately took no
             // photo, because the phone's own scanner app is capturing pose-tagged keyframes
             // instead. Downloading is not just skipped but *must* be — fetch(null) throws
             // "Failed to parse URL from null" and kills the run mid-sweep.
             if (!event.photoUrl) {
-              console.error(`    (movement-only — the scanner app captures this position)`);
-              continue;
-            }
-            const shots = [{ suffix: '', url: event.photoUrl }];
-            if (event.photoUrlPortrait) shots.push({ suffix: '-portrait', url: event.photoUrlPortrait });
-            for (const shot of shots) {
-              const dest = `${outDir}/pos-${String(event.position).padStart(2, '0')}${shot.suffix}.jpg`;
-              const photoRes = await fetch(shot.url);
-              if (!photoRes.ok) {
-                console.error(`    WARNING: downloading position ${event.position}${shot.suffix}: HTTP ${photoRes.status} — skipped`);
-                continue;
+              frame.capturedBy = 'scanner-app';
+              console.error('    (movement-only — the scanner app captures this position)');
+            } else {
+              const shots = [{ suffix: '', url: event.photoUrl }];
+              if (event.photoUrlPortrait) shots.push({ suffix: '-portrait', url: event.photoUrlPortrait });
+              for (const shot of shots) {
+                const dest = `${outDir}/${event.stationLabel}/pos-${String(event.stationPosition).padStart(2, '0')}${shot.suffix}.jpg`;
+                const photoRes = await fetch(shot.url);
+                if (!photoRes.ok) {
+                  console.error(`    WARNING: downloading position ${event.stationPosition}${shot.suffix}: HTTP ${photoRes.status} — skipped`);
+                  continue;
+                }
+                writeFileSync(dest, Buffer.from(await photoRes.arrayBuffer()));
+                files.push(dest);
+                frame.files.push(dest.slice(outDir.length + 1));
               }
-              writeFileSync(dest, Buffer.from(await photoRes.arrayBuffer()));
-              files.push(dest);
             }
+            if (station) {
+              station.frames.push(frame);
+              station.positions++;
+              if (event.converged) station.converged++;
+            }
+            writeManifest();
+          } else if (event.phase === 'station-done') {
+            console.error(`  station ${event.station}: ${event.converged}/${event.positions} converged`);
+            writeManifest();
           } else if (event.phase === 'done') {
-            sawDone = true;
+            final = event;
             total = event.total;
-            converged = event.converged;
           } else if (event.phase === 'error') {
-            sawError = event.error;
+            console.error(`\n  Backend reported a fault: ${event.error}`);
           }
         }
       }
-      console.error(`\n  ${converged}/${total} converged`);
+
+      manifest.finishedAt = new Date().toISOString();
+      manifest.complete = final?.complete ?? false;
+      manifest.usable = final?.usable ?? false;
+      manifest.reason = final?.reason ?? (final ? null : 'The progress stream ended without a summary — the connection dropped mid-run.');
+      writeManifest();
+
+      console.error(`\n  ${final?.converged ?? 0}/${total} positions converged across ${manifest.stations.length} station(s)`);
       console.error(`  downloaded ${files.length} photo(s) to ${outDir}/`);
-      if (sawError) {
-        console.error(`\n  Backend reported an error partway through: ${sawError}`);
-        console.error(`  ${files.length} photo(s) captured before the failure are still on disk in ${outDir}/ — nothing before the error was lost.`);
-      } else if (!sawDone) {
-        console.error(`\n  WARNING: the stream ended without a "done" event — the connection may have dropped mid-run. ${files.length} photo(s) downloaded so far are still on disk.`);
-      }
+      console.error(`  manifest: ${manifestPath}`);
 
       // Distinct-bytes check, not a formality: a stalled camera returning the same frame over
       // and over is a real failure mode this project has hit before (wave 04, six byte-identical
       // JPEGs across 47 minutes), and it is invisible unless something compares them.
-      const hashes = new Set(files.map((f) => createHash('md5').update(readFileSync(f)).digest('hex')));
-      if (hashes.size !== files.length) {
-        console.error(`  WARNING: only ${hashes.size} distinct image(s) among ${files.length} — the camera may be returning a stale frame.`);
-      } else {
-        console.error(`  all ${files.length} frames are byte-distinct`);
+      if (files.length) {
+        const hashes = new Set(files.map((f) => createHash('md5').update(readFileSync(f)).digest('hex')));
+        if (hashes.size !== files.length) {
+          console.error(`  WARNING: only ${hashes.size} distinct image(s) among ${files.length} — the camera may be returning a stale frame.`);
+        } else {
+          console.error(`  all ${files.length} frames are byte-distinct`);
+        }
       }
 
       if (flags.ingest) {
@@ -421,6 +588,24 @@ async function main() {
         if (!res.ok) throw new Error(`ingest failed: HTTP ${res.status} ${JSON.stringify(json)}`);
         console.error('');
         print(json);
+      }
+
+      // The exit code is the one thing a script reads, so it has to mean "this can be
+      // reconstructed", not "the process reached the end". A single-station run, a run where
+      // nothing converged, and a run cut short of the stations it was asked for are all real
+      // outcomes with usable frames on disk — and none of them is the capture that was
+      // requested. Say which, and exit non-zero.
+      if (!final) {
+        console.error('\n  FAILED: the stream ended without a summary — the connection dropped mid-run.');
+        console.error(`  Whatever is in ${outDir}/ is still intact; manifest.json says how far it got.`);
+        process.exitCode = 1;
+      } else if (!final.usable || !final.complete) {
+        console.error(`\n  ${final.usable ? 'PARTIAL' : 'NOT USABLE'}: ${final.reason ?? 'the run did not complete every planned station.'}`);
+        console.error(`  ${final.stationsUsable}/${final.stationsPlanned} station(s) captured.`
+          + (final.usable ? ` Those ${final.stationsUsable} are complete domes and can be reconstructed on their own.` : ''));
+        process.exitCode = 1;
+      } else {
+        console.error(`\n  OK: ${final.stationsUsable} station(s), ${final.framesConverged} converged frames — enough parallax to reconstruct.`);
       }
       return;
     }

@@ -1521,6 +1521,86 @@
         max-width: 380px;
       }
 
+      /* The subject question — the only thing this screen asks. Which method
+         runs is worked out from it and from what the device can do
+         (src/capture/capture-intent.ts), because "does this phone do AR" is
+         not a question anyone standing in their living room can answer. */
+      #capture-intent {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        width: 100%;
+        max-width: 380px;
+      }
+
+      #capture-question {
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        color: var(--ci-muted);
+      }
+
+      #capture-subjects {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      /* Four across a 393px screen. 44px is the tap-target floor; the cards
+         below keep their own, larger one. */
+      .capture-subject {
+        flex: 1 1 0;
+        min-width: 84px;
+        min-height: 44px;
+        padding: 8px 6px;
+        border-radius: 999px;
+        border: 1px solid var(--ci-line);
+        background: var(--ci-bg-elevated);
+        color: var(--ci-text);
+        font-size: 13px;
+        font-weight: 600;
+        white-space: nowrap;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+        transition: border-color 0.2s ease-out, background 0.2s ease-out;
+      }
+
+      .capture-subject[aria-pressed='true'] {
+        border-color: rgba(114, 221, 212, 0.7);
+        background: rgba(114, 221, 212, 0.16);
+        color: #bff3ee;
+      }
+
+      /* Reveals the methods that were not recommended. They are real paths, so
+         they stay reachable — they are just not a choice anyone is made to
+         make before they have said what they are capturing. */
+      #capture-more {
+        border: none;
+        background: none;
+        padding: 4px;
+        color: var(--ci-muted);
+        font-size: 12px;
+        font-weight: 700;
+        text-decoration: underline;
+        text-underline-offset: 3px;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      /* Why the recommended method is the recommended one, when that is worth
+         a sentence. Hidden whenever it is not — this screen has a word budget
+         (tests/mock-scanner-startup-budget.spec.ts) and a line that says
+         nothing spends it. */
+      #capture-note {
+        max-width: 340px;
+        text-align: center;
+        color: var(--ci-muted);
+        font-size: 12px;
+        line-height: 1.55;
+      }
+
+      #capture-note[hidden] { display: none; }
+
       /* min-height stays comfortably over the 56px tap target mock-ftue
          asserts; the padding is what came down (was 16/18 with an 84px floor,
          measuring 92px per card — 303px of stack for three of them). */
@@ -1532,6 +1612,9 @@
         min-height: 68px;
         padding: 11px 14px;
         text-align: left;
+        /* The editor card is an <a> while its siblings are <button>s, so
+           without this it alone carries the UA's link underline. */
+        text-decoration: none;
         border-radius: var(--ci-radius);
         border: 1px solid var(--ci-line);
         background: var(--ci-bg-elevated);
@@ -1554,17 +1637,28 @@
         transform: scale(0.98);
       }
 
-      /* Primary path — the live-AR card carries the accent (mint) fill */
-      #start-ar-btn.start-path {
+      /* A card that is not the recommended method is out of the way until the
+         "Other ways" toggle asks for it. `hidden` alone cannot do this: the
+         `display: flex` above outranks the UA stylesheet's [hidden] rule. */
+      .start-path[hidden] { display: none; }
+
+      #start-ar-btn.start-path[data-recommended='true']:not(:disabled):hover {
+        background: linear-gradient(180deg, rgba(114,221,212,1), rgba(114,221,212,0.88));
+        box-shadow: 0 20px 54px rgba(114,221,212,0.22);
+      }
+
+      /* The accent is now on whichever card the resolver picked, and only
+         there — it used to be welded to #start-ar-btn, which meant the live
+         card wore "start here" on phones where a live capture is a coin flip
+         or an impossibility. renderCaptureChoice() in src/main.ts sets this
+         from resolveCapture() (src/capture/capture-intent.ts); the static
+         markup ships it on the live card, which is what an unprobed device is
+         optimistically offered. */
+      .start-path[data-recommended='true'] {
         background: linear-gradient(180deg, rgba(114,221,212,0.98), rgba(114,221,212,0.82));
         border-color: rgba(114,221,212,0.7);
         color: #041620;
         box-shadow: 0 18px 44px rgba(114,221,212,0.18);
-      }
-
-      #start-ar-btn.start-path:not(:disabled):hover {
-        background: linear-gradient(180deg, rgba(114,221,212,1), rgba(114,221,212,0.88));
-        box-shadow: 0 20px 54px rgba(114,221,212,0.22);
       }
 
       /* Terminally unusable (no secure context, no AR runtime) — flat and dead. */
@@ -1686,6 +1780,75 @@
         color: var(--ci-muted);
         font-size: 12px;
         line-height: 1.45;
+      }
+
+      /* Tripod Scan's station loop (#tripod-sheet, built by mountTripodCapture()
+         in src/main.ts). It borrows .place-sheet / .place-sheet-panel /
+         .place-upload-note / .place-sheet-actions wholesale — this is the same
+         kind of thing as the Place picker, a modal that asks for one decision
+         at a time, so it gets the same box rather than a second one. Only the
+         parts that have no equivalent are new: a headline big enough to read
+         from arm's length while standing over a tripod, and a progress row.
+
+         The dots are .project-calibration-steps, the segmented row that
+         already exists for a two-step flow over the camera. Same job here —
+         "which of these am I on" — and one implementation. */
+      .tripod-headline {
+        margin: 2px 0 6px;
+        font-family: var(--ci-font-display);
+        font-size: 21px;
+        font-weight: 500;
+        line-height: 1.25;
+        color: var(--ci-text);
+      }
+      .tripod-detail {
+        margin: 0 0 10px;
+        color: var(--ci-muted);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      /* A sweep that produced nothing. Warm rather than red: nothing is broken
+         and nothing was lost — the spot simply has not been captured yet, and
+         the copy says so. Red here would read as a failed upload. */
+      .tripod-headline[data-tone='warn'] { color: #ffcf8b; }
+      .tripod-tally {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        margin: 0 0 10px;
+        color: var(--ci-muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .tripod-tally b { color: #72ddd4; }
+      /* Full-width actions that belong to the step being read, not to the
+         modal — "add this spot's photos" and "send the capture" are things you
+         do to the thing above them, so they sit in the body rather than in the
+         sticky row, which stays [do the next thing] [close]. Same visual
+         weight as #place-area-save, which is the same kind of button. */
+      .tripod-wide-btn {
+        display: block;
+        width: 100%;
+        min-height: 40px;
+        margin: 0 0 10px;
+        border: 1px solid rgba(114, 221, 212, 0.55);
+        border-radius: 7px;
+        color: var(--ci-mint);
+        background: rgba(114, 221, 212, 0.1);
+        font-weight: 700;
+      }
+      .tripod-wide-btn[hidden] { display: none; }
+      /* Shown only while finishing is refused, so the Send button never sits
+         next to an unexplained disabled state. */
+      .tripod-blocked {
+        margin: 0 0 10px;
+        padding: 9px 10px;
+        border-left: 2px solid rgba(255, 207, 139, 0.6);
+        border-radius: 8px;
+        background: rgba(255, 207, 139, 0.08);
+        color: var(--ci-text);
+        font-size: 12px;
+        line-height: 1.5;
       }
 
       /* Current location, directly under the title: coordinates first, because
@@ -2017,7 +2180,9 @@
         background: rgba(4, 22, 32, 0.14);
       }
 
-      #start-upload-card .start-path-icon {
+      /* Any card can be the recommended one now, and the recommended one is
+         mint — against which the mint-tinted icon chip disappears. */
+      #start-upload-card:not([data-recommended='true']) .start-path-icon {
         background: rgba(114, 221, 212, 0.10);
       }
 
@@ -2037,16 +2202,14 @@
       .start-path-sub {
         font-size: 12px;
         line-height: 1.35;
-        opacity: 0.85;
-      }
-
-      #start-ar-btn.start-path .start-path-sub {
-        color: rgba(4, 22, 32, 0.72);
-        opacity: 1;
-      }
-
-      #start-upload-card .start-path-sub {
         color: var(--ci-muted);
+      }
+
+      /* Keyed off the recommendation rather than off which card it is: the
+         mint fill moves between cards now, and the text has to move with it or
+         the recommended card is muted grey on mint. */
+      .start-path[data-recommended='true'] .start-path-sub {
+        color: rgba(4, 22, 32, 0.72);
       }
 
       /* Leaflet dark-mode overrides */
@@ -2149,8 +2312,12 @@
     <!-- Persistent help button — visible during scanning -->
     <button id="help-btn" aria-label="Show scanning help">?</button>
 
-    <!-- Start screen: two equal capture paths. #start-ar-btn stays a real
-         <button> so Safari grants iOS motion permission from its click handler. -->
+    <!-- Start screen: one question, then one recommended method. The cards
+         below are the methods, one per control, and which of them is on screen
+         is decided by renderCaptureChoice() in src/main.ts — not by the person,
+         who would have to know what their phone can do to decide it.
+         #start-ar-btn stays a real <button> so Safari grants iOS motion
+         permission from its click handler. -->
     <div id="start-screen">
       <div id="start-brand">
         <div id="start-brand-mark"></div>
@@ -2159,7 +2326,23 @@
         <div id="start-subtitle">Private spatial memory for places you own.</div>
       </div>
 
-      <div id="start-paths" role="group" aria-label="Choose how to capture your space">
+      <!-- The one question. Everything below is worked out from the answer and
+           from what this device turns out to be able to do — see
+           renderCaptureChoice() in src/main.ts and resolveCapture() in
+           src/capture/capture-intent.ts. "A room" is preselected because it is
+           what most captures are, and because a screen that demands an answer
+           before it will show anything has added a tap for everyone. -->
+      <div id="capture-intent">
+        <div id="capture-question">What are you capturing?</div>
+        <div id="capture-subjects" role="group" aria-label="What are you capturing?">
+          <button type="button" class="capture-subject" data-subject="room" aria-pressed="true">A room</button>
+          <button type="button" class="capture-subject" data-subject="place" aria-pressed="false">Whole place</button>
+          <button type="button" class="capture-subject" data-subject="object" aria-pressed="false">An object</button>
+          <button type="button" class="capture-subject" data-subject="person" aria-pressed="false">A person</button>
+        </div>
+      </div>
+
+      <div id="start-paths" role="group" aria-label="How to capture it">
         <!-- Path 1 — live AR (primary). Must stay a <button>: the iOS motion
              permission request in its click handler needs a real user gesture.
              Ships `disabled aria-busy` on purpose — this markup paints before
@@ -2167,41 +2350,81 @@
              attaches the handler at the top of its boot (section 0) and clears
              both there, so the not-pressable state lasts ~50ms in practice —
              and stays put if the bundle never loads at all. -->
-        <button id="start-ar-btn" class="start-path" aria-label="Scan a Place with live AR" disabled aria-busy="true">
+        <button id="start-ar-btn" class="start-path" data-recommended="true" aria-label="Walk the room — hold your phone up and walk slowly round the room. A 3D map at true size, with things placed as you go." disabled aria-busy="true">
           <span class="start-path-icon" aria-hidden="true"><svg width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="2.2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 16.2a6 6 0 0 0 0-8.4"/><path d="M4.8 4.8a10.2 10.2 0 0 0 0 14.4M19.2 19.2a10.2 10.2 0 0 0 0-14.4"/></svg></span>
           <span class="start-path-copy">
-            <span class="start-path-title">Scan a Place</span>
-            <span class="start-path-sub">Choose a Place, align it, then walk the space to build a 3D map.</span>
+            <span class="start-path-title">Walk the room</span>
+            <span class="start-path-sub">Hold your phone up and walk slowly round the room. A 3D map at true size, with things placed as you go.</span>
             <span class="start-path-status" aria-live="polite">Preparing…</span>
           </span>
         </button>
 
-        <!-- Path 2 — the location modal runs before opening the native picker,
-             and carries the full version of the sentence below (see
-             uploadExpectation() in src/capture/upload-expectation.ts). This
-             copy said "no AR needed", which is true of the room's shape and
-             silently wrong about the things in it: an uploaded video registers
-             every frame and rebuilds the room, and places 0 of 29 objects,
-             because its frames do not record where the camera was standing.
-             Kept short deliberately — this is inside the startup word budget
-             that tests/mock-scanner-startup-budget.spec.ts holds. -->
-        <button id="start-upload-card" class="start-path" type="button" aria-label="Upload content from a Place">
+        <!-- The upload path. Ships `hidden`: it is a real method and stays
+             reachable behind "Other ways", but three cards named after the
+             machinery behind them was the screen this replaced, and the copy
+             here is written per subject by renderCaptureChoice() — filming a
+             room and photographing a chair are not the same instruction.
+             Hidden also costs no words, which is what pays for the question
+             above (tests/mock-scanner-startup-budget.spec.ts measures the
+             rendered text of #start-screen, and hidden text is not in it).
+
+             Whatever the subject, the sentence keeps saying that an upload
+             rebuilds the room and catalogues nothing in it — measured: every
+             frame of a walkthrough registered, 0 of 29 objects placed, because
+             its frames do not record where the camera was standing. The full
+             version is uploadExpectation() in src/capture/upload-expectation.ts,
+             which the Place modal shows before the picker opens. -->
+        <button id="start-upload-card" class="start-path" type="button" hidden aria-label="Film a walkthrough — film as you walk round the room, then hand it over">
           <span class="start-path-icon" aria-hidden="true"><svg width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="5" width="18" height="14" rx="1.8"/><path d="M8 5v14M16 5v14M3 9.7h5M3 14.3h5M16 9.7h5M16 14.3h5"/></svg></span>
           <span class="start-path-copy">
-            <span id="upload-video-btn" class="start-path-title">Upload Content</span>
-            <span class="start-path-sub">A video or photos rebuild the room in 3D. Objects are only placed by walking the room with a phone.</span>
+            <span id="upload-video-btn" class="start-path-title">Film a walkthrough</span>
+            <span class="start-path-sub">Film as you walk round the room, then hand it over. The room in 3D — nothing catalogued, size is not measured.</span>
           </span>
         </button>
         <input id="upload-video-input" type="file" accept="video/*,image/jpeg,image/png,image/webp" multiple style="display:none;" />
+
+        <!-- The tripod path: a phone set down, swept, carried, swept again.
+             Nothing tracks the phone anywhere in it, which is the whole point
+             — the test phone cannot run a live capture at all, and this is the
+             method that is recommended there rather than being the third
+             option on a list it was never going to reach. Measured: one spot
+             swept in place gave 3 of 17 usable photos and no room at all; five
+             spots gave 36 of 36 and 9,914 points. Hence "3 to 5" — a single
+             sweep is not a capture, and the sheet this opens refuses to send
+             one.
+
+             Ships `hidden` for the same reason as the card above, and its copy
+             no longer promises a true-to-size room: what five spots produce is
+             an exact SHAPE, whose size is only pinned down once something of
+             known length is measured in it. The longer version of what the
+             path is for is in src/capture/station-capture.ts, shown in the
+             sheet — one tap in, where there is room for it. -->
+        <button id="start-tripod-card" class="start-path" type="button" hidden aria-label="Sweep from a tripod — sweep, move the tripod, sweep again, 3 to 5 spots">
+          <span class="start-path-icon" aria-hidden="true"><svg width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="7.6" y="3.4" width="8.8" height="5" rx="1.3"/><path d="M12 8.4v2.9M12 11.3 6.6 20.6M12 11.3l5.4 9.3M12 11.3v9.3M8.9 17.4h6.2"/></svg></span>
+          <span class="start-path-copy">
+            <span class="start-path-title">Sweep from a tripod</span>
+            <span class="start-path-sub">Sweep, move the tripod, sweep again — 3 to 5 spots. The room rebuilt from every side. Size is not measured.</span>
+          </span>
+        </button>
 
         <a id="start-editor-card" class="start-path" href="/editor" aria-label="Explore and edit existing places">
           <span class="start-path-icon" aria-hidden="true"><svg width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 5.5h16v13H4z"/><path d="M8 3.5v4M16 3.5v4M8 16.5h8M8 12.5h5"/></svg></span>
           <span class="start-path-copy">
             <span class="start-path-title">Place Scan Editor</span>
-            <span class="start-path-sub">Explore, compare, and edit the scans already mapped to a place.</span>
+            <span class="start-path-sub">Open and edit the places already scanned.</span>
           </span>
         </a>
       </div>
+
+      <!-- The methods that were not recommended, one tap away. Ships hidden
+           and is unhidden by renderCaptureChoice() once it knows there is
+           something behind it — a toggle that reveals nothing is worse than no
+           toggle. -->
+      <button id="capture-more" type="button" hidden aria-expanded="false">Other ways</button>
+
+      <!-- Why this method and not a better one, when that is worth saying.
+           Written by renderCaptureChoice() from the resolver's note. -->
+      <div id="capture-note" aria-live="polite" hidden></div>
 
       <!-- Upload progress / result line, driven by wireVideoUpload() -->
       <div id="upload-video-progress" aria-live="polite"

@@ -23,9 +23,11 @@ import { Document, Primitive } from '@gltf-transform/core'
 
 import {
   collectPointPositions,
+  MAX_ALIGN_RESIDUAL_M,
   runPanopticLift,
   type PanopticDetectionsSidecar,
 } from '../../../server/panoptic/panoptic_lift.ts'
+import { THING_MATCH_RADIUS_M } from '../../../server/thing_match.ts'
 import { MIN_CONFIDENCE } from '../../../src/shared/panoptic_lift.ts'
 
 /** 720x960 baseline JPEG header — enough for readJpegDimensions, no pixels. */
@@ -708,4 +710,300 @@ Deno.test('a document with no POINTS geometry yields an empty cloud rather than 
   const doc = new Document()
   doc.createScene()
   assertEquals(collectPointPositions(doc).count, 0)
+})
+
+// ── the metric frame: the only door a solved camera track gets through ──────
+//
+// The refusal these cases surround is the one that makes the whole stage
+// correct, so both halves of it are pinned: a capture with no measured metric
+// frame still abstains, and a capture WITH one places in real metres.
+//
+// The fixture is arithmetic end to end, which is the only way to tell "the
+// transform was applied" from "the transform happened to be near identity".
+// Solver frame: the camera sits at the solver origin with an identity OpenCV
+// [R|t], which `openCvW2cToC2w` turns into a camera looking down world +Z. The
+// slab sits at solver z = +12. The alignment is a pure 0.25 scale plus a
+// (10, 1, -3) m offset, so:
+//
+//   camera centre  (0,0,0)  ->  (10, 1, -3) m
+//   slab           (0,0,12) ->  (10, 1,  0) m,  3.0 m in front of the camera
+//
+// 12 solver units is deliberately outside MAX_DEPTH_M (5.0), so a run that
+// forgot to carry the cloud through the transform cannot pass by accident —
+// it comes back 'out-of-range'.
+const ALIGN_SCALE = 0.25
+const ALIGN_TRANSFORM = [
+  ALIGN_SCALE, 0, 0, 10,
+  0, ALIGN_SCALE, 0, 1,
+  0, 0, ALIGN_SCALE, -3,
+  0, 0, 0, 1,
+]
+
+/** The slab, mirrored to +Z: `slab` builds it down -Z for the capture cases. */
+const solverSlab = (z: number, n: number) => slab(z, n).map((v, i) => (i % 3 === 2 ? -v : v))
+
+/** An identity OpenCV world-to-camera — i.e. the camera at the solver origin. */
+const IDENTITY_W2C = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]]
+
+async function writeSolvedPoses(sessionDir: string, files: string[]): Promise<void> {
+  await Deno.writeTextFile(
+    `${sessionDir}/colmap.poses.json`,
+    JSON.stringify({ frames: files.map((file) => ({ file, cameraToWorld: IDENTITY_W2C })) }),
+  )
+}
+
+/** A `splat-align` sidecar, `status: 'ok'` unless the case says otherwise. */
+function alignManifest(over: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    schemaVersion: 1,
+    tool: 'umeyama',
+    status: 'ok',
+    createdAt: new Date().toISOString(),
+    projectTransform: ALIGN_TRANSFORM,
+    scale: ALIGN_SCALE,
+    residualM: 0.02,
+    correspondenceCount: 36,
+    calibrationMethod: 'two-point-ground',
+    params: { minCorrespondences: 4, maxResidualM: 0.25 },
+    ...over,
+  })
+}
+
+Deno.test('with no measured metric frame, a solved camera track still places nothing', async () => {
+  await withTmp(async (tmp) => {
+    // The refusal the header is about, stated on its own: every input for a
+    // lift is present EXCEPT the one measurement that says what a metre is.
+    const sessionDir = await makeSession(
+      tmp,
+      [{ file: 'kf-00000.jpg' }],
+      [{ file: 'kf-00000.jpg', label: 'chair' }],
+    )
+    await writeSolvedPoses(sessionDir, ['kf-00000.jpg'])
+    const detectionsPath = `${tmp}/scan.panoptic.detections.json`
+    const m = await runPanopticLift({
+      sessionDir,
+      scanGlbPath: `${tmp}/scan.glb`,
+      detectionsPath,
+      _readCloud: cloudSeam(solverSlab(12, 40)),
+    })
+
+    assertEquals(m.status, 'ok')
+    assertEquals(m.confidentCount, 0)
+    assertEquals(m.reasons?.['no-pose'], 1)
+    const sidecar = await readSidecar(detectionsPath)
+    assertEquals(sidecar.detections[0].worldPos, null)
+    assertEquals(sidecar.detections[0].cameraSource, undefined)
+    assertEquals(sidecar.metricFrame, undefined, 'no frame was used, so none is claimed')
+    // The operator's next action is a measurement, not a re-capture — the
+    // capture itself is fine.
+    assertStringIncludes(m.remediation ?? '', 'known real-world distance')
+    assertStringIncludes(m.remediation ?? '', 'scale')
+  })
+})
+
+Deno.test('a verified metric frame lets a solved camera track place objects, in real metres', async () => {
+  await withTmp(async (tmp) => {
+    const sessionDir = await makeSession(
+      tmp,
+      [{ file: 'kf-00000.jpg' }],
+      [{ file: 'kf-00000.jpg', label: 'chair', score: 0.94 }],
+    )
+    await writeSolvedPoses(sessionDir, ['kf-00000.jpg'])
+    await Deno.writeTextFile(`${tmp}/scan.splat-align.manifest.json`, alignManifest())
+
+    const detectionsPath = `${tmp}/scan.panoptic.detections.json`
+    const m = await runPanopticLift({
+      sessionDir,
+      scanGlbPath: `${tmp}/scan.glb`,
+      detectionsPath,
+      _readCloud: cloudSeam(solverSlab(12, 40)),
+    })
+
+    assertEquals(m.status, 'ok')
+    assertEquals(m.confidentCount, 1)
+    assertEquals(m.reasons?.['no-pose'], undefined)
+    assertEquals(m.remediation, undefined)
+
+    const sidecar = await readSidecar(detectionsPath)
+    const d = sidecar.detections[0]
+    assertEquals(d.cameraSource, 'solved')
+    assert(d.worldPos, 'expected a world position')
+    // The whole point of the gate: these are metres in the project's frame,
+    // not solver units at the solver's origin. Both halves are asserted —
+    // the 0.25 scale AND the (10, 1, -3) offset.
+    assert(Math.abs(d.worldPos.x - 10) < 0.05, `x was ${d.worldPos.x}`)
+    assert(Math.abs(d.worldPos.y - 1) < 0.05, `y was ${d.worldPos.y}`)
+    assert(Math.abs(d.worldPos.z - 0) < 0.05, `z was ${d.worldPos.z}`)
+    // 12 solver units became 3.0 m; untransformed it would have been outside
+    // the 0.5-5.0 m window entirely.
+    assert(typeof d.depthM === 'number' && Math.abs(d.depthM - 3.0) < 0.05, `depth was ${d.depthM}`)
+    // Provenance, so the number can be checked later without re-deriving it.
+    assertEquals(sidecar.metricFrame?.scale, ALIGN_SCALE)
+    assertEquals(sidecar.metricFrame?.residualM, 0.02)
+    assertEquals(sidecar.metricFrame?.source, 'scan.splat-align.manifest.json')
+  })
+})
+
+Deno.test('the session-dir alignment sidecar is found too, not only the one beside the scan', async () => {
+  await withTmp(async (tmp) => {
+    // splat_align writes beside the splat when there is one and into the
+    // session dir when there is not; a capture with no trained splat is
+    // exactly the capture this path serves, so both have to be read.
+    const sessionDir = await makeSession(
+      tmp,
+      [{ file: 'kf-00000.jpg' }],
+      [{ file: 'kf-00000.jpg', label: 'chair' }],
+    )
+    await writeSolvedPoses(sessionDir, ['kf-00000.jpg'])
+    await Deno.writeTextFile(`${sessionDir}/splat-align.manifest.json`, alignManifest())
+    const m = await runPanopticLift({
+      sessionDir,
+      scanGlbPath: `${tmp}/scan.glb`,
+      detectionsPath: `${tmp}/scan.panoptic.detections.json`,
+      _readCloud: cloudSeam(solverSlab(12, 40)),
+    })
+    assertEquals(m.confidentCount, 1)
+  })
+})
+
+Deno.test('an alignment that is unverified, too loose, or misshapen places nothing', async () => {
+  // Each of these is a different way for the measurement to fail to be a
+  // measurement, and every one of them has to land back on the honest refusal
+  // — a wrong metric frame is worse than no metric frame, because every
+  // position it produces looks real.
+  const cases: Array<[string, string]> = [
+    ['skipped', alignManifest({ status: 'skipped', skippedReason: 'no calibrated metric frame' })],
+    ['no residual reported', alignManifest({ residualM: undefined })],
+    // 0.20 m is a legitimate `status: 'ok'` for splat-align, whose own limit is
+    // 0.25 m. It is still over a fifth of thing_match's 0.75 m fusion radius,
+    // which is the budget this stage is willing to spend on the frame alone.
+    ['residual over the placement bar', alignManifest({ residualM: 0.2 })],
+    ['non-positive scale', alignManifest({ scale: 0 })],
+    ['no transform', alignManifest({ projectTransform: undefined })],
+    // A non-uniform scale has no single metres-per-unit, so nothing it moves
+    // can be reported in metres.
+    ['non-uniform 3x3', alignManifest({ projectTransform: [0.25, 0, 0, 10, 0, 0.4, 0, 1, 0, 0, 0.25, -3, 0, 0, 0, 1] })],
+    // A reflection mirrors every ray while leaving all the lengths right.
+    ['reflected 3x3', alignManifest({ projectTransform: [-0.25, 0, 0, 10, 0, 0.25, 0, 1, 0, 0, 0.25, -3, 0, 0, 0, 1] })],
+    // A size, not a placement. `SplatAlignManifest.determined`'s own doc says a
+    // consumer that puts one scan beside another must check heading and origin
+    // first, and `thing_match` fusing these positions across scans at
+    // THING_MATCH_RADIUS_M is exactly that consumer. Every length read off this
+    // frame is real and every bearing in it is arbitrary, which is the shape of
+    // answer that gets believed.
+    ['a size-only frame', alignManifest({
+      tool: 'known-distance',
+      calibrationMethod: 'known-distance+solver-gravity',
+      residualSource: 'viewpoint-scatter',
+      determined: { scale: true, up: true, heading: false, origin: false },
+    })],
+    // The solve found no gravity, so the frame is tilted by an unknown angle —
+    // every depth read off it is short or long by a factor nobody measured.
+    ['an unknown up', alignManifest({ determined: { scale: true, up: false, heading: true, origin: true } })],
+    // Absent `determined` is read as an older umeyama fit, which is what its
+    // doc says one is. The known-distance driver always writes the block, so
+    // one without it is malformed rather than old — and malformed is a refusal.
+    ['a known-distance frame that recorded nothing about what it pinned down', alignManifest({ tool: 'known-distance' })],
+  ]
+  for (const [name, body] of cases) {
+    await withTmp(async (tmp) => {
+      const sessionDir = await makeSession(
+        tmp,
+        [{ file: 'kf-00000.jpg' }],
+        [{ file: 'kf-00000.jpg', label: 'chair' }],
+      )
+      await writeSolvedPoses(sessionDir, ['kf-00000.jpg'])
+      await Deno.writeTextFile(`${tmp}/scan.splat-align.manifest.json`, body)
+      const detectionsPath = `${tmp}/scan.panoptic.detections.json`
+      const m = await runPanopticLift({
+        sessionDir,
+        scanGlbPath: `${tmp}/scan.glb`,
+        detectionsPath,
+        _readCloud: cloudSeam(solverSlab(12, 40)),
+      })
+      assertEquals(m.confidentCount, 0, `${name}: nothing may be placed`)
+      assertEquals(m.reasons?.['no-pose'], 1, `${name}: the honest reason is unchanged`)
+      const sidecar = await readSidecar(detectionsPath)
+      assertEquals(sidecar.metricFrame, undefined, `${name}: no frame may be claimed`)
+      assert(m.remediation, `${name}: a run that placed nothing must say what would change that`)
+    })
+  }
+})
+
+Deno.test('a capture that was sized but never placed is not told to go and measure again', async () => {
+  await withTmp(async (tmp) => {
+    // The one refusal whose obvious advice is backwards. A `'known-distance'`
+    // frame IS what measuring a distance produces, so "measure a distance" here
+    // sends the operator round the same loop; what is missing is where the
+    // capture sits in the room, which is the World Editor's two-point flow.
+    const sessionDir = await makeSession(
+      tmp,
+      [{ file: 'kf-00000.jpg' }],
+      [{ file: 'kf-00000.jpg', label: 'chair' }],
+    )
+    await writeSolvedPoses(sessionDir, ['kf-00000.jpg'])
+    await Deno.writeTextFile(
+      `${tmp}/scan.splat-align.manifest.json`,
+      alignManifest({
+        tool: 'known-distance',
+        determined: { scale: true, up: true, heading: false, origin: false },
+      }),
+    )
+    const m = await runPanopticLift({
+      sessionDir,
+      scanGlbPath: `${tmp}/scan.glb`,
+      detectionsPath: `${tmp}/scan.panoptic.detections.json`,
+      _readCloud: cloudSeam(solverSlab(12, 40)),
+    })
+
+    assertEquals(m.confidentCount, 0)
+    const remediation = m.remediation ?? ''
+    assertStringIncludes(remediation, 'World Editor')
+    assert(
+      !/Measure this capture against one known real-world distance/.test(remediation),
+      `the advice that produced this very frame must not be the advice out of it: ${remediation}`,
+    )
+  })
+})
+
+Deno.test('the residual bar is a fifth of the radius thing_match fuses at', () => {
+  // Stated as a relationship, not as 0.15: the bar exists only because of that
+  // radius, and if the radius ever moves the bar has to move with it.
+  assertEquals(MAX_ALIGN_RESIDUAL_M, THING_MATCH_RADIUS_M / 5)
+  assert(MAX_ALIGN_RESIDUAL_M < 0.25, 'tighter than splat-align\'s own same-camera-path check')
+})
+
+Deno.test('one tracked frame keeps the whole capture off solved cameras, alignment or not', async () => {
+  await withTmp(async (tmp) => {
+    // The invariant that survives the new door. A capture that tracked built
+    // its cloud in the tracker's frame, so a solved camera — however well
+    // measured — is a camera in a different space from the points it would be
+    // cast against. The test is per capture, not per frame, and a verified
+    // alignment does not change that.
+    const sessionDir = await makeSession(
+      tmp,
+      [{ file: 'kf-00000.jpg' }, { file: 'kf-00001.jpg', pose: { position: { x: 0, y: 0, z: 0 } } }],
+      [{ file: 'kf-00000.jpg', label: 'desk' }, { file: 'kf-00001.jpg', label: 'desk' }],
+    )
+    await writeSolvedPoses(sessionDir, ['kf-00000.jpg', 'kf-00001.jpg'])
+    await Deno.writeTextFile(`${tmp}/scan.splat-align.manifest.json`, alignManifest())
+
+    const detectionsPath = `${tmp}/scan.panoptic.detections.json`
+    await runPanopticLift({
+      sessionDir,
+      scanGlbPath: `${tmp}/scan.glb`,
+      detectionsPath,
+      // A capture-frame cloud: down -Z from the tracked camera at the origin.
+      _readCloud: cloudSeam(slab(2.0, 40)),
+    })
+
+    const sidecar = await readSidecar(detectionsPath)
+    const tracked = sidecar.detections.find((d) => d.file === 'kf-00001.jpg')!
+    const untracked = sidecar.detections.find((d) => d.file === 'kf-00000.jpg')!
+    assert(tracked.worldPos, 'the tracked frame lifts against its own cloud, unchanged')
+    assertEquals(tracked.cameraSource, undefined)
+    assertEquals(untracked.worldPos, null)
+    assertEquals(untracked.reason, 'no-pose')
+    assertEquals(sidecar.metricFrame, undefined, 'no solved camera was used, so no frame is claimed')
+  })
 })

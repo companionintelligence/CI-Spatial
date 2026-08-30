@@ -37,6 +37,24 @@
  * scale: it silently makes every downstream distance, fusion and measurement
  * wrong while looking fine.
  *
+ * ── The second tier: one measured distance ─────────────────────────────────
+ *
+ * Everything above needs a metric camera path, and a capture that never ran an
+ * AR runtime has none — a tripod walked between fixed spots, or an uploaded
+ * video. Those reconstruct fine and then sit at an arbitrary size forever. The
+ * `'known-distance'` tier (`server/capture/known_distance.ts`) is the answer:
+ * one physically measured length between two viewpoints the capture can
+ * identify, which fixes the scale exactly because the solve is a *similarity*
+ * of reality — measured 0.000433 m RMS against ground truth on the five-station
+ * session this repo keeps.
+ *
+ * It is a strictly weaker tier and it says so rather than papering over it.
+ * Umeyama recovers all seven degrees of freedom; one distance recovers scale,
+ * plus up when (and only when) the solve reported gravity. Heading and origin
+ * stay free, `SplatAlignManifest.determined` publishes exactly that, and no
+ * heading is invented to fill the gap — a made-up bearing would come back as a
+ * confidently mis-rotated room in every placement downstream.
+ *
  * Two coordinate conventions meet here and they are NOT the same, so both are
  * named at every boundary below:
  *   - `ScanCalibration.sessionToProject` is **column-major** (built by
@@ -52,6 +70,12 @@
 
 import type { ScanCalibration, SplatAlignManifest } from '../../src/world/types.ts'
 import { isServerSessionId } from '../../src/shared/session-id.ts'
+import {
+  type DistanceMeasurement,
+  readSolveGravity,
+  solveKnownDistanceFrame,
+  viewpointsFromKeyframes,
+} from '../capture/known_distance.ts'
 import {
   type KeyframeRecord,
   poseToMatrix,
@@ -161,6 +185,17 @@ export interface SplatAlignRunOptions {
    * skip, not an error.
    */
   calibration?: ScanCalibration | null
+  /**
+   * Measured real-world distances between viewpoints this capture recorded —
+   * the `'known-distance'` tier's whole input.
+   *
+   * Supplying any of these switches the run onto that tier: it derives its own
+   * `ScanCalibration` (returned as `SplatAlignResult.calibration`, for a caller
+   * that wants to persist it) instead of consuming one, because the tier exists
+   * precisely for captures that have nothing to consume. One distance is
+   * enough to size the capture; a second is what makes the result checkable.
+   */
+  knownDistances?: DistanceMeasurement[]
   /** Absolute path of the splat this transform describes, when one exists. */
   plyPath?: string
   /** Where the manifest sidecar lands. Defaults next to `plyPath`, else in the session dir. */
@@ -185,6 +220,12 @@ export interface SplatAlignResult {
   scale?: number
   residualM?: number
   correspondenceCount?: number
+  /**
+   * The `'known-distance'` frame this run derived, when it took that tier and
+   * succeeded. Handed back rather than written, because a `ScanCalibration`
+   * belongs to the scan record, which this module does not own.
+   */
+  calibration?: Extract<ScanCalibration, { method: 'known-distance' }>
 }
 
 // ─── The fit ─────────────────────────────────────────────────────────────────
@@ -434,6 +475,29 @@ export async function runSplatAlign(opts: SplatAlignRunOptions): Promise<SplatAl
     return await finish(manifestPath, { ...base, status: 'error', error: 'invalid session directory' }, started)
   }
 
+  if (opts.knownDistances && opts.knownDistances.length > 0) {
+    return await runKnownDistanceTier(opts, base, manifestPath, params, started)
+  }
+
+  // A `'known-distance'` calibration must never fall through to the fit below.
+  // Its `sessionToProject` carries CAMERA-SOLVE coordinates into project space,
+  // not AR-session ones (see the variant's doc comment); applying it to the
+  // capture-time poses `metricCentresFromKeyframes` reads would silently
+  // produce a metric side that is wrong by whatever the two frames differ by,
+  // fit cleanly, and publish a confident lie. The measurements are what
+  // re-derive it, so ask for them.
+  if (opts.calibration?.method === 'known-distance') {
+    return await finish(manifestPath, {
+      ...base,
+      tool: 'known-distance',
+      status: 'skipped',
+      skippedReason:
+        'this capture is sized by a measured real-world distance, but the measurement was not supplied to this run',
+      remediation:
+        'Re-run with the recorded distance between two of the spots the camera stood at — the stored size factor is not re-checkable without it.',
+    }, started)
+  }
+
   // 1. The metric frame. No calibration means the only "metres" available
   //    would be the AR runtime's own unverified units — claiming a metric
   //    scale from those is precisely the unbacked claim ADR 0005 rule 3
@@ -562,7 +626,13 @@ export async function runSplatAlign(opts: SplatAlignRunOptions): Promise<SplatAl
     projectTransform,
     scale: fit.scale,
     residualM: fit.residualM,
+    residualSource: 'camera-path',
     correspondenceCount,
+    // All four, and the only tier that can say so: a whole calibrated camera
+    // path constrains every degree of freedom at once. Stated rather than left
+    // absent so a consumer can branch on one field across both tiers instead of
+    // treating "no `determined` block" as a third, ambiguous case.
+    determined: { scale: true, up: true, heading: true, origin: true },
   }
   return await finish(manifestPath, manifest, started, {
     projectTransform,
@@ -570,6 +640,160 @@ export async function runSplatAlign(opts: SplatAlignRunOptions): Promise<SplatAl
     residualM: fit.residualM,
     correspondenceCount,
   })
+}
+
+/**
+ * The `'known-distance'` tier's driver — same sidecar, same refusal discipline,
+ * a different (and smaller) claim.
+ *
+ * Two independent gates stand between a measurement and a published scale, and
+ * they are deliberately not the same number: `known_distance.ts` refuses above
+ * `DEFAULT_SEPARATION_TOLERANCE_M` (0.15 m — the two-point tier's own idea of
+ * "these two readings describe the same thing"), and this function refuses
+ * again above `params.maxResidualM` (0.25 m — this module's idea of "these two
+ * descriptions are of the same capture"). The tighter one governs; both are
+ * applied because they are checking different claims and either could be
+ * relaxed later without the other quietly following.
+ */
+async function runKnownDistanceTier(
+  opts: SplatAlignRunOptions,
+  base: SplatAlignManifest,
+  manifestPath: string,
+  params: { minCorrespondences: number; maxResidualM: number },
+  started: number,
+): Promise<SplatAlignResult> {
+  const kdBase: SplatAlignManifest = { ...base, tool: 'known-distance' }
+
+  const solved = await readSolvedPoses(opts.sessionDir)
+  if (!solved) {
+    return await finish(manifestPath, {
+      ...kdBase,
+      status: 'skipped',
+      skippedReason: 'this capture has not been solved yet, so there is nothing for the measured distance to size',
+      remediation: 'Run the camera solve on this capture first — it runs on CPU and needs no GPU — then re-run this step.',
+    }, started)
+  }
+
+  // Viewpoints come from the `station` labels the tripod capture writes. A
+  // walkthrough video has none, and that is not a gap to be papered over: it
+  // never stood still anywhere twice, so there are no two fixed spots for a
+  // tape measure to span. Sizing it needs a different kind of known length
+  // (a measured object in view), which this tier does not implement — so it
+  // says so instead of half-supporting it.
+  const viewpoints = viewpointsFromKeyframes(await readKeyframes(opts.sessionDir))
+  if (viewpoints.length === 0) {
+    return await finish(manifestPath, {
+      ...kdBase,
+      status: 'skipped',
+      skippedReason:
+        'this capture never recorded which spot each frame was taken from, so a distance between two spots has nothing to attach to',
+      remediation:
+        'Size a walkthrough capture by calibrating it in the World Editor instead. Capturing from a tripod at a few marked spots is what lets a tape measure size it directly.',
+    }, started)
+  }
+
+  const frame = solveKnownDistanceFrame({
+    centres: sfmCentresFromPoses(solved),
+    viewpoints,
+    measurements: opts.knownDistances ?? [],
+    // Never defaulted to true: an unknown vertical is recorded as unknown.
+    gravityAligned: await readSolveGravity(opts.sessionDir),
+  })
+  if (!frame.ok) {
+    return await finish(manifestPath, {
+      ...kdBase,
+      status: 'skipped',
+      skippedReason: frame.reason,
+      remediation: frame.remediation,
+    }, started)
+  }
+
+  const correspondenceCount = frame.frameCount
+  const knownDistance = {
+    measuredM: frame.measuredM,
+    solvedSeparation: frame.solvedSeparation,
+    measurementCount: frame.measurementCount,
+  }
+
+  // The same minimum the fit tier uses, for the same reason: below it the
+  // published residual is arithmetic rather than evidence. It is re-checked by
+  // both consumers of this manifest against `params.minCorrespondences`, so a
+  // count that would fail there must fail here first.
+  if (correspondenceCount < params.minCorrespondences) {
+    return await finish(manifestPath, {
+      ...kdBase,
+      status: 'skipped',
+      correspondenceCount,
+      knownDistance,
+      skippedReason:
+        `only ${correspondenceCount} solved frame(s) stand behind the spots that were measured between — ` +
+        `${params.minCorrespondences} are needed before there is anything to check the result against`,
+      remediation: 'Capture more frames at each marked spot, or re-run the camera solve so it places more of the ones already taken.',
+    }, started)
+  }
+
+  if (!(frame.residualM <= params.maxResidualM)) {
+    return await finish(manifestPath, {
+      ...kdBase,
+      status: 'skipped',
+      correspondenceCount,
+      residualM: frame.residualM,
+      residualSource: frame.residualSource,
+      knownDistance,
+      skippedReason:
+        `the capture and the measurement disagree by ${frame.residualM.toFixed(3)}m, past the ` +
+        `${params.maxResidualM}m limit — the size this would give is not trustworthy`,
+      remediation:
+        'Check that the frames are labelled with the spot they were taken from, and that the recorded distance is between those same two spots.',
+    }, started)
+  }
+
+  // Row-major from the column-major calibration by transposing it, rather than
+  // rebuilding the same numbers in the other layout. Transposing an affine 4x4
+  // IS the conversion between the two conventions, and one construction site
+  // means the two matrices cannot drift apart — the failure the header warns
+  // about, where `fromArray` transposes a row-major matrix silently.
+  const projectTransform = transpose4(frame.calibration.sessionToProject)
+  const manifest: SplatAlignManifest = {
+    ...kdBase,
+    status: 'ok',
+    projectTransform,
+    scale: frame.scale,
+    residualM: frame.residualM,
+    residualSource: frame.residualSource,
+    correspondenceCount,
+    knownDistance,
+    // What a single length actually pins down. `heading` and `origin` are false
+    // and are meant to be read: this transform states a size, not a placement,
+    // and two scans aligned this way are not registered to each other.
+    determined: {
+      scale: true,
+      up: frame.calibration.gravityAligned,
+      heading: false,
+      origin: false,
+    },
+    calibrationMethod: frame.calibration.gravityAligned ? 'known-distance+solver-gravity' : 'known-distance',
+  }
+  return await finish(manifestPath, manifest, started, {
+    projectTransform,
+    scale: frame.scale,
+    residualM: frame.residualM,
+    correspondenceCount,
+    calibration: frame.calibration,
+  })
+}
+
+/**
+ * Transpose a 4x4 held as 16 numbers — which is exactly what converting an
+ * affine transform between the column-major (`ScanCalibration.sessionToProject`)
+ * and row-major (`SplatAlignManifest.projectTransform`) conventions is.
+ */
+export function transpose4(m: number[]): number[] {
+  const out = new Array<number>(16)
+  for (let r = 0; r < 4; r++) {
+    for (let c = 0; c < 4; c++) out[r * 4 + c] = m[c * 4 + r]
+  }
+  return out
 }
 
 /** Shares `SESSION_ID_RE` with the other drivers rather than re-deriving it. */

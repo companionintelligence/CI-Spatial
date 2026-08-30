@@ -199,6 +199,17 @@
   .gp-summary .gp-capped { color: var(--warn); }
   .scan-run { width: 100%; min-height: 44px; }
 
+  /* ---- Between-station prompt ----
+     Given the accent border and a taller button because of where the operator is when it
+     appears: across the room with the rig in their hands, looking at a phone propped up or
+     held at arm's length. It has to be findable at a glance, not read. */
+  .station-prompt {
+    margin: 10px 0; padding: 10px; border: 1px solid var(--accent); border-radius: 8px;
+    background: var(--panel-2);
+  }
+  .station-prompt .scan-run { min-height: 56px; font-size: 15px; }
+  .station-note { font-size: 12px; line-height: 1.45; color: var(--text); margin-bottom: 8px; }
+
   /* ---- Orientation readout (top of the main view) ----
      Compass + tilt gauge + the three numbers, then the phone's own sensors in a separate
      captioned block. Two gauges, because this mount only has two observable axes: pan has no
@@ -481,7 +492,7 @@
           <div class="details-body">
             <div class="scan-types" id="be-scan-types" role="group" aria-label="Scan type">
               <button type="button" class="scan-type" data-preset="dome">Dome</button>
-              <button type="button" class="scan-type" data-preset="quick25">Quick 25</button>
+              <button type="button" class="scan-type" data-preset="quick25">Quick</button>
               <button type="button" class="scan-type" data-preset="band">Band</button>
               <button type="button" class="scan-type" data-preset="custom">Custom</button>
             </div>
@@ -491,13 +502,23 @@
               <span class="gp-head">to°</span>
               <span class="gp-head">step°</span>
               <span class="gp-axis">Pan</span>
-              <input id="be-pan-from" class="gp-num" type="number" inputmode="numeric" step="5" value="-150" aria-label="Pan from, degrees" />
-              <input id="be-pan-to" class="gp-num" type="number" inputmode="numeric" step="5" value="150" aria-label="Pan to, degrees" />
-              <input id="be-pan-step" class="gp-num" type="number" inputmode="numeric" min="1" step="5" value="30" aria-label="Pan step, degrees" />
+              <input id="be-pan-from" class="gp-num" type="number" inputmode="numeric" step="5" value="96" aria-label="Pan from, degrees" />
+              <input id="be-pan-to" class="gp-num" type="number" inputmode="numeric" step="5" value="-114" aria-label="Pan to, degrees" />
+              <input id="be-pan-step" class="gp-num" type="number" inputmode="numeric" min="1" step="5" value="25" aria-label="Pan step, degrees" />
               <span class="gp-axis">Tilt</span>
-              <input id="be-tilt-from" class="gp-num" type="number" inputmode="numeric" step="5" value="-15" aria-label="Tilt from, degrees" />
-              <input id="be-tilt-to" class="gp-num" type="number" inputmode="numeric" step="5" value="0" aria-label="Tilt to, degrees" />
-              <input id="be-tilt-step" class="gp-num" type="number" inputmode="numeric" min="1" step="5" value="15" aria-label="Tilt step, degrees" />
+              <input id="be-tilt-from" class="gp-num" type="number" inputmode="numeric" step="5" value="-25" aria-label="Tilt from, degrees" />
+              <input id="be-tilt-to" class="gp-num" type="number" inputmode="numeric" step="5" value="5" aria-label="Tilt to, degrees" />
+              <input id="be-tilt-step" class="gp-num" type="number" inputmode="numeric" min="1" step="5" value="30" aria-label="Tilt step, degrees" />
+            </div>
+            <!-- Stations, not just positions. A dome swept from one spot is pure rotation: no
+                 translational baseline, and structure-from-motion registered 3 of 17 images
+                 from exactly that. Five stations registered 36 of 36. The count sits directly
+                 under the grid because it is the number that decides whether the run can be
+                 reconstructed at all — the position count only decides how long it takes. -->
+            <div class="row" style="gap:6px; margin-top:8px;">
+              <label for="be-stations">Stations</label>
+              <input id="be-stations" class="gp-num" style="max-width:70px;" type="number" inputmode="numeric" min="1" max="12" step="1" value="4" aria-label="Number of tripod stations" />
+              <span class="test-desc">move the tripod between each</span>
             </div>
             <div id="be-grid-summary" class="gp-summary" aria-live="polite"></div>
             <div class="row" style="gap:6px;">
@@ -511,6 +532,14 @@
               <input type="checkbox" id="be-grid-both" /> Both orientations per position
             </label>
             <button id="be-btn-grid" class="primary scan-run" disabled>Run scan</button>
+            <!-- The one control a multi-station capture cannot work without. Hidden until the
+                 run parks between domes, then it is the largest thing on the panel: the
+                 operator is holding a tripod, several metres away, and this is the only thing
+                 they need to hit. -->
+            <div id="be-station-prompt" class="station-prompt" hidden>
+              <div id="be-station-note" class="station-note"></div>
+              <button id="be-btn-advance" class="primary scan-run">I've moved it — continue</button>
+            </div>
             <div class="grid-bar-track"><div id="be-grid-bar" class="grid-bar-fill"></div></div>
             <div id="be-grid-progress" class="test-desc" style="margin-top:8px;"></div>
             <div id="be-grid-results"></div>

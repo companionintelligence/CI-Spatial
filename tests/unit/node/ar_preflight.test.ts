@@ -264,3 +264,65 @@ test('every verdict carries a headline and a detail — no empty UI', () => {
     }
   }
 })
+
+// ── where a dead end sends someone ───────────────────────────────────────────
+
+test('every dead end offers the tripod path first, and Upload Content second', () => {
+  // The old copy sent a phone that cannot scan to Upload Content alone, which
+  // rebuilds the room's shape and catalogues nothing. Tripod Scan needs no AR
+  // either and is the stronger of the two here — five spots swept from a
+  // tripod reconstructed the room from every side, 36 of 36 photos usable —
+  // so it leads. Neither path recovers real-world size, so the ordering is
+  // about coverage and nothing here may imply otherwise.
+  const noApi = probeVerdict({
+    secureContext: true, xr8Loaded: false, webxrApi: false, immersiveArAdvertised: false,
+  })
+  const noSession = probeVerdict({
+    secureContext: true, xr8Loaded: false, webxrApi: true, immersiveArAdvertised: false,
+  })
+  const beamPro = (() => {
+    const err = new Error('The specified session configuration is not supported')
+    err.name = 'NotSupportedError'
+    return startFailureVerdict(err)
+  })()
+  const generic = startFailureVerdict(new TypeError('window.THREE does not exist'))
+
+  for (const [name, verdict] of Object.entries({ noApi, noSession, beamPro, generic })) {
+    assert.equal(verdict.routeToUpload, true, `${name}: still a dead end for the live scanner`)
+    assert.match(verdict.detail, /Tripod Scan/, `${name}: must offer the path that works here`)
+    assert.match(verdict.detail, /Upload Content/, `${name}: must still offer the upload path`)
+    assert.ok(
+      verdict.detail.indexOf('Tripod Scan') < verdict.detail.indexOf('Upload Content'),
+      `${name}: the path that reconstructs the room from every side leads`,
+    )
+  }
+})
+
+test('the intermittent no-frame case offers the tripod path without giving up on AR', () => {
+  // 'degraded', not 'unavailable': the same phone succeeds about one start in
+  // four. So retrying leads, and the no-AR paths are the fallback for someone
+  // it keeps failing for — not a verdict on the hardware.
+  const v = firstFrameVerdict({ sawCameraFrame: false, sawPose: false, elapsedMs: 6_000 })
+  assert.equal(v.canScan, true)
+  assert.match(v.detail, /second try/i)
+  assert.ok(v.detail.indexOf('second try') < v.detail.indexOf('Tripod Scan'), 'retrying comes first')
+  assert.match(v.detail, /Tripod Scan/)
+})
+
+test('a fixable-in-the-room verdict still sends nobody away', () => {
+  // Frames but no pose: adding light fixes it where they stand. Offering a
+  // different capture path here would be worse advice than saying nothing.
+  const v = firstFrameVerdict({ sawCameraFrame: true, sawPose: false, elapsedMs: 6_000 })
+  assert.doesNotMatch(v.detail, /Tripod Scan|Upload Content/)
+})
+
+test('a secure-context failure blames the link, not the capture path', () => {
+  // Nothing runs on an insecure page — Tripod Scan included, since it uploads
+  // photos to this same origin. Offering it here would be a dead end dressed
+  // up as a next step.
+  const v = probeVerdict({
+    secureContext: false, xr8Loaded: true, webxrApi: true, immersiveArAdvertised: true,
+  })
+  assert.equal(v.routeToUpload, false)
+  assert.doesNotMatch(v.detail, /Tripod Scan/)
+})

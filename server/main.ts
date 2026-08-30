@@ -16,6 +16,8 @@
  * POST /sessions/:id/keyframes         multipart { image, meta } → { ok, index }
  * POST /sessions/:id/finalize          JSON { glbFilename?, … } → session record
  * GET  /sessions/:id                   → session record
+ * GET  /sessions/:id/station-coverage  → station-dome coverage + whether it can reconstruct
+ * POST /sessions/:id/station-capture   JSON { name?, projectId?, areaId? } → 202 { sessionId, scanId, jobId, frameCount, stationCount, framesPerStation } | 422 (cannot reconstruct)
  * POST /ingest-video      multipart { video: File, name?, fps?, projectId?, areaId? } → 202 { sessionId, scanId, jobId, frameCount }
  * POST /ingest-photos     multipart { files: File[], name?, projectId?, areaId? } → 202 { sessionId, scanId, jobId, frameCount, droppedBlurry }
  * POST /upload-summary     multipart { file: File(.md) } → { filename }
@@ -84,6 +86,12 @@ import {
 import { pruneScansMissingFromDisk } from './world/world_prune.ts'
 import { runLingBotMapReconstruction } from './lingbot-map/lingbot_map.ts'
 import { runColmapPoses } from './colmap/colmap_poses.ts'
+import {
+  assessStationCoverage,
+  readStationCoverage,
+  stationCaptureBlockReason,
+  STATION_DOME_SOURCE,
+} from './capture/station_dome.ts'
 import { runSplatAlign } from './splat/splat_align.ts'
 import { runSplatTrain } from './splat/splat_train.ts'
 import { runSpirulaTrain } from './splat/spirula_train.ts'
@@ -1170,6 +1178,124 @@ app.post('/sessions/:id/finalize', async (c) => {
   return c.json(record)
 })
 
+// ── Station-dome capture — "a gimbal on a tripod, swept from several spots" ──
+//
+// The frames arrive over POST /sessions + POST /sessions/:id/keyframes like any
+// other capture; `station` rides along in the per-frame meta the keyframe route
+// already writes through to keyframes.jsonl verbatim. These two routes are the
+// only station-specific server surface: one to see coverage while the tripod is
+// still in the room, one to turn the finished session into a scan.
+// See server/capture/station_dome.ts for why station count is the number that
+// decides whether a capture can reconstruct at all.
+
+// GET /sessions/:id/station-coverage — what has been captured so far, and
+// whether it can reconstruct. Safe to poll during a capture; it reads only what
+// the keyframe route has already written.
+app.get('/sessions/:id/station-coverage', async (c) => {
+  const dir = await resolveSessionDirFor(c.req.param('id'))
+  if (!dir) return c.json({ error: 'Session not found' }, 404)
+  return c.json(assessStationCoverage(await readStationCoverage(dir)))
+})
+
+// POST /sessions/:id/station-capture   { name?, projectId?, areaId? }
+// Finishes a station-dome session: refuses a capture that cannot reconstruct,
+// otherwise registers a session-backed scan in the selected Place and queues
+// the COLMAP solve — the same session→scan→reconstruction shape /ingest-photos
+// uses, with no downstream special-casing (ADR 0001).
+//
+// COLMAP rather than lingbot-map because COLMAP is what the 36/36 measurement
+// was made with, and it is the stage that writes this scan's first real
+// geometry (_runColmapPosesJob builds the GLB from its seed cloud).
+app.post('/sessions/:id/station-capture', async (c) => {
+  const sessionId = c.req.param('id')
+  const dir = await resolveSessionDirFor(sessionId)
+  if (!dir) return c.json({ error: 'Session not found' }, 404)
+
+  let record: Record<string, unknown>
+  try {
+    record = JSON.parse(await Deno.readTextFile(`${dir}/session.json`)) as Record<string, unknown>
+  } catch {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+
+  const body = await c.req.json().catch(() => ({})) as {
+    name?: unknown
+    projectId?: unknown
+    areaId?: unknown
+  }
+  const scanName = typeof body.name === 'string' && body.name.trim().length > 0 ? body.name.trim() : null
+  const projectId = typeof body.projectId === 'string' && body.projectId.trim().length > 0 ? body.projectId.trim() : null
+  const areaId = typeof body.areaId === 'string' && body.areaId.trim().length > 0 ? body.areaId.trim() : null
+  const selectedProject = projectId ? (await loadProjects()).find(project => project.projectId === projectId) : null
+  if (projectId && !selectedProject) return c.json({ error: 'Selected Place was not found' }, 404)
+  if (areaId && !selectedProject?.areas?.some(area => area.areaId === areaId)) {
+    return c.json({ error: 'Selected Area was not found in this Place' }, 404)
+  }
+
+  // The refusal that this whole path exists for. A one-station capture is
+  // geometrically incapable of reconstruction (measured: 3 of 17 images
+  // registered), so it is stopped here — while the operator is still standing
+  // next to the tripod and moving it costs a minute — rather than twenty
+  // minutes into a COLMAP run that was never going to converge. 422, not 400:
+  // the request is well-formed, the capture is not usable.
+  const assessment = assessStationCoverage(await readStationCoverage(dir))
+  if (!assessment.ok) {
+    console.warn(`[station-capture] refused ${sessionId}: ${assessment.verdict} — ${assessment.reason}`)
+    return c.json({ error: assessment.reason, ...assessment }, 422)
+  }
+
+  const frameCount = assessment.coverage.frameCount
+  const framesPerStation = assessment.coverage.stations.map(s => s.frameCount)
+  // Written before the job is queued, on purpose: `source` is what tells the
+  // job preflight this is a station capture, and the pump can pick the job up
+  // as soon as it exists.
+  const finalized = {
+    ...record,
+    source: STATION_DOME_SOURCE,
+    keyframeCount: frameCount,
+    stationCount: assessment.coverage.stations.length,
+    framesPerStation,
+    framesWithoutStation: assessment.coverage.framesWithoutStation,
+    captureWarnings: assessment.warnings,
+    finalizedAt: new Date().toISOString(),
+  }
+  await Deno.writeTextFile(`${dir}/session.json`, JSON.stringify(finalized, null, 2))
+
+  const targetSlug = projectId ? projectWorldSlug(projectId) : 'default'
+  if (projectId) await loadProjectWorld(projectId)
+  const { world, value: { scan, job } } = await updateWorld(targetSlug, (world) => {
+    const scan = registerSessionScan(world, sessionId, scanName ?? undefined, frameCount, 'station-dome', projectId, areaId)
+    const job = createWorldJob(world, 'colmap-poses', scan.scanId, {
+      source: STATION_DOME_SOURCE,
+      projectId,
+      areaId,
+      sessionId,
+      frameCount,
+      stationCount: assessment.coverage.stations.length,
+    })
+    return { scan, job }
+  })
+  await completeJobSoon(world.shareSlug, job.jobId)
+
+  console.log(
+    `[station-capture] ${sessionId} — ${frameCount} photo(s) from ${assessment.coverage.stations.length} spot(s) ` +
+    `(${framesPerStation.join('/')}) → ${scan.scanId}`,
+  )
+  // The session really is finalized, so this reuses that event rather than
+  // minting a third ingest event. glbFilename is null because no GLB exists
+  // yet — the COLMAP job is what may write one.
+  broadcast({ type: EVENT.SESSION_FINALIZED, sessionId, keyframeCount: frameCount, glbFilename: null })
+  return c.json({
+    sessionId,
+    scanId: scan.scanId,
+    jobId: job.jobId,
+    frameCount,
+    stationCount: assessment.coverage.stations.length,
+    framesPerStation,
+    warnings: assessment.warnings,
+  }, 202)
+})
+
 // ── Video ingest — "walk the house shooting normal video" ────────────────────
 //
 // POST /ingest-video   multipart { video: File, name?, fps? }
@@ -2011,7 +2137,11 @@ function registerSessionScan(
   // 'person-capture' is a scan whose subject is a person rather than a place.
   // It shares the session-backed scan shape — a capture is still a capture —
   // but carries no place geometry, so the editor can tell the two apart.
-  source: 'video-ingest' | 'photo-ingest' | 'person-capture' = 'video-ingest',
+  // 'station-dome' is a tripod-and-gimbal capture: several dome sweeps from
+  // fixed spots, with no AR pose at all. Same session-backed shape as the
+  // ingest sources — it differs only in where the parallax came from, which
+  // matters for diagnosing a failed solve, not for anything downstream.
+  source: 'video-ingest' | 'photo-ingest' | 'person-capture' | 'station-dome' = 'video-ingest',
   projectId: string | null = null,
   areaId: string | null = null,
 ): ScanManifest {
@@ -3496,9 +3626,17 @@ async function _runPanopticLiftJob(slug: string, jobId: string): Promise<void> {
           ? `Placed ${placed} of ${seen} object segment(s) in the room` +
             `${result.medianConfidence != null ? ` (median confidence ${result.medianConfidence.toFixed(2)})` : ''}.` +
             `${(result.undeterminedCount ?? 0) > 0 ? ` ${result.undeterminedCount} could not be placed.` : ''}`
+          // The stage already worked out WHICH of the several ways to place
+          // nothing this run hit, and wrote it to `remediation` (only when
+          // nothing was placed at all — see `liftRemediation`). Reaching past
+          // that for a fixed sentence about turning on the spot was a wrong
+          // diagnosis for every other cause, and one of those causes is now
+          // fixable by the operator: a capture with a reconstructed camera
+          // track that has never been measured against a real distance.
           : `Saw ${seen} object segment(s) but could not place any of them. ` +
-            `A capture that rotates in place has almost no parallax, so depth is not recoverable from it — ` +
-            `walk the room to give the scan a baseline.`
+            (result.remediation ??
+              'Depth needs the camera to look at things from more than one spot — turning on the spot cannot ' +
+                'supply it, so walk the room to give the scan a baseline.')
         currentJob.artifacts = [{
           type: 'panoptic-lift-output',
           label: `${scan.name} placed objects`,
@@ -4233,6 +4371,11 @@ const KEYFRAME_JOB_TYPES = ['depth-reconstruct', 'lingbot-map-reconstruct', 'col
 interface JobPreflight {
   /** Whether the scan's keyframe session directory is present on disk. */
   keyframeDirExists?: boolean
+  /**
+   * Why a station-dome capture must not be reconstructed, or absent when there
+   * is no reason (including "this is not a station-dome session at all").
+   */
+  stationCaptureBlock?: string
 }
 
 /**
@@ -4252,7 +4395,14 @@ async function keyframePreflight(slug: string, jobId: string): Promise<JobPrefli
     if (!job || !KEYFRAME_JOB_TYPES.includes(job.type)) return {}
     const scan = scanForJob(job, world)
     if (!scan?.sessionId) return {}
-    return { keyframeDirExists: await resolveSessionDirFor(scan.sessionId) !== null }
+    const sessionPath = await resolveSessionDirFor(scan.sessionId)
+    if (!sessionPath) return { keyframeDirExists: false }
+    // Same gate POST /sessions/:id/station-capture applies, applied again here
+    // because a job can be re-queued by hand long after that route ran — and a
+    // degenerate capture that reaches COLMAP fails twenty confusing minutes
+    // later instead of now. A no-op for every other kind of session.
+    const stationCaptureBlock = await stationCaptureBlockReason(sessionPath)
+    return { keyframeDirExists: true, ...(stationCaptureBlock ? { stationCaptureBlock } : {}) }
   } catch {
     // A preflight hint is never worth failing a dispatch over.
     return {}
@@ -4274,6 +4424,9 @@ function jobFailureReason(job: WorldJob, world: WorldProject, preflight: JobPref
   // thing the user can actually do something about.
   if (KEYFRAME_JOB_TYPES.includes(job.type) && scan && (!scan.sessionId || preflight.keyframeDirExists === false)) {
     return `${job.type} requires RGB keyframe observations. Start keyframe streaming before export.`
+  }
+  if (KEYFRAME_JOB_TYPES.includes(job.type) && preflight.stationCaptureBlock) {
+    return preflight.stationCaptureBlock
   }
   if (job.type === 'align-scan' && world.scans.length < 2) {
     return 'align-scan needs at least two scans in the world or a manual control-point target.'
