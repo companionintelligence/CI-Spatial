@@ -99,6 +99,10 @@ export interface PreflightVerdict {
 // per-frame camera position and object depth cannot be recovered without one.
 // Every verdict this is appended to has already concluded the device cannot scan,
 // so it must not end by recommending scanning.
+/** The same next step, as a mid-sentence continuation. */
+const UPLOAD_NEXT_STEP_LOWER =
+  'use Upload Content to add a walkthrough video or photos from this Place — it rebuilds the room in 3D, though it will not catalogue objects.'
+
 const UPLOAD_NEXT_STEP =
   'Use Upload Content to add a walkthrough video or photos from this Place instead — it rebuilds the room in 3D. It will not catalogue objects: only walking the room with a phone places those, which this device cannot do.'
 
@@ -313,11 +317,23 @@ export function firstFrameVerdict(obs: FirstFrameObservation): PreflightVerdict 
   if (!obs.sawCameraFrame) {
     const seconds = Math.round(timeoutMs / 1000)
     return {
-      outcome: 'unavailable',
-      headline: 'No camera frames from AR',
-      detail: `The AR engine reported ready but has produced no camera frame in ${seconds} seconds, so there is nothing to scan and nothing to track. This device cannot run the live scanner. ${UPLOAD_NEXT_STEP}`,
-      canScan: false,
-      routeToUpload: true,
+      // NOT 'unavailable', and no longer "this device cannot run the live
+      // scanner". That was a permanent claim about hardware drawn from a
+      // five-second sample, and it is measurably wrong: the same XREAL Beam Pro
+      // it condemned reached trackingStatus NORMAL with a pose 2.37 s after
+      // start on a later attempt. The failure is intermittent — roughly two
+      // starts in eight — and correlates with the orientation getUserMedia
+      // happens to return, not with the device's capability.
+      //
+      // So this reports what actually happened, once, and offers the two things
+      // that work: try again, or upload. `canScan` stays true because the
+      // capture rail must not be dead on a device that succeeds one attempt in
+      // four — the failure here is the start, not the hardware.
+      outcome: 'degraded',
+      headline: 'AR did not start this time',
+      detail: `The camera opened but the AR engine sent no frame in ${seconds} seconds, so there is nothing to track yet. This often clears on a second try. If it keeps happening, ${UPLOAD_NEXT_STEP_LOWER}`,
+      canScan: true,
+      routeToUpload: false,
       caveat: true,
     }
   }

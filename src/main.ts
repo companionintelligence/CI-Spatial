@@ -1283,7 +1283,7 @@ async function main() {
       arHelp.textContent = verdict.detail
       arHelp.hidden = false
     }
-    showPermissionBanner(verdict.detail)
+    showPermissionBanner(verdict.detail, verdict.headline)
     // Caught live 2026-08-26 on an XREAL companion device: navigator.xr
     // reported immersive-ar supported, but requestSession() rejected with
     // "The specified session configuration is not supported" because the
@@ -2704,7 +2704,7 @@ function applyPreflightVerdict(
   // must survive the next 750 ms of scanner-tick chatter.
   overlay.setStatus(verdict.headline, 'sticky')
   if (verdict.routeToUpload) {
-    showPermissionBanner(verdict.detail)
+    showPermissionBanner(verdict.detail, verdict.headline)
     preflightBannerShown = true
   }
 }
@@ -3100,11 +3100,21 @@ async function initDrawerGeoMap(fix: GeoFix | null): Promise<void> {
   }
 }
 
-function showPermissionBanner(message: string): void {
+/**
+ * @param title Heading. Defaults to the permission wording because the original
+ *   callers ARE permission denials — but this banner is also the surface for
+ *   preflight verdicts, and a device that granted the camera and then produced
+ *   no frame was being told "Permission Access Required". That sends someone to
+ *   Settings to fix something that is not broken: `Camera status: hasStream`
+ *   succeeded on every one of those runs.
+ */
+function showPermissionBanner(message: string, title = 'Permission Access Required'): void {
   const banner = document.getElementById('permission-error-banner')
   const msgEl = document.getElementById('permission-error-msg')
+  const titleEl = document.getElementById('permission-error-title')
   if (banner && msgEl) {
     msgEl.textContent = message
+    if (titleEl) titleEl.textContent = title
     banner.style.display = 'block'
   }
 }

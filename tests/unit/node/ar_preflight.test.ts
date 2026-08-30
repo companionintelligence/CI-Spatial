@@ -148,21 +148,27 @@ test('the grace window is the provider\'s existing 5 s pose timer', () => {
     firstFrameVerdict({ sawCameraFrame: false, sawPose: false, elapsedMs: 4_999 }).outcome,
     'warming-up',
   )
+  // Past the window is 'degraded', not 'unavailable': see the no-frame test below.
   assert.equal(
     firstFrameVerdict({ sawCameraFrame: false, sawPose: false, elapsedMs: 5_000 }).outcome,
-    'unavailable',
+    'degraded',
   )
 })
 
-test('no camera frame past the window is "never" — the dead 8th Wall pipeline', () => {
-  // The Beam Pro signature: engine ready, camera track acquired, and the aspect
-  // diagnostic reading `frame: "unreported"` because the videoWidth hook never
-  // fired. Nothing about walking the room produces a frame.
+test('no camera frame past the window is "not this time", NOT "never"', () => {
+  // This test used to assert the opposite, and was wrong. The Beam Pro signature
+  // — engine ready, camera track acquired, aspect diagnostic reading
+  // `frame: "unreported"` — was read as proof the device could never scan. It is
+  // not: the same device later reached trackingStatus NORMAL with a pose 2.37 s
+  // after start. The failure is intermittent, about two starts in eight, and
+  // correlates with the orientation getUserMedia returns rather than with the
+  // hardware. A five-second sample cannot support a permanent claim.
   const v = firstFrameVerdict({ sawCameraFrame: false, sawPose: false, elapsedMs: 6_000 })
-  assert.equal(v.outcome, 'unavailable')
-  assert.equal(v.canScan, false)
-  assert.equal(v.routeToUpload, true)
-  assert.match(v.detail, /Upload Content/)
+  assert.equal(v.outcome, 'degraded')
+  assert.equal(v.canScan, true, 'the capture rail must stay live on a device that succeeds 1 in 4')
+  assert.equal(v.routeToUpload, false, 'do not push someone away from a scanner that may work on retry')
+  assert.doesNotMatch(v.detail, /cannot run the live scanner/, 'no permanent claim from one sample')
+  assert.match(v.detail, /second try|try again|again/i, 'retrying is the thing that actually works here')
 })
 
 test('frames but no pose is "not yet, and here is why" — fixable in the room', () => {
@@ -195,7 +201,7 @@ test('a pose without a reported frame size still counts as ready', () => {
 test('the grace window is overridable, so callers with a different timer agree', () => {
   assert.equal(
     firstFrameVerdict({ sawCameraFrame: false, sawPose: false, elapsedMs: 3_000, timeoutMs: 2_000 }).outcome,
-    'unavailable',
+    'degraded',
   )
 })
 
@@ -229,7 +235,8 @@ test('every verdict that cannot scan is worth reading', () => {
     probeVerdict({ secureContext: true, xr8Loaded: false, webxrApi: false, immersiveArAdvertised: false }),
     probeVerdict({ secureContext: true, xr8Loaded: false, webxrApi: true, immersiveArAdvertised: false }),
     startFailureVerdict(new Error('boom')),
-    firstFrameVerdict({ sawCameraFrame: false, sawPose: false, elapsedMs: 9_000 }),
+    // firstFrameVerdict is deliberately absent: a missing first frame is no longer
+    // a dead end, because it clears on retry on real hardware.
   ]
   for (const v of cannotScan) {
     assert.equal(v.canScan, false)
