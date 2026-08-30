@@ -1580,18 +1580,6 @@
       /* Reveals the methods that were not recommended. They are real paths, so
          they stay reachable — they are just not a choice anyone is made to
          make before they have said what they are capturing. */
-      #capture-more {
-        border: none;
-        background: none;
-        padding: 4px;
-        color: var(--ci-muted);
-        font-size: 12px;
-        font-weight: 700;
-        text-decoration: underline;
-        text-underline-offset: 3px;
-        cursor: pointer;
-        -webkit-tap-highlight-color: transparent;
-      }
 
       /* Why the recommended method is the recommended one, when that is worth
          a sentence. Hidden whenever it is not — this screen has a word budget
@@ -1644,7 +1632,7 @@
       }
 
       /* A card that is not the recommended method is out of the way until the
-         "Other ways" toggle asks for it. `hidden` alone cannot do this: the
+         the recommendation changes. `hidden` alone cannot do this: the
          `display: flex` above outranks the UA stylesheet's [hidden] rule. */
       .start-path[hidden] { display: none; }
 
@@ -2485,7 +2473,7 @@
         </button>
 
         <!-- The upload path. Ships `hidden`: it is a real method and stays
-             reachable behind "Other ways", but three cards named after the
+             all shown at once, but three cards named after the
              machinery behind them was the screen this replaced, and the copy
              here is written per subject by renderCaptureChoice() — filming a
              room and photographing a chair are not the same instruction.
@@ -2545,7 +2533,6 @@
            and is unhidden by renderCaptureChoice() once it knows there is
            something behind it — a toggle that reveals nothing is worse than no
            toggle. -->
-      <button id="capture-more" type="button" hidden aria-expanded="false">Other ways</button>
 
       <!-- Why this method and not a better one, when that is worth saying.
            Written by renderCaptureChoice() from the resolver's note. -->

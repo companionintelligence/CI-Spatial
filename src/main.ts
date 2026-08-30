@@ -199,7 +199,6 @@ let captureDevice: DeviceCapture = {
 }
 
 /** Whether the methods that were not recommended are on screen. */
-let captureMoreOpen = false
 
 function poseIsFinite(pose: Pose): boolean {
   return Number.isFinite(pose.position.x)
@@ -2810,8 +2809,8 @@ function renderCaptureChoice(): void {
     const plan = byControl.get(id)
     if (!plan) {
       // Not merely un-recommended: this one cannot run here at all, so it is
-      // not behind "Other ways" either. An alternative that dead-ends is worse
-      // than no alternative.
+      // not merely un-recommended, so it is not shown at all. An alternative
+      // that dead-ends is worse than no alternative.
       el.hidden = true
       el.dataset.recommended = 'false'
       continue
@@ -2826,15 +2825,7 @@ function renderCaptureChoice(): void {
     if (sub) sub.textContent = `${plan.action} ${plan.result}`
     el.setAttribute('aria-label', `${plan.title} — ${plan.action} ${plan.result}`)
     el.dataset.recommended = String(isBest)
-    el.hidden = !isBest && !captureMoreOpen
-  }
-
-  const more = document.getElementById('capture-more') as HTMLButtonElement | null
-  if (more) {
-    // A toggle that reveals nothing is worse than no toggle.
-    more.hidden = alternatives === 0
-    more.textContent = captureMoreOpen ? 'Fewer ways' : 'Other ways'
-    more.setAttribute('aria-expanded', String(captureMoreOpen))
+    el.hidden = false
   }
 
   const note = document.getElementById('capture-note')
@@ -2858,7 +2849,7 @@ function setCaptureDevice(next: Partial<DeviceCapture>): void {
 }
 
 /**
- * Wire the subject question and the "Other ways" disclosure.
+ * Wire the subject question and the capture-method list.
  *
  * Called at the top of main(), beside the two paths that need no AR runtime,
  * so the screen is answerable on the devices where the boot below gives up —
@@ -2873,15 +2864,9 @@ function mountCaptureIntent(): void {
       captureSubject = subject
       // The list was opened about the previous subject; leaving it open would
       // show a set of methods answering a question that has changed.
-      captureMoreOpen = false
       renderCaptureChoice()
     })
   }
-
-  document.getElementById('capture-more')?.addEventListener('click', () => {
-    captureMoreOpen = !captureMoreOpen
-    renderCaptureChoice()
-  })
 
   renderCaptureChoice()
 }
