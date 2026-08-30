@@ -131,10 +131,12 @@ export interface CaptureRecommendation {
 export const SUBJECT_QUESTION = 'What are you capturing?'
 
 export const SUBJECT_CHOICES: ReadonlyArray<{ subject: CaptureSubject, label: string }> = [
-  { subject: 'room', label: 'A room' },
-  { subject: 'place', label: 'Whole place' },
-  { subject: 'object', label: 'An object' },
-  { subject: 'person', label: 'A person' },
+  { subject: 'room', label: 'Room' },
+  // The key stays 'place': it maps to the Place/WorldProject domain concept the
+  // rest of the app is built on (ADR 0001). Only the label is a building.
+  { subject: 'place', label: 'Building' },
+  { subject: 'object', label: 'Object' },
+  { subject: 'person', label: 'Person' },
 ]
 
 /**
@@ -185,9 +187,9 @@ const COPY: Record<CaptureMethod, Record<CaptureSubject, { title: string, action
       result: 'A 3D map at true size, with things placed as you go.',
     },
     place: {
-      title: 'Walk the place',
+      title: 'Walk the building',
       action: 'Hold your phone up and walk from room to room.',
-      result: 'One 3D map of the whole place at true size, things placed.',
+      result: 'One 3D map of the whole building at true size, things placed.',
     },
     object: {
       title: 'Walk around it',
@@ -210,9 +212,9 @@ const COPY: Record<CaptureMethod, Record<CaptureSubject, { title: string, action
       result: 'A 3D map at true size, with things placed as you go.',
     },
     place: {
-      title: 'Walk the place',
+      title: 'Walk the building',
       action: 'Hold your phone up and walk from room to room.',
-      result: 'One 3D map of the whole place at true size, things placed.',
+      result: 'One 3D map of the whole building at true size, things placed.',
     },
     object: {
       title: 'Walk around it',
@@ -257,7 +259,7 @@ const COPY: Record<CaptureMethod, Record<CaptureSubject, { title: string, action
     place: {
       title: 'Film a walkthrough',
       action: 'Film as you walk from room to room, then hand it over.',
-      result: 'The place in 3D — nothing catalogued, size is not measured.',
+      result: 'The building in 3D — nothing catalogued, size is not measured.',
     },
     object: {
       title: 'Film it',
@@ -278,8 +280,8 @@ const COPY: Record<CaptureMethod, Record<CaptureSubject, { title: string, action
     },
     place: {
       title: 'Hand over photos',
-      action: 'Photos taken all through the place, several from each room.',
-      result: 'The place in 3D — nothing catalogued, size is not measured.',
+      action: 'Photos taken all through the building, several from each room.',
+      result: 'The building in 3D — nothing catalogued, size is not measured.',
     },
     object: {
       title: 'Photograph it',
