@@ -1244,10 +1244,15 @@
           linear-gradient(180deg, rgba(8,28,38,0.92), rgba(4,22,32,0.97)),
           repeating-linear-gradient(90deg, rgba(114,221,212,0.08) 0 1px, transparent 1px 14px);
         backdrop-filter: blur(10px);
+        /* The bottom carries an extra 30vh so the centred stack sits 15vh above
+           the middle. Folded into the shorthand rather than declared separately,
+           because a later `padding:` would reset a standalone padding-bottom.
+           `safe center` still governs, so a short screen falls back to the top
+           edge instead of pushing the title off it. */
         padding:
           max(18px, env(safe-area-inset-top))
           max(18px, env(safe-area-inset-right))
-          max(18px, env(safe-area-inset-bottom))
+          calc(30vh + max(18px, env(safe-area-inset-bottom)))
           max(18px, env(safe-area-inset-left));
       }
 
