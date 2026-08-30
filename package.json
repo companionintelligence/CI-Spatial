@@ -25,7 +25,7 @@
     "test:ar:preflight": "node --experimental-strip-types --no-warnings --test tests/unit/node/ar_preflight.test.ts",
     "test:scan:lighting": "node --experimental-strip-types --no-warnings --test tests/unit/node/scan_lighting.test.ts",
     "preview": "vite preview --host",
-    "server": "deno run --watch --allow-net --allow-read --allow-write --allow-env --allow-ffi --allow-run server/main.ts",
+    "server": "deno run --env-file --watch --allow-net --allow-read --allow-write --allow-env --allow-ffi --allow-run server/main.ts",
     "start": "concurrently --raw --names \"infer,vite\" -c \"cyan,green\" \"npm run server\" \"npm run dev\"",
     "gen-icons": "node scripts/generate-icons.mjs",
     "prepare": "git config core.hooksPath .githooks",
