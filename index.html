@@ -1815,6 +1815,31 @@
         font-weight: 700;
       }
       .tripod-tally b { color: #72ddd4; }
+      /* What the phone can see, while it is looking. Sized so the whole sheet
+         still fits a 375x812 viewport with the step, the guidance and the
+         buttons — the preview is a confidence check that the lens is pointed
+         at the room, not the subject of this screen, so it is deliberately
+         small and deliberately never the thing you scroll to. */
+      .tripod-camera {
+        margin: 0 0 10px;
+      }
+      .tripod-camera[hidden] { display: none; }
+      #tripod-preview {
+        display: block;
+        width: 100%;
+        max-height: 30vh;
+        aspect-ratio: 16 / 9;
+        object-fit: cover;
+        border-radius: 8px;
+        border: 1px solid rgba(114, 221, 212, 0.35);
+        background: #000;
+      }
+      .tripod-camera-line {
+        margin: 6px 0 0;
+        font-size: 12px;
+        line-height: 1.4;
+        color: #72ddd4;
+      }
       /* Full-width actions that belong to the step being read, not to the
          modal — "add this spot's photos" and "send the capture" are things you
          do to the thing above them, so they sit in the body rather than in the
