@@ -48,7 +48,28 @@
  * metric pose by definition (that is what COLMAP is being asked to produce), so
  * the server has no positions to test. It is stated in the operator guidance
  * instead of silently assumed.
+ *
+ * ── The station index is a claim, and claims get checked ───────────────────
+ *
+ * Everything above counts stations the capture tool *declared*. On 2026-08-30
+ * a real rig swept the same six columns twice without the tripod being moved,
+ * declared two stations, and was accepted here with nothing worse than a "5
+ * spots would be better" warning; the solve then reported 12/12 registered and
+ * the capture was only stopped, twenty minutes later, by the known-distance
+ * tier noticing the two spots had landed 0.106 apart while the frames of one
+ * spot scattered 5.19. So this module no longer says movement happened just
+ * because two numbers appeared in the uploads: `station_movement.ts` measures
+ * it — from the photographs at upload time, and from the solve's own verdict
+ * once there is one — and {@link assessStationCoverage} says which of those it
+ * has (ADR 0005 rule 3: a status claiming verification needs a measurement).
  */
+
+import {
+  measureSweepSeparation,
+  readSolvedSeparation,
+  UNCHECKED_SEPARATION,
+  type SweepSeparation,
+} from './station_movement.ts'
 
 /** `session.json`'s `source` for a capture built this way. */
 export const STATION_DOME_SOURCE = 'station-dome'
@@ -90,6 +111,13 @@ export interface StationCoverage {
   malformedLines: number
   /** Ascending by station index. */
   stations: StationSummary[]
+  /**
+   * Whether the tripod is known to have moved between the declared spots, and
+   * on what evidence. `'not-checked'` whenever the coverage was summarized from
+   * JSONL alone — {@link readStationCoverage} is what has a session directory
+   * to measure in.
+   */
+  movement: SweepSeparation
 }
 
 export type StationVerdict =
@@ -97,6 +125,12 @@ export type StationVerdict =
   | 'ready'
   /** One station: pure rotation, geometrically incapable of reconstruction. */
   | 'single-station'
+  /**
+   * Several stations were declared, and something measured them landing on top
+   * of each other — the tripod did not move. Only ever returned on a
+   * measurement, never on the declaration alone.
+   */
+  | 'stations-not-separated'
   /** Frames exist but none says which station it came from. */
   | 'unlabelled'
   /** No frames at all. */
@@ -118,6 +152,8 @@ export interface StationAssessment {
 interface RawFrame {
   station: number | null
   pan: number | null
+  /** The image on disk, when the record names one. */
+  file: string | null
 }
 
 function asFiniteNumber(value: unknown): number | null {
@@ -146,8 +182,12 @@ export function panSpreadDegrees(pans: number[]): number | null {
   return Math.round(spread * 10) / 10
 }
 
-/** Parse a keyframes.jsonl body into per-station coverage. */
-export function summarizeStationCoverage(jsonl: string): StationCoverage {
+/**
+ * The frames, as read once. Callers that need both the counts and the image
+ * filenames (`readStationCoverage` needs both, to summarize and to measure)
+ * parse the JSONL a single time through this.
+ */
+function parseFrames(jsonl: string): { frames: RawFrame[]; malformedLines: number } {
   const frames: RawFrame[] = []
   let malformedLines = 0
 
@@ -173,8 +213,38 @@ export function summarizeStationCoverage(jsonl: string): StationCoverage {
     const station = typeof stationRaw === 'number' && Number.isInteger(stationRaw) && stationRaw >= 0
       ? stationRaw
       : null
-    frames.push({ station, pan: asFiniteNumber(meta['pan']) })
+    const fileRaw = meta['file']
+    frames.push({
+      station,
+      pan: asFiniteNumber(meta['pan']),
+      file: typeof fileRaw === 'string' && fileRaw.length > 0 ? fileRaw : null,
+    })
   }
+
+  return { frames, malformedLines }
+}
+
+/** Image filenames per declared station, in capture order. */
+function stationFiles(frames: RawFrame[]): Map<number, string[]> {
+  const byStation = new Map<number, string[]>()
+  for (const frame of frames) {
+    if (frame.station === null || frame.file === null) continue
+    const files = byStation.get(frame.station) ?? []
+    files.push(frame.file)
+    byStation.set(frame.station, files)
+  }
+  return byStation
+}
+
+/**
+ * Parse a keyframes.jsonl body into per-station coverage.
+ *
+ * `movement` comes back `'not-checked'`: this function has a string, not a
+ * session directory, so it has no photographs to compare and says so rather
+ * than leaving the field to be read as an absence of trouble.
+ */
+export function summarizeStationCoverage(jsonl: string): StationCoverage {
+  const { frames, malformedLines } = parseFrames(jsonl)
 
   const byStation = new Map<number, number[]>()
   let framesWithoutStation = 0
@@ -210,6 +280,7 @@ export function summarizeStationCoverage(jsonl: string): StationCoverage {
     framesWithoutStation,
     malformedLines,
     stations,
+    movement: UNCHECKED_SEPARATION,
   }
 }
 
@@ -285,6 +356,57 @@ export function assessStationCoverage(coverage: StationCoverage): StationAssessm
     }
   }
 
+  // Declared stations are now a claim with evidence behind it, or a claim
+  // marked as one. The two sources are deliberately ranked: a solve has
+  // measured the geometry, so its verdict refuses; the photographic check is
+  // calibrated on two runs in one room, so it warns loudly and lets the capture
+  // through. A wrong accusation strands an operator who did move the tripod,
+  // with nothing to appeal to — and this gate is not the last line of defence:
+  // the known-distance tier still refuses a size the frames cannot support.
+  const movement = coverage.movement
+  const solved = movement.solved
+  if (solved?.known && solved.moved === false) {
+    const measured = solved.separation !== undefined && solved.withinSpotSpread !== undefined
+      ? ` — it put them ${solved.separation.toFixed(2)} apart, while the photos of a single spot are ` +
+        `spread ${solved.withinSpotSpread.toFixed(2)} across`
+      : ''
+    return {
+      ok: false,
+      verdict: 'stations-not-separated',
+      reason:
+        `The scan measured these ${stationCount} spot(s) as being in the same place${measured}. The ` +
+        'camera never really moved between them, so there is nothing for the scan to measure depth ' +
+        'against and any size it reported would be invented.',
+      remediation:
+        'Sweep again from spots a couple of metres apart — carrying the tripod between sweeps is what ' +
+        `gives the scan its depth. ${MEASURED_GOOD_STATIONS} spots spread around the room (roughly a ` +
+        'ring plus one in the middle) is what measured a clean result: 36 of 36 photos placed.',
+      warnings,
+      coverage,
+    }
+  }
+
+  const sameSpot = movement.status === 'measured'
+    ? movement.pairs.filter((p) => p.verdict === 'same-spot-suspected')
+    : []
+  for (const pair of sameSpot) {
+    const times = pair.ratio > 0 ? (1 / pair.ratio).toFixed(1) : 'many'
+    warnings.push(
+      `Spots ${pair.a} and ${pair.b} photographed almost the same view: their photos differ ${times}x ` +
+      `less than two neighbouring photos of one sweep do (${pair.differenceLevels} against ` +
+      `${pair.sceneContrastLevels} of 255 brightness levels). If the tripod did not really move between ` +
+      'those two spots, this scan cannot work out depth and any size it reports will be wrong — check ' +
+      'that it moved, and if it did not, sweep again from a spot a couple of metres away.',
+    )
+  }
+
+  if (movement.status === 'skipped' && movement.note) {
+    warnings.push(
+      `Whether the camera really moved between the spots could not be checked (${movement.note}), so ` +
+      'that has been taken on trust.',
+    )
+  }
+
   if (stationCount < MEASURED_GOOD_STATIONS) {
     warnings.push(
       `${stationCount} spots is enough to try, but ${MEASURED_GOOD_STATIONS} spread around the room is ` +
@@ -309,12 +431,39 @@ export function assessStationCoverage(coverage: StationCoverage): StationAssessm
     )
   }
 
+  // The sentence this used to end on was "enough movement between spots for the
+  // scan to measure depth" — a claim about the tripod, made from a number the
+  // uploader typed. RUN A earned that sentence without the tripod ever leaving
+  // the spot. What is said now is exactly what is known, in each of the three
+  // cases it can be in.
+  const head = `${coverage.frameCount} photo(s) from ${stationCount} spot(s)`
+  const reason = solved?.known && solved.moved
+    ? `${head}, and the finished scan measured the camera really moving between them — this capture ` +
+      'can measure depth.'
+    : sameSpot.length > 0
+    ? `${head}, but ${sameSpot.length === 1 ? 'two of them' : 'some of them'} photographed almost the ` +
+      'same view, so the tripod may never have been moved — this scan can only measure depth if it was.'
+    // Measured on photographs, not geometry — so this branch reports what was
+    // seen and stops there. The same check hedges when it accuses ("may never
+    // have been moved"); hedging only in that direction and asserting the move
+    // as fact in this one would be the asymmetry this repo keeps having to fix,
+    // pointed the usual way: certain about the good news, careful about the bad.
+    // The pixel test is calibrated on two runs in one room and is explicitly not
+    // proof (see `station_movement.ts`); the solve above is, and it has its own
+    // branch. What is known here is that the views differ, which is what a real
+    // move looks like.
+    : movement.status === 'measured'
+    ? `${head}, and each spot photographed a visibly different view — which is what a real move ` +
+      'between spots looks like, and that move is what lets the scan measure depth. The finished ' +
+      'scan is what confirms it.'
+    : `${head} in the room. Nothing here has checked that the camera really moved between those spots, ` +
+      'and that move is the whole reason the scan can measure depth — so make sure the tripod was ' +
+      'carried between sweeps.'
+
   return {
     ok: true,
     verdict: 'ready',
-    reason:
-      `${coverage.frameCount} photo(s) from ${stationCount} spot(s) in the room — enough movement ` +
-      'between spots for the scan to measure depth.',
+    reason,
     remediation: null,
     warnings,
     coverage,
@@ -331,6 +480,15 @@ export function isStationDomeSession(record: unknown): boolean {
  * Read one session's keyframes.jsonl and summarize it. A missing or unreadable
  * file is empty coverage, not a throw — `assessStationCoverage` already has a
  * verdict for empty, and it is a better message than a filesystem error.
+ *
+ * Unlike {@link summarizeStationCoverage} this has the session directory, so it
+ * also fills in `movement`: the photographs of each declared spot are compared
+ * against each other, and any verdict a solve has already published for this
+ * exact set of frames is read back. Both are bounded and cached in
+ * `station_movement.ts` — the coverage route is pollable during a capture, and
+ * this must not turn a poll into a pile of JPEG decodes. Either check being
+ * unavailable is a `skipped`/`not-checked` movement, never a throw: the whole
+ * assessment still works without them, with one fewer thing measured.
  */
 export async function readStationCoverage(sessionPath: string): Promise<StationCoverage> {
   let jsonl = ''
@@ -339,7 +497,30 @@ export async function readStationCoverage(sessionPath: string): Promise<StationC
   } catch {
     // No frames posted yet.
   }
-  return summarizeStationCoverage(jsonl)
+  const { frames } = parseFrames(jsonl)
+  const coverage = summarizeStationCoverage(jsonl)
+  if (coverage.stations.length < MIN_STATIONS) return coverage
+
+  let movement = UNCHECKED_SEPARATION
+  try {
+    movement = await measureSweepSeparation(sessionPath, stationFiles(frames))
+  } catch (err) {
+    movement = {
+      ...UNCHECKED_SEPARATION,
+      status: 'skipped',
+      note: `the photos could not be compared (${err instanceof Error ? err.message : String(err)})`,
+      remediation:
+        'Whether the camera really moved between spots could not be checked from the photos; the scan ' +
+        'will still run.',
+    }
+  }
+  try {
+    const solved = await readSolvedSeparation(sessionPath, coverage.frameCount)
+    if (solved.known) movement = { ...movement, solved }
+  } catch {
+    // A solve verdict is a bonus, never a precondition.
+  }
+  return { ...coverage, movement }
 }
 
 /**

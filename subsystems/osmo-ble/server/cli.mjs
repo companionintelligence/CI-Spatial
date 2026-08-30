@@ -131,7 +131,14 @@ Automated capture:
        [--pans 120,145,170] [--tilts -25,0]
                                           Explicit columns/rows instead. Any pan in the dead
                                           zone is refused, not attempted.
-       [--device-url URL] [--device-token TOK]   (default: ANDROID_MCP_URL / ANDROID_MCP_TOKEN)
+       [--device NAME]                    Which phone to drive, by its .mcp.json name (e.g.
+                                          beam-pro-1). Only needed when more than one device
+                                          has its token set; otherwise ANDROID_MCP_DEVICE or
+                                          the single configured device is used.
+       [--device-url URL] [--device-token TOK]   Override the resolved device outright. Default:
+                                          URL from .mcp.json's android-<device> entry (or
+                                          ANDROID_MCP_URL), token from that device's own
+                                          ANDROID_MCP_TOKEN_<DEVICE>.
        [--out DIR]                        Download the photos here (default: ./grid-<timestamp>)
                                           One subdirectory per station, plus a manifest.json
                                           rewritten as each frame lands — stop after 3 of 5
@@ -420,6 +427,7 @@ async function main() {
             tilts,
             stations: stationsPlanned,
             ...(stationLabels ? { stationLabels } : {}),
+            device: flags.device,
             deviceUrl: flags['device-url'],
             deviceToken: flags['device-token'],
             toleranceDeg: flags.tolerance ? Number(flags.tolerance) : undefined,

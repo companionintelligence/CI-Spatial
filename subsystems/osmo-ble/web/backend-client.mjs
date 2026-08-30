@@ -151,7 +151,10 @@ async function api(method, path, body) {
     throw new Error(`Can't reach ${baseUrl()} — is the backend running? Start it with "npm run backend" in a terminal.`);
   }
   const json = await res.json();
-  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+  // The backend's refusals carry a `remediation` — which column is in the dead zone, which
+  // ANDROID_MCP_TOKEN_* to set — and dropping it here left the UI showing a problem with no
+  // fix attached. Same shape the CLI already prints.
+  if (!res.ok) throw new Error([json.error || `HTTP ${res.status}`, json.remediation].filter(Boolean).join(' — '));
   return json;
 }
 

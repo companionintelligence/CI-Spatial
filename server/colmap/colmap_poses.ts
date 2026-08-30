@@ -46,6 +46,16 @@ import {
 } from './colmap_model.ts'
 import type { ColmapPosesManifest } from '../../src/world/manifests.ts'
 import type { ScanReviewStatus } from '../../src/world/types.ts'
+// The station grouping and the camera-centre conversion are both already
+// written and already tested elsewhere; per ADR 0001 this reads them rather
+// than re-deriving either. `viewpointsFromKeyframes` is the one place that
+// turns `station` labels into groups of keyframes, and `openCvW2cToC2w` +
+// `sfmCentresFromPoses` are the audited world-to-camera inverse — the
+// translation column of `cameraToWorld` is NOT the camera centre, and reading
+// it directly gives a plausible, wrong answer.
+import { viewpointsFromKeyframes, type Viewpoint } from '../capture/known_distance.ts'
+import { openCvW2cToC2w, readKeyframes } from '../splat/splat_train_dataset.ts'
+import { sfmCentresFromPoses, type Vec3Tuple } from '../splat/splat_align.ts'
 
 export interface ColmapPosesRunOptions {
   /** Absolute path to the session directory (scans/sessions/<id>). */
@@ -89,7 +99,53 @@ export interface ColmapPosesRunOptions {
 export type ColmapPosesStatus = 'ok' | 'skipped' | 'error'
 
 /** Why a solve was judged degenerate. Codes, so a caller can branch without parsing prose. */
-export type ColmapQualityReason = 'low-registration-ratio' | 'too-few-points'
+export type ColmapQualityReason =
+  | 'low-registration-ratio'
+  | 'too-few-points'
+  /** The spots the camera shot from did not come out apart — see {@link StationBaseline}. */
+  | 'no-station-baseline'
+
+/**
+ * How far the camera actually travelled between the spots it shot from,
+ * measured against how much it wobbled at a single spot.
+ *
+ * Why this exists at all: registration ratio and point count cannot see a
+ * missing baseline. Measured on a real gimbal-on-a-tripod dome, 2026-08-30,
+ * two 12-photo captures of the same room through the same 6 columns:
+ *
+ *                          within-spot spread   spot separation   ratio
+ *   RUN A (tripod NOT moved)   5.19 / 5.01           0.106        0.020
+ *   RUN B (tripod moved 1.8m)  0.069 / 0.139         9.863        70.9
+ *
+ * RUN A reported 12/12 registered, 4410 points, registrationRatio 1.000 and
+ * `degenerate: false` — a "ready" verdict on a capture that cannot support a
+ * metric reconstruction at all, because every photo was taken from one point in
+ * space. Both existing gates are blind to that by construction: they count how
+ * many frames were placed and how much structure was triangulated, and a
+ * rotation-only capture can score perfectly on both.
+ *
+ * The measurement that does separate them is the one below. It is scale-free
+ * (a ratio of two lengths in the same arbitrary solve units), so it needs no
+ * metre stick and no calibration — which matters, because this runs before
+ * anything has been sized.
+ */
+export interface StationBaseline {
+  /** Spots ("stations") the solve actually placed at least one camera at. */
+  stationCount: number
+  /** Solved cameras backing those spots. */
+  placedFrameCount: number
+  /** Smallest distance between two spot centroids, in solve units. */
+  minSeparation: number
+  /** Largest RMS scatter of one spot's cameras about that spot's own centroid. */
+  maxSpread: number
+  /**
+   * `minSeparation / maxSpread`. Null — not Infinity — when every spot rests on
+   * a single camera and there is therefore no scatter to compare against:
+   * `JSON.stringify(Infinity)` is `null` anyway, and a field that means "not
+   * measurable" should say so rather than arrive as a mangled number.
+   */
+  separationRatio: number | null
+}
 
 /**
  * How good the solve that just succeeded actually is.
@@ -124,6 +180,14 @@ export interface ColmapReconstructionQuality {
   degenerate: boolean
   status: ScanReviewStatus
   reasons: ColmapQualityReason[]
+  /**
+   * The baseline measurement, when this capture was one that HAS spots to
+   * measure between (a tripod/station capture with at least two of them
+   * placed). Absent on a walkthrough, where there are no repeated fixed spots
+   * and the question is not asked — absent means "not measurable here", never
+   * "measured and fine". ADR 0005 rule 3: the verdict carries its measurement.
+   */
+  baseline?: StationBaseline
   /** What the verdict was measured against, so a manifest explains its own verdict. */
   thresholds: ColmapQualityThresholds
 }
@@ -131,6 +195,7 @@ export interface ColmapReconstructionQuality {
 export interface ColmapQualityThresholds {
   minRegistrationRatio: number
   minPoints3D: number
+  minStationSeparationRatio: number
 }
 
 /**
@@ -149,6 +214,15 @@ export type ColmapPosesManifestWithQuality = ColmapPosesManifest & {
   glbPath?: string
   /** Why the GLB was not built, when a build was asked for and failed. */
   glbError?: string
+  /**
+   * {@link frameFingerprint} of the keyframes this solve was computed from.
+   * Two manifests with different fingerprints describe different captures —
+   * which is how the identical-answer replay described in `runColmapPoses`
+   * would have been visible the first time instead of the third.
+   */
+  inputFingerprint?: string
+  /** Whether an existing `colmap-work/` was kept (same frames) or rebuilt. */
+  reusedWorkspace?: boolean
 }
 
 export interface ColmapPosesResult {
@@ -285,11 +359,144 @@ export const DEFAULT_MIN_REGISTRATION_RATIO = 0.6
  */
 export const DEFAULT_MIN_POINTS_3D = 100
 
+/**
+ * How far apart the spots must come out, as a multiple of one spot's own scatter.
+ *
+ * Chosen from the two real dome captures in {@link StationBaseline}, not from
+ * intuition. In solve units:
+ *
+ *   RUN A  tripod NOT moved   separation 0.106,  worst spread 5.19  → ratio 0.020
+ *   RUN B  tripod moved 1.8m  separation 9.863,  worst spread 0.139 → ratio 70.9
+ *
+ * The two runs sit on opposite sides of 1 by a factor of ~50 each way, and 1 is
+ * where the ratio *means* something rather than merely separating the data: at
+ * exactly 1 the gap between two spots is the same size as the slop within one
+ * spot, so below it the solve cannot tell the spots apart from noise, and the
+ * second sweep adds nothing the first did not already have. Anywhere in
+ * (0.02, 70) separates these two captures equally well, so — as with
+ * DEFAULT_MIN_REGISTRATION_RATIO — the number is picked on meaning and left
+ * overridable (COLMAP_MIN_STATION_SEPARATION_RATIO) rather than fitted to two
+ * points, per ADR 0005 rule 5.
+ *
+ * Deliberately NOT a bar on solve quality: RUN B is a weak capture (9 of 12
+ * registered, 372 points — a real room has blank walls, unlike the 36/36,
+ * 9,914-point synthetic fixture) and it clears this by two orders of magnitude,
+ * because the question asked here is only "did the tripod move", which is
+ * independent of how well the room photographed.
+ */
+export const DEFAULT_MIN_STATION_SEPARATION_RATIO = 1
+
 export function resolveQualityThresholds(): ColmapQualityThresholds {
   return {
     minRegistrationRatio: numFromEnv('COLMAP_MIN_REGISTRATION_RATIO', DEFAULT_MIN_REGISTRATION_RATIO),
     minPoints3D: numFromEnv('COLMAP_MIN_POINTS3D', DEFAULT_MIN_POINTS_3D),
+    minStationSeparationRatio: numFromEnv(
+      'COLMAP_MIN_STATION_SEPARATION_RATIO',
+      DEFAULT_MIN_STATION_SEPARATION_RATIO,
+    ),
   }
+}
+
+/**
+ * Camera centres by keyframe filename, from a solved model.
+ *
+ * Every step is an existing, tested one: `buildPosesJson` writes the OpenCV
+ * world-to-camera 3×4 (misleadingly keyed `cameraToWorld`, for the format
+ * reasons in its own comment), `openCvW2cToC2w` inverts it, and
+ * `sfmCentresFromPoses` reads the centre off the result. Hand-rolling
+ * -Rᵀ·t here would be a fourth copy of an inverse that has already been got
+ * wrong once in this repo's history.
+ */
+export function cameraCentres(images: Parameters<typeof buildPosesJson>[0]): Map<string, Vec3Tuple> {
+  const c2w = new Map<string, number[][]>()
+  for (const frame of buildPosesJson(images).frames) {
+    const m = openCvW2cToC2w(frame.cameraToWorld)
+    if (m) c2w.set(frame.file, m)
+  }
+  return sfmCentresFromPoses(c2w)
+}
+
+/**
+ * Measure the baseline between the spots a station capture was shot from.
+ *
+ * Returns null when the question does not apply: a walkthrough (no `station`
+ * labels at all, so `viewpointsFromKeyframes` yields nothing) or a solve that
+ * placed cameras at fewer than two of the spots. Null is "not measurable",
+ * and {@link assessColmapQuality} treats it as such — it never stands in for a
+ * pass. A single-station capture is refused earlier, by `station_dome.ts`.
+ *
+ * `minSeparation` is the *smallest* gap between any two spots and `maxSpread`
+ * the *largest* scatter within any one of them, so the ratio describes the
+ * worst-separated pair rather than an average that a well-separated pair could
+ * carry. The scatter is RMS distance from the spot's own centroid — the same
+ * quantity `solveKnownDistanceFrame` publishes as `viewpointScatterM`, one
+ * scale factor away.
+ */
+export function measureStationBaseline(
+  centres: Map<string, Vec3Tuple>,
+  viewpoints: Viewpoint[],
+): StationBaseline | null {
+  const placed: Array<{ centroid: Vec3Tuple; spread: number; count: number }> = []
+  for (const vp of viewpoints) {
+    const solved: Vec3Tuple[] = []
+    for (const file of vp.files) {
+      const c = centres.get(file)
+      if (c && c.every(Number.isFinite)) solved.push(c)
+    }
+    if (solved.length === 0) continue
+    const c = centroidOf(solved)
+    const spread = Math.sqrt(solved.reduce((acc, p) => acc + distanceBetween(p, c) ** 2, 0) / solved.length)
+    placed.push({ centroid: c, spread, count: solved.length })
+  }
+  if (placed.length < 2) return null
+
+  let minSeparation = Infinity
+  for (let i = 0; i < placed.length; i++) {
+    for (let j = i + 1; j < placed.length; j++) {
+      const d = distanceBetween(placed[i].centroid, placed[j].centroid)
+      if (d < minSeparation) minSeparation = d
+    }
+  }
+  const maxSpread = Math.max(...placed.map((p) => p.spread))
+  return {
+    stationCount: placed.length,
+    placedFrameCount: placed.reduce((n, p) => n + p.count, 0),
+    minSeparation: round4(minSeparation),
+    maxSpread: round4(maxSpread),
+    separationRatio: maxSpread > 0 ? round4(minSeparation / maxSpread) : null,
+  }
+}
+
+/** {@link measureStationBaseline} for a session on disk. Never throws. */
+export async function measureSessionBaseline(
+  sessionDir: string,
+  images: Parameters<typeof buildPosesJson>[0],
+): Promise<StationBaseline | null> {
+  try {
+    const viewpoints = viewpointsFromKeyframes(await readKeyframes(sessionDir))
+    if (viewpoints.length < 2) return null
+    return measureStationBaseline(cameraCentres(images), viewpoints)
+  } catch {
+    // An unreadable keyframes.jsonl leaves the baseline unmeasured, which is
+    // reported as unmeasured. It must never be reported as measured and fine.
+    return null
+  }
+}
+
+function centroidOf(points: Vec3Tuple[]): Vec3Tuple {
+  const sum: Vec3Tuple = [0, 0, 0]
+  for (const p of points) {
+    sum[0] += p[0]; sum[1] += p[1]; sum[2] += p[2]
+  }
+  return [sum[0] / points.length, sum[1] / points.length, sum[2] / points.length]
+}
+
+function distanceBetween(a: Vec3Tuple, b: Vec3Tuple): number {
+  return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2])
+}
+
+function round4(n: number): number {
+  return Math.round(n * 10000) / 10000
 }
 
 /**
@@ -304,13 +511,31 @@ export function resolveQualityThresholds(): ColmapQualityThresholds {
  * change.
  */
 export function assessColmapQuality(
-  input: { registeredImages: number; frameCount: number; pointCount: number },
+  input: {
+    registeredImages: number
+    frameCount: number
+    pointCount: number
+    /** From {@link measureSessionBaseline}. Null/absent = not a capture this can be asked of. */
+    baseline?: StationBaseline | null
+  },
   thresholds: ColmapQualityThresholds = resolveQualityThresholds(),
 ): ColmapReconstructionQuality {
   const ratio = input.frameCount > 0 ? input.registeredImages / input.frameCount : 0
   const reasons: ColmapQualityReason[] = []
   if (ratio < thresholds.minRegistrationRatio) reasons.push('low-registration-ratio')
   if (input.pointCount < thresholds.minPoints3D) reasons.push('too-few-points')
+  // The gate the other two cannot see (see StationBaseline): a capture that
+  // registered every frame and triangulated thousands of points, from a camera
+  // that never left the spot it was standing on. Only asked when there is
+  // something to ask it of — an unmeasurable baseline adds no reason, and adds
+  // no reassurance either.
+  const baseline = input.baseline ?? null
+  if (
+    baseline && baseline.separationRatio !== null &&
+    baseline.separationRatio < thresholds.minStationSeparationRatio
+  ) {
+    reasons.push('no-station-baseline')
+  }
 
   const degenerate = reasons.length > 0
   return {
@@ -318,6 +543,7 @@ export function assessColmapQuality(
     degenerate,
     status: degenerate ? 'needs-rescan' : 'ready',
     reasons,
+    ...(baseline ? { baseline } : {}),
     thresholds,
   }
 }
@@ -335,30 +561,88 @@ export function degenerateRemediation(
   quality: ColmapReconstructionQuality,
   input: { registeredImages: number; frameCount: number; pointCount: number },
 ): string {
-  const facts: string[] = []
+  const thin: string[] = []
   if (quality.reasons.includes('low-registration-ratio')) {
-    facts.push(
+    thin.push(
       `only ${input.registeredImages} of ${input.frameCount} photos could be placed in 3D ` +
       `(${Math.round(quality.registrationRatio * 100)}%, and at least ` +
       `${Math.round(quality.thresholds.minRegistrationRatio * 100)}% is needed)`,
     )
   }
   if (quality.reasons.includes('too-few-points')) {
-    facts.push(
+    thin.push(
       `the scan found ${input.pointCount} point(s) of shared detail between photos ` +
       `(at least ${quality.thresholds.minPoints3D} is needed)`,
     )
   }
-  return (
-    `This scan came out too thin to use: ${facts.join(', and ')}. ` +
-    'That almost always means the room was too dark or too plain for the camera to ' +
-    'recognise the same spot in two photos. To re-scan: turn on every light and open the ' +
-    'blinds; aim at things with visible pattern and detail — bookshelves, pictures, ' +
-    'furniture, a patterned rug — rather than bare walls, plain floors or anything ' +
-    'shiny; and walk sideways through the room as you scan instead of turning on the ' +
-    'spot, because the camera needs to see the same object from two different places to ' +
-    'work out how far away it is. Move slowly enough that nothing blurs.'
-  )
+
+  const parts: string[] = []
+  if (thin.length > 0) {
+    parts.push(
+      `This scan came out too thin to use: ${thin.join(', and ')}. ` +
+      'That almost always means the room was too dark or too plain for the camera to ' +
+      'recognise the same spot in two photos. To re-scan: turn on every light and open the ' +
+      'blinds; aim at things with visible pattern and detail — bookshelves, pictures, ' +
+      'furniture, a patterned rug — rather than bare walls, plain floors or anything ' +
+      'shiny; and walk sideways through the room as you scan instead of turning on the ' +
+      'spot, because the camera needs to see the same object from two different places to ' +
+      'work out how far away it is. Move slowly enough that nothing blurs.',
+    )
+  }
+
+  // The tripod case is a different failure with a different fix, so it gets its
+  // own sentences rather than being folded into the dark-room advice above: the
+  // photos can be perfectly lit, perfectly sharp, and every one of them placed
+  // in 3D, and the capture still be unusable because the camera never left the
+  // spot it was standing on.
+  const baseline = quality.baseline
+  if (quality.reasons.includes('no-station-baseline') && baseline) {
+    parts.push(
+      `The photos say the camera never really moved: the ${baseline.stationCount} spots it was set up at ` +
+      `came out only ${baseline.minSeparation} apart, while the photos taken at a single spot are already ` +
+      `spread ${baseline.maxSpread} across — so the two sets of photos were taken from what is, as far as ` +
+      'this scan can tell, the same place. Turning the camera on the spot cannot show how far away ' +
+      'anything is, however many photos are taken. To re-scan: take the full set of photos, then pick the ' +
+      'tripod up and physically move it a few paces — a metre or two, across the room, not a turn where it ' +
+      'stands — and take a full set again from there. Aim for spots that are well apart but can still both ' +
+      'see some of the same furniture, and use three or four of them rather than two if you can.',
+    )
+  }
+
+  return parts.join(' ')
+}
+
+/** Name of every keyframe COLMAP is fed, and the only files the fingerprint covers. */
+const KEYFRAME_RE = /^kf-\d+\.jpg$/
+
+/**
+ * Identity of the *frames* a solve is computed from.
+ *
+ * Why the content and not the count: on 2026-08-30 two different 12-photo dome
+ * captures landed in the same session directory, the second overwriting the
+ * first's `kf-*.jpg`, and the re-queued solve reused the sparse model already
+ * sitting in `colmap-work/` — returning the FIRST capture's answer, byte for
+ * byte (same 4,410 points, same station separation of 0.106), in 4.8 s. The
+ * frames had completely changed and every cheap key was blind to it: the count
+ * was 12 both times, the filenames were `kf-00000.jpg`…`kf-00011.jpg` both
+ * times, and the directory's own mtime says nothing about what is in the files.
+ * Hashing the bytes is the only key that changes exactly when the input does.
+ *
+ * Cost is one read of each keyframe (a few MB, ~10 ms for a 12-photo dome)
+ * against a solve measured in minutes, and it is paid once per run.
+ */
+export async function frameFingerprint(sessionDir: string, names: string[]): Promise<string> {
+  const lines: string[] = []
+  for (const name of [...names].sort()) {
+    const bytes = await Deno.readFile(`${sessionDir}/${name}`)
+    lines.push(`${name} ${bytes.byteLength} ${await sha256Hex(bytes)}`)
+  }
+  return await sha256Hex(new TextEncoder().encode(lines.join('\n')))
+}
+
+async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', bytes)
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
 /** Shares `SESSION_ID_RE` with the other drivers rather than re-deriving it. */
@@ -416,31 +700,83 @@ export async function runColmapPoses(opts: ColmapPosesRunOptions): Promise<Colma
   // flat kf-*.jpg layout and COLMAP's own outputs stay quarantined.
   const work = `${sessionDir}/colmap-work`
   const imagesDir = `${work}/images`
+  const fingerprintPath = `${work}/input.fingerprint`
+
+  const frameNames: string[] = []
+  for await (const entry of Deno.readDir(sessionDir)) {
+    if (entry.isFile && KEYFRAME_RE.test(entry.name)) frameNames.push(entry.name)
+  }
+  frameNames.sort()
+
+  if (frameNames.length < 3) {
+    return finish(manifestPath, {
+      ...base,
+      status: 'skipped',
+      skippedReason: `only ${frameNames.length} keyframe(s) in session — structure-from-motion needs at least 3`,
+      remediation: 'Capture more frames, walking between them so the views have parallax.',
+    }, 0, '', started)
+  }
+
+  // ── Never solve one capture and report another's answer ───────────────────
+  //
+  // `colmap-work/` holds a feature database keyed by image *filename* and one
+  // or more sparse models built from it, and both survive a re-run: COLMAP's
+  // feature extractor skips images already in the database (by name, not by
+  // content) and its mapper writes each new model alongside the old ones, which
+  // `largestModel` then picks the biggest of — the previous capture's included.
+  // So a session whose `kf-*.jpg` were replaced re-ran every step in seconds
+  // and returned the earlier capture's reconstruction unchanged. Measured
+  // 2026-08-30: 12 new photos, 4.8 s, and an answer identical to the run before
+  // it down to the point count.
+  //
+  // Reuse on UNCHANGED frames is still legitimate and still happens — a job
+  // re-queued by hand over the same session skips the expensive extraction.
+  // What is not legitimate is reuse across a change, so the workspace is keyed
+  // on the frames themselves and thrown away wholesale when they differ.
+  // Wholesale, not per-file: a stale row in the feature database and a stale
+  // model directory are as wrong as a stale image, and none of them can be
+  // repaired in place.
+  const fingerprint = await frameFingerprint(sessionDir, frameNames)
+  let cachedFingerprint: string | null = null
+  try {
+    cachedFingerprint = (await Deno.readTextFile(fingerprintPath)).trim()
+  } catch {
+    // No record of what the workspace was built from.
+  }
+  let workspaceExists = true
+  try {
+    await Deno.stat(work)
+  } catch {
+    workspaceExists = false
+  }
+  const reusedWorkspace = workspaceExists && cachedFingerprint === fingerprint
+  if (workspaceExists && !reusedWorkspace) {
+    // An unfingerprinted workspace (written before this check existed, or by an
+    // interrupted run) cannot prove it matches, so it is discarded too.
+    console.warn(
+      `[colmap-poses] ${base.sessionId ?? sessionDir}: keyframes changed since the last solve ` +
+      `(${cachedFingerprint ? `${cachedFingerprint.slice(0, 12)} → ${fingerprint.slice(0, 12)}` : 'no recorded fingerprint'}) ` +
+      '— discarding colmap-work/ and re-solving from scratch',
+    )
+    await Deno.remove(work, { recursive: true })
+  }
   await Deno.mkdir(imagesDir, { recursive: true })
+  await Deno.writeTextFile(fingerprintPath, fingerprint)
 
   let linked = 0
-  for await (const entry of Deno.readDir(sessionDir)) {
-    if (!entry.isFile || !/^kf-\d+\.jpg$/.test(entry.name)) continue
-    const dest = `${imagesDir}/${entry.name}`
+  for (const name of frameNames) {
+    const dest = `${imagesDir}/${name}`
     try {
       await Deno.remove(dest)
     } catch {
       // not present — fine
     }
     try {
-      await Deno.link(`${sessionDir}/${entry.name}`, dest)
+      await Deno.link(`${sessionDir}/${name}`, dest)
     } catch {
-      await Deno.copyFile(`${sessionDir}/${entry.name}`, dest)
+      await Deno.copyFile(`${sessionDir}/${name}`, dest)
     }
     linked++
-  }
-  if (linked < 3) {
-    return finish(manifestPath, {
-      ...base,
-      status: 'skipped',
-      skippedReason: `only ${linked} keyframe(s) in session — structure-from-motion needs at least 3`,
-      remediation: 'Capture more frames, walking between them so the views have parallax.',
-    }, 0, '', started)
   }
   base.frameCount = linked
 
@@ -660,7 +996,14 @@ export async function runColmapPoses(opts: ColmapPosesRunOptions): Promise<Colma
   // way — a degenerate model is still the most useful thing to look at when
   // diagnosing why a capture failed, and deleting it would leave the operator
   // with a verdict and nothing to check it against.
-  const counts = { registeredImages: images.length, frameCount: linked, pointCount }
+  const counts = {
+    registeredImages: images.length,
+    frameCount: linked,
+    pointCount,
+    // Asked of the session, because the station labels live on the keyframes
+    // and only the session knows them. Null for a walkthrough.
+    baseline: await measureSessionBaseline(sessionDir, images),
+  }
   const quality = assessColmapQuality(counts)
 
   return finish(manifestPath, {
@@ -673,6 +1016,8 @@ export async function runColmapPoses(opts: ColmapPosesRunOptions): Promise<Colma
     upAxis,
     gravityAligned: Boolean(upAxis),
     quality,
+    inputFingerprint: fingerprint,
+    reusedWorkspace,
     ...(glbPath ? { glbPath } : {}),
     ...(glbError ? { glbError } : {}),
     // `remediation` is the envelope's existing "how do I fix this" slot, and it

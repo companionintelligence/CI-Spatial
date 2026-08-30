@@ -35,7 +35,7 @@ Treat that document as the current state of the hardware; this README covers the
 
 ```bash
 npm install
-npm run test:protocol   # DUML codec against a real captured frame + the dome/station planner
+npm run test:protocol   # DUML codec vs. a real frame, the dome/station planner, device resolution
 npm run backend         # :8788 — the ONE process that owns the BLE connection (node --watch)
 npm run web             # http://localhost:8787 — "Scanner Control" UI (Web Bluetooth or backend)
 npm run cli -- grid --stations 4 --dry-run   # scripted capture runs against the backend
@@ -115,6 +115,67 @@ is made unplannable rather than detected at position 14 of 105:
 
 Tilt has measured stops too — it converges down to about −40° but jams near +16° — and is
 range-checked the same way.
+
+### Configuring the phone it drives
+
+Only needed for the modes where **this backend takes the photos** — `POST /api/capture-photo`,
+the web UI's quick-shot buttons, and `grid-capture` without `--movement-only`. A movement-only
+sweep never touches the phone (the scanner web app captures its own pose-tagged keyframes) and
+needs none of this.
+
+The phone in the cradle runs `android-remote-control-mcp`, and **its bearer token is per
+device** — every phone runs its own server with its own token, which is why the repo has
+`ANDROID_MCP_TOKEN_TAB_S8_ULTRA`, `_TAB_S9_ULTRA`, `_BEAM_PRO_1`, `_BEAM_PRO` and not one
+shared value. The backend already knows where each phone lives: the repo's `.mcp.json` lists
+every device as `android-<name>` with its URL and, in its `Authorization` header, the *name* of
+the variable holding that device's token. So the whole configuration is one variable:
+
+```bash
+# In the shell that starts `npm run backend` (or in the repo's .env — see below).
+export ANDROID_MCP_TOKEN_BEAM_PRO_1=...   # from that phone: Settings → Access
+export ANDROID_MCP_DEVICE=beam-pro-1      # only needed if several phones have tokens set
+```
+
+Check it before the rig is on a tripod in the middle of a room:
+
+```bash
+curl -s localhost:8788/api/capture-device | jq
+# { "configured": true, "device": "beam-pro-1",
+#   "url": "http://beam-pro-1.<tailnet>.ts.net:8080/mcp",
+#   "tokenEnv": "ANDROID_MCP_TOKEN_BEAM_PRO_1",
+#   "urlSource": ".mcp.json android-beam-pro-1 (the only device with ANDROID_MCP_TOKEN_BEAM_PRO_1 set)" }
+```
+
+That endpoint reports the variable's **name**, never its value; no token is ever put in a
+response, an NDJSON progress event, a manifest, or an error message.
+
+Resolution order, highest first:
+
+| | URL | Token |
+| --- | --- | --- |
+| 1 | `deviceUrl` in the request body (`--device-url`) | `deviceToken` in the body (`--device-token`) |
+| 2 | `ANDROID_MCP_URL_<DEVICE>` | `ANDROID_MCP_TOKEN_<DEVICE>` for the named device |
+| 3 | `.mcp.json`'s `android-<device>` entry | the variable that entry's `Authorization` header names |
+| 4 | `ANDROID_MCP_URL` | `ANDROID_MCP_TOKEN` (single-phone shortcut; a per-device token always wins) |
+
+Which device, when none is named: `ANDROID_MCP_DEVICE`, else the single `.mcp.json` device that
+has a token set. **Several with tokens and no choice made is refused**, not guessed — driving
+the phone on the desk instead of the one in the cradle produces a capture that looks fine until
+someone opens the photos. Pass `--device beam-pro-1` (or `{"device": "beam-pro-1"}`) to choose
+per run.
+
+Tokens are read from the process environment first, and from the repo's `.env` as a fallback
+(`ANDROID_MCP_*` names only, nothing is exported into the environment, a real environment
+variable always wins). That fallback exists because on 2026-08-29 a six-column dome had to be
+shuttled photo-by-photo by hand while `capture-photo` insisted `deviceToken is required` — the
+token was in `.env` and the URL in `.mcp.json` the whole time, and the backend read neither.
+Point them elsewhere with `ANDROID_MCP_CONFIG` / `ANDROID_MCP_ENV_FILE`, or set
+`ANDROID_MCP_ENV_FILE=''` to ignore the file. With nothing configured a capture is still
+refused outright, with a remediation naming the exact variable to set.
+
+One thing configuration cannot fix: the phone caps concurrent MCP clients and answers `503
+"Too many active sessions"` when it is full. **A Claude Code session attached to that phone
+holds one of those slots** — detach it before a capture run.
 
 ### The flow
 
@@ -268,6 +329,9 @@ protocol/          shared codec — pure JS, runs unmodified in both Node and th
   stall.mjs            jam/wedge detection, per tick and per position (tested from real telemetry)
   dome.mjs             the reachable pan arc, dome planning, and the "is this a capture?" verdict
   dome.test.mjs        the arc and the COLMAP registration rates, as assertions
+  device_registry.mjs  which phone to drive and which per-device token variable holds its
+                       key — pure resolution over .mcp.json + the environment
+  device_registry.test.mjs  the precedence table, the refusals, and "no refusal leaks a token"
   constants.mjs        BLE service/characteristic UUIDs, DUML component/cmdSet/cmdId constants
   commands.mjs          command builders (pairing, gimbal recenter/mode/nudge, raw/RE escape hatch)
   telemetry.mjs         decoders for the orientation frames the gimbal streams at 10-20Hz
@@ -279,6 +343,8 @@ server/
   backend.mjs             the single BLE owner: HTTP + /ws, closed-loop move-to, multi-station
                           capture (sweep a dome -> park for the tripod move -> sweep the next)
   android-capture.mjs     minimal MCP-over-HTTP client for the phone in the cradle (photo capture)
+  device-config.mjs       finds .mcp.json and .env and feeds protocol/device_registry.mjs, so a
+                          capture needs no token pasted into its request body
   cli.mjs                 scripted runs against the backend (scan/connect/grid/…); writes the
                           per-station output directory and its incremental manifest.json
   mcp-server.mjs          MCP server exposing it all as tools — an HTTP client of backend.mjs
