@@ -72,6 +72,36 @@ refused new connections (`Error: Peripheral already connected`) even after a cle
 button, and trigger together for about a second. If a backend restart + rescan doesn't recover a
 connection, try this before assuming it's a code or macOS-side problem.
 
+**Known gotcha — `connected: true` used to be a claim, not a measurement (fixed 2026-08-30).**
+After restarting `server/backend.mjs`, `transport.connect()` could fail *after* noble had already
+handed over a GATT handle — and the transport kept that handle. `/api/status` then reported
+`connected: true` with `lastQuaternion: null`: healthy in the web UI, no telemetry, and every
+closed-loop move running with no feedback (each one burning its full `maxMs` and reporting
+`timedOut`, which reads as "nearly there"). Every reconnect after that hit
+`Error: Peripheral already connected` against that same handle, so only a full process restart
+recovered — which is also the one action guaranteed to leave latched motors driving.
+
+Two changes, both in this subsystem:
+
+- **`connected` now means telemetry is flowing.** `/api/status` carries `link`, one of
+  `disconnected` / `connecting` / `linked` / `streaming` (see
+  `subsystems/osmo-ble/protocol/link_state.mjs`). **`linked` is the state to know**: a GATT handle
+  exists so commands go out, but nothing is coming back. The web UI shows it as
+  `LINKED BUT NOT STREAMING` with the reason. Routes that need feedback (`/api/move-to`,
+  `/api/grid-capture`, both test probes) refuse at `linked`; routes that only write — including
+  every stop — still work there, deliberately: a gimbal that has stopped reporting is a gimbal
+  whose motors are most likely still latched.
+- **A stale handle is dropped and re-established, not trusted.** noble's Linux HCI bindings adopt
+  links they did not open, so a connection left behind by the previous backend process is already
+  `connected` in a freshly started one. `connect()` now recognises that rejection, drops the
+  handle, re-opens, and logs `[ble] <id>: Peripheral already connected — dropping that stale
+  handle…`. A failed connect also tears its handle back down, so nothing half-open survives to be
+  reported as connected. Regression tests: `npm run test:gimbal:link`.
+
+Note this is distinct from the *gimbal-side* wedge above, which produces the same noble error but
+is not recoverable from our side — if the automatic drop/re-open also fails, the error says so,
+and the button-combo reset is the next step.
+
 **Known gotcha — an unbonded gimbal ignores motor commands, and it looks like a code bug.**
 Two separate problems presented as one symptom here on 2026-08-24, and the first was
 misdiagnosed before the second was found. Both are now resolved; the sequence is recorded

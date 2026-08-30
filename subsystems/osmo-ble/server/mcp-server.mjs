@@ -140,14 +140,25 @@ function createMcpServer() {
     'status',
     {
       title: 'Connection status',
-      description: 'Report whether we are connected and paired.',
+      description:
+        'Report the state of the BLE link. `connected` means telemetry is FLOWING, not merely '
+        + 'that a connect call returned — `link` carries the full state: "disconnected", '
+        + '"connecting", "linked" (a GATT handle exists so commands go out, but nothing is '
+        + 'coming back, so any closed-loop move would run blind) or "streaming". Treat "linked" '
+        + 'as broken: reconnect before relying on move_to, sweeps or probes.',
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },
     async () => {
       try {
         const status = await backendFetch('/api/status');
-        return textResult({ connected: status.connected, paired: status.paired });
+        return textResult({
+          connected: status.connected,
+          link: status.link,
+          linkDetail: status.linkDetail,
+          subscribedChars: status.subscribedChars,
+          paired: status.paired,
+        });
       } catch (err) {
         return errorResult(err);
       }
@@ -272,7 +283,7 @@ function createMcpServer() {
     {
       title: 'Move gimbal to an absolute angle (closed-loop)',
       description:
-        'Move to a single absolute (yawDeg, pitchDeg) using closed-loop speed control driven by live quaternion feedback, not the absolute-angle opcode — that opcode (cmdId 0x14) was live-tested 2026-08-21 and confirmed to do nothing on this hardware, likely because our guessed payload struct never matched DJI\'s real (larger) angle-set structs. This is the single-step primitive behind gimbal_sweep, exposed on its own so a caller can interleave something else (e.g. a photo-capture tool call on a different MCP server) between steps of a multi-position scan (see plan_scan_grid). Returns {converged, timedOut, ticks, finalYaw, finalPitch, history} — check `converged` before assuming the position was actually reached; the yaw/pitch mapping used for feedback is an approximate Euler decomposition, not a calibrated attitude readout, so treat "close enough within toleranceDeg" as the real contract, not exact degrees. Fixed 2026-08-24: the loop previously steered on the raw `yaw` Euler channel, which on a mounted OM6 is pinned at -90 while physical pan lands in `roll` — so it never converged on real hardware. It now steers on measured pan/tilt (see GIMBAL_INTEGRATION.md). finalYaw/finalPitch carry pan/tilt values; the field names are kept for wire compatibility. If a call does report timedOut, read the history array and check whether pan/tilt actually change between ticks — a completely flat history means the gimbal is not moving at all (no macOS Bluetooth bond, or a wedged BLE stack), which is a different problem from a move that fell short.',
+        'Move to a single absolute (yawDeg, pitchDeg) using closed-loop speed control driven by live quaternion feedback, not the absolute-angle opcode — that opcode (cmdId 0x14) was live-tested 2026-08-21 and confirmed to do nothing on this hardware, likely because our guessed payload struct never matched DJI\'s real (larger) angle-set structs. This is the single-step primitive behind gimbal_sweep, exposed on its own so a caller can interleave something else (e.g. a photo-capture tool call on a different MCP server) between steps of a multi-position scan (see plan_scan_grid). Returns {converged, timedOut, ticks, finalYaw, finalPitch, history} — check `converged` before assuming the position was actually reached; the yaw/pitch mapping used for feedback is an approximate Euler decomposition, not a calibrated attitude readout, so treat "close enough within toleranceDeg" as the real contract, not exact degrees. Fixed 2026-08-24: the loop previously steered on the raw `yaw` Euler channel, which on a mounted OM6 is pinned at -90 while physical pan lands in `roll` — so it never converged on real hardware. It now steers on measured pan/tilt (see GIMBAL_INTEGRATION.md). finalYaw/finalPitch carry pan/tilt values; the field names are kept for wire compatibility. If a call does report timedOut, read the history array and check whether pan/tilt actually change between ticks — a completely flat history means the gimbal is not moving at all (no macOS Bluetooth bond, or a wedged BLE stack), which is a different problem from a move that fell short. A result carrying `noTelemetry: true` is a third, distinct outcome: the gimbal stopped sending telemetry mid-move, so the loop gave up rather than driving blind for the rest of maxMs. Reconnect (the `connect` tool) before retrying — a longer maxMs cannot help, and neither can a bigger tolerance.',
       inputSchema: {
         yawDeg: z.number().min(-160).max(160).optional().describe('Target yaw in degrees (default 0)'),
         pitchDeg: z.number().min(-60).max(60).optional().describe('Target pitch in degrees (default 0)'),
