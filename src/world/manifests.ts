@@ -294,7 +294,16 @@ export interface ColmapPosesManifest extends PipelineManifestBase {
  * most load-bearing field: it is what makes every downstream distance real.
  */
 export interface SplatAlignManifest extends PipelineManifestBase {
-  tool: 'umeyama'
+  /**
+   * Which of the two ways the metric frame was obtained.
+   *
+   * `'umeyama'` fits the solved camera path against a calibrated AR one and so
+   * recovers all seven degrees of freedom. `'known-distance'` has no AR path to
+   * fit against and recovers only what one measured length (plus, when the
+   * solve found gravity, one up direction) can determine — read `determined`
+   * before treating its `projectTransform` as a placement rather than a size.
+   */
+  tool: 'umeyama' | 'known-distance'
   /** Basename of the splat this transform applies to. */
   plyPath?: string
   /**
@@ -307,10 +316,67 @@ export interface SplatAlignManifest extends PipelineManifestBase {
   scale?: number
   /** RMS fit residual in metres. Large = the correspondence disagreed; do not trust the fit. */
   residualM?: number
+  /**
+   * Which disagreement `residualM` measured. The two tiers have different
+   * things to disagree about, and a reader comparing residuals across
+   * manifests needs to know it is not comparing like with like.
+   *
+   * - `'camera-path'` — RMS over paired camera centres of (calibrated −
+   *   fitted). The `'umeyama'` tier's residual, and the only one that measures
+   *   all seven degrees of freedom at once.
+   * - `'known-distance-cross-check'` — RMS over the supplied measured
+   *   distances of (predicted − measured), with two or more spanning
+   *   *different* pairs of viewpoints. Each such distance beyond the first is
+   *   redundancy the scale did not get to absorb, so this measures the scale
+   *   directly. The same pair measured twice is one constraint written twice,
+   *   which the scale absorbs exactly, so it does not reach this source.
+   * - `'viewpoint-scatter'` — RMS, in metres, of how far the frames claimed to
+   *   share a viewpoint land from that viewpoint's centre. What is left when
+   *   exactly one distance was measured, since the scale then fits it exactly
+   *   and its own residual is arithmetic. It tests the grouping and the solve,
+   *   not the tape reading.
+   */
+  residualSource?: 'camera-path' | 'known-distance-cross-check' | 'viewpoint-scatter'
   /** How many camera centres were paired to produce the fit. */
   correspondenceCount?: number
+  /**
+   * Which of the similarity's seven degrees of freedom this fit actually
+   * pinned down. Absent on manifests written before the `'known-distance'` tier
+   * existed, all of which were `'umeyama'` fits, i.e. all four true.
+   *
+   * The point of the field is that `projectTransform` is sixteen numbers
+   * whether or not they mean anything: a `'known-distance'` frame still ships a
+   * full 4x4, but its heading and origin are whatever the camera solve happened
+   * to choose. Sizes and distances read off it are real; a bearing or a
+   * position shared with another scan is not. A consumer that places one scan
+   * beside another must check `heading` and `origin` here first — a scale-only
+   * frame is exactly as arbitrary in those axes as no frame at all, so treating
+   * it as a placement silently mis-registers the two.
+   */
+  determined?: {
+    /** Lengths are in metres. False never ships — a fit without this is refused. */
+    scale: boolean
+    /** Which way is up is known, so the frame is not tilted by an unknown angle. */
+    up: boolean
+    /** Rotation about the up axis is known. False = the frame's bearing is arbitrary. */
+    heading: boolean
+    /** The origin is a known physical place, rather than wherever the solve put zero. */
+    origin: boolean
+  }
   /** Which calibration tier supplied the metric side — determines how much to trust `scale`. */
   calibrationMethod?: string
+  /**
+   * The physically measured distance a `'known-distance'` fit rests on, in
+   * metres, and the length it corresponded to in solve units. Recorded so the
+   * scale can be re-derived (and audited) from the two numbers that produced
+   * it; absent on `'umeyama'` fits, which rest on a whole camera path instead.
+   */
+  knownDistance?: {
+    measuredM: number
+    solvedSeparation: number
+    /** How many measured distances backed the frame. 1 = scale exact, no cross-check. */
+    measurementCount: number
+  }
   params: {
     minCorrespondences: number
     maxResidualM: number

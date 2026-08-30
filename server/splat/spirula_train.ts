@@ -20,7 +20,7 @@
  * Spirula facts measured on this box (v2026.8.28, ubuntu-vulkan-x86_64):
  *   spirula train <preset> --data <dir> --data-format nerfstudio
  *     --num-iterations N --sh-degree D --quality {low|medium|high|ultra}
- *     --device <index|name substring>
+ *     --cap-max N --device <index|name substring>
  *     --output-dir-prefix <dir> --output-dir-name <name>
  *     --disable-viewer 1 --keep-viewer-alive 0
  *   - It reads the SAME Nerfstudio layout buildBrushDataset already writes,
@@ -37,7 +37,12 @@
  *     passed, not exposed as options.
  *   - There is no image max-resolution flag anywhere in its 194-flag
  *     `--help-all`; it trains at the dataset's native size. That is why
- *     `params` here has no `maxResolution` counterpart to Brush's.
+ *     `params` here has no `maxResolution` counterpart to Brush's — and it is
+ *     also the reason a fair A/B has to raise BRUSH_MAX_RES to the keyframes'
+ *     native size rather than lower Spirula to Brush's 1280: only one of the
+ *     two ends can move. (The nearest-looking flag, `--rescale-camera-to-fit`,
+ *     is not a training cap — it reconciles a dataset whose stored camera
+ *     parameters disagree with its images' size.)
  */
 
 import { resolve } from '@std/path'
@@ -48,9 +53,11 @@ import { runColmapPoses } from '../colmap/colmap_poses.ts'
 // session-dir predicate, the manifest-sized stderr condenser, and the PLY
 // header vertex count are all backend-independent, and a second copy of any of
 // them is exactly the drift `exec_probe.ts` was extracted to stop.
-import { countPlyVertices, isValidSessionDir, stderrTail } from './splat_train.ts'
+import { countPlyVertices, DEFAULT_MAX_SPLATS, isValidSessionDir, stderrTail } from './splat_train.ts'
 import type { SplatTrainResult, SplatTrainStatus } from './splat_train.ts'
 import type { SplatTrainManifest } from '../../src/world/types.ts'
+import { degenerateSplatRemediation, measureSplatQuality, scaleFrameOf } from './splat_quality.ts'
+import type { SplatQuality } from './splat_quality.ts'
 
 /**
  * The Brush manifest with the two backend-specific fields swapped.
@@ -69,7 +76,18 @@ export type SpirulaTrainManifest = Omit<SplatTrainManifest, 'tool' | 'params'> &
     shDegree: number
     preset: string
     quality: string
+    capMax: number
   }
+  /**
+   * The splat's own verdict. Same field NAME as the Brush manifest's on
+   * purpose — a reader of `<scan>.splat-train.manifest.json` must not have to
+   * know which backend wrote it to find the verdict (ADR 0001). Not to be
+   * confused with `params.quality`, which is Spirula's `--quality` preset: an
+   * input asking for a detail level, not an output judging what came back.
+   */
+  quality?: SplatQuality
+  /** Why no verdict was reached. Present INSTEAD of `splatQuality`, never alongside it. */
+  qualityError?: string
 }
 
 export interface SpirulaTrainRunOptions {
@@ -101,6 +119,22 @@ export interface SpirulaTrainRunOptions {
   preset?: string
   /** `--quality`, the splat budget. Falls back to env SPIRULA_QUALITY, then 'medium'. */
   quality?: string
+  /**
+   * `--cap-max`, the hard gaussian ceiling. Falls back to env SPIRULA_CAP_MAX,
+   * then the shared `DEFAULT_MAX_SPLATS` — the same budget Brush is given, so
+   * an A/B between the backends differs by the trainer and not by its
+   * allowance. It was the single biggest distortion in the first comparison
+   * run on this box: Spirula's untouched default cap of 1,000,000 was read as
+   * a Spirula property ("997,855 gaussians, 163.6 MB, vs Brush's 246,838 /
+   * 37.5 MB") when it was only the ceiling nobody had set. Told to stop at
+   * Brush's realised count instead, the same session trains to 252,975
+   * gaussians in 41.5 MB — within 6% of Brush's file, not 4x it.
+   *
+   * Unlike Brush's `--max-splats`, this is a TARGET: Spirula reached 997,922
+   * of 1,000,000 and 252,975 of 253,021. That asymmetry is why matching the
+   * two backends' realised counts means setting this one, never the other.
+   */
+  capMax?: number
   /** For testing: skip the real spawn and treat these results as the Spirula run. */
   _spawn?: (
     bin: string,
@@ -159,6 +193,7 @@ export function resolveSpirulaParams(
     shDegree: opts.shDegree ?? intFromEnv('SPIRULA_SH_DEGREE', 2),
     preset: opts.preset ?? Deno.env.get('SPIRULA_PRESET') ?? '3dgs',
     quality: opts.quality ?? Deno.env.get('SPIRULA_QUALITY') ?? 'medium',
+    capMax: opts.capMax ?? intFromEnv('SPIRULA_CAP_MAX', DEFAULT_MAX_SPLATS),
   }
 }
 
@@ -184,6 +219,7 @@ export function buildSpirulaArgs(
     '--num-iterations', String(params.trainIters),
     '--sh-degree', String(params.shDegree),
     '--quality', params.quality,
+    '--cap-max', String(params.capMax),
     '--output-dir-prefix', outputPrefix,
     '--output-dir-name', RUN_NAME,
     // Not options: a background job must never open a port or wait on a human.
@@ -344,14 +380,46 @@ export async function runSpirulaTrain(opts: SpirulaTrainRunOptions): Promise<Spi
       timing: { elapsedMs: Date.now() - started },
     }, spawnResult.code, diagnosis)
   }
-  const gaussianCount = countPlyVertices(plyBytes) ?? 0
+  // Zero gaussians (or an unreadable header) is a failed run, not a small one —
+  // see the identical gate in splat_train.ts for why `?? 0` flowing into an
+  // `ok` manifest was the bug rather than the fallback.
+  const countedGaussians = countPlyVertices(plyBytes)
+  if (countedGaussians === null || countedGaussians === 0) {
+    return _finish(manifestPath, {
+      ...baseManifest,
+      status: 'error',
+      gaussianCount: countedGaussians ?? undefined,
+      error: countedGaussians === null
+        ? `spirula wrote ${exported.path} but it has no readable PLY header`
+        : 'spirula wrote a PLY with 0 gaussians',
+      remediation:
+        'The trainer ran to completion and produced nothing usable. Check that the dataset actually ' +
+        `had posed images (\`${dataset.transformsPath}\`, ${dataset.frameCount} frame(s)), then re-run ` +
+        `by hand to see the full log: ${params.spirulaBin} ${args.join(' ')}.`,
+      timing: { elapsedMs: Date.now() - started },
+    }, spawnResult.code, diagnosis)
+  }
+  const gaussianCount = countedGaussians
   await Deno.writeFile(opts.outputPlyPath, plyBytes)
+
+  const quality = await measureSplatQuality({
+    plyPath: opts.outputPlyPath,
+    seedPlyPath: dataset.seedPlyPath,
+    sessionDir,
+    scaleFrame: scaleFrameOf(dataset.posedFrames),
+  })
 
   const manifest: SpirulaTrainManifest = {
     ...baseManifest,
     status: 'ok',
     plyPath: opts.outputPlyPath.split('/').pop(),
     gaussianCount,
+    ...(quality
+      ? {
+        quality,
+        ...(quality.degenerate ? { remediation: degenerateSplatRemediation(quality) } : {}),
+      }
+      : { qualityError: `could not measure ${opts.outputPlyPath}: unreadable PLY` }),
     timing: { elapsedMs: Date.now() - started },
   }
   await writeManifest(manifestPath, manifest)
@@ -361,6 +429,7 @@ export async function runSpirulaTrain(opts: SpirulaTrainRunOptions): Promise<Spi
     manifest,
     plyPath: opts.outputPlyPath,
     gaussianCount,
+    ...(quality ? { quality } : {}),
     log: diagnosis,
     exitCode: spawnResult.code,
   }

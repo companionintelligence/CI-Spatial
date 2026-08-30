@@ -11,6 +11,7 @@ import { assert } from 'jsr:@std/assert@^1.0.0/assert'
 import {
   buildBrushArgs,
   countPlyVertices,
+  DEFAULT_MAX_SPLATS,
   isValidSessionDir,
   resolveParams,
   runSplatTrain,
@@ -46,12 +47,14 @@ Deno.test('resolveParams honours explicit overrides over env defaults', () => {
     trainIters: 5000,
     shDegree: 1,
     maxResolution: 800,
+    maxSplats: 250_000,
     device: 'DiscreteGpu(0)',
     brushBin: '/opt/brush-cli',
   })
   assertEquals(p.trainIters, 5000)
   assertEquals(p.shDegree, 1)
   assertEquals(p.maxResolution, 800)
+  assertEquals(p.maxSplats, 250_000)
   assertEquals(p.device, 'DiscreteGpu(0)')
   assertEquals(p.brushBin, '/opt/brush-cli')
   assertEquals(p.evalEvery, 5000)
@@ -71,6 +74,7 @@ Deno.test('buildBrushArgs assembles the headless CLI in a stable order', () => {
     '--total-train-iters', '12000',
     '--sh-degree', '2',
     '--max-resolution', '1280',
+    '--max-splats', '1000000',
     '--export-every', '12000',
     '--export-path', '/data/ds/exports',
     '--export-name', 'splat_{iter}.ply',
@@ -596,4 +600,225 @@ Deno.test({
     assertEquals(new TextDecoder().decode(bytes.subarray(0, 3)), 'ply')
     await Deno.remove(tmp, { recursive: true })
   },
+})
+
+// ─── Gaussian budget + the splat's own quality verdict ────────────────────────
+
+Deno.test('the default gaussian budget is the one both backends share', () => {
+  // 1,000,000 rather than Brush's own 10,000,000: it is Spirula's --cap-max
+  // default, and the lower of the two is the only value that constrains
+  // anything. Measured at this budget on sess-video-20260830-054518, Brush
+  // finished at 258,710 — a quarter of the way to it — while Spirula reached
+  // 997,922, which is why the budget is matchable as an input and not as an
+  // output.
+  assertEquals(DEFAULT_MAX_SPLATS, 1_000_000)
+  const p = resolveParams({ sessionDir: '/x/sess-1-a', outputPlyPath: '/x/a.splat.ply' })
+  assertEquals(p.maxSplats, 1_000_000)
+})
+
+/**
+ * A session with one keyframe plus, optionally, a seed cloud — the two inputs
+ * the quality verdict measures against.
+ */
+async function qualitySession(tmp: string, opts?: { seedPoints?: number[][] }): Promise<string> {
+  const sessionDir = `${tmp}/sess-quality-test`
+  await Deno.mkdir(sessionDir, { recursive: true })
+  await Deno.writeFile(`${sessionDir}/kf-00000.jpg`, TINY_JPEG)
+  await Deno.writeTextFile(
+    `${sessionDir}/keyframes.jsonl`,
+    JSON.stringify({
+      index: 0,
+      file: 'kf-00000.jpg',
+      pose: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0, w: 1 } },
+      intrinsics: { width: 2, height: 2, fovYDeg: 55 },
+    }) + '\n',
+  )
+  if (opts?.seedPoints) {
+    await Deno.writeFile(`${sessionDir}/colmap.point-cloud.ply`, xyzPly(opts.seedPoints))
+  }
+  return sessionDir
+}
+
+/** A minimal binary xyz PLY — the shape of both seed clouds and (enough of) a splat. */
+function xyzPly(rows: number[][]): Uint8Array {
+  const header = new TextEncoder().encode(
+    'ply\nformat binary_little_endian 1.0\n' +
+      `element vertex ${rows.length}\n` +
+      'property float x\nproperty float y\nproperty float z\nend_header\n',
+  )
+  const body = new Uint8Array(rows.length * 12)
+  const view = new DataView(body.buffer)
+  rows.forEach((r, i) => {
+    view.setFloat32(i * 12, r[0], true)
+    view.setFloat32(i * 12 + 4, r[1], true)
+    view.setFloat32(i * 12 + 8, r[2], true)
+  })
+  const out = new Uint8Array(header.length + body.length)
+  out.set(header)
+  out.set(body, header.length)
+  return out
+}
+
+Deno.test('a zero-gaussian export is an error, not an ok run with a small number', () => {
+  // The defect this repo keeps producing: `countPlyVertices(...) ?? 0` used to
+  // flow straight into `status: 'ok'`, so a completed train that exported an
+  // empty PLY was indistinguishable from one that reconstructed the room.
+  return (async () => {
+    const tmp = await Deno.makeTempDir({ prefix: 'splat-empty-' })
+    const sessionDir = await qualitySession(tmp)
+    const result = await runSplatTrain({
+      sessionDir,
+      outputPlyPath: `${tmp}/scan.splat.ply`,
+      brushBin: Deno.execPath(),
+      _spawn: async (_bin, args) => {
+        const exportPath = args[args.indexOf('--export-path') + 1]
+        await Deno.writeFile(`${exportPath}/splat_15000.ply`, xyzPly([]))
+        return { code: 0, stderr: '' }
+      },
+    })
+    assertEquals(result.status, 'error')
+    assertEquals(result.manifest.status, 'error')
+    assertStringIncludes(result.manifest.error ?? '', '0 gaussians')
+    assert(result.manifest.remediation, 'an error the operator can act on must carry a fix')
+    await Deno.remove(tmp, { recursive: true })
+  })()
+})
+
+Deno.test('an unreadable PLY header is an error too', async () => {
+  const tmp = await Deno.makeTempDir({ prefix: 'splat-badhdr-' })
+  const sessionDir = await qualitySession(tmp)
+  const result = await runSplatTrain({
+    sessionDir,
+    outputPlyPath: `${tmp}/scan.splat.ply`,
+    brushBin: Deno.execPath(),
+    _spawn: async (_bin, args) => {
+      const exportPath = args[args.indexOf('--export-path') + 1]
+      await Deno.writeFile(`${exportPath}/splat_15000.ply`, new TextEncoder().encode('not a ply at all'))
+      return { code: 0, stderr: '' }
+    },
+  })
+  assertEquals(result.status, 'error')
+  assertStringIncludes(result.manifest.error ?? '', 'no readable PLY header')
+  await Deno.remove(tmp, { recursive: true })
+})
+
+Deno.test('an ok run carries a quality verdict measured against the seed cloud', async () => {
+  const tmp = await Deno.makeTempDir({ prefix: 'splat-quality-' })
+  // Seed cloud spanning a 10-unit box; the "splat" fills the same box, so the
+  // extent ratio is ~1 and the run is ready.
+  const box = [[0, 0, 0], [10, 0, 0], [0, 10, 0], [0, 0, 10], [10, 10, 10]]
+  const sessionDir = await qualitySession(tmp, { seedPoints: box })
+  const result = await runSplatTrain({
+    sessionDir,
+    outputPlyPath: `${tmp}/scan.splat.ply`,
+    brushBin: Deno.execPath(),
+    _spawn: async (_bin, args) => {
+      const exportPath = args[args.indexOf('--export-path') + 1]
+      const rows: number[][] = []
+      for (let i = 0; i < 2000; i++) rows.push([(i % 11), ((i / 11 | 0) % 11), ((i / 121 | 0) % 11)])
+      await Deno.writeFile(`${exportPath}/splat_15000.ply`, xyzPly(rows))
+      return { code: 0, stderr: '' }
+    },
+  })
+  assertEquals(result.status, 'ok')
+  const manifest = JSON.parse(await Deno.readTextFile(`${tmp}/scan.splat-train.manifest.json`))
+  assertEquals(manifest.quality.degenerate, false)
+  assertEquals(manifest.quality.status, 'ready')
+  // This session's single pose came from the keyframe record, so the frame is
+  // metric and the metre gate is the one that applies.
+  assertEquals(manifest.quality.scaleFrame, 'metric')
+  assert(manifest.quality.extentRatio > 0, 'a seed cloud was present, so a ratio must be reported')
+  assertEquals(manifest.remediation, undefined)
+  await Deno.remove(tmp, { recursive: true })
+})
+
+Deno.test('a splat far bigger than the room it came from is flagged, with a fix', async () => {
+  const tmp = await Deno.makeTempDir({ prefix: 'splat-sprawl-' })
+  const sessionDir = await qualitySession(tmp, { seedPoints: [[0, 0, 0], [1, 1, 1], [0, 1, 0], [1, 0, 1]] })
+  const result = await runSplatTrain({
+    sessionDir,
+    outputPlyPath: `${tmp}/scan.splat.ply`,
+    brushBin: Deno.execPath(),
+    _spawn: async (_bin, args) => {
+      const exportPath = args[args.indexOf('--export-path') + 1]
+      // 2000 gaussians spread over a 200-unit box against a 1-unit seed: a
+      // large, well-formed, entirely healthy-looking PLY of the wrong room.
+      const rows: number[][] = []
+      for (let i = 0; i < 2000; i++) rows.push([(i % 200), ((i * 7) % 200), ((i * 13) % 200)])
+      await Deno.writeFile(`${exportPath}/splat_15000.ply`, xyzPly(rows))
+      return { code: 0, stderr: '' }
+    },
+  })
+  // The stage succeeded — Brush ran and the .ply is still the most useful thing
+  // to look at. What must not happen is it passing for a good scan.
+  assertEquals(result.status, 'ok')
+  assertEquals(result.quality?.degenerate, true)
+  assert(result.quality?.reasons.includes('sprawls-beyond-seed'))
+  const manifest = JSON.parse(await Deno.readTextFile(`${tmp}/scan.splat-train.manifest.json`))
+  assertEquals(manifest.quality.status, 'needs-rescan')
+  assertStringIncludes(manifest.remediation, 're-scan')
+  await Deno.remove(tmp, { recursive: true })
+})
+
+Deno.test('a splat trained on a degenerate solve inherits that verdict', async () => {
+  // sess-a7e2f642 in miniature: the poses are bad, the PLY is not. Only the
+  // pose solve's own manifest knows, so the splat stage reads it.
+  const tmp = await Deno.makeTempDir({ prefix: 'splat-badposes-' })
+  const sessionDir = await qualitySession(tmp, { seedPoints: [[0, 0, 0], [10, 10, 10]] })
+  await Deno.writeTextFile(
+    `${sessionDir}/colmap-poses.manifest.json`,
+    JSON.stringify({
+      tool: 'colmap',
+      status: 'ok',
+      registeredImages: 3,
+      frameCount: 17,
+      quality: { degenerate: true, status: 'needs-rescan', reasons: ['low-registration-ratio'] },
+    }),
+  )
+  const result = await runSplatTrain({
+    sessionDir,
+    outputPlyPath: `${tmp}/scan.splat.ply`,
+    brushBin: Deno.execPath(),
+    _spawn: async (_bin, args) => {
+      const exportPath = args[args.indexOf('--export-path') + 1]
+      const rows: number[][] = []
+      for (let i = 0; i < 2000; i++) rows.push([(i % 11), ((i / 11 | 0) % 11), ((i / 121 | 0) % 11)])
+      await Deno.writeFile(`${exportPath}/splat_15000.ply`, xyzPly(rows))
+      return { code: 0, stderr: '' }
+    },
+  })
+  assertEquals(result.status, 'ok')
+  assertEquals(result.quality?.reasons, ['degenerate-poses'])
+  assertEquals(result.quality?.degenerate, true)
+  await Deno.remove(tmp, { recursive: true })
+})
+
+Deno.test('a splat that cannot be measured says so instead of staying silent', async () => {
+  // An absent verdict on an `ok` manifest reads exactly like a passing one, so
+  // the unmeasurable case has to be stated rather than omitted.
+  const tmp = await Deno.makeTempDir({ prefix: 'splat-unmeasurable-' })
+  const sessionDir = await qualitySession(tmp)
+  const result = await runSplatTrain({
+    sessionDir,
+    outputPlyPath: `${tmp}/scan.splat.ply`,
+    brushBin: Deno.execPath(),
+    _spawn: async (_bin, args) => {
+      const exportPath = args[args.indexOf('--export-path') + 1]
+      // A header the vertex counter reads (so this is not the empty-PLY path)
+      // but the centre reader refuses: it declares no y or z.
+      await Deno.writeFile(
+        `${exportPath}/splat_15000.ply`,
+        new TextEncoder().encode(
+          'ply\nformat binary_little_endian 1.0\nelement vertex 3\nproperty float x\nend_header\n',
+        ),
+      )
+      return { code: 0, stderr: '' }
+    },
+  })
+  assertEquals(result.status, 'ok')
+  assertEquals(result.quality, undefined)
+  const manifest = JSON.parse(await Deno.readTextFile(`${tmp}/scan.splat-train.manifest.json`))
+  assertEquals(manifest.quality, undefined)
+  assertStringIncludes(manifest.qualityError, 'could not measure')
+  await Deno.remove(tmp, { recursive: true })
 })

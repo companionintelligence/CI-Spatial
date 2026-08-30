@@ -21,3 +21,4 @@ shape future work, promote it to an ADR and link back to the issue.
 - [0005. Spatial frames are established by geometry and verified by measurement](0005-spatial-frames-are-established-by-geometry-and-verified-by-measurement.md) — Proposed
 - [0006. A person capture is a calibrated take; view densification is a subsystem](0006-person-capture-is-a-calibrated-take-and-densification-is-a-subsystem.md) — Accepted
 - [0007. Splat backends are selectable; a rotation-only sweep is not a reconstruction capture](0007-splat-backends-are-selectable-and-a-rotation-only-sweep-is-not-a-reconstruction-capture.md) — Proposed
+- [0008. Station-dome capture is a supported path, and its baseline comes from moving the tripod](0008-station-dome-capture-is-a-supported-path-and-its-baseline-comes-from-moving-the-tripod.md) — Proposed

@@ -156,10 +156,31 @@ export async function runLingBotMapReconstruction(
     )
   }
 
+  // A frame cap the GPU can actually hold. Measured on a 12 GB 4080: 16 frames
+  // reconstruct in ~17 s and produce 2.4M points; 24 frames OOM. The job used to
+  // pass no cap at all, so it handed the worker every frame in the session (48
+  // here) and failed where the same worker succeeds from the CLI. Raise it via
+  // LINGBOT_MAP_MAX_FRAMES on a card with more memory — the model's cost is set
+  // by the scale phase and the window, not by session length.
+  const frameCap = opts.maxFrames && opts.maxFrames > 0
+    ? opts.maxFrames
+    : Number(Deno.env.get('LINGBOT_MAP_MAX_FRAMES') ?? '16')
+
   let cmd: Deno.Command
   try {
     cmd = new Deno.Command(python, {
-      args: buildWorkerArgs({ ...opts, modelPath, device }),
+      args: buildWorkerArgs({ ...opts, modelPath, device, maxFrames: frameCap }),
+      // Inherit, then add: replacing the environment wholesale would strip PATH
+      // and the venv resolution with it.
+      //
+      // expandable_segments is torch's own suggestion in the OOM it raises here,
+      // and upstream's limited-VRAM section uses it too. Measured: without it the
+      // allocator fragments and a run that fits still fails.
+      env: {
+        ...Deno.env.toObject(),
+        PYTORCH_CUDA_ALLOC_CONF: Deno.env.get('PYTORCH_CUDA_ALLOC_CONF') ??
+          'expandable_segments:True',
+      },
       stdout: 'piped',
       stderr: 'piped',
     })

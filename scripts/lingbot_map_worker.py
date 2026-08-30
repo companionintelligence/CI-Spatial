@@ -137,10 +137,12 @@ def _try_import_lingbot() -> tuple[Any, str | None]:
     there and is what a walkthrough session is, so that is the default here too.
     """
     try:
-        if os.environ.get("LINGBOT_MAP_MODE", "streaming") == "windowed":
-            from lingbot_map.models.gct_stream_window import GCTStream as _GCTStream
-        else:
+        # Windowed by default: the 8 GB fork notes "Only windowed mode is
+        # supported now", and streaming mode is what OOMed on this 12 GB card.
+        if os.environ.get("LINGBOT_MAP_MODE", "windowed") == "streaming":
             from lingbot_map.models.gct_stream import GCTStream as _GCTStream
+        else:
+            from lingbot_map.models.gct_stream_window import GCTStream as _GCTStream
         from lingbot_map.utils.load_fn import load_and_preprocess_images
         from lingbot_map.utils.pose_enc import pose_encoding_to_extri_intri
 
@@ -326,20 +328,53 @@ def run(args: argparse.Namespace) -> int:
         # not a HF snapshot, so it is constructed then loaded — and with
         # strict=False, because upstream itself tolerates missing/unexpected keys
         # across its three published checkpoints (lingbot-map, -long, -stage1).
-        # `kv_cache_scale_frames` is upstream's documented lever for limited VRAM
-        # ("--num_scale_frames 2 ... shrinks the activation peak of the initial
-        # scale phase"; their default is 8). Measured here: at 8 this OOMs on an
-        # idle 12 GB 4080 even with 8 frames and autocast, because the peak is set
-        # by the scale phase rather than by the frame count. Overridable for hosts
-        # with more headroom, where a higher value is more accurate.
-        scale_frames = int(os.environ.get("LINGBOT_MAP_SCALE_FRAMES", "2"))
-        model = GCTStream(  # type: ignore[operator]
-            img_size=args.image_size,
-            patch_size=DEFAULT_PATCH_SIZE,
-            kv_cache_scale_frames=scale_frames,
-            use_sdpa=True,  # FlashInfer is optional upstream; SDPA is the fallback
+        # Build against whatever the installed package actually exposes.
+        #
+        # Three published surfaces disagree on names and defaults: upstream's
+        # demo.py wants kv_cache_sliding_window / kv_cache_scale_frames at
+        # img_size 512 patch 16; the RTX-4060 fork adds window_size; the build
+        # installed here takes sliding_window_size / num_frame_for_scale and
+        # defaults to img_size 518 patch 14. Passing the wrong spelling is a
+        # TypeError, and passing the wrong img_size/patch_size is worse — it
+        # fails load_state_dict on the position embeddings. So ask the
+        # constructor what it takes and hand it only that, leaving img_size and
+        # patch_size at ITS defaults so the checkpoint always fits.
+        #
+        # The memory values come from ureeey/lingbot-map-rtx4060-8g@eeee84a,
+        # which upstream's README points at for limited VRAM: a bounded KV cache
+        # and a small scale-frame count cap the activation peak instead of
+        # letting it grow with the sequence. Streaming mode OOMed here on an idle
+        # 12 GB 4080 at 8 frames even with autocast.
+        import inspect as _inspect
+
+        accepted = set(_inspect.signature(GCTStream.__init__).parameters)  # type: ignore[union-attr]
+        wanted = {
+            'sliding_window_size': int(os.environ.get("LINGBOT_MAP_KV_WINDOW", "48")),
+            'kv_cache_sliding_window': int(os.environ.get("LINGBOT_MAP_KV_WINDOW", "48")),
+            'num_frame_for_scale': int(os.environ.get("LINGBOT_MAP_SCALE_FRAMES", "2")),
+            'kv_cache_scale_frames': int(os.environ.get("LINGBOT_MAP_SCALE_FRAMES", "2")),
+            'camera_num_iterations': int(os.environ.get("LINGBOT_MAP_CAMERA_ITERS", "1")),
+            'use_sdpa': True,   # FlashInfer is optional upstream; SDPA is the fallback
+            # The whole point of this job is a world point cloud, and this build
+            # defaults enable_point to False — which produced a clean `status: ok`
+            # with pointCount 0 and no error at all, the worst kind of result.
+            # enable_depth already defaults True; enable_camera gives the poses.
+            'enable_point': True,
+            'enable_local_point': True,
+        }
+        kwargs = {k: v for k, v in wanted.items() if k in accepted}
+        model = GCTStream(**kwargs)  # type: ignore[operator]
+        model_img_size = _inspect.signature(GCTStream.__init__).parameters['img_size'].default
+        model_patch = _inspect.signature(GCTStream.__init__).parameters['patch_size'].default
+        print(
+            f"[lingbot-map] windowed build: img={model_img_size} patch={model_patch} "
+            f"opts={sorted(kwargs)}",
+            file=sys.stderr,
         )
-        ckpt = torch.load(args.model_path, map_location=device, weights_only=False)
+
+        # map_location="cpu" + mmap: the fork loads this way so the 4.6 GB archive is
+        # not materialised on the GPU (or in RAM) before load_state_dict picks it apart.
+        ckpt = torch.load(args.model_path, map_location="cpu", weights_only=False, mmap=True)
         state_dict = ckpt.get("model", ckpt) if isinstance(ckpt, dict) else ckpt
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
         if missing:
@@ -357,11 +392,13 @@ def run(args: argparse.Namespace) -> int:
         print(f"[lingbot-map] model on {dev.label}", file=sys.stderr)
 
         paths = [str(session_dir / f.file) for f in sampled]
+        # Match the model's own img_size/patch_size, not our constants: a
+        # mismatch here is what makes the position embeddings disagree.
         images = load_and_preprocess_images(
             paths,
             mode="crop",
-            image_size=args.image_size,
-            patch_size=DEFAULT_PATCH_SIZE,
+            image_size=model_img_size,
+            patch_size=model_patch,
         )
         if hasattr(images, "to"):
             images = images.to(device)

@@ -16,6 +16,7 @@ import { WebSocketServer } from 'ws';
 import { OsmoBleTransport } from './ble-transport.mjs';
 import { createStallGuard, createWedgeGuard, NO_PROGRESS_DEG } from '../protocol/stall.mjs';
 import { computeCorrection, shouldFlipSign, poseAlreadyActedOn } from '../protocol/control.mjs';
+import { planDomePans, unreachablePans, assessCapture, PAN_ARC_START_DEG, PAN_ARC_END_DEG } from '../protocol/dome.mjs';
 import { buildGimbalRecenter, buildGimbalAbsoluteAngle, buildGimbalSetMode, buildGimbalSpeedControl, buildGimbalStickControlEnable, buildGimbalResetAndCenter, buildRawCommand } from '../protocol/commands.mjs';
 import { GIMBAL_MODE } from '../protocol/constants.mjs';
 import { quaternionDelta, quatToGimbalControlDeg } from '../protocol/telemetry.mjs';
@@ -45,6 +46,42 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let gridRunning = false;
 /** Set by POST /api/grid-stop; the run loop checks it between positions and unwinds cleanly. */
 let gridCancelRequested = false;
+/**
+ * Non-null while a multi-station run is PARKED between domes, waiting for the operator to
+ * carry the tripod to the next station and say so (POST /api/grid-advance).
+ *
+ * Held at module scope rather than as a local in the run loop because three separate HTTP
+ * requests have to reach it: the advance, a grid-stop that should end the run cleanly instead
+ * of after "the current position" that is not running, and GET /api/status, so a phone that
+ * locks its screen mid-capture and comes back can still find the prompt.
+ *
+ * `{ nextStation, stationsPlanned, since, release }` — `release('advance'|'stop')` resolves
+ * the promise the run loop is sitting on.
+ */
+let stationGate = null;
+
+/**
+ * How long a parked run waits for the operator before giving up.
+ *
+ * Bounded, not infinite. The operator is walking a tripod across a room, so minutes are
+ * normal and a short timeout would be worse than useless — but a run that parks forever holds
+ * `gridRunning`, and this file already has a comment recording what an unattended run that
+ * nobody could stop cost. Thirty minutes is far past any real station move and still ends the
+ * session on its own; the expiry is reported as a partial capture, never as a completed one.
+ */
+const STATION_WAIT_MAX_MS = 30 * 60 * 1000;
+
+/**
+ * How often a parked run emits a line and re-sends a stop.
+ *
+ * Both halves matter. The line keeps the NDJSON response demonstrably alive — the same reason
+ * the per-position streaming exists (see the grid-capture handler), except a station pause can
+ * be minutes of silence rather than seconds, so it would trip undici's idle timeout outright.
+ * The stop is cheap insurance on the one hazard specific to this state: the operator is
+ * physically handling a rig whose speed command LATCHES, and it also proves the BLE link is
+ * still there rather than discovering that at the first move of the next station.
+ */
+const STATION_HEARTBEAT_MS = 5000;
 // Run-level wedge detection lives in protocol/stall.mjs (createWedgeGuard), next to the
 // tick-level stall guard and its tests — see that file for the overheating incident that
 // made it a shared function rather than an inline check in one of the two capture paths.
@@ -238,6 +275,18 @@ function statusPayload() {
     // stream) so a client that loads or reconnects mid-scan can lock its manual controls
     // immediately, instead of offering a joystick that the backend will reject.
     scanning: gridRunning,
+    // Set while a multi-station capture is parked waiting for the tripod to be moved. On
+    // status for the same reason `scanning` is, only more so: the pause can last minutes, and
+    // the operator is across the room with the rig in their hands. If their phone slept, or
+    // the page reloaded, the "I've moved it, go" control has to come back on reconnect — the
+    // alternative is a capture that can only be resumed from whichever tab started it.
+    awaitingStation: stationGate
+      ? {
+        nextStation: stationGate.nextStation,
+        stationsPlanned: stationGate.stationsPlanned,
+        waitedMs: Date.now() - stationGate.since,
+      }
+      : null,
   };
 }
 
@@ -395,6 +444,70 @@ async function moveToClosedLoop(opts) {
  * inside a typical 15s maxMs, so a genuinely dead link is caught with time to spare.
  */
 const NO_TELEMETRY_ABORT_MS = STREAM_STALE_MS * 2;
+
+/**
+ * Park a multi-station capture between domes until the operator has carried the tripod to the
+ * next station and said so.
+ *
+ * This pause is the whole capture, not a convenience. A dome swept from one spot is pure
+ * rotation with no translational baseline — measured, that registers 3 of 17 images in COLMAP,
+ * while five domes from five spots register 36 of 36. The parallax comes from the tripod
+ * moving, so the run has to stop dead and wait for a human with no idea how long that takes.
+ *
+ * Three things have to hold across a wait of arbitrary length, and each is why a `sleep` would
+ * not do:
+ *
+ *   1. The motors must not be latched. The speed command is a latch, not a pulse, and the
+ *      operator is about to pick the rig up — so stop before parking and again on every
+ *      heartbeat, not once at the start.
+ *   2. The BLE link must not be assumed. It is re-exercised every heartbeat (that is what
+ *      stopMotors doubles as) and its state is reported in the event, so a link that died
+ *      during the pause is visible while the operator is still standing at the gimbal.
+ *   3. The HTTP response must keep flowing. A multi-minute silence on the NDJSON stream reads
+ *      as a hung connection to undici's own idle timeout, which is what killed two real runs
+ *      before per-position streaming existed.
+ *
+ * Returns 'advance' | 'stop' | 'timeout'. Never throws: every outcome is a run state the
+ * caller has to report, not an exception.
+ */
+async function awaitStation({ nextStation, stationsPlanned, emit, maxWaitMs = STATION_WAIT_MAX_MS }) {
+  await stopMotors();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const since = Date.now();
+  stationGate = { nextStation, stationsPlanned, since, release };
+  broadcast({ type: 'status', ...statusPayload() });
+
+  const prompt = `Move the tripod to station ${nextStation} of ${stationsPlanned}, then confirm to continue. `
+    + 'Put it somewhere the previous stations can see and that can see them, and do not line the '
+    + 'stations up in a row — collinear stations share one baseline direction and reintroduce the '
+    + 'degeneracy the stations exist to break.';
+  emit({ phase: 'awaiting-station', nextStation, stationsPlanned, waitedMs: 0, linkUp: transport.connected, note: prompt });
+
+  let outcome = null;
+  while (outcome === null) {
+    outcome = await Promise.race([gate, sleep(STATION_HEARTBEAT_MS).then(() => null)]);
+    if (outcome !== null) break;
+    if (Date.now() - since >= maxWaitMs) {
+      stationGate = null;
+      outcome = 'timeout';
+      break;
+    }
+    await stopMotors();
+    emit({
+      phase: 'awaiting-station',
+      nextStation,
+      stationsPlanned,
+      waitedMs: Date.now() - since,
+      linkUp: transport.connected,
+      note: prompt,
+    });
+  }
+
+  stationGate = null;
+  broadcast({ type: 'status', ...statusPayload() });
+  return outcome;
+}
 
 async function driveClosedLoop({ yawDeg = 0, pitchDeg = 0, toleranceDeg = 3, speedDegPerSec = 25, tickMs = 250, settleMs = 150, maxMs = 8000 }) {
   const start = Date.now();
@@ -592,7 +705,7 @@ const routes = {
     {
       ok: true,
       message: 'Osmo BLE backend is running.',
-      routes: ['GET /api/status', 'POST /api/scan', 'POST /api/connect', 'POST /api/pair-trigger', 'POST /api/pair', 'POST /api/disconnect', 'POST /api/forget-os', 'POST /api/command', 'POST /api/move-to', 'POST /api/capture-photo', 'POST /api/grid-capture', 'POST /api/grid-stop', 'GET /api/scan-sessions', 'GET /api/frames', 'POST /api/test/recenter-probe', 'POST /api/test/command-probe', 'WS /ws'],
+      routes: ['GET /api/status', 'POST /api/scan', 'POST /api/connect', 'POST /api/pair-trigger', 'POST /api/pair', 'POST /api/disconnect', 'POST /api/forget-os', 'POST /api/command', 'POST /api/move-to', 'POST /api/capture-photo', 'POST /api/grid-capture', 'POST /api/grid-advance', 'POST /api/grid-stop', 'GET /api/scan-sessions', 'GET /api/frames', 'POST /api/test/recenter-probe', 'POST /api/test/command-probe', 'WS /ws'],
     },
   ],
   'GET /api/status': async () => [200, statusPayload()],
@@ -662,7 +775,55 @@ const routes = {
   'POST /api/grid-stop': async () => {
     if (!gridRunning) return [200, { stopped: false, note: 'No scan is running.' }];
     gridCancelRequested = true;
+    // Parked between stations, the loop is asleep on a promise and will never reach its
+    // between-positions cancel check — so releasing the gate IS the stop. Ending here is a
+    // clean seam rather than an abort: every station so far finished, so what is on disk is a
+    // whole number of domes, which is exactly the shape a partial capture has to have to be
+    // solvable.
+    if (stationGate) {
+      const gate = stationGate;
+      stationGate = null;
+      gate.release('stop');
+      return [200, {
+        stopped: true,
+        note: `Stopping with ${gate.nextStation - 1} of ${gate.stationsPlanned} station(s) captured. `
+          + 'Those stations are complete and usable on their own.',
+      }];
+    }
     return [200, { stopped: true, note: 'Scan will stop after the current position.' }];
+  },
+
+  // "I have moved the tripod — go." The one control a multi-station capture cannot work
+  // without, and the reason the pause is a real state rather than a sleep: only the operator
+  // knows when the rig is down, level and out of shot at the next spot, and that takes as long
+  // as it takes.
+  //
+  // Separate from /api/grid-capture rather than a field on it because the capture request is
+  // already in flight (it is the NDJSON stream), and separate from /api/grid-stop because the
+  // two answers to "the capture is parked" are genuinely different outcomes, not one control
+  // with a flag.
+  'POST /api/grid-advance': async () => {
+    if (!stationGate) {
+      return [409, {
+        error: gridRunning
+          ? 'The capture is sweeping a station, not waiting for one.'
+          : 'No capture is running.',
+        remediation: 'Wait for the "move the tripod" prompt before advancing.',
+      }];
+    }
+    // Checked here, not after the loop wakes: a link that dropped during the pause means the
+    // next station would drive nothing and report a wall of non-converged positions. Saying so
+    // while the operator is still standing at the rig is worth more than a diagnosis later.
+    if (!transport.connected) {
+      return [409, {
+        error: 'The BLE link to the gimbal dropped while the capture was parked, so the next station would sweep nothing.',
+        remediation: 'Reconnect the gimbal (scan -> connect), then advance again. The stations already captured are safe.',
+      }];
+    }
+    const gate = stationGate;
+    stationGate = null;
+    gate.release('advance');
+    return [200, { advanced: true, station: gate.nextStation, stationsPlanned: gate.stationsPlanned }];
   },
 
   'POST /api/command': async (req) => {
@@ -679,7 +840,14 @@ const routes = {
     // scan is driving them.
     const isStopCommand = type === 'speed'
       && !['yawDegPerSec', 'pitchDegPerSec', 'rollDegPerSec'].some((k) => Number(params?.[k]) || 0);
-    if (gridRunning && !isStopCommand && (type === 'speed' || type === 'recenter' || type === 'resetAndCenter')) {
+    // A parked run is exempt. The interlock exists because two controllers steering the same
+    // two motors fight each other — and while the capture is waiting between stations there is
+    // no controller running at all: the motors are stopped and the loop is asleep on a promise.
+    // Refusing here would take the joystick and Center away from the operator at exactly the
+    // moment they are carrying the rig and most likely to need them. The next station's first
+    // move is closed-loop, so whatever pose they leave it in is absorbed.
+    const parked = stationGate !== null;
+    if (gridRunning && !parked && !isStopCommand && (type === 'speed' || type === 'recenter' || type === 'resetAndCenter')) {
       return [409, {
         error: 'A scan is running and owns the gimbal — motion commands are rejected until it finishes.',
         remediation: 'Wait for the scan to finish, or stop it, before moving the gimbal by hand.',
@@ -702,10 +870,20 @@ const routes = {
     return [200, result];
   },
 
-  // Drive a full grid capture: move -> photo -> move -> photo, for every position. Lives here
-  // rather than in the CLI or the web UI so both get the same implementation and, more
-  // importantly, so exactly one process ever holds an MCP session to the phone — the device
-  // caps concurrent sessions (see android-capture.mjs).
+  // Drive a multi-station capture: for each station, sweep a dome (move -> photo -> move ->
+  // photo over every position), then PAUSE while the operator carries the tripod to the next
+  // spot, then sweep the next dome. Lives here rather than in the CLI or the web UI so both
+  // get the same implementation and, more importantly, so exactly one process ever holds an
+  // MCP session to the phone — the device caps concurrent sessions (see android-capture.mjs).
+  //
+  // Why stations, and why the pause is the point: a dome swept from ONE spot is pure rotation.
+  // The optical centre never moves, so there is no translational baseline for structure-from-
+  // motion to triangulate against. Measured on real COLMAP runs over this rig's frames — a
+  // single rotating dome registered 3 of 17 images (degenerate), five stations registered
+  // 36 of 36 (9,914 points), a continuous walkthrough 48 of 48. The parallax comes from the
+  // tripod MOVING BETWEEN stations, so a single-station run is not a smaller capture, it is a
+  // capture of nothing. `stations: 1` still runs (and is what every pre-existing caller gets),
+  // but the `done` event says plainly that it cannot be reconstructed.
   //
   // Streamed as NDJSON (one JSON object per line, flushed as each position finishes) rather
   // than buffered into one response sent only at the very end. Two real failures on real
@@ -725,8 +903,57 @@ const routes = {
   // not hold a WS connection open just to watch one HTTP call finish.
   'POST /api/grid-capture': async (req, url, res) => {
     const body = await readJsonBody(req);
-    const pans = body.pans ?? [120, 145, 170];
-    const tilts = body.tilts ?? [-10, 0, 10];
+
+    // Pan columns come either as an explicit list or as a centre-and-width the planner
+    // guarantees lands inside the gimbal's reachable arc (+82 through 180 to -100 — it cannot
+    // rotate through the front). Explicit lists are checked against the same arc rather than
+    // trusted: a plan that crosses the dead zone is a bug in the plan, and the hardware's
+    // answer to one is to twitch against its stop while the controller holds a speed command
+    // against it until it thermally shuts down. Refusing up front costs one comparison; not
+    // refusing cost a real OM6 several shutdowns on 2026-08-26.
+    let panPlan = null;
+    let pans;
+    try {
+      if (Array.isArray(body.pans) && body.pans.length) {
+        pans = body.pans.map(Number);
+        const bad = unreachablePans(pans);
+        if (bad.length) {
+          return [400, {
+            error: `${bad.length} of ${pans.length} pan column(s) are in the gimbal's dead zone: `
+              + `${bad.map((b) => `${b.pan}° (${b.intoDeadZoneDeg}° past a stop)`).join(', ')}.`,
+            remediation: `Pan can only travel ${PAN_ARC_START_DEG}° round through 180° to ${PAN_ARC_END_DEG}°. `
+              + 'Send panCenterDeg/panSpanDeg instead of an explicit list and the plan is clamped to that arc for you.',
+            reachableArc: { startDeg: PAN_ARC_START_DEG, endDeg: PAN_ARC_END_DEG },
+          }];
+        }
+      } else {
+        panPlan = planDomePans({
+          centerDeg: body.panCenterDeg,
+          spanDeg: body.panSpanDeg,
+          stepDeg: body.panStepDeg,
+          count: body.panCount,
+        });
+        pans = panPlan.pans;
+      }
+    } catch (err) {
+      return [400, { error: String(err.message || err) }];
+    }
+
+    // Tilt has measured stops too — it converges down to about -40° but jams near +16°, which
+    // is the same overheating failure as a pan stop, reached the same way. Same treatment.
+    //
+    // Two rows by default, matching the capture that registered 36/36, and 25° apart so the
+    // step clears the scanner app's 20° minRotationDeg keyframe threshold — a finer default
+    // drives the gimbal through positions that emit no keyframe at all.
+    const tilts = (body.tilts ?? [-25, 0]).map(Number);
+    const badTilts = tilts.filter((t) => !Number.isFinite(t) || t > 16 || t < -45);
+    if (badTilts.length) {
+      return [400, {
+        error: `tilt ${badTilts.join(', ')}° is outside the measured travel (-45°..+16°) — driving into the tilt stop jams it.`,
+        remediation: 'Keep tilt rows within about -40°..+10°.',
+      }];
+    }
+
     const deviceUrl = body.deviceUrl ?? process.env.ANDROID_MCP_URL;
     const deviceToken = body.deviceToken ?? process.env.ANDROID_MCP_TOKEN;
     // Movement-only: sweep the grid but take no photos over MCP. The phone runs the scanner
@@ -746,11 +973,29 @@ const routes = {
     if (capturePhotos && !deviceToken) return [400, { error: 'deviceToken is required (or set ANDROID_MCP_TOKEN) — see .env.example' }];
     const refusal = linkRefusal('stream');
     if (refusal) return refusal;
+    if (gridRunning) return [409, { error: 'A capture is already running and owns the gimbal.', remediation: 'Stop it (POST /api/grid-stop) before starting another.' }];
+
+    // Capped at 12: a station is a physical walk plus a full dome, so a hundred of them is a
+    // typo, not a plan. Three to five is what a room takes.
+    const stationsPlanned = Math.min(12, Math.max(1, Math.trunc(Number(body.stations ?? 1)) || 1));
+    const stationLabel = (n) => {
+      const given = Array.isArray(body.stationLabels) ? body.stationLabels[n - 1] : null;
+      // Sanitised, because this becomes a path segment on the phone and in the operator's
+      // output directory. A label that is only punctuation falls back to the index rather than
+      // producing an empty path component.
+      const safe = String(given ?? '').trim().replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+      return safe || `station-${String(n).padStart(2, '0')}`;
+    };
+
+    // A wait long enough for a real station move, overridable for tests. See
+    // STATION_WAIT_MAX_MS for why it is bounded at all.
+    const stationWaitMaxMs = Number(body.stationWaitMaxMs) > 0 ? Number(body.stationWaitMaxMs) : STATION_WAIT_MAX_MS;
 
     const grid = planGrid({ pans, tilts });
+    const perStation = grid.length;
+    const total = perStation * stationsPlanned;
     const prefix = body.prefix ?? `grid-${Date.now()}`;
     const client = capturePhotos ? new AndroidMcpClient({ url: deviceUrl, token: deviceToken }) : null;
-    const results = [];
 
     res.writeHead(200, {
       'Content-Type': 'application/x-ndjson',
@@ -759,13 +1004,43 @@ const routes = {
     });
     const emit = (event) => {
       broadcast({ type: 'grid-progress', ...event });
-      res.write(JSON.stringify(event) + '\n');
+      // A dead NDJSON client must not become a failed capture. The run deliberately survives its
+      // HTTP caller going away (that is why /api/grid-stop exists at all), and a station pause
+      // makes that more likely, not less — the operator is walking around with a phone. Writing
+      // to a closed response throws, and doing so from inside the run loop would abort a capture
+      // that is still perfectly alive on the WS every other client is watching.
+      try {
+        res.write(JSON.stringify(event) + '\n');
+      } catch {
+        /* client hung up; the WS broadcast above is still the live channel */
+      }
     };
 
-    emit({ phase: 'start', total: grid.length, prefix });
+    emit({
+      phase: 'start',
+      total,
+      perStation,
+      stationsPlanned,
+      prefix,
+      // The plan is on the wire so a capture can be read back later without re-deriving it —
+      // "which station was bad" is the first question when a solve fails, and it is
+      // unanswerable if nobody wrote down where the columns were.
+      plan: { pans, tilts, ...(panPlan ? { pan: panPlan } : {}) },
+    });
     gridRunning = true;
     gridCancelRequested = false;
-    const wedge = createWedgeGuard();
+    broadcast({ type: 'status', ...statusPayload() });
+
+    /** Per-station summary, in station order. The unit a partial capture is measured in. */
+    const stations = [];
+    /** Every captured position across every station, for the final summary. */
+    const results = [];
+    /** Non-null once the run is ending early; the text says why, in the operator's terms. */
+    let incompleteReason = null;
+    /** Set when the run ended on a fault rather than a choice — reported as an error too. */
+    let faulted = false;
+    let position = 0;
+
     /** Remediation text for an aborted run; only called once the guard has tripped. */
     const wedgeMessage = (move) =>
       `Gimbal stopped moving — ${wedge.stuckPositions} consecutive positions ended at the same pose `
@@ -774,116 +1049,197 @@ const routes = {
       + 'Stopping so the motors are not driven into a jam until they overheat. Hold '
       + 'Shutter + Switch + Trigger together for ~1s to hardware-reset the gimbal, check the '
       + 'phone is balanced in the cradle, then reconnect and re-run.';
+    // Reassigned per station, and closed over by wedgeMessage above so the message always
+    // reports the guard that actually tripped — see the loop for why it does not span stations.
+    let wedge = createWedgeGuard();
+
     try {
       if (client) await client.open();
-      for (const [i, target] of grid.entries()) {
-        const position = i + 1;
-        emit({ phase: 'moving', position, total: grid.length, target });
 
-        const move = await moveToClosedLoop({
-          yawDeg: target.pan,
-          pitchDeg: target.tilt,
-          toleranceDeg: body.toleranceDeg ?? 5,
-          maxMs: body.maxMs ?? 15000,
-        });
-
-        // Losing telemetry IS fatal to the run, unlike a merely non-converged move below: every
-        // remaining position would be commanded blind and photographed wherever the gimbal
-        // happened to end up, producing a capture that looks complete and is not.
-        if (move.noTelemetry) {
-          emit({
-            phase: 'error',
-            error: `${move.reason} The ${results.length} position(s) captured so far are on disk. `
-              + 'Reconnect (POST /api/connect) and re-run from here.',
-            captured: results.length,
-            link: move.link,
+      for (let station = 1; station <= stationsPlanned; station++) {
+        if (station > 1) {
+          const outcome = await awaitStation({
+            nextStation: station,
+            stationsPlanned,
+            emit,
+            maxWaitMs: stationWaitMaxMs,
           });
-          res.end();
-          return;
+          if (outcome === 'stop') {
+            incompleteReason = `Stopped by request after ${station - 1} of ${stationsPlanned} station(s).`;
+            break;
+          }
+          if (outcome === 'timeout') {
+            incompleteReason = `No confirmation to move on after ${Math.round(stationWaitMaxMs / 60000)} minute(s) — `
+              + `ended with ${station - 1} of ${stationsPlanned} station(s) captured.`;
+            break;
+          }
+          if (!transport.connected) {
+            incompleteReason = 'The BLE link to the gimbal dropped while the capture was parked between stations.';
+            faulted = true;
+            break;
+          }
+          emit({ phase: 'resumed', station, stationsPlanned, stationLabel: stationLabel(station) });
         }
 
-        // A non-converged move is recorded, not fatal: a photo from a position that is merely
-        // close is still usable, and aborting the whole run would throw away the frames already
-        // captured. The caller decides what to do with `converged: false`.
-        emit({ phase: 'capturing', position, total: grid.length, converged: move.converged });
-        if (!capturePhotos) {
-          // Hold still long enough for the scanner's pose poller (~350ms) to see a settled
-          // pose and emit a keyframe. Moving straight on would blur the frame it captures.
-          await sleep(body.dwellMs ?? 1200);
-          const entry = { position, target, converged: move.converged, ticks: move.ticks, pan: move.finalYaw, tilt: move.finalPitch, photoUrl: null, capturedBy: 'scanner-app' };
-          results.push(entry);
-          emit({ phase: 'captured', ...entry, total: grid.length });
-          if (wedge.observe(move)) {
+        const summary = { station, label: stationLabel(station), positions: 0, converged: 0 };
+        stations.push(summary);
+        emit({ phase: 'station-start', station, stationsPlanned, stationLabel: summary.label, perStation, total });
+
+        // A fresh wedge guard per station, not one for the whole run. The guard counts
+        // CONSECUTIVE positions that ended at the same pose, and a station boundary breaks that
+        // chain for a real physical reason: the operator has just picked the rig up, moved it
+        // and set it down, which is the same intervention its own remediation text asks for.
+        // Carrying suspicion across that would condemn a healthy station for the last one's
+        // trouble.
+        wedge = createWedgeGuard();
+
+        for (const [i, target] of grid.entries()) {
+          const stationPosition = i + 1;
+          position++;
+          emit({ phase: 'moving', position, total, station, stationLabel: summary.label, stationPosition, perStation, target });
+
+          const move = await moveToClosedLoop({
+            yawDeg: target.pan,
+            pitchDeg: target.tilt,
+            toleranceDeg: body.toleranceDeg ?? 5,
+            maxMs: body.maxMs ?? 15000,
+          });
+
+          // Losing telemetry IS fatal to the run, unlike a merely non-converged move below:
+          // every remaining position would be commanded blind and photographed wherever the
+          // gimbal happened to end up, producing a capture that looks complete and is not.
+          // Carried over from #222 into the station loop: that rewrite restructured this loop,
+          // and dropping the check would have silently un-fixed it.
+          if (move.noTelemetry) {
+            incompleteReason = `${move.reason} Lost the link during station ${station} of `
+              + `${stationsPlanned}, after ${summary.positions} position(s) in it.`;
             emit({
               phase: 'error',
-              error: `${wedgeMessage(move)} The ${results.length} position(s) captured so far are on disk.`,
+              error: `${move.reason} The ${results.length} position(s) captured so far are on `
+                + 'disk. Reconnect (POST /api/connect) and re-run from here.',
               captured: results.length,
+              station,
+              link: move.link,
             });
-            res.end();
-            return;
+            faulted = true;
+            break;
+          }
+
+          // A non-converged move is recorded, not fatal: a photo from a position that is merely
+          // close is still usable, and aborting the whole run would throw away the frames already
+          // captured. The caller decides what to do with `converged: false`.
+          emit({ phase: 'capturing', position, total, station, stationLabel: summary.label, stationPosition, converged: move.converged });
+
+          // Every position carries its station, on the frame itself and in the photo's own
+          // filename. Downstream needs it twice over: COLMAP wants to know which images share
+          // an optical centre, and "which station was bad" is the first question anyone asks
+          // when a solve comes back short — unanswerable if the only record is capture order.
+          const entry = {
+            position,
+            station,
+            stationLabel: summary.label,
+            stationPosition,
+            target,
+            converged: move.converged,
+            ticks: move.ticks,
+            pan: move.finalYaw,
+            tilt: move.finalPitch,
+            photoUrl: null,
+          };
+
+          if (!capturePhotos) {
+            // Hold still long enough for the scanner's pose poller (~350ms) to see a settled
+            // pose and emit a keyframe. Moving straight on would blur the frame it captures.
+            await sleep(body.dwellMs ?? 1200);
+            entry.capturedBy = 'scanner-app';
+          } else {
+            const photoOpts = { cameraId: body.cameraId ?? '0', resolution: body.resolution ?? '1280x720', quality: body.quality ?? 85 };
+            // One directory level on the phone, station in the filename — nested directories on
+            // the device side are unproven, while the single-level layout is what every run so
+            // far has written. The station structure gets rebuilt as real directories on the
+            // machine that downloads them, where it costs nothing to be sure.
+            const stem = `${prefix}/${summary.label}-pos-${String(stationPosition).padStart(2, '0')}`;
+            if (body.bothOrientations) {
+              // 'follow' is confirmed landscape; 'lock' (byte 0) is only a best guess at portrait —
+              // see the "Orientation toggle" section's own caveat. Land landscape first (the
+              // confirmed one) so a run that only manages one shot per position before a failure
+              // still has the orientation we trust.
+              await buildAndSend('setMode', { mode: 'follow' });
+              await sleep(1000);
+              entry.photoUrl = await capturePhoto(client, { path: `${stem}-landscape.jpg`, ...photoOpts });
+              await buildAndSend('setMode', { mode: 'lock' });
+              await sleep(1000);
+              entry.photoUrlPortrait = await capturePhoto(client, { path: `${stem}-portrait.jpg`, ...photoOpts });
+            } else {
+              entry.photoUrl = await capturePhoto(client, { path: `${stem}.jpg`, ...photoOpts });
+            }
+          }
+
+          results.push(entry);
+          summary.positions++;
+          if (move.converged) summary.converged++;
+          emit({ phase: 'captured', ...entry, total, perStation });
+
+          // Wedge/jam detection — createWedgeGuard() in protocol/stall.mjs. One check, on the
+          // single path both capture modes now share: the movement-only branch used to `continue`
+          // past an inline check that lived only in the photo path, which is how a run once drove
+          // an OM6 through 10 consecutive positions at a bit-identical pose until it overheated.
+          if (wedge.observe(move)) {
+            incompleteReason = wedgeMessage(move);
+            faulted = true;
+            break;
           }
           if (gridCancelRequested) {
-            emit({ phase: 'error', error: `Scan stopped by request after ${results.length} position(s).`, captured: results.length });
-            res.end();
-            return;
+            incompleteReason = `Stopped by request during station ${station} of ${stationsPlanned}, `
+              + `after ${summary.positions} of ${perStation} position(s) in it.`;
+            break;
           }
-          continue;
         }
 
-        const photoOpts = { cameraId: body.cameraId ?? '0', resolution: body.resolution ?? '1280x720', quality: body.quality ?? 85 };
-        let photoUrl, photoUrlPortrait;
-        if (body.bothOrientations) {
-          // 'follow' is confirmed landscape; 'lock' (byte 0) is only a best guess at portrait —
-          // see the "Orientation toggle" section's own caveat. Land landscape first (the
-          // confirmed one) so a run that only manages one shot per position before a failure
-          // still has the orientation we trust.
-          await buildAndSend('setMode', { mode: 'follow' });
-          await sleep(1000);
-          photoUrl = await capturePhoto(client, { path: `${prefix}/pos-${String(position).padStart(2, '0')}-landscape.jpg`, ...photoOpts });
-          await buildAndSend('setMode', { mode: 'lock' });
-          await sleep(1000);
-          photoUrlPortrait = await capturePhoto(client, { path: `${prefix}/pos-${String(position).padStart(2, '0')}-portrait.jpg`, ...photoOpts });
-        } else {
-          photoUrl = await capturePhoto(client, { path: `${prefix}/pos-${String(position).padStart(2, '0')}.jpg`, ...photoOpts });
-        }
-
-        const entry = { position, target, converged: move.converged, ticks: move.ticks, pan: move.finalYaw, tilt: move.finalPitch, photoUrl, ...(photoUrlPortrait ? { photoUrlPortrait } : {}) };
-        results.push(entry);
-        emit({ phase: 'captured', ...entry, total: grid.length });
-
-        // Wedge/jam detection — createWedgeGuard() in protocol/stall.mjs, shared with the
-        // movement-only path above rather than written inline here (that split is what let the
-        // scanner path run with no wedge check at all).
-        if (wedge.observe(move)) {
-          emit({
-            phase: 'error',
-            error: `${wedgeMessage(move)} The ${results.length} position(s) captured so far are on disk.`,
-            captured: results.length,
-          });
-          res.end();
-          return;
-        }
-
-        if (gridCancelRequested) {
-          emit({ phase: 'error', error: `Scan stopped by request after ${results.length} position(s).`, captured: results.length });
-          res.end();
-          return;
-        }
+        emit({
+          phase: 'station-done',
+          station,
+          stationsPlanned,
+          stationLabel: summary.label,
+          positions: summary.positions,
+          perStation,
+          converged: summary.converged,
+        });
+        if (incompleteReason) break;
       }
     } catch (err) {
-      emit({ phase: 'error', error: String(err.message || err), captured: results.length });
-      res.end();
-      return;
+      incompleteReason = String(err.message || err);
+      faulted = true;
     } finally {
       // Before anything else: a run that ended early (wedge abort, stop request, thrown error)
       // can still have a speed command latched. Leaving it is how the gimbal overheats.
       await stopMotors();
+      // Releasing the gate here as well as in the loop matters for the throw path: a fault
+      // raised while parked would otherwise leave a resolved-by-nobody promise and a status
+      // payload still advertising a prompt that nothing is listening for.
+      stationGate = null;
       gridRunning = false;
       if (client) await client.close();
+      broadcast({ type: 'status', ...statusPayload() });
     }
 
-    const converged = results.filter((r) => r.converged).length;
-    emit({ phase: 'done', total: grid.length, converged });
+    // One verdict, from one place (protocol/dome.mjs), for every consumer — because the defect
+    // this pipeline keeps producing is a run that exits zero having captured nothing usable.
+    // `complete` is "every planned station was swept"; `usable` is the one that matters, and
+    // it is false for a single-station run however many positions it converged.
+    const verdict = assessCapture({ stationsPlanned, stations, incompleteReason });
+    if (faulted) emit({ phase: 'error', error: incompleteReason, captured: results.length, stations });
+    emit({
+      phase: 'done',
+      total,
+      perStation,
+      // Kept as the count of CONVERGED positions, which is what every existing consumer prints
+      // next to `total`.
+      converged: verdict.framesConverged,
+      captured: results.length,
+      stations,
+      ...verdict,
+    });
     res.end();
   },
 

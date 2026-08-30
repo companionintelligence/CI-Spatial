@@ -147,6 +147,21 @@ export interface BuildDatasetResult {
   seedPlyPath?: string
   /** Frames that were dropped because the image was missing or unreadable. */
   droppedFrames: number
+  /**
+   * Where the poses in `transforms.json` came from, split by kind.
+   *
+   * Not bookkeeping: it is the only thing that says whether the world frame the
+   * trainer works in is METRIC. A capture-time pose comes from WebXR/8th Wall
+   * and is in metres; a solver pose comes from COLMAP or LingBot-Map and is
+   * scale-free, so the same numbers mean nothing in metres. Downstream that
+   * decides which extent check `assessSplatQuality` is even allowed to run —
+   * testing a scale-free extent against a metre threshold is the same error
+   * that makes the panoptic lift place nothing on these sessions.
+   *
+   * Counted rather than flagged because a session can mix the two: only
+   * `fromSolver === 0` makes the whole frame metric.
+   */
+  posedFrames: { fromCapture: number; fromSolver: number }
 }
 
 const KEYFRAME_FILE_RE = /^kf-\d{5}\.jpg$/
@@ -209,6 +224,8 @@ export async function buildBrushDataset(opts: BuildDatasetOptions): Promise<Buil
   const frames: NerfstudioFrame[] = []
   let dropped = 0
   let droppedNoPose = 0
+  let fromCapture = 0
+  let fromSolver = 0
   for (const rec of records) {
     const file = rec.file
     if (!file || !KEYFRAME_FILE_RE.test(file)) {
@@ -217,6 +234,7 @@ export async function buildBrushDataset(opts: BuildDatasetOptions): Promise<Buil
     }
 
     let transform: number[][]
+    let poseFromSolver = false
     if (recordHasPose(rec)) {
       transform = poseToMatrix(rec.pose ?? {})
     } else {
@@ -228,6 +246,7 @@ export async function buildBrushDataset(opts: BuildDatasetOptions): Promise<Buil
         continue
       }
       transform = fallback
+      poseFromSolver = true
     }
 
     const srcPath = `${sessionDir}/${file}`
@@ -261,6 +280,8 @@ export async function buildBrushDataset(opts: BuildDatasetOptions): Promise<Buil
       h,
     )
 
+    if (poseFromSolver) fromSolver++
+    else fromCapture++
     frames.push({
       file_path: `images/${file}`,
       transform_matrix: transform,
@@ -325,6 +346,7 @@ export async function buildBrushDataset(opts: BuildDatasetOptions): Promise<Buil
     frameCount: frames.length,
     seedPlyPath,
     droppedFrames: dropped,
+    posedFrames: { fromCapture, fromSolver },
   }
 }
 

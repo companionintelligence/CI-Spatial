@@ -33,6 +33,45 @@ import { isServerSessionId } from '../../src/shared/session-id.ts'
 // `import type { SplatTrainManifest } from './splat_train.ts'` still works.
 import type { SplatTrainManifest } from '../../src/world/types.ts'
 export type { SplatTrainManifest }
+import { degenerateSplatRemediation, measureSplatQuality, scaleFrameOf } from './splat_quality.ts'
+import type { SplatQuality } from './splat_quality.ts'
+
+/**
+ * `SplatTrainManifest` plus the two fields this stage learned to write after
+ * that type was frozen: the splat's own quality verdict, and the gaussian
+ * budget it was trained under.
+ *
+ * Declared here for exactly the reason `ColmapPosesManifestWithQuality` is
+ * declared in colmap_poses.ts: the fields belong in src/world/manifests.ts
+ * beside the rest of the manifest shape, and that file is owned by another
+ * change in flight. Moving `SplatQuality` there and adding `quality?` /
+ * `params.maxSplats` to `SplatTrainManifest` collapses this alias to nothing,
+ * with no call-site edits.
+ */
+export type SplatTrainManifestWithQuality = Omit<SplatTrainManifest, 'params'> & {
+  params: SplatTrainManifest['params'] & { maxSplats: number }
+  quality?: SplatQuality
+  /**
+   * Why no verdict was reached, when one was attempted and could not be.
+   *
+   * Present INSTEAD of `quality`, never alongside it. A manifest with neither
+   * field would say `status: 'ok'` about a run nothing checked, which reads
+   * exactly like a run that passed — the failure mode this whole verdict exists
+   * to remove, so an unmeasurable splat has to say so out loud.
+   */
+  qualityError?: string
+}
+
+/**
+ * Gaussian budget both backends are given, so an A/B differs by the trainer.
+ *
+ * 1,000,000 is Spirula's `--cap-max` default rather than Brush's 10,000,000:
+ * Spirula treats the number as a target and reaches it, Brush treats it as a
+ * ceiling it does not approach, so the lower of the two is the only value that
+ * constrains anything at all. Measured on sess-video-20260830-054518 at this
+ * budget: Brush 258,710 gaussians, Spirula 997,922.
+ */
+export const DEFAULT_MAX_SPLATS = 1_000_000
 
 export interface SplatTrainRunOptions {
   /**
@@ -70,6 +109,22 @@ export interface SplatTrainRunOptions {
   shDegree?: number
   /** Max image resolution. Falls back to env BRUSH_MAX_RES, then 1280. */
   maxResolution?: number
+  /**
+   * Upper bound on gaussians, forwarded as `--max-splats`. Falls back to env
+   * BRUSH_MAX_SPLATS, then 1,000,000 — Spirula's `--cap-max` default, so the
+   * two backends are given the SAME budget and an A/B between them differs by
+   * the trainer rather than by its allowance.
+   *
+   * Brush's own default is 10,000,000, and lowering it to 1,000,000 changes
+   * nothing about what it produces: brush-cli --help calls it "only an upper
+   * bound, the actual final number of splats is NOT determined by this", and
+   * the measured run under this budget finished at 258,710 — a quarter of the
+   * way to it. That asymmetry is the honest finding of the A/B and is why the
+   * budget can be equalised as an INPUT but not as an output: Spirula
+   * saturates the same cap (997,922 of 1,000,000), Brush stops where its
+   * densification stops.
+   */
+  maxSplats?: number
   /** Eval cadence in steps (default = trainIters, i.e. eval once at the end). */
   evalEvery?: number
   /** For testing: skip the real spawn and treat these results as the Brush run. */
@@ -82,12 +137,18 @@ export type SplatTrainStatus = 'ok' | 'skipped' | 'error'
 
 export interface SplatTrainResult {
   status: SplatTrainStatus
-  manifest: SplatTrainManifest
+  manifest: SplatTrainManifestWithQuality
   /** Absolute path of the landed .ply when status is 'ok'. */
   plyPath?: string
   /** Absolute path of the compressed .ply when produced. */
   compressedPlyPath?: string
   gaussianCount?: number
+  /**
+   * The splat's own verdict. Present whenever a PLY landed and could be read —
+   * callers that gate on `status !== 'ok'` alone are the reason a splat trained
+   * from a 3-of-17 solve reaches the viewer looking like any other.
+   */
+  quality?: SplatQuality
   /** stderr tail from Brush — surfaced in the UI on failure. */
   log: string
   /** Subprocess exit code (or a synthetic code on skip/pre-spawn failure). */
@@ -112,8 +173,9 @@ export function resolveParams(opts: SplatTrainRunOptions) {
   const trainIters = opts.trainIters ?? intFromEnv('BRUSH_TRAIN_ITERS', 15000)
   const shDegree = opts.shDegree ?? intFromEnv('BRUSH_SH_DEGREE', 2)
   const maxResolution = opts.maxResolution ?? intFromEnv('BRUSH_MAX_RES', 1280)
+  const maxSplats = opts.maxSplats ?? intFromEnv('BRUSH_MAX_SPLATS', DEFAULT_MAX_SPLATS)
   const evalEvery = opts.evalEvery ?? trainIters
-  return { brushBin, device, trainIters, shDegree, maxResolution, evalEvery }
+  return { brushBin, device, trainIters, shDegree, maxResolution, maxSplats, evalEvery }
 }
 
 /**
@@ -131,6 +193,7 @@ export function buildBrushArgs(
     '--total-train-iters', String(params.trainIters),
     '--sh-degree', String(params.shDegree),
     '--max-resolution', String(params.maxResolution),
+    '--max-splats', String(params.maxSplats),
     '--export-every', String(params.trainIters),
     '--export-path', exportDir,
     '--export-name', 'splat_{iter}.ply',
@@ -151,7 +214,7 @@ export async function runSplatTrain(opts: SplatTrainRunOptions): Promise<SplatTr
   // dataset-relative --export-path) needs an absolute one to be correct at all.
   const sessionDir = resolve(opts.sessionDir)
 
-  const baseManifest: SplatTrainManifest = {
+  const baseManifest: SplatTrainManifestWithQuality = {
     schemaVersion: 1,
     tool: 'brush',
     status: 'error',
@@ -329,7 +392,30 @@ export async function runSplatTrain(opts: SplatTrainRunOptions): Promise<SplatTr
       timing: { elapsedMs: Date.now() - started },
     }, spawnResult.code, spawnResult.stderr)
   }
-  const gaussianCount = countPlyVertices(plyBytes) ?? 0
+  // An unreadable header or a zero-gaussian export is a FAILED run, not an
+  // `ok` one with a small number in it. `countPlyVertices(...) ?? 0` used to
+  // flow straight into a `status: 'ok'` manifest, so a Brush run that exported
+  // an empty PLY was indistinguishable from one that reconstructed the room —
+  // the same shape of unearned success as a 3-of-17 COLMAP solve reporting ok.
+  // Nothing downstream can use zero gaussians, so nothing downstream should be
+  // told the stage succeeded.
+  const countedGaussians = countPlyVertices(plyBytes)
+  if (countedGaussians === null || countedGaussians === 0) {
+    return _finish(manifestPath, {
+      ...baseManifest,
+      status: 'error',
+      gaussianCount: countedGaussians ?? undefined,
+      error: countedGaussians === null
+        ? `brush exported ${exported.path} but it has no readable PLY header`
+        : 'brush exported a PLY with 0 gaussians',
+      remediation:
+        'The trainer ran to completion and produced nothing usable. Check that the dataset actually ' +
+        `had posed images (\`${dataset.transformsPath}\`, ${dataset.frameCount} frame(s)), then re-run ` +
+        `by hand to see the full log: ${params.brushBin} ${args.join(' ')}.`,
+      timing: { elapsedMs: Date.now() - started },
+    }, spawnResult.code, spawnResult.stderr)
+  }
+  const gaussianCount = countedGaussians
   await Deno.writeFile(opts.outputPlyPath, plyBytes)
 
   // Best-effort compressed variant: Brush does not emit one by default, but if
@@ -347,12 +433,32 @@ export async function runSplatTrain(opts: SplatTrainRunOptions): Promise<SplatTr
     }
   }
 
-  const manifest: SplatTrainManifest = {
+  // Judge the splat that just landed. A large, well-formed PLY is not evidence
+  // of a good reconstruction — see splat_quality.ts's header for the two
+  // healthy runs whose raw extents are 2.9x and 6.9x their own seed cloud.
+  const quality = await measureSplatQuality({
+    plyPath: opts.outputPlyPath,
+    seedPlyPath: dataset.seedPlyPath,
+    sessionDir,
+    scaleFrame: scaleFrameOf(dataset.posedFrames),
+  })
+
+  const manifest: SplatTrainManifestWithQuality = {
     ...baseManifest,
     status: 'ok',
     plyPath: opts.outputPlyPath.split('/').pop(),
     compressedPlyPath: compressedPlyPath?.split('/').pop(),
     gaussianCount,
+    ...(quality
+      ? {
+        quality,
+        // The stage still succeeded — Brush ran, and the .ply is the most
+        // useful thing to look at even when the verdict is bad, exactly as
+        // colmap_poses.ts keeps a degenerate model rather than deleting it.
+        // What changes is that the manifest now says so, and carries the fix.
+        ...(quality.degenerate ? { remediation: degenerateSplatRemediation(quality) } : {}),
+      }
+      : { qualityError: `could not measure ${opts.outputPlyPath}: unreadable PLY` }),
     timing: { elapsedMs: Date.now() - started },
   }
   await writeManifest(manifestPath, manifest)
@@ -363,6 +469,7 @@ export async function runSplatTrain(opts: SplatTrainRunOptions): Promise<SplatTr
     plyPath: opts.outputPlyPath,
     compressedPlyPath,
     gaussianCount,
+    ...(quality ? { quality } : {}),
     log: spawnResult.stderr,
     exitCode: spawnResult.code,
   }
@@ -436,7 +543,7 @@ async function defaultSpawn(
   return { code: output.code, stderr }
 }
 
-async function writeManifest(path: string, manifest: SplatTrainManifest): Promise<void> {
+async function writeManifest(path: string, manifest: SplatTrainManifestWithQuality): Promise<void> {
   try {
     await Deno.writeTextFile(path, JSON.stringify(manifest, null, 2))
   } catch (e) {
@@ -446,7 +553,7 @@ async function writeManifest(path: string, manifest: SplatTrainManifest): Promis
 
 async function _finish(
   manifestPath: string,
-  manifest: SplatTrainManifest,
+  manifest: SplatTrainManifestWithQuality,
   exitCode: number,
   log: string,
 ): Promise<SplatTrainResult> {

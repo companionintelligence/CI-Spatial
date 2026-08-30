@@ -115,6 +115,20 @@ export type SplatAlignment =
     correspondenceCount?: number
     /** Which calibration tier supplied the metric side of the fit. */
     calibrationMethod?: string
+    /**
+     * Which of the similarity's degrees of freedom the fit actually pinned
+     * down, carried through from the manifest so the sentence below can be
+     * built from the evidence rather than from the fact that a fit exists.
+     *
+     * The `'known-distance'` tier publishes `heading: false, origin: false` on
+     * purpose — one measured length fixes SIZE and nothing else. Reading
+     * `state: 'aligned'` as "placed in the Place" for such a frame is exactly
+     * the unearned claim ADR 0005 rule 3 forbids, and it is a claim the server
+     * does not make: `_runSplatAlignJob` already words its own result line off
+     * this same block. Normalised here so every reader gets the same four
+     * booleans (see `resolveSplatAlignment`).
+     */
+    determined: { scale: boolean; up: boolean; heading: boolean; origin: boolean }
   }
   | {
     state: 'unaligned'
@@ -304,6 +318,22 @@ export function resolveSplatAlignment(align: SplatAlignManifest | undefined): Sp
     }
   }
 
+  // Which axes the fit settled. Absent reads as all four, and only for a tier
+  // that predates the field — the `'known-distance'` driver always writes the
+  // block, so one without it is malformed rather than old. This is the same
+  // rule `readMetricFrame` applies server-side (server/panoptic/panoptic_lift.ts);
+  // stated identically here because the two are the only readers of the field
+  // and a disagreement between them would show up as a viewer that describes a
+  // scan the lift refused to place.
+  const determined = align.determined ??
+    (align.tool === 'known-distance' ? null : { scale: true, up: true, heading: true, origin: true })
+  if (!determined) {
+    return {
+      state: 'unaligned',
+      reason: 'splat-align reported ok but never recorded which axes the measurement pinned down',
+    }
+  }
+
   return {
     state: 'aligned',
     scale,
@@ -311,6 +341,7 @@ export function resolveSplatAlignment(align: SplatAlignManifest | undefined): Sp
     projectTransform: transform,
     correspondenceCount,
     calibrationMethod: align.calibrationMethod,
+    determined,
   }
 }
 
@@ -320,7 +351,16 @@ export function resolveSplatAlignment(align: SplatAlignManifest | undefined): Sp
  * on screen always states which frame it is in.
  *
  * Aligned:   "Aligned to project space at metric scale — 1 SfM unit = 8.1 cm, residual 3.1 cm over 24 cameras."
+ * Sized:     "Shown at real-world size — 1 scan unit = 48.0 cm, residual 0.1 cm over 17 cameras. Which way it faces and where it sits are not set yet."
  * Unaligned: "Unaligned — arbitrary SfM scale (no splat-align manifest available — the align job has not run, or is not served yet)."
+ *
+ * The middle case is not a shade of the first. A capture sized by one measured
+ * real-world distance has a TRUE scale and an arbitrary heading and origin, so
+ * "aligned to project space" would be false about it in two of the three things
+ * that sentence claims — and false in the plausible direction, since every
+ * number in the line is correct. The server refuses to place objects through
+ * such a frame for exactly this reason (`readMetricFrame`); the sentence a
+ * person reads has to agree with that refusal rather than contradict it.
  *
  * The scale is stated as the metric length of one SfM unit rather than as a
  * "1:N" ratio on purpose: `scale` is defined as "multiply an SfM length by this
@@ -335,6 +375,14 @@ export function formatAlignmentStatus(alignment: SplatAlignment | undefined): st
     ? ` over ${alignment.correspondenceCount} cameras`
     : ''
   const via = alignment.calibrationMethod ? ` via ${alignment.calibrationMethod} calibration` : ''
+  // Size alone is the smaller claim, so it gets the smaller sentence — and it
+  // says what is still missing, because "not placed" is the fact a reader needs
+  // before trusting this scan next to another one.
+  if (!alignment.determined.heading || !alignment.determined.origin) {
+    return `Shown at real-world size — 1 scan unit = ${formatMetres(alignment.scale)}, ` +
+      `residual ${formatMetres(alignment.residualM)}${cameras}. ` +
+      'Which way it faces and where it sits are not set yet.'
+  }
   return `Aligned to project space at metric scale — 1 SfM unit = ${formatMetres(alignment.scale)}, ` +
     `residual ${formatMetres(alignment.residualM)}${cameras}${via}.`
 }

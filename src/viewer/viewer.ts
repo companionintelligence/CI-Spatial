@@ -2506,6 +2506,13 @@ function scanHasCompletedLift(scanId: string): boolean {
  * overlays follow. `ensureScanRootInWorld` is what makes this work for the
  * capture kind that most needs it: a video-ingest scan has no GLB of its own,
  * so `loadedScans` may hold no attached root until something asks for one.
+ *
+ * The scan root's LOCAL frame is the scan GLB's own scene frame — it is the
+ * loaded `gltf.scene` with `localToWorld` written over it — which is the frame
+ * `panoptic-layer` has already put `markerGroup` into. So this is a plain
+ * `add`: any conversion out of the sidecar's coordinates is on the group's own
+ * matrix, which is why the chip anchor below is read from the marker's WORLD
+ * position rather than from the sidecar's numbers.
  */
 async function ensureScanPanopticLayer(scanId: string): Promise<ScanPanopticLayer | null> {
   const cached = scanPanopticLayers.get(scanId)
@@ -2532,8 +2539,14 @@ async function ensureScanPanopticLayer(scanId: string): Promise<ScanPanopticLaye
     const root = ensureScanRootInWorld(scan)
     if (root) root.add(layer.markerGroup)
     layer.markerGroup.visible = panopticVisible
+    // `marker.position` is the sidecar's own number, which lives INSIDE the
+    // marker group and is not a scene position when that group carries a frame
+    // change. The chip anchor is a scene position, so it is read off the mesh
+    // once the group is parented — `getWorldPosition` walks up and refreshes
+    // the ancestors itself, so this does not depend on the render loop having
+    // run yet.
     for (const marker of layer.markers) {
-      createLabel(marker.text, marker.position, {
+      createLabel(marker.text, marker.object.getWorldPosition(new THREE.Vector3()), {
         object: marker.object,
         scanId,
         // 'labels', so the Views text filter and the Labels toggle reach these

@@ -104,7 +104,35 @@ export interface SplitSegments {
  * tail of slivers where two real segments meet, plus specks of a class that is
  * mostly off-frame. Those have unusable centroids: a 30px sliver's centroid is
  * an artefact of the boundary, not a position, and fusing on it would scatter
- * phantom Things around the room. 1500px is ~0.2% of a 720x960 keyframe.
+ * phantom Things around the room. 1500px is 0.22% of a 720x960 phone keyframe
+ * and 0.13% of a 1440x810 video-ingest one.
+ *
+ * ── Why this is not raised, and why there is no confidence floor ─────────────
+ *
+ * Measured over three sessions (17-frame phone capture; 32- and 48-frame
+ * synthetic ray-traced room), looking for a threshold that separates the labels
+ * that are right from the ones that plainly are not:
+ *
+ *   Area does not separate them. On the real phone capture the *correct* things
+ *   are the small ones — swivel chair median 5,370px, box 3,207px, chair
+ *   3,530px, monitor 2,343px — while on the synthetic room the misreads are
+ *   large: bench 131,461px, door 234,644px, towel 66,768px. Any floor high
+ *   enough to cut the misreads deletes most of the real capture's true objects.
+ *
+ *   Confidence does not separate them either, and the model has already applied
+ *   the only defensible floor: Mask2Former's post_process_panoptic_segmentation
+ *   drops everything under 0.5, so the observed minimum across all three
+ *   sessions is 0.504 — a floor at 0.5 is a no-op, and anything above it is
+ *   fitted to these three captures. Worse, the ranking runs the wrong way: on
+ *   the synthetic room the *highest*-scoring segments are the wrong ones (sky
+ *   0.999 indoors, towel 0.992, door 0.923 in a room with no door), while a
+ *   real cabinet on the phone capture scores 0.522 at the low end.
+ *
+ * So no new threshold is added. A filter that deletes true positives and keeps
+ * confident false ones is not a quality gate, it is a way of making the counts
+ * look tidier — and the thing this pipeline must not do is report a cleanliness
+ * it has not earned. What a misread label needs is a second view of the same
+ * surface (the 3-D lift), not a number tuned against these fixtures.
  */
 export const MIN_SEGMENT_PIXELS = 1500
 
@@ -181,4 +209,104 @@ export function splitPanopticSegments(
     }
   }
   return { things, stuff, dropped }
+}
+
+/** One label's showing across a run. */
+export interface LabelSightings {
+  label: string
+  /** Segments carrying this label, summed over frames. Sightings, not objects. */
+  sightings: number
+  /** The most this label appeared in any single frame. */
+  maxPerFrame: number
+}
+
+export interface SegmentSummary {
+  /** Frames that contributed at least one segment. */
+  frames: number
+  /** Every segment counted once per frame it appears in. */
+  sightings: number
+  /** Per-label breakdown, most-seen first, ties broken alphabetically. */
+  labels: LabelSightings[]
+  /**
+   * The floor under "how many distinct objects is this?" — see the comment on
+   * `summarizePanopticSegments`. Never a count of objects.
+   */
+  distinctObjectsAtLeast: number
+}
+
+/**
+ * What a run's segments actually support saying.
+ *
+ * The counting problem this exists for: one physical object appears in many
+ * keyframes as many segments, and nothing here merges them, so a raw segment
+ * total is a count of SIGHTINGS. Measured on the 48-frame synthetic fixture:
+ * 38 thing segments, of which 30 are the label `step` — one ledge, seen thirty
+ * times. "38 objects" would overstate that room by roughly an order of
+ * magnitude.
+ *
+ * Merging them properly needs each sighting's world position, and that is
+ * exactly what the 3-D lift cannot supply on these captures: a video keyframe
+ * carries no metric capture pose (0 of 48 on this fixture) and solved SfM poses
+ * are scale-free, so the lift places nothing. Merging on 2-D evidence instead —
+ * label plus centroid or bbox overlap between neighbouring frames — was not
+ * done, because it cannot re-identify an object left and revisited, so it would
+ * emit another authoritative-looking number wrong by an unknown factor. That is
+ * this codebase's recurring defect, not a fix for it.
+ *
+ * What IS provable without any 3-D: if one frame shows three `chair` segments,
+ * the room holds at least three chairs. Summing that per-frame maximum over
+ * labels gives `distinctObjectsAtLeast`, a genuine lower bound — 8 for the
+ * 48-frame fixture against 38 sightings.
+ *
+ * One caveat that has to travel with it, because it is a bound on segment
+ * identities and not on reality: it is only a bound on *objects* where the label
+ * is right. On the synthetic fixture the contributing labels include `towel`,
+ * `bench`, `door` and `flag` on untextured noise, so its lower bound of 8 counts
+ * misreads as objects. Truncating the tail would not fix that — see
+ * MIN_SEGMENT_PIXELS for why neither an area nor a confidence floor separates
+ * those from real ones.
+ */
+export function summarizePanopticSegments(segments: readonly ThingSegment[]): SegmentSummary {
+  const perFrame = new Map<string, Map<string, number>>()
+  for (const s of segments) {
+    let frame = perFrame.get(s.file)
+    if (!frame) perFrame.set(s.file, frame = new Map())
+    frame.set(s.label, (frame.get(s.label) ?? 0) + 1)
+  }
+
+  const totals = new Map<string, { sightings: number; maxPerFrame: number }>()
+  for (const frame of perFrame.values()) {
+    for (const [label, n] of frame) {
+      const t = totals.get(label) ?? { sightings: 0, maxPerFrame: 0 }
+      t.sightings += n
+      t.maxPerFrame = Math.max(t.maxPerFrame, n)
+      totals.set(label, t)
+    }
+  }
+
+  const labels = [...totals].map(([label, t]) => ({ label, ...t }))
+    .sort((a, b) => b.sightings - a.sightings || a.label.localeCompare(b.label))
+
+  return {
+    frames: perFrame.size,
+    sightings: segments.length,
+    labels,
+    distinctObjectsAtLeast: labels.reduce((n, l) => n + l.maxPerFrame, 0),
+  }
+}
+
+/**
+ * One log line for a run, worded so the numbers cannot be read as objects.
+ *
+ * Formatted here rather than at the call site so the wording is covered by the
+ * same tests as the counting — the whole point of the line is that "38" never
+ * appears next to the word "objects" without the sightings/at-least framing
+ * beside it.
+ */
+export function formatSegmentSummary(kind: string, summary: SegmentSummary, topN = 6): string {
+  const top = summary.labels.slice(0, topN).map((l) => `${l.label}×${l.sightings}`).join(', ')
+  const rest = summary.labels.length - Math.min(topN, summary.labels.length)
+  return `${summary.sightings} ${kind} sighting(s) of ${summary.labels.length} label(s) over ` +
+    `${summary.frames} frame(s) — at least ${summary.distinctObjectsAtLeast} distinct ${kind}(s), ` +
+    `not ${summary.sightings}${top ? `; ${top}${rest > 0 ? `, +${rest} more` : ''}` : ''}`
 }

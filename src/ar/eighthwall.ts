@@ -270,13 +270,26 @@ export class EighthWallProvider implements ARProvider {
   /**
    * Preflight subscriber and the state its verdict is made from.
    *
-   * `_sessionStartedMs` is when `start()` armed the pose timer; `_preflightRuled`
-   * records that the timer has already fired, so the only thing that can speak
-   * after it is a late pose taking a warning back (see `_emitPreflight`).
+   * `_cameraStreamMs` is when getUserMedia actually handed us a stream, and it
+   * — not `start()` — is what the pose grace window is measured from;
+   * `_preflightRuled` records that the timer has already fired, so the only
+   * thing that can speak after it is a late pose taking a warning back (see
+   * `_emitPreflight`).
+   *
+   * The anchor moved because the old one measured the wrong thing. Timed on an
+   * XREAL Beam Pro (2026-08-29 20:23, scans/client-logs.jsonl): `requesting` at
+   * +0.0 s and `hasStream` 713 s later, because Chrome's camera permission
+   * prompt was sitting on screen the whole time. The 5 s timer fired at +5 s
+   * against a session that had no camera yet, `firstFrameVerdict()` saw
+   * `sawCameraFrame: false` past the window and returned `'unavailable'` —
+   * "This device cannot run the live scanner" — and then, 474 ms after the
+   * stream finally arrived, the same device reported `trackingStatus: NORMAL`
+   * and a first pose. The device was never the problem; the clock was.
    */
   private _onPreflight: ((verdict: PreflightVerdict) => void) | null = null
-  private _sessionStartedMs = 0
+  private _cameraStreamMs: number | null = null
   private _preflightRuled = false
+  private _poseRulingTimer: ReturnType<typeof setTimeout> | null = null
   /**
    * Camera vertical field-of-view in degrees, read from the projection matrix
    * the SLAM engine publishes each frame (`_syncReality()` below). 60 is only
@@ -583,11 +596,22 @@ export class EighthWallProvider implements ARProvider {
       // console.warn so src/debug/remote-log.ts relays them off-device.
       {
         name: 'ci-scan-diagnostics',
-        onCameraStatusChange({ status }: { status: string }) {
+        onCameraStatusChange: ({ status }: { status: string }) => {
           if (status === 'failed') {
             console.error('[8thwall] Camera failed to start — no video feed will render')
           } else {
             console.log(`[8thwall] Camera status: ${status}`)
+          }
+          // The stream arriving is what starts every clock in this file: until
+          // it does, "no camera frame" only means the browser has not answered
+          // getUserMedia yet, which is a permission prompt or a cold camera and
+          // never a fact about the device. `hasVideo` is accepted alongside
+          // `hasStream` because it is the stronger signal and we should not
+          // depend on seeing both.
+          if (this._cameraStreamMs === null && (status === 'hasStream' || status === 'hasVideo')) {
+            this._cameraStreamMs = performance.now()
+            this._armPoseRuling()
+            this._armAspectDiagnostic()
           }
         },
         onException(error: unknown) {
@@ -706,23 +730,38 @@ export class EighthWallProvider implements ARProvider {
 
     XR8.run({ canvas, allowedDevices: XR8.XrConfig.device().ANY })
 
-    // Aspect diagnostic — read it from the phone's remote console on the next
-    // AR start (`?debug=remote`). This is the only way any of the fit reasoning
-    // in this file gets checked against real hardware.
-    //
-    // `crop` is the number to look at: how much of the camera frame the display
-    // throws away along its tighter axis. Under `contain` it must read 1.00 —
-    // if it does not, `frame` and `canvas` disagree and the fit is wrong.
-    // `projectionAspect` must track `canvas.aspect`, since the engine builds
-    // that projection from the canvas rect; a drift there means the render and
-    // the keyframe intrinsics have come apart.
-    //
-    // `trackSettings` is the raw getUserMedia track resolution, logged only to
-    // show which constraint xr.js settled on (its list is 4:3 — 1600x1200,
-    // 1440x1080, 1280x960, 960x720, 640x480). It can legitimately disagree with
-    // `frame` in orientation: browsers differ on whether they report rotated or
-    // sensor-native dimensions on a portrait device. `frame` is what the engine
-    // fits with, so `frame` is what we fit with.
+  }
+
+  /**
+   * Aspect diagnostic — read it from the phone's remote console on the next
+   * AR start (`?debug=remote`). This is the only way any of the fit reasoning
+   * in this file gets checked against real hardware.
+   *
+   * `crop` is the number to look at: how much of the camera frame the display
+   * throws away along its tighter axis. Under `contain` it must read 1.00 —
+   * if it does not, `frame` and `canvas` disagree and the fit is wrong.
+   * `projectionAspect` must track `canvas.aspect`, since the engine builds
+   * that projection from the canvas rect; a drift there means the render and
+   * the keyframe intrinsics have come apart.
+   *
+   * `trackSettings` is the raw getUserMedia track resolution, logged only to
+   * show which constraint xr.js settled on (its list is 4:3 — 1600x1200,
+   * 1440x1080, 1280x960, 960x720, 640x480). It can legitimately disagree with
+   * `frame` in orientation: browsers differ on whether they report rotated or
+   * sensor-native dimensions on a portrait device. `frame` is what the engine
+   * fits with, so `frame` is what we fit with.
+   *
+   * Armed when the camera stream arrives, not from `start()`: fired from there
+   * it routinely sampled a session that had no stream yet and printed
+   * `frame: "unreported"`, `trackSettings: "unavailable"`,
+   * `projectionAspect: null` — which reads as a dead engine and is actually a
+   * pending getUserMedia. Measured on the Beam Pro, 2026-08-30 08:17:07:
+   * `hasStream` at +0.66 s, diagnostic at +4.00 s. Anchored to the stream, the
+   * same print means what it says.
+   */
+  private _armAspectDiagnostic(): void {
+    const canvas = this._canvas
+    if (!canvas) return
     setTimeout(() => {
       const video = document.querySelector('video') as HTMLVideoElement | null
       const track = video?.srcObject instanceof MediaStream
@@ -749,20 +788,27 @@ export class EighthWallProvider implements ARProvider {
           : null,
       }))
     }, 4000)
+  }
 
-    // The preflight verdict. This is the same 5 s pose timer that has always
-    // been here — it used to end at a console.warn, which is invisible to
-    // someone holding a phone in their kitchen, and on the Beam Pro that warning
-    // was the ONLY report that the engine had accepted XR8.run(), acquired a
-    // 960x720 camera track, and then never emitted a single frame.
-    //
-    // `_videoW` is what separates that dead pipeline from a room SLAM simply
-    // cannot lock onto: it is set from the engine's own videoWidth hook, so a
-    // zero here is exactly the `frame: "unreported"` the aspect diagnostic
-    // above prints. The judgement itself lives in firstFrameVerdict() so it is
-    // testable without an AR session.
-    this._sessionStartedMs = performance.now()
-    setTimeout(() => {
+  /**
+   * Arm the preflight verdict, measured from the camera stream.
+   *
+   * This is the same 5 s pose timer that has always been here — it used to end
+   * at a console.warn, which is invisible to someone holding a phone in their
+   * kitchen, and on the Beam Pro that warning was the ONLY report that the
+   * engine had accepted XR8.run(), acquired a 960x720 camera track, and then
+   * never emitted a single frame.
+   *
+   * `_videoW` is what separates that dead pipeline from a room SLAM simply
+   * cannot lock onto: it is set from the engine's own videoWidth hook, so a
+   * zero here is exactly the `frame: "unreported"` the aspect diagnostic prints.
+   * The judgement itself lives in firstFrameVerdict() so it is testable without
+   * an AR session.
+   */
+  private _armPoseRuling(): void {
+    if (this._poseRulingTimer !== null) clearTimeout(this._poseRulingTimer)
+    this._poseRulingTimer = setTimeout(() => {
+      this._poseRulingTimer = null
       this._preflightRuled = true
       if (!this._slamReady) {
         console.warn('[8thwall] Pose not received in 5 s — capture can continue, but scan geometry will be sparse')
@@ -784,13 +830,26 @@ export class EighthWallProvider implements ARProvider {
     this._onPreflight(firstFrameVerdict({
       sawCameraFrame: this._videoW > 0 && this._videoH > 0,
       sawPose: this._slamReady,
-      elapsedMs: performance.now() - this._sessionStartedMs,
+      // Zero while no stream has arrived, which keeps the verdict inside
+      // firstFrameVerdict()'s grace window and therefore `'warming-up'`. That
+      // is the honest answer to "is this device capable" when the browser has
+      // not yet said whether we may have a camera at all — the alternative,
+      // elapsed-since-start, is what told a working Beam Pro it could not scan.
+      elapsedMs: this._cameraStreamMs === null ? 0 : performance.now() - this._cameraStreamMs,
     }))
   }
 
   stop(): void {
     XR8.stop()
     this._scene = null
+    // A pending ruling outlives the session it was judging otherwise, and would
+    // warn about a pose that stopped being expected the moment we stopped.
+    if (this._poseRulingTimer !== null) {
+      clearTimeout(this._poseRulingTimer)
+      this._poseRulingTimer = null
+    }
+    this._cameraStreamMs = null
+    this._preflightRuled = false
     if (this._onViewportChange) {
       window.removeEventListener('resize', this._onViewportChange)
       window.removeEventListener('orientationchange', this._onViewportChange)

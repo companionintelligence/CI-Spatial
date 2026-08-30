@@ -55,7 +55,7 @@ export type PreflightOutcome =
   | 'warming-up'
   /** Frames are arriving but tracking has not converged. Fixable in the room, not by leaving. */
   | 'degraded'
-  /** Never — this device cannot produce an AR session. Upload Content is the path. */
+  /** Never — this device cannot produce an AR session. The no-AR paths are what is left. */
   | 'unavailable'
 
 export interface PreflightVerdict {
@@ -75,8 +75,13 @@ export interface PreflightVerdict {
   /** Whether committing to a live AR scan is worth the user's time. */
   canScan: boolean
   /**
-   * Whether Upload Content — a walkthrough video or photos, which needs no AR
-   * runtime at all — is the path this device should be sent to.
+   * Whether the paths that need no AR runtime — Tripod Scan first, Upload
+   * Content second — are where this device should be sent.
+   *
+   * Named for Upload Content because that was the only such path when this
+   * field was written, and kept: the question it answers ("has the live
+   * scanner run out of road here?") is unchanged, and what it routes to is a
+   * property of `detail`, which now offers both.
    */
   routeToUpload: boolean
   /**
@@ -92,15 +97,34 @@ export interface PreflightVerdict {
   caveat: boolean
 }
 
-/** The sentence every dead end ends with. Upload Content builds the same map. */
+/** The next steps every dead end ends with, both of which need no AR runtime. */
 // "the same map" was wrong, and wrong in the direction that costs the user time:
 // an upload rebuilds the room's shape but places no objects in it. Measured on a
 // real video capture — 29 segments seen, 0 placed, because a video records no
 // per-frame camera position and object depth cannot be recovered without one.
 // Every verdict this is appended to has already concluded the device cannot scan,
 // so it must not end by recommending scanning.
-const UPLOAD_NEXT_STEP =
-  'Use Upload Content to add a walkthrough video or photos from this Place instead — it rebuilds the room in 3D. It will not catalogue objects: only walking the room with a phone places those, which this device cannot do.'
+//
+// Tripod Scan now leads, and Upload Content follows. Both need no AR runtime, so
+// both are reachable on a phone that has just been found unable to scan — but
+// they are not equivalent, and the ordering says which is better here: sweeping
+// a room from several tripod spots reconstructed it from every side (36 of 36
+// photos usable across five spots, 9,914 points), while an upload of footage
+// shot for other reasons has whatever coverage it happens to have. Sending
+// someone to the weaker of the two paths when the stronger one runs on their
+// device is the dead end this copy used to be.
+//
+// Neither of them recovers real-world size — the ordering is about coverage,
+// not scale, and no copy here may imply otherwise. A capture with no AR runtime
+// is an exact similarity of the room at an arbitrary size until a known length
+// calibrates it (server/capture/known_distance.ts), which is what
+// capture-intent.ts's `TRUE_TO_SIZE` records for both of these paths.
+/** The same next steps, as a mid-sentence continuation. */
+const NO_AR_NEXT_STEP_LOWER =
+  'try Tripod Scan — a phone on a tripod sweeps the room from a few spots, with no AR involved — or use Upload Content to add a video or photos from this Place.'
+
+const NO_AR_NEXT_STEP =
+  'Tripod Scan is the path for this device: a phone on a tripod sweeps the room from a few spots, with no AR involved. Upload Content is the other option if you already have a video or photos of this Place, though it rebuilds the room without cataloguing objects.'
 
 export interface ProbeEnv {
   /** `window.isSecureContext` — camera, WebXR and IndexedDB all require it. */
@@ -159,7 +183,7 @@ export function probeVerdict(env: ProbeEnv): PreflightVerdict {
     return {
       outcome: 'unavailable',
       headline: 'No AR on this browser',
-      detail: `This browser has no AR support at all, so a live scan cannot run. ${UPLOAD_NEXT_STEP}`,
+      detail: `This browser has no AR support at all, so a live scan cannot run. ${NO_AR_NEXT_STEP}`,
       canScan: false,
       routeToUpload: true,
       caveat: true,
@@ -172,7 +196,7 @@ export function probeVerdict(env: ProbeEnv): PreflightVerdict {
     return {
       outcome: 'unavailable',
       headline: 'AR not supported here',
-      detail: `This browser cannot open an AR session, so there is nothing for the scanner to track. ${UPLOAD_NEXT_STEP}`,
+      detail: `This browser cannot open an AR session, so there is nothing for the scanner to track. ${NO_AR_NEXT_STEP}`,
       canScan: false,
       routeToUpload: true,
       caveat: true,
@@ -234,7 +258,7 @@ export function startFailureVerdict(err: unknown): PreflightVerdict {
       // it is the part that is true regardless of cause. The device-specific
       // reason follows, because "retrying will not help" is the thing that
       // changes what the person does next.
-      detail: `AR could not start: this device advertises AR support but has no AR service installed to back it (on Android that is Google Play Services for AR), so retrying will not help. ${UPLOAD_NEXT_STEP}`,
+      detail: `AR could not start: this device advertises AR support but has no AR service installed to back it (on Android that is Google Play Services for AR), so retrying will not help. ${NO_AR_NEXT_STEP}`,
       canScan: false,
       routeToUpload: true,
       caveat: true,
@@ -244,7 +268,7 @@ export function startFailureVerdict(err: unknown): PreflightVerdict {
   return {
     outcome: 'unavailable',
     headline: 'AR could not start on this device',
-    detail: `AR could not start on this device, so there is nothing for the scanner to track. ${UPLOAD_NEXT_STEP}`,
+    detail: `AR could not start on this device, so there is nothing for the scanner to track. ${NO_AR_NEXT_STEP}`,
     canScan: false,
     routeToUpload: true,
     caveat: true,
@@ -313,11 +337,23 @@ export function firstFrameVerdict(obs: FirstFrameObservation): PreflightVerdict 
   if (!obs.sawCameraFrame) {
     const seconds = Math.round(timeoutMs / 1000)
     return {
-      outcome: 'unavailable',
-      headline: 'No camera frames from AR',
-      detail: `The AR engine reported ready but has produced no camera frame in ${seconds} seconds, so there is nothing to scan and nothing to track. This device cannot run the live scanner. ${UPLOAD_NEXT_STEP}`,
-      canScan: false,
-      routeToUpload: true,
+      // NOT 'unavailable', and no longer "this device cannot run the live
+      // scanner". That was a permanent claim about hardware drawn from a
+      // five-second sample, and it is measurably wrong: the same XREAL Beam Pro
+      // it condemned reached trackingStatus NORMAL with a pose 2.37 s after
+      // start on a later attempt. The failure is intermittent — roughly two
+      // starts in eight — and correlates with the orientation getUserMedia
+      // happens to return, not with the device's capability.
+      //
+      // So this reports what actually happened, once, and offers the two things
+      // that work: try again, or upload. `canScan` stays true because the
+      // capture rail must not be dead on a device that succeeds one attempt in
+      // four — the failure here is the start, not the hardware.
+      outcome: 'degraded',
+      headline: 'AR did not start this time',
+      detail: `The camera opened but the AR engine sent no frame in ${seconds} seconds, so there is nothing to track yet. This often clears on a second try. If it keeps happening, ${NO_AR_NEXT_STEP_LOWER}`,
+      canScan: true,
+      routeToUpload: false,
       caveat: true,
     }
   }

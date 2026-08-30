@@ -42,7 +42,14 @@ import {
   type PanopticScanManifest,
 } from '../../src/world/manifests.ts'
 import { isRunnable } from '../exec_probe.ts'
-import { splitPanopticSegments, MIN_SEGMENT_PIXELS, type RawPanopticFrame } from './panoptic_segments.ts'
+import {
+  formatSegmentSummary,
+  MIN_SEGMENT_PIXELS,
+  type RawPanopticFrame,
+  splitPanopticSegments,
+  type SplitSegments,
+  summarizePanopticSegments,
+} from './panoptic_segments.ts'
 export type { PanopticScanManifest }
 
 const DEFAULT_PANOPTIC_PYTHON = `${Deno.env.get('HOME') ?? '~'}/.venvs/panoptic/bin/python`
@@ -200,6 +207,65 @@ export function parseDeviceLine(
   return { resolvedDevice: m[1], ...(m[2] ? { deviceVendor: m[2].trim() } : {}) }
 }
 
+/**
+ * What a completed run should say about itself in the server log.
+ *
+ * Pure and exported so the wording is asserted rather than eyeballed. Two facts
+ * have nowhere else to go on a successful run, and both are ones this pipeline
+ * has previously got wrong by staying quiet:
+ *
+ *  - **The counts are sightings.** `thingCount` is segments across all frames,
+ *    not objects: on the 48-frame synthetic fixture 30 of its 38 thing segments
+ *    are the same ledge. `summarizePanopticSegments` explains why a distinct-
+ *    object count cannot honestly be derived here, and what can.
+ *  - **How the thing/stuff split was decided.** The worker reports `thingSource`
+ *    because a label-string match against the default checkpoint silently files
+ *    eight isthing=1 ADE20K classes (windowpane, bathtub, railing, streetlight,
+ *    television receiver, airplane, apparel, ashcan) as room surface — a real
+ *    phone capture lost 8 of 119 object sightings to it. `thingLabelsUsed` on
+ *    the manifest only says a list was FOUND, which that failure also satisfied.
+ */
+export function runReportLines(
+  segments: SplitSegments,
+  thingSource: unknown,
+  haveThingLabels: boolean,
+): string[] {
+  const lines = [
+    formatSegmentSummary('object', summarizePanopticSegments(segments.things)),
+    formatSegmentSummary('surface', summarizePanopticSegments(segments.stuff)),
+  ]
+  if (segments.dropped > 0) lines.push(`${segments.dropped} segment(s) dropped as malformed or below the pixel floor`)
+  if (!haveThingLabels) {
+    lines.push(
+      'no thing-label list resolved — every segment counted as room surface, so ' +
+        'a zero object count here means the split was disabled, not that the room is empty',
+    )
+  } else if (thingSource === 'label-string') {
+    lines.push(
+      'thing/stuff split fell back to matching label strings: the checkpoint is not ' +
+        'the taxonomy the list was generated from, so classes it names differently are ' +
+        'counted as room surface. Re-run scripts/fetch-ade20k-things.mjs for a list with class ids.',
+    )
+  } else if (thingSource !== 'class-id') {
+    lines.push(
+      `thing/stuff split reported no source (${JSON.stringify(thingSource)}) — this worker ` +
+        'predates the class-id match, so the split is by label string and may misfile renamed classes.',
+    )
+  }
+  return lines
+}
+
+function reportRun(
+  tag: string,
+  segments: SplitSegments,
+  thingSource: unknown,
+  haveThingLabels: boolean,
+): void {
+  for (const line of runReportLines(segments, thingSource, haveThingLabels)) {
+    console.warn(`[panoptic] ${tag}: ${line}`)
+  }
+}
+
 export async function runPanopticScan(opts: PanopticScanRunOptions): Promise<PanopticScanManifest> {
   const started = Date.now()
   const params = resolveParams(opts)
@@ -317,7 +383,7 @@ export async function runPanopticScan(opts: PanopticScanRunOptions): Promise<Pan
 
   // 4. Read back what it wrote. A clean exit that produced nothing is an error,
   //    not an ok-with-zero — silence there would look like "no objects here".
-  let payload: { frames?: RawPanopticFrame[] }
+  let payload: { frames?: RawPanopticFrame[]; thingSource?: unknown }
   try {
     payload = JSON.parse(await Deno.readTextFile(segmentsPath)) as typeof payload
   } catch (e) {
@@ -330,6 +396,7 @@ export async function runPanopticScan(opts: PanopticScanRunOptions): Promise<Pan
   }
 
   const split = splitPanopticSegments(payload.frames ?? [], params.minSegmentPixels)
+  reportRun(opts.sessionId ?? opts.sessionDir, split, payload.thingSource, haveThingLabels)
   return finish(manifestPath, {
     ...base,
     status: 'ok',

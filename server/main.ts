@@ -16,8 +16,12 @@
  * POST /sessions/:id/keyframes         multipart { image, meta } → { ok, index }
  * POST /sessions/:id/finalize          JSON { glbFilename?, … } → session record
  * GET  /sessions/:id                   → session record
+ * GET  /sessions/:id/station-coverage  → station-dome coverage + whether it can reconstruct
+ * POST /sessions/:id/station-capture   JSON { name?, projectId?, areaId?, knownDistances? } → 202 { sessionId, scanId, jobId, frameCount, stationCount, framesPerStation } | 422 (cannot reconstruct)
+ * GET  /sessions/:id/known-distances   → { sessionId, measurements }
+ * POST /sessions/:id/known-distances   JSON { knownDistances: [{ from, to, metres }] } → { sessionId, measurements }
  * POST /ingest-video      multipart { video: File, name?, fps?, projectId?, areaId? } → 202 { sessionId, scanId, jobId, frameCount }
- * POST /ingest-photos     multipart { files: File[], name?, projectId?, areaId? } → 202 { sessionId, scanId, jobId, frameCount, droppedBlurry }
+ * POST /ingest-photos     multipart { files: File[], name?, projectId?, areaId?, stations?, knownDistances? } → 202 { sessionId, scanId, jobId, frameCount, droppedBlurry } | 422 (stations sent, cannot reconstruct)
  * POST /upload-summary     multipart { file: File(.md) } → { filename }
  * POST /process-scan       JSON { filename, action, sessionId? } → { action, result }
  * POST /client-logs        JSON { entries: [{ ts, level, msg, stack?, url? }], ua? } → 204
@@ -84,6 +88,21 @@ import {
 import { pruneScansMissingFromDisk } from './world/world_prune.ts'
 import { runLingBotMapReconstruction } from './lingbot-map/lingbot_map.ts'
 import { runColmapPoses } from './colmap/colmap_poses.ts'
+import {
+  applyStationLabels,
+  assessStationCoverage,
+  readStationCoverage,
+  type StationAssessment,
+  stationCaptureBlockReason,
+  STATION_DOME_SOURCE,
+  summarizeStationCoverage,
+} from './capture/station_dome.ts'
+import {
+  type DistanceMeasurement,
+  parseDistanceMeasurements,
+  readKnownDistances,
+  writeKnownDistances,
+} from './capture/known_distance.ts'
 import { runSplatAlign } from './splat/splat_align.ts'
 import { runSplatTrain } from './splat/splat_train.ts'
 import { runSpirulaTrain } from './splat/spirula_train.ts'
@@ -1170,6 +1189,231 @@ app.post('/sessions/:id/finalize', async (c) => {
   return c.json(record)
 })
 
+// ── Station-dome capture — "a gimbal on a tripod, swept from several spots" ──
+//
+// The frames arrive over POST /sessions + POST /sessions/:id/keyframes like any
+// other capture; `station` rides along in the per-frame meta the keyframe route
+// already writes through to keyframes.jsonl verbatim. These two routes are the
+// only station-specific server surface: one to see coverage while the tripod is
+// still in the room, one to turn the finished session into a scan.
+// See server/capture/station_dome.ts for why station count is the number that
+// decides whether a capture can reconstruct at all.
+
+/**
+ * Turn a finished station capture into a scan with a solve queued behind it.
+ *
+ * The one place that knows the shape of a station capture's finalization, so
+ * that the two ways a capture can arrive — a gimbal client posting keyframes,
+ * or the app's tripod flow posting photos through `/ingest-photos` — cannot
+ * drift apart. They differ only in how the frames landed on disk; from
+ * `session.json` onwards a station capture is a station capture (ADR 0001).
+ *
+ * COLMAP rather than lingbot-map because COLMAP is what the 36/36 measurement
+ * was made with, and it is the stage that writes this scan's first real
+ * geometry (`_runColmapPosesJob` builds the GLB from its seed cloud).
+ */
+async function finalizeStationCapture(opts: {
+  sessionId: string
+  sessionDir: string
+  record: Record<string, unknown>
+  assessment: StationAssessment
+  scanName: string | null
+  projectId: string | null
+  areaId: string | null
+  measurements: DistanceMeasurement[]
+}): Promise<{ scanId: string; jobId: string; slug: string; frameCount: number; stationCount: number; framesPerStation: number[] }> {
+  const { assessment } = opts
+  const frameCount = assessment.coverage.frameCount
+  const stationCount = assessment.coverage.stations.length
+  const framesPerStation = assessment.coverage.stations.map(s => s.frameCount)
+
+  // Written before the job is queued, on purpose: `source` is what tells the
+  // job preflight this is a station capture, and the pump can pick the job up
+  // as soon as it exists.
+  await Deno.writeTextFile(
+    `${opts.sessionDir}/session.json`,
+    JSON.stringify({
+      ...opts.record,
+      source: STATION_DOME_SOURCE,
+      keyframeCount: frameCount,
+      stationCount,
+      framesPerStation,
+      framesWithoutStation: assessment.coverage.framesWithoutStation,
+      captureWarnings: assessment.warnings,
+      finalizedAt: new Date().toISOString(),
+    }, null, 2),
+  )
+  // Separate write, through the module that owns the field's validation, so
+  // there is exactly one writer of a measurement anywhere on the server.
+  if (opts.measurements.length > 0) await writeKnownDistances(opts.sessionDir, opts.measurements)
+
+  const targetSlug = opts.projectId ? projectWorldSlug(opts.projectId) : 'default'
+  if (opts.projectId) await loadProjectWorld(opts.projectId)
+  const { world, value: { scan, job } } = await updateWorld(targetSlug, (world) => {
+    const scan = registerSessionScan(
+      world,
+      opts.sessionId,
+      opts.scanName ?? undefined,
+      frameCount,
+      'station-dome',
+      opts.projectId,
+      opts.areaId,
+    )
+    const job = createWorldJob(world, 'colmap-poses', scan.scanId, {
+      source: STATION_DOME_SOURCE,
+      projectId: opts.projectId,
+      areaId: opts.areaId,
+      sessionId: opts.sessionId,
+      frameCount,
+      stationCount,
+      // Read back by the solve's completion to decide whether an alignment can
+      // follow it — see `_runColmapPosesJob`'s chain.
+      knownDistanceCount: opts.measurements.length,
+    })
+    return { scan, job }
+  })
+  await completeJobSoon(world.shareSlug, job.jobId)
+
+  console.log(
+    `[station-capture] ${opts.sessionId} — ${frameCount} photo(s) from ${stationCount} spot(s) ` +
+    `(${framesPerStation.join('/')})` +
+    `${opts.measurements.length > 0 ? `, ${opts.measurements.length} measured distance(s)` : ''} → ${scan.scanId}`,
+  )
+  return { scanId: scan.scanId, jobId: job.jobId, slug: world.shareSlug, frameCount, stationCount, framesPerStation }
+}
+
+// GET /sessions/:id/station-coverage — what has been captured so far, and
+// whether it can reconstruct. Safe to poll during a capture; it reads only what
+// the keyframe route has already written.
+app.get('/sessions/:id/station-coverage', async (c) => {
+  const dir = await resolveSessionDirFor(c.req.param('id'))
+  if (!dir) return c.json({ error: 'Session not found' }, 404)
+  return c.json(assessStationCoverage(await readStationCoverage(dir)))
+})
+
+// POST /sessions/:id/station-capture   { name?, projectId?, areaId? }
+// Finishes a station-dome session: refuses a capture that cannot reconstruct,
+// otherwise registers a session-backed scan in the selected Place and queues
+// the COLMAP solve — the same session→scan→reconstruction shape /ingest-photos
+// uses, with no downstream special-casing (ADR 0001).
+//
+// COLMAP rather than lingbot-map because COLMAP is what the 36/36 measurement
+// was made with, and it is the stage that writes this scan's first real
+// geometry (_runColmapPosesJob builds the GLB from its seed cloud).
+app.post('/sessions/:id/station-capture', async (c) => {
+  const sessionId = c.req.param('id')
+  const dir = await resolveSessionDirFor(sessionId)
+  if (!dir) return c.json({ error: 'Session not found' }, 404)
+
+  let record: Record<string, unknown>
+  try {
+    record = JSON.parse(await Deno.readTextFile(`${dir}/session.json`)) as Record<string, unknown>
+  } catch {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+
+  const body = await c.req.json().catch(() => ({})) as {
+    name?: unknown
+    projectId?: unknown
+    areaId?: unknown
+    knownDistances?: unknown
+    measurements?: unknown
+  }
+  // The tape readings, if the operator took any while still in the room. They
+  // are the only thing that can ever size this capture — it has no AR pose by
+  // construction — so they ride in on the same request that finishes it.
+  //
+  // `knownDistances` is the name: it is what the field is called in the session
+  // record, in `SplatAlignRunOptions`, and in the capture client that posts it.
+  // `measurements` is accepted as the same thing because that is what the
+  // reading is called out loud, and a caller that guesses it should not get a
+  // capture that silently arrives unsized.
+  const parsedMeasurements = parseDistanceMeasurements(body.knownDistances ?? body.measurements)
+  if (!parsedMeasurements.ok) return c.json({ error: parsedMeasurements.error }, 400)
+  const scanName = typeof body.name === 'string' && body.name.trim().length > 0 ? body.name.trim() : null
+  const projectId = typeof body.projectId === 'string' && body.projectId.trim().length > 0 ? body.projectId.trim() : null
+  const areaId = typeof body.areaId === 'string' && body.areaId.trim().length > 0 ? body.areaId.trim() : null
+  const selectedProject = projectId ? (await loadProjects()).find(project => project.projectId === projectId) : null
+  if (projectId && !selectedProject) return c.json({ error: 'Selected Place was not found' }, 404)
+  if (areaId && !selectedProject?.areas?.some(area => area.areaId === areaId)) {
+    return c.json({ error: 'Selected Area was not found in this Place' }, 404)
+  }
+
+  // The refusal that this whole path exists for. A one-station capture is
+  // geometrically incapable of reconstruction (measured: 3 of 17 images
+  // registered), so it is stopped here — while the operator is still standing
+  // next to the tripod and moving it costs a minute — rather than twenty
+  // minutes into a COLMAP run that was never going to converge. 422, not 400:
+  // the request is well-formed, the capture is not usable.
+  const assessment = assessStationCoverage(await readStationCoverage(dir))
+  if (!assessment.ok) {
+    console.warn(`[station-capture] refused ${sessionId}: ${assessment.verdict} — ${assessment.reason}`)
+    return c.json({ error: assessment.reason, ...assessment }, 422)
+  }
+
+  const registered = await finalizeStationCapture({
+    sessionId,
+    sessionDir: dir,
+    record,
+    assessment,
+    scanName,
+    projectId,
+    areaId,
+    measurements: parsedMeasurements.measurements,
+  })
+
+  // The session really is finalized, so this reuses that event rather than
+  // minting a third ingest event. glbFilename is null because no GLB exists
+  // yet — the COLMAP job is what may write one.
+  broadcast({ type: EVENT.SESSION_FINALIZED, sessionId, keyframeCount: registered.frameCount, glbFilename: null })
+  return c.json({
+    sessionId,
+    scanId: registered.scanId,
+    jobId: registered.jobId,
+    frameCount: registered.frameCount,
+    stationCount: registered.stationCount,
+    framesPerStation: registered.framesPerStation,
+    measurementCount: parsedMeasurements.measurements.length,
+    warnings: assessment.warnings,
+  }, 202)
+})
+
+// POST /sessions/:id/known-distances   { measurements: [{ from, to, metres }] }
+//
+// Record what the operator measured with a tape. `from`/`to` name viewpoints —
+// `station-0`, `station-1`, … for a tripod capture, matching the station
+// numbers the frames carry.
+//
+// Its own route because measuring is not part of capturing: the reading is
+// often taken after the tripod has been packed away, and a capture that was
+// finished unmeasured must be sizeable later without being re-shot. Replaces
+// the stored set rather than appending — re-posting is how a wrong reading is
+// corrected, and an append would keep the wrong one in the fit forever.
+app.post('/sessions/:id/known-distances', async (c) => {
+  const sessionId = c.req.param('id')
+  const dir = await resolveSessionDirFor(sessionId)
+  if (!dir) return c.json({ error: 'Session not found' }, 404)
+
+  const body = await c.req.json().catch(() => ({})) as { knownDistances?: unknown; measurements?: unknown }
+  const parsed = parseDistanceMeasurements(body.knownDistances ?? body.measurements)
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400)
+
+  try {
+    await writeKnownDistances(dir, parsed.measurements)
+  } catch {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+  console.log(`[known-distances] ${sessionId} — ${parsed.measurements.length} measured distance(s)`)
+  return c.json({ sessionId, measurements: parsed.measurements })
+})
+
+// GET /sessions/:id/known-distances — what has been measured against this capture.
+app.get('/sessions/:id/known-distances', async (c) => {
+  const dir = await resolveSessionDirFor(c.req.param('id'))
+  if (!dir) return c.json({ error: 'Session not found' }, 404)
+  return c.json({ sessionId: c.req.param('id'), measurements: await readKnownDistances(dir) })
+})
+
 // ── Video ingest — "walk the house shooting normal video" ────────────────────
 //
 // POST /ingest-video   multipart { video: File, name?, fps? }
@@ -1446,11 +1690,93 @@ app.post('/ingest-photos', async (c) => {
     return c.json({ error: 'Selected Area was not found in this Place' }, 404)
   }
 
+  // ── The tripod contract ───────────────────────────────────────────────────
+  //
+  // `stations`: a JSON array of one non-negative integer per entry of `files`,
+  // in the same order, naming the spot in the room each photo was taken from
+  // (`null` for a photo that was not taken from a marked spot). `measurements`:
+  // a JSON array of `{ from, to, metres }` between viewpoint ids `station-<n>`.
+  //
+  // Two fields on a route that already exists, rather than a capture route of
+  // its own (ADR 0001). Neither is required, and a photo upload that sends
+  // neither behaves exactly as it always has. Sending `stations` is what makes
+  // this a *station capture*: it is the difference between a bag of photos and
+  // a set of fixed spots with parallax between them, and everything downstream
+  // — the single-station refusal, the metre stick, the solve that gets queued —
+  // hangs off it. See server/capture/station_dome.ts.
+  const stationsField = form.get('stations')
+  let stations: (number | null)[] | null = null
+  if (typeof stationsField === 'string' && stationsField.trim().length > 0) {
+    let raw: unknown
+    try {
+      raw = JSON.parse(stationsField)
+    } catch {
+      return c.json({ error: 'stations must be a JSON array of spot numbers, one per photo' }, 400)
+    }
+    if (!Array.isArray(raw) || raw.length !== files.length) {
+      return c.json({
+        error: `stations must carry one entry per photo (${files.length} sent, ${Array.isArray(raw) ? raw.length : 'not a list'} given)`,
+      }, 400)
+    }
+    const parsedStations: (number | null)[] = []
+    for (const [i, value] of raw.entries()) {
+      if (value === null) {
+        parsedStations.push(null)
+        continue
+      }
+      if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+        return c.json({ error: `stations[${i}] must be a whole spot number of 0 or more` }, 400)
+      }
+      parsedStations.push(value)
+    }
+    stations = parsedStations
+  }
+
+  // `knownDistances`, with `measurements` as the same field under the name the
+  // reading has out loud — see POST /sessions/:id/station-capture.
+  const measurementsField = form.get('knownDistances') ?? form.get('measurements')
+  let measurementsJson: unknown = undefined
+  if (typeof measurementsField === 'string' && measurementsField.trim().length > 0) {
+    try {
+      measurementsJson = JSON.parse(measurementsField)
+    } catch {
+      return c.json({ error: 'knownDistances must be a JSON list of { from, to, metres } readings' }, 400)
+    }
+  }
+  const parsedMeasurements = parseDistanceMeasurements(measurementsJson)
+  if (!parsedMeasurements.ok) return c.json({ error: parsedMeasurements.error }, 400)
+  if (parsedMeasurements.measurements.length > 0 && !stations) {
+    return c.json({
+      error: 'a measured distance names two spots, so the photos have to say which spot each was taken from',
+    }, 400)
+  }
+
+  // Refuse before a single byte is transcoded. `summarizeStationCoverage` is
+  // the one judge of a station layout, so the labels are handed to it in the
+  // shape it reads rather than the rule being restated here — this is the same
+  // verdict the finished session gets below, asked as early as it can be asked.
+  // The operator is still standing next to the tripod at this point.
+  if (stations) {
+    const preflight = assessStationCoverage(
+      summarizeStationCoverage(stations.map(s => JSON.stringify(s === null ? {} : { station: s })).join('\n')),
+    )
+    if (!preflight.ok) {
+      console.warn(`[ingest-photos] refused a station capture up front: ${preflight.verdict} — ${preflight.reason}`)
+      return c.json({ error: preflight.reason, ...preflight }, 422)
+    }
+  }
+
   // Save the upload to a temp dir the ingest script reads, then delete it.
   // The index prefix keeps upload order stable for photos without EXIF.
   const tmpDir = `${SCANS_DIR}/tmp/ingest-photos-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`
   await Deno.mkdir(tmpDir, { recursive: true })
   try {
+    // The temp basename is the only name the ingest script ever sees, and it is
+    // what it writes back as `sourcePhoto` — so it is the key the station
+    // labels are carried on. Positional matching cannot be used downstream:
+    // the script re-orders by EXIF capture time and drops blurry frames, so
+    // the k-th upload is routinely not the k-th keyframe.
+    const stationBySourcePhoto = new Map<string, number>()
     let index = 0
     for (const file of files) {
       const ext = (file.name.match(/\.(jpe?g|png)$/i)?.[0] ?? '.jpg').toLowerCase()
@@ -1458,8 +1784,10 @@ app.post('/ingest-photos', async (c) => {
         .replace(/[^a-zA-Z0-9._-]/g, '_')
         .replace(/\.\./g, '__')
         .replace(/^[._-]+/, '') || 'photo'
-      const dest = `${tmpDir}/${String(index).padStart(4, '0')}-${safeStem}${ext}`
-      await Deno.writeFile(dest, new Uint8Array(await file.arrayBuffer()))
+      const basename = `${String(index).padStart(4, '0')}-${safeStem}${ext}`
+      await Deno.writeFile(`${tmpDir}/${basename}`, new Uint8Array(await file.arrayBuffer()))
+      const station = stations?.[index]
+      if (typeof station === 'number') stationBySourcePhoto.set(basename, station)
       index += 1
     }
 
@@ -1490,6 +1818,66 @@ app.post('/ingest-photos', async (c) => {
     const frameCount = parsed.frameCount ?? 0
     if (!sessionId || !sessionDir(sessionId)) {
       return c.json({ error: `ingest returned an invalid session id: ${sessionId}` }, 500)
+    }
+    // The server's own resolver, not the script's reported path: one function
+    // owns the sessions-directory layout, and the guard above already proved
+    // this id resolves through it.
+    const ingestedDir = sessionDir(sessionId)!
+
+    // ── A station capture takes the other branch from here ────────────────
+    //
+    // Same session on disk; a different thing was captured. The station index
+    // is stamped onto the keyframes first, because it is what every later
+    // stage reads — the coverage assessment, `viewpointsFromKeyframes`, and
+    // the job preflight all key off it, and a capture that reaches them
+    // unlabelled is indistinguishable from a bag of photos.
+    if (stations) {
+      const labels = await applyStationLabels(ingestedDir, stationBySourcePhoto)
+
+      // Asked again, of the file rather than the upload. The blur filter runs
+      // between the two, and it can empty a whole spot — a capture that was
+      // two spots when it was posted can be one spot by the time it is on
+      // disk, and one spot cannot reconstruct however it got that way.
+      const assessment = assessStationCoverage(await readStationCoverage(ingestedDir))
+      if (!assessment.ok) {
+        console.warn(`[ingest-photos] refused ${sessionId} after ingest: ${assessment.verdict} — ${assessment.reason}`)
+        return c.json({ error: assessment.reason, sessionId, ...assessment }, 422)
+      }
+
+      let record: Record<string, unknown> = { sessionId }
+      try {
+        record = JSON.parse(await Deno.readTextFile(`${ingestedDir}/session.json`)) as Record<string, unknown>
+      } catch { /* the script just wrote it; a missing one is not worth failing the capture over */ }
+
+      const registered = await finalizeStationCapture({
+        sessionId,
+        sessionDir: ingestedDir,
+        record,
+        assessment,
+        scanName,
+        projectId,
+        areaId,
+        measurements: parsedMeasurements.measurements,
+      })
+      broadcast({
+        type: EVENT.PHOTOS_INGESTED,
+        sessionId,
+        scanId: registered.scanId,
+        jobId: registered.jobId,
+        frameCount: registered.frameCount,
+      })
+      return c.json({
+        sessionId,
+        scanId: registered.scanId,
+        jobId: registered.jobId,
+        frameCount: registered.frameCount,
+        droppedBlurry: parsed.droppedBlurry ?? 0,
+        stationCount: registered.stationCount,
+        framesPerStation: registered.framesPerStation,
+        labelledFrameCount: labels.labelled,
+        measurementCount: parsedMeasurements.measurements.length,
+        warnings: assessment.warnings,
+      }, 202)
     }
 
     // Mirrors video ingest while retaining the user-selected Place/Area.
@@ -2011,7 +2399,11 @@ function registerSessionScan(
   // 'person-capture' is a scan whose subject is a person rather than a place.
   // It shares the session-backed scan shape — a capture is still a capture —
   // but carries no place geometry, so the editor can tell the two apart.
-  source: 'video-ingest' | 'photo-ingest' | 'person-capture' = 'video-ingest',
+  // 'station-dome' is a tripod-and-gimbal capture: several dome sweeps from
+  // fixed spots, with no AR pose at all. Same session-backed shape as the
+  // ingest sources — it differs only in where the parallax came from, which
+  // matters for diagnosing a failed solve, not for anything downstream.
+  source: 'video-ingest' | 'photo-ingest' | 'person-capture' | 'station-dome' = 'video-ingest',
   projectId: string | null = null,
   areaId: string | null = null,
 ): ScanManifest {
@@ -3135,21 +3527,87 @@ async function _runSplatAlignJob(slug: string, jobId: string): Promise<void> {
       // and both lead to the same skip with the same remediation.
     }
 
+    // The other metre stick, and the only one a tripod or video capture can
+    // ever have: a distance somebody measured between two of the spots the
+    // camera stood at. Without this the `'known-distance'` tier had no caller
+    // at all and no station capture could obtain any scale, however well it
+    // reconstructed. The session record is where a measurement lives (see
+    // known_distance.ts) — the scan's meta sidecar holds the *derived*
+    // calibration, which is this run's output, not its input.
+    const knownDistances = await readKnownDistances(sessionPath)
+
     const result = await runSplatAlign({
       sessionDir: sessionPath,
       calibration,
+      knownDistances,
       plyPath: `${SCANS_DIR}/${base}.splat.ply`,
       provenance: { sessionId, scanId: scan.scanId },
     })
 
-    await commitWorldJob(slug, jobId, (currentJob, current) => {
+    // Persist the frame the tier derived, before the job is committed.
+    //
+    // `runSplatAlign` hands a `ScanCalibration` back rather than writing one
+    // because a calibration belongs to the scan record, which that module does
+    // not own — this does. Writing it into the same sidecar `calibration` is
+    // read from above is what makes the size durable: the next reader of this
+    // scan sees a `method: 'known-distance'` frame with the residual that
+    // backs it, instead of an uncalibrated scan that has to be measured again.
+    //
+    // A later align run that finds this calibration but no measurement does
+    // NOT re-use it as a metric camera path — runSplatAlign refuses that
+    // explicitly, because a known-distance frame maps solver coordinates, not
+    // AR-session ones. The measurement in the session is what re-derives it.
+    if (result.status === 'ok' && result.calibration) {
+      try {
+        const metaPath = scanMetaPath(scan.filename)
+        let meta: Record<string, unknown> = {}
+        try {
+          meta = JSON.parse(await Deno.readTextFile(metaPath)) as Record<string, unknown>
+        } catch { /* no sidecar yet — this run mints one */ }
+        meta['calibration'] = result.calibration
+        await Deno.writeTextFile(metaPath, JSON.stringify(meta, null, 2))
+      } catch (err) {
+        console.error(`[splat-align] failed to persist calibration for ${scan.filename}:`, err)
+      }
+    }
+
+    // Ordering, for a capture that has both a size and something to place.
+    //
+    // The lift reads the alignment's `projectTransform`, so a lift that ran
+    // before this stage read a frame that did not exist yet. Re-running it
+    // here — and only when there are segments on disk to lift, so this never
+    // queues work with nothing to do — is what puts "solve, align, then lift"
+    // in that order without a scheduler.
+    let segmentsExist = false
+    if (result.status === 'ok') {
+      try {
+        await Deno.stat(`${sessionPath}/panoptic.segments.json`)
+        segmentsExist = true
+      } catch { /* nothing segmented yet; whoever queues panoptic-scan queues the lift */ }
+    }
+
+    const chainedLiftJobId = await commitWorldJob(slug, jobId, (currentJob, current) => {
+      let chained: string | null = null
       currentJob.progress = 1
       if (result.status === 'ok') {
         currentJob.status = 'completed'
-        const scaleText = result.scale ? `1 SfM unit = ${result.scale.toFixed(4)} m` : 'scale unavailable'
-        currentJob.result =
-          `Splat aligned to the Place metric frame — ${scaleText}, ` +
-          `residual ${((result.residualM ?? 0) * 100).toFixed(1)} cm over ${result.correspondenceCount ?? 0} cameras.`
+        // Two tiers, two different claims, and the sentence has to be the
+        // smaller one when the evidence is smaller. A whole tracked camera
+        // path settles size, up, heading and where the room sits; one measured
+        // distance settles the size and nothing else, and saying "placed in
+        // the Place" off the back of it would be the exact unearned success
+        // this stage refuses everywhere else. `determined` is the fact, so the
+        // sentence is built from it rather than from the tier's name.
+        const determined = result.manifest.determined
+        const placed = determined?.heading === true && determined?.origin === true
+        const residualText = `${((result.residualM ?? 0) * 100).toFixed(1)} cm`
+        currentJob.result = placed
+          ? `Scan measured and placed in this Place — ${result.scale?.toFixed(4) ?? '?'} m per scan unit, ` +
+            `off by ${residualText} across ${result.correspondenceCount ?? 0} camera position(s).`
+          : `Scan now has real-world size — ${result.scale?.toFixed(4) ?? '?'} m per scan unit, ` +
+            `off by ${residualText} across ${result.correspondenceCount ?? 0} camera position(s). ` +
+            'Which way it faces and where it sits are still unset, so set them in the World Editor ' +
+            'before this scan can be placed alongside another.'
         currentJob.artifacts = [{
           type: 'splat-align',
           label: `${scan.name} metric alignment`,
@@ -3157,10 +3615,20 @@ async function _runSplatAlignJob(slug: string, jobId: string): Promise<void> {
           metadata: {
             scale: result.scale ?? null,
             residualM: result.residualM ?? null,
+            residualSource: result.manifest.residualSource ?? null,
             correspondenceCount: result.correspondenceCount ?? null,
             calibrationMethod: result.manifest.calibrationMethod ?? null,
+            determined: determined ?? null,
           },
         }]
+        if (segmentsExist) {
+          const liftJob = createWorldJob(current, 'panoptic-lift', scan.scanId, {
+            source: 'auto-chain',
+            alignJobId: jobId,
+            sessionId,
+          })
+          chained = liftJob.jobId
+        }
         applyCompletedJobToWorld(currentJob, current)
       } else if (result.status === 'skipped') {
         currentJob.status = 'completed'
@@ -3177,7 +3645,9 @@ async function _runSplatAlignJob(slug: string, jobId: string): Promise<void> {
         currentJob.result = currentJob.error
       }
       currentJob.updatedAt = new Date().toISOString()
+      return chained
     })
+    if (chainedLiftJobId) await completeJobSoon(slug, chainedLiftJobId)
   } catch (err) {
     console.error('[splat-align job error]', err)
     await failWorldJob(slug, jobId, errorMessage(err))
@@ -3216,7 +3686,17 @@ async function _runColmapPosesJob(slug: string, jobId: string): Promise<void> {
       }),
     })
 
-    await commitWorldJob(slug, jobId, (currentJob, current) => {
+    // A capture with a tape reading against it is one step from being sized,
+    // and this is the step it has to come after: the measurement is applied to
+    // solved camera positions, which did not exist until just now. Chaining it
+    // here is what makes the order "solve, then align" hold for a station
+    // capture without anyone having to queue the second stage by hand — the
+    // whole reason the tier had no caller. A capture nobody measured chains
+    // nothing, because there would be nothing for the alignment to use.
+    const measuredDistances = result.status === 'ok' ? (await readKnownDistances(sessionPath)).length : 0
+
+    const chainedAlignJobId = await commitWorldJob(slug, jobId, (currentJob, current) => {
+      let chained: string | null = null
       currentJob.progress = 1
       if (result.status === 'ok') {
         currentJob.status = 'completed'
@@ -3224,6 +3704,15 @@ async function _runColmapPosesJob(slug: string, jobId: string): Promise<void> {
           `COLMAP registered ${result.registeredImages ?? 0} image(s), ` +
           `${result.pointCount ?? 0} point(s)` +
           (result.glbPath ? `, and wrote ${scan.filename} from the seed cloud` : '')
+        if (measuredDistances > 0) {
+          const alignJob = createWorldJob(current, 'splat-align', scan.scanId, {
+            source: 'auto-chain',
+            solveJobId: jobId,
+            sessionId,
+            knownDistanceCount: measuredDistances,
+          })
+          chained = alignJob.jobId
+        }
         currentJob.artifacts = [
           {
             type: 'colmap-poses',
@@ -3262,7 +3751,9 @@ async function _runColmapPosesJob(slug: string, jobId: string): Promise<void> {
         currentJob.result = currentJob.error
       }
       currentJob.updatedAt = new Date().toISOString()
+      return chained
     })
+    if (chainedAlignJobId) await completeJobSoon(slug, chainedAlignJobId)
   } catch (err) {
     console.error('[colmap-poses job error]', err)
     await failWorldJob(slug, jobId, errorMessage(err))
@@ -3496,9 +3987,17 @@ async function _runPanopticLiftJob(slug: string, jobId: string): Promise<void> {
           ? `Placed ${placed} of ${seen} object segment(s) in the room` +
             `${result.medianConfidence != null ? ` (median confidence ${result.medianConfidence.toFixed(2)})` : ''}.` +
             `${(result.undeterminedCount ?? 0) > 0 ? ` ${result.undeterminedCount} could not be placed.` : ''}`
+          // The stage already worked out WHICH of the several ways to place
+          // nothing this run hit, and wrote it to `remediation` (only when
+          // nothing was placed at all — see `liftRemediation`). Reaching past
+          // that for a fixed sentence about turning on the spot was a wrong
+          // diagnosis for every other cause, and one of those causes is now
+          // fixable by the operator: a capture with a reconstructed camera
+          // track that has never been measured against a real distance.
           : `Saw ${seen} object segment(s) but could not place any of them. ` +
-            `A capture that rotates in place has almost no parallax, so depth is not recoverable from it — ` +
-            `walk the room to give the scan a baseline.`
+            (result.remediation ??
+              'Depth needs the camera to look at things from more than one spot — turning on the spot cannot ' +
+                'supply it, so walk the room to give the scan a baseline.')
         currentJob.artifacts = [{
           type: 'panoptic-lift-output',
           label: `${scan.name} placed objects`,
@@ -4233,6 +4732,11 @@ const KEYFRAME_JOB_TYPES = ['depth-reconstruct', 'lingbot-map-reconstruct', 'col
 interface JobPreflight {
   /** Whether the scan's keyframe session directory is present on disk. */
   keyframeDirExists?: boolean
+  /**
+   * Why a station-dome capture must not be reconstructed, or absent when there
+   * is no reason (including "this is not a station-dome session at all").
+   */
+  stationCaptureBlock?: string
 }
 
 /**
@@ -4252,7 +4756,14 @@ async function keyframePreflight(slug: string, jobId: string): Promise<JobPrefli
     if (!job || !KEYFRAME_JOB_TYPES.includes(job.type)) return {}
     const scan = scanForJob(job, world)
     if (!scan?.sessionId) return {}
-    return { keyframeDirExists: await resolveSessionDirFor(scan.sessionId) !== null }
+    const sessionPath = await resolveSessionDirFor(scan.sessionId)
+    if (!sessionPath) return { keyframeDirExists: false }
+    // Same gate POST /sessions/:id/station-capture applies, applied again here
+    // because a job can be re-queued by hand long after that route ran — and a
+    // degenerate capture that reaches COLMAP fails twenty confusing minutes
+    // later instead of now. A no-op for every other kind of session.
+    const stationCaptureBlock = await stationCaptureBlockReason(sessionPath)
+    return { keyframeDirExists: true, ...(stationCaptureBlock ? { stationCaptureBlock } : {}) }
   } catch {
     // A preflight hint is never worth failing a dispatch over.
     return {}
@@ -4274,6 +4785,9 @@ function jobFailureReason(job: WorldJob, world: WorldProject, preflight: JobPref
   // thing the user can actually do something about.
   if (KEYFRAME_JOB_TYPES.includes(job.type) && scan && (!scan.sessionId || preflight.keyframeDirExists === false)) {
     return `${job.type} requires RGB keyframe observations. Start keyframe streaming before export.`
+  }
+  if (KEYFRAME_JOB_TYPES.includes(job.type) && preflight.stationCaptureBlock) {
+    return preflight.stationCaptureBlock
   }
   if (job.type === 'align-scan' && world.scans.length < 2) {
     return 'align-scan needs at least two scans in the world or a manual control-point target.'

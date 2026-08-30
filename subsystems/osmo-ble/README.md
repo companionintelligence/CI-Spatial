@@ -35,10 +35,10 @@ Treat that document as the current state of the hardware; this README covers the
 
 ```bash
 npm install
-npm run test:protocol   # verifies the DUML codec against a real captured frame
+npm run test:protocol   # DUML codec against a real captured frame + the dome/station planner
 npm run backend         # :8788 — the ONE process that owns the BLE connection (node --watch)
 npm run web             # http://localhost:8787 — "Scanner Control" UI (Web Bluetooth or backend)
-npm run cli -- grid --dry-run   # scripted capture runs against the backend
+npm run cli -- grid --stations 4 --dry-run   # scripted capture runs against the backend
 npm run mcp             # MCP server over stdio, for use with Claude Code / Claude Desktop
 ```
 
@@ -59,6 +59,128 @@ shell.
 **Web app requirement:** Web Bluetooth only works in Chrome/Edge (not Safari/Firefox), and only
 over a secure context — `http://localhost` counts, plain `file://` does not, hence the tiny
 static server in `web/server.mjs`.
+
+## Multi-station capture — the scan that actually reconstructs
+
+This gimbal is a third capture path for CI-Spatial, beside 8th Wall SLAM and native WebXR: a
+tripod stands still, the gimbal sweeps a dome from that spot, the operator picks the tripod up
+and carries it somewhere else, and it sweeps again. No AR runtime, no SLAM, no ARCore. That
+matters because the test phone (XREAL Beam Pro) has no ARCore at all, so WebXR is permanently
+dead on it, and 8th Wall's SLAM has been observed starting about two attempts in eight.
+
+**The pause between domes is the entire capture.** Measured on real COLMAP runs over this
+rig's own frames:
+
+| capture                          | images registered | verdict                    |
+| -------------------------------- | ----------------- | -------------------------- |
+| single dome, rotating in place   | 3 / 17            | **degenerate**             |
+| 5 stations × a dome each         | 36 / 36           | ready — 9,914 points       |
+| continuous walkthrough           | 48 / 48           | ready                      |
+
+A dome swept from one spot is pure rotation. The optical centre never moves, so there is no
+translational baseline anywhere in the capture and monocular structure-from-motion has nothing
+to triangulate. The parallax comes from the tripod moving *between* stations — this is ordinary
+multi-station photogrammetry, the same principle as registering terrestrial laser scans from
+several setups. The 36/36 run used 5 stations spread across a 6 × 4.4 m room as a rough ring
+plus a centre point: deliberately **not collinear**, because stations in a line share one
+baseline direction and reintroduce a degeneracy of their own.
+
+So `stations: 1` is not a smaller capture, it is a capture of nothing, and every surface here
+says so rather than reporting a successful run: the CLI exits non-zero, the web UI's summary
+line warns before you press Run, and the `done` event carries `usable: false` with the reason.
+
+### The reachable pan arc
+
+The OM6 **cannot rotate through the front.** Its pan travels from roughly **+82° round through
+180° to about −100°** — a 178° arc, with the ~182° spanning the front unreachable. Driving a
+move into that stop does not error: the gimbal twitches against the limit and springs back
+while the controller holds a speed command against it, which is exactly the condition that
+thermally shut a real unit down on 2026-08-26 (a jam closes ~0.65° in 11 s where a healthy move
+closes ~31° in 7.8 s; see `protocol/stall.mjs`).
+
+A plan that crosses the dead zone is therefore a bug in the plan, not an operator error, and it
+is made unplannable rather than detected at position 14 of 105:
+
+- `protocol/dome.mjs` plans a dome as a **centre and a width** clamped to the arc, never a
+  `-x..+x` pair — that spelling is how the dead zone used to get requested. The default is 150°
+  centred on 171° (straight back), which is what the 36/36 capture swept and leaves 14° of
+  margin at each stop.
+- `POST /api/grid-capture` **refuses** an explicit `pans` list containing an unreachable column,
+  with a 400 naming the columns and how far past the stop each one is.
+- The web UI's pan from/to is read *along* the arc, so `96 → -114` sweeps 96 → 180 → −114 rather
+  than numerically through 0, and the Run button is disabled while any column is in the dead
+  zone.
+- The old shipped `Dome` preset was `-150..150` step 30: **6 of its 11 columns were inside the
+  stop.** Those numbers are kept as a regression fixture in `protocol/dome.test.mjs`.
+
+Tilt has measured stops too — it converges down to about −40° but jams near +16° — and is
+range-checked the same way.
+
+### The flow
+
+```bash
+# Plan first; nothing moves.
+npm run cli -- grid --stations 4 --dry-run
+
+# Movement-only: the phone's scanner web app captures its own pose-tagged keyframes, and those
+# VIO poses are metric, which is the only thing that gives the reconstruction a true scale.
+npm run cli -- grid --stations 4 --movement-only --out ./scan-kitchen
+```
+
+For each station the backend sweeps the dome, then stops dead and waits:
+
+```
+── station 1/4 (station-01) ──
+   1: pan=144.3 tilt=1.6  converged (12 ticks)
+   ...
+  station 1: 3/3 converged
+
+  MOVE THE TRIPOD to station 2 of 4.
+  Press Enter when it is down and level (Ctrl-C to stop here — the stations already captured are complete).
+```
+
+Confirm in whichever surface you have to hand — they are the same state, not three copies of
+it:
+
+- the CLI's Enter prompt (or `curl -XPOST :8788/api/grid-advance` when it is not a terminal),
+- the web UI's **"I've moved it — continue"** button, which reappears after a page reload or a
+  sleeping phone because the pause is reported in `GET /api/status` as `awaitingStation`,
+- `POST /api/grid-advance` directly.
+
+What the pause guarantees, for a wait of any length:
+
+- **Motors are not latched.** The speed command is a latch, not a pulse, and the operator is
+  about to pick the rig up — so the backend stops the motors before parking and again on every
+  5-second heartbeat. Verified on hardware: the reported orientation is bit-stable across the
+  whole pause.
+- **The BLE link is not assumed.** Each heartbeat re-exercises it and reports `linkUp`, and
+  `/api/grid-advance` refuses with a 409 if the link died while parked — while the operator is
+  still standing at the gimbal, rather than as a wall of non-converged positions afterwards.
+- **The HTTP stream keeps flowing.** A multi-minute silence on the NDJSON response reads as a
+  hung connection to undici's own idle timeout, which is what killed two real runs before
+  per-position streaming existed.
+- **The manual controls come back.** The scan interlock that rejects joystick/recenter commands
+  mid-sweep (two controllers fighting for two motors) is lifted while parked, because no
+  controller is running. Confirmed on hardware: 409 during a sweep, 200 while parked.
+- **It is bounded at 30 minutes.** Far past any real station move, but a run that parks forever
+  holds the gimbal and can only be recovered by restarting the backend. An expiry ends the run
+  as a *partial* capture, never as a completed one.
+
+### A partial run is still a capture
+
+Stopping after 3 of 5 stations must leave three whole domes, not a half-written directory:
+
+- The CLI writes `manifest.json` **after every frame and every station**, so at any instant the
+  directory describes itself — which stations exist, which frames belong to which, and whether
+  the run had finished. Photos land in one subdirectory per station.
+- Every frame carries its station on the wire and in its filename. "Which station was bad" is
+  the first question when a solve comes back short, and a bare running index cannot answer it.
+- `POST /api/grid-stop` while parked ends the run on a clean seam — a whole number of domes —
+  and says so, rather than aborting mid-sweep.
+- The verdict comes from one place (`assessCapture` in `protocol/dome.mjs`) for every consumer.
+  `complete` means every planned station was swept; **`usable`** means it can be reconstructed,
+  and it is false for a single station however many positions converged, false when nothing
+  converged, and false when nothing was captured. The CLI's exit code is `usable && complete`.
 
 ## Registering the MCP server
 
@@ -143,6 +265,9 @@ and what to do about it are documented in `GIMBAL_INTEGRATION.md` and
 protocol/          shared codec — pure JS, runs unmodified in both Node and the browser
   duml.mjs            DUML frame encode/decode, CRC8/CRC16, notify-stream reassembly
   duml.test.mjs        validates the codec against a real captured frame — run this first
+  stall.mjs            jam/wedge detection, per tick and per position (tested from real telemetry)
+  dome.mjs             the reachable pan arc, dome planning, and the "is this a capture?" verdict
+  dome.test.mjs        the arc and the COLMAP registration rates, as assertions
   constants.mjs        BLE service/characteristic UUIDs, DUML component/cmdSet/cmdId constants
   commands.mjs          command builders (pairing, gimbal recenter/mode/nudge, raw/RE escape hatch)
   telemetry.mjs         decoders for the orientation frames the gimbal streams at 10-20Hz
@@ -151,14 +276,17 @@ protocol/          shared codec — pure JS, runs unmodified in both Node and th
                         /ws — displayed alongside gimbal telemetry, never averaged into it
 server/
   ble-transport.mjs      Node BLE transport (@stoprocent/noble): scan, connect, pair, write-char fallback
-  backend.mjs             the single BLE owner: HTTP + /ws, closed-loop move-to, grid capture
+  backend.mjs             the single BLE owner: HTTP + /ws, closed-loop move-to, multi-station
+                          capture (sweep a dome -> park for the tripod move -> sweep the next)
   android-capture.mjs     minimal MCP-over-HTTP client for the phone in the cradle (photo capture)
-  cli.mjs                 scripted runs against the backend (scan/connect/grid/…)
+  cli.mjs                 scripted runs against the backend (scan/connect/grid/…); writes the
+                          per-station output directory and its incremental manifest.json
   mcp-server.mjs          MCP server exposing it all as tools — an HTTP client of backend.mjs
 web/                 "Scanner Control" PWA — two pathways, direct Web Bluetooth and backend
   index.html            markup + styles for both pathways
   app.mjs                 direct Web Bluetooth client, sharing protocol/* with the Node side
-  backend-client.mjs      backend pathway: scan presets, grid runs, the scan-in-progress lock
+  backend-client.mjs      backend pathway: scan presets (planned along the reachable arc),
+                          station count, the between-station prompt, the scan-in-progress lock
   orientation.mjs         compass dial + tilt gauge rendering
   joystick.mjs            virtual joystick (mouse/touch/arrow keys), shared by both pathways
   coverage.mjs            persistent cmdSet:cmdId coverage grid — "what have I actually tried"

@@ -9,6 +9,9 @@ import { attachCoverage } from './coverage.mjs';
 import { decodeQuaternion } from '../protocol/telemetry.mjs';
 import { decodeFrame } from '../protocol/duml.mjs';
 import { PHONE_TELEMETRY, isPhoneTelemetry } from '../protocol/phone_telemetry.mjs';
+// The same planner the backend plans with, so the count and the arc warning this panel renders
+// describe the run the backend would actually accept — not a second opinion about it.
+import { toArcDeg, fromArcDeg, unreachablePans, MIN_STATIONS_FOR_PARALLAX, PAN_ARC_START_DEG, PAN_ARC_END_DEG } from '../protocol/dome.mjs';
 
 const els = {
   url: document.getElementById('be-url'),
@@ -31,6 +34,10 @@ const els = {
   rawSend: document.getElementById('be-btn-raw-send'),
   gridBothOrientations: document.getElementById('be-grid-both'),
   gridRun: document.getElementById('be-btn-grid'),
+  stations: document.getElementById('be-stations'),
+  stationPrompt: document.getElementById('be-station-prompt'),
+  stationNote: document.getElementById('be-station-note'),
+  advance: document.getElementById('be-btn-advance'),
   gridProgress: document.getElementById('be-grid-progress'),
   gridBar: document.getElementById('be-grid-bar'),
   captureMode: document.getElementById('be-capture-mode'),
@@ -159,6 +166,14 @@ async function api(method, path, body) {
  * being offered a control that cannot work.
  */
 let scanActive = false;
+/**
+ * Whether the currently-typed plan stays inside the gimbal's reachable pan arc.
+ *
+ * A third input to "may the operator press Run", alongside connected and not-scanning. It is a
+ * separate flag rather than a check at click time so the button is visibly unavailable while
+ * the numbers are wrong, next to the summary line saying which columns are the problem.
+ */
+let planIsReachable = true;
 function setScanActive(active) {
   scanActive = active;
   document.body.classList.toggle('scanning', active);
@@ -173,6 +188,29 @@ function setScanActive(active) {
   // The grid is closed-loop, so it restores on the streaming tier — not on `lastConnected`,
   // which is only "a handle exists". See setConnectedControlsEnabled.
   if (els.gridRun) els.gridRun.disabled = active || !lastStreaming;
+  // The between-station prompt belongs to a running capture and nothing else — a run that ends
+  // while parked (stop, timeout, a fault) must not leave a live "continue" button behind for
+  // the operator to press into a 409.
+  if (!active) showStationPrompt(null);
+}
+
+/**
+ * Show or hide the "I've moved it — continue" prompt.
+ *
+ * Driven from two independent sources on purpose: the grid-progress stream while the page has
+ * been watching all along, and GET/WS status when it has not. The second is the one that
+ * matters in practice — the pause is minutes long, the operator is carrying a tripod, and a
+ * phone that slept or a page that reloaded must come back to the same prompt rather than to a
+ * capture it can no longer advance.
+ */
+function showStationPrompt(info) {
+  if (!els.stationPrompt) return;
+  els.stationPrompt.hidden = !info;
+  if (!info) return;
+  els.stationNote.textContent = `Move the tripod to station ${info.nextStation} of ${info.stationsPlanned}. `
+    + 'Put it where the previous stations can see it and it can see them, and not in a line with '
+    + 'them — stations in a row share one baseline and stay degenerate.'
+    + (info.linkUp === false ? ' WARNING: the BLE link to the gimbal has dropped — reconnect first.' : '');
 }
 
 // Tracked so setScanActive can restore the right state when a scan ends: "enabled" is the AND
@@ -377,6 +415,12 @@ function connectWs() {
     const msg = JSON.parse(ev.data);
     if (msg.type === 'status') {
       renderLinkStatus(msg);
+      // A capture already in flight when this page connected — after a reload, or a phone
+      // waking from sleep mid-pause. Restore both halves of that state from status, because
+      // the grid-progress events that would have told us happened before this socket existed.
+      if (msg.scanning !== undefined) setScanActive(msg.scanning);
+      showStationPrompt(msg.awaitingStation ? { ...msg.awaitingStation, linkUp: msg.connected } : null);
+      if (!msg.connected) tryAutoconnect();
     } else if (msg.type === 'grid-progress') {
       renderGridProgress(msg);
     } else if (msg.type === PHONE_TELEMETRY) {
@@ -552,29 +596,37 @@ els.captureBoth?.addEventListener('click', async () => {
 // registered only 4 of 9 images. Defaulting to the widest sweep puts the good outcome on the
 // path of least resistance; the narrower presets stay one tap away for a quick check.
 //
-// Every range sits inside what was actually probed as safe on hardware: yaw sweeps cleanly
-// across ~+/-175 degrees provided a single move never has to cross the +/-180 seam, and tilt
-// converges down to about -40 degrees but stalls near +16 degrees — a real mechanical limit,
-// not a display choice. Nothing here goes past those.
+// Every range sits inside what was actually probed as safe on hardware. Tilt converges down to
+// about -40 degrees but stalls near +16 — a real mechanical limit, not a display choice.
+//
+// Pan is the one that was WRONG here until this pass, and expensively so. These presets used
+// to run -150..150, which reads as a wide sweep and is in fact a 300-degree request straight
+// across the arc the gimbal cannot reach: its pan travels +82 degrees round THROUGH 180 to
+// about -100, and cannot rotate through the front at all. Six of that preset's eleven columns
+// were inside the stop (see protocol/dome.test.mjs, which keeps the old numbers as a fixture).
+// A move into the stop does not error — the gimbal twitches and springs back while the
+// controller holds a speed against it, which is the exact condition that thermally shut a real
+// OM6 down. Pan from/to is now read ALONG that arc (see panValues), so the sweep goes the way
+// the hardware can actually turn and the front is not expressible.
 //
 // The interior rows of the multi-row presets are interpolations, not separately measured
 // angles: they lie between two tilts that were run on hardware, which is a plan choice rather
 // than a re-measurement. "Custom" is simply whatever is in the fields.
 const SCAN_PRESETS = {
-  // Full dome — the default. 21 pan columns x 5 tilt rows = 105 positions. That is a long run
-  // (tens of minutes of gimbal-and-phone time), which is exactly why the position count is
-  // rendered live under the fields rather than left for the operator to work out.
-  dome: { pan: { from: -150, to: 150, step: 15 }, tilt: { from: -30, to: 10, step: 10 } },
-  // Quick 25 — a 5x5 block around centre, for a fast look rather than a reconstruction.
-  // Deliberately 25 and not 9: nine frames from one station is below what structure-from-motion
-  // needs to register reliably, so the old preset produced runs that looked complete and then
-  // failed to reconstruct.
-  quick25: { pan: { from: -60, to: 60, step: 30 }, tilt: { from: -30, to: 10, step: 10 } },
+  // Full dome — the default. 150 degrees of pan (7 columns) x 2 tilt rows = 14 positions per
+  // station, which at 4 stations is 56 frames. Sized against the capture that actually
+  // reconstructed: 5 stations, 36 images, all 36 registered, 9,914 points. Positions per
+  // station is the cheap axis and stations is the expensive one, so this spends where it pays.
+  dome: { pan: { from: 96, to: -114, step: 25 }, tilt: { from: -25, to: 5, step: 30 } },
+  // Quick — a coarse pass for checking the rig works, not for reconstructing. 4 columns x 2
+  // rows. Still multi-station, because a single-station capture is degenerate at any density
+  // and a "quick look" that cannot be solved teaches nothing.
+  quick25: { pan: { from: 111, to: -129, step: 40 }, tilt: { from: -20, to: 5, step: 25 } },
   // Horizontal band — a wide, shallow sweep for long or corridor-shaped rooms, where the
-  // useful information is spread around the horizon rather than up and down. Denser in pan
-  // than the old version (17 columns at 20 degrees, was 11 at 30) because pan is the axis that
-  // carries the coverage here, and shallower in tilt (2 rows) so it stays a band.
-  band: { pan: { from: -160, to: 160, step: 20 }, tilt: { from: -10, to: 5, step: 15 } },
+  // useful information is spread around the horizon rather than up and down. Takes nearly the
+  // whole 178-degree arc, stopping ~10 degrees short of each stop so a move that overshoots
+  // its tolerance still lands inside it.
+  band: { pan: { from: 92, to: -104, step: 20 }, tilt: { from: -15, to: 5, step: 20 } },
 };
 
 // A few hundred positions is hours of gimbal-and-phone time, and a mistyped step is the easy
@@ -613,10 +665,31 @@ function readAxis(name) {
   return { from: num(group.from), to: num(group.to), step: num(group.step) };
 }
 
+/**
+ * Pan columns, generated ALONG the reachable arc rather than numerically between two degrees.
+ *
+ * axisValues() sorts from/to and walks upward, which is right for tilt and wrong for pan: pan's
+ * reachable travel crosses the +/-180 seam, so the numerically-smaller endpoint is often the one
+ * further round the arc. 96 -> -114 walked numerically is -114..96, i.e. the entire dead zone;
+ * walked along the arc it is the intended 96 -> 180 -> -114. Converting both ends into arc
+ * coordinates first makes the seam a non-event and makes the front inexpressible, which is the
+ * point — the gimbal cannot rotate through it, and asking it to is what jams the motors.
+ */
+function panValues({ from, to, step }) {
+  return axisValues({ from: toArcDeg(from), to: toArcDeg(to), step })
+    .map((arc) => Math.round(fromArcDeg(arc) * 10) / 10);
+}
+
 function currentGrid() {
   const pan = readAxis('pan');
   const tilt = readAxis('tilt');
-  return { pans: axisValues(pan), tilts: axisValues(tilt) };
+  return { pans: panValues(pan), tilts: axisValues(tilt) };
+}
+
+/** Stations requested, floored at 1 — an empty or half-typed field must not read as zero. */
+function currentStations() {
+  const n = Math.trunc(Number(els.stations?.value));
+  return Number.isFinite(n) && n >= 1 ? Math.min(12, n) : 1;
 }
 
 // The position count was never visible before the run started — the old free-text lists made
@@ -624,11 +697,40 @@ function currentGrid() {
 // run, so it is stated next to the control that sets it.
 function renderGridSummary() {
   const { pans, tilts } = currentGrid();
+  const stations = currentStations();
+  const perStation = pans.length * tilts.length;
   const total = document.createElement('strong');
-  total.textContent = `${pans.length * tilts.length} positions`;
+  total.textContent = `${stations} × ${perStation} = ${stations * perStation} positions`;
   const detail = document.createElement('span');
   detail.textContent = ` · pan ${pans[0]}…${pans[pans.length - 1]}° ×${pans.length} · tilt ${tilts[0]}…${tilts[tilts.length - 1]}° ×${tilts.length}`;
   els.gridSummary.replaceChildren(total, detail);
+
+  // A plan that crosses the dead zone is refused, not attempted, and it is refused HERE rather
+  // than by the backend two seconds into a run — the operator is looking at the fields that
+  // caused it. The Run button goes with it: offering a control whose only outcome is a 400 is
+  // the same mistake as offering the joystick mid-scan.
+  const unreachable = unreachablePans(pans);
+  planIsReachable = unreachable.length === 0;
+  if (unreachable.length) {
+    const warn = document.createElement('span');
+    warn.className = 'gp-warn';
+    warn.textContent = ` · ${unreachable.length} column(s) are in the gimbal's dead zone `
+      + `(${unreachable.map((u) => `${u.pan}°`).join(', ')}) — pan travels ${PAN_ARC_START_DEG}° round `
+      + `through 180° to ${PAN_ARC_END_DEG}° and cannot rotate through the front`;
+    els.gridSummary.appendChild(warn);
+  }
+  if (els.gridRun) els.gridRun.disabled = !planIsReachable || scanActive || !lastConnected;
+
+  // Stations, not positions, are what decide whether this can be reconstructed at all — so a
+  // one-station plan is called out however many positions it has. Measured: one dome from one
+  // spot registered 3 of 17 images; five stations registered 36 of 36.
+  if (stations < MIN_STATIONS_FOR_PARALLAX) {
+    const warn = document.createElement('span');
+    warn.className = 'gp-warn';
+    warn.textContent = ' · one station is pure rotation — no baseline to triangulate against '
+      + '(3 of 17 images registered, measured). Use 3–5 stations.';
+    els.gridSummary.appendChild(warn);
+  }
   if (pans.length >= MAX_STEPS_PER_AXIS || tilts.length >= MAX_STEPS_PER_AXIS) {
     const capped = document.createElement('span');
     capped.className = 'gp-capped';
@@ -682,6 +784,10 @@ for (const axis of ['pan', 'tilt']) {
     });
   }
 }
+// Station count is not part of any preset — the presets describe one dome's shape, and how many
+// domes a room needs is a property of the room, not of the sweep. It still redraws the summary,
+// because it is a multiplier on every number in it.
+els.stations?.addEventListener('input', renderGridSummary);
 selectPreset('dome');
 
 // Promoted to the main view since the test matrix flags this as a possible precondition for
@@ -789,12 +895,39 @@ for (const def of TEST_DEFS) {
 function renderGridProgress(msg) {
   if (msg.phase === 'start') {
     els.gridResults.innerHTML = '';
-    els.gridProgress.textContent = `Starting ${msg.total}-position run…`;
+    els.gridProgress.textContent = `Starting ${msg.stationsPlanned} station(s) × ${msg.perStation} positions…`;
     setScanActive(true);
     return;
   }
+  if (msg.phase === 'station-start') {
+    const row = document.createElement('div');
+    row.className = 'test-row';
+    row.innerHTML = `<span class="verdict">station ${msg.station}/${msg.stationsPlanned}</span>`;
+    const label = document.createElement('span');
+    label.className = 'test-desc';
+    label.textContent = msg.stationLabel;
+    row.appendChild(label);
+    els.gridResults.appendChild(row);
+    showStationPrompt(null);
+    return;
+  }
+  if (msg.phase === 'awaiting-station') {
+    // The bar deliberately stays where it is — the run has not lost ground, it is waiting on a
+    // human, and rewinding it would read as a restart.
+    els.gridProgress.textContent = `Paused — move the tripod to station ${msg.nextStation} of ${msg.stationsPlanned}.`;
+    showStationPrompt(msg);
+    return;
+  }
+  if (msg.phase === 'resumed') {
+    showStationPrompt(null);
+    return;
+  }
+  if (msg.phase === 'station-done') {
+    els.gridProgress.textContent = `Station ${msg.station}/${msg.stationsPlanned}: ${msg.converged}/${msg.positions} converged.`;
+    return;
+  }
   if (msg.phase === 'moving') {
-    els.gridProgress.textContent = `[${msg.position}/${msg.total}] moving to pan=${msg.target.pan} tilt=${msg.target.tilt}…`;
+    els.gridProgress.textContent = `[station ${msg.station} · ${msg.stationPosition}/${msg.perStation}] moving to pan=${msg.target.pan} tilt=${msg.target.tilt}…`;
     return;
   }
   if (msg.phase === 'moving' || msg.phase === 'capturing') {
@@ -804,7 +937,7 @@ function renderGridProgress(msg) {
     if (els.gridBar) els.gridBar.style.width = `${pct}%`;
   }
   if (msg.phase === 'capturing') {
-    els.gridProgress.textContent = `[${msg.position}/${msg.total}] ${msg.converged ? 'converged' : 'NOT converged'} — taking photo…`;
+    els.gridProgress.textContent = `[station ${msg.station} · ${msg.stationPosition}/${msg.perStation}] ${msg.converged ? 'converged' : 'NOT converged'} — taking photo…`;
     return;
   }
   if (msg.phase === 'captured') {
@@ -814,7 +947,9 @@ function renderGridProgress(msg) {
     row.innerHTML = `<span class="verdict ${msg.converged ? 'moved' : 'notmoved'}">${verdict}</span>`;
     const label = document.createElement('span');
     label.className = 'test-desc';
-    label.textContent = `${msg.position}. pan=${(msg.pan ?? 0).toFixed(1)} tilt=${(msg.tilt ?? 0).toFixed(1)} (${msg.ticks} ticks)`;
+    // Station first, then the position within it — "which station was bad" is the first
+    // question when a solve comes back short, and a bare running index cannot answer it.
+    label.textContent = `s${msg.station}.${msg.stationPosition} pan=${(msg.pan ?? 0).toFixed(1)} tilt=${(msg.tilt ?? 0).toFixed(1)} (${msg.ticks} ticks)`;
     row.appendChild(label);
     // The photo stays on the phone; these link to the device's own share URL rather than
     // proxying bytes through the backend.
@@ -834,12 +969,26 @@ function renderGridProgress(msg) {
   }
   if (msg.phase === 'done') {
     setScanActive(false);
-    els.gridProgress.textContent = `Done — ${msg.converged}/${msg.total} converged.`;
+    // `usable` and `complete`, not just a converged count. A run can converge every position it
+    // attempted and still be worthless — a single station is pure rotation, and it is exactly
+    // the shape that reports 100% and then registers 3 of 17 images. The headline says which of
+    // those happened; msg.reason says why in the operator's terms.
+    if (msg.usable && msg.complete) {
+      els.gridProgress.textContent = `Done — ${msg.stationsUsable} station(s), ${msg.converged}/${msg.total} positions converged. Enough parallax to reconstruct.`;
+    } else {
+      els.gridProgress.textContent = `${msg.usable ? 'Partial' : 'NOT usable'} — `
+        + `${msg.stationsUsable}/${msg.stationsPlanned} station(s), ${msg.converged}/${msg.total} positions converged. `
+        + (msg.reason ?? '');
+      log(`Capture ${msg.usable ? 'partial' : 'NOT usable'}: ${msg.reason ?? 'incomplete'}`, 'warn');
+    }
     return;
   }
   if (msg.phase === 'error') {
-    setScanActive(false);
-    els.gridProgress.textContent = `Failed after ${msg.captured} position(s): ${msg.error}`;
+    // Not setScanActive(false): a `done` summary always follows, and it is the one that decides
+    // whether anything usable survived. Ending the scan state here would drop the prompt and
+    // the final verdict on the floor.
+    els.gridProgress.textContent = `Fault after ${msg.captured} position(s): ${msg.error}`;
+    log(`Capture fault: ${msg.error}`, 'warn');
   }
 }
 
@@ -856,13 +1005,21 @@ els.gridRun?.addEventListener('click', async () => {
     // Same generator the summary line above the button rendered from, so the run is exactly the
     // one the count promised — no second parse of the same fields to drift out of step with it.
     const { pans, tilts } = currentGrid();
+    const stations = currentStations();
     const bothOrientations = els.gridBothOrientations?.checked ?? false;
-    log(`Grid capture: ${pans.length * tilts.length} position(s)${bothOrientations ? ' x 2 orientations' : ''}...`);
+    log(`Capture: ${stations} station(s) x ${pans.length * tilts.length} position(s)${bothOrientations ? ' x 2 orientations' : ''}...`);
     const res = await fetch(`${baseUrl()}/api/grid-capture`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pans, tilts, bothOrientations }),
+      body: JSON.stringify({ pans, tilts, stations, bothOrientations }),
     });
+    // A rejected plan (a pan column in the dead zone, no device token) answers with one JSON
+    // object, not NDJSON — read it as such so its message reaches the operator intact instead
+    // of surfacing as a parse error over the top of it.
+    if (!res.ok) {
+      const rejected = await res.json().catch(() => ({}));
+      throw new Error(rejected.error || `HTTP ${res.status}`);
+    }
     if (!res.body) throw new Error(`HTTP ${res.status}`);
     let buf = '';
     let final = null;
@@ -874,11 +1031,18 @@ els.gridRun?.addEventListener('click', async () => {
         buf = buf.slice(nl + 1);
         if (!line.trim()) continue;
         const event = JSON.parse(line);
-        if (event.phase === 'done' || event.phase === 'error') final = event;
+        if (event.phase === 'done') final = event;
       }
     }
-    if (final?.phase === 'error') throw new Error(final.error);
-    log(`Grid capture done: ${final?.converged ?? '?'}/${final?.total ?? '?'} converged.`, 'ok');
+    // renderGridProgress has already put the verdict on screen from the WS copy of the same
+    // event; this line is the log's own record, and it only claims success when the run earned
+    // it — every station swept, and enough of them to have a baseline at all.
+    if (!final) throw new Error('the progress stream ended without a summary — the connection dropped mid-run');
+    if (final.complete && final.usable) {
+      log(`Capture done: ${final.stationsUsable} station(s), ${final.converged}/${final.total} converged.`, 'ok');
+    } else {
+      log(`Capture ${final.usable ? 'partial' : 'NOT usable'}: ${final.reason ?? 'incomplete'}`, 'warn');
+    }
   } catch (err) {
     // The backend broadcasts partial progress on the WS as it goes, and renderGridProgress has
     // already drawn whatever completed — so this only needs to report, not reconstruct state.
@@ -887,5 +1051,27 @@ els.gridRun?.addEventListener('click', async () => {
     els.gridProgress.textContent = `Failed: ${err.message}`;
   } finally {
     els.gridRun.disabled = false;
+  }
+});
+
+// "I've moved it — continue". Disabled for the round trip rather than left live: the operator
+// is looking at a phone from across the room and a second press would land as a 409 they have
+// no way to interpret.
+els.advance?.addEventListener('click', async () => {
+  els.advance.disabled = true;
+  const wasLabel = els.advance.textContent;
+  els.advance.textContent = 'Continuing…';
+  try {
+    const { station, stationsPlanned } = await api('POST', '/api/grid-advance');
+    log(`Advancing to station ${station} of ${stationsPlanned}.`, 'ok');
+    showStationPrompt(null);
+  } catch (err) {
+    // Left visible on failure, because the usual cause (the BLE link dropped during the pause)
+    // is one the operator can fix standing where they are, and then press this again.
+    log(`Could not continue: ${err.message}`, 'warn');
+    els.stationNote.textContent = `Could not continue: ${err.message}`;
+  } finally {
+    els.advance.disabled = false;
+    els.advance.textContent = wasLabel;
   }
 });

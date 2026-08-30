@@ -349,22 +349,43 @@ export type TakeSync = {
 export const DEFAULT_SYNC_TOLERANCE_MS = 50
 
 /**
- * One AR session's alignment onto a Place's {@link ProjectSpatialFrame}.
+ * One capture's alignment onto a Place's {@link ProjectSpatialFrame}.
+ *
+ * Two of the three tiers describe an **AR session**, whose runtime supplied a
+ * continuously-tracked local frame that only needed anchoring. The third
+ * (`'known-distance'`) describes a capture that had no AR runtime at all — a
+ * tripod walked between fixed viewpoints, or an uploaded video — where the
+ * "session" frame is the camera solve's own arbitrary one. `sessionToProject`
+ * means the same thing in all three cases (carry this capture's own
+ * coordinates into project space); only where those coordinates came from
+ * differs, and `method` is what says which. Reading `sessionToProject` without
+ * branching on `method` would apply a solve-space matrix to AR-space points,
+ * which is a plausible-looking wrong answer rather than an error.
  *
  * `status` is a measurement, not a label — wave 09 ticket 0004 restored the
  * producer that ticket 0001 retired, so these words are now backed by an
- * actual check performed at commit time in `src/ar/project-calibration.ts`:
- * - `'verified'` — reachable only on the `'two-point-ground'` tier, and only
- *   when this Place already had a stored two-point frame *and* the
- *   re-measured landmark→marker separation matched its `separationM` within
- *   `toleranceM`. `residualM` carries the measured difference.
+ * actual check performed at commit time in `src/ar/project-calibration.ts`
+ * (and, for the `'known-distance'` tier, in `server/capture/known_distance.ts`):
+ * - `'verified'` — reachable on two tiers, and on each only when a second
+ *   independent measurement agreed with the first inside `toleranceM`:
+ *   `'two-point-ground'` when this Place already had a stored two-point frame
+ *   and the re-measured landmark→marker separation matched its `separationM`;
+ *   `'known-distance'` when a second measured distance spanning a *different*
+ *   pair of viewpoints was supplied and the frame built from all of them
+ *   predicted every one of them inside tolerance. (The same pair measured
+ *   twice is one constraint written twice — the scale absorbs it exactly, so
+ *   it stays `'provisional'`.)
+ *   `residualM` carries the measured disagreement in both cases.
  * - `'provisional'` — a frame is established, but its agreement with any
- *   previously recorded frame for this Place is unconfirmed. Three ways to
+ *   previously recorded frame for this Place is unconfirmed. Four ways to
  *   land here: a Place's first calibration (nothing to compare against), a
  *   `'ground-tap-compass'` fallback (a single ground anchor is project-space
- *   (0,0,0) by construction and so cannot be checked against itself), or a
- *   user overriding a separation mismatch — which is precisely the case where
- *   the check ran and did *not* pass, so it must never report verified.
+ *   (0,0,0) by construction and so cannot be checked against itself), a
+ *   `'known-distance'` frame resting on exactly one measured distance (which
+ *   fixes the scale exactly, so its own residual would be arithmetic rather
+ *   than evidence — see that variant), or a user overriding a separation
+ *   mismatch — which is precisely the case where the check ran and did *not*
+ *   pass, so it must never report verified.
  * - `'uncalibrated'` — written by `src/export/gltf.ts`'s `?? 'uncalibrated'`
  *   fallback when a scan has no calibration at all.
  *
@@ -372,7 +393,7 @@ export const DEFAULT_SYNC_TOLERANCE_MS = 50
  * `'verified'` did not imply any check had run.
  */
 export type ScanCalibration = {
-  /** Maps this AR session's local coordinates into project space. */
+  /** Maps this capture's own local coordinates into project space. See `method`. */
   sessionToProject: number[]
   calibratedAt: string
   status: 'verified' | 'provisional' | 'uncalibrated'
@@ -388,6 +409,60 @@ export type ScanCalibration = {
   | {
       method: 'ground-tap-compass'
       anchorBearingDeg: number | null
+    }
+  | {
+      /**
+       * The metre stick came from the operator, not from the runtime: one
+       * physically measured real-world distance between two viewpoints the
+       * capture can identify in its own solve.
+       *
+       * This is the tier for a capture with **no AR poses at all** — the
+       * tripod-station path (`server/capture/station_dome.ts`), where each
+       * station is a fixed spot the operator can put a tape measure between.
+       * The other two tiers cannot reach it: both derive metres from an AR
+       * runtime's tracked frame, and there isn't one.
+       *
+       * `sessionToProject` here carries **camera-solve** coordinates into
+       * project space, not AR-session ones, and it determines strictly less
+       * than the other tiers do — see `gravityAligned`, and
+       * `SplatAlignManifest.determined`, which spells out which of the seven
+       * degrees of freedom this actually fixed. Rotation about the up axis is
+       * free with a single distance and is *not* invented here; the World
+       * Editor's two-point flow is what settles it.
+       */
+      method: 'known-distance'
+      /**
+       * The measured distance the whole frame rests on, in metres — the first
+       * one, when several were supplied. Named to match the `'two-point-ground'`
+       * variant's field: both are "the physical length that proves this frame
+       * is in metres".
+       */
+      separationM: number
+      /**
+       * RMS disagreement in metres between what this frame predicts and what
+       * was measured, over whatever redundancy existed.
+       *
+       * With two or more measured distances that is a direct check of the
+       * scale (each extra distance is one the frame did not get to fit). With
+       * exactly one it cannot be — one distance fixes the scale exactly, so
+       * that residual is 0 by construction — and it instead carries the
+       * strongest independent measurement available: how far, in metres, the
+       * frames claimed to share a viewpoint actually land from that viewpoint's
+       * centre. That catches a mis-grouped or badly-solved capture; it cannot
+       * catch a mis-typed tape reading, and nothing measured from one distance
+       * could. Hence `status: 'provisional'` in that case.
+       */
+      residualM: number
+      toleranceM: number
+      /**
+       * True when the camera solve reported a trustworthy gravity direction and
+       * rotated its output onto it, so +Y is up in solve space and this frame
+       * inherits a real vertical. False means the solve never established one:
+       * the scale is still metric but the frame is tilted by an unknown amount,
+       * and nothing here guesses. Read from the solve's own manifest
+       * (`ColmapPosesManifest.gravityAligned`) rather than assumed.
+       */
+      gravityAligned: boolean
     }
 )
 

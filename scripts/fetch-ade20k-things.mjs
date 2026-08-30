@@ -63,16 +63,50 @@ for (const c of all.filter((c) => c.isthing)) {
   if (head && head !== c.name) things.push(head)
 }
 
+// ── Why the ids, and not only the names ──────────────────────────────────────
+//
+// The names above are NOT the names the checkpoint uses. Measured by diffing
+// this file against `id2label` in the cached config of
+// facebook/mask2former-swin-large-ade-panoptic: 140 of 150 agree and 10 are the
+// same class under a different synonym. Two of those ten are isthing=0 either
+// way and harmless ("pool"/"swimming pool", "falls"/"waterfall"). The other
+// eight are all isthing=1 here, so a name compare filed every one of them as a
+// room surface:
+//
+//     id   8  upstream "window "     → checkpoint "windowpane"
+//     id  37  upstream "tub"         → checkpoint "bathtub"
+//     id  38  upstream "rail"        → checkpoint "railing"
+//     id  87  upstream "street lamp" → checkpoint "streetlight"
+//     id  89  upstream "tv"          → checkpoint "television receiver"
+//     id  90  upstream "plane"       → checkpoint "airplane"
+//     id  92  upstream "clothes"     → checkpoint "apparel"
+//     id 138  upstream "trash can"   → checkpoint "ashcan"
+//
+// Silent, and in the direction the split is deliberately biased toward, so it
+// never looked like an error — a real phone capture lost 7 `windowpane` and 1
+// `ashcan` sighting to it. The class *id* is the stable key: both sides are the
+// canonical ADE20K-150 ordering, so `thingIds` is exact where a name compare is
+// a guess. `names` ships alongside so the worker can prove the checkpoint is
+// this taxonomy before trusting an id (see panoptic_worker.py) — an id means
+// nothing on a COCO or Cityscapes checkpoint.
+const thingIds = all.filter((c) => c.isthing).map((c) => c.id).sort((a, b) => a - b)
+const names = Object.fromEntries(all.map((c) => [c.id, c.name]))
+
 const payload = {
   _source: SOURCE,
   _generatedBy: 'scripts/fetch-ade20k-things.mjs',
   _note:
-    'ADE20K-150 classes flagged isthing=1 upstream, plus the leading synonym of ' +
-    'each comma-separated name. Consumed by scripts/panoptic_worker.py --thing-labels.',
+    'ADE20K-150 classes flagged isthing=1 upstream. `thingIds` is authoritative; ' +
+    '`things` is the same set by name (plus the leading synonym of each ' +
+    'comma-separated name) and is the fallback for a checkpoint whose taxonomy ' +
+    'is not this one. `names` lets a consumer verify that first. ' +
+    'Consumed by scripts/panoptic_worker.py --thing-labels.',
   count: things.length,
+  thingIds,
+  names,
   things: things.sort((a, b) => a.localeCompare(b)),
 }
 
 await writeFile(OUT, JSON.stringify(payload, null, 2) + '\n')
-console.log(`${all.length} categories → ${all.filter((c) => c.isthing).length} things (${things.length} with synonyms)`)
+console.log(`${all.length} categories → ${thingIds.length} things (${things.length} names with synonyms)`)
 console.log(`wrote ${OUT.pathname}`)

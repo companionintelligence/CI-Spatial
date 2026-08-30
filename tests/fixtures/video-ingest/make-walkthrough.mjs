@@ -59,7 +59,71 @@ const LIGHTS = [
  * The look-at keeps the furniture framed; an unconstrained yaw sweep spent most
  * of the clip pointed at a blank corner, which is parallax nothing can use.
  */
+/**
+ * Which camera path to render. `walkthrough` (the default) is the continuous
+ * diagonal walk described above; `stations` renders the multi-station tripod
+ * pattern instead.
+ *
+ * Read from the environment rather than passed in because `renderFrame` runs
+ * inside worker threads, which inherit env but not module state. The main
+ * branch sets it from `--path` before spawning them.
+ */
+const PATH_MODE = process.env.SCAN_FIXTURE_PATH ?? 'walkthrough'
+
+/**
+ * The multi-station tripod pattern — the fixture behind ADR 0008's numbers.
+ *
+ * The camera holds a fixed position and sweeps a dome, then jumps to the next
+ * station; no frame is rendered in transit, so the within-station baseline is
+ * exactly zero by construction. That is the point: it isolates the claim that
+ * the usable parallax comes from the moves BETWEEN stations, not from anything
+ * inside a sweep. Rendering the moves would confound the two.
+ *
+ * Stations are a ring plus a centre point, not a line — collinear stations give
+ * a degenerate baseline for anything along that line, which would confound
+ * "multi-station" with "badly placed". Spacing is 1.89-2.16 m nearest
+ * neighbour, 4.33 m widest, all at a 1.5 m tripod height.
+ */
+const STATIONS = [
+  [1.2, 1.5, 1.0],
+  [4.6, 1.5, 1.2],
+  [4.8, 1.5, 3.4],
+  [1.4, 1.5, 3.2],
+  [3.0, 1.5, 2.2],
+]
+/** The arc the real OM6 reaches without driving into a mechanical stop. */
+const PAN_SPAN = (150 * Math.PI) / 180
+/** Level-ish, then angled down. Two rows cover a room's height. */
+const TILT_ROWS = [0.10, -0.14]
+
+function stationDomeCamera(t) {
+  const per = 1 / STATIONS.length
+  const si = Math.min(STATIONS.length - 1, Math.floor(t / per))
+  const u = (t - si * per) / per
+  const eye = STATIONS[si]
+  // Serpentine: pan one way along the top row and back along the bottom, so no
+  // frames are spent flying back to the start between rows.
+  const row = u < 0.5 ? 0 : 1
+  const v = row === 0 ? u * 2 : 1 - (u - 0.5) * 2
+  const yaw = -PAN_SPAN / 2 + PAN_SPAN * v
+  const tilt = TILT_ROWS[row]
+  const dist = 3.0
+  return {
+    eye,
+    target: [
+      eye[0] + dist * Math.sin(yaw) * Math.cos(tilt),
+      eye[1] + dist * Math.sin(tilt),
+      eye[2] + dist * Math.cos(yaw) * Math.cos(tilt),
+    ],
+    roll: 0,
+  }
+}
+
 function cameraAt(t) {
+  return PATH_MODE === 'stations' ? stationDomeCamera(t) : walkthroughCamera(t)
+}
+
+function walkthroughCamera(t) {
   const eye = [
     0.9 + 4.2 * t + 0.35 * Math.sin(t * Math.PI * 2),
     1.52 + 0.035 * Math.sin(t * 18.0),
@@ -247,7 +311,10 @@ if (!isMainThread) {
   const FPS = Number(args.fps ?? 15)
   const WIDTH = Number(args.width ?? 1920)
   const HEIGHT = Number(args.height ?? 1080)
-  const OUT = args.out ?? path.join(HERE, 'walkthrough-1080p.mp4')
+  // Set before any worker spawns so they inherit it. See PATH_MODE.
+  if (args.path) process.env.SCAN_FIXTURE_PATH = args.path
+  const OUT = args.out ?? path.join(HERE,
+    args.path === 'stations' ? 'station-domes-1080p.mp4' : 'walkthrough-1080p.mp4')
   const TOTAL = Math.round(SECONDS * FPS)
   const framesDir = path.join(HERE, '.frames')
 

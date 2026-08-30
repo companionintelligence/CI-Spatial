@@ -21,6 +21,28 @@
  * majority (44 of 50 on the one real session) and the reason the lift keeps
  * per-reason counts at all. They are reported as a sentence instead of a marker,
  * because inventing a position for them is exactly what the lift refuses to do.
+ *
+ * ── The frame a marker is drawn in ───────────────────────────────────────────
+ *
+ * `worldPos` is in real metres, always — `thing_match` fuses across scans at a
+ * distance in metres, so the lift has no other option (its header sets this out
+ * in full). This overlay draws inside the scan GLB's own frame, because the
+ * group hangs off the scan root. For an ordinary tracked capture those are the
+ * same frame and nothing has to happen.
+ *
+ * They come apart for a capture rebuilt from pictures alone: its GLB holds the
+ * reconstruction's own units, and the lift's metres are related to them by the
+ * measured alignment. The sidecar says so — `metricFrame` is present exactly
+ * when the two differ — and carries `toScanFrame`, the map back. That matrix
+ * goes on the marker GROUP rather than on each marker, which is what makes the
+ * marker glyphs come out the right SIZE too: {@link MARKER_RADIUS_M} is metres,
+ * and a group scaled by metres-per-unit renders a 9 cm marker as 9 cm however
+ * large a unit of that scan is.
+ *
+ * A sidecar that says the frames differ and does not say how is refused, not
+ * guessed at: drawing those coordinates raw is the bug this section exists to
+ * prevent, and on the one measured solve it lands markers 4x too close to the
+ * origin — close enough to the room to look like a placement.
  */
 import * as THREE from 'three'
 import type { ScanManifest, PanopticLiftManifest } from '../world/types'
@@ -59,7 +81,44 @@ export interface PanopticDetectionsSidecar {
   sessionId?: string
   scanId?: string
   generatedAt: string
+  /**
+   * Present exactly when `worldPos` is NOT in the scan GLB's frame. See the
+   * header. `toScanFrame` is a row-major 4x4 from a `worldPos` into that frame;
+   * it arrived in schema version 2, and a version-1 sidecar carrying a
+   * `metricFrame` without it named no frame at all.
+   */
+  metricFrame?: { source: string; scale: number; residualM: number; toScanFrame?: number[] }
   detections: PanopticDetectionRecord[]
+}
+
+/**
+ * How this sidecar's positions relate to the scan GLB the markers hang in.
+ *
+ * Three outcomes, because two of them are not the same kind of "no": `'same'`
+ * is the ordinary tracked capture, `'mapped'` carries the matrix that gets out
+ * of the lift's frame, and `'undeclared'` is a sidecar that says the frames
+ * differ without saying how — which is the one case where the honest thing is
+ * to draw nothing at all.
+ */
+export type PanopticFrameRead =
+  | { kind: 'same' }
+  | { kind: 'mapped'; toScanFrame: number[] }
+  | { kind: 'undeclared' }
+
+/**
+ * Read the frame declaration off a parsed sidecar.
+ *
+ * Exported for the same reason `parsePanopticDetections` is: this is the
+ * decision that puts a marker in the right place or the wrong one, and it
+ * should be checkable without a scene.
+ */
+export function readPanopticFrame(value: unknown): PanopticFrameRead {
+  const metric = (value as PanopticDetectionsSidecar | null)?.metricFrame
+  if (!metric || typeof metric !== 'object') return { kind: 'same' }
+  const m = (metric as { toScanFrame?: unknown }).toScanFrame
+  if (!Array.isArray(m) || m.length !== 16) return { kind: 'undeclared' }
+  if (!m.every((n) => typeof n === 'number' && Number.isFinite(n))) return { kind: 'undeclared' }
+  return { kind: 'mapped', toScanFrame: m as number[] }
 }
 
 /**
@@ -98,6 +157,12 @@ export function placementTier(confidence: number, minConfidence: number): Placem
 export interface PanopticMarker {
   /** Chip text, e.g. `swivel chair 25% unsure`. */
   text: string
+  /**
+   * The sidecar's `worldPos`, which is the marker's position INSIDE
+   * `markerGroup` — not in the scan root, and not in the world. The group may
+   * carry a frame change (see the header), so a caller that needs a scene
+   * position must read `object.getWorldPosition()` once the group is attached.
+   */
   position: THREE.Vector3
   /** The marker mesh, so the caller can gate its visibility with the chip's. */
   object: THREE.Object3D
@@ -111,13 +176,25 @@ export interface PanopticMarker {
 export interface ScanPanopticLayer {
   scanId: string
   manifest: PanopticLiftManifest
-  /** Marker group, ready to attach under the scan root. */
+  /**
+   * Marker group, ready to attach under the scan root.
+   *
+   * Its own transform is the frame change out of the sidecar's coordinates and
+   * into the scan GLB's — identity in the ordinary case. The caller attaches
+   * it and does not otherwise touch it.
+   */
   markerGroup: THREE.Group
   markers: PanopticMarker[]
   /** Segments that produced a position. Equals `markers.length`. */
   placedCount: number
   /** Segments the lift saw but would not place. */
   unplacedCount: number
+  /**
+   * Set when the sidecar's positions are in a frame it did not name, so none
+   * of them could be drawn where the object is. Positions exist; this overlay
+   * refuses to put them somewhere wrong. See `placementVerdictOf`.
+   */
+  frameUndeclared?: true
 }
 
 /** URL of a scan's panoptic detections sidecar on the gated artifact route. */
@@ -228,9 +305,26 @@ function positionOf(record: PanopticDetectionRecord): THREE.Vector3 | null {
 export function buildPanopticMarkers(
   records: PanopticDetectionRecord[],
   minConfidence: number,
+  frame: PanopticFrameRead = { kind: 'same' },
 ): { group: THREE.Group; markers: PanopticMarker[]; unplacedCount: number } {
   const group = new THREE.Group()
   group.name = 'panoptic-placed-objects'
+  // The frame change lives here and nowhere else: one matrix on the group, so
+  // every marker, every chip anchor, and every glyph radius inherits it at
+  // once. `set` takes the sixteen numbers in ROW order, which is the order the
+  // sidecar writes them; decomposing keeps `matrixAutoUpdate` true so the
+  // group behaves like every other node under the scan root.
+  if (frame.kind === 'mapped') {
+    const m = frame.toScanFrame
+    new THREE.Matrix4()
+      .set(
+        m[0], m[1], m[2], m[3],
+        m[4], m[5], m[6], m[7],
+        m[8], m[9], m[10], m[11],
+        m[12], m[13], m[14], m[15],
+      )
+      .decompose(group.position, group.quaternion, group.scale)
+  }
   const markers: PanopticMarker[] = []
   let unplacedCount = 0
 
@@ -311,18 +405,31 @@ export async function fetchScanPanopticLayer(
   if (!detectionsResp.ok) return nothing
 
   let records: PanopticDetectionRecord[] = []
+  let frame: PanopticFrameRead = { kind: 'same' }
   try {
-    records = parsePanopticDetections(await detectionsResp.json())
+    const parsed = await detectionsResp.json()
+    records = parsePanopticDetections(parsed)
+    frame = readPanopticFrame(parsed)
   } catch (e) {
     console.warn('[panoptic] detections parse failed:', e)
     return nothing
+  }
+
+  // A sidecar whose positions are in a frame it did not name. Every one of them
+  // may be a perfectly good position — there is just no way to say where it
+  // goes in this scan, and a marker drawn from it would be confidently wrong
+  // rather than absent. Reported as its own verdict, not folded into the
+  // ordinary "could not place" counts, because the fix is a re-run of the
+  // placement rather than anything about the capture.
+  if (frame.kind === 'undeclared') {
+    return { ...nothing, unplacedCount: manifest.segmentCount ?? records.length, frameUndeclared: true }
   }
 
   // The manifest's floor is authoritative for a run that already happened; the
   // shared constant is only the fallback for a manifest written before params
   // were recorded.
   const minConfidence = manifest.params?.minConfidence ?? MIN_CONFIDENCE
-  const { group, markers, unplacedCount } = buildPanopticMarkers(records, minConfidence)
+  const { group, markers, unplacedCount } = buildPanopticMarkers(records, minConfidence, frame)
   return {
     scanId: scan.scanId,
     manifest,
@@ -355,6 +462,11 @@ export type PlacementBlock =
   | 'thin-geometry'
   /** Positions were computed and none was trustworthy. */
   | 'weak-placements'
+  /**
+   * Positions exist and are trustworthy, but the record of how they line up
+   * with this scan's own shape is missing, so none can be shown in the room.
+   */
+  | 'positions-unanchored'
   /** The frames were read and held no discrete objects. */
   | 'nothing-found'
   /** Placement was attempted and errored. */
@@ -436,6 +548,21 @@ export function placementVerdictOf(layer: ScanPanopticLayer | null): PlacementVe
   if (layer.placedCount > 0) return null
 
   const m = layer.manifest
+  // Before the reason tally, because this is not one of the lift's reasons:
+  // the lift placed these objects and said so. What is missing is the note
+  // saying how its measurements line up with this scan's own shape, and
+  // without it drawing them would be a guess. Only when it actually found
+  // something — otherwise the ordinary explanation below is the true one.
+  if (layer.frameUndeclared && (m.confidentCount ?? 0) > 0) {
+    const found = m.confidentCount ?? 0
+    return {
+      block: 'positions-unanchored',
+      headline: `Found where ${found} object${found === 1 ? ' is' : 's are'}, but not how that lines up with this scan.`,
+      detail: 'The measurements are real ones, in metres. This scan\'s shape was rebuilt at its own size '
+        + 'though, and the note saying how the two match up was not written down, so showing the objects here '
+        + 'would put them somewhere they are not. Placing objects in this scan again writes that note.',
+    }
+  }
   if (m.status === 'skipped') {
     // Two structural cases cover every skip the driver writes: `pointCount` is
     // 0 exactly when the cloud was the missing input, and absent when the
