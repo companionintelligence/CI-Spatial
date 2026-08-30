@@ -22,6 +22,7 @@ import { GIMBAL_MODE } from '../protocol/constants.mjs';
 import { quaternionDelta, quatToGimbalControlDeg } from '../protocol/telemetry.mjs';
 import { AndroidMcpClient, capturePhoto, planGrid } from './android-capture.mjs';
 import { PHONE_TELEMETRY, isPhoneTelemetry, normalizePhoneTelemetry } from '../protocol/phone_telemetry.mjs';
+import { STREAM_STALE_MS } from '../protocol/link_state.mjs';
 
 const PORT = Number(process.env.BACKEND_PORT) || 8788;
 const transport = new OsmoBleTransport();
@@ -160,7 +161,15 @@ transport.on('frame', (frame) => {
     payloadHex: frame.payload ? Buffer.from(frame.payload).toString('hex') : undefined,
   });
 });
-transport.on('disconnect', () => broadcast({ type: 'status', connected: false, paired: false }));
+transport.on('disconnect', () => broadcast({ type: 'status', ...statusPayload() }));
+// Surfaced rather than swallowed: an automatic recovery that nobody can see is how a link that
+// needs a power-cycle gets mistaken for one that is merely flaky.
+transport.on('link-recovery', ({ peripheralId, reason, action, attempt, attempts }) => {
+  const what = action === 'retry'
+    ? `retrying (attempt ${attempt} of ${attempts})`
+    : 'dropping that stale handle and re-establishing the link';
+  console.warn(`[ble] ${peripheralId}: ${reason} — ${what}.`);
+});
 
 // ── Phone telemetry relay ────────────────────────────────────────────────────────────────────
 // The operator's phone posts its own compass/orientation/GPS samples UP the same /ws socket the
@@ -241,9 +250,23 @@ function handleInboundWsMessage(ws, data, isBinary) {
 
 function statusPayload() {
   return {
+    // `connected` now means telemetry is FLOWING, not that a connect call returned. It used to
+    // mean the latter, which is how this endpoint reported a perfectly healthy-looking
+    // `connected: true` alongside `lastQuaternion: null` for a link that had never subscribed to
+    // a single characteristic — see protocol/link_state.mjs, and ADR 0005 rule 3.
     connected: transport.connected,
+    // The full state, for a caller that needs to tell the two failure modes apart:
+    // 'disconnected' | 'connecting' | 'linked' | 'streaming'. `linked` is the honest name for
+    // "commands go out, nothing comes back" — the state that used to be indistinguishable from
+    // a working gimbal.
+    link: transport.linkState,
+    linkDetail: transport.linkDetail,
+    subscribedChars: transport.subscribedChars,
+    lastNotifyAt: transport.lastNotifyAt,
+    notifyCount: transport.notifyCount,
     paired: transport.paired,
     lastQuaternion: transport.lastQuaternion,
+    lastQuaternionAt: transport.lastQuaternionAt,
     // Newest phone sample, or null if none has arrived this process lifetime. Included here (and
     // so in GET /api/status and the on-connect status frame) so a client that connects between
     // phone ticks isn't blank; it is a cache of the last relayed frame, not a live reading.
@@ -382,9 +405,14 @@ function wrapDeg(d) {
  *
  * Errors are swallowed deliberately — this runs on failure and shutdown paths where the
  * transport may already be gone, and a throw here would mask the original fault.
+ *
+ * Gated on `linked`, NOT on `connected`. Since `connected` came to mean "telemetry is flowing"
+ * the two differ exactly when it matters most: a gimbal that has stopped reporting is a gimbal
+ * whose motors are most likely still latched and driving, and this is the one command that can
+ * stop them. Gating this on telemetry would make the stop unavailable precisely then.
  */
 async function stopMotors() {
-  if (!transport.connected) return;
+  if (!transport.linked) return;
   try {
     await transport.sendRaw(buildGimbalSpeedControl(transport.nextMsgId(), {}));
   } catch (err) {
@@ -406,6 +434,16 @@ async function moveToClosedLoop(opts) {
     await stopMotors();
   }
 }
+
+/**
+ * How long the loop tolerates a link that has stopped streaming before giving up on the move.
+ *
+ * Deliberately longer than protocol/link_state.mjs's own STREAM_STALE_MS window rather than
+ * equal to it: `connected` going false is a 3s-old silence already, and a move should survive a
+ * single dropped-and-recovered window without being abandoned. Two windows is still ~6s, well
+ * inside a typical 15s maxMs, so a genuinely dead link is caught with time to spare.
+ */
+const NO_TELEMETRY_ABORT_MS = STREAM_STALE_MS * 2;
 
 /**
  * Park a multi-station capture between domes until the operator has carried the tripod to the
@@ -481,8 +519,36 @@ async function driveClosedLoop({ yawDeg = 0, pitchDeg = 0, toleranceDeg = 3, spe
   const guard = createStallGuard();
 
   let actedOnPose = null;
+  /** When the link stopped streaming, or 0 while it is healthy. See the check in the loop. */
+  let noTelemetrySince = 0;
 
   while (Date.now() - start < maxMs) {
+    // Telemetry is this loop's only sensor. If it stops, every remaining tick is a correction
+    // computed from a pose nothing is refreshing — so say so and stop, instead of spending the
+    // rest of maxMs and reporting `timedOut`, which reads as "nearly there, needs longer".
+    // Motors are stopped by moveToClosedLoop's finally on the way out.
+    if (!transport.connected) {
+      if (!noTelemetrySince) noTelemetrySince = Date.now();
+      if (Date.now() - noTelemetrySince >= NO_TELEMETRY_ABORT_MS) {
+        return {
+          converged: false,
+          timedOut: false,
+          stalled: false,
+          noTelemetry: true,
+          reason: `The gimbal stopped sending telemetry (${transport.linkDetail}). A closed-loop `
+            + `move has no feedback without it, so this stopped rather than driving blind.`,
+          link: transport.linkState,
+          ticks: history.length,
+          finalYaw: history.at(-1)?.yaw ?? null,
+          finalPitch: history.at(-1)?.pitch ?? null,
+          history,
+        };
+      }
+      await new Promise((resolve) => setTimeout(resolve, tickMs));
+      continue;
+    }
+    noTelemetrySince = 0;
+
     const quat = transport.lastQuaternion;
     if (!quat) {
       await new Promise((resolve) => setTimeout(resolve, tickMs));
@@ -610,6 +676,29 @@ async function driveClosedLoop({ yawDeg = 0, pitchDeg = 0, toleranceDeg = 3, spe
   };
 }
 
+/**
+ * Refuse a request the link cannot honestly serve, or return null to let it through.
+ *
+ * Two requirements, deliberately named apart, because conflating them is the whole defect:
+ *   'write'  — the command only has to go OUT (recenter, setMode, and above all a stop).
+ *              Needs `linked`.
+ *   'stream' — the caller reads telemetry back: every closed-loop move, and every probe that
+ *              judges a command by whether the pose changed. Needs `connected`, which now
+ *              measures notifications rather than trusting a connect call. Running one of these
+ *              over a `linked` link is the silent-no-feedback failure — a move-to that burns its
+ *              full maxMs and reports `timedOut`, or a probe that reports `moved: false` when
+ *              the truth is that nothing could see whether it moved.
+ */
+function linkRefusal(need) {
+  if (need === 'write' ? transport.linked : transport.connected) return null;
+  return [400, {
+    error: transport.linkDetail,
+    link: transport.linkState,
+    subscribedChars: transport.subscribedChars,
+    lastNotifyAt: transport.lastNotifyAt,
+  }];
+}
+
 const routes = {
   'GET /': async () => [
     200,
@@ -631,8 +720,16 @@ const routes = {
     const { deviceId } = await readJsonBody(req);
     if (!deviceId) return [400, { error: 'deviceId is required' }];
     const info = await transport.connect(deviceId);
+    // First thing over a fresh link, before anything else can be commanded. A speed command is a
+    // LATCH, so a gimbal whose previous controlling process died mid-move is still driving right
+    // now, and this link is the first opportunity anything has had to tell it to stop. Cheap and
+    // idempotent on an idle gimbal; the one thing that makes an automatic reconnect strictly
+    // safer than the process restart it replaces.
+    await stopMotors();
     broadcast({ type: 'status', ...statusPayload() });
-    return [200, { connected: true, ...info }];
+    // No `connected: true` here — that claim belongs to the status payload, which measures it.
+    // Expect `link: 'linked'`: subscriptions are up, the first notification may not have landed.
+    return [200, info];
   },
 
   // Separate from /api/pair so a caller without a PIN yet can make the device show one, rather
@@ -731,6 +828,10 @@ const routes = {
 
   'POST /api/command': async (req) => {
     const { type, params } = await readJsonBody(req);
+    // 'write', not 'stream': these are open-loop commands, and one of them is the stop that a
+    // gimbal driving on a latched speed needs most when telemetry has already died.
+    const refusal = linkRefusal('write');
+    if (refusal) return refusal;
     // Motion commands only — a scan does not care about setMode/raw probes, and blocking
     // those would be surprising. 409 (conflict) rather than 400: the request is well-formed,
     // it just lost a race for a single physical resource.
@@ -759,6 +860,11 @@ const routes = {
   // Closed-loop absolute positioning — see moveToClosedLoop's own comment for why this exists
   // instead of the absolute-angle command (confirmed non-functional on this hardware).
   'POST /api/move-to': async (req) => {
+    // Previously ungated entirely: with no link this fell through to sendRaw() and failed with
+    // "failed to write on any known characteristic"; with a linked-but-silent one it ran the
+    // full loop blind and reported `timedOut`. Neither said what was actually wrong.
+    const refusal = linkRefusal('stream');
+    if (refusal) return refusal;
     const { yawDeg, pitchDeg, toleranceDeg, speedDegPerSec, tickMs, settleMs, maxMs } = await readJsonBody(req);
     const result = await moveToClosedLoop({ yawDeg, pitchDeg, toleranceDeg, speedDegPerSec, tickMs, settleMs, maxMs });
     return [200, result];
@@ -865,7 +971,8 @@ const routes = {
     const capturePhotos = body.capturePhotos !== false;
     if (capturePhotos && !deviceUrl) return [400, { error: 'deviceUrl is required (or set ANDROID_MCP_URL)' }];
     if (capturePhotos && !deviceToken) return [400, { error: 'deviceToken is required (or set ANDROID_MCP_TOKEN) — see .env.example' }];
-    if (!transport.connected) return [400, { error: 'not connected to a gimbal — scan + connect first' }];
+    const refusal = linkRefusal('stream');
+    if (refusal) return refusal;
     if (gridRunning) return [409, { error: 'A capture is already running and owns the gimbal.', remediation: 'Stop it (POST /api/grid-stop) before starting another.' }];
 
     // Capped at 12: a station is a physical walk plus a full dome, so a hundred of them is a
@@ -997,6 +1104,26 @@ const routes = {
             toleranceDeg: body.toleranceDeg ?? 5,
             maxMs: body.maxMs ?? 15000,
           });
+
+          // Losing telemetry IS fatal to the run, unlike a merely non-converged move below:
+          // every remaining position would be commanded blind and photographed wherever the
+          // gimbal happened to end up, producing a capture that looks complete and is not.
+          // Carried over from #222 into the station loop: that rewrite restructured this loop,
+          // and dropping the check would have silently un-fixed it.
+          if (move.noTelemetry) {
+            incompleteReason = `${move.reason} Lost the link during station ${station} of `
+              + `${stationsPlanned}, after ${summary.positions} position(s) in it.`;
+            emit({
+              phase: 'error',
+              error: `${move.reason} The ${results.length} position(s) captured so far are on `
+                + 'disk. Reconnect (POST /api/connect) and re-run from here.',
+              captured: results.length,
+              station,
+              link: move.link,
+            });
+            faulted = true;
+            break;
+          }
 
           // A non-converged move is recorded, not fatal: a photo from a position that is merely
           // close is still usable, and aborting the whole run would throw away the frames already
@@ -1200,6 +1327,11 @@ const routes = {
   // report whether it actually changed — the fastest way to confirm (or rule out) that a
   // given command physically moves the gimbal over BLE-only.
   'POST /api/test/recenter-probe': async (req) => {
+    // The verdict IS a telemetry comparison. Without a stream both samples are null and the
+    // probe reports `moved: false` — "the command did nothing" when the truth is "nothing could
+    // see whether it did anything". Refuse instead.
+    const refusal = linkRefusal('stream');
+    if (refusal) return refusal;
     const { durationSeconds } = await readJsonBody(req);
     const before = transport.lastQuaternion;
     await buildAndSend('recenter', { durationSeconds: durationSeconds ?? 1 });
@@ -1217,6 +1349,8 @@ const routes = {
   'POST /api/test/command-probe': async (req) => {
     const { type, params, waitMs, stop } = await readJsonBody(req);
     if (!type) return [400, { error: 'type is required' }];
+    const refusal = linkRefusal('stream'); // same reason as recenter-probe above
+    if (refusal) return refusal;
     const before = transport.lastQuaternion;
     const sent = await buildAndSend(type, params ?? {});
     await new Promise((resolve) => setTimeout(resolve, waitMs ?? 1500));
