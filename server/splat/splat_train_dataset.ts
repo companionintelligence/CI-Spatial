@@ -38,6 +38,8 @@
  * Brush. It does no network I/O.
  */
 
+import { resolve } from '@std/path'
+
 export interface KeyframeRecord {
   index?: number
   file?: string
@@ -72,11 +74,31 @@ export interface NerfstudioFrame {
   h: number
 }
 
+/**
+ * Camera-model spellings this module can stamp into `transforms.json`.
+ *
+ * The two trainers do NOT accept the same set, and the intersection is a
+ * single name — measured on the 32-frame sess-video-20260830-033839 dataset
+ * by feeding each spelling to `spirula train --data-format nerfstudio
+ * --num-iterations 1`:
+ *
+ *   name              Brush   Spirula
+ *   PERSPECTIVE       yes     "error: NerfstudioParser: unsupported camera model PERSPECTIVE"
+ *   OPENCV            yes     yes  (32 cameras, 9362 seed points)
+ *   PINHOLE           no      yes
+ *   SIMPLE_PINHOLE    no      yes
+ *
+ * So 'OPENCV' would in principle serve both — but our intrinsics are
+ * distortion-free, and 'PERSPECTIVE' is the name Brush's own docs use for
+ * that, so the Brush default stays as it was and Spirula asks for 'OPENCV'.
+ */
+export type NerfstudioCameraModel = 'PERSPECTIVE' | 'OPENCV' | 'PINHOLE' | 'SIMPLE_PINHOLE'
+
 export interface NerfstudioTransforms {
   // Brush's nerfstudio loader accepts only 'PERSPECTIVE' (pinhole),
   // 'OPENCV', or 'OPENCV_FISHEYE' — NOT the COLMAP name 'PINHOLE'
   // (brush-dataset/src/formats/nerfstudio.rs resolve_camera_model).
-  camera_model: 'PERSPECTIVE' | 'OPENCV'
+  camera_model: NerfstudioCameraModel
   /** Provenance so a re-run / debugging can trace which session produced this. */
   ci_source?: { sessionId: string; frameCount: number; generatedAt: string }
   /** Path (relative to transforms.json) to the seed point cloud, when present. */
@@ -85,11 +107,17 @@ export interface NerfstudioTransforms {
 }
 
 export interface BuildDatasetOptions {
-  /** Absolute path to the session directory (scans/sessions/<id>). */
+  /**
+   * Path to the session directory (scans/sessions/<id>). May be relative —
+   * it is resolved against the process cwd on the way in (see
+   * `buildBrushDataset`), because the world-job runner passes SCANS_DIR
+   * through verbatim and that defaults to the relative `./scans`.
+   */
   sessionDir: string
   /**
    * Where to write the dataset. Defaults to `<sessionDir>/brush-dataset`.
    * The directory (and its `images/` child) is created if missing.
+   * Relative paths are resolved the same way `sessionDir` is.
    */
   datasetDir?: string
   /**
@@ -98,6 +126,16 @@ export interface BuildDatasetOptions {
    * (e.g. cross-device). 'copy' forces a byte copy.
    */
   imageMode?: 'symlink' | 'copy'
+  /**
+   * Which spelling of the pinhole camera model to stamp into
+   * `transforms.json`. Defaults to 'PERSPECTIVE' — what Brush wants, and what
+   * every caller before the Spirula backend existed relied on. Spirula's
+   * parser rejects that exact string, so `spirula_train.ts` passes 'OPENCV';
+   * see NerfstudioCameraModel for the measured compatibility table. The
+   * geometry written is identical either way — this names the lens model, it
+   * does not change a single intrinsic.
+   */
+  cameraModel?: NerfstudioCameraModel
 }
 
 export interface BuildDatasetResult {
@@ -128,8 +166,27 @@ export function recordHasPose(rec: KeyframeRecord): boolean {
  * caller can turn that into a `skipped` manifest.
  */
 export async function buildBrushDataset(opts: BuildDatasetOptions): Promise<BuildDatasetResult> {
-  const sessionDir = opts.sessionDir
-  const datasetDir = opts.datasetDir ?? `${sessionDir}/brush-dataset`
+  // Resolve to absolute ONCE, here, rather than at each use — every path this
+  // function emits is consumed from a different working directory than ours:
+  //
+  //   - `srcPath` becomes a symlink TARGET under `images/`, and a relative
+  //     target resolves against the directory holding the link, not our cwd.
+  //     Measured on the 17-frame session sess-a7e2f642: the runner passes
+  //     SCANS_DIR verbatim (server/main.ts defaults it to './scans'), so
+  //     sessionDir arrived as './scans/sessions/sess-…' and all 17 links
+  //     landed dangling — `brush-dataset/images/./scans/sessions/…`. Brush
+  //     then reported "dataset contains no usable training views (all images
+  //     missing or filtered out)" and exited 1, which the manifest recorded
+  //     only as "brush exited 1".
+  //   - `datasetDir` is handed to Brush as the positional dataset argument and
+  //     as the parent of `--export-path`, which brush-cli --help documents as
+  //     "relative to the dataset's parent directory (or CWD if unavailable)" —
+  //     so a relative dataset dir silently nests the exported .ply under
+  //     <sessionDir>/<sessionDir>/… AFTER a successful multi-minute train.
+  //
+  // Callers stay free to pass relative paths; nothing downstream has to know.
+  const sessionDir = resolve(opts.sessionDir)
+  const datasetDir = opts.datasetDir ? resolve(opts.datasetDir) : `${sessionDir}/brush-dataset`
   const imagesDir = `${datasetDir}/images`
   const imageMode = opts.imageMode ?? 'symlink'
 
@@ -248,7 +305,7 @@ export async function buildBrushDataset(opts: BuildDatasetOptions): Promise<Buil
 
   const transforms: NerfstudioTransforms = {
     // Our WebXR intrinsics are distortion-free pinhole → 'PERSPECTIVE'.
-    camera_model: 'PERSPECTIVE',
+    camera_model: opts.cameraModel ?? 'PERSPECTIVE',
     ci_source: {
       sessionId: sessionDir.split('/').filter(Boolean).pop() ?? '',
       frameCount: frames.length,
@@ -625,9 +682,23 @@ async function materialiseImage(
   if (mode === 'symlink') {
     try {
       await Deno.symlink(srcPath, destPath)
+      // Verify the link RESOLVES, not just that symlink() succeeded. Creating a
+      // dangling link is not an error on any POSIX filesystem, so this is the
+      // only way to tell a usable dataset from one Brush will reject as "no
+      // usable training views" — the exact failure a relative `srcPath` caused
+      // (see buildBrushDataset). `resolve()` above makes that unreachable now;
+      // this stat is what keeps ANY future dangling-target bug from reaching
+      // the trainer, at the cost of one stat per frame. We already hold the
+      // bytes, so the fallback copy costs nothing extra to reach.
+      await Deno.stat(destPath)
       return
     } catch {
-      // fall through to copy (cross-device, no symlink perms, etc.)
+      // fall through to copy (cross-device, no symlink perms, dangling target)
+      try {
+        await Deno.remove(destPath)
+      } catch {
+        // never created
+      }
     }
   }
   await Deno.writeFile(destPath, bytes)

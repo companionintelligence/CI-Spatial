@@ -47,8 +47,10 @@ description it fits rather than at this level.
 | Doc | What it covers |
 |---|---|
 | [operations/DEPLOY.md](operations/DEPLOY.md) | Self-hosting and deployment — Deno server, Vite proxy, Ollama, and Tailscale/HTTPS setup. |
+| [operations/PLATFORM_SUPPORT.md](operations/PLATFORM_SUPPORT.md) | What runs on which OS and accelerator, what is untested, and `server/capabilities.ts` — the probe that answers "what can this machine actually do?" for your own box. |
 | [operations/CI.md](operations/CI.md) | What CI runs, and what it deliberately does not. |
 | [operations/GIMBAL_INTEGRATION.md](operations/GIMBAL_INTEGRATION.md) | DJI Osmo Mobile 6 gimbal control over BLE, the `osmo-gimbal` MCP server, and automated grid capture into the ingest pipeline. |
+| [operations/COLMAP_SETUP.md](operations/COLMAP_SETUP.md) | Installing COLMAP for the `colmap-poses` pose solve — including why the supported install lands somewhere `which` cannot see. |
 
 ## testing/ — how it is verified
 
@@ -65,9 +67,13 @@ description it fits rather than at this level.
 
 | Doc | What it covers |
 |---|---|
+| [pipelines/colmap-poses.md](pipelines/colmap-poses.md) | COLMAP pose solve — the CPU path to `poses.json` + a sparse seed cloud, and the quality verdict that says whether the solve is usable. |
 | [pipelines/lingbot-map.md](pipelines/lingbot-map.md) | LingBot-Map reconstruction integration — point cloud + poses from a session. |
 | [pipelines/splat-toolbox.md](pipelines/splat-toolbox.md) | Splat tools index — the desktop editor's Splat Toolbox (train, download `.ply`, splat-detect). |
-| [pipelines/splat-train.md](pipelines/splat-train.md) | Brush 3DGS deep-dive — GPU-pinned splat training from captured sessions. |
+| [pipelines/splat-train.md](pipelines/splat-train.md) | 3DGS training deep-dive — the dataset converter, the skip contract, and **both `SPLAT_BACKEND` drivers** (Brush, the default, and Spirula Studio) with the measured A/B between them. |
+| [pipelines/splat-align.md](pipelines/splat-align.md) | Fitting a trained splat to the scan's metric ground calibration. |
+| [pipelines/panoptic-scan.md](pipelines/panoptic-scan.md) | Per-keyframe panoptic segmentation and the lift that turns its 2D segments into world positions. |
+| [pipelines/4d-person.md](pipelines/4d-person.md) | Person capture as an animated splat sequence — the one job type that delegates off-box (ADR 0006). |
 | [pipelines/SPLAT_DETECT_ROADMAP.md](pipelines/SPLAT_DETECT_ROADMAP.md) | Where splat-based detection is heading. |
 
 ## adr/ — decisions

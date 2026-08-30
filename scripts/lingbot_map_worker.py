@@ -23,7 +23,7 @@ generic "job failed".
 Usage:
     python scripts/lingbot_map_worker.py --session-dir <path> \\
         [--model-path <ckpt>] [--max-frames N] [--keyframe-interval K] \\
-        [--device {auto,cpu,cuda}]
+        [--device {auto,cpu,cuda,mps}]
 """
 
 from __future__ import annotations
@@ -140,12 +140,24 @@ def _try_import_lingbot() -> tuple[Any, str | None]:
         return None, f"lingbot_map import failed: {e}"
 
 
-def _resolve_device(requested: str, torch: Any) -> str:
-    if requested == "cpu":
-        return "cpu"
-    if requested == "cuda":
-        return "cuda" if torch.cuda.is_available() else "cpu"
-    return "cuda" if torch.cuda.is_available() else "cpu"
+def _try_import_device_resolver() -> tuple[Any, str | None]:
+    """Load the shared resolver, tolerating the copy-one-file deployment.
+
+    The Dockerfile installs this worker with `COPY scripts/lingbot_map_worker.py`
+    and `LINGBOT_MAP_SCRIPT` can point anywhere, so `_torch_device.py` has to be
+    found as a sibling rather than on an installed package path. Same failure
+    style as `_try_import_torch`: a reason string the caller turns into a
+    `skipped` manifest, never a traceback.
+    """
+    try:
+        try:
+            from _torch_device import resolve_torch_device
+        except ImportError:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from _torch_device import resolve_torch_device
+        return resolve_torch_device, None
+    except Exception as e:
+        return None, f"_torch_device import failed: {e}"
 
 
 def _write_ply(path: Path, xyz: Iterable[tuple[float, float, float]], rgb: Iterable[tuple[int, int, int]] | None) -> int:
@@ -257,8 +269,26 @@ def run(args: argparse.Namespace) -> int:
         print(f"[lingbot-map] model not found at {args.model_path}", file=sys.stderr)
         return 0
 
-    device = _resolve_device(args.device, torch)
+    resolve_torch_device, derr = _try_import_device_resolver()
+    if resolve_torch_device is None:
+        _write_manifest(session_dir, {
+            **base_manifest,
+            "status": "skipped",
+            "skippedReason": derr,
+            "remediation": "Copy scripts/_torch_device.py next to lingbot_map_worker.py (LINGBOT_MAP_SCRIPT's directory).",
+        })
+        print(f"[lingbot-map] {derr}", file=sys.stderr)
+        return 0
+
+    # One resolver, shared with panoptic_worker.py — see scripts/_torch_device.py.
+    # `resolvedDevice` stays the bare torch string the UI and fixtures already
+    # read; the vendor is reported alongside it because "cuda" alone cannot tell
+    # an operator whether a ROCm box actually picked up its GPU.
+    dev = resolve_torch_device(torch, args.device)
+    device = dev.device
     base_manifest["params"]["resolvedDevice"] = device
+    base_manifest["params"]["deviceVendor"] = dev.vendor
+    print(f"[lingbot-map] device: {dev.label} — {dev.reason}", file=sys.stderr)
 
     try:
         LingBotMap = mods["LingBotMap"]
@@ -454,7 +484,10 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("LINGBOT_MAP_MODEL_PATH", ""),
         help="LingBot-Map checkpoint path (defaults to $LINGBOT_MAP_MODEL_PATH)",
     )
-    p.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
+    # "mps" is new here: auto already picks it on Apple Silicon, but an operator
+    # debugging a Mac needs to be able to ask for it (and to be told when it is
+    # unavailable) rather than have argparse reject the word.
+    p.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
     p.add_argument("--keyframe-interval", type=int, default=1)
     p.add_argument("--max-frames", type=int, default=512)
     p.add_argument("--image-size", type=int, default=DEFAULT_IMAGE_SIZE)

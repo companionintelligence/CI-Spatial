@@ -591,8 +591,8 @@
       }
       #compass-ring {
         position: relative;
-        width: 36px;
-        height: 36px;
+        width: 30px;
+        height: 30px;
         flex-shrink: 0;
       }
       #compass-ring svg {
@@ -641,12 +641,18 @@
         color: rgba(255, 255, 255, 0.6);
       }
 
-      /* ── Unified top-left HUD panel ── */
+      /* ── Unified top-left HUD panel ──
+         Sized against the occlusion budget in mock-scanner-startup-budget,
+         which only ever measures a 375x812 viewport. A 360x640 phone has 24%
+         less camera to give it: the same 280x167 panel is 20.3% of that
+         viewport on its own, and total UI measured 31.4% there against 23.6%
+         at 375x812. The width and the per-section padding below are what close
+         that gap — nothing is removed from the panel, it is packed tighter. */
       #hud-panel {
         position: absolute;
-        top: max(14px, env(safe-area-inset-top));
-        left: max(14px, env(safe-area-inset-left));
-        width: min(280px, calc(100vw - 28px - env(safe-area-inset-left) - env(safe-area-inset-right)));
+        top: max(10px, env(safe-area-inset-top));
+        left: max(12px, env(safe-area-inset-left));
+        width: min(264px, calc(100vw - 24px - env(safe-area-inset-left) - env(safe-area-inset-right)));
         display: flex;
         flex-direction: column;
         background: rgba(4,22,32,0.68);
@@ -662,15 +668,15 @@
 
       /* 1 — Status row */
       #status-bar {
-        padding: 10px 11px 9px;
+        padding: 7px 9px 6px;
         color: rgba(255, 255, 255, 0.9);
         font-size: 12px;
         text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
       }
       #status-main {
         display: grid;
-        grid-template-columns: 36px minmax(0, 1fr);
-        gap: 9px;
+        grid-template-columns: 30px minmax(0, 1fr);
+        gap: 8px;
         align-items: center;
       }
       #status-copy {
@@ -736,18 +742,18 @@
       /* 2 — Coverage / quality section */
       #quality-overlay {
         border-top: 1px solid rgba(255, 255, 255, 0.07);
-        padding: 7px 11px 8px;
+        padding: 5px 9px 6px;
         flex-direction: column;
-        gap: 5px;
+        gap: 4px;
         /* display toggled none/flex by JS */
       }
 
       #autosave-status {
         border-top: 1px solid rgba(255, 255, 255, 0.07);
-        padding: 6px 11px;
+        padding: 4px 9px;
         color: rgba(239,240,240,0.45);
         font-size: 10px;
-        line-height: 1.4;
+        line-height: 1.35;
       }
 
       /* 3 — RTC LIVE row */
@@ -1212,6 +1218,15 @@
 
 
       /* Start screen — shown until user taps the button; grants iOS motion permission */
+      /* The brand block plus three 92px cards came to 524px of content, which
+         is most of a 360x640 phone and more than a 360x480 one: measured
+         there, #start-brand sat at y=-33 and the stack overflowed (491 of 480)
+         with overflow visible, so the top was clipped and the third card
+         ("Place Scan Editor") was unreachable. The rhythm below is tightened,
+         and `safe center` centres while still letting the top of a too-tall
+         stack be scrolled to; browsers that don't know the keyword drop the
+         whole declaration and fall back to the plain `center` above it, which
+         is the pre-existing behaviour. */
       #start-screen {
         position: fixed;
         inset: 0;
@@ -1220,13 +1235,20 @@
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 22px;
+        justify-content: safe center;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        gap: 16px;
         background:
           radial-gradient(circle at 50% 30%, rgba(114,221,212,0.14), transparent 28%),
           linear-gradient(180deg, rgba(8,28,38,0.92), rgba(4,22,32,0.97)),
           repeating-linear-gradient(90deg, rgba(114,221,212,0.08) 0 1px, transparent 1px 14px);
         backdrop-filter: blur(10px);
-        padding: 24px;
+        padding:
+          max(18px, env(safe-area-inset-top))
+          max(18px, env(safe-area-inset-right))
+          max(18px, env(safe-area-inset-bottom))
+          max(18px, env(safe-area-inset-left));
       }
 
       /* Project-frame calibration runs over the live camera before capture begins. */
@@ -1432,13 +1454,13 @@
         flex-direction: column;
         align-items: center;
         text-align: center;
-        gap: 10px;
+        gap: 7px;
         max-width: 320px;
       }
 
       #start-brand-mark {
-        width: 54px;
-        height: 54px;
+        width: 44px;
+        height: 44px;
         border: 1px solid rgba(239,240,240,0.42);
         border-radius: 50%;
         position: relative;
@@ -1454,14 +1476,15 @@
       }
 
       #start-brand-mark::before {
-        inset: 8px;
+        inset: 7px;
       }
 
+      /* Proportional to the 44px mark above (was 18/7/17 against 54px). */
       #start-brand-mark::after {
-        width: 18px;
-        height: 18px;
-        right: 7px;
-        top: 17px;
+        width: 15px;
+        height: 15px;
+        right: 6px;
+        top: 14px;
         background: #72ddd4;
         border-color: #72ddd4;
       }
@@ -1476,7 +1499,7 @@
 
       #start-title {
         color: #eff0f0;
-        font-size: clamp(34px, 12vw, 58px);
+        font-size: clamp(30px, 9.5vw, 46px);
         line-height: 0.95;
         font-weight: 400;
         font-family: var(--ci-font-display);
@@ -1486,25 +1509,28 @@
       #start-subtitle {
         color: rgba(239,240,240,0.68);
         font-size: 12px;
-        line-height: 1.55;
+        line-height: 1.4;
       }
 
       /* Two stacked capture-path cards — equal dignity, distinct roles */
       #start-paths {
         display: flex;
         flex-direction: column;
-        gap: 14px;
+        gap: 10px;
         width: 100%;
         max-width: 380px;
       }
 
+      /* min-height stays comfortably over the 56px tap target mock-ftue
+         asserts; the padding is what came down (was 16/18 with an 84px floor,
+         measuring 92px per card — 303px of stack for three of them). */
       .start-path {
         display: flex;
         align-items: center;
-        gap: 14px;
+        gap: 12px;
         width: 100%;
-        min-height: 84px;
-        padding: 16px 18px;
+        min-height: 68px;
+        padding: 11px 14px;
         text-align: left;
         border-radius: var(--ci-radius);
         border: 1px solid var(--ci-line);
@@ -1578,16 +1604,37 @@
            straight through the dialog — over the sub-labels this modal now
            relies on to explain what each row opens. */
         background: rgba(0, 0, 0, 0.66);
+        /* The panel is a grid item centred in a full-viewport grid area, so
+           this padding is what its `max-height: 100%` resolves against — it
+           keeps the sheet clear of a notch and a gesture bar instead of
+           tucking its first and last rows under them. */
+        padding:
+          max(12px, env(safe-area-inset-top))
+          max(12px, env(safe-area-inset-right))
+          max(12px, env(safe-area-inset-bottom))
+          max(12px, env(safe-area-inset-left));
       }
 
       .place-sheet[hidden] {
         display: none;
       }
 
+      /* Bounded and scrollable. This panel grows with its content — a selected
+         place adds a confirm button, an opened areas section adds a list and a
+         form — and it had no ceiling and no scroller, so on a short phone the
+         actions row (including "Skip for now", the only path to the camera
+         without creating a Place) sat below the fold with no way to reach it. */
       .place-sheet-panel {
-        width: min(520px, calc(100vw - 24px));
+        width: min(520px, 100%);
+        max-height: 100%;
+        overflow-y: auto;
+        overscroll-behavior: contain;
         margin: 0 auto;
-        padding: 14px;
+        /* No bottom padding: .place-sheet-actions is the last child and is
+           sticky, and a scroll container's bottom padding is scrollable area —
+           content slid underneath the pinned row and showed in that band. The
+           row carries the 14px itself instead. */
+        padding: 14px 14px 0;
         border: 1px solid var(--ci-line);
         border-radius: 12px;
         background: #05141c;
@@ -1736,14 +1783,31 @@
 
       /* Nested popup. Same overlay shape as the sheet it sits on rather than a
          second dialog language. */
-      .place-popup { position: fixed; inset: 0; z-index: 90; display: grid; align-items: center; background: rgba(0, 0, 0, 0.5); }
+      .place-popup {
+        position: fixed;
+        inset: 0;
+        z-index: 90;
+        display: grid;
+        align-items: center;
+        background: rgba(0, 0, 0, 0.5);
+        padding:
+          max(12px, env(safe-area-inset-top))
+          max(12px, env(safe-area-inset-right))
+          max(12px, env(safe-area-inset-bottom))
+          max(12px, env(safe-area-inset-left));
+      }
       .place-popup[hidden] { display: none; }
+      /* 70vh left a third of a short phone unused while the new-place form
+         (four fields, a select and a save button — 364px) was the thing that
+         did not fit. `100%` is the padded grid area above, so the safe-area
+         insets are already deducted; dvh is not needed here. */
       .place-popup-panel {
-        width: min(460px, calc(100vw - 24px));
-        max-height: min(70vh, 560px);
+        width: min(460px, 100%);
+        max-height: 100%;
         margin: 0 auto;
         padding: 14px;
         overflow: auto;
+        overscroll-behavior: contain;
         border: 1px solid var(--ci-line);
         border-radius: 12px;
         background: #05141c;
@@ -1816,8 +1880,16 @@
       .place-option span { color: var(--ci-muted); font-size: 11px; }
 
       #place-new-form { display: grid; gap: 8px; }
-      #place-new-form label { display: grid; gap: 4px; color: var(--ci-muted); font-size: 11px; }
+      #place-new-form label { display: grid; gap: 4px; min-width: 0; color: var(--ci-muted); font-size: 11px; }
+      /* min-width:0 is load-bearing, not tidying. A bare <input>'s automatic
+         minimum size is its intrinsic ~20-character width, and the two of them
+         side by side in .place-coordinate-grid below pushed this grid's single
+         column to 402px inside a 339px panel — the form ran off the right edge
+         with nothing to scroll it, which is half of "the new place form
+         doesn't fit on screen". The other half was vertical (see
+         .place-popup-panel). Same reason for minmax(0, 1fr) on the pair. */
       #place-new-form input {
+        min-width: 0;
         min-height: 36px;
         padding: 7px 9px;
         border: 1px solid var(--ci-line);
@@ -1825,7 +1897,7 @@
         color: var(--ci-text);
         background: var(--ci-surface);
       }
-      .place-coordinate-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      .place-coordinate-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
       .place-new-name-preview { min-height: 14px; color: var(--ci-muted); font-size: 11px; }
       #place-new-save { min-height: 40px; border: 0; border-radius: 7px; color: #042226; background: #72ddd4; font-weight: 700; }
       #place-area-list { display:grid; gap:5px; max-height:160px; overflow:auto; }
@@ -1834,8 +1906,9 @@
       .place-area-new { justify-self:start; border:0; background:transparent; color:var(--ci-accent); font-size:11px; font-weight:700; }
       #place-area-new-form { display:grid; gap:7px; padding-top:3px; }
       #place-area-new-form[hidden] { display:none; }
-      #place-area-new-form label { display:grid; gap:4px; color:var(--ci-muted); font-size:11px; }
+      #place-area-new-form label { display:grid; gap:4px; min-width:0; color:var(--ci-muted); font-size:11px; }
       .ci-select {
+        min-width: 0;
         min-height: 36px;
         padding: 0 34px 0 9px;
         border: 1px solid rgba(114, 221, 212, 0.32);
@@ -1856,9 +1929,24 @@
       .ci-select:focus-visible { outline: none; border-color: var(--ci-mint); box-shadow: 0 0 0 3px rgba(114, 221, 212, 0.18); }
       .ci-select option { color: var(--ci-text); background: #082432; }
       .ci-select option:checked { color: #061820; background: #72ddd4; }
-      #place-area-new-form input { min-height:36px; padding:7px 9px; border:1px solid var(--ci-line); border-radius:7px; color:var(--ci-text); background:var(--ci-surface); }
+      #place-area-new-form input { min-width:0; min-height:36px; padding:7px 9px; border:1px solid var(--ci-line); border-radius:7px; color:var(--ci-text); background:var(--ci-surface); }
       #place-area-save { min-height:36px; border:1px solid rgba(114,221,212,.55); border-radius:7px; color:var(--ci-mint); background:rgba(114,221,212,.1); font-weight:700; }
-      .place-sheet-actions { display: flex; gap: 8px; margin-top: 10px; }
+      /* Sticky to the bottom of the scrolling panel above, so the row that
+         leads out of this modal is on screen whatever the panel's height —
+         scrolling to find it is the fallback, not the normal case. The
+         negative side margins let its opaque band reach the panel's inner
+         edges so nothing shows in the gutter beside it as content passes
+         under. */
+      .place-sheet-actions {
+        position: sticky;
+        bottom: 0;
+        z-index: 1;
+        display: flex;
+        gap: 8px;
+        margin: 10px -14px 0;
+        padding: 10px 14px 14px;
+        background: #05141c;
+      }
       .place-sheet-actions button { flex: 1; min-height: 40px; border: 1px solid var(--ci-line); border-radius: 7px; color: var(--ci-text); background: var(--ci-surface); }
       /* The confirm button names what it will do ("Scan This Place" / "Upload
          to This Place"), so it should also look like the thing you came here
@@ -1887,8 +1975,8 @@
 
       .start-path-icon {
         flex-shrink: 0;
-        width: 46px;
-        height: 46px;
+        width: 38px;
+        height: 38px;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -1904,19 +1992,19 @@
       .start-path-copy {
         display: flex;
         flex-direction: column;
-        gap: 3px;
+        gap: 2px;
         min-width: 0;
       }
 
       .start-path-title {
-        font-size: 17px;
+        font-size: 16px;
         font-weight: 700;
         letter-spacing: 0.01em;
       }
 
       .start-path-sub {
         font-size: 12px;
-        line-height: 1.45;
+        line-height: 1.35;
         opacity: 0.85;
       }
 

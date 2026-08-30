@@ -11,12 +11,20 @@
  * pagehide. Same-origin relative URL so the Vite proxy routes it.
  * The log channel must never break the app: all send errors are
  * swallowed.
+ *
+ * `?debug=remote,verbose` additionally mirrors console.log. It is opt-in
+ * because the interesting diagnostics are log-level, not warn: the 8th Wall
+ * startup dump (camera frame dims, canvas size, viewport, fov) is a
+ * console.log, so a phone reporting "no camera feed" produced a remote log
+ * containing nothing but a geolocation timeout — the one message that could
+ * not explain it. Off by default: a scanner tick logs several times a second
+ * and would evict everything else from the 50-entry buffer.
  */
 
 import { REMOTE_LOG_KEY } from '../shared/storage-keys'
 import { hasDebugFlag } from '../shared/debug-flags'
 
-type LogLevel = 'error' | 'warn'
+type LogLevel = 'error' | 'warn' | 'log'
 
 interface LogEntry {
   ts: number
@@ -87,6 +95,14 @@ export function installRemoteLog(): void {
 
   const originalError = console.error.bind(console)
   const originalWarn = console.warn.bind(console)
+  const originalLog = console.log.bind(console)
+
+  if (hasDebugFlag('verbose')) {
+    console.log = (...args: unknown[]) => {
+      originalLog(...args)
+      push('log', toMsg(args))
+    }
+  }
 
   console.error = (...args: unknown[]) => {
     originalError(...args)

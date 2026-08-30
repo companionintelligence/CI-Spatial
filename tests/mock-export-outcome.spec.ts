@@ -19,6 +19,7 @@
 import { test, expect, type Page } from '@playwright/test'
 import { QUEUED_OFFLINE_HEADER } from '../src/shared/offline-queue'
 import { startArScan } from './support/start-scan'
+import { requireUsableInferenceEngine } from './support/inference-engine'
 
 test.use({
   // No service worker for this spec. Since the cert flag landed (#95) the
@@ -44,6 +45,9 @@ test.use({
  * itself the cancel path — so callers say which one they want.
  */
 async function scanThenOpenPanel(page: Page, confirmLowQuality = true): Promise<void> {
+  // The poll below waits 45 s for a detection that a server with no vision
+  // engine can never produce. Say so in a second instead. See ./support/inference-engine.
+  await requireUsableInferenceEngine()
   // The handler has to be registered before the navigation, so it is passed in
   // rather than attached here.
   await startArScan(page, { confirmLowQuality })

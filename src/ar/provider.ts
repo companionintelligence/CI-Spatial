@@ -1,5 +1,6 @@
 import type * as THREE from 'three'
 import type { TrackingStatus } from './tracking-quality'
+import type { PreflightVerdict } from './preflight'
 
 /** 6-DoF camera pose from the AR runtime */
 export interface Pose {
@@ -111,6 +112,23 @@ export interface ARProvider {
    * Viewport aspect ratio (width / height) at the time XR was started.
    */
   getCameraAspect(): number
+
+  /**
+   * Subscribe to this runtime's own preflight verdict — "did AR actually start
+   * working", answered on a timer rather than by a return value.
+   *
+   * Optional, and only implemented by a runtime that has the signal.
+   * `EighthWallProvider` does: it already ran a 5 s "pose not received" timer
+   * for a console warning, and that timer is now what produces the verdict, so
+   * this is a second reader of one existing signal rather than a competing
+   * notion of readiness (see `src/ar/preflight.ts`). `WebXRProvider` omits it —
+   * its equivalent failure is a `requestSession()` rejection, which the caller
+   * already has in hand and classifies with `startFailureVerdict()`.
+   *
+   * The callback may fire more than once: a late pose re-reports `'ready'`, so
+   * a UI that warned at 5 s can take the warning back at 8 s.
+   */
+  onPreflightVerdict?(cb: (verdict: PreflightVerdict) => void): void
 
   /**
    * A live, world-locked Three.js scene the caller can add/remove objects to

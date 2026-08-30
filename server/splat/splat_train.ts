@@ -21,6 +21,7 @@
  *   Brush does not emit a manifest — this driver writes it.
  */
 
+import { resolve } from '@std/path'
 import { buildBrushDataset } from './splat_train_dataset.ts'
 import { isRunnable } from '../exec_probe.ts'
 import { runColmapPoses } from '../colmap/colmap_poses.ts'
@@ -34,7 +35,12 @@ import type { SplatTrainManifest } from '../../src/world/types.ts'
 export type { SplatTrainManifest }
 
 export interface SplatTrainRunOptions {
-  /** Absolute path to the session directory (scans/sessions/<id>). */
+  /**
+   * Path to the session directory (scans/sessions/<id>). May be relative — the
+   * world-job runner passes SCANS_DIR through verbatim and that defaults to
+   * './scans'. It is resolved against the process cwd on the way in, before it
+   * reaches a symlink target, Brush's CLI, or the manifest.
+   */
   sessionDir: string
   /** Absolute path where the final .ply should land (e.g. <SCANS>/<base>.splat.ply). */
   outputPlyPath: string
@@ -137,18 +143,26 @@ export async function runSplatTrain(opts: SplatTrainRunOptions): Promise<SplatTr
   const manifestPath = opts.manifestPath ?? opts.outputPlyPath.replace(/\.splat\.ply$/, '') + '.splat-train.manifest.json'
   const started = Date.now()
 
+  // Resolve the caller's session dir once, before anything records or consumes
+  // it. The world-job runner hands us SCANS_DIR verbatim ('./scans' by
+  // default), and a manifest that says `sessionDir: "./scans/sessions/sess-…"`
+  // is only meaningful to a reader who also knows the server's cwd — while
+  // every downstream consumer (the dataset builder's symlink targets, Brush's
+  // dataset-relative --export-path) needs an absolute one to be correct at all.
+  const sessionDir = resolve(opts.sessionDir)
+
   const baseManifest: SplatTrainManifest = {
     schemaVersion: 1,
     tool: 'brush',
     status: 'error',
     createdAt: new Date().toISOString(),
-    sessionDir: opts.sessionDir,
+    sessionDir,
     params,
     sessionId: opts.provenance?.sessionId,
     scanId: opts.provenance?.scanId,
   }
 
-  if (!isValidSessionDir(opts.sessionDir)) {
+  if (!isValidSessionDir(sessionDir)) {
     return _finish(manifestPath, {
       ...baseManifest,
       status: 'error',
@@ -165,7 +179,14 @@ export async function runSplatTrain(opts: SplatTrainRunOptions): Promise<SplatTr
       ...baseManifest,
       status: 'skipped',
       skippedReason: `Brush binary not found or not executable: ${params.brushBin}`,
-      remediation: 'Build Brush and set BRUSH_BIN (see docs/pipelines/splat-train.md — Setup).',
+      // Name the command, the way colmap_poses.ts's skip does — "build Brush"
+      // alone sends the reader to a repo they then have to guess the build
+      // invocation for, and `--bin brush-cli` (the obvious guess) fails on this
+      // workspace: it needs `-p`, see docs/pipelines/splat-train.md — Setup.
+      remediation:
+        'Build Brush (`git clone https://github.com/ArthurBrussee/brush ~/brush && ' +
+        'cd ~/brush && cargo build --release -p brush-cli`) or set BRUSH_BIN to an existing brush-cli. ' +
+        'Needs a Vulkan/Metal-capable GPU; see docs/pipelines/splat-train.md — Setup.',
     }, 0, `brush binary missing: ${params.brushBin}`)
   }
 
@@ -181,11 +202,11 @@ export async function runSplatTrain(opts: SplatTrainRunOptions): Promise<SplatTr
   let dataset
   const autoSolve = opts.autoSolvePoses ?? Deno.env.get('SPLAT_TRAIN_AUTO_POSES') !== '0'
   try {
-    dataset = await buildBrushDataset({ sessionDir: opts.sessionDir })
+    dataset = await buildBrushDataset({ sessionDir })
   } catch (e0) {
     const msg0 = e0 instanceof Error ? e0.message : String(e0)
     if (autoSolve && /no camera poses/.test(msg0)) {
-      const solved = await runColmapPoses({ sessionDir: opts.sessionDir })
+      const solved = await runColmapPoses({ sessionDir })
       if (solved.status !== 'ok') {
         // Surface COLMAP's own diagnosis — it distinguishes "not installed"
         // from "this capture has no parallax", and those need different fixes.
@@ -199,7 +220,7 @@ export async function runSplatTrain(opts: SplatTrainRunOptions): Promise<SplatTr
       }
     }
     try {
-      dataset = await buildBrushDataset({ sessionDir: opts.sessionDir })
+      dataset = await buildBrushDataset({ sessionDir })
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       // "no keyframes" is a graceful skip; any other conversion failure is an error.
@@ -221,6 +242,15 @@ export async function runSplatTrain(opts: SplatTrainRunOptions): Promise<SplatTr
   baseManifest.frameCount = dataset.frameCount
 
   // 3. Spawn Brush headless with the GPU pin.
+  //
+  // `--export-path` MUST be absolute. brush-cli --help: "Path is relative to
+  // the dataset's parent directory (or CWD if unavailable)" — not to our cwd,
+  // and not to the dataset dir itself. A relative one therefore lands the .ply
+  // under <sessionDir>/<the-relative-path>, `findExportedPly` sees an empty
+  // exports/, and the run reports "produced no .ply" on a zero exit code —
+  // i.e. it throws away a completed multi-minute train. `buildBrushDataset`
+  // returns an absolute `datasetDir` (it resolves its inputs), so this is
+  // absolute by construction; do not reintroduce a relative one.
   const exportDir = `${dataset.datasetDir}/exports`
   try {
     await Deno.mkdir(exportDir, { recursive: true })
@@ -247,10 +277,23 @@ export async function runSplatTrain(opts: SplatTrainRunOptions): Promise<SplatTr
   }
 
   if (spawnResult.code !== 0) {
+    // Carry Brush's own diagnosis onto the manifest, not just the exit code.
+    // The manifest is the only durable record of a run — `log` is returned to
+    // the caller and then dropped — so a bare "brush exited 1" is the end of
+    // the trail for anyone reading scans/*.splat-train.manifest.json after the
+    // fact. That is exactly what happened to the first splat-train ever
+    // enqueued here: the on-disk manifest said "brush exited 1" and nothing
+    // else, while the stderr it discarded said "dataset contains no usable
+    // training views (all images missing or filtered out)" — which names the
+    // real cause. Same reasoning as colmap_poses.ts keeping a stderr slice.
+    const tail = stderrTail(spawnResult.stderr)
     return _finish(manifestPath, {
       ...baseManifest,
       status: 'error',
-      error: `brush exited ${spawnResult.code}`,
+      error: tail ? `brush exited ${spawnResult.code}: ${tail}` : `brush exited ${spawnResult.code}`,
+      remediation:
+        'Read the message above — it is Brush\'s own. Re-run the same command by hand to see the full log: ' +
+        `${params.brushBin} ${args.join(' ')} (see docs/pipelines/splat-train.md — Troubleshooting).`,
       timing: { elapsedMs: Date.now() - started },
     }, spawnResult.code, spawnResult.stderr)
   }
@@ -261,7 +304,14 @@ export async function runSplatTrain(opts: SplatTrainRunOptions): Promise<SplatTr
     return _finish(manifestPath, {
       ...baseManifest,
       status: 'error',
-      error: 'brush finished but produced no .ply in the export directory',
+      error: `brush exited 0 but produced no .ply in ${exportDir}`,
+      // This branch costs a whole training run before it fires, so it names the
+      // one thing that has actually caused it: a non-absolute --export-path,
+      // which Brush resolves against the dataset's PARENT dir (see step 3).
+      remediation:
+        'Brush trained but nothing landed. Check for a stray splat_*.ply elsewhere under the session ' +
+        `dir (\`find ${sessionDir} -name 'splat_*.ply'\`): Brush resolves a relative --export-path ` +
+        'against the dataset\'s parent directory, so a misplaced export means a relative dataset path got through.',
       timing: { elapsedMs: Date.now() - started },
     }, spawnResult.code, spawnResult.stderr)
   }
@@ -316,6 +366,24 @@ export async function runSplatTrain(opts: SplatTrainRunOptions): Promise<SplatTr
     log: spawnResult.stderr,
     exitCode: spawnResult.code,
   }
+}
+
+/**
+ * Condense a Brush stderr dump into something that fits a manifest's `error`.
+ *
+ * The last non-empty lines, not the first: Brush logs wgpu adapter selection
+ * and per-step training noise before it fails, so the head of the stream is
+ * never the diagnosis. Three lines is enough for the messages seen so far
+ * (`Error: Error when decoding format: dataset contains no usable training
+ * views (all images missing or filtered out)` is one), and the cap keeps a
+ * panic backtrace from turning the manifest into a log file — the full stream
+ * still reaches the caller as `result.log`.
+ */
+export function stderrTail(stderr: string, maxChars = 600, maxLines = 3): string {
+  const lines = stderr.split('\n').map((l) => l.trimEnd()).filter((l) => l.trim().length > 0)
+  if (lines.length === 0) return ''
+  const tail = lines.slice(-maxLines).join(' | ')
+  return tail.length > maxChars ? tail.slice(tail.length - maxChars) : tail
 }
 
 /** Count `element vertex N` from a PLY header without decoding the body. */

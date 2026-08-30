@@ -9,6 +9,7 @@
  * POST /scans/:filename/optimize     → (re-)enqueue optimization job
  * DELETE /scans/:filename            → delete stored .glb + sidecars + derived artifacts
  * DELETE /scans?confirm=delete-all   → clear scan storage (test reset)
+ * GET  /capabilities       → CapabilityReport (external tools, GPU/Vulkan, pipeline readiness)
  * GET  /jobs               → Job[]   (processing queue state)
  * GET  /jobs/:id           → Job
  * POST /sessions                       → { sessionId } — begin keyframe capture session
@@ -44,6 +45,7 @@ import { logger } from 'hono/logger'
 import { fromFileUrl } from '@std/path'
 import { REPO_ROOT } from './repo-root.ts'
 import { InferenceEngine } from './inference.ts'
+import { type CapabilityReport, formatCapabilityReport, probeCapabilities } from './capabilities.ts'
 import type { Job, JobStatus, OptimizeScanManifest } from './jobs.ts'
 import { optimizeScan } from './pipeline.ts'
 import {
@@ -84,10 +86,12 @@ import { runLingBotMapReconstruction } from './lingbot-map/lingbot_map.ts'
 import { runColmapPoses } from './colmap/colmap_poses.ts'
 import { runSplatAlign } from './splat/splat_align.ts'
 import { runSplatTrain } from './splat/splat_train.ts'
+import { runSpirulaTrain } from './splat/spirula_train.ts'
 import { runSplatDetect } from './splat/splat_detect.ts'
 import { runSplatFinish } from './splat/splat_finish.ts'
 import { runSenseNovaVision, senseNovaTask } from './sensenova_vision.ts'
 import { runPanopticScan } from './panoptic/panoptic_scan.ts'
+import { runPanopticLift } from './panoptic/panoptic_lift.ts'
 import { configFromEnv as portalAuthConfig, registerPortalAuth } from './portal_auth.ts'
 import {
   configFromEnv as memoryPushConfig,
@@ -212,6 +216,22 @@ const INGEST_MAX_VIDEO_BYTES = Number(Deno.env.get('INGEST_MAX_VIDEO_BYTES') ?? 
 const INGEST_MAX_PHOTOS_BYTES = Number(Deno.env.get('INGEST_MAX_PHOTOS_BYTES') ?? '') || 500_000_000
 // Auto-enqueue a splat-finish job when splat-train completes ok (kill switch: SPLAT_FINISH_AUTO=0).
 const SPLAT_FINISH_AUTO = Deno.env.get('SPLAT_FINISH_AUTO') !== '0'
+/**
+ * Which trainer a `splat-train` job spawns. 'brush' (the default, and every
+ * deployment that predates this variable) or 'spirula'.
+ *
+ * One job type, two interchangeable drivers — not a second job type, because
+ * nothing downstream differs: both land <base>.splat.ply and a
+ * <base>.splat-train.manifest.json, and splat-finish / splat-detect consume
+ * those by name. A `splat-train-spirula` job would have duplicated the whole
+ * chain to change one argv (ADR 0001).
+ *
+ * Anything unrecognised falls back to Brush rather than failing the job: a
+ * typo'd env var must not silently stop a fleet from reconstructing.
+ */
+const SPLAT_BACKEND: 'brush' | 'spirula' = Deno.env.get('SPLAT_BACKEND')?.trim().toLowerCase() === 'spirula'
+  ? 'spirula'
+  : 'brush'
 const ENGINE_LOAD_WAIT_MS = 15_000 // max time /infer waits for the model to finish loading
 const INFER_TIMEOUT_MS = 60_000    // hard cap on a single engine.infer() call
 
@@ -344,6 +364,76 @@ app.get('/health', (c) => c.json({
   lastInferMs: engine.lastInferMs,
   lastInferAt: engine.lastInferAt,
 }))
+
+/**
+ * GET /capabilities — "what can this machine actually do?" over HTTP.
+ *
+ * Same posture as /health directly above: unauthenticated, and covered by the
+ * global CORS policy. Deliberately not stricter — the report was previously
+ * only reachable by SSHing in and running `deno run server/capabilities.ts`,
+ * which is precisely why a missing ffmpeg showed up as an HTTP 500 instead of
+ * a fact anyone could read, and an auth gate on the one route that explains a
+ * broken box would recreate that. Deliberately not looser either: it names
+ * absolute install paths and versions, which is the same class of host detail
+ * /health already returns (model id, mode, uptime), on a server whose reachable
+ * surface is Tailscale/LAN (see `isAllowedOrigin`).
+ *
+ * Cost is where it differs from /health, and it is not a small difference:
+ * a full probe spawns one subprocess per tool and the torch one-liner alone
+ * measured 1.07s on this box's panoptic venv (capabilities.ts's
+ * TORCH_PROBE_SOURCE note). /health is polled by the editor; this must never
+ * be. So:
+ *   - the answer is cached for CAPABILITY_TTL_MS and the response says so in
+ *     Cache-Control and X-Capability-Cache, and `generatedAt` in the body is
+ *     the probe time, not the request time;
+ *   - concurrent misses share one probe (single-flight), so a page that fires
+ *     three of these at load does not spawn three sets of subprocesses;
+ *   - `?versions=0` is the cheap mode — pure filesystem lookups, no
+ *     subprocesses, every `found` still correct, only version/torch/GPU detail
+ *     missing;
+ *   - `?fresh=1` bypasses the cache, for the "I just installed it" case.
+ */
+const CAPABILITY_TTL_MS = 30_000
+type CapabilityCacheEntry = { at: number; report: CapabilityReport }
+const capabilityCache = new Map<string, CapabilityCacheEntry>()
+const capabilityInFlight = new Map<string, Promise<CapabilityReport>>()
+
+app.get('/capabilities', async (c) => {
+  const versions = c.req.query('versions') !== '0'
+  const fresh = c.req.query('fresh') === '1'
+  // Keyed by mode: the fast and full reports are different documents, and
+  // serving a cached fast one to a caller that asked for versions would be a
+  // silently wrong answer rather than a slow one.
+  const key = versions ? 'full' : 'fast'
+
+  const cached = capabilityCache.get(key)
+  let hit: 'hit' | 'miss' | 'coalesced' = 'miss'
+  let report: CapabilityReport
+  if (!fresh && cached && Date.now() - cached.at < CAPABILITY_TTL_MS) {
+    report = cached.report
+    hit = 'hit'
+  } else {
+    const running = capabilityInFlight.get(key)
+    if (running) {
+      hit = 'coalesced'
+      report = await running
+    } else {
+      const probe = probeCapabilities({ versions }).then((r) => {
+        capabilityCache.set(key, { at: Date.now(), report: r })
+        return r
+      }).finally(() => capabilityInFlight.delete(key))
+      capabilityInFlight.set(key, probe)
+      report = await probe
+    }
+  }
+
+  c.header('Cache-Control', `private, max-age=${Math.floor(CAPABILITY_TTL_MS / 1000)}`)
+  c.header('X-Capability-Cache', hit)
+  // The text rendering is the same one the CLI prints, so a curl from a phone
+  // and a shell on the box read identically.
+  if (c.req.query('format') === 'text') return c.text(formatCapabilityReport(report))
+  return c.json(report)
+})
 
 app.post('/infer', async (c) => {
   // Reject oversized uploads before buffering them (header check first, then
@@ -1083,6 +1173,8 @@ app.post('/sessions/:id/finalize', async (c) => {
 // ── Video ingest — "walk the house shooting normal video" ────────────────────
 //
 // POST /ingest-video   multipart { video: File, name?, fps? }
+// `fps` is optional and omitting it is meaningful: the extractor then picks the
+// rate adaptively from the clip's duration (see the `fps` const below).
 // Extracts keyframes with scripts/ingest-video.mjs into a capture session, then
 // registers a session-backed scan in the selected Place (or the legacy default
 // workspace when none is supplied) and auto-enqueues a
@@ -1137,12 +1229,24 @@ app.post('/ingest-video', async (c) => {
   const modeRaw = form.get('mode')
   const personMode = modeRaw === 'person'
 
+  // `null` means "pass no --fps at all", which is NOT the same as passing the
+  // script's documented 2fps default: without the flag, ingest-video.mjs runs
+  // its adaptive policy (scripts/ingest-video.mjs `resolveFps`) and raises the
+  // sample rate on short clips so they still reach TARGET_MIN_FRAMES = 40.
+  // This route used to hardcode '2', which meant that policy could never fire
+  // from the server — measured: the 16s walkthrough behind
+  // scans/sessions/sess-video-20260830-033839 yielded 32 keyframes, below the
+  // script's own floor, from a route that looked like it was accepting the
+  // default. A caller that supplies fps still wins outright.
   const fps = typeof fpsRaw === 'string' && Number.isFinite(Number(fpsRaw)) && Number(fpsRaw) > 0
     ? String(Number(fpsRaw))
     // A person clip needs thumbnails, not a reconstruction dataset — the clip
     // is what gets reconstructed, off-box. Sampling it at walkthrough rates
-    // would write hundreds of frames nothing reads.
-    : personMode ? String(PERSON_THUMBNAIL_FPS) : '2'
+    // would write hundreds of frames nothing reads, so person mode keeps its
+    // fixed low rate and opts out of the adaptive policy on purpose.
+    : personMode
+    ? String(PERSON_THUMBNAIL_FPS)
+    : null
 
   const takeIdRaw = form.get('takeId')
   const takeId = isTakeId(takeIdRaw) ? takeIdRaw : null
@@ -1170,7 +1274,15 @@ app.post('/ingest-video', async (c) => {
   try {
     // Run the ingest script; the LAST stdout line is JSON { sessionId, frameCount, sessionDir }.
     const cmd = new Deno.Command('node', {
-      args: [INGEST_VIDEO_SCRIPT, tmpVideo, '--scans-dir', SCANS_DIR, '--sessions-dir', SESSIONS_DIR, '--fps', fps],
+      args: [
+        INGEST_VIDEO_SCRIPT,
+        tmpVideo,
+        '--scans-dir',
+        SCANS_DIR,
+        '--sessions-dir',
+        SESSIONS_DIR,
+        ...(fps === null ? [] : ['--fps', fps]),
+      ],
       stdout: 'piped',
       stderr: 'piped',
     })
@@ -1620,6 +1732,7 @@ const WORLD_JOB_TYPES = new Set<WorldJobType>([
   'splat-finish',
   'sensenova-vision',
   'panoptic-scan',
+  'panoptic-lift',
   'person-4d-reconstruct',
   'memory-push',
   'export-world',
@@ -2718,6 +2831,11 @@ async function _dispatchWorldJob(slug: string, jobId: string): Promise<void> {
       return
     }
 
+    if (job.type === 'panoptic-lift') {
+      await _runPanopticLiftJob(slug, jobId)
+      return
+    }
+
     if (job.type === 'person-4d-reconstruct') {
       await _runPerson4DJob(slug, jobId)
       return
@@ -3284,6 +3402,85 @@ async function _runPanopticScanJob(slug: string, jobId: string): Promise<void> {
   }
 }
 
+/**
+ * Lift `panoptic-scan`'s 2D segments into world space.
+ *
+ * Reports `completed` for a skip, exactly as the scan stage does — a session
+ * with no segments file has not failed, it has not been segmented yet, and the
+ * remediation says which job to run first.
+ *
+ * The interesting case is a run that succeeds while placing nothing. That is
+ * not a failure either: a gimbal dome rotates in place, so parallax is near
+ * zero (measured 0.881 m max baseline across 17 cameras), and refusing to
+ * invent depths is the designed behaviour. The result string therefore always
+ * carries the undetermined count alongside the confident one — "44 seen, 0
+ * placed" has to read as an honest outcome, not as silence.
+ */
+async function _runPanopticLiftJob(slug: string, jobId: string): Promise<void> {
+  try {
+    const start = await claimSessionJob(slug, jobId)
+    if (!start) return
+    const { scan, sessionPath, payload } = start
+
+    const result = await runPanopticLift({
+      sessionDir: sessionPath,
+      scanGlbPath: `${SCANS_DIR}/${scan.filename}`,
+      minSegmentPixels: typeof payload?.['minSegmentPixels'] === 'number'
+        ? payload['minSegmentPixels'] as number
+        : undefined,
+      sessionId: scan.sessionId ?? undefined,
+      scanId: scan.scanId ?? undefined,
+    })
+
+    await commitWorldJob(slug, jobId, (currentJob, current) => {
+      currentJob.progress = 1
+      if (result.status === 'ok') {
+        currentJob.status = 'completed'
+        const placed = result.confidentCount ?? 0
+        const seen = result.segmentCount ?? 0
+        currentJob.result = placed > 0
+          ? `Placed ${placed} of ${seen} object segment(s) in the room` +
+            `${result.medianConfidence != null ? ` (median confidence ${result.medianConfidence.toFixed(2)})` : ''}.` +
+            `${(result.undeterminedCount ?? 0) > 0 ? ` ${result.undeterminedCount} could not be placed.` : ''}`
+          : `Saw ${seen} object segment(s) but could not place any of them. ` +
+            `A capture that rotates in place has almost no parallax, so depth is not recoverable from it — ` +
+            `walk the room to give the scan a baseline.`
+        currentJob.artifacts = [{
+          type: 'panoptic-lift-output',
+          label: `${scan.name} placed objects`,
+          metadata: {
+            segmentCount: seen,
+            confidentCount: placed,
+            lowConfidenceCount: result.lowConfidenceCount ?? 0,
+            undeterminedCount: result.undeterminedCount ?? 0,
+            medianConfidence: result.medianConfidence ?? null,
+            pointCount: result.pointCount ?? 0,
+            reasons: result.reasons ?? {},
+            detectionsPath: result.detectionsPath ?? null,
+          },
+        }]
+        applyCompletedJobToWorld(currentJob, current)
+      } else if (result.status === 'skipped') {
+        currentJob.status = 'completed'
+        currentJob.result = `Object placement skipped: ${result.remediation ?? result.skippedReason ?? 'inputs unavailable'}`
+        currentJob.artifacts = [{
+          type: 'panoptic-lift-skip',
+          label: 'Object placement needs a panoptic scan first',
+          metadata: { remediation: result.remediation ?? null, reason: result.skippedReason ?? null },
+        }]
+      } else {
+        currentJob.status = 'failed'
+        currentJob.error = result.error ?? 'panoptic lift failed'
+        currentJob.result = currentJob.error
+      }
+      currentJob.updatedAt = new Date().toISOString()
+    })
+  } catch (error) {
+    console.error('[panoptic-lift] job failed:', error)
+    await failWorldJob(slug, jobId, errorMessage(error))
+  }
+}
+
 async function _runPerson4DJob(slug: string, jobId: string): Promise<void> {
   try {
     const start = await claimJobScan(slug, jobId)
@@ -3408,13 +3605,20 @@ async function _runSplatTrainJob(slug: string, jobId: string): Promise<void> {
     const outputPlyPath = `${SCANS_DIR}/${base}.splat.ply`
     const outputCompressedPlyPath = `${SCANS_DIR}/${base}.compressed.ply`
     const manifestPath = `${SCANS_DIR}/${base}.splat-train.manifest.json`
-    const result = await runSplatTrain({
+    // Both drivers take the same options and return the same shape — that is
+    // the whole point of spirula_train.ts mirroring splat_train.ts's contract,
+    // and it is what keeps the ~100 lines of world bookkeeping below
+    // backend-agnostic.
+    const trainOpts = {
       sessionDir: sessionPath,
       outputPlyPath,
       outputCompressedPlyPath,
       manifestPath,
       provenance: { sessionId, scanId: scan.scanId },
-    })
+    }
+    const result = SPLAT_BACKEND === 'spirula'
+      ? await runSpirulaTrain(trainOpts)
+      : await runSplatTrain(trainOpts)
 
     const chainedFinishJobId = await commitWorldJob(slug, jobId, (currentJob, current) => {
       let chained: string | null = null
@@ -3486,7 +3690,10 @@ async function _runSplatTrainJob(slug: string, jobId: string): Promise<void> {
         }]
       } else {
         currentJob.status = 'failed'
-        currentJob.error = result.manifest.error ?? `brush exit ${result.exitCode}`
+        // Name the backend that actually ran, from the manifest's own `tool`
+        // rather than a hardcoded "brush" — with two backends the exit code
+        // alone no longer says which binary produced it.
+        currentJob.error = result.manifest.error ?? `${result.manifest.tool} exit ${result.exitCode}`
         currentJob.result = currentJob.error
       }
       currentJob.updatedAt = new Date().toISOString()
@@ -4082,6 +4289,8 @@ function jobResultFor(job: WorldJob): string {
       return 'SenseNova-Vision processed the scan keyframes and wrote task-specific visual geometry artifacts.'
     case 'panoptic-scan':
       return 'Panoptic segmentation labelled every pixel of the scan keyframes, separating discrete objects from room surfaces.'
+    case 'panoptic-lift':
+      return 'Panoptic object segments were placed in the room by casting each one against the scan point cloud. A segment whose depth could not be recovered is recorded as unplaced rather than guessed.'
     case 'person-4d-reconstruct':
       return 'Person reconstructed in 4D. The .4d/ sequence is available as a splat4d layer on the scan.'
     case 'memory-push':

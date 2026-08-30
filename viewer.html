@@ -621,6 +621,28 @@
         color: #72ddd4;
         margin-top: 4px;
       }
+      /* Reconstruction verdict. Same left-rule treatment for all four tones so
+         a bad scan is not a different kind of widget from a good one — only the
+         rule and the headline change colour, which is what makes "needs
+         re-capturing" scannable next to a stack of "all photos placed". */
+      .quality-verdict {
+        margin-top: 8px;
+        padding: 7px 0 7px 9px;
+        border-left: 2px solid rgba(255,255,255,0.2);
+        font-size: 11px;
+        line-height: 1.5;
+      }
+      .quality-verdict[hidden] { display: none; }
+      .quality-verdict-headline { font-weight: 700; color: #fff; }
+      .quality-verdict-detail { color: rgba(255,255,255,0.55); margin-top: 3px; }
+      .quality-verdict[data-tone="ready"] { border-left-color: rgba(114,221,212,0.7); }
+      .quality-verdict[data-tone="ready"] .quality-verdict-headline { color: #72ddd4; }
+      .quality-verdict[data-tone="needs-review"] { border-left-color: rgba(255,213,79,0.7); }
+      .quality-verdict[data-tone="needs-review"] .quality-verdict-headline { color: #ffd54f; }
+      .quality-verdict[data-tone="needs-rescan"],
+      .quality-verdict[data-tone="blocked"] { border-left-color: rgba(255,138,128,0.75); }
+      .quality-verdict[data-tone="needs-rescan"] .quality-verdict-headline,
+      .quality-verdict[data-tone="blocked"] .quality-verdict-headline { color: #ff8a80; }
       .quality-processing {
         display: flex;
         align-items: center;
@@ -2398,6 +2420,14 @@
                 <div class="edit-section-title">Map Quality</div>
                 <div class="quality-stepper" id="quality-stepper" role="list" aria-label="Map quality tier"></div>
                 <div class="quality-blurb" id="quality-blurb">Select a scan to see its map quality.</div>
+                <!-- Reconstruction verdict: whether the camera actually tracked
+                     through this capture. Sits directly under the tier because
+                     the tier alone cannot tell a 32-of-32 solve from a 3-of-17
+                     one — both reach "Reconstructed". -->
+                <div class="quality-verdict" id="quality-verdict" role="status" hidden>
+                  <div class="quality-verdict-headline" id="quality-verdict-headline"></div>
+                  <div class="quality-verdict-detail" id="quality-verdict-detail"></div>
+                </div>
                 <div class="quality-next" id="quality-next" hidden></div>
                 <div class="quality-processing" id="quality-processing" role="status" aria-live="polite" hidden>
                   <span class="quality-spinner" aria-hidden="true"></span>

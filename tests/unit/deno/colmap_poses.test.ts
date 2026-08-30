@@ -27,7 +27,16 @@ import {
   rotationBetween,
   rotationToQuat,
 } from '../../../server/colmap/colmap_model.ts'
-import { isValidSessionDir, resolveParams, runColmapPoses } from '../../../server/colmap/colmap_poses.ts'
+import {
+  assessColmapQuality,
+  DEFAULT_MIN_POINTS_3D,
+  DEFAULT_MIN_REGISTRATION_RATIO,
+  degenerateRemediation,
+  isValidSessionDir,
+  resolveParams,
+  resolveQualityThresholds,
+  runColmapPoses,
+} from '../../../server/colmap/colmap_poses.ts'
 import { deriveIntrinsics, openCvW2cToC2w, POSE_SOURCES, readSolvedCamera, SEED_CLOUDS } from '../../../server/splat/splat_train_dataset.ts'
 
 /** Encode one images.bin record the way COLMAP's writer lays it out. */
@@ -459,4 +468,196 @@ Deno.test('a solved camera beats the FOV fallback, and rescales to the actual im
   const half = deriveIntrinsics({ fx: 812.5, fy: 812.5, cx: 358.1, cy: 483.7, width: 720, height: 960 }, 360, 480)
   assertEquals(half.flX, 406.25)
   assertEquals(half.cx, 179.05)
+})
+
+// ─── Reconstruction quality ───────────────────────────────────────────────────
+// A COLMAP run that registers a handful of frames exits 0 and writes a real
+// poses.json, so before this gate existed the only difference between a good
+// solve and a useless one was numbers nobody compared. The two runs asserted on
+// below are the measured ones (2026-08-30); they are the whole evidence base for
+// the thresholds, so they are pinned here rather than paraphrased.
+
+const GOOD_RUN = { registeredImages: 32, frameCount: 32, pointCount: 9362 }
+const BAD_RUN = { registeredImages: 3, frameCount: 17, pointCount: 1 }
+
+Deno.test('assessColmapQuality passes the measured good solve', () => {
+  const q = assessColmapQuality(GOOD_RUN, { minRegistrationRatio: 0.6, minPoints3D: 100 })
+  assertEquals(q.degenerate, false)
+  assertEquals(q.status, 'ready')
+  assertEquals(q.registrationRatio, 1)
+  assertEquals(q.reasons, [])
+})
+
+Deno.test('assessColmapQuality condemns the measured 3-of-17 solve', () => {
+  const q = assessColmapQuality(BAD_RUN, { minRegistrationRatio: 0.6, minPoints3D: 100 })
+  assertEquals(q.degenerate, true)
+  assertEquals(q.status, 'needs-rescan')
+  assertEquals(q.registrationRatio, 0.176)
+  assertEquals(q.reasons, ['low-registration-ratio', 'too-few-points'])
+  // The verdict has to carry what it was judged against, or a manifest read
+  // months later cannot say whether the bar moved or the capture did.
+  assertEquals(q.thresholds.minRegistrationRatio, 0.6)
+})
+
+Deno.test('the ratio gate carries a bad capture the point floor lets through', () => {
+  // Re-running the same 17 phone keyframes through the real solver produced
+  // 2/17 with 159 points, not 3/17 with 1 — the mapper's initialisation is
+  // stochastic and a capture this weak has no dominant solution to settle on.
+  // 159 clears minPoints3D, so a points-only gate would have called that run
+  // fine. This is the case that says both thresholds have to stay.
+  const q = assessColmapQuality({ registeredImages: 2, frameCount: 17, pointCount: 159 })
+  assertEquals(q.degenerate, true)
+  assertEquals(q.reasons, ['low-registration-ratio'])
+})
+
+Deno.test('a single triangulated point is degenerate at any registration ratio', () => {
+  // The ratio gate alone would wave this through: every frame is posed, and the
+  // model still has no structure. That is why there are two thresholds.
+  const q = assessColmapQuality({ registeredImages: 8, frameCount: 8, pointCount: 1 })
+  assertEquals(q.degenerate, true)
+  assertEquals(q.reasons, ['too-few-points'])
+})
+
+Deno.test('quality thresholds are overridable, including disabling the point floor', () => {
+  const prevRatio = Deno.env.get('COLMAP_MIN_REGISTRATION_RATIO')
+  const prevPts = Deno.env.get('COLMAP_MIN_POINTS3D')
+  try {
+    // Defaults first, so the override below is demonstrably doing the work.
+    assertEquals(resolveQualityThresholds().minRegistrationRatio, DEFAULT_MIN_REGISTRATION_RATIO)
+    assertEquals(resolveQualityThresholds().minPoints3D, DEFAULT_MIN_POINTS_3D)
+
+    Deno.env.set('COLMAP_MIN_REGISTRATION_RATIO', '0.15')
+    // 0 must survive: it is the documented way to turn the point floor off, and
+    // the int helper next to it would have silently restored the default.
+    Deno.env.set('COLMAP_MIN_POINTS3D', '0')
+    const t = resolveQualityThresholds()
+    assertEquals(t.minRegistrationRatio, 0.15)
+    assertEquals(t.minPoints3D, 0)
+    assertEquals(assessColmapQuality(BAD_RUN, t).degenerate, false, 'a loosened gate must actually loosen')
+
+    // Garbage falls back rather than producing a threshold of NaN, which would
+    // compare false against everything and disable the gate by accident.
+    Deno.env.set('COLMAP_MIN_REGISTRATION_RATIO', 'soon')
+    assertEquals(resolveQualityThresholds().minRegistrationRatio, DEFAULT_MIN_REGISTRATION_RATIO)
+  } finally {
+    if (prevRatio === undefined) Deno.env.delete('COLMAP_MIN_REGISTRATION_RATIO')
+    else Deno.env.set('COLMAP_MIN_REGISTRATION_RATIO', prevRatio)
+    if (prevPts === undefined) Deno.env.delete('COLMAP_MIN_POINTS3D')
+    else Deno.env.set('COLMAP_MIN_POINTS3D', prevPts)
+  }
+})
+
+Deno.test('the remediation tells a non-expert what to do in the room', () => {
+  const q = assessColmapQuality(BAD_RUN, { minRegistrationRatio: 0.6, minPoints3D: 100 })
+  const msg = degenerateRemediation(q, BAD_RUN)
+  // The real cause on 2026-08-30 was a dim, low-texture room (50–330 SIFT
+  // features per frame), so light, texture and parallax are the three things
+  // the message has to name. Someone holding a phone cannot act on anything else.
+  for (const cue of ['light', 'pattern', 'walk sideways']) {
+    assert(msg.toLowerCase().includes(cue), `remediation must mention "${cue}": ${msg}`)
+  }
+  // The counts belong in it too — "3 of 17" is what makes it credible.
+  assert(msg.includes('3 of 17'))
+  // And jargon must stay out: naming the algorithm is not an instruction.
+  for (const jargon of ['structure-from-motion', 'sfm', 'colmap', 'triangulat']) {
+    assert(!msg.toLowerCase().includes(jargon), `remediation must avoid jargon "${jargon}": ${msg}`)
+  }
+})
+
+/** Encode a points3D.bin holding `n` points, tracks empty. */
+function encodePoints3DBin(n: number): Uint8Array {
+  const rec = 8 + 24 + 3 + 8 + 8
+  const buf = new Uint8Array(8 + n * rec)
+  const dv = new DataView(buf.buffer)
+  dv.setBigUint64(0, BigInt(n), true)
+  for (let i = 0; i < n; i++) {
+    let o = 8 + i * rec
+    dv.setBigUint64(o, BigInt(i + 1), true); o += 8
+    dv.setFloat64(o, i, true); dv.setFloat64(o + 8, 0, true); dv.setFloat64(o + 16, 0, true); o += 24
+    buf[o] = 128; buf[o + 1] = 128; buf[o + 2] = 128; o += 3
+    dv.setFloat64(o, 0.5, true); o += 8
+    dv.setBigUint64(o, 0n, true)
+  }
+  return buf
+}
+
+/**
+ * Drive `runColmapPoses` end to end against a stubbed COLMAP that emits a model
+ * of exactly the shape asked for. This is the part the pure-function tests
+ * cannot cover: that the verdict actually reaches the manifest on disk, which
+ * is the only thing the world-job coordinator and splat_train ever read.
+ */
+async function runWithStubbedModel(
+  opts: { keyframes: number; registered: number; points: number },
+): Promise<{ dir: string; result: Awaited<ReturnType<typeof runColmapPoses>> }> {
+  const dir = await Deno.makeTempDir()
+  const sessionDir = `${dir}/sess-photo-stub`
+  await Deno.mkdir(sessionDir)
+  for (let i = 0; i < opts.keyframes; i++) {
+    await Deno.writeFile(`${sessionDir}/kf-${String(i).padStart(5, '0')}.jpg`, new Uint8Array([0xff, 0xd8]))
+  }
+  const images = Array.from({ length: opts.registered }, (_, i) => ({
+    id: i + 1,
+    q: [1, 0, 0, 0],
+    t: [i, 0, 0],
+    cam: 1,
+    name: `kf-${String(i).padStart(5, '0')}.jpg`,
+  }))
+
+  const result = await runColmapPoses({
+    sessionDir,
+    colmapBin: Deno.execPath(), // any runnable binary: the spawn is stubbed below
+    _spawn: async (_bin, args) => {
+      if (args[0] === 'mapper') {
+        const out = args[args.indexOf('--output_path') + 1]
+        const model = `${out}/0`
+        await Deno.mkdir(model, { recursive: true })
+        await Deno.writeFile(`${model}/images.bin`, encodeImagesBin(images))
+        await Deno.writeFile(`${model}/points3D.bin`, encodePoints3DBin(opts.points))
+      }
+      return { code: 0, stderr: '' }
+    },
+  })
+  return { dir, result }
+}
+
+Deno.test('a degenerate solve stays status ok but is flagged, with a remediation on disk', async () => {
+  // The exact run that motivated this: 3 of 17 posed, 1 point, exit 0.
+  const { dir, result } = await runWithStubbedModel({ keyframes: 17, registered: 3, points: 1 })
+  try {
+    // 'ok' is correct and deliberate: COLMAP ran every step and wrote real
+    // files. 'error' would blame the tool, 'skipped' would deny it ran.
+    assertEquals(result.status, 'ok')
+    assertEquals(result.exitCode, 0)
+    assertEquals(result.quality?.degenerate, true)
+    assertEquals(result.quality?.status, 'needs-rescan')
+    assertEquals(result.registeredImages, 3)
+
+    const written = JSON.parse(await Deno.readTextFile(`${dir}/sess-photo-stub/colmap-poses.manifest.json`))
+    assertEquals(written.status, 'ok')
+    assertEquals(written.frameCount, 17)
+    assertEquals(written.registeredImages, 3)
+    assertEquals(written.quality.degenerate, true)
+    assertEquals(written.quality.registrationRatio, 0.176)
+    assert(written.remediation?.includes('3 of 17'), 'the envelope slot every consumer already reads must carry the fix')
+    // The poses are still written: a bad model is the best diagnostic there is.
+    assertEquals(written.posesPath, 'colmap.poses.json')
+  } finally {
+    await Deno.remove(dir, { recursive: true })
+  }
+})
+
+Deno.test('a healthy solve carries a ready verdict and no remediation', async () => {
+  const { dir, result } = await runWithStubbedModel({ keyframes: 12, registered: 12, points: 4000 })
+  try {
+    assertEquals(result.status, 'ok')
+    assertEquals(result.quality?.degenerate, false)
+    assertEquals(result.quality?.status, 'ready')
+    const written = JSON.parse(await Deno.readTextFile(`${dir}/sess-photo-stub/colmap-poses.manifest.json`))
+    // Absent, not empty-string: "nothing to remedy" must not read as advice.
+    assertEquals(written.remediation, undefined)
+    assertEquals(written.quality.reasons, [])
+  } finally {
+    await Deno.remove(dir, { recursive: true })
+  }
 })

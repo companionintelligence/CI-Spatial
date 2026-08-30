@@ -22,6 +22,12 @@ export type DebugFlag =
   | 'remote'
   /** Show the live camera-pose / drift readout in the scanner HUD. */
   | 'pose'
+  /**
+   * Widen the remote mirror to console.log as well as warn/error. Off by
+   * default because the scanner tick logs several times a second and would
+   * evict everything else from the 50-entry buffer.
+   */
+  | 'verbose'
 
 /**
  * True when `flag` appears in the current page's `?debug=` token list.

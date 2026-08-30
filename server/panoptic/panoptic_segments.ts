@@ -47,6 +47,10 @@ export interface RawPanopticSegment {
   areaPx?: unknown
   /** Mask centroid in source-frame pixels, [x, y]. */
   centroidPx?: unknown
+  /** Mask extent [x0, y0, x1, y1] inclusive. Absent on older segments files. */
+  bboxPx?: unknown
+  /** Whether the centroid pixel is on the mask. Absent on older files. */
+  centroidOnMask?: unknown
 }
 
 /** One frame's worth of worker output. */
@@ -56,13 +60,31 @@ export interface RawPanopticFrame {
   segments?: unknown
 }
 
-/** A discrete object segment, validated. */
+/**
+ * A discrete object segment, validated.
+ *
+ * `bboxPx` and `centroidOnMask` are OPTIONAL rather than required, and both
+ * halves of that matter. The worker emits them, and the 3-D lift uses both (a
+ * tighter angular footprint for an elongated mask, and an outright abstention
+ * when the centroid ray misses the object) — but a `panoptic.segments.json`
+ * written before they existed is still a perfectly good segments file, and
+ * re-running the segmenter costs a GPU pass over up to 64 frames. So a missing
+ * field degrades the lift rather than invalidating the file.
+ */
 export interface ThingSegment {
   file: string
   label: string
   score: number
   areaPx: number
   centroidPx: [number, number]
+  /** Mask extent [x0, y0, x1, y1] inclusive, when the worker reported one. */
+  bboxPx?: [number, number, number, number]
+  /**
+   * Whether the centroid pixel is inside the mask. `undefined` means "not
+   * reported", which is NOT the same as false — see the lift's
+   * 'centroid-off-mask' reason.
+   */
+  centroidOnMask?: boolean
 }
 
 /** A room-surface segment. Same shape; kept apart by type, not by convention. */
@@ -88,6 +110,20 @@ export const MIN_SEGMENT_PIXELS = 1500
 
 function finite(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+/**
+ * Validate a `[x0, y0, x1, y1]` mask extent. Returns null for anything else,
+ * including a degenerate box — a malformed bbox must fall back to the
+ * area-derived footprint, not narrow the lift's cone to nothing.
+ */
+function bbox4(v: unknown): [number, number, number, number] | null {
+  if (!Array.isArray(v) || v.length !== 4) return null
+  const n = v.map(finite)
+  if (n.some((x) => x === null)) return null
+  const [x0, y0, x1, y1] = n as number[]
+  if (x1 < x0 || y1 < y0) return null
+  return [x0, y0, x1, y1]
 }
 
 /**
@@ -131,7 +167,15 @@ export function splitPanopticSegments(
         dropped++
         continue
       }
-      const entry: ThingSegment = { file, label, score, areaPx, centroidPx: [cx, cy] }
+      const entry: ThingSegment = {
+        file,
+        label,
+        score,
+        areaPx,
+        centroidPx: [cx, cy],
+        ...(bbox4(seg?.bboxPx) ? { bboxPx: bbox4(seg?.bboxPx)! } : {}),
+        ...(typeof seg?.centroidOnMask === 'boolean' ? { centroidOnMask: seg.centroidOnMask } : {}),
+      }
       if (seg.isThing === true) things.push(entry)
       else stuff.push(entry)
     }

@@ -20,8 +20,17 @@ import { PointCloud } from './scene/pointcloud'
 import { CaptureModule } from './capture/capture'
 import { AutoCapture } from './capture/auto-capture'
 import { KeyframeStreamer } from './capture/keyframes'
-import { ScanQualityMonitor, isFrameUnusable } from './capture/quality-monitor'
+import { createScreenWakeLock } from './capture/wake-lock'
+
+/**
+ * Holds the screen awake for as long as AR is running. Acquired only after
+ * provider.start() resolves — a lock taken before that would outlive a failed
+ * start and keep a dead page lit.
+ */
+const screenWakeLock = createScreenWakeLock()
+import { ScanQualityMonitor, isFrameUnusable, motionHintText } from './capture/quality-monitor'
 import type { FrameQuality } from './capture/quality-monitor'
+import { probeVerdict, startFailureVerdict, type PreflightVerdict } from './ar/preflight'
 import { InferenceRouter, WebGpuInferenceError } from './inference/router'
 import { InferServerError } from './inference/server'
 import { getProvisioningStatus, provisionModel, removeProvisionedModel, estimateModelCacheBytes } from './inference/model-provisioning'
@@ -59,6 +68,8 @@ import * as THREE from 'three'
 
 const CAPTURE_FRAME_TIMEOUT_MS = 8000
 const TRACKING_WAIT_MS = 2500
+/** See `lightSampleTick` — one luminance sample every fourth 750 ms scanner tick. */
+const LIGHT_SAMPLE_EVERY_TICKS = 4
 let requestPlaceSelection:
   | ((afterSelection?: () => void, purpose?: PlaceSelectionPurpose) => void)
   | null = null
@@ -86,6 +97,14 @@ let decimationNoticeShown = false
  * who is now recording fine that they are not.
  */
 let recordingPaused = false
+
+/**
+ * True while #permission-error-banner is showing a PREFLIGHT verdict, as
+ * opposed to the motion-permission denial that beginArSession() writes into the
+ * same element. Only the former may be cleared by a later 'ready' verdict —
+ * see applyPreflightVerdict().
+ */
+let preflightBannerShown = false
 
 // Last verdict state written to the HUD, so the 750 ms scanner tick only
 // touches the DOM when the verdict or its recommendation actually changes.
@@ -246,6 +265,14 @@ async function main() {
   let sessionScanEntry: ScanEntry | null = null
   let sessionCalibration: ScanCalibration | undefined
   const qualityMonitor = new ScanQualityMonitor()
+  /**
+   * Scanner ticks since the last luminance sample. Sampling every tick would
+   * mean a 64x64 drawImage + getImageData off the camera video every 750 ms for
+   * a number that changes on the timescale of someone turning a lamp on; every
+   * fourth tick (~3 s) is fast enough to catch a dark room before the person
+   * has walked anywhere, and cheap enough not to compete with SLAM.
+   */
+  let lightSampleTick = 0
   const geoTracker = new GeoTracker()
   const placePicker = mountPlacePicker(projectStore, geoTracker, selectedProject, (project, areaId) => {
     selectedProject = project
@@ -460,8 +487,29 @@ async function main() {
   }
   // Only offer the WebXR toggle when it would actually work — no point
   // sending desktop/unsupported-browser users to a dead-end landing page.
-  const webxrSupported = use8thWall ? await isImmersiveARSupported() : true
+  //
+  // One call, two readers. The preflight probe below wants the same answer, and
+  // it wants it for its LIMITS as much as its value: isSessionSupported() is
+  // only trustworthy in the negative (see probeVerdict), so asking twice would
+  // buy two chances to read it as a green light.
+  const immersiveArAdvertised = await isImmersiveARSupported()
+  const webxrSupported = use8thWall ? immersiveArAdvertised : true
   updateXrModeLink(use8thWall, webxrSupported)
+
+  // ── 3b. Preflight — what can this device honestly do, said before the tap ───
+  // Section 5 does not run until the user commits to a scan, and the two
+  // failures worth naming (no AR service behind the API; an 8th Wall pipeline
+  // that reports ready and emits nothing) are only visible after that. What IS
+  // knowable now goes on the start screen, beside the Upload Content card that
+  // is the alternative — including the honest caveat when the only evidence we
+  // have is a browser saying "yes" that a Beam Pro also says.
+  const probe = probeVerdict({
+    secureContext: window.isSecureContext,
+    xr8Loaded: xr8Available,
+    webxrApi: typeof navigator.xr !== 'undefined',
+    immersiveArAdvertised,
+  })
+  applyPreflightToStartScreen(probe)
 
   // ── 4. AR Overlay & Capture setup ──────────────────────────────────────────
   keyframes = new KeyframeStreamer(provider)
@@ -724,7 +772,7 @@ async function main() {
     if (summary.status === 'needs-rescan') {
       const ok = confirm('Scan quality is low. Review recommendations before exporting. Export anyway?')
       if (!ok) {
-        overlay.setStatus('Export cancelled')
+        overlay.setStatus('Export cancelled', 'sticky')
         setAutosaveStatus('Export cancelled')
         return { outcome: 'cancelled' }
       }
@@ -747,7 +795,7 @@ async function main() {
           // reports 'failed' and callers skip keyframes.rotate() for it.
           console.error('[export] updateSessionScanFilename failed (non-fatal)', error)
         }
-        overlay.setStatus('Scan exported & synced ✓')
+        overlay.setStatus('Scan exported & synced ✓', 'sticky')
         setAutosaveStatus(`Scan exported & synced ✓ ${shortName(result.uploadedFilename)}`)
 
         // Reveal the "View in 3D" link next to status — only now is there
@@ -764,7 +812,7 @@ async function main() {
         // Not a failure: the service worker holds it and replays on reconnect.
         // Calling this "server sync failed" sent people hunting for a problem
         // that did not exist.
-        overlay.setStatus('Scan saved — will sync when back online')
+        overlay.setStatus('Scan saved — will sync when back online', 'sticky')
         setAutosaveStatus('Scan saved — will sync when back online')
         return { outcome: 'queued' }
       }
@@ -776,11 +824,11 @@ async function main() {
       const msg = result.savedLocally
         ? 'Scan saved locally — server sync failed'
         : 'Export failed — server rejected it and no local copy was saved'
-      overlay.setStatus(msg)
+      overlay.setStatus(msg, 'sticky')
       setAutosaveStatus(msg)
       return { outcome: 'local-only' }
     } catch (error) {
-      overlay.setStatus('Export failed — try again')
+      overlay.setStatus('Export failed — try again', 'sticky')
       setAutosaveStatus('Export failed — try again')
       console.error('[export]', error)
       return { outcome: 'failed' }
@@ -1176,6 +1224,11 @@ async function main() {
   await startArPressed
 
   overlay.setStatus('Starting AR…')
+  // Registered BEFORE start(), because start() is what arms the timer that
+  // produces the verdict. Optional on the interface: only 8th Wall has the
+  // signal (a WebXR runtime with no backing AR service rejects requestSession()
+  // instead, which the catch below classifies).
+  provider.onPreflightVerdict?.((verdict) => applyPreflightVerdict(verdict, overlay))
   try {
     await provider.start(canvas)
   } catch (e) {
@@ -1186,21 +1239,17 @@ async function main() {
     // Wall provider was reported for weeks as "Camera access denied", and the
     // real error was only visible in the console. A permission claim has to be
     // backed by a permission error (ADR 0005 rule 3, applied to failure copy).
-    const name = e instanceof Error ? e.name : ''
-    const message = e instanceof Error ? e.message : String(e)
-    const isPermission = name === 'NotAllowedError'
-      || name === 'SecurityError'
-      || /permission|denied|NotAllowedError/i.test(message)
     // Echoing `message` handed the reader the runtime's own sentence — "The
     // specified session configuration is not supported" — which names no
     // consequence and no next step. The raw string stays in the console.error
     // above, where it is still the thing worth reporting a bug with.
-    const consequence = isPermission
-      ? 'Camera access is blocked, so the scanner cannot see the room.'
-      : 'AR could not start on this device, so there is nothing for the scanner to track.'
-    const nextStep = isPermission
-      ? 'Allow camera access for this site in your browser or phone settings and reload, or use Upload Content to add a video or photos from this Place instead.'
-      : 'Use Upload Content to add a walkthrough video or photos from this Place instead — it builds the same map, no AR needed.'
+    //
+    // The classification lives in startFailureVerdict() (src/ar/preflight.ts)
+    // so it is testable, and so the NotSupportedError case — a device whose AR
+    // API is present with no service behind it, which no amount of retrying or
+    // permission-checking will fix — gets its own sentence instead of the
+    // generic one it used to share.
+    const verdict = startFailureVerdict(e)
     // The start screen is still standing on this path, and it is what the
     // reader is looking at: #permission-error-banner lives inside #ar-overlay
     // (z-index 10), which paints *under* #start-screen (z-index 20). So say it
@@ -1208,13 +1257,13 @@ async function main() {
     // the line already reserved there for "why AR isn't happening" — right
     // beside the Upload Content card the next step points at. The banner is
     // still written for the case where the start screen is already gone.
-    setStartButtonState('unavailable', isPermission ? 'Camera access is blocked' : 'AR could not start on this device')
+    setStartButtonState('unavailable', verdict.headline)
     const arHelp = document.getElementById('ar-help')
     if (arHelp) {
-      arHelp.textContent = `${consequence} ${nextStep}`
+      arHelp.textContent = verdict.detail
       arHelp.hidden = false
     }
-    showPermissionBanner(`${consequence} ${nextStep}`)
+    showPermissionBanner(verdict.detail)
     // Caught live 2026-08-26 on an XREAL companion device: navigator.xr
     // reported immersive-ar supported, but requestSession() rejected with
     // "The specified session configuration is not supported" because the
@@ -1229,13 +1278,20 @@ async function main() {
     // reaches, so the session sits open forever with keyframeCount: 0. No
     // frame will ever arrive to correct that status text.
     disableCaptureControls('AR did not start — live capture is unavailable')
-    overlay.setStatus(isPermission ? 'Camera access denied' : 'AR failed to start')
+    overlay.setStatus(verdict.headline)
     return
   }
   // Only now is the start screen no longer the user's way out: AR is running,
   // so the live camera behind it is the thing to look at. A spec asserts this
   // (tests/mock-ftue.spec.ts expects #start-screen gone once scanning begins).
   document.getElementById('start-screen')?.remove()
+  // AR is live, so keep the screen up. Without this an unattended capture —
+  // the gimbal-driven dome scan is the whole reason this exists — dies at the
+  // phone's screen timeout: Chrome backgrounds, visibilityState flips to
+  // 'hidden', and KeyframeStreamer._tick() bails, leaving the session open and
+  // the HUD still claiming it is streaming. Measured: 0 frames across 10
+  // converged gimbal positions.
+  void screenWakeLock.start()
   // ── 6. Continuous SLAM point-cloud accumulation ──────────────────────────────
   // Started BEFORE calibration, not after. The calibration flow's
   // environment-scan step gates anchor placement on a settled ground-plane
@@ -1313,6 +1369,17 @@ async function main() {
     const snap = qualityMonitor.tick(provider, pointCloud)
     updateQualityOverlay(snap)
     updateVerdictUI()
+
+    // Sample how much light the camera is getting, on a live frame rather than
+    // a captured one. This is the whole fix for the 19:40 dark-room session:
+    // qualityMonitor.analyseFrame() only ever runs on a CAPTURED frame, and in
+    // a room too dark to track, tracking never acquires, so nothing is captured
+    // and luminance is never measured — the one number that explained the black
+    // screen was the one nothing computed. The result lands in _lastLighting
+    // and is read by the NEXT tick's snapshot; nothing here awaits it.
+    if (++lightSampleTick % LIGHT_SAMPLE_EVERY_TICKS === 0) {
+      void qualityMonitor.sampleLighting(cameraLightSource())
+    }
   })
   console.log('[main] Room scanner started')
 
@@ -2496,6 +2563,89 @@ function waitForTracking(provider: ARProvider, timeoutMs: number): Promise<boole
   })
 }
 
+/**
+ * The camera's own <video> element, when it has a frame worth measuring.
+ *
+ * The 8th Wall engine renders the getUserMedia stream into a <video>, which is
+ * the same element the aspect diagnostic in `eighthwall.ts` reads. A
+ * getUserMedia stream does not taint a canvas, so drawing it into an
+ * OffscreenCanvas and reading the pixels back is allowed.
+ *
+ * Deliberately NOT the AR canvas. That is a WebGL surface without
+ * `preserveDrawingBuffer`, so reading it outside a rAF callback — and this is
+ * called from a 750 ms setInterval — returns a cleared buffer. It would report
+ * black on a perfectly lit room, which is the precise false alarm this feature
+ * must never raise. A native WebXR session has no accessible passthrough video
+ * at all, so this simply returns null there and no lighting claim is made.
+ */
+function cameraLightSource(): HTMLVideoElement | null {
+  const video = document.querySelector('video')
+  if (!video) return null
+  // HAVE_CURRENT_DATA. Before that, drawImage paints nothing and the frame
+  // measures as pure black — indistinguishable from a dark room.
+  if (video.readyState < 2 || video.videoWidth === 0) return null
+  return video
+}
+
+/**
+ * Show a pre-tap preflight verdict on the start screen.
+ *
+ * Reuses the two lines that screen already has for this — the Start button's
+ * `.start-path-status` sub-label and `#ar-help` — rather than introducing an
+ * overlay. `#ar-help` sits directly beside the Upload Content card, which is
+ * where `routeToUpload` is pointing.
+ */
+function applyPreflightToStartScreen(verdict: PreflightVerdict): void {
+  if (verdict.outcome === 'unavailable') {
+    setStartButtonState('unavailable', verdict.headline)
+  }
+  // `caveat` and not `canScan`: the case worth showing is a verdict that says
+  // yes and should still be read — a browser advertising AR support on a device
+  // with no AR service behind it. A phone that is simply going to work gets a
+  // clean start screen.
+  if (!verdict.caveat) return
+  const help = document.getElementById('ar-help')
+  if (help) {
+    help.textContent = verdict.detail
+    help.hidden = false
+  }
+}
+
+/**
+ * Act on a verdict from the runtime's own first-frame watchdog.
+ *
+ * Capture controls are NOT disabled here, even on `'unavailable'`. The start()
+ * catch disables them because AR provably failed; this verdict is inferred from
+ * an absence on a timer, and a false positive there would tear down a working
+ * session. Saying the true thing loudly, and leaving the controls alone, is the
+ * asymmetry worth taking — and a late pose re-fires this with `'ready'`, which
+ * is why the banner is cleared rather than left standing.
+ */
+function applyPreflightVerdict(
+  verdict: PreflightVerdict,
+  overlay: { setStatus(text: string, priority?: StatusPriority): void },
+): void {
+  if (verdict.outcome === 'ready' || verdict.outcome === 'warming-up') {
+    // Only take back a banner this function put up. The healthy path emits
+    // 'ready' at the 5 s mark on every good session, and #permission-error-banner
+    // is shared — beginArSession() writes the motion/orientation denial notice
+    // into it, which is still true and still worth reading after a pose arrives.
+    if (preflightBannerShown) {
+      const banner = document.getElementById('permission-error-banner')
+      if (banner) banner.style.display = 'none'
+      preflightBannerShown = false
+    }
+    return
+  }
+  // 'sticky' because this is the answer to "why is nothing happening" and it
+  // must survive the next 750 ms of scanner-tick chatter.
+  overlay.setStatus(verdict.headline, 'sticky')
+  if (verdict.routeToUpload) {
+    showPermissionBanner(verdict.detail)
+    preflightBannerShown = true
+  }
+}
+
 function shortName(filename: string): string {
   return filename.replace(/^\d+_/, '').replace(/\.glb$/, '')
 }
@@ -2529,11 +2679,16 @@ function updateQualityOverlay(snap: import('./capture/quality-monitor').QualityS
   // because it is refreshed on every 750 ms scanner tick — exactly the
   // property that made it erase every capture result and error message.
   if (motionHint) {
-    const motionText = snap.trackingLost
-      ? 'Tracking lost — move slowly'
-      : snap.driftRisk === 'high'
-        ? '⚠ Moving too fast — slow down'
-        : ''
+    // One function picks this line (quality-monitor.ts `motionHintText`), so
+    // the signals cannot fight over the element. They used to: a dark room
+    // where tracking never acquired printed "Tracking lost — move slowly",
+    // advice that was not merely unhelpful but wrong — moving slowly in the
+    // dark was never going to produce a pose.
+    const motionText = motionHintText({
+      lighting: snap.lighting,
+      trackingLost: snap.trackingLost,
+      driftRisk: snap.driftRisk,
+    })
     // aria-live, so an unconditional per-tick write would re-announce the same
     // sentence twice a second. Same reasoning as updateVerdictUI().
     if (motionText !== lastMotionHint) {

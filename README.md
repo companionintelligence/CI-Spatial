@@ -74,7 +74,7 @@ flowchart TB
 
     subgraph HeavyWorkers ["Heavy CV / Reconstruction Workers"]
         LingBotMap["LingBot-Map Python reconstructor"]
-        SplatTrainer["Brush 3D Gaussian Splat Trainer"]
+        SplatTrainer["3D Gaussian Splat Trainer (Brush or Spirula)"]
         SplatDetector["3D Spatial Object Detector"]
     end
 
@@ -164,7 +164,7 @@ graph TD
         Server_Storage -->|Create WorldJob| WorldJobs["WorldJob Queue (single-flight)"]
         WorldJobs -->|optimize-scan| Optimize["server/pipeline.ts (Draco/LODs)"]
         WorldJobs -->|Run Reconstruction| LingBot["LingBot-Map (PLY + poses)"]
-        WorldJobs -->|Run Splat Training| Brush["Brush 3DGS (splat.ply)"]
+        WorldJobs -->|Run Splat Training| Brush["3DGS trainer: Brush or Spirula (splat.ply)"]
         WorldJobs -->|Run 3D Object Detection| SplatDetect["Splat-Detect (boxes)"]
     end
 
@@ -209,6 +209,29 @@ graph TD
 
 An iOS or Android device with camera is required for AR scanning. The 3D viewer and inference server work on desktop.
 The **Upload Content** path — a walkthrough video or photos, no phone, tailnet, cert or AR engine involved — needs only ffmpeg on the server.
+
+### Reconstruction toolchain (all optional)
+
+Everything downstream of a capture — poses, points, splat, segmentation — is an external program the server shells out to. **None of them is a deployment requirement**: an absent tool makes its job complete as `skipped` carrying a `remediation` string, never fail, so a box with none of these installed still runs the whole queue green.
+
+| Tool | Used by | How it is found |
+|------|---------|-----------------|
+| [COLMAP](https://colmap.github.io) | `colmap-poses`, and the automatic pose solve inside `splat-train` | `COLMAP_BIN` if set (taken at its word), else PATH, else `~/.local/micromamba/envs/colmap/bin/colmap` |
+| [Brush](https://github.com/ArthurBrussee/brush) (default splat backend) | `splat-train` | `BRUSH_BIN`, else `~/brush/target/release/brush-cli` |
+| [Spirula Studio](https://github.com/harry7557558/spirula-studio) (alternative splat backend, `SPLAT_BACKEND=spirula`) | `splat-train` | `SPIRULA_BIN`, else `~/opt/spirula/spirula`, `~/.local/bin/spirula`, `/usr/local/bin/spirula` |
+| LingBot-Map / SenseNova / panoptic segmenter | their own job types | a venv interpreter named by env var — see the sections below and `.env.example` |
+
+**`which colmap` finding nothing does not mean COLMAP is missing.** The supported install is a micromamba environment (`~/.local/micromamba/envs/colmap/bin/colmap`), which is not on a normal login PATH — so `command -v colmap` reports nothing on a box where COLMAP is installed and working. That is why `resolveColmapBin()` (`server/colmap/colmap_poses.ts:177`) probes that path after PATH, and why the manifest records the absolute binary it actually ran. Check `params.colmapBin` in a session's `colmap-poses.manifest.json` before concluding anything from `which`. The same shape applies to Brush and Spirula, neither of which is normally on PATH either.
+
+The opposite trap for ffmpeg: it *is* on PATH here, but the server resolves it from **the PATH it was started with**. Installing ffmpeg without restarting the Deno server leaves `/ingest-video` failing while a fresh shell says everything is fine (`scripts/ingest-video.mjs:102-113`).
+
+Rather than checking any of this by hand, ask the box — `server/capabilities.ts` probes every external tool the pipelines shell out to, the same way the runners resolve them:
+
+```bash
+deno run --allow-read --allow-env --allow-run server/capabilities.ts
+```
+
+See [docs/operations/PLATFORM_SUPPORT.md](docs/operations/PLATFORM_SUPPORT.md) for what it reports, and [docs/operations/COLMAP_SETUP.md](docs/operations/COLMAP_SETUP.md) for the COLMAP install itself.
 
 The 8th Wall SLAM engine is committed to this repo at `public/xr.js` — nothing to download.
 It is Niantic Spatial's XR Engine and carries its own licence agreement, reproduced in that
@@ -323,6 +346,32 @@ For persistent serving from a Linux box (systemd units, GPU inference, cert rene
 
 New here? [docs/product/UX_FLOW.md](docs/product/UX_FLOW.md) walks the whole happy path as a user story — install and onboarding on the phone, scanning a room, structuring scans into the 4D world in the desktop editor, queuing reconstruction jobs, and sharing a world — plus the mental model for the four capture modes (manual tap, auto-capture, keyframe streaming, and WebRTC live). For the full documentation index see [docs/README.md](docs/README.md).
 
+### Capture geometry: walk the camera, don't spin it
+
+This is the single biggest difference between a scan that reconstructs and one that does not, and it is not a tuning problem.
+
+Monocular structure-from-motion locates a 3D point by intersecting the rays to it from two camera centres **that are in different places**. Rotate on the spot and there is no second place: the rays are collinear, the intersection is undefined at any noise level, and the two-view geometry collapses to a homography. COLMAP has a name for this exact condition — it reports such pairs as `PLANAR_OR_PANORAMIC`. No amount of extra frames, better exposure, or matcher tuning changes it.
+
+Three captures from this repo, ordered by how much the camera actually moved:
+
+| Capture | Frames | Camera motion | COLMAP result |
+|---|---|---|---|
+| Walkthrough video, `sess-video-20260830-033839` | 32 | translating through the space | **32 / 32 registered**, 9362 points, 27.6 s — trained to a usable splat |
+| Handheld phone, `sess-a7e2f642-…` | 17 | near-in-place; rotation dominated translation | **3 / 17 registered, 1 triangulated point** |
+| Gimbal dome, one station | 9 | effectively none — lens offset from the pan/tilt axes only | **4 / 9 registered**; 29 of 36 pairs `PLANAR_OR_PANORAMIC` |
+
+(Row 1 is `scans/sessions/sess-video-20260830-033839/colmap-poses.manifest.json`, still on disk. Row 2's session is on disk but its solve manifest is not — those numbers, and the re-runs that showed the ratio is reproducible on a bad capture while the point count is not, are recorded at `server/colmap/colmap_poses.ts:204-236`. Row 3 is from [ADR 0007](docs/adr/0007-splat-backends-are-selectable-and-a-rotation-only-sweep-is-not-a-reconstruction-capture.md), sourced from `docs/operations/GIMBAL_INTEGRATION.md`.)
+
+**So, when you capture:**
+
+- **Walk.** Move through the room and keep moving while recording — down a hallway, around a table, along a wall. Sideways steps buy you more than sweeps do.
+- **Orbit things, don't pan across them.** To capture an object, circle it. Standing in one spot and turning to face it is the failure case above.
+- **Give the shot a baseline comparable to the depth of what you're looking at.** Baselines measured for the two rows above (ADR 0007): the 32/32 run reached ~13.6 units against a 2.2–2.5 unit scene depth — several times the depth it was looking at; the 3/17 run reached 0.88 m over a 3.62 m path while rotating 90.4°.
+- **Keep overlap while you move**, so features survive between viewpoints — translate steadily rather than jumping between disconnected vantage points.
+- **A rotation-only sweep is a panorama, not a reconstruction capture.** It is the *ideal* input for a 360° projection and a useless one for SfM; those are the same property seen from two sides. Don't run a dome and expect a 3D model.
+
+**Check the verdict, don't assume it.** A solve that ran, exited 0, and wrote real files still reports `status: "ok"` — the 3-of-17 capture above did exactly that. The usable signal is the quality block a `colmap-poses` job now writes into `colmap-poses.manifest.json`: `quality.registrationRatio`, `quality.degenerate`, and `quality.status` (a `ScanReviewStatus` — `ready` / `needs-rescan`), with `quality.reasons` saying which gate tripped and `quality.thresholds` recording what it was judged against. The defaults are a 0.6 registration ratio and a 100-point floor, both overridable (`COLMAP_MIN_REGISTRATION_RATIO`, `COLMAP_MIN_POINTS3D`). Treat `degenerate: true` as "go back and walk the room again", not as something to tune around.
+
 ### WebXR mode (HelloXR on iOS)
 
 `/webxr.html` runs the same scanner on a **native WebXR `immersive-ar` session** instead of the 8th Wall SLAM engine. Safari on iOS has no WebXR AR, so open the URL inside [HelloXR](https://apps.apple.com/us/app/helloxr/id6757726359), a WebXR-enabled iOS browser (Android Chrome and headset browsers work directly).
@@ -360,8 +409,13 @@ In WebXR mode the point cloud accumulates from per-frame hit-test samples (WebXR
 │   ├── migrations/             #   migrate_jobs.ts, migrate_scan_ids.ts (one-shot data migrations)
 │   ├── world/                  #   world_job_pump.ts (single-flight WorldJob pump), world_lock.ts,
 │   │                           #     world_membership.ts, world_prune.ts
-│   ├── splat/                  #   splat_train.ts (Brush), splat_detect.ts (OWLv2), splat_finish.ts
-│   │                           #     (@playcanvas/splat-transform), splat_train_dataset.ts
+│   ├── splat/                  #   splat_train.ts (Brush) + spirula_train.ts (Spirula Studio) — the
+│   │                           #     two SPLAT_BACKEND drivers behind one job type; splat_detect.ts
+│   │                           #     (OWLv2), splat_finish.ts (@playcanvas/splat-transform),
+│   │                           #     splat_align.ts, splat_train_dataset.ts
+│   ├── colmap/                 #   colmap_poses.ts (pose solve + quality verdict), colmap_model.ts
+│   ├── panoptic/               #   panoptic_scan.ts, panoptic_segments.ts, panoptic_lift.ts
+│   ├── person4d/               #   person_4d.ts (off-box 4DAnyone delegation — ADR 0006)
 │   └── lingbot-map/            #   lingbot_map.ts, lingbot_map_glb.ts (LingBot-Map reconstruction glue)
 │
 ├── public/
@@ -477,7 +531,7 @@ The repo defines ~30 npm scripts. The most common:
 | `npm run test:mobile` | Playwright tests (webkit iPhone 15 emulation) |
 | `npm run test:iphone` | Playwright over USB on a real iPhone |
 | `npm run test:house` | Two-story-house field-acceptance suite |
-| `npm run test:box` | Bounding-box readiness check |
+| `npm run test:box` | Self-contained browser loop — boots its own Deno API (`:8100`) and Vite (`:5273`) on scratch data dirs, seeds a corpus, runs the `api` + `chromium-mock` Playwright projects, tears it all down. Never touches the long-lived `:8000`/`:5173` servers or the real `scans/`. |
 | `npm run test:mock` / `test:api` | Mock-engine + API-only test tiers |
 | `npm run smoke:pipeline` | End-to-end scan-optimization pipeline smoke test |
 | `npm run setup:models` | Show the recommended Ollama vision-model catalog and install the ones you want |
@@ -486,7 +540,7 @@ The repo defines ~30 npm scripts. The most common:
 | `npm run ingest:video` | Ingest a walkthrough video into a session scan |
 | `npm run links:house` | Print the house-validation scanner/viewer links |
 | `npm run gen:test-data` / `seed:test-data` | Generate / seed test fixtures |
-| `npm run test:splat:unit` / `test:splat:make-fixture` | `deno test` for splat_train/detect/finish + Playwright fixture builder |
+| `npm run test:splat:unit` / `test:splat:make-fixture` | `deno test` for splat_train (Brush), spirula_train, splat_detect/finish/align + Playwright fixture builder |
 | `npm run test:mock:unit` | `deno test` for the mock inference engine |
 | `npm run test:lingbot:glb` / `test:lingbot:fetch-video` / `test:lingbot:make-fixture` | LingBot-Map GLB test (Node, needs `sharp`) + fixture scripts |
 | `npm run gen-icons` | Regenerate PWA icons |
@@ -597,6 +651,34 @@ The job invokes `scripts/lingbot_map_worker.py` as a subprocess and writes three
 All three are served read-only at `/sessions/<id>/<artifact>`. The desktop editor consumes them via the world-job artifact metadata. If LingBot-Map / torch is not installed, or the checkpoint is missing, the worker writes a `skipped` manifest with a `remediation` hint and the world job completes with that message rather than failing — so the UI explains *why* no reconstruction was produced.
 
 See [docs/pipelines/lingbot-map.md](docs/pipelines/lingbot-map.md) for the full architecture diagram, UI walkthrough with screenshots, test setup, and CC-BY clip provenance.
+
+### Splat training backends (Brush or Spirula Studio)
+
+`splat-train` is **one job type with two interchangeable drivers**, chosen by `SPLAT_BACKEND`:
+
+```bash
+export SPLAT_BACKEND=brush      # default — omit it and you get this
+export SPLAT_BACKEND=spirula    # Spirula Studio instead
+```
+
+Nothing downstream changes with the choice. Both land `<base>.splat.ply` and `<base>.splat-train.manifest.json` under `scans/`, and `splat-finish` / `splat-detect` consume those by name, so a backend switch is a deployment decision rather than a code change (`server/main.ts:3547-3549`). An unrecognised value falls back to Brush rather than failing the job — a typo'd env var must not stop a fleet from reconstructing. The manifest's `tool` field (`"brush"` / `"spirula"`) records which driver produced a given artifact, so "why does this scan look different" is answerable after the fact.
+
+**Brush is the default and stays the default.** Its number on the known-good fixture (`scans/sess-video-20260830-033839.splat-train.manifest.json`, 32 keyframes, COLMAP-solved 32/32): 15 000 iterations → 246 838 gaussians, 37.5 MB, 166 s. The head-to-head against Spirula on that same session — and the reason "Spirula is faster" is the wrong summary of it — is in [docs/pipelines/splat-train.md § Measured A/B](docs/pipelines/splat-train.md); the criteria that would move the default are [ADR 0007](docs/adr/0007-splat-backends-are-selectable-and-a-rotation-only-sweep-is-not-a-reconstruction-capture.md), item 7.
+
+**Installing Spirula.** It is **not vendored and not bundled** — no Spirula source is in this repo, no Spirula binary ships in the container image, and nothing here builds it from source. It is downloaded separately by whoever runs the box and invoked as a child process over argv and files on disk, exactly as Brush and COLMAP already are. Spirula Studio is **GPL-3.0** and this repo is not; that arm's-length arrangement is the only permitted coupling, and the reasoning, the open licence review, and the things that would change the analysis are all in [ADR 0007](docs/adr/0007-splat-backends-are-selectable-and-a-rotation-only-sweep-is-not-a-reconstruction-capture.md) rather than repeated here. Do not bundle, fork, or link it without going back to that document first.
+
+```bash
+# Download a prebuilt release (the ubuntu-vulkan-x86_64 zip) — do NOT build from source
+#   https://github.com/harry7557558/spirula-studio/releases
+unzip spirula-*.zip -d ~/opt/spirula && chmod +x ~/opt/spirula/spirula
+~/opt/spirula/spirula --version      # 2026.8.28 is what this box runs
+```
+
+`~/opt/spirula/spirula` is the first path the resolver tries, so that layout needs no env var at all; `SPIRULA_BIN` overrides it. It needs a Vulkan-capable GPU.
+
+**When Spirula is absent**, a `splat-train` job with `SPLAT_BACKEND=spirula` completes as `skipped` with a remediation naming the download and reminding you that `SPLAT_BACKEND=brush` switches back — the same contract as a missing `BRUSH_BIN` or `COLMAP_BIN`. It is never a crash and never a failed job.
+
+The remaining knobs (`SPIRULA_DEVICE`, `SPIRULA_TRAIN_ITERS`, `SPIRULA_SH_DEGREE`, `SPIRULA_PRESET`, `SPIRULA_QUALITY`) are documented in `.env.example`; iterations and SH degree default to Brush's 15000/2 so an A/B is like-for-like. Two behaviours differ from Brush and are worth knowing: Spirula's Nerfstudio parser rejects `"camera_model": "PERSPECTIVE"`, so the dataset builder writes `OPENCV` for it instead of adding a second converter; and Spirula has no max-resolution flag anywhere in its CLI, so it trains at the dataset's native size and there is no counterpart to `BRUSH_MAX_RES`.
 
 ### SenseNova Vision (optional, WSL)
 

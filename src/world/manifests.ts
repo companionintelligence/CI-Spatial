@@ -40,6 +40,51 @@ export interface PipelineManifestBase {
 }
 
 /**
+ * Torch backend a Python worker can be *asked* for.
+ *
+ * Defined here, not in either driver, because server/panoptic/panoptic_scan.ts
+ * and server/lingbot-map/lingbot_map.ts resolve the same option against the
+ * same `--device` flag on their workers — ADR 0001 wants one definition of
+ * that, not the two this repo has been bitten by before. This file is the
+ * right home for the same reason it holds the manifests: dependency-free and
+ * free of `Deno.*`, so the viewer can read a manifest's device without
+ * dragging a Deno driver into its type graph.
+ *
+ * There is deliberately no 'rocm' member. A ROCm torch reports
+ * `torch.cuda.is_available() == True` and takes the device string "cuda" —
+ * that is how ROCm works, so an AMD box asks for 'cuda' like every other GPU
+ * and `torch.version.hip` is what tells them apart, which only the worker can
+ * see. 'mps' is here because Apple Silicon was otherwise unreachable: the
+ * workers' resolution used to be a cuda-or-cpu binary, so a Mac silently ran
+ * on CPU.
+ *
+ * This list mirrors `scripts/_torch_device.py`'s `CHOICES`, which is also what
+ * `lingbot_map_worker.py` pins its argparse `choices` to. Keep them in step.
+ */
+export const COMPUTE_DEVICES = ['auto', 'cpu', 'cuda', 'mps'] as const
+export type ComputeDevice = (typeof COMPUTE_DEVICES)[number]
+
+/** Narrow an operator-supplied string (an env var, typically) to the union. */
+export function isComputeDevice(value: string): value is ComputeDevice {
+  return (COMPUTE_DEVICES as readonly string[]).includes(value)
+}
+
+/**
+ * An indexed CUDA device — `cuda:1` on a multi-GPU host.
+ *
+ * Separate from `ComputeDevice` because only *one* worker takes it:
+ * `panoptic_worker.py --device` is free-form and `resolve_torch_device` honours
+ * an index verbatim, while `lingbot_map_worker.py` pins
+ * `choices=[auto,cpu,cuda,mps]`, where `cuda:1` is an argparse exit-2. Folding
+ * both into one loose predicate would let a driver accept a value its own
+ * worker rejects.
+ */
+export type IndexedCudaDevice = `cuda:${number}`
+export function isIndexedCudaDevice(value: string): value is IndexedCudaDevice {
+  return /^cuda:\d+$/.test(value)
+}
+
+/**
  * panoptic_scan.ts's manifest — the per-keyframe panoptic segmenter.
  *
  * Panoptic means every pixel gets exactly one label, so a run yields BOTH
@@ -70,12 +115,102 @@ export interface PanopticScanManifest extends PipelineManifestBase {
   thingLabelsUsed?: boolean
   /** Basename of the landed per-frame segment JSON, relative to the session dir. */
   segmentsPath?: string
+  /**
+   * Backend the worker reported actually using — 'cuda', 'cpu', 'mps', …
+   *
+   * Not derivable from `params.device`. 'auto' is resolved inside the worker,
+   * and even an explicit request is downgraded when the backend is absent
+   * (scripts/_torch_device.py's `resolve_torch_device` downgrades an
+   * unreachable backend to CPU rather than raising). The gap matters
+   * because the same job is ~0.7 s/frame on the 4080 and minutes per frame on
+   * CPU, and until now a run's manifest could not answer "did this use the
+   * GPU?" — leaving a user staring at a slow job with nowhere to look.
+   *
+   * Absent when the worker did not say: it predates the reporting contract, or
+   * it died before picking one.
+   */
+  resolvedDevice?: string
+  /**
+   * Which vendor's stack that backend was — 'NVIDIA CUDA', 'AMD ROCm',
+   * 'Apple MPS', 'CPU'. `resolvedDevice` cannot carry this: a ROCm torch runs
+   * on the device string "cuda", so 'cuda' alone does not say whose GPU it was.
+   * Same field lingbot_map_worker.py already writes as `params.deviceVendor`.
+   */
+  deviceVendor?: string
   params: {
     python: string
     panopticDir: string
     model: string
     maxFrames: number
     minSegmentPixels: number
+    /**
+     * The backend that was *requested*, verbatim. Typed `string` rather than
+     * `ComputeDevice` on purpose: an unrecognised `PANOPTIC_DEVICE` is recorded
+     * here as it was written and the run is skipped with a remediation, which
+     * is only useful if the typo survives into the manifest.
+     */
+    device: string
+  }
+}
+
+/**
+ * panoptic_lift.ts's manifest — the 2D-segment-to-3D-position stage.
+ *
+ * Splitting this from `panoptic-scan` rather than folding it into that job is a
+ * cost decision: the segmenter is a GPU pass over up to 64 keyframes, and its
+ * `panoptic.segments.json` is already on disk. Re-tuning the depth policy must
+ * not mean re-running Mask2Former.
+ *
+ * The three counts are the point of this manifest, not decoration. "A room with
+ * 6 things" and "a room where 44 objects were seen and could not be placed" are
+ * completely different facts about a scan, and without the split they look
+ * identical from outside — the same failure `thingLabelsUsed` above exists to
+ * prevent. On the one real session measured (sess-a7e2f642, 50 thing segments,
+ * 5330 points, coverageScore 0.0027) the split is 4 confident / 7
+ * low-confidence / 39 with no answer at all.
+ */
+export interface PanopticLiftManifest extends PipelineManifestBase {
+  tool: 'panoptic-lift'
+  sessionDir: string
+  /** Thing segments read from the panoptic-scan sidecar. */
+  segmentCount?: number
+  /**
+   * Segments that produced a trusted world position — at or above the
+   * confidence floor. `confidentCount + undeterminedCount === segmentCount`;
+   * those two partition the set and are the only pair that does.
+   */
+  confidentCount?: number
+  /**
+   * Determinate but below the floor: a position was computed and is not
+   * trusted, so it is NOT published as a Thing.
+   *
+   * A SUBSET of `undeterminedCount`, not a third bucket beside it — it is also
+   * the `'low-confidence'` entry in `reasons`. Adding all three together
+   * double-counts (a real run read 6 + 5 + 44 against 50 segments, which is
+   * what prompted this note).
+   */
+  lowConfidenceCount?: number
+  /**
+   * Segments that yielded no publishable position, for any reason. Exactly
+   * partitioned by `reasons`, whose values sum to this.
+   */
+  undeterminedCount?: number
+  /** Count per LiftReason, e.g. { 'no-geometry': 2, unsupported: 33 }. */
+  reasons?: Record<string, number>
+  /** Median confidence across the confident set. Absent when that set is empty. */
+  medianConfidence?: number
+  /** Points in the cloud the rays were cast against. */
+  pointCount?: number
+  /** Basename of the written detections sidecar, relative to the scans dir. */
+  detectionsPath?: string
+  /** Which artifact supplied the cloud, for provenance. */
+  cloudSource?: string
+  params: {
+    minSegmentPixels: number
+    minConfidence: number
+    minDepthM: number
+    maxDepthM: number
+    minClusterPoints: number
   }
 }
 

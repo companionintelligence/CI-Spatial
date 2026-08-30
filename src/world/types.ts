@@ -56,6 +56,21 @@ export type WorldJobType =
    * docs/pipelines/panoptic-scan.md).
    */
   | 'panoptic-scan'
+  /**
+   * Lift `panoptic-scan`'s 2D thing segments into world space by casting each
+   * segment centroid against the scan's own point cloud (see
+   * docs/pipelines/panoptic-scan.md § Lifting). Runs after `panoptic-scan`,
+   * whose segments sidecar is its input.
+   *
+   * Separate from `panoptic-scan` rather than folded into it because the two
+   * fail for unrelated reasons and a person needs to tell them apart: the scan
+   * stage needs a Python venv and a GPU, the lift stage needs a scan GLB with
+   * geometry. Merging them would report "panoptic failed" for a missing point
+   * cloud, which is the kind of misattributed error this codebase keeps
+   * correcting. Re-running the lift is also cheap, and re-running segmentation
+   * is not.
+   */
+  | 'panoptic-lift'
   | 'memory-push'
   | 'export-world'
   | 'optimize-scan'
@@ -671,6 +686,7 @@ export type {
   SplatTrainManifest,
   SplatDetectManifest,
   PanopticScanManifest,
+  PanopticLiftManifest,
   SplatFinishManifest,
   SplatFinishSizes,
 } from './manifests.ts'

@@ -33,7 +33,7 @@
  * Prints JSON { sessionId, frameCount, sessionDir, droppedBlurry, fps } on
  * stdout as the LAST line (the /ingest-video server route parses exactly that).
  */
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdir, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { filterBlurryFrames } from './ingest-quality.mjs'
@@ -78,6 +78,43 @@ function clampNumber(raw, fallback, min, max) {
   return Math.min(max, Math.max(min, n))
 }
 
+/** True when `bin` exists on PATH and answers `-version`. */
+function isRunnable(bin) {
+  const probe = spawnSync(bin, ['-version'], { stdio: 'ignore' })
+  return !probe.error && probe.status === 0
+}
+
+/**
+ * Refuse early, by name, when ffmpeg is absent.
+ *
+ * Without this, the missing binary surfaces as an uncaught `spawnSync ffmpeg
+ * ENOENT` from the extraction call — which the /ingest-video route forwards
+ * verbatim as the `detail` of an HTTP 500. That names a Node API, not the
+ * program the operator has to install, and offers no remediation. Every other
+ * optional external tool in this repo reports a reason plus a fix instead (see
+ * `resolveColmapBin` in server/colmap/colmap_poses.ts).
+ *
+ * Unlike COLMAP this is a hard failure, not a skip: the keyframes ARE the
+ * artifact of a walkthrough ingest, so there is nothing partial to hand back.
+ * Person-mode uploads degrade at the route level, which is the right place —
+ * there the clip is the artifact and the frames are only thumbnails.
+ *
+ * The PATH note is not filler. ffmpeg is resolved out of the PATH the *server*
+ * process inherited at start-up, so installing it into a directory that process
+ * never had cannot fix a running server; that is a genuinely confusing failure
+ * because `which ffmpeg` in a fresh shell then says everything is fine.
+ */
+function preflightFfmpeg() {
+  if (isRunnable('ffmpeg')) return
+  console.error('error: ffmpeg not found on PATH — video ingest cannot extract keyframes without it.')
+  console.error('  Install it: `apt install ffmpeg` / `brew install ffmpeg`, or drop a static build')
+  console.error('  (https://johnvansickle.com/ffmpeg/) somewhere already on PATH, e.g. ~/.local/bin.')
+  console.error('  Already installed? The server resolves ffmpeg from the PATH it started with —')
+  console.error('  restart it so the new location is inherited.')
+  console.error(`  PATH was: ${process.env.PATH ?? '(unset)'}`)
+  process.exit(1)
+}
+
 /** Clip duration in seconds via ffprobe, or null when unprobeable. */
 function probeDurationSeconds(video) {
   try {
@@ -116,6 +153,7 @@ async function defaultSessionId() {
 
 async function main() {
   await stat(VIDEO) // fail fast with a clear ENOENT before touching ffmpeg
+  preflightFfmpeg() // …and before creating a session directory nothing will fill
   const sessionId = args['session-id'] || await defaultSessionId()
   if (!SESSION_ID_RE.test(sessionId)) {
     console.error(`error: session id "${sessionId}" must match ${SESSION_ID_RE}`)
