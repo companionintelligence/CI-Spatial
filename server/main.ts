@@ -2349,7 +2349,24 @@ async function refreshWorldScans(world: WorldProject): Promise<void> {
 
   world.scans = world.scans.map((scan, index) => {
     const storedScan = storedByFilename.get(scan.filename)
-    if (!storedScan) return scan
+    if (!storedScan) {
+      // A session-backed scan kept by the prune guard above has no .glb on
+      // disk, so 'ready' is a claim about geometry that is not there — the
+      // editor believes it, fetches `glbUrl`, and gets a 404. Both video
+      // sessions in worlds/default.json were sitting in exactly that state on
+      // 2026-08-30 (status 'ready', no file), because a completed splat or
+      // panoptic job had promoted them past the honest 'processing' that
+      // registerSessionScan sets. This is the self-heal for rows already
+      // written that way; `readyStatusFor` stops new ones being written.
+      // Only 'ready' is demoted: 'needs-review'/'needs-rescan' are verdicts on
+      // the capture, true whether or not geometry was ever produced, and
+      // 'aligned' is a claim about a transform this function did not check.
+      if (scan.status === 'ready') {
+        changed = true
+        return { ...scan, status: 'processing' as const }
+      }
+      return scan
+    }
     if (!belongsToCurrentWorld(world, storedScan, existingScanFilenames)) {
       changed = true
       removedForProjectMismatch.push({ scanId: scan.scanId, filename: scan.filename })
@@ -3173,7 +3190,31 @@ async function _runColmapPosesJob(slug: string, jobId: string): Promise<void> {
     if (!start) return
     const { scan, sessionId, sessionPath } = start
 
-    const result = await runColmapPoses({ sessionDir: sessionPath })
+    // Fill in geometry only where there is none.
+    //
+    // A session-backed scan advertises `<sessionId>.glb` that nothing ever
+    // wrote (see registerSessionScan), and COLMAP's seed cloud is the first
+    // real geometry that path produces. An *uploaded* scan is the opposite
+    // case: its GLB already holds mesh, detections, floor plane and camera
+    // path, all of which a sparse SfM cloud is strictly less than, so
+    // overwriting it would destroy the capture this stage exists to improve.
+    const scanGlbPath = `${SCANS_DIR}/${scan.filename}`
+    let scanGlbExists = true
+    try {
+      await Deno.stat(scanGlbPath)
+    } catch {
+      scanGlbExists = false
+    }
+
+    const result = await runColmapPoses({
+      sessionDir: sessionPath,
+      ...(scanGlbExists ? {} : {
+        glbOutPath: scanGlbPath,
+        // `capturedAt` is nullable on the manifest; the builder falls back to
+        // "now" rather than writing a null capture time into the provenance.
+        glbProvenance: { sessionId, scanId: scan.scanId, capturedAt: scan.capturedAt ?? undefined },
+      }),
+    })
 
     await commitWorldJob(slug, jobId, (currentJob, current) => {
       currentJob.progress = 1
@@ -3181,17 +3222,30 @@ async function _runColmapPosesJob(slug: string, jobId: string): Promise<void> {
         currentJob.status = 'completed'
         currentJob.result =
           `COLMAP registered ${result.registeredImages ?? 0} image(s), ` +
-          `${result.pointCount ?? 0} point(s)`
-        currentJob.artifacts = [{
-          type: 'colmap-poses',
-          label: `${scan.name} camera poses`,
-          url: `/sessions/${encodeURIComponent(sessionId)}/colmap.poses.json`,
-          metadata: {
-            sessionId,
-            registeredImages: result.registeredImages ?? null,
-            pointCount: result.pointCount ?? null,
+          `${result.pointCount ?? 0} point(s)` +
+          (result.glbPath ? `, and wrote ${scan.filename} from the seed cloud` : '')
+        currentJob.artifacts = [
+          {
+            type: 'colmap-poses',
+            label: `${scan.name} camera poses`,
+            url: `/sessions/${encodeURIComponent(sessionId)}/colmap.poses.json`,
+            metadata: {
+              sessionId,
+              registeredImages: result.registeredImages ?? null,
+              pointCount: result.pointCount ?? null,
+            },
           },
-        }]
+          // The scan's own GLB, not a sidecar: this is the file `scan.glbUrl`
+          // has been pointing at since ingest, so it needs no new URL shape.
+          ...(result.glbPath
+            ? [{
+              type: 'scan-glb',
+              label: `${scan.name} point-cloud geometry`,
+              url: `/scans/${encodeURIComponent(scan.filename)}`,
+              metadata: { sessionId, scanId: scan.scanId, pointCount: result.glbPointCount ?? null },
+            }]
+            : []),
+        ]
         applyCompletedJobToWorld(currentJob, current)
       } else if (result.status === 'skipped') {
         currentJob.status = 'completed'
@@ -4227,31 +4281,69 @@ function jobFailureReason(job: WorldJob, world: WorldProject, preflight: JobPref
   return null
 }
 
+/**
+ * The status a completed job is allowed to promote a scan to.
+ *
+ * 'ready' is a claim about geometry — the editor reads it as "this scan can be
+ * drawn" and fetches `glbUrl` on the strength of it. A session-backed scan
+ * advertises `<sessionId>.glb` from birth and only acquires the file if some
+ * reconstruction actually writes one, so every branch below used to promote
+ * scans that had nothing behind that URL. Measured 2026-08-30: both
+ * sess-video-20260830-033839 (colmap cloud + 37.5 MB splat) and
+ * sess-video-20260830-054518 (48 keyframes + panoptic segments) sat at 'ready'
+ * in worlds/default.json with no GLB on disk at all, which is what
+ * `registerSessionScan`'s own comment already calls out as the dishonest state
+ * — it just could not survive the first completed job.
+ *
+ * `statSync`, not `stat`: this runs inside `commitWorldJob`'s synchronous
+ * mutation callback, which is where the scan is reachable at all. It is one
+ * stat per completed job.
+ */
+function readyStatusFor(scan: ScanManifest): ScanManifestStatus {
+  try {
+    if (!Deno.statSync(`${SCANS_DIR}/${scan.filename}`).isFile) return 'processing'
+  } catch {
+    return 'processing' // ingested, awaiting geometry — the same state ingest set
+  }
+  return scan.qualitySummary?.status ?? 'ready'
+}
+
 function applyCompletedJobToWorld(job: WorldJob, world: WorldProject): void {
   const scan = scanForJob(job, world)
   if (!scan) return
   if (job.type === 'align-scan') scan.status = 'aligned'
   else if (job.type === 'semantic-pass' || job.type === 'extract-layers' || job.type === 'merge-points') {
-    scan.status = scan.qualitySummary?.status ?? 'ready'
+    scan.status = readyStatusFor(scan)
   }
   else if (job.type === 'lingbot-map-reconstruct') {
-    scan.status = scan.qualitySummary?.status ?? 'ready'
+    scan.status = readyStatusFor(scan)
+  }
+  // The one stage that can *create* the missing geometry: colmap-poses turns
+  // its seed cloud into the scan GLB, so this branch flips 'processing' to
+  // 'ready' the moment the file lands — and leaves it alone when the solve
+  // triangulated nothing.
+  else if (job.type === 'colmap-poses') {
+    scan.status = readyStatusFor(scan)
   }
   else if (job.type === 'splat-train') {
-    scan.status = scan.qualitySummary?.status ?? 'ready'
+    scan.status = readyStatusFor(scan)
   }
   else if (job.type === 'splat-detect') {
-    scan.status = scan.qualitySummary?.status ?? 'ready'
+    scan.status = readyStatusFor(scan)
   }
   else if (job.type === 'splat-finish') {
-    scan.status = scan.qualitySummary?.status ?? 'ready'
+    scan.status = readyStatusFor(scan)
   }
   else if (job.type === 'sensenova-vision') {
-    scan.status = scan.qualitySummary?.status ?? 'ready'
+    scan.status = readyStatusFor(scan)
   }
   else if (job.type === 'panoptic-scan') {
-    scan.status = scan.qualitySummary?.status ?? 'ready'
+    scan.status = readyStatusFor(scan)
   }
+  // Deliberately NOT gated on a GLB: a person capture's subject is a person,
+  // not a place (see registerSessionScan's 'person-capture' source), so it has
+  // no place geometry to wait for and `readyStatusFor` would pin it at
+  // 'processing' forever.
   else if (job.type === 'person-4d-reconstruct') {
     scan.status = scan.qualitySummary?.status ?? 'ready'
   }

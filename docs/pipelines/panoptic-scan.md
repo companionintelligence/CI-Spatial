@@ -270,6 +270,7 @@ A lift is undetermined — `worldPos: null` plus a `reason` — on any of:
 | `no-pose` | the frame carries no capture pose (see below) |
 | `centroid-off-mask` | the centroid is not on its own mask, so the ray misses the object |
 | `no-geometry` | no cloud point in the segment's cone at all |
+| `out-of-range` | the cone hit geometry, but **every** point of it was outside `[MIN_DEPTH_M, MAX_DEPTH_M]` |
 | `unsupported` | no depth cluster reached `MIN_CLUSTER_POINTS` (12), or the winner holds under 30 % of the cone |
 | `depth-ambiguous` | the nearest supported cluster is smeared wider than 0.35 m |
 | `multi-surface` | two comparably-supported surfaces more than 1.0 m apart |
@@ -309,6 +310,77 @@ is a policy choice placed at a visible break, not a measured error rate. Every
 rejected segment's confidence is written to the sidecar, so the data to re-fit
 it is always on disk.
 
+### Measured on a video-ingest capture: 0 of 29 placed, for two structural reasons
+
+The numbers above come from `sess-a7e2f642`, a phone room-scan with capture
+poses. The lift was then run against a **video-ingest** session, which is the
+source the reconstruction pipelines actually feed today, and it placed nothing.
+Both causes are structural, neither is a threshold, and neither was legible in
+the manifest before this pass.
+
+Session `sess-video-20260830-033839`: 32 keyframes, COLMAP solved with all 32
+images registered, `colmap.point-cloud.ply` 9362 points, `colmap.poses.json`
+with solved intrinsics (`fx = fy = 635.72`, `cx = 720`, `cy = 405`, 1440×810).
+Re-segmented with the current worker: **29 thing segments**, 90 stuff, 0
+dropped; all 29 carry `bboxPx` and `centroidOnMask`, and none is off-mask.
+
+**1. A video-ingest session has no capture pose at all — not one.** Its
+`keyframes.jsonl` records are `{index, file, timestamp}` and nothing more:
+0 of 32 frames here, 0 of 48 on `sess-video-20260830-054518`. So the driver's
+capture-poses-only rule (below) refuses every segment, and the real run is:
+
+```
+segmentCount 29  confidentCount 0  undeterminedCount 29  reasons { "no-pose": 29 }
+```
+
+That is correct behaviour, not a bug — but "29 × no-pose" reads like a broken
+filename join, so the manifest now carries a `remediation` naming the cause and
+distinguishing *"this session has SfM poses that are deliberately not used"*
+from *"nothing solved this session at all"*.
+
+**2. Handed the solver's own poses, the metre depth window rejects 100 % of the
+geometry.** COLMAP poses and `colmap.point-cloud.ply` *are* in one frame — the
+gravity alignment rotates images and points together, and `openCvW2cToC2w` only
+swaps the camera's local axes — so that pairing is self-consistent and was worth
+measuring. It yields:
+
+```
+reasons { "out-of-range": 23, "unsupported": 6 }   placed 0   medianConfidence n/a
+```
+
+Before this pass those 23 read `no-geometry`, which says "the cloud is too
+sparse". It is not. Those same 23 cones hold **1 to 605 points each (median
+109)** at depths of **3.6 to 18.1** along the ray, and `[0.5, 5.0]` threw all of
+them away. The reconstruction spans 18.93 × 11.56 × 21.23 units with a max
+pairwise camera baseline of 13.6 (mean 4.36) for a small room — a monocular SfM
+world is scale-free, so its unit is not the metre and a metre window means
+nothing against it. Hence the new `out-of-range` reason and the `nearestDepthM`
+diagnostic, which names where the geometry actually was.
+
+**The confidence model was not exercised, and nothing here re-tunes it.** Zero
+segments reached `liftConfidence` on either path, so this data says nothing
+about whether 0.20 separates good placements from bad — it only says the two
+gates *upstream* of confidence are what bind on a video ingest. Moving
+`MIN_CONFIDENCE` would change nothing on this session and would be fitting to
+absent data.
+
+Two further cautions about this capture, recorded so nobody reads more into the
+numbers than they support:
+
+- **It is a synthetic scene.** The frames are a procedurally-generated grey box
+  room with one floating cube and a ledge. Mask2Former labels the ledge `step`
+  (21 of 29 segments here, 30 of 38 on `-054518`) and produces `bench`, `towel`,
+  `flag`, `door`, `chair` on untextured noise. The label population is not a
+  room's contents, so no per-label conclusion is available from it.
+- **The whole population is effectively one object seen 21 times.** Even had the
+  window admitted it, that is not a distribution to fit a threshold to.
+
+What would actually make the confidence model arguable: a capture that has
+capture poses *and* a dense metric cloud, i.e. a phone room-scan run through
+reconstruction, so that a real population reaches `liftConfidence` and the
+cross-frame agreement check (two rays, two cameras, one Thing) can be run at
+scale rather than on the single `curtain` pair available today.
+
 ### The gate is also what protects `MAX_THINGS_PER_WORLD`
 
 50 thing segments from 8 frames is 6.25/frame; at the shipped
@@ -345,6 +417,19 @@ capture-frame cloud is in a different space *and a different unit*, and
 `thing_match` would fuse it against real metres at 0.75 m. A frame with no
 capture pose is an honest `no-pose`.
 
+The measurement above sharpens what that rule is really protecting, because the
+obvious objection is that COLMAP's poses and COLMAP's *own* seed cloud are in
+one frame, so pairing those two would be self-consistent. They are — and it
+still does not help, which is the useful part: run that way, the session places
+0 of 29 and reports `out-of-range` on 23, because self-consistent is not the
+same as metric. `thing_match` fuses at 0.75 **m** and `MIN_DEPTH_M`/`MAX_DEPTH_M`
+are **metres**; a scale-free reconstruction satisfies neither. So the rule is not
+"capture poses are better" but **"poses and cloud must be in one frame *and*
+that frame must be metres"**, and a solved-pose path only becomes correct once a
+scale is established (the job `SplatAlignManifest` exists for). Until then a
+solved-pose fallback would be a way to get plausible numbers in the wrong unit,
+which is worse than `no-pose`.
+
 ### The cloud is read through the node hierarchy
 
 Measured, not assumed. In the raw autosave GLB the `point-cloud` node and both
@@ -375,25 +460,33 @@ tests covering every guard and the read-back with no model present.
 Landed here: the lift — `src/shared/panoptic_lift.ts` (pure geometry +
 confidence, Deno- and `three`-free per ADR 0002), `server/panoptic/panoptic_lift.ts`
 (the driver), `PanopticLiftManifest` extending `PipelineManifestBase` in its
-canonical home, the worker's `bboxPx`/`centroidOnMask` fields, and 46 tests
-(26 Node on the shared policy, 17 Deno on the driver, 3 more on the segment
-policy) that run with no model, no GPU and no GLB.
+canonical home, the worker's `bboxPx`/`centroidOnMask` fields, and 50 tests
+(30 Node on the shared policy, 20 Deno on the driver) that run with no model, no
+GPU and no GLB.
 
-**Not yet wired**, and deliberately out of this change's scope because
-`server/main.ts` is owned by other work in flight:
+Landed since: the `'panoptic-lift'` `WorldJob` type and `_runPanopticLiftJob`
+(`server/main.ts`), and — from the measurement above — the `out-of-range` reason,
+the `nearestDepthM` diagnostic, and `liftRemediation`, which puts a cause on the
+manifest of a run that placed nothing.
 
-1. a `'panoptic-lift'` member on `WorldJobType` plus `WORLD_JOB_TYPES`,
-   `jobResultFor` and `applyCompletedJobToWorld` entries;
-2. a `_runPanopticLiftJob` modelled on `_runPanopticScanJob`, passing
-   `sessionDir`, the scan's GLB path, and `<base>.panoptic.detections.json`;
-3. an extension of `detectionLikesForWorld` to gather from that sidecar as well
-   as the meta sidecar — keeping it the single aggregation point into
-   `runThingCorrespondence` rather than adding a second path (ADR 0001), with
-   `targetId` set to `` `${scan.scanId}:panoptic:${file}:${segmentIndex}` `` so a
-   re-lift updates the same `ThingObservation` via the natural-key path instead
-   of duplicating it.
+**Known gaps**, all outside this file's own modules:
 
-Worth noting for (3): `splat-detect` has the identical gap. It lands a
-`<base>.interactions.json` full of 3-D object boxes next to the scan and nothing
-reads it, so those boxes never reach Things either. The same extension point
-serves both.
+1. **A video-ingest capture cannot be lifted at all today.** It has no capture
+   pose (measured: 0 of 32 and 0 of 48) and no metric cloud, and the two are one
+   problem: what the lift needs is poses and a cloud in one frame *in metres*.
+   Establishing a metric scale for a monocular reconstruction is the missing
+   piece, not a change to this stage.
+2. **`_runPanopticLiftJob` discards `result.remediation` on the run that most
+   needs it.** `server/main.ts:3499` answers a zero-placed `ok` run with a
+   hardcoded *"a capture that rotates in place has almost no parallax — walk the
+   room to give the scan a baseline"*. On both sessions measured that sentence is
+   simply false (the captures do walk; a video ingest has 13.6 units of camera
+   baseline). The `skipped` branch four lines below already forwards
+   `result.remediation`; the `ok` branch should do the same.
+3. **`detectionLikesForWorld` does not read the detections sidecar.** It remains
+   the single aggregation point into `runThingCorrespondence` (ADR 0001), and it
+   should gather `<base>.panoptic.detections.json` with `targetId` set to
+   `` `${scan.scanId}:panoptic:${file}:${segmentIndex}` `` so a re-lift updates
+   the same `ThingObservation` rather than duplicating it. `splat-detect` has the
+   identical gap — its `<base>.interactions.json` boxes never reach Things
+   either — and the same extension point serves both.

@@ -22,12 +22,14 @@ import {
   coneHalfAngle,
   gatherCone,
   liftConfidence,
+  liftRemediation,
   liftSegment,
   MAX_CONE_HALF_ANGLE_RAD,
   MAX_DEPTH_M,
   MIN_CLUSTER_POINTS,
   MIN_CONFIDENCE,
   MIN_DEPTH_M,
+  nearestConeHitDepth,
   type LiftCamera,
 } from '../../../src/shared/panoptic_lift.ts'
 
@@ -452,6 +454,101 @@ test('a dome with geometry still lifts, and lifts to the same place from every a
   }
   // Well inside THING_MATCH_RADIUS_M (0.75 m), so these fuse to ONE Thing.
   for (const d of seen) assert.ok(d < 0.1, `every view must agree to within 0.1 m, got ${d}`)
+})
+
+// ── an empty window is not an empty cloud ───────────────────────────────────
+
+test('geometry outside the depth window is out-of-range, not no-geometry', () => {
+  // The distinction that cost an evening. Measured on
+  // sess-video-20260830-033839 (COLMAP, 32 registered images, 9362 points) with
+  // the solver's own poses: 23 of 29 thing segments reported 'no-geometry',
+  // which reads as "too sparse to hit anything". Those same 23 cones held 1 to
+  // 605 points each (median 109) at 3.6-18.1 along the ray. The cloud was
+  // dense; it was in the solver's arbitrary unit, so a metre window rejected
+  // every point. Both states must be nameable, or the manifest sends the
+  // reader after the wrong fix.
+  const beyond = cloudOf(slab(MAX_DEPTH_M + 3.0, 60))
+  const far = liftSegment({ camera: CAM, centroidPx: CENTRE, areaPx: AREA, segScore: 0.9 }, beyond.positions, beyond.count)
+  assert.equal(far.worldPos, null)
+  assert.equal(far.confidence, null)
+  assert.equal(far.reason, 'out-of-range')
+  assert.equal(far.debug.conePoints, 0, 'the WINDOWED cone really is empty — that is the point')
+  assert.ok(far.debug.nearestDepthM !== null)
+  assert.ok(
+    Math.abs(far.debug.nearestDepthM - (MAX_DEPTH_M + 3.0)) < 0.1,
+    `nearestDepthM should name where the geometry actually is, got ${far.debug.nearestDepthM}`,
+  )
+
+  // Nearer than MIN_DEPTH_M is the same failure from the other side.
+  const near = cloudOf(slab(MIN_DEPTH_M / 2, 60, 0.05))
+  const close = liftSegment({ camera: CAM, centroidPx: CENTRE, areaPx: AREA, segScore: 0.9 }, near.positions, near.count)
+  assert.equal(close.reason, 'out-of-range')
+
+  // A genuinely empty cloud keeps the old reason, and reports no depth at all —
+  // there is no "where it actually is" to report.
+  const none = liftSegment({ camera: CAM, centroidPx: CENTRE, areaPx: AREA, segScore: 0.9 }, new Float32Array(0), 0)
+  assert.equal(none.reason, 'no-geometry')
+  assert.equal(none.debug.nearestDepthM, null)
+
+  // Geometry that is in front but OUTSIDE the cone is also no-geometry: the
+  // probe must not widen the cone, only drop the window.
+  const beside = cloudOf(slab(3.0, 60, 0.05).map((v, i) => (i % 3 === 0 ? v + 5.0 : v)))
+  const aside = liftSegment({ camera: CAM, centroidPx: CENTRE, areaPx: AREA, segScore: 0.9 }, beside.positions, beside.count)
+  assert.equal(aside.reason, 'no-geometry')
+  assert.equal(aside.debug.nearestDepthM, null)
+})
+
+test('a successful lift never carries a nearestDepthM — the window was not the constraint', () => {
+  const cloud = cloudOf(slab(2.0, 40))
+  const r = liftSegment({ camera: CAM, centroidPx: CENTRE, areaPx: AREA, segScore: 0.95 }, cloud.positions, cloud.count)
+  assert.ok(r.worldPos)
+  assert.equal(r.debug.nearestDepthM, null)
+
+  // Nor does an 'unsupported' one: points WERE inside the window, so the probe
+  // is not run and would answer a question nobody asked.
+  const thin = cloudOf(slab(2.0, MIN_CLUSTER_POINTS - 1))
+  const under = liftSegment({ camera: CAM, centroidPx: CENTRE, areaPx: AREA, segScore: 0.95 }, thin.positions, thin.count)
+  assert.equal(under.reason, 'unsupported')
+  assert.equal(under.debug.nearestDepthM, null)
+})
+
+test('the probe ignores the window but not the cone, and never looks behind the camera', () => {
+  const ray = cameraRay(CAM, 360, 480)
+  assert.ok(ray)
+  // Behind the camera along +Z. A dot product would make this a NEGATIVE depth;
+  // returning it would put an object behind the viewer.
+  const behind = cloudOf(slab(2.0, 40).map((v, i) => (i % 3 === 2 ? -v : v)))
+  assert.equal(nearestConeHitDepth(ray, behind.positions, behind.count, coneHalfAngle(AREA, FL)), null)
+
+  // Two surfaces beyond the window: the NEAREST is the informative one.
+  const two = cloudOf(slab(9.0, 40, 0.05), slab(6.0, 40, 0.05))
+  const d = nearestConeHitDepth(ray, two.positions, two.count, coneHalfAngle(AREA, FL))
+  assert.ok(d !== null && Math.abs(d - 6.0) < 0.1, `expected ~6.0, got ${d}`)
+})
+
+// ── a run that placed nothing must say what to do about it ──────────────────
+
+test('the dominant abstention picks the remediation, and only when nothing placed', () => {
+  // Measured: both video-ingest sessions on disk write keyframes.jsonl records
+  // of {index, file, timestamp} and nothing else — 0 of 32 and 0 of 48 frames
+  // carry a pose. A session that ALSO has SfM poses needs a different sentence
+  // from one that has none, because "there are poses, they are the wrong kind"
+  // is a different instruction to an operator.
+  const withSolved = liftRemediation({ 'no-pose': 29 }, { hasSolvedPoses: true })
+  const withoutSolved = liftRemediation({ 'no-pose': 29 }, { hasSolvedPoses: false })
+  assert.ok(withSolved && withoutSolved && withSolved !== withoutSolved)
+  assert.match(withSolved, /scale|metric/i)
+
+  // The units case must not read like a coverage case, or it sends the reader
+  // off to re-scan a room that was scanned perfectly well.
+  const range = liftRemediation({ 'out-of-range': 23, unsupported: 6 }, { hasSolvedPoses: true })
+  assert.ok(range)
+  assert.match(range, /metre/i)
+  assert.notEqual(range, liftRemediation({ 'no-geometry': 23 }, { hasSolvedPoses: false }))
+
+  // Ties and unknown reasons must not fabricate advice.
+  assert.equal(liftRemediation({}, { hasSolvedPoses: false }), undefined)
+  assert.equal(liftRemediation({ 'degenerate-camera': 4 }, { hasSolvedPoses: false }), undefined)
 })
 
 test('MAX_DEPTH_M matches the resolver bound it was lifted from', () => {

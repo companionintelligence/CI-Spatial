@@ -1191,6 +1191,16 @@
          Centring on the anchor is what used to hang half a chip off the canvas
          and slice "lamp 94%" down to "%"; doing it this way needs no measurement
          in the render loop, which is what kept two captures identical. */
+      /* An unsure placement's chip. Amber text on the same chip geometry, so
+         the de-collision pass in updateLabels() — which estimates chip width
+         from the text alone and never measures — stays exact. Colour alone
+         would not be enough on its own; the marker is hollow and the word
+         "unsure" is in the text as well. */
+      .label3d.label3d-unsure {
+        color: #ffd7a0;
+        border-color: rgba(255,183,77,0.55);
+      }
+
       .label3d[data-pin='left']  { transform: translate(0, -100%) translateY(-6px); }
       .label3d[data-pin='right'] { transform: translate(-100%, -100%) translateY(-6px); }
 
@@ -2477,6 +2487,29 @@
                 <input type="text" id="sensenova-query" placeholder="Optional labels, e.g. bed, chair, table"
                   style="width:100%;box-sizing:border-box;margin-bottom:6px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:#fff;font-size:11px;padding:7px 8px;outline:none;" />
                 <button class="job-btn" id="btn-sensenova-run" style="width:100%;">Run SenseNova</button>
+                </div>
+              </details>
+
+              <!-- Placed objects — where panoptic segments actually are in the
+                   room, and how sure the placement is. Markers are teal and
+                   solid when firm, amber and hollow when the placement only
+                   just cleared the confidence floor. -->
+              <details class="layer-tool" id="panoptic-objects-section" open>
+                <summary><span><span class="layer-tool-name">Placed objects</span><span class="layer-tool-hint">Objects located in the room, with how sure each placement is.</span></span></summary>
+                <div class="layer-tool-body">
+                <div id="panoptic-objects-status" class="layer-meta" style="margin:12px 0 6px;">
+                  Select a scan to see the objects placed in it.
+                </div>
+                <div id="panoptic-objects-reasons" class="layer-meta" style="margin-bottom:8px;opacity:0.75;"></div>
+                <label class="layer-row" style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                  <input type="checkbox" id="panoptic-objects-toggle" checked />
+                  <span>Show placed objects</span>
+                </label>
+                <div class="layer-meta" style="opacity:0.75;">
+                  Amber hollow markers are unsure placements. Filter them with
+                  <code>-unsure</code>, or the room surfaces with
+                  <code>-wall -floor -ceiling</code>, in the Views filter.
+                </div>
                 </div>
               </details>
 

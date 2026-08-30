@@ -21,6 +21,12 @@ import { fetchLingBotMapArtifacts, type LingBotMapOverlay } from './lingbot-map'
 import { attachSparkRenderer, loadSplat, disposeSplat, type LoadedSplat } from './splat-viewer'
 import { fetchScanSplatLayer, disposeScanSplatLayer, splatPlyUrl, splatManifestUrl, splatSogUrl, formatFinishStats, formatAlignmentStatus, type ScanSplatLayer } from './splat-layer'
 import { fetchScanDetectLayer, type ScanDetectLayer } from './splat-detect-layer'
+import {
+  fetchScanPanopticLayer,
+  summarizePanopticLayer,
+  unplacedReasonLine,
+  type ScanPanopticLayer,
+} from './panoptic-layer'
 import { buildTrainJobRequest, buildDetectJobRequest } from './splat-toolbox'
 import { buildThingObservationIndex, resolveThingTagsForScan } from '../shared/thing_tags'
 import { PlacesPanel } from './places'
@@ -68,6 +74,23 @@ interface Label3D {
   object?: THREE.Object3D
   scanId?: string
   layerType: LayerType
+  /**
+   * Hide this chip while this node (or an ancestor of it) is hidden.
+   *
+   * Opt-in, because it is wrong for the labels a scan's own GLB carries: in
+   * points mode every detection mesh is hidden deliberately and its caption is
+   * meant to survive. It is right for an overlay with its own show/hide
+   * checkbox, where a chip left floating over an object nobody can see reads as
+   * a bug.
+   *
+   * It is the overlay's GROUP, never the chip's own `object`. Gating a chip on
+   * the very node the text filter hides is self-latching: applyLayerVisibility
+   * writes `label.object.visible = isLabelVisible(label)`, so once a filter
+   * hides a marker the gate keeps reporting hidden and the chip never comes
+   * back when the filter is relaxed. Measured in the browser — `-unsure` then
+   * `unsure` left all four unsure chips dark.
+   */
+  visibilityGate?: THREE.Object3D
 }
 
 interface InventoryItem {
@@ -633,9 +656,20 @@ function isLabelVisible(label: Label3D): boolean {
   // The Views-panel text filter. Applied here rather than at label creation so
   // typing re-filters the existing scene instead of forcing a world reload.
   if (!matchesObjectFilter(label.text, objectFilter)) return false
+  // An overlay chip follows its own overlay's checkbox, which lives on the
+  // group above the marker rather than on the marker itself.
+  if (label.visibilityGate && !objectRenderable(label.visibilityGate)) return false
   if (!label.scanId) return true
   const loaded = loadedScans.get(label.scanId)
   return loaded ? scanRendered(loaded) : true
+}
+
+/** True when `obj` and every ancestor of it is visible. */
+function objectRenderable(obj: THREE.Object3D): boolean {
+  for (let node: THREE.Object3D | null = obj; node; node = node.parent) {
+    if (!node.visible) return false
+  }
+  return true
 }
 
 // ─── World loading ───────────────────────────────────────────────────────────
@@ -1379,6 +1413,7 @@ function integrateScanRoot(scan: ScanManifest, root: THREE.Group): void {
 
     worldGroup.remove(previous.root)
     removeLabelsForScan(scan.scanId)
+    discardPanopticLayer(scan.scanId)
     detectionBoundsObjects = detectionBoundsObjects.filter((obj) => {
       let current: THREE.Object3D | null = obj
       while (current) {
@@ -1433,6 +1468,15 @@ function integrateScanRoot(scan: ScanManifest, root: THREE.Group): void {
     const match = findObjectByTargetId(root, reselectId)
     if (match) selectEditableObject(match, false)
     else clearSelection()
+  }
+  // Lifted objects belong to the scan, not to the selection: a world of rooms
+  // should show every room's placed furniture at once. Gated on the world's own
+  // job history so a world of scans that never went through placement costs no
+  // requests at all.
+  if (scanHasCompletedLift(scan.scanId)) {
+    void ensureScanPanopticLayer(scan.scanId).catch((e: unknown) => {
+      console.warn('[viewer] panoptic layer attach failed:', e)
+    })
   }
   renderItemsPanel()
 }
@@ -1859,6 +1903,7 @@ function selectScan(scanId: string, focus: boolean, openEdit = true): void {
   void refreshQualityPanel(scanId)
   void refreshLingBotMapPanel(scanId)
   void refreshSplatLayerPanel(scanId)
+  void refreshPanopticPanel(scanId)
   if (PLACE_COMPOSER_ENABLED) renderPlacesPanel()
   renderItemsPanel()
 }
@@ -2404,6 +2449,133 @@ function setScanDetectVisible(visible: boolean): void {
     layer.boxesGroup.visible = visible
   }
   applyLayerVisibility()
+}
+
+// ─── Placed objects (panoptic-lift output) ───────────────────────────────────
+//
+// The lift's markers are the only view of where a segmented object actually is,
+// so unlike the splat-detect boxes they start visible: a scan that has been
+// through the lift has nothing else to show for it.
+
+const scanPanopticLayers = new Map<string, ScanPanopticLayer>()
+let panopticVisible = true
+
+/**
+ * Whether this scan's lift has already run, according to the world's own job
+ * history.
+ *
+ * Used to decide whether a *non-selected* scan is worth two artifact requests
+ * as it loads. Without the gate, opening a 105-scan world would fire 210
+ * requests that almost all 404. A lift old enough to have aged out of the
+ * bounded history still draws — selecting the scan fetches unconditionally.
+ */
+function scanHasCompletedLift(scanId: string): boolean {
+  return (world?.jobs ?? []).some(job =>
+    job.type === 'panoptic-lift' && job.status === 'completed' && job.scanId === scanId)
+}
+
+/**
+ * Load a scan's lifted objects and attach their markers under its root.
+ *
+ * Attaching to the scan root rather than to the world means the markers move
+ * with the scan's transform gizmo, the same rule the splat and LingBot-Map
+ * overlays follow. `ensureScanRootInWorld` is what makes this work for the
+ * capture kind that most needs it: a video-ingest scan has no GLB of its own,
+ * so `loadedScans` may hold no attached root until something asks for one.
+ */
+async function ensureScanPanopticLayer(scanId: string): Promise<ScanPanopticLayer | null> {
+  const cached = scanPanopticLayers.get(scanId)
+  if (cached) return cached
+  const scan = world?.scans.find(s => s.scanId === scanId)
+  if (!scan) return null
+
+  const layer = await fetchScanPanopticLayer(scan, (url) => fetch(withAccessToken(url)))
+  if (!layer) return null
+  scanPanopticLayers.set(scanId, layer)
+
+  if (layer.markers.length > 0) {
+    const root = ensureScanRootInWorld(scan)
+    if (root) root.add(layer.markerGroup)
+    layer.markerGroup.visible = panopticVisible
+    for (const marker of layer.markers) {
+      createLabel(marker.text, marker.position, {
+        object: marker.object,
+        scanId,
+        // 'labels', so the Views text filter and the Labels toggle reach these
+        // chips exactly as they reach a scan's own detection captions —
+        // `-wall -floor -ceiling` and `-unsure` both work with no new syntax.
+        layerType: 'labels',
+        visibilityGate: layer.markerGroup,
+        ...(marker.tier === 'marginal' ? { variant: 'unsure' as const } : {}),
+        detail: marker.detail,
+      })
+    }
+    applyLayerVisibility()
+  }
+  return layer
+}
+
+/** Status text for the Placed objects panel, for the selected scan. */
+async function refreshPanopticPanel(scanId: string): Promise<void> {
+  const status = document.getElementById('panoptic-objects-status')
+  const reasons = document.getElementById('panoptic-objects-reasons')
+  const toggle = document.getElementById('panoptic-objects-toggle') as HTMLInputElement | null
+  if (!status) return
+
+  let layer: ScanPanopticLayer | null = null
+  try {
+    layer = await ensureScanPanopticLayer(scanId)
+  } catch (e) {
+    console.error('[viewer] panoptic layer fetch failed:', e)
+    status.textContent = `Could not read this scan's placed objects: ${errorMessage(e)}`
+    if (reasons) reasons.textContent = ''
+    return
+  }
+  // A later selection may have superseded this async read.
+  if (selectedScanId !== scanId) return
+
+  if (!layer) {
+    status.textContent = 'No objects have been placed in this scan yet. '
+      + 'Placement needs segmented frames and a scanned point cloud to cast them against.'
+    if (reasons) reasons.textContent = ''
+    if (toggle) toggle.checked = panopticVisible
+    return
+  }
+
+  status.textContent = summarizePanopticLayer(layer)
+  if (reasons) reasons.textContent = unplacedReasonLine(layer.manifest)
+  if (toggle) toggle.checked = panopticVisible
+}
+
+function setPanopticVisible(visible: boolean): void {
+  panopticVisible = visible
+  for (const layer of scanPanopticLayers.values()) {
+    layer.markerGroup.visible = visible
+  }
+  // The chips are gated on their marker's visibility, so this hides both.
+  applyLayerVisibility()
+}
+
+/**
+ * Drop a scan's cached layer, its markers, and its chips.
+ *
+ * Called when the scan's GLB is (re)loaded and when a re-lift lands: the
+ * markers hang off the root that load is about to replace, so keeping the cache
+ * would leave them attached to a discarded subtree — visible nowhere and
+ * impossible to toggle. The chips are removed by their marker, not by scanId,
+ * so a scan's own detection captions survive.
+ */
+function discardPanopticLayer(scanId: string): void {
+  const layer = scanPanopticLayers.get(scanId)
+  if (!layer) return
+  const markers = new Set(layer.markers.map(marker => marker.object))
+  labels = labels.filter((label) => {
+    if (!label.object || !markers.has(label.object)) return true
+    label.el.remove()
+    return false
+  })
+  layer.markerGroup.removeFromParent()
+  scanPanopticLayers.delete(scanId)
 }
 
 async function queueSplatToolboxJob(kind: 'train' | 'detect'): Promise<void> {
@@ -3809,13 +3981,24 @@ function itemTargetId(item: InventoryItem): string {
 function createLabel(
   text: string,
   position: THREE.Vector3,
-  options: { object?: THREE.Object3D; scanId?: string; layerType: LayerType },
+  options: {
+    object?: THREE.Object3D
+    scanId?: string
+    layerType: LayerType
+    visibilityGate?: THREE.Object3D
+    /** Extra chip class, e.g. the amber treatment an unsure placement gets. */
+    variant?: 'unsure'
+    /** Native tooltip — provenance that would not fit in the chip. */
+    detail?: string
+  },
 ): void {
   const el = document.createElement('div')
-  el.className = 'label3d'
+  el.className = options.variant ? `label3d label3d-${options.variant}` : 'label3d'
   el.textContent = text
+  if (options.detail) el.title = options.detail
   labelContainer.appendChild(el)
-  labels.push({ el, position: position.clone(), text, ...options })
+  const { variant: _variant, detail: _detail, ...rest } = options
+  labels.push({ el, position: position.clone(), text, ...rest })
 }
 
 function clearLabels(): void {
@@ -4154,6 +4337,10 @@ document.getElementById('btn-splat-train')?.addEventListener('click', () => {
     flashButton('btn-splat-train', 'Failed')
   })
 })
+document.getElementById('panoptic-objects-toggle')?.addEventListener('change', (e) => {
+  setPanopticVisible((e.target as HTMLInputElement).checked)
+})
+
 document.getElementById('btn-splat-detect')?.addEventListener('click', () => {
   void queueSplatToolboxJob('detect').catch(error => {
     console.error('[viewer] splat-detect queue failed:', error)
@@ -4346,6 +4533,13 @@ function connectServerEvents(): void {
         if (t === 'splat-detect' && wj.status === 'completed' && wj.scanId) {
           scanDetectLayers.delete(wj.scanId)
           if (selectedScanId === wj.scanId) void refreshSplatDetectPanel(wj.scanId)
+        }
+        if (t === 'panoptic-lift' && wj.status === 'completed' && wj.scanId) {
+          // Re-attach rather than refresh in place: a re-lift rewrites the whole
+          // sidecar, so every marker and chip is potentially different.
+          discardPanopticLayer(wj.scanId)
+          if (selectedScanId === wj.scanId) void refreshPanopticPanel(wj.scanId)
+          else void ensureScanPanopticLayer(wj.scanId)
         }
         if (t === 'thing-correspondence' && wj.status === 'completed') {
           scheduleWorldRefresh()

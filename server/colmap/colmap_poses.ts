@@ -63,8 +63,27 @@ export interface ColmapPosesRunOptions {
   matcherType?: string
   /** Longest image edge fed to feature extraction. */
   maxImageSize?: number
+  /**
+   * Where to write the scan's GLB, when the caller wants the seed cloud turned
+   * into loadable geometry. Absent = write the PLY only (the previous
+   * behaviour). See the call site in `runColmapPoses` for why this happens
+   * inside the pose solve rather than in a job of its own.
+   */
+  glbOutPath?: string
+  /**
+   * Node-level provenance stamped into that GLB. `sessionId` defaults to the
+   * one derived from `sessionDir`; the rest only the world coordinator knows.
+   */
+  glbProvenance?: { sessionId?: string; scanId?: string; capturedAt?: string }
   /** Injection seam for tests: replaces the subprocess spawn. */
   _spawn?: (bin: string, args: string[]) => Promise<{ code: number; stderr: string }>
+  /**
+   * Injection seam for tests, mirroring `_spawn`: replaces the PLY→GLB build.
+   * Needed because the real builder pulls in `@gltf-transform/functions`, which
+   * eagerly loads `sharp` and cannot be imported from a Deno unit test — the
+   * same constraint that makes `lingbot_map.ts` import it lazily.
+   */
+  _buildScanGlb?: typeof import('../lingbot-map/lingbot_map_glb.ts').buildLingBotMapGlb
 }
 
 export type ColmapPosesStatus = 'ok' | 'skipped' | 'error'
@@ -126,6 +145,10 @@ export interface ColmapQualityThresholds {
  */
 export type ColmapPosesManifestWithQuality = ColmapPosesManifest & {
   quality?: ColmapReconstructionQuality
+  /** Absolute path of the scan GLB built from the seed cloud, when one was. */
+  glbPath?: string
+  /** Why the GLB was not built, when a build was asked for and failed. */
+  glbError?: string
 }
 
 export interface ColmapPosesResult {
@@ -135,6 +158,12 @@ export interface ColmapPosesResult {
   posesPath?: string
   /** Absolute path of the written seed cloud, when points were triangulated. */
   pointCloudPath?: string
+  /** Absolute path of the scan GLB built from that cloud, when one was asked for. */
+  glbPath?: string
+  /** Points that reached the GLB — the same cloud, re-counted by its parser. */
+  glbPointCount?: number
+  /** Set when a requested GLB build failed. Never fails the run; see the call site. */
+  glbError?: string
   registeredImages?: number
   pointCount?: number
   /**
@@ -574,6 +603,59 @@ export async function runColmapPoses(opts: ColmapPosesRunOptions): Promise<Colma
     pointCount = pts.length
   }
 
+  // Turn that seed cloud into the scan's GLB, in the run that produced it.
+  //
+  // Why here rather than in a `colmap-glb` job of its own: a video- or
+  // photo-ingest scan advertises `<sessionId>.glb` from the moment
+  // `registerSessionScan` creates it, and until now *nothing on this path ever
+  // wrote that file*. Measured 2026-08-30 on sess-video-20260830-033839 — a
+  // 32-frame session with colmap.point-cloud.ply (140 KB, 9362 points) and a
+  // 37.5 MB trained splat, and still no GLB — so the editor fetched the
+  // advertised URL and got a 404, and `panoptic-lift` raycast against nothing.
+  // A separate job holds that window open for exactly as long as it stays
+  // unqueued, which on a host with no GPU tooling is forever. The conversion is
+  // pure CPU over data this function already has on disk (~0.2 s for 9362
+  // points), so there is nothing for a second job to schedule around.
+  //
+  // The failure contract is the sidecar one, copied from lingbot_map.ts: a GLB
+  // that will not build must not turn a good solve into an error. The poses and
+  // the PLY are the canonical artifacts; `glbError` reports the miss and the
+  // caller decides what the scan's status becomes.
+  let glbPath: string | undefined
+  let glbPointCount: number | undefined
+  let glbError: string | undefined
+  if (opts.glbOutPath && pointCloudPath) {
+    try {
+      const build = opts._buildScanGlb ??
+        (await import('../lingbot-map/lingbot_map_glb.ts')).buildLingBotMapGlb
+      const built = await build(
+        await Deno.readFile(pointCloudPath),
+        {
+          source: 'colmap',
+          pointCount,
+          poseCount: images.length,
+          sessionId: opts.glbProvenance?.sessionId ?? base.sessionId ?? '',
+          manifestPath,
+          scanId: opts.glbProvenance?.scanId,
+          capturedAt: opts.glbProvenance?.capturedAt,
+        },
+        // Unquantized: this GLB is the scan, not a preview sidecar. See
+        // LingBotMapGlbOptions.quantize for the measurement behind that.
+        { quantize: false },
+      )
+      // Write via a temp + rename so a reader mid-build never sees a truncated
+      // GLB at the URL the scan has been advertising all along.
+      const tmp = `${opts.glbOutPath}.${crypto.randomUUID()}.tmp`
+      await Deno.writeFile(tmp, built.bytes)
+      await Deno.rename(tmp, opts.glbOutPath)
+      glbPath = opts.glbOutPath
+      glbPointCount = built.pointCount
+    } catch (e) {
+      glbError = e instanceof Error ? e.message : String(e)
+      console.warn('[colmap-poses] scan GLB build failed:', glbError)
+    }
+  }
+
   // Judge the solve before reporting it. The outputs above are written either
   // way — a degenerate model is still the most useful thing to look at when
   // diagnosing why a capture failed, and deleting it would leave the operator
@@ -591,12 +673,23 @@ export async function runColmapPoses(opts: ColmapPosesRunOptions): Promise<Colma
     upAxis,
     gravityAligned: Boolean(upAxis),
     quality,
+    ...(glbPath ? { glbPath } : {}),
+    ...(glbError ? { glbError } : {}),
     // `remediation` is the envelope's existing "how do I fix this" slot, and it
     // is what splat_train already forwards and the UI already renders — so a
     // degenerate solve reaches a human through a path that exists rather than a
     // new one (ADR 0001). Left unset on a good solve: nothing to remedy.
     ...(quality.degenerate ? { remediation: degenerateRemediation(quality, counts) } : {}),
-  }, 0, logs.join('\n'), started, { posesPath, pointCloudPath, registeredImages: images.length, pointCount, quality })
+  }, 0, logs.join('\n'), started, {
+    posesPath,
+    pointCloudPath,
+    registeredImages: images.length,
+    pointCount,
+    quality,
+    glbPath,
+    glbPointCount,
+    glbError,
+  })
 }
 
 /**
