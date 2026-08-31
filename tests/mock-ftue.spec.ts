@@ -40,6 +40,10 @@ test.describe('FTUE two-path start screen', () => {
     const upload = page.locator('#start-upload-card')
 
     await expect(scan).toBeVisible({ timeout: 15_000 })
+    // Since the start screen recommends one method rather than presenting two,
+    // the upload path ships behind #start-alt-toggle. Open it, so what fails
+    // below is this test's pre-#223 copy and not its route to the card.
+    await page.locator('#start-alt-toggle').click({ timeout: 15_000 })
     await expect(upload).toBeVisible()
 
     // Distinct copy: each card names its path and its one-line subtext.
