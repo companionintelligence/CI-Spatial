@@ -65,14 +65,20 @@ test.describe('WebXR session-start failure', () => {
     // It used to assert the raw exception text ("session configuration is not
     // supported") appeared on screen. That was the bug, not the contract: a
     // person who cannot run AR was handed a WebXR internals string, no retry,
-    // and no route to Upload Content — the one path their device CAN do. The
-    // raw message still goes to console.error for whoever is debugging; what
-    // reaches the screen is now a consequence plus a next step. Asserting the
-    // exception text here would re-require the defect.
+    // and no route to the one path their device CAN do. The raw message still
+    // goes to console.error for whoever is debugging; what reaches the screen
+    // is now a consequence plus a next step. Asserting the exception text here
+    // would re-require the defect.
+    //
+    // The way out is matched by what it IS, not by a card label. It used to be
+    // /Upload Content/, which was the label on #start-upload-card until #223
+    // gave that card to renderCaptureChoice() — it now reads "Film a
+    // walkthrough" for a room and "Photograph it" for an object, so no fixed
+    // label is right, and preflight.ts deliberately names none.
     const banner = page.locator('#permission-error-msg')
     await expect(banner).toContainText('AR could not start', { timeout: 15_000 })
     await expect(banner, 'the banner must point at the path this device can still use')
-      .toContainText('Upload Content')
+      .toContainText(/video or photos/i)
     await expect(banner, 'this device never hit a permission prompt — do not claim one')
       .not.toContainText(/permission|denied|blocked/i)
 

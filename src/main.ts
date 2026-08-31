@@ -336,8 +336,8 @@ async function main() {
     // The start screen is torn down only once `provider.start()` has actually
     // resolved (section 5), not here. Removing it up front meant a device with
     // no working AR runtime landed on a dark screen holding a raw exception,
-    // with no retry and no route back to Upload Content — the one path that
-    // phone can still take, and it had just been deleted. Report progress on
+    // with no retry and no route back to the paths that need no AR runtime —
+    // the ones that phone can still take, and they had just been deleted. Report progress on
     // the button that was tapped, since #status-text sits behind this screen.
     const startStatus = document.querySelector<HTMLElement>('#start-ar-btn .start-path-status')
     if (startStatus) startStatus.textContent = 'Starting AR…'
@@ -636,9 +636,9 @@ async function main() {
   // Section 5 does not run until the user commits to a scan, and the two
   // failures worth naming (no AR service behind the API; an 8th Wall pipeline
   // that reports ready and emits nothing) are only visible after that. What IS
-  // knowable now goes on the start screen, beside the Upload Content card that
-  // is the alternative — including the honest caveat when the only evidence we
-  // have is a browser saying "yes" that a Beam Pro also says.
+  // knowable now goes on the start screen, beside the cards that are the
+  // alternative — including the honest caveat when the only evidence we have
+  // is a browser saying "yes" that a Beam Pro also says.
   const probeEnv = {
     secureContext: window.isSecureContext,
     xr8Loaded: xr8Available,
@@ -1397,8 +1397,10 @@ async function main() {
     // (z-index 10), which paints *under* #start-screen (z-index 20). So say it
     // on the start screen — on the button that was tapped, and in #ar-help,
     // the line already reserved there for "why AR isn't happening" — right
-    // beside the Upload Content card the next step points at. The banner is
-    // still written for the case where the start screen is already gone.
+    // beside the cards the verdict's next step describes. It describes them
+    // rather than naming them, because renderCaptureChoice() writes those
+    // labels per subject and preflight.ts has no subject. The banner is still
+    // written for the case where the start screen is already gone.
     setStartButtonState('unavailable', verdict.headline)
     const arHelp = document.getElementById('ar-help')
     if (arHelp) {
@@ -2237,7 +2239,7 @@ function mountPlacePicker(
       // explicit Place pick this way; unassigned (null) is supported
       // end-to-end (ensureSessionScanEntry, upload's projectId: null), so
       // Cancel should resume the same way instead of leaving the caller (AR
-      // start or Upload Content) as a dead click.
+      // start or the upload card) as a dead click.
       const action = pendingSelectionAction
       pendingSelectionAction = null
       action?.()
@@ -3323,7 +3325,7 @@ function mountTripodCapture(): void {
     // File[] becomes an input's FileList; if it is missing, say so instead of
     // pretending the capture went anywhere.
     if (typeof DataTransfer === 'undefined') {
-      notice = 'This browser will not let the app hand the photos to the uploader. Use Upload Content and pick all of the spots’ photos together.'
+      notice = 'This browser will not let the app hand the photos to the uploader. Use the upload card on the start screen and pick all of the spots’ photos together.'
       render()
       return
     }
@@ -3466,8 +3468,10 @@ function cameraLightSource(): HTMLVideoElement | null {
  *
  * Reuses the two lines that screen already has for this — the Start button's
  * `.start-path-status` sub-label and `#ar-help` — rather than introducing an
- * overlay. `#ar-help` sits directly beside the Upload Content card, which is
- * where `routeToUpload` is pointing.
+ * overlay. `#ar-help` sits directly beside the cards that need no AR runtime,
+ * which is where `routeToUpload` is pointing. It says what those paths ARE
+ * rather than naming one: renderCaptureChoice() writes their labels per
+ * subject, so preflight.ts, which has no subject, names none.
  */
 function applyPreflightToStartScreen(verdict: PreflightVerdict): void {
   if (verdict.outcome === 'unavailable') {
