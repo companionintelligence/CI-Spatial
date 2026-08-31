@@ -22,6 +22,7 @@
     "test:clip-validation": "node --experimental-strip-types --no-warnings --test tests/unit/node/clip_validation.test.ts",
     "test:splat4d": "node --experimental-strip-types --no-warnings --test tests/unit/node/splat4d_window.test.ts",
     "test:status-line": "node --experimental-strip-types --no-warnings --test tests/unit/node/status_line.test.ts",
+    "test:startup:budget": "node --experimental-strip-types --no-warnings --test tests/unit/node/startup_word_budget.test.ts",
     "test:ar:preflight": "node --experimental-strip-types --no-warnings --test tests/unit/node/ar_preflight.test.ts",
     "test:scan:lighting": "node --experimental-strip-types --no-warnings --test tests/unit/node/scan_lighting.test.ts",
     "preview": "vite preview --host",
@@ -78,8 +79,7 @@
     "test:capture:intent": "node --experimental-strip-types --no-warnings --test tests/unit/node/capture_intent.test.ts",
     "test:capture:station": "node --experimental-strip-types --no-warnings --test tests/unit/node/station_capture.test.ts",
     "test:capture:distance": "node --experimental-strip-types --no-warnings --test tests/unit/node/spot_distance.test.ts",
-    "test:capture:sweep": "node --experimental-strip-types --no-warnings --test tests/unit/node/sweep_cadence.test.ts",
-    "test:startup:budget": "node --experimental-strip-types --no-warnings --test tests/unit/node/startup_word_budget.test.ts"
+    "test:capture:sweep": "node --experimental-strip-types --no-warnings --test tests/unit/node/sweep_cadence.test.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",

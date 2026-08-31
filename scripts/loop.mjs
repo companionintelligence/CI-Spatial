@@ -74,8 +74,16 @@ const TIERS = [
   {
     n: 1,
     name: 'unit',
-    why: 'pure logic — the Umeyama fit, place clustering, job dedupe',
-    steps: [['deno', ['task', 'test']]],
+    why: 'pure logic — the Umeyama fit, place clustering, job dedupe, the word budget',
+    // The startup word budget is the one node-suite test in here, because it
+    // is the one this loop used to catch only in T3: the same ceiling, checked
+    // against index.html and resolveCapture() instead of against a rendered
+    // page, so it answers in a second and without a Vite server. T3 still
+    // measures the DOM and holds the model to it.
+    steps: [
+      ['deno', ['task', 'test']],
+      ['npm', ['run', '--silent', 'test:startup:budget']],
+    ],
   },
   {
     n: 2,
