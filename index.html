@@ -2472,14 +2472,20 @@
           </span>
         </button>
 
-        <!-- The upload path. Ships `hidden`: it is a real method and stays
-             all shown at once, but three cards named after the
-             machinery behind them was the screen this replaced, and the copy
-             here is written per subject by renderCaptureChoice() — filming a
-             room and photographing a chair are not the same instruction.
-             Hidden also costs no words, which is what pays for the question
-             above (tests/mock-scanner-startup-budget.spec.ts measures the
-             rendered text of #start-screen, and hidden text is not in it).
+        <!-- The upload path. Ships `hidden` and is unhidden by
+             renderCaptureChoice() only where it can actually run: an
+             alternative that dead-ends is worse than no alternative. The copy
+             here is written per subject by that same function — filming a room
+             and photographing a chair are not the same instruction.
+
+             It is shown open, alongside the recommendation, rather than one tap
+             behind a disclosure control. That was not free: three cards of
+             two sentences each is what took the start screen past its 120-word
+             budget to 151 in the worst case, re-baselined to 155 on 2026-08-30
+             (tests/unit/node/startup_word_budget.test.ts, which holds the
+             number, and WORDS_BEFORE_CAMERA_MAX, which argues it). Putting the
+             un-recommended methods behind a tap would give ~50 of those words
+             back, and is the open question here, not a settled design.
 
              Whatever the subject, the sentence keeps saying that an upload
              rebuilds the room and catalogues nothing in it — measured: every
@@ -2528,11 +2534,6 @@
           </span>
         </a>
       </div>
-
-      <!-- The methods that were not recommended, one tap away. Ships hidden
-           and is unhidden by renderCaptureChoice() once it knows there is
-           something behind it — a toggle that reveals nothing is worse than no
-           toggle. -->
 
       <!-- Why this method and not a better one, when that is worth saying.
            Written by renderCaptureChoice() from the resolver's note. -->

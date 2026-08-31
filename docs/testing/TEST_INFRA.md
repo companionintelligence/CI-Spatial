@@ -74,6 +74,15 @@ gate that works instead. It runs tiers in order — types, Deno units, contract
 gates, the startup-budget UI specs — and stops at the first failure, because a
 type error makes every downstream result meaningless.
 
+The startup **word** budget is checked twice on purpose. T1 runs
+`npm run test:startup:budget`, which computes what the start screen says from
+index.html and `resolveCapture()` for every subject x device — no browser, no
+Vite server, and it is in `npm run verify` so the pre-push hook runs it too.
+T3 then renders the page and asserts the browser's own count against that same
+model. The split exists because the browser-only version was dark: it went 20
+words over in #223 and stayed over until 2026-08-30, since GitHub CI runs no
+Playwright at all.
+
 `tests/known-failures.json` is that loop's **baseline**: a list of
 Playwright test ids (spec file + full title) that were already failing when the
 loop was introduced. The loop does not require the list to be empty. It fails on
