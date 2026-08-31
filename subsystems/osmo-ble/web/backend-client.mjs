@@ -921,6 +921,31 @@ function renderGridProgress(msg) {
     showStationPrompt(msg);
     return;
   }
+  // The gimbal deliberately driving to both its stops looks exactly like the malfunction the
+  // stall guard exists to catch, so it is narrated rather than left silent.
+  if (msg.phase === 'arc-probe') {
+    if (msg.state === 'start') els.gridProgress.textContent = 'Measuring how far pan can swing from this tripod position…';
+    if (msg.state === 'step') els.gridProgress.textContent = `Measuring reach: move ${msg.move}/${msg.maxMoves} → ${msg.target}°…`;
+    if (msg.state === 'result') els.gridProgress.textContent = `Measuring reach: ${msg.target}° → ${Number(msg.finalPan).toFixed(1)}° ${msg.converged ? 'reachable' : '— that end is a stop'}`;
+    if (msg.state === 'measured') els.gridProgress.textContent = `Reach from this spot: ${msg.stops.minusDeg}° round to ${msg.stops.plusDeg}° (${msg.stopSpanDeg}° of travel).`;
+    if (msg.state === 'failed') els.gridProgress.textContent = `Could not measure the reach (${msg.reason}) — using the built-in limits.`;
+    return;
+  }
+  if (msg.phase === 'arc-warning') {
+    const row = document.createElement('div');
+    row.className = 'test-row';
+    row.innerHTML = '<span class="verdict">reach</span>';
+    const note = document.createElement('span');
+    note.className = 'test-desc';
+    note.textContent = msg.note;
+    row.appendChild(note);
+    els.gridResults.appendChild(row);
+    return;
+  }
+  if (msg.phase === 'station-plan') {
+    els.gridProgress.textContent = `Station ${msg.station} columns, inside the measured reach: ${msg.pans.join(', ')}°`;
+    return;
+  }
   if (msg.phase === 'resumed') {
     showStationPrompt(null);
     return;

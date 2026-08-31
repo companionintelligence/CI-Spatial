@@ -16,7 +16,10 @@ import { WebSocketServer } from 'ws';
 import { OsmoBleTransport } from './ble-transport.mjs';
 import { createStallGuard, createWedgeGuard, NO_PROGRESS_DEG } from '../protocol/stall.mjs';
 import { computeCorrection, shouldFlipSign, poseAlreadyActedOn } from '../protocol/control.mjs';
-import { planDomePans, unreachablePans, assessCapture, PAN_ARC_START_DEG, PAN_ARC_END_DEG } from '../protocol/dome.mjs';
+import {
+  planDomePans, unreachablePans, assessCapture, describeArc, createArcProbe, diagnoseJam,
+  DEFAULT_PAN_ARC, PROBE_MAX_MOVES,
+} from '../protocol/dome.mjs';
 import { buildGimbalRecenter, buildGimbalAbsoluteAngle, buildGimbalSetMode, buildGimbalSpeedControl, buildGimbalStickControlEnable, buildGimbalResetAndCenter, buildRawCommand } from '../protocol/commands.mjs';
 import { GIMBAL_MODE } from '../protocol/constants.mjs';
 import { quaternionDelta, quatToGimbalControlDeg } from '../protocol/telemetry.mjs';
@@ -83,6 +86,71 @@ const STATION_WAIT_MAX_MS = 30 * 60 * 1000;
  * still there rather than discovering that at the first move of the next station.
  */
 const STATION_HEARTBEAT_MS = 5000;
+
+/**
+ * The reachable pan arc as last MEASURED from the spot the tripod is standing on, or null when
+ * nothing valid has been measured — in which case the planner falls back to the constants in
+ * protocol/dome.mjs and every message says so.
+ *
+ * Held here, at module scope and deliberately NOT persisted, because the thing it describes is
+ * a physical setup that this process cannot see and has no way to re-check. The arc is fixed to
+ * the tripod BASE (see dome.mjs's module comment for the 89-degree shift measured across one
+ * carry on 2026-08-29), so the measurement is only true of the setup it was taken in, and the
+ * only safe default is to forget it.
+ */
+let measuredArc = null;
+/** Why there is no measured arc right now, in the operator's terms. Never null. */
+let arcUnmeasuredReason = 'nothing has been measured this session';
+
+/**
+ * How long a measurement is allowed to stand.
+ *
+ * Every event that INVALIDATES the arc is handled explicitly (a station park, a reconnect, a
+ * reset, a jam that disproves it). This is the backstop for the event nobody can handle: a
+ * tripod picked up and set down between runs, with no advance and no reconnect, which this
+ * process cannot observe at all. Fifteen minutes is longer than a dome takes and shorter than a
+ * session, so a stale belief cannot survive a coffee break — and the cost of expiring it wrongly
+ * is one probe, against a jammed run for keeping it wrongly.
+ */
+const ARC_MEASUREMENT_TTL_MS = 15 * 60 * 1000;
+
+/** Forget the measured arc. Idempotent; logs only when there was something to forget. */
+function invalidateArc(reason) {
+  if (measuredArc) console.log(`[arc] discarding the measured pan arc: ${reason}`);
+  measuredArc = null;
+  arcUnmeasuredReason = reason;
+}
+
+/**
+ * The arc every plan and every message in this process should be using.
+ *
+ * Falls back to the constants rather than refusing, because a run with no measurement is still
+ * the behaviour this backend had before probes existed — what must not happen is calling the
+ * fallback a measurement, which is why `source` rides on the value.
+ */
+function currentArc() {
+  if (measuredArc && Date.now() - measuredArc.measuredAt > ARC_MEASUREMENT_TTL_MS) {
+    invalidateArc(`the measurement is over ${Math.round(ARC_MEASUREMENT_TTL_MS / 60000)} minutes old, and this process cannot see whether the tripod has moved since`);
+  }
+  return measuredArc ?? DEFAULT_PAN_ARC;
+}
+
+/** The arc, as a status/event payload — always including where it came from. */
+function arcPayload() {
+  const arc = currentArc();
+  return {
+    startDeg: arc.startDeg,
+    endDeg: arc.endDeg,
+    spanDeg: arc.spanDeg,
+    centerDeg: arc.centerDeg,
+    source: arc.source,
+    measuredAt: arc.measuredAt,
+    ageMs: arc.measuredAt ? Date.now() - arc.measuredAt : null,
+    describe: describeArc(arc),
+    ...(arc.source === 'measured' ? {} : { unmeasuredReason: arcUnmeasuredReason }),
+  };
+}
+
 // Run-level wedge detection lives in protocol/stall.mjs (createWedgeGuard), next to the
 // tick-level stall guard and its tests — see that file for the overheating incident that
 // made it a shared function rather than an inline check in one of the two capture paths.
@@ -276,6 +344,12 @@ function statusPayload() {
     // stream) so a client that loads or reconnects mid-scan can lock its manual controls
     // immediately, instead of offering a joystick that the backend will reject.
     scanning: gridRunning,
+    // The reachable pan arc in use, and — the part that matters — whether it was MEASURED from
+    // where the tripod is standing or inherited from the built-in constants. A client that shows
+    // an arc without its provenance is showing a number that was true at a different tripod
+    // position, which is exactly how the 2026-08-29 run drove into a stop it thought was 89
+    // degrees further round.
+    panArc: arcPayload(),
     // Set while a multi-station capture is parked waiting for the tripod to be moved. On
     // status for the same reason `scanning` is, only more so: the pause can last minutes, and
     // the operator is across the room with the rig in their hands. If their phone slept, or
@@ -473,6 +547,12 @@ const NO_TELEMETRY_ABORT_MS = STREAM_STALE_MS * 2;
  */
 async function awaitStation({ nextStation, stationsPlanned, emit, maxWaitMs = STATION_WAIT_MAX_MS }) {
   await stopMotors();
+  // The tripod is about to move, and the reachable arc is bolted to the tripod. Whatever was
+  // measured at the last spot describes a setup that is about to stop existing, so it is
+  // discarded HERE — at the moment of the decision — rather than being left for the next
+  // station to remember to distrust. Every way out of this park (advance, stop, timeout) goes
+  // through this line.
+  invalidateArc(`the capture parked for the move to station ${nextStation}; the arc moves with the tripod`);
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
   const since = Date.now();
@@ -508,6 +588,158 @@ async function awaitStation({ nextStation, stationsPlanned, emit, maxWaitMs = ST
   stationGate = null;
   broadcast({ type: 'status', ...statusPayload() });
   return outcome;
+}
+
+/**
+ * Probe drive parameters, tuned against a measured rate rather than a guess.
+ *
+ * The commanded speed is not the travel rate. Measured on the real OM6, 2026-08-30: a move at
+ * 16 deg/s with the loop's default 250/150 ms drive/settle cadence actually travelled about
+ * 2 deg/s, so a 45-degree step ran out of a 12-second budget 10 degrees short — three times
+ * running, which ended the first live probe with one stop measured instead of two. The same
+ * move at 25 deg/s with a 400/100 ms cadence travelled 43 degrees in 9.9 s: 4.3 deg/s. Most of
+ * the loop's wall time is spent waiting for a fresh pose, not driving, so widening the drive
+ * window buys more than raising the speed does.
+ *
+ * So: a speed BELOW a capture move's 25 deg/s (this is the one routine that drives into a stop
+ * on purpose, and it should meet the limit rather than arrive at it), and a wider drive window
+ * to make up the difference — about 3.5 deg/s in practice.
+ *
+ * The budget is then set SHORT rather than generous, and that is the safety number here. The
+ * move loop only concludes "jammed" when its budget runs out (its tick-level verdict needs more
+ * ticks than a normal budget contains — see createStallGuard's netProgressDeg), so maxMs IS the
+ * worst case for how long the motors push against a stop. 10 s at 3.5 deg/s does not cover a
+ * whole 35-degree step, and before the re-issue logic existed that would have cost a
+ * measurement; now a move that is still travelling when the budget ends is simply aimed at the
+ * same target again, so a short budget costs an extra move rather than an arc. Two stop contacts
+ * per probe puts the exposure at about 20 s.
+ *
+ * That number is not theoretical. On 2026-08-30, with the budget at 20 s, this unit stopped
+ * responding to motion while still streaming telemetry — the documented thermal/wedge state —
+ * after two probes and then six hand-issued 20-second moves into the jam that followed. The
+ * probe's own contribution was bounded and it stopped asking at each stop, as designed; the
+ * hand-issued moves were not bounded by anything, which is the argument for the wedge guard the
+ * capture loop already has and for keeping this budget small.
+ */
+const PROBE_SPEED_DEG_PER_SEC = 20;
+const PROBE_TICK_MS = 400;
+const PROBE_SETTLE_MS = 100;
+const PROBE_MOVE_MAX_MS = 10000;
+const PROBE_TOLERANCE_DEG = 4;
+
+/**
+ * Measure the reachable pan arc from wherever the tripod is standing right now.
+ *
+ * Why this is worth its ~30-50 seconds, and why it is not longer: see createArcProbe in
+ * protocol/dome.mjs. The short version is that the arc is base-relative, the operator has just
+ * set the tripod down, and the alternative is a dome that jams at position 14 and takes the run
+ * with it.
+ *
+ * Tilt is pinned at whatever it was when the probe started: the question is about pan, and
+ * moving both axes would put the tilt stop into an answer about the pan one.
+ *
+ * Every exit stops the motors. moveToClosedLoop already guarantees that per move, and the
+ * `finally` here covers the paths that leave between moves (a throw, an abandoned probe, a
+ * cancelled run) — the speed command LATCHES, so "the probe gave up" must never mean "the
+ * motors are still driving into the stop it found".
+ */
+async function runArcProbe({ emit = () => {}, stepDeg, reason = 'requested' } = {}) {
+  const quat = transport.lastQuaternion;
+  if (!quat) {
+    return {
+      ok: false,
+      arc: null,
+      moves: 0,
+      reason: `no telemetry to measure against (${transport.linkDetail}) — a probe judges every `
+        + 'step by the pose it ended at, so with nothing streaming there is nothing to measure.',
+    };
+  }
+  const { pan: startPan, tilt: holdTilt } = quatToGimbalControlDeg(quat);
+  const probe = createArcProbe({ startPan, stepDeg });
+  emit({
+    phase: 'arc-probe',
+    state: 'start',
+    reason,
+    startPan: Math.round(startPan * 10) / 10,
+    note: 'Measuring how far pan can actually swing from this tripod position. The gimbal will '
+      + 'sweep to each end and stop there; that is the measurement, not a fault. A minute or two '
+      + '(measured live: 7 moves, 85 s).',
+  });
+
+  try {
+    for (let step; (step = probe.next());) {
+      if (gridCancelRequested) {
+        emit({ phase: 'arc-probe', state: 'cancelled', moves: probe.moves });
+        return { ok: false, arc: null, moves: probe.moves, reason: 'stopped by request part-way through the probe' };
+      }
+      emit({
+        phase: 'arc-probe',
+        state: 'step',
+        move: probe.moves + 1,
+        maxMoves: PROBE_MAX_MOVES,
+        target: step.target,
+        direction: step.direction,
+        attempt: step.attempt,
+        reissued: step.reissued,
+      });
+      const move = await moveToClosedLoop({
+        yawDeg: step.target,
+        pitchDeg: holdTilt,
+        toleranceDeg: PROBE_TOLERANCE_DEG,
+        speedDegPerSec: PROBE_SPEED_DEG_PER_SEC,
+        tickMs: PROBE_TICK_MS,
+        settleMs: PROBE_SETTLE_MS,
+        maxMs: PROBE_MOVE_MAX_MS,
+      });
+      // A move that could not see is not a stop. Handing finalPan: null to the probe is how it
+      // is told that, and it abandons rather than writing a fabricated limit into the planner.
+      probe.observe({
+        converged: move.converged,
+        finalPan: move.noTelemetry ? null : move.finalYaw,
+        stalled: move.stalled,
+      });
+      emit({
+        phase: 'arc-probe',
+        state: 'result',
+        move: probe.moves,
+        target: step.target,
+        converged: move.converged,
+        finalPan: move.finalYaw,
+        stalled: move.stalled === true,
+        stops: probe.stops,
+      });
+    }
+  } finally {
+    await stopMotors();
+  }
+
+  const result = probe.result();
+  if (result.ok) {
+    measuredArc = result.arc;
+    arcUnmeasuredReason = 'measured';
+    emit({
+      phase: 'arc-probe',
+      state: 'measured',
+      moves: result.moves,
+      stops: result.stops,
+      stopSpanDeg: result.spanDeg,
+      arc: arcPayload(),
+      note: `Pan reaches ${result.stops.minusDeg}° round to ${result.stops.plusDeg}° from this spot `
+        + `(${result.spanDeg}° of travel). Planning inside that, ${result.marginDeg}° clear of each end.`,
+    });
+  } else {
+    emit({
+      phase: 'arc-probe',
+      state: 'failed',
+      moves: result.moves,
+      stops: result.stops,
+      reason: result.reason,
+      note: 'Could not measure the arc, so the plan falls back to the built-in limits — which were '
+        + 'measured at a different tripod position and may not hold here.',
+    });
+  }
+  broadcast({ type: 'status', ...statusPayload() });
+  return result;
 }
 
 async function driveClosedLoop({ yawDeg = 0, pitchDeg = 0, toleranceDeg = 3, speedDegPerSec = 25, tickMs = 250, settleMs = 150, maxMs = 8000 }) {
@@ -706,7 +938,7 @@ const routes = {
     {
       ok: true,
       message: 'Osmo BLE backend is running.',
-      routes: ['GET /api/status', 'POST /api/scan', 'POST /api/connect', 'POST /api/pair-trigger', 'POST /api/pair', 'POST /api/disconnect', 'POST /api/forget-os', 'POST /api/command', 'POST /api/move-to', 'POST /api/capture-photo', 'POST /api/grid-capture', 'POST /api/grid-advance', 'POST /api/grid-stop', 'GET /api/scan-sessions', 'GET /api/frames', 'POST /api/test/recenter-probe', 'POST /api/test/command-probe', 'WS /ws'],
+      routes: ['GET /api/status', 'POST /api/scan', 'POST /api/connect', 'POST /api/pair-trigger', 'POST /api/pair', 'POST /api/disconnect', 'POST /api/forget-os', 'POST /api/command', 'POST /api/arc-probe', 'POST /api/move-to', 'POST /api/capture-photo', 'POST /api/grid-capture', 'POST /api/grid-advance', 'POST /api/grid-stop', 'GET /api/scan-sessions', 'GET /api/frames', 'POST /api/test/recenter-probe', 'POST /api/test/command-probe', 'WS /ws'],
     },
   ],
   'GET /api/status': async () => [200, statusPayload()],
@@ -727,6 +959,10 @@ const routes = {
     // idempotent on an idle gimbal; the one thing that makes an automatic reconnect strictly
     // safer than the process restart it replaces.
     await stopMotors();
+    // A fresh link is a fresh unknown. Anything this process measured belongs to a session that
+    // ended — the gimbal may have been power-cycled, re-mounted or carried since — and a
+    // reconnect is exactly the moment an operator has been handling the rig.
+    invalidateArc('the gimbal reconnected; anything measured before that describes a setup this process can no longer vouch for');
     broadcast({ type: 'status', ...statusPayload() });
     // No `connected: true` here — that claim belongs to the status payload, which measures it.
     // Expect `link: 'linked'`: subscriptions are up, the first notification may not have landed.
@@ -751,6 +987,7 @@ const routes = {
 
   'POST /api/disconnect': async () => {
     await transport.disconnect();
+    invalidateArc('the gimbal was disconnected');
     broadcast({ type: 'status', ...statusPayload() });
     return [200, { disconnected: true }];
   },
@@ -854,8 +1091,51 @@ const routes = {
         remediation: 'Wait for the scan to finish, or stop it, before moving the gimbal by hand.',
       }];
     }
+    // A reset re-establishes the gimbal's own reference, so pan angles measured before it are
+    // not necessarily the same angles afterwards. Plain `recenter` is left alone: it drives the
+    // motors within the existing frame and has never been observed to move the datum.
+    if (type === 'resetAndCenter') invalidateArc('the gimbal was reset, so pan angles measured before it may not mean the same thing now');
     const result = await buildAndSend(type, params);
     return [200, result];
+  },
+
+  // Measure the reachable pan arc from where the tripod is standing NOW.
+  //
+  // The one endpoint an operator should reach for after setting the tripod down, and the one
+  // the jam message points at. It costs a handful of moves (see createArcProbe for the sizing)
+  // and replaces an assumption that has been measured wrong: on 2026-08-29 one carry across a
+  // room moved the pan stop 89 degrees in the reported frame, and the plan built from the
+  // constants drove straight into it.
+  //
+  // 'stream', not 'write': the probe's verdict IS a comparison of poses. Over a link that can
+  // only send, every step would report "did not converge" and the probe would happily write two
+  // fabricated limits into the planner.
+  'POST /api/arc-probe': async (req) => {
+    const refusal = linkRefusal('stream');
+    if (refusal) return refusal;
+    if (gridRunning && stationGate === null) {
+      return [409, {
+        error: 'A capture is running and owns the gimbal.',
+        remediation: 'The capture measures the arc itself at each station (send probeArc: false to turn that off). Stop it first if you want to probe by hand.',
+      }];
+    }
+    const body = await readJsonBody(req);
+    const result = await runArcProbe({
+      emit: (event) => broadcast({ type: 'grid-progress', ...event }),
+      stepDeg: Number(body.stepDeg) > 0 ? Number(body.stepDeg) : undefined,
+      reason: 'operator asked',
+    });
+    return [200, {
+      ...result,
+      arc: arcPayload(),
+      // Said plainly on failure too: falling back is fine, believing the fallback was measured
+      // is not.
+      ...(result.ok ? {} : {
+        remediation: 'The plan will use the built-in limits, which were measured at a different '
+          + 'tripod position. If a sweep then stops dead somewhere it should have had travel, that '
+          + 'is the arc having moved, not the gimbal being broken.',
+      }),
+    }];
   },
 
   // Closed-loop absolute positioning — see moveToClosedLoop's own comment for why this exists
@@ -914,31 +1194,57 @@ const routes = {
     // refusing cost a real OM6 several shutdowns on 2026-08-26.
     let panPlan = null;
     let pans;
+    /**
+     * The centre/span the columns were derived from, or null when the caller sent an explicit
+     * list. Kept because the plan has to be REBUILT at every station once that station's arc has
+     * been measured — the arc is base-relative, so the same centre/span lands on different
+     * angles from different spots, and re-deriving is the only way a plan can follow it. The
+     * column COUNT is pinned so `total` and `perStation`, already on the wire in the start
+     * event, stay true.
+     */
+    let panPlanSpec = null;
     try {
       if (Array.isArray(body.pans) && body.pans.length) {
         pans = body.pans.map(Number);
-        const bad = unreachablePans(pans);
+        const bad = unreachablePans(pans, currentArc());
         if (bad.length) {
           return [400, {
             error: `${bad.length} of ${pans.length} pan column(s) are in the gimbal's dead zone: `
               + `${bad.map((b) => `${b.pan}° (${b.intoDeadZoneDeg}° past a stop)`).join(', ')}.`,
-            remediation: `Pan can only travel ${PAN_ARC_START_DEG}° round through 180° to ${PAN_ARC_END_DEG}°. `
-              + 'Send panCenterDeg/panSpanDeg instead of an explicit list and the plan is clamped to that arc for you.',
-            reachableArc: { startDeg: PAN_ARC_START_DEG, endDeg: PAN_ARC_END_DEG },
+            remediation: `Pan can only travel ${describeArc(currentArc())}. `
+              + 'Send panCenterDeg/panSpanDeg instead of an explicit list and the plan is clamped to that arc for you '
+              + '— and re-clamped at every station, against an arc measured from that station.',
+            reachableArc: arcPayload(),
           }];
         }
       } else {
-        panPlan = planDomePans({
+        panPlanSpec = {
           centerDeg: body.panCenterDeg,
           spanDeg: body.panSpanDeg,
           stepDeg: body.panStepDeg,
           count: body.panCount,
-        });
+        };
+        panPlan = planDomePans({ ...panPlanSpec, arc: currentArc() });
         pans = panPlan.pans;
       }
     } catch (err) {
       return [400, { error: String(err.message || err) }];
     }
+
+    /**
+     * Whether to measure the reachable arc at the start of each station.
+     *
+     * Default ON for a centre/span plan, because that is the plan shape that can actually USE
+     * the answer — the columns are re-derived from the measured arc, so a tripod that was set
+     * down facing differently gets a dome that fits. Default OFF for an explicit `pans` list,
+     * where the caller has taken the columns into their own hands and re-deriving them would be
+     * overruling them; a probe there can only report, so it is opt-in.
+     *
+     * The cost is real and stated: a probe is a handful of moves, roughly half a minute, per
+     * station. It buys the failure it was written for — a dome that jams at position 14 and
+     * takes the run with it, having photographed a third of a room.
+     */
+    const probeArc = body.probeArc !== undefined ? body.probeArc !== false : panPlanSpec !== null;
 
     // Tilt has measured stops too — it converges down to about -40° but jams near +16°, which
     // is the same overheating failure as a pan stop, reached the same way. Same treatment.
@@ -1034,6 +1340,11 @@ const routes = {
       // "which station was bad" is the first question when a solve fails, and it is
       // unanswerable if nobody wrote down where the columns were.
       plan: { pans, tilts, ...(panPlan ? { pan: panPlan } : {}) },
+      // The columns above are provisional whenever probeArc is on: each station re-derives them
+      // from the arc it measures on the spot. Said here so nothing downstream reads the start
+      // event as the final plan — the per-station `station-plan` event is the one that ran.
+      panArc: arcPayload(),
+      probeArc,
     });
     gridRunning = true;
     gridCancelRequested = false;
@@ -1049,17 +1360,39 @@ const routes = {
     let faulted = false;
     let position = 0;
 
-    /** Remediation text for an aborted run; only called once the guard has tripped. */
-    const wedgeMessage = (move) =>
-      `Gimbal stopped moving — ${wedge.stuckPositions} consecutive positions ended at the same pose `
-      + `(pan ${move.finalYaw.toFixed(1)}, tilt ${move.finalPitch.toFixed(1)})`
-      + `${move.stalled === true ? ', with the move loop reporting the axis jammed' : ''}. `
-      + 'Stopping so the motors are not driven into a jam until they overheat. Hold '
-      + 'Shutter + Switch + Trigger together for ~1s to hardware-reset the gimbal, check the '
-      + 'phone is balanced in the cradle, then reconnect and re-run.';
+    /**
+     * Remediation text for an aborted run; only called once the guard has tripped.
+     *
+     * The first half is the observation. The second half is the DIAGNOSIS, and it is the whole
+     * reason this changed: the message used to stop at "3 consecutive positions ended at the
+     * same pose" and then send the operator to hardware-reset the gimbal and check the cradle
+     * balance. On 2026-08-29 none of that was the fault — the tripod had been carried, the
+     * reachable arc had come with it, and the plan was driving at a pan that had been reachable
+     * from the previous spot and was 89 degrees past the stop from this one. Following the old
+     * remediation reproduces the jam exactly. diagnoseJam compares where it stopped against the
+     * arc it was planned with and says which of the two failures this is.
+     */
+    const wedgeMessage = (move, target) => {
+      const jam = diagnoseJam({ panDeg: move.finalYaw, targetDeg: target?.pan ?? null, arc: stationArc });
+      return `Gimbal stopped moving — ${wedge.stuckPositions} consecutive positions ended at the same pose `
+        + `(pan ${move.finalYaw.toFixed(1)}, tilt ${move.finalPitch.toFixed(1)})`
+        + `${move.stalled === true ? ', with the move loop reporting the axis jammed' : ''}. `
+        + `Stopping so the motors are not driven into a jam until they overheat. ${jam.message ?? ''}`;
+    };
     // Reassigned per station, and closed over by wedgeMessage above so the message always
     // reports the guard that actually tripped — see the loop for why it does not span stations.
     let wedge = createWedgeGuard();
+    /**
+     * The arc THIS station's columns were planned against, closed over by wedgeMessage.
+     *
+     * Per-station for the same reason the wedge guard is: the arc belongs to a tripod position,
+     * and a jam has to be judged against the arc the plan actually believed in at the moment it
+     * jammed — not against whatever has been measured since.
+     */
+    let stationArc = currentArc();
+    /** This station's columns and grid; re-derived per station when the arc is measured. */
+    let stationPans = pans;
+    let stationGrid = grid;
 
     try {
       if (client) await client.open();
@@ -1101,7 +1434,68 @@ const routes = {
         // trouble.
         wedge = createWedgeGuard();
 
-        for (const [i, target] of grid.entries()) {
+        // Measure the arc from THIS spot, then rebuild the columns inside what was measured.
+        //
+        // Both halves are needed and neither is optional on its own: measuring without
+        // re-planning produces an accurate arc and a plan that still ignores it, and re-planning
+        // without measuring is what the run already did. The station gate has already discarded
+        // the previous station's measurement (see awaitStation), so `currentArc()` here is
+        // either what this probe just measured or the honest fallback.
+        if (probeArc) {
+          const probe = await runArcProbe({ emit, reason: `station ${station} of ${stationsPlanned}` });
+          if (gridCancelRequested) {
+            incompleteReason = `Stopped by request while measuring the reachable arc at station ${station} of ${stationsPlanned}.`;
+            break;
+          }
+          if (!probe.ok) {
+            emit({
+              phase: 'arc-warning',
+              station,
+              stationLabel: summary.label,
+              reason: probe.reason,
+              arc: arcPayload(),
+              note: 'Sweeping against the built-in limits instead. They were measured at a different '
+                + 'tripod position, so if this station stops dead somewhere it should have had travel, '
+                + 'that is the arc having moved rather than the gimbal being broken.',
+            });
+          }
+        }
+        stationArc = currentArc();
+        if (panPlanSpec) {
+          // Same centre and width, same number of columns, re-derived inside this station's arc.
+          const replanned = planDomePans({ ...panPlanSpec, count: pans.length, arc: stationArc });
+          stationPans = replanned.pans;
+          stationGrid = planGrid({ pans: stationPans, tilts });
+          emit({
+            phase: 'station-plan',
+            station,
+            stationLabel: summary.label,
+            pans: stationPans,
+            tilts,
+            pan: replanned,
+            panArc: arcPayload(),
+          });
+        } else {
+          // An explicit column list is the caller's, not ours to move. All this can do is say
+          // which of their columns the arc it just measured puts past a stop — before the sweep
+          // drives at them rather than after.
+          const bad = unreachablePans(stationPans, stationArc);
+          if (bad.length) {
+            emit({
+              phase: 'arc-warning',
+              station,
+              stationLabel: summary.label,
+              unreachable: bad,
+              panArc: arcPayload(),
+              note: `${bad.length} of ${stationPans.length} requested column(s) are past a stop from this `
+                + 'spot. They were sent as an explicit list, so they are being swept as given — expect '
+                + 'those positions to jam. Send panCenterDeg/panSpanDeg to have the columns re-derived '
+                + 'from the measured arc instead.',
+            });
+          }
+        }
+
+        for (const [i, target] of stationGrid.entries()) {
           const stationPosition = i + 1;
           position++;
           emit({ phase: 'moving', position, total, station, stationLabel: summary.label, stationPosition, perStation, target });
@@ -1193,7 +1587,11 @@ const routes = {
           // past an inline check that lived only in the photo path, which is how a run once drove
           // an OM6 through 10 consecutive positions at a bit-identical pose until it overheated.
           if (wedge.observe(move)) {
-            incompleteReason = wedgeMessage(move);
+            incompleteReason = wedgeMessage(move, target);
+            // Whatever arc this station was planned against has just been contradicted by the
+            // hardware: the gimbal stopped where that arc said it could still travel. Keeping it
+            // would let the next run inherit a belief a jam has already disproved.
+            invalidateArc('a sweep jammed against a limit the arc in use did not have');
             faulted = true;
             break;
           }

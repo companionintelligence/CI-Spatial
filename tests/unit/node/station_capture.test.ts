@@ -24,11 +24,17 @@ import {
   STATION_STATUS_MAX_CHARS,
   TRIPOD_PATH_SUMMARY,
   WHY_SEVERAL_SPOTS,
+  DROP_SPOT_CANCEL_LABEL,
+  DROP_SPOT_CONFIRM_LABEL,
+  DROP_SPOT_LABEL,
   addPhotos,
   beginSweep,
+  canDropSpots,
   clearDistance,
   createStationCapture,
   currentSpot,
+  dropSpot,
+  dropSpotConfirm,
   endSweep,
   finishCapture,
   finishVerdict,
@@ -38,6 +44,7 @@ import {
   shouldAskDistance,
   sizeVerdict,
   skipDistance,
+  spotSummary,
   stationGuidance,
   stationStatusLine,
   totalPhotos,
@@ -274,7 +281,11 @@ test('no copy prints implementation vocabulary at the user', () => {
     'pipeline', 'job', 'metric scale', 'panoptic', 'splat', 'no-pose',
     'photogrammetry', 'baseline', 'registered', 'degenerate', 'station', 'dome',
   ]
-  const strings: string[] = [TRIPOD_PATH_SUMMARY, WHY_SEVERAL_SPOTS, SPREAD_HINT]
+  const strings: string[] = [
+    TRIPOD_PATH_SUMMARY, WHY_SEVERAL_SPOTS, SPREAD_HINT,
+    DROP_SPOT_LABEL, DROP_SPOT_CONFIRM_LABEL, DROP_SPOT_CANCEL_LABEL,
+    spotSummary(0, 1), spotSummary(4, 24), dropSpotConfirm(1, 24),
+  ]
   const walk = (state: StationCaptureState) => {
     const g = stationGuidance(state)
     const v = finishVerdict(state)
@@ -409,4 +420,115 @@ test('the path summary now says how a size can be had, without promising one', (
   assert.doesNotMatch(TRIPOD_PATH_SUMMARY, /true size|true to size|to scale|actual size|in met(re|er)s|life-?size/i)
   assert.match(TRIPOD_PATH_SUMMARY, /unmeasured|not measured/i)
   assert.match(TRIPOD_PATH_SUMMARY, /measure one distance/i)
+})
+
+
+// ─── Throwing one spot away ──────────────────────────────────────────────────
+//
+// Measured on 2026-08-29: a sweep banked 48 frames of a jammed, stationary
+// gimbal and the only ways out were "Add more" and starting the whole capture
+// over — so a spot that photographed one wall was cheaper to send than to fix.
+// What these hold is that removing one keeps every claim on the screen true.
+
+test('a discarded spot takes its photos out of every count on the screen', () => {
+  const before = withSpots(4)
+  assert.equal(before.spots.length, 4)
+  assert.equal(totalPhotos(before), 48)
+  const after = dropSpot(before, 1)
+  assert.equal(after.spots.length, 3)
+  assert.equal(totalPhotos(after), 36)
+  assert.match(stationGuidance(after).step, /of \d+$/)
+  assert.equal(finishVerdict(after).ok, true)
+  assert.match(finishVerdict(after).short, /36 photos from 3 spots/)
+})
+
+test('dropping below the minimum makes the capture refuse to send again', () => {
+  // The gate is not re-implemented anywhere; it simply reads a smaller list.
+  // That is the whole reason discarding is a state transition and not a splice
+  // in the sheet.
+  const three = withSpots(3)
+  assert.equal(finishVerdict(three).ok, true)
+  const two = dropSpot(three, 0)
+  assert.equal(finishVerdict(two).ok, false)
+  assert.match(finishVerdict(two).short, new RegExp(`2 of ${STATION_MIN} spots`))
+  assert.match(finishVerdict(two).short, /1 more before this can be sent/)
+  // And the capture cannot be finished through the back door either.
+  assert.equal(finishCapture(two).phase, 'move')
+})
+
+test('discarding the spot you are standing at puts you back at it, not on to the next', () => {
+  const state = withSpots(2)
+  assert.equal(state.phase, 'move')
+  const after = dropSpot(state, 1)
+  assert.equal(after.phase, 'ready', 'offered to move a tripod that has not been picked up')
+  assert.equal(after.lastSweepEmpty, false, 'blamed the camera for a spot the operator threw away')
+  assert.equal(currentSpot(after), 2)
+  assert.match(stationGuidance(after).primary ?? '', /sweep/i)
+})
+
+test('discarding an earlier spot leaves the tripod where it is', () => {
+  const state = withSpots(3)
+  const after = dropSpot(state, 0)
+  assert.equal(after.phase, 'move')
+  assert.equal(after.spots.length, 2)
+})
+
+test('a measurement about a spot that no longer exists is asked for again', () => {
+  // The length is between spot 1 and spot 2. Throw either away and it is a
+  // length between a spot and a ghost — and nothing downstream could tell,
+  // because a room at the wrong size is a perfectly self-consistent room.
+  let state = recordDistance(withSpots(2), 3.4)
+  assert.equal(measuredMetres(state), 3.4)
+  state = endSweep(addPhotos(beginSweep(nextSpot(state)), 6))
+  assert.equal(measuredMetres(state), 3.4)
+
+  const droppedFirst = dropSpot(state, 0)
+  assert.equal(droppedFirst.measurement, null, 'a length to a spot that was thrown away survived')
+  assert.equal(sizeVerdict(droppedFirst).trueToSize, false)
+  assert.equal(shouldAskDistance(droppedFirst), true, 'the question was not asked again')
+
+  // The third spot was never part of the measurement, so dropping it changes
+  // nothing about the size.
+  const droppedThird = dropSpot(state, 2)
+  assert.equal(measuredMetres(droppedThird), 3.4)
+  assert.equal(sizeVerdict(droppedThird).trueToSize, true)
+})
+
+test('a sweep in progress and a sent capture are both untouchable', () => {
+  const sweeping = addPhotos(beginSweep(nextSpot(withSpots(2))), 5)
+  assert.equal(sweeping.phase, 'sweeping')
+  assert.deepEqual(dropSpot(sweeping, 0), sweeping, 'a spot was removed while photos were still arriving')
+  assert.equal(canDropSpots(sweeping), false)
+
+  const sent = finishCapture(withSpots(3))
+  assert.equal(sent.phase, 'done')
+  assert.deepEqual(dropSpot(sent, 0), sent, 'a spot was removed from a capture that has already gone')
+  assert.equal(canDropSpots(sent), false)
+})
+
+test('an index that is not a spot changes nothing at all', () => {
+  const state = withSpots(3)
+  for (const bad of [-1, 3, 99, 1.5, Number.NaN]) {
+    assert.deepEqual(dropSpot(state, bad), state, `dropSpot(state, ${bad}) changed the capture`)
+  }
+})
+
+test('the confirmation names the photos that are about to be lost', () => {
+  assert.match(dropSpotConfirm(1, 24), /spot 2/)
+  assert.match(dropSpotConfirm(1, 24), /24 photos/)
+  assert.match(dropSpotConfirm(0, 1), /1 photo\b/)
+  assert.match(dropSpotConfirm(0, 1), /cannot be got back/)
+  assert.equal(spotSummary(0, 1), 'Spot 1 — 1 photo')
+  assert.equal(spotSummary(4, 24), 'Spot 5 — 24 photos')
+})
+
+test('every spot can be thrown away, and the capture is then simply empty', () => {
+  let state = withSpots(3)
+  while (state.spots.length > 0) state = dropSpot(state, 0)
+  assert.equal(totalPhotos(state), 0)
+  assert.equal(finishVerdict(state).ok, false)
+  assert.match(finishVerdict(state).headline, /No spots captured yet/)
+  assert.equal(canDropSpots(state), false)
+  assert.equal(state.phase, 'ready')
+  assert.ok(state.target >= STATION_MIN)
 })

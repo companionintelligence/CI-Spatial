@@ -35,7 +35,13 @@ import { InferenceRouter, WebGpuInferenceError } from './inference/router'
 import { InferServerError } from './inference/server'
 import { getProvisioningStatus, provisionModel, removeProvisionedModel, estimateModelCacheBytes } from './inference/model-provisioning'
 import { bucket, resolveDetections, mergeDetections } from './spatial/resolver'
-import { DetectionStore } from './scene/store'
+import {
+  DetectionStore,
+  clearTripodCapture,
+  deleteTripodSpot,
+  loadTripodCapture,
+  saveTripodCapture,
+} from './scene/store'
 import {
   ProjectStore,
   referencePhotoKey,
@@ -72,13 +78,19 @@ import {
 } from './capture/upload-expectation'
 import {
   DISTANCE_PROMPT,
+  DROP_SPOT_CANCEL_LABEL,
+  DROP_SPOT_CONFIRM_LABEL,
+  DROP_SPOT_LABEL,
   TRIPOD_PATH_SUMMARY,
   WHY_SEVERAL_SPOTS,
   addPhotos,
   beginSweep,
+  canDropSpots,
   clearDistance,
   createStationCapture,
   currentSpot,
+  dropSpot,
+  dropSpotConfirm,
   endSweep,
   finishCapture,
   finishVerdict,
@@ -87,13 +99,23 @@ import {
   shouldAskDistance,
   sizeVerdict,
   skipDistance,
+  spotSummary,
   stationGuidance,
   totalPhotos,
   type StationCaptureState,
 } from './capture/station-capture'
 import { readSpotDistance, spotDistanceEcho } from './capture/spot-distance'
 import { SweepCamera } from './capture/sweep-camera'
-import { CAMERA_ON_LABEL, sweepCountLine, sweepEndNotice } from './capture/sweep-cadence'
+import { CAMERA_ON_LABEL, sweepCountLine, sweepEndNotice, sweepMotionNotice } from './capture/sweep-cadence'
+import {
+  RECOVERY_DISCARD_LABEL,
+  RECOVERY_KEEP_LABEL,
+  RECOVERY_LOST_SWEEP,
+  newSpotKey,
+  recoveryHeadline,
+  restoreTripodCapture,
+  tripodMetaOf,
+} from './capture/tripod-persistence'
 import {
   filesFor,
   knownDistancesFor,
@@ -2911,7 +2933,42 @@ function mountTripodCapture(): void {
    * only where `endSweep` commits its count.
    */
   let spotFiles: File[][] = []
+  /**
+   * The storage key each entry of `spotFiles` is written under, kept beside it
+   * rather than inside it.
+   *
+   * Two arrays because `spotFiles` is what `planStationFrames` consumes and
+   * `filesFor` flattens, and threading a key through the uploader would be a
+   * new shape in four modules for the benefit of one. They are only ever
+   * changed together — a spot commits, a spot is discarded, the capture is
+   * reset or restored — and each of those four places does both lines.
+   *
+   * The key never moves once minted, so discarding spot 2 deletes one record
+   * instead of rewriting spots 3, 4 and 5.
+   */
+  let spotKeys: string[] = []
+  let spotSeq = 0
   let pendingFiles: File[] = []
+  /**
+   * A capture that came back from storage and has not been acknowledged.
+   *
+   * Set only by the restore, cleared by the first thing the operator does with
+   * it. It exists so that restoring is LOUD: the alternative is someone
+   * reopening the app, finding themselves at spot 3 of 5, and having no way to
+   * know whether those photos are of this room.
+   */
+  let recovered: { spots: number, photos: number, savedAt: number } | null = null
+  /** Which spot a Discard has been asked about, and is waiting to be confirmed. */
+  let confirmDrop: number | null = null
+  /**
+   * Whether the last write to storage worked.
+   *
+   * Storage is optional, exactly like the camera, and a tab that will not give
+   * the page a database must still be able to run a whole capture — but it must
+   * not be told the capture is safe to leave. Null until anything has been
+   * written.
+   */
+  let persisted: boolean | null = null
   /**
    * A one-off message that outranks the finish refusal in the same slot —
    * "those were not photos", "this browser cannot hand them over". Cleared by
@@ -2938,6 +2995,15 @@ function mountTripodCapture(): void {
   sheet.innerHTML = `
     <div class="place-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="tripod-headline">
       <div class="place-sheet-title">Tripod Scan · <span id="tripod-step"></span></div>
+      <!-- What came back after the app was closed or the tab was thrown away.
+           Above everything, because it is the first thing that has to be true
+           before any other number on this screen means anything. -->
+      <div id="tripod-recovered" class="tripod-recovered" hidden>
+        <b id="tripod-recovered-headline"></b>
+        <span>${escapeHtml(RECOVERY_LOST_SWEEP)}</span>
+        <button id="tripod-recovered-keep" type="button" class="tripod-wide-btn">${escapeHtml(RECOVERY_KEEP_LABEL)}</button>
+        <button id="tripod-recovered-drop" type="button" class="tripod-plain-btn">${escapeHtml(RECOVERY_DISCARD_LABEL)}</button>
+      </div>
       <div id="tripod-intro" class="place-upload-note">
         <b>What this path is for</b>
         ${escapeHtml(TRIPOD_PATH_SUMMARY)}
@@ -2953,11 +3019,22 @@ function mountTripodCapture(): void {
       <div id="tripod-camera" class="tripod-camera" hidden>
         <video id="tripod-preview" playsinline muted aria-label="What the camera can see"></video>
         <p id="tripod-camera-line" class="tripod-camera-line" aria-live="polite"></p>
+        <!-- The shape of the sweep, not just its size. A jammed gimbal keeps
+             the tally climbing and every photo is of the same wall; this is the
+             only thing on the screen that can say so. -->
+        <p id="tripod-camera-still" class="tripod-camera-still" aria-live="polite" hidden></p>
       </div>
       <div class="tripod-tally">
         <span id="tripod-tally-spots"></span>
         <span id="tripod-tally-photos"></span>
       </div>
+      <!-- Every spot in hand, and the way to throw one away. A sweep that
+           photographed a cupboard used to cost the whole capture to fix. -->
+      <ul id="tripod-spot-list" class="tripod-spot-list" hidden></ul>
+      <!-- Only ever shown when saving FAILED. A capture that is safely stored
+           says nothing, because "your work is saved" is the claim this repo
+           keeps making without earning it. -->
+      <p id="tripod-storage" class="tripod-blocked" hidden></p>
       <div id="tripod-measure" class="tripod-measure" hidden>
         <div class="tripod-measure-q">${escapeHtml(DISTANCE_PROMPT.question)}</div>
         <p class="tripod-detail">${escapeHtml(DISTANCE_PROMPT.why)} ${escapeHtml(DISTANCE_PROMPT.how)}</p>
@@ -3000,6 +3077,13 @@ function mountTripodCapture(): void {
   const cameraEl = sheet.querySelector<HTMLElement>('#tripod-camera')!
   const previewEl = sheet.querySelector<HTMLVideoElement>('#tripod-preview')!
   const cameraLineEl = sheet.querySelector<HTMLElement>('#tripod-camera-line')!
+  const cameraStillEl = sheet.querySelector<HTMLElement>('#tripod-camera-still')!
+  const spotListEl = sheet.querySelector<HTMLElement>('#tripod-spot-list')!
+  const storageEl = sheet.querySelector<HTMLElement>('#tripod-storage')!
+  const recoveredEl = sheet.querySelector<HTMLElement>('#tripod-recovered')!
+  const recoveredHeadlineEl = sheet.querySelector<HTMLElement>('#tripod-recovered-headline')!
+  const recoveredKeepBtn = sheet.querySelector<HTMLButtonElement>('#tripod-recovered-keep')!
+  const recoveredDropBtn = sheet.querySelector<HTMLButtonElement>('#tripod-recovered-drop')!
   const tallySpotsEl = sheet.querySelector<HTMLElement>('#tripod-tally-spots')!
   const tallyPhotosEl = sheet.querySelector<HTMLElement>('#tripod-tally-photos')!
   const measureEl = sheet.querySelector<HTMLElement>('#tripod-measure')!
@@ -3081,8 +3165,8 @@ function mountTripodCapture(): void {
     const photos = totalPhotos(state)
     tallyPhotosEl.innerHTML = `<b>${photos}</b> photo${photos === 1 ? '' : 's'}`
 
-    measureEl.hidden = !asking
-    if (asking) renderEcho()
+    measureEl.hidden = !asking || recovered !== null
+    if (asking && recovered === null) renderEcho()
 
     // What this capture will know about its own size, said the moment the
     // answer exists and again on the screen that sends it — the last point at
@@ -3098,35 +3182,96 @@ function mountTripodCapture(): void {
     // been answered, and this is the door left open beside the answer.
     reopenBtn.hidden = asking || state.phase === 'done' || state.measurement?.kind !== 'skipped'
 
+    // The recovery banner outranks the measurement question: someone who has
+    // just been handed back two spots has to know what they are before they are
+    // asked to measure between them.
+    recoveredEl.hidden = recovered === null
+    if (recovered) {
+      recoveredHeadlineEl.textContent =
+        recoveryHeadline(recovered.spots, recovered.photos, recovered.savedAt, Date.now())
+    }
+
+    // The spots in hand, each with the way to throw it away. Hidden during a
+    // sweep — photos are landing, and `state.spots` is not what is changing.
+    const listable = canDropSpots(state) && !asking && recovered === null
+    spotListEl.hidden = !listable
+    // Emptied rather than left in place when it goes away: a hidden list still
+    // has its rows, and the next thing to reveal it — or anything reading the
+    // page aloud — would find a spot that has just been thrown away.
+    if (!listable) spotListEl.replaceChildren()
+    if (listable) {
+      spotListEl.replaceChildren(...state.spots.map((spot, i) => {
+        const li = document.createElement('li')
+        const label = document.createElement('span')
+        label.textContent = spotSummary(i, spot.photos)
+        li.append(label)
+        if (confirmDrop === i) {
+          // The count that is about to be lost, then the two answers. A single
+          // tap must not be able to destroy a sweep somebody walked to.
+          const q = document.createElement('span')
+          q.className = 'tripod-drop-q'
+          q.textContent = dropSpotConfirm(i, spot.photos)
+          const yes = document.createElement('button')
+          yes.type = 'button'
+          yes.className = 'tripod-drop-yes'
+          yes.textContent = DROP_SPOT_CONFIRM_LABEL
+          yes.addEventListener('click', () => discardSpot(i))
+          const no = document.createElement('button')
+          no.type = 'button'
+          no.className = 'tripod-drop-no'
+          no.textContent = DROP_SPOT_CANCEL_LABEL
+          no.addEventListener('click', () => { confirmDrop = null; render() })
+          li.append(q, yes, no)
+        } else {
+          const drop = document.createElement('button')
+          drop.type = 'button'
+          drop.className = 'tripod-drop-btn'
+          drop.textContent = DROP_SPOT_LABEL
+          drop.setAttribute('aria-label', `${DROP_SPOT_LABEL} ${spotSummary(i, spot.photos)}`)
+          drop.addEventListener('click', () => { confirmDrop = i; render() })
+          li.append(drop)
+        }
+        return li
+      }))
+    }
+
+    // Said only when it is false. A capture that cannot be written down is
+    // still a capture — it is just one that a locked screen can end.
+    const unsaved = persisted === false && state.spots.length > 0 && state.phase !== 'done'
+    storageEl.hidden = !unsaved
+    storageEl.textContent = unsaved
+      ? 'This capture is only in this tab — it could not be saved on this phone, so closing the app or reloading would lose it. Send it before you stop.'
+      : ''
+
     const sweeping = state.phase === 'sweeping'
 
     // The preview is the honest half of the tally: it is on screen exactly
     // while a camera is open, and the line under it counts photos that have
     // been encoded and banked, not shutter clicks.
     cameraEl.hidden = !(sweeping && cameraLive)
-    if (sweeping && cameraLive) cameraLineEl.textContent = sweepCountLine(camera.captured)
+    if (sweeping && cameraLive) paintCameraLine()
 
     // Offered exactly when a sweep is running and nothing is photographing it:
     // after a refusal, after a stall, and on a sheet re-opened mid-sweep. Never
     // beside a live camera, where it would read as a second shutter.
-    cameraOnBtn.hidden = asking || !sweeping || cameraLive
+    cameraOnBtn.hidden = asking || !sweeping || cameraLive || recovered !== null
 
     // Still the import path, and still available during every sweep. It is the
     // way back from a refused camera and the way to finish a capture whose
     // photos were taken on something else, so it is never the camera's
     // replacement and never hidden by it — only its wording changes, so that
     // during a live sweep it does not read as the thing to press.
-    addBtn.hidden = asking || !sweeping
+    addBtn.hidden = asking || !sweeping || recovered !== null
     addBtn.textContent = state.pending === 0
       ? "Add this spot's photos"
       : cameraLive
         ? `Add photos from the gallery too — ${state.pending} so far`
         : `Add more — ${state.pending} from this spot`
 
-    sendBtn.hidden = asking || sending || state.phase === 'done' || !verdict.ok
+    sendBtn.hidden = asking || sending || state.phase === 'done' || !verdict.ok || recovered !== null
     sendBtn.textContent = `Send ${done} spots as one capture`
 
-    primaryBtn.hidden = asking || sending || guidance.primary === null
+    primaryBtn.hidden = asking || sending || guidance.primary === null || recovered !== null
     primaryBtn.textContent = guidance.primary ?? ''
     closeBtn.textContent = state.phase === 'done' ? 'Close' : 'Continue later'
 
@@ -3137,6 +3282,149 @@ function mountTripodCapture(): void {
     const blocked = notice ?? (!verdict.ok && state.phase === 'move' ? verdict.short : null)
     blockedEl.textContent = blocked ?? ''
     blockedEl.hidden = blocked === null
+  }
+
+  /**
+   * The two lines under the preview: how many photos, and whether the view is
+   * still moving.
+   *
+   * Repainted on its own timer as well as on every banked frame, because the
+   * thing it has to be able to say is that NOTHING is happening — and a screen
+   * that only redraws when a photo arrives cannot say that. The count is read
+   * off the camera, which counts encodes that produced bytes.
+   */
+  const paintCameraLine = () => {
+    cameraLineEl.textContent = sweepCountLine(camera.captured)
+    const still = sweepMotionNotice(camera.viewStillMs)
+    cameraStillEl.textContent = still ?? ''
+    cameraStillEl.hidden = still === null
+  }
+
+  /**
+   * A once-a-second repaint while the camera is open, and only then.
+   *
+   * Cleared in releaseCamera, so it cannot outlive the stream it reports on.
+   */
+  let cameraTicker: ReturnType<typeof setInterval> | null = null
+
+  /**
+   * Write the capture down.
+   *
+   * Called at every point the set of finished spots or the measurement changes,
+   * and never during a sweep: the photos landing in `pendingFiles` belong to a
+   * sweep nobody has watched finish, and storing them would let a restore bank
+   * a spot the operator never accepted (see tripod-persistence.ts).
+   *
+   * `spot` is the one record that is new, if any — passing it is what keeps a
+   * save O(1) instead of rewriting every spot's photos each time.
+   */
+  const persist = (spot?: { id: string, files: File[] }) => {
+    const meta = tripodMetaOf(state, spotKeys, Date.now())
+    void saveTripodCapture(meta, spot).then(ok => {
+      // Only ever downgrades within a capture: one failed write means the
+      // stored copy is already behind, whatever the next one does.
+      if (persisted !== false) persisted = ok
+      if (!ok) render()
+    })
+  }
+
+  /**
+   * Give the shared file input back.
+   *
+   * The claim is taken when "Add this spot's photos" is tapped and used to be
+   * given up only when a pick actually came back — so a CANCELLED picker left
+   * it held, and the next thing to open that same input had its files
+   * swallowed by a sweep that was already over. Measured 2026-08-30: with the
+   * sheet closed, choosing a video on the Upload Content card uploaded
+   * nothing, and the explanation was written onto a sheet nobody could see.
+   *
+   * Called wherever the sweep that took the claim stops being the thing on
+   * screen. Never while a picker is genuinely open — the sheet is behind it,
+   * so none of these can be reached until it closes.
+   */
+  const releaseIntake = () => { pendingPhotoIntake = null }
+
+  /** Forget the capture, in memory and on disk. Every ending goes through here. */
+  const resetCapture = () => {
+    releaseIntake()
+    state = createStationCapture()
+    spotFiles = []
+    spotKeys = []
+    pendingFiles = []
+    recovered = null
+    confirmDrop = null
+    persisted = null
+    metresInput.value = ''
+    cmInput.value = ''
+    notice = null
+    void clearTripodCapture()
+  }
+
+  /**
+   * Throw one spot away — the photos with it, in memory and on disk.
+   *
+   * The gates are not touched, which is the point: `dropSpot` puts the state
+   * back to what it would have been if that sweep had never happened, so a
+   * capture that falls under three spots goes back to refusing to send, and a
+   * measurement that was about a spot which no longer exists is asked for
+   * again. Nothing here has to remember to keep them honest.
+   */
+  const discardSpot = (index: number) => {
+    if (index < 0 || index >= state.spots.length) return
+    const key = spotKeys[index]
+    const before = state.spots.length
+    state = dropSpot(state, index)
+    if (state.spots.length === before) return   // refused; change nothing else
+    spotFiles = spotFiles.filter((_, i) => i !== index)
+    spotKeys = spotKeys.filter((_, i) => i !== index)
+    confirmDrop = null
+    notice = null
+    if (key) void deleteTripodSpot(key)
+    if (state.spots.length === 0) {
+      // Nothing left to store, and an empty meta record would be recovered as
+      // a capture on the next open.
+      void clearTripodCapture()
+      persisted = null
+    } else {
+      persist()
+    }
+    render()
+  }
+
+  /**
+   * Put back whatever the last session left behind.
+   *
+   * Runs once, at mount, before the sheet has ever been opened, so the card is
+   * already carrying a real capture the first time it is tapped. The state is
+   * built from the FILES that came back rather than from the numbers in the
+   * record — see restoreTripodCapture — so a partial write cannot produce a
+   * sheet that counts spots it cannot upload.
+   */
+  const restore = async () => {
+    const stored = await loadTripodCapture()
+    if (!stored) return
+    const back = restoreTripodCapture(stored.meta, stored.banks)
+    if (!back) {
+      // Meta with no usable photos behind it. Nothing to offer, and leaving it
+      // there would make every future open try again.
+      void clearTripodCapture()
+      return
+    }
+    // A capture in progress in THIS tab outranks anything on disk: the operator
+    // is standing in a room with a tripod, and replacing what they are doing
+    // with something from an hour ago would be the worst possible moment.
+    if (state.spots.length > 0 || state.phase !== 'ready' || pendingFiles.length > 0) return
+    state = back.state
+    spotFiles = back.spotFiles
+    spotKeys = back.spotKeys
+    spotSeq = spotKeys.length
+    persisted = true
+    recovered = {
+      spots: back.spotFiles.length,
+      photos: back.spotFiles.reduce((n, files) => n + files.length, 0),
+      savedAt: back.savedAt,
+    }
+    render()
   }
 
   /**
@@ -3183,6 +3471,10 @@ function mountTripodCapture(): void {
   const releaseCamera = () => {
     camera.stop()
     cameraLive = false
+    if (cameraTicker !== null) {
+      clearInterval(cameraTicker)
+      cameraTicker = null
+    }
     void screenWakeLock.stop()
     render()
   }
@@ -3215,6 +3507,13 @@ function mountTripodCapture(): void {
       // and starting AR removes it. `start()` is idempotent and `stop()` is a
       // no-op when nothing was acquired.
       if (cameraLive) void screenWakeLock.start()
+      // The stillness line has to be able to appear while nothing else is
+      // happening — that is the whole case it reports on.
+      if (cameraLive && cameraTicker === null) {
+        cameraTicker = setInterval(() => {
+          if (cameraLive && state.phase === 'sweeping') paintCameraLine()
+        }, 1000)
+      }
       if (refusal) notice = refusal
       render()
     })
@@ -3222,6 +3521,7 @@ function mountTripodCapture(): void {
 
   primaryBtn.addEventListener('click', () => {
     notice = null
+    confirmDrop = null
     if (state.phase === 'ready') {
       state = beginSweep(state)
       // Opened from inside the tap, so the permission prompt is attributed to
@@ -3232,8 +3532,11 @@ function mountTripodCapture(): void {
       openCamera()
     } else if (state.phase === 'sweeping') {
       // Before endSweep, so the count the sweep is judged on is final and no
-      // frame can land in a spot that has already closed.
+      // frame can land in a spot that has already closed. The gallery's claim
+      // on the shared input goes at the same moment and for the same reason:
+      // a pick that comes back after this belongs to no sweep.
       releaseCamera()
+      releaseIntake()
       const before = state.spots.length
       state = endSweep(state)
       // The files commit exactly where the count does. An empty sweep advances
@@ -3241,10 +3544,32 @@ function mountTripodCapture(): void {
       // anything else would leave photos filed under a spot that does not
       // exist, which is the same lie in a different place.
       if (state.spots.length > before) {
+        const key = newSpotKey(Date.now(), spotSeq++)
         spotFiles = [...spotFiles, pendingFiles]
+        spotKeys = [...spotKeys, key]
+        // Written the moment the count moves, and with exactly the photos the
+        // count is of. This is the write the discarded tab cost: a spot that
+        // exists only in a `let` is a spot Chrome may take at any moment.
+        persist({ id: key, files: pendingFiles })
       }
       pendingFiles = []
     } else if (state.phase === 'move') state = nextSpot(state)
+    render()
+  })
+
+  // Carrying on is an acknowledgement, not a change: the capture is already
+  // restored, and this only takes the banner off the screen.
+  recoveredKeepBtn.addEventListener('click', () => {
+    recovered = null
+    notice = null
+    render()
+  })
+
+  // The other half of "obvious rather than silent". Someone who does not want
+  // yesterday's half-capture must be able to say so in one tap, from the same
+  // panel that told them about it.
+  recoveredDropBtn.addEventListener('click', () => {
+    resetCapture()
     render()
   })
 
@@ -3261,12 +3586,14 @@ function mountTripodCapture(): void {
     }
     notice = null
     state = recordDistance(state, reading.metres)
+    if (state.spots.length > 0) persist()
     render()
   })
 
   skipBtn.addEventListener('click', () => {
     notice = null
     state = skipDistance(state)
+    if (state.spots.length > 0) persist()
     render()
   })
 
@@ -3275,6 +3602,7 @@ function mountTripodCapture(): void {
     metresInput.value = ''
     cmInput.value = ''
     state = clearDistance(state)
+    if (state.spots.length > 0) persist()
     render()
   })
 
@@ -3290,6 +3618,24 @@ function mountTripodCapture(): void {
     // Claims the shared input for one pick. wireContentUpload()'s change
     // handler routes here instead of uploading while this is set.
     pendingPhotoIntake = (files) => {
+      // The sweep this pick was opened for may be over by the time the picker
+      // hands anything back — the picker was cancelled and the spot marked
+      // finished, or the sheet was closed and something else opened the same
+      // input. `addPhotos` already refuses outside a sweep; without the same
+      // test HERE the two halves came apart, because `pendingFiles` was
+      // appended to unconditionally while the count was not. The extra photos
+      // then rode into whichever spot closed next, uncounted.
+      //
+      // Measured 2026-08-30 on this build: a sheet reading "12 photos from 3
+      // spots" against a POST body carrying 15 files and a 15-entry `stations`
+      // list. The tally, the stored spot and the upload have to be the same
+      // number or none of them is worth anything.
+      if (state.phase !== 'sweeping') {
+        notice = 'That sweep had already finished, so those photos were not added to it. '
+          + 'Start the sweep at this spot and add them again.'
+        render()
+        return
+      }
       const photos = files.filter(file => file.type.startsWith('image/'))
       if (photos.length === 0) {
         // Nothing was added, so nothing may look as if it was: the tally and
@@ -3344,6 +3690,10 @@ function mountTripodCapture(): void {
         `Sent — ${frameCount || frames.length} photos from ${spots} spots. ${size.headline}.`,
       settle: (ok, message) => {
         sending = false
+        // The capture has landed, so the copy on this phone is no longer the
+        // only one — and keeping it would mean every sent capture's photos
+        // stayed on the device forever. A failed send keeps everything.
+        if (ok) void clearTripodCapture()
         // A refused or failed upload registered nothing, so nothing may look
         // as though it did: the capture stays exactly where it was, with the
         // same Send button and the same photos still in hand.
@@ -3368,16 +3718,17 @@ function mountTripodCapture(): void {
     // it open would be a phone quietly filming a room with its preview closed,
     // and it is also what makes the next open fail.
     releaseCamera()
-    if (state.phase !== 'done') return
-    // Only a sent capture resets. Closing part-way through is "continue
-    // later", and losing four spots' photos to a mistapped Close would be
-    // unrecoverable — the photos are only in this page's memory.
-    state = createStationCapture()
-    spotFiles = []
-    pendingFiles = []
-    metresInput.value = ''
-    cmInput.value = ''
-    notice = null
+    releaseIntake()
+    confirmDrop = null
+    if (state.phase !== 'done') {
+      // Closing part-way through is "continue later", and it now means it: the
+      // finished spots are on disk, so this is the one path that got worse when
+      // a tab was discarded and is now the same as any other pause.
+      render()
+      return
+    }
+    // Only a sent capture resets.
+    resetCapture()
     render()
   })
 
@@ -3401,6 +3752,10 @@ function mountTripodCapture(): void {
   })
 
   render()
+  // After the first render, so a phone with slow storage shows the sheet's
+  // start screen rather than nothing, and the recovered capture replaces it a
+  // moment later with the banner saying where it came from.
+  void restore()
 }
 
 function setCaptureBusy(busy: boolean): void {

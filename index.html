@@ -1976,6 +1976,86 @@
         background: rgba(114, 221, 212, 0.08);
       }
       .tripod-size[data-tone='ok'] b { color: #72ddd4; }
+      /* The stillness warning, under the photo count. Amber rather than the
+         preview's teal because it is the one line on this screen that reports
+         something going wrong while everything looks fine — the tally is still
+         climbing, the preview still shows a picture, and every photo is of the
+         same wall. */
+      .tripod-camera-still {
+        margin: 6px 0 0;
+        font-size: 12px;
+        line-height: 1.4;
+        color: #ffcf8b;
+      }
+      .tripod-camera-still[hidden] { display: none; }
+      /* One row per spot in hand, each with the way to throw it away. Rows
+         rather than chips: the photo count is the thing being judged, so it
+         has to be readable at arm's length beside its own Discard. */
+      .tripod-spot-list {
+        list-style: none;
+        margin: 0 0 10px;
+        padding: 0;
+        display: grid;
+        gap: 6px;
+      }
+      .tripod-spot-list[hidden] { display: none; }
+      .tripod-spot-list li {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 10px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.03);
+        font-size: 13px;
+        color: var(--ci-text);
+      }
+      .tripod-spot-list li > span:first-child { flex: 1 1 auto; }
+      .tripod-drop-btn,
+      .tripod-drop-yes,
+      .tripod-drop-no {
+        flex: 0 0 auto;
+        min-height: 34px;
+        padding: 6px 12px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: transparent;
+        color: var(--ci-muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+      /* The confirmation names the photos that are about to go, and takes the
+         whole row, so the two answers below it are read after it rather than
+         beside it. */
+      .tripod-drop-q {
+        flex: 1 1 100%;
+        color: #ffcf8b;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .tripod-drop-yes {
+        border-color: rgba(255, 138, 128, 0.6);
+        color: #ff8a80;
+      }
+      .tripod-drop-no { color: var(--ci-text); }
+      /* What came back after the app was closed. Teal and at the very top,
+         because until this is read every other number on the screen is about
+         photos the operator has not been told exist. */
+      .tripod-recovered {
+        display: grid;
+        gap: 6px;
+        margin: 0 0 12px;
+        padding: 10px;
+        border-left: 2px solid rgba(114, 221, 212, 0.6);
+        border-radius: 8px;
+        background: rgba(114, 221, 212, 0.08);
+        color: var(--ci-muted);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .tripod-recovered[hidden] { display: none; }
+      .tripod-recovered b { color: var(--ci-text); font-size: 13px; }
       /* Shown only while finishing is refused, so the Send button never sits
          next to an unexplained disabled state. */
       .tripod-blocked {

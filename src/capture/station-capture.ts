@@ -178,6 +178,88 @@ export function nextSpot(state: StationCaptureState): StationCaptureState {
 }
 
 /**
+ * Throw one spot away, and everything that was only true because of it.
+ *
+ * A sweep can capture the wrong thing and still be a perfectly valid sweep —
+ * the gimbal jammed and photographed one wall forty times, the tripod was
+ * pointed into a cupboard, someone walked through the whole arc. Until this
+ * existed the only ways out were "Add more" and starting the entire capture
+ * again, so a bad spot was cheaper to send than to fix, and the count on the
+ * screen was the count of sweeps that HAPPENED rather than of spots worth
+ * having.
+ *
+ * Two things go with the spot, and both are the honesty rule rather than
+ * tidiness:
+ *
+ *  - Dropping the spot the operator is standing at — the last one, at the
+ *    pause after its sweep — puts the phase back to 'ready'. The tripod has
+ *    not been picked up, so there is nothing to move on from, and leaving
+ *    'move' would offer "set down at the next spot" to someone who has just
+ *    said this one did not count.
+ *  - A measurement is about spot 1 and spot {@link MEASURE_AFTER_SPOTS}. Drop
+ *    either of them and the length that was written down is a length between
+ *    two places, one of which is no longer in this capture — so the question
+ *    goes back to unanswered and gets asked again at the next pause. Carrying
+ *    it forward would size the whole room off a walk between a spot and a
+ *    ghost, and nothing downstream could tell.
+ *
+ * Refused outright while a sweep is running (the photos are still arriving,
+ * and `pending` is not a spot) and once the capture is 'done' (it has been
+ * sent; this cannot un-send it).
+ */
+export function dropSpot(state: StationCaptureState, index: number): StationCaptureState {
+  if (state.phase !== 'ready' && state.phase !== 'move') return state
+  if (!Number.isInteger(index) || index < 0 || index >= state.spots.length) return state
+
+  const spots = state.spots.filter((_, i) => i !== index)
+  const wasLast = index === state.spots.length - 1
+  const measurement = index < MEASURE_AFTER_SPOTS ? null : state.measurement
+  return {
+    ...state,
+    spots,
+    measurement,
+    // Never below the minimum, and never below what is still in hand: the
+    // target is a plan, and a plan for fewer spots than exist reads as a bug.
+    target: Math.min(STATION_MAX, Math.max(STATION_MIN, Math.max(state.target, spots.length))),
+    phase: state.phase === 'move' && wasLast ? 'ready' : state.phase,
+    // Not an empty sweep — the operator threw this one away on purpose, and the
+    // "that sweep produced no photos" screen would be blaming the camera.
+    lastSweepEmpty: false,
+  }
+}
+
+/** The row for one captured spot, as the sheet lists them. */
+export function spotSummary(index: number, photos: number): string {
+  return `Spot ${index + 1} — ${photos} photo${photos === 1 ? '' : 's'}`
+}
+
+/**
+ * The confirmation, which names the cost rather than asking "are you sure?".
+ *
+ * Discarding a spot is unrecoverable — the photos are gone with it — so the
+ * number that is about to be lost is the whole question.
+ */
+export function dropSpotConfirm(index: number, photos: number): string {
+  return `Throw away spot ${index + 1} and its ${photos} photo${photos === 1 ? '' : 's'}? `
+    + 'They cannot be got back, and that spot will have to be swept again.'
+}
+
+export const DROP_SPOT_LABEL = 'Discard'
+export const DROP_SPOT_CONFIRM_LABEL = 'Yes, throw it away'
+export const DROP_SPOT_CANCEL_LABEL = 'Keep it'
+
+/**
+ * Whether the list of spots is something the operator can act on right now.
+ *
+ * Not during a sweep: photos are landing, and a list with a Discard button
+ * beside every row is the wrong thing to put under a live camera. Not once the
+ * capture has gone.
+ */
+export function canDropSpots(state: StationCaptureState): boolean {
+  return (state.phase === 'ready' || state.phase === 'move') && state.spots.length > 0
+}
+
+/**
  * Whether the measurement question is the thing on screen right now.
  *
  * True at the pause after the second spot — phase 'move', where the sweep is

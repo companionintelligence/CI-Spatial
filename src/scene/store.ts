@@ -5,11 +5,14 @@
  * Subscribers are notified synchronously after every mutation.
  *
  * Schema (IndexedDB):
- *   DB: 'ci-xr-scan'  version: 2
+ *   DB: 'ci-xr-scan'  version: 3
  *   objectStore: 'sessions'  keyPath: 'sessionId'
  *     Each record: { sessionId, startedAt, detections: StoredDetection[] }
  *   objectStore: 'captures'  keyPath: 'captureId'
  *     Each record: CaptureRecord — one captured frame, see below
+ *   objectStore: 'tripod'  keyPath: 'id'
+ *     One 'meta' record plus one record per finished tripod spot — see
+ *     src/capture/tripod-persistence.ts for what is kept and what is not.
  *
  * Captures live in their own object store rather than on the session record
  * because persist() rewrites the *entire* session record on every mutation.
@@ -130,7 +133,15 @@ type ChangeListener = (detections: Map<string, StoredDetection>, selected: Set<s
 const DB_NAME = SCAN_DB_NAME
 const STORE_NAME = 'sessions'
 const CAPTURES_STORE = 'captures'
-const DB_VERSION = 2   // 1 -> 2 adds CAPTURES_STORE; additive, existing records still open
+/**
+ * The tripod path's in-progress capture, so a discarded tab does not cost the
+ * operator the spots they have already walked to. ADR 0001: one more store in
+ * the database that already exists, not a second database — and the database
+ * NAME is frozen (CLAUDE.md "Do not rename"), which adding a store does not
+ * touch.
+ */
+const TRIPOD_STORE = 'tripod'
+const DB_VERSION = 3   // 1 -> 2 adds CAPTURES_STORE, 2 -> 3 adds TRIPOD_STORE; additive throughout
 const OPEN_TIMEOUT_MS = 5000 // give up on IndexedDB after 5 s (private mode, hung backends)
 
 // Capture retention bounds, modelled on the offline queue's MAX_QUEUE_ITEMS /
@@ -687,14 +698,18 @@ function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION)
     req.onupgradeneeded = () => {
-      // Additive only. On the 1 -> 2 upgrade 'sessions' already exists and is
-      // left exactly as it is — every stored session must keep opening.
+      // Additive only. On the 1 -> 2 and 2 -> 3 upgrades the existing stores
+      // are already there and are left exactly as they are — every stored
+      // session and every pending capture frame must keep opening.
       const db = req.result
       if (!db.objectStoreNames.contains(STORE_NAME)) {
         db.createObjectStore(STORE_NAME, { keyPath: 'sessionId' })
       }
       if (!db.objectStoreNames.contains(CAPTURES_STORE)) {
         db.createObjectStore(CAPTURES_STORE, { keyPath: 'captureId' })
+      }
+      if (!db.objectStoreNames.contains(TRIPOD_STORE)) {
+        db.createObjectStore(TRIPOD_STORE, { keyPath: 'id' })
       }
     }
     req.onsuccess = () => resolve(req.result)
@@ -737,4 +752,127 @@ function idbDelete(db: IDBDatabase, storeName: string, key: string): Promise<voi
     req.onsuccess = () => resolve()
     req.onerror = () => reject(req.error)
   })
+}
+
+// ─── The tripod path's in-progress capture ────────────────────────────────────
+//
+// Free functions rather than a second class: there is exactly one in-progress
+// tripod capture per browser, it has no subscribers, and DetectionStore is
+// about detections in a scan session — which a tripod capture is not. They
+// share this file only because they share the database, which is the point
+// (ADR 0001) and the reason `openDB`, `idbPut`, `idbGetAll` and `idbDelete`
+// above are reused untouched.
+//
+// Every one of these swallows its own failure and reports it in the return
+// value. Storage is an optional capability here, exactly like the camera: a
+// private-mode tab that will not give the page a database must still be able
+// to run a whole tripod capture in memory, the way it did before any of this
+// existed. Nothing below is allowed to be the reason a capture cannot start.
+
+/**
+ * Open the shared database for a one-off tripod read or write.
+ *
+ * Not cached: these calls happen a handful of times per capture (a spot
+ * finishes, a spot is discarded, the capture is sent), and holding a connection
+ * open across a whole capture would block the upgrade of a tab opened
+ * afterwards. The same 5 s ceiling the session store uses, for the same hung
+ * backends.
+ */
+async function openTripodDB(): Promise<IDBDatabase | null> {
+  if (typeof indexedDB === 'undefined') return null
+  try {
+    return await Promise.race([
+      openDB(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('IndexedDB open timed out')), OPEN_TIMEOUT_MS),
+      ),
+    ])
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Write the capture's shape, and one spot's photos if any are given.
+ *
+ * `spot` is written first: if the two writes come apart — the tab dies between
+ * them — a photo record with no meta pointing at it is invisible and harmless,
+ * where meta naming a spot whose photos never landed is a capture that claims a
+ * spot it cannot upload. `restoreTripodCapture` refuses that shape anyway; this
+ * makes it not happen.
+ *
+ * Returns false when nothing was written, so the caller can stop promising the
+ * operator that closing the app is safe.
+ */
+export async function saveTripodCapture(
+  meta: unknown,
+  spot?: { id: string, files: File[] },
+): Promise<boolean> {
+  const db = await openTripodDB()
+  if (!db) return false
+  try {
+    if (spot) await idbPut(db, TRIPOD_STORE, { id: spot.id, files: spot.files })
+    await idbPut(db, TRIPOD_STORE, meta)
+    return true
+  } catch {
+    return false
+  } finally {
+    db.close()
+  }
+}
+
+/** Everything stored for the in-progress capture: the meta record and the spots. */
+export async function loadTripodCapture(): Promise<{ meta: unknown, banks: Array<{ id: string, files: File[] }> } | null> {
+  const db = await openTripodDB()
+  if (!db) return null
+  try {
+    const rows = await idbGetAll<{ id: string, files?: File[] }>(db, TRIPOD_STORE)
+    const meta = rows.find(row => row?.id === 'meta') ?? null
+    if (!meta) return null
+    const banks = rows
+      .filter((row): row is { id: string, files: File[] } => row?.id !== 'meta' && Array.isArray(row?.files))
+    return { meta, banks }
+  } catch {
+    return null
+  } finally {
+    db.close()
+  }
+}
+
+/** Drop one spot's photos. Called when a spot is discarded, and only then. */
+export async function deleteTripodSpot(id: string): Promise<void> {
+  const db = await openTripodDB()
+  if (!db) return
+  try {
+    await idbDelete(db, TRIPOD_STORE, id)
+  } catch {
+    // Nothing to do about it and nothing to say: the photos are already out of
+    // the capture, and an orphan record is dropped by the next clear.
+  } finally {
+    db.close()
+  }
+}
+
+/**
+ * Throw the whole stored capture away.
+ *
+ * Called when a capture is sent and when one is abandoned, which between them
+ * are every way a capture ends. Without it a phone accumulates the JPEGs of
+ * every tripod capture it has ever started, forever, in a database whose other
+ * two stores are carefully bounded.
+ */
+export async function clearTripodCapture(): Promise<void> {
+  const db = await openTripodDB()
+  if (!db) return
+  try {
+    const rows = await idbGetAll<{ id: string }>(db, TRIPOD_STORE)
+    for (const row of rows) {
+      if (typeof row?.id === 'string') await idbDelete(db, TRIPOD_STORE, row.id)
+    }
+  } catch {
+    // Same as above: best effort. A stored capture that outlives its send is
+    // recovered on the next open and can be thrown away from there.
+  } finally {
+    db.close()
+  }
 }
