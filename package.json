@@ -9,7 +9,7 @@
     "dev": "vite --host",
     "build": "tsc --noEmit && vite build",
     "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",
-    "verify": "deno task check && deno task test && tsc --noEmit && npm run typecheck:tests && npm run test:pipeline:graph && npm run test:editor:pick && npm run test:store && npm run test:resolver && npm run test:provenance && npm run test:detection-gate && npm run test:model-provisioning && npm run test:router && npm run test:clock-sync && npm run test:clip-validation && npm run test:splat4d && npm run test:gimbal:stall && npm run test:gimbal:control && npm run test:gimbal:link && npm run test:gimbal:protocol && npm run test:tracking:quality && npm run test:object:filter && npm run test:status-line && npm run test:panoptic:lift && npm run test:wake-lock && npm run test:ar:preflight && npm run test:scan:lighting && npm run test:upload:expectation && npm run test:capture:intent && npm run test:capture:station && npm run test:capture:distance && npm run test:startup:budget",
+    "verify": "deno task check && deno task test && tsc --noEmit && npm run typecheck:tests && npm run test:pipeline:graph && npm run test:editor:pick && npm run test:store && npm run test:resolver && npm run test:provenance && npm run test:detection-gate && npm run test:model-provisioning && npm run test:router && npm run test:clock-sync && npm run test:clip-validation && npm run test:splat4d && npm run test:gimbal:stall && npm run test:gimbal:control && npm run test:gimbal:link && npm run test:gimbal:protocol && npm run test:tracking:quality && npm run test:object:filter && npm run test:status-line && npm run test:panoptic:lift && npm run test:wake-lock && npm run test:ar:preflight && npm run test:scan:lighting && npm run test:upload:expectation && npm run test:capture:intent && npm run test:capture:station && npm run test:capture:distance && npm run test:capture:sweep && npm run test:startup:budget",
     "test:pipeline:graph": "node --experimental-strip-types --no-warnings --test tests/unit/node/pipeline_detection_graph.test.ts",
     "test:editor:pick": "node --experimental-strip-types --no-warnings --test tests/unit/node/editor_pick.test.ts",
     "test:store": "node --experimental-strip-types --no-warnings --test tests/unit/node/detection_store.test.ts",
@@ -78,7 +78,8 @@
     "test:upload:expectation": "node --experimental-strip-types --no-warnings --test tests/unit/node/upload_expectation.test.ts",
     "test:capture:intent": "node --experimental-strip-types --no-warnings --test tests/unit/node/capture_intent.test.ts",
     "test:capture:station": "node --experimental-strip-types --no-warnings --test tests/unit/node/station_capture.test.ts",
-    "test:capture:distance": "node --experimental-strip-types --no-warnings --test tests/unit/node/spot_distance.test.ts"
+    "test:capture:distance": "node --experimental-strip-types --no-warnings --test tests/unit/node/spot_distance.test.ts",
+    "test:capture:sweep": "node --experimental-strip-types --no-warnings --test tests/unit/node/sweep_cadence.test.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",

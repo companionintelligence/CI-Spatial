@@ -78,6 +78,7 @@ import {
   beginSweep,
   clearDistance,
   createStationCapture,
+  currentSpot,
   endSweep,
   finishCapture,
   finishVerdict,
@@ -91,6 +92,8 @@ import {
   type StationCaptureState,
 } from './capture/station-capture'
 import { readSpotDistance, spotDistanceEcho } from './capture/spot-distance'
+import { SweepCamera } from './capture/sweep-camera'
+import { CAMERA_ON_LABEL, sweepCountLine, sweepEndNotice } from './capture/sweep-cadence'
 import {
   filesFor,
   knownDistancesFor,
@@ -2917,6 +2920,16 @@ function mountTripodCapture(): void {
   let notice: string | null = null
   /** True while the capture is on the wire, so a second tap cannot send it twice. */
   let sending = false
+  /**
+   * True once the camera is actually open and banking frames for this sweep.
+   *
+   * Separate from `state.phase === 'sweeping'`, because they genuinely come
+   * apart: a sweep whose camera was refused is still a sweep — the tripod is
+   * down, the gimbal is turning, and the photos can still be added by hand —
+   * and showing a preview frame for it would be the screen claiming a camera
+   * it does not have.
+   */
+  let cameraLive = false
 
   const sheet = document.createElement('div')
   sheet.id = 'tripod-sheet'
@@ -2933,6 +2946,14 @@ function mountTripodCapture(): void {
       <ol id="tripod-dots" class="project-calibration-steps"></ol>
       <div id="tripod-headline" class="tripod-headline" aria-live="polite"></div>
       <p id="tripod-detail" class="tripod-detail"></p>
+      <!-- What the phone can see, while it is looking. Hidden the rest of the
+           time so a dead black rectangle never sits in the sheet implying a
+           camera that is not open. The muted + playsinline pair is what lets
+           it show at all on Android Chrome without going full-screen. -->
+      <div id="tripod-camera" class="tripod-camera" hidden>
+        <video id="tripod-preview" playsinline muted aria-label="What the camera can see"></video>
+        <p id="tripod-camera-line" class="tripod-camera-line" aria-live="polite"></p>
+      </div>
       <div class="tripod-tally">
         <span id="tripod-tally-spots"></span>
         <span id="tripod-tally-photos"></span>
@@ -2960,7 +2981,8 @@ function mountTripodCapture(): void {
         <span id="tripod-size-detail"></span>
       </div>
       <button id="tripod-measure-open" type="button" class="tripod-plain-btn" hidden>${escapeHtml(DISTANCE_PROMPT.reopen)}</button>
-      <button id="tripod-add" type="button" class="tripod-wide-btn" hidden></button>
+      <button id="tripod-camera-on" type="button" class="tripod-wide-btn" hidden>${escapeHtml(CAMERA_ON_LABEL)}</button>
+      <button id="tripod-add" type="button" class="tripod-plain-btn" hidden></button>
       <button id="tripod-send" type="button" class="tripod-wide-btn" hidden></button>
       <p id="tripod-blocked" class="tripod-blocked" hidden></p>
       <div class="place-sheet-actions">
@@ -2975,6 +2997,9 @@ function mountTripodCapture(): void {
   const dotsEl = sheet.querySelector<HTMLElement>('#tripod-dots')!
   const headlineEl = sheet.querySelector<HTMLElement>('#tripod-headline')!
   const detailEl = sheet.querySelector<HTMLElement>('#tripod-detail')!
+  const cameraEl = sheet.querySelector<HTMLElement>('#tripod-camera')!
+  const previewEl = sheet.querySelector<HTMLVideoElement>('#tripod-preview')!
+  const cameraLineEl = sheet.querySelector<HTMLElement>('#tripod-camera-line')!
   const tallySpotsEl = sheet.querySelector<HTMLElement>('#tripod-tally-spots')!
   const tallyPhotosEl = sheet.querySelector<HTMLElement>('#tripod-tally-photos')!
   const measureEl = sheet.querySelector<HTMLElement>('#tripod-measure')!
@@ -2987,6 +3012,7 @@ function mountTripodCapture(): void {
   const sizeEl = sheet.querySelector<HTMLElement>('#tripod-size')!
   const sizeHeadlineEl = sheet.querySelector<HTMLElement>('#tripod-size-headline')!
   const sizeDetailEl = sheet.querySelector<HTMLElement>('#tripod-size-detail')!
+  const cameraOnBtn = sheet.querySelector<HTMLButtonElement>('#tripod-camera-on')!
   const addBtn = sheet.querySelector<HTMLButtonElement>('#tripod-add')!
   const sendBtn = sheet.querySelector<HTMLButtonElement>('#tripod-send')!
   const blockedEl = sheet.querySelector<HTMLElement>('#tripod-blocked')!
@@ -3073,10 +3099,29 @@ function mountTripodCapture(): void {
     reopenBtn.hidden = asking || state.phase === 'done' || state.measurement?.kind !== 'skipped'
 
     const sweeping = state.phase === 'sweeping'
+
+    // The preview is the honest half of the tally: it is on screen exactly
+    // while a camera is open, and the line under it counts photos that have
+    // been encoded and banked, not shutter clicks.
+    cameraEl.hidden = !(sweeping && cameraLive)
+    if (sweeping && cameraLive) cameraLineEl.textContent = sweepCountLine(camera.captured)
+
+    // Offered exactly when a sweep is running and nothing is photographing it:
+    // after a refusal, after a stall, and on a sheet re-opened mid-sweep. Never
+    // beside a live camera, where it would read as a second shutter.
+    cameraOnBtn.hidden = asking || !sweeping || cameraLive
+
+    // Still the import path, and still available during every sweep. It is the
+    // way back from a refused camera and the way to finish a capture whose
+    // photos were taken on something else, so it is never the camera's
+    // replacement and never hidden by it — only its wording changes, so that
+    // during a live sweep it does not read as the thing to press.
     addBtn.hidden = asking || !sweeping
     addBtn.textContent = state.pending === 0
       ? "Add this spot's photos"
-      : `Add more — ${state.pending} from this spot`
+      : cameraLive
+        ? `Add photos from the gallery too — ${state.pending} so far`
+        : `Add more — ${state.pending} from this spot`
 
     sendBtn.hidden = asking || sending || state.phase === 'done' || !verdict.ok
     sendBtn.textContent = `Send ${done} spots as one capture`
@@ -3094,10 +3139,101 @@ function mountTripodCapture(): void {
     blockedEl.hidden = blocked === null
   }
 
+  /**
+   * The sheet's camera. One instance for the whole capture, re-opened per
+   * sweep — a second one could hold the device against the first.
+   *
+   * Its frames go exactly where the gallery picker's do: onto `pendingFiles`,
+   * through `addPhotos`, committed by `endSweep`. Nothing downstream of this
+   * closure can tell which of the two took a photo, which is why the uploader,
+   * the spot labelling and the refusals all still work untouched.
+   */
+  const camera = new SweepCamera({
+    onFrame: (file) => {
+      pendingFiles = [...pendingFiles, file]
+      state = addPhotos(state, 1)
+      render()
+    },
+    onEnded: (reason, captured) => {
+      cameraLive = false
+      // The sweep itself is NOT ended here. The camera stopping is not the
+      // operator deciding this spot is done, and ending the spot for them
+      // would bank a sweep they never watched finish — so the phase stays
+      // 'sweeping', the photos stay pending, and the line says what happened.
+      notice = sweepEndNotice(reason, captured)
+      render()
+    },
+  })
+
+  /**
+   * Close the camera. Every exit from a sweep goes through here.
+   *
+   * It redraws, because two of the four ways in here are not followed by a
+   * render of their own — `pagehide` above all. Without it the sheet kept the
+   * preview box and its "N photos taken from this spot" line on screen after
+   * the stream was stopped, AND kept the button that reopens the camera
+   * hidden: a page restored from the back/forward cache came back showing a
+   * live camera that was not running, with no way to restart it. Measured
+   * 2026-08-30 in headless Chromium — after a pagehide, both tracks read
+   * 'ended' and `video.srcObject` was null while `#tripod-camera` was still
+   * visible and `#tripod-camera-on` still hidden.
+   *
+   * The screen lock goes with it. See openCamera().
+   */
+  const releaseCamera = () => {
+    camera.stop()
+    cameraLive = false
+    void screenWakeLock.stop()
+    render()
+  }
+
+  /**
+   * Open the camera for the spot being swept.
+   *
+   * Always called straight out of a tap, because the permission prompt needs
+   * that gesture, and it resolves long after the screen has redrawn — so the
+   * only thing it does on the way back is report what happened.
+   */
+  const openCamera = () => {
+    void camera.start(previewEl, currentSpot(state)).then(refusal => {
+      cameraLive = refusal === null && camera.isRunning
+      // Keep the screen up while the camera is banking frames, and only then.
+      //
+      // This is the most unattended capture in the app — the screen one step
+      // back says "step out of the way", and nobody touches the phone again
+      // until the sweep is over. The AR path already holds this lock for the
+      // same reason, after a gimbal dome scan produced 0 keyframes across 10
+      // converged positions because the screen locked partway through
+      // (src/capture/wake-lock.ts). The same thing ends a sweep here: Android
+      // backgrounds Chrome on lock, and a hidden page banks nothing
+      // (sweep-cadence.ts's `hidden` branch). Measured 2026-08-30: a live
+      // sweep with the camera open and six photos banked had requested zero
+      // screen locks.
+      //
+      // The one lock is shared with the AR session, which is safe because the
+      // two cannot run together — the tripod card lives on the start screen,
+      // and starting AR removes it. `start()` is idempotent and `stop()` is a
+      // no-op when nothing was acquired.
+      if (cameraLive) void screenWakeLock.start()
+      if (refusal) notice = refusal
+      render()
+    })
+  }
+
   primaryBtn.addEventListener('click', () => {
     notice = null
-    if (state.phase === 'ready') state = beginSweep(state)
-    else if (state.phase === 'sweeping') {
+    if (state.phase === 'ready') {
+      state = beginSweep(state)
+      // Opened from inside the tap, so the permission prompt is attributed to
+      // a gesture. It resolves after the sheet has already redrawn as
+      // 'sweeping': a refused camera leaves that screen exactly as it was
+      // before this feature existed, with the import button and a sentence
+      // saying why.
+      openCamera()
+    } else if (state.phase === 'sweeping') {
+      // Before endSweep, so the count the sweep is judged on is final and no
+      // frame can land in a spot that has already closed.
+      releaseCamera()
       const before = state.spots.length
       state = endSweep(state)
       // The files commit exactly where the count does. An empty sweep advances
@@ -3139,6 +3275,13 @@ function mountTripodCapture(): void {
     metresInput.value = ''
     cmInput.value = ''
     state = clearDistance(state)
+    render()
+  })
+
+  cameraOnBtn.addEventListener('click', () => {
+    notice = null
+    if (state.phase !== 'sweeping' || cameraLive) return
+    openCamera()
     render()
   })
 
@@ -3221,6 +3364,10 @@ function mountTripodCapture(): void {
 
   closeBtn.addEventListener('click', () => {
     sheet.hidden = true
+    // The sheet is gone, so nothing is showing what the camera sees — leaving
+    // it open would be a phone quietly filming a room with its preview closed,
+    // and it is also what makes the next open fail.
+    releaseCamera()
     if (state.phase !== 'done') return
     // Only a sent capture resets. Closing part-way through is "continue
     // later", and losing four spots' photos to a mistapped Close would be
@@ -3233,6 +3380,11 @@ function mountTripodCapture(): void {
     notice = null
     render()
   })
+
+  // The last way out. A page being discarded or navigated away from still
+  // holds the camera until something stops it, and on Android that is the
+  // state that makes the next open time out.
+  addEventListener('pagehide', releaseCamera)
 
   const open = () => {
     notice = null
