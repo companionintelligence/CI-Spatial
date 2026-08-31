@@ -13,9 +13,28 @@
  * sits just above the measured value at the time of writing, so a real
  * regression trips it and a cosmetic tweak does not.
  *
+ * The word budget is no longer held here. It went 20 words over in #223 and
+ * stayed over, because this file only runs where a browser and a Vite server
+ * do — GitHub CI runs no Playwright at all, so the only thing that ever
+ * executed the assertion was a local `npm run loop`. It now lives in
+ * tests/unit/node/startup_word_budget.test.ts, which computes the same number
+ * from index.html and `resolveCapture()` for every subject x device and runs
+ * in `npm run verify`, hence on every push.
+ *
+ * What is left here is the half a model cannot have: this measures the DOM a
+ * browser actually paints, and asserts it against the model rather than
+ * against a literal. If the scanner in tests/support/startup-budget.ts ever
+ * reads the markup differently from the way Chrome renders it, this is what
+ * says so.
+ *
  * Run: npx playwright test --project=chromium-mock mock-scanner-startup-budget
  */
 import { test, expect, type Page } from '@playwright/test'
+import {
+  MOCK_CASE,
+  WORDS_BEFORE_CAMERA_MAX,
+  wordsBeforeCamera,
+} from './support/startup-budget.ts'
 
 test.use({
   viewport: { width: 375, height: 812 },
@@ -115,7 +134,22 @@ test.describe('scanner startup budget', () => {
       Array.from(document.querySelectorAll('.onboard-desc'))
         .reduce((a, e) => a + ((e as HTMLElement).textContent || '').trim().split(/\s+/).filter(Boolean).length, 0))
     const startWords = await wordCount(page, '#start-screen')
-    expect(onboardingWords + startWords, 'words shown before the camera (was 197)').toBeLessThanOrEqual(120)
+
+    // `?mock=xr8` loads the in-browser engine and nothing else, and `room` is
+    // preselected — the one screen out of 24 this run renders. Parity first,
+    // because a budget met by a model that has stopped seeing half the screen
+    // is worse than no budget: the numbers must agree before either is trusted.
+    const model = wordsBeforeCamera(MOCK_CASE.subject, MOCK_CASE.device)
+    expect(onboardingWords, 'onboarding words: browser vs tests/support/startup-budget.ts')
+      .toBe(model.onboarding)
+    expect(startWords, 'start-screen words: browser vs tests/support/startup-budget.ts')
+      .toBe(model.total - model.onboarding)
+
+    // Was 197, then 120, and 155 since 2026-08-30 — see the reasoning on
+    // WORDS_BEFORE_CAMERA_MAX. Held here too so the ceiling is checked against
+    // a real render and not only against the model.
+    expect(onboardingWords + startWords, 'words shown before the camera')
+      .toBeLessThanOrEqual(WORDS_BEFORE_CAMERA_MAX)
 
     // Tap 1 — skip the tutorial.
     await page.locator('#onboard-skip').click()
