@@ -66,32 +66,31 @@ import {
  * Every word a first-run visitor reads before the camera opens: the onboarding
  * bodies plus the whole start screen.
  *
- * Re-baselined 2026-08-30 from 120, against a measured worst case of 151.
+ * Brought back DOWN to 110 on 2026-08-30, against a measured worst case of
+ * 103 — the design change the 155 was explicitly holding a place for.
  *
- * The 120 was set in #205/#208 against a screen that showed two method cards
- * and asked nothing (measured ~98 with onboarding). #223 changed what the
- * screen is: it asks "What are you capturing?" and then shows every method
- * that can actually run here, recommended one first, because the person is no
- * longer expected to know whether their phone can run a live capture. That is
- * +8 words of question and +25 for a third card that is a real capture path
- * (a tripod sweep) rather than a repackaging of an old one.
+ * The history, because the number has moved twice and only the last move was
+ * a fix. 120 was set in #205/#208 against a screen that showed two method
+ * cards and asked nothing (~98 with onboarding). #223 changed what the screen
+ * is — it asks "What are you capturing?" and then showed every method that can
+ * run here — which cost +8 for the question and +25 for a third card, and took
+ * the worst screen to 151. #226 re-baselined to 155 rather than trim, and said
+ * why in this comment: no word on this screen is free, because each card's
+ * second sentence carries what the path does NOT give you ("size is not
+ * measured", "nothing catalogued"), which capture_intent.test.ts pins in
+ * place. Cutting 31 words to fit meant retracting claims.
  *
- * It is a re-baseline and not a trim because no word on this screen is free:
- * each card's second sentence carries what the path does NOT give you ("size
- * is not measured", "nothing catalogued"), which is the truthfulness
- * commitment wave 04 bought and which tests/unit/node/capture_intent.test.ts
- * pins in place. Cutting 31 words to fit the old ceiling means retracting
- * claims, and the honest alternative — putting the un-recommended methods one
- * tap behind a disclosure control, which index.html's own comments still
- * describe and which `renderCaptureChoice()`'s dead `alternatives` counter is
- * the stub of — is a design change and belongs in its own ticket. Finishing it
- * would take ~50 words off this screen and this ceiling should come back down
- * with it.
+ * It also named the honest alternative and predicted its size: put the
+ * un-recommended methods one tap behind a disclosure control, worth ~50 words.
+ * That is now built (`#start-alt-toggle`, renderCaptureChoice()), and the
+ * prediction was good — the worst screen went 153 -> 103 and the mock 140 ->
+ * 92. So the ceiling comes back down with it, as that comment said it should.
  *
- * The slack is deliberately thin (4 words). The screen is at its limit: the
- * next thing added to it is a decision, not a drift.
+ * 110 sits just above the worst case, the same rule the occlusion budget next
+ * door follows. The seven words of slack are the point: an alternative card is
+ * ~25 words, so nothing can quietly drift back onto this screen open.
  */
-export const WORDS_BEFORE_CAMERA_MAX = 155
+export const WORDS_BEFORE_CAMERA_MAX = 110
 
 /**
  * One method card — title, what you do, what you get. Measured worst: 26.
@@ -234,11 +233,25 @@ export function staticVisibleText(html: string, rootId: string, skipIds: string[
 /** The controls `renderCaptureChoice()` owns. Same ids, no new ones (ADR 0001). */
 const METHOD_CONTROLS: CaptureControlId[] = ['start-ar-btn', 'start-tripod-card', 'start-upload-card']
 
+/**
+ * The disclosure holding the methods that were ranked and not chosen.
+ *
+ * Counted on its own rather than as chrome, because it is not always on the
+ * screen: `renderCaptureChoice()` hides it when the recommendation is the only
+ * runnable method, and a control that reveals nothing is worse than no
+ * control. It ships `hidden`, so the chrome scan already skips it — naming it
+ * in `skipIds` too is so that stops depending on an attribute in the markup
+ * that exists for an unrelated reason.
+ */
+const DISCLOSURE_CONTROL = 'start-alt-toggle'
+
 export interface StaticCopy {
   /** Brand, subject question, subject chips, editor card. */
   chrome: number
   /** The onboarding step bodies — `.onboard-desc`, what the spec counts. */
   onboarding: number
+  /** `#start-alt-toggle`'s label, charged only to screens that show it. */
+  disclosure: number
   /** For failure messages: the chrome, as it reads. */
   chromeText: string
 }
@@ -251,9 +264,15 @@ export interface StaticCopy {
  * passes.
  */
 export function readStaticCopy(html: string = indexHtml()): StaticCopy {
-  const chromeText = staticVisibleText(html, 'start-screen', METHOD_CONTROLS)
+  const chromeText = staticVisibleText(html, 'start-screen', [...METHOD_CONTROLS, DISCLOSURE_CONTROL])
   const chrome = countWords(chromeText)
   if (chrome === 0) throw new Error('startup-budget: #start-screen scanned to no words at all')
+
+  // Read out of its own subtree, not the chrome scan: the root's own `hidden`
+  // is not applied by staticVisibleText, which is exactly what is wanted here
+  // — the control ships hidden and is shown whenever anything is behind it.
+  const disclosure = countWords(staticVisibleText(html, DISCLOSURE_CONTROL))
+  if (disclosure === 0) throw new Error(`startup-budget: #${DISCLOSURE_CONTROL} scanned to no words at all`)
 
   const steps = html.match(/class="onboard-step\b/g)?.length ?? 0
   const descs = [...html.matchAll(/<div class="onboard-desc">([\s\S]*?)<\/div>/g)]
@@ -263,17 +282,31 @@ export function readStaticCopy(html: string = indexHtml()): StaticCopy {
     throw new Error(`startup-budget: ${steps} onboarding steps but ${descs.length} bodies — the scanner is missing copy`)
   }
 
-  return { chrome, onboarding: descs.reduce((a, d) => a + countWords(d), 0), chromeText }
+  return { chrome, disclosure, onboarding: descs.reduce((a, d) => a + countWords(d), 0), chromeText }
 }
 
 export interface ScreenWords {
-  /** Onboarding bodies + everything on the start screen. */
+  /**
+   * Onboarding bodies + everything on the start screen as it first paints:
+   * the chrome, the recommendation, the note, and the disclosure's own label.
+   * The methods behind the disclosure are NOT in here — they are not on screen
+   * until someone asks for them, which is the whole point of the control.
+   */
   total: number
+  /** The same screen with the disclosure open. What #223 shipped as `total`. */
+  totalExpanded: number
   onboarding: number
   /** Static start-screen furniture. */
   chrome: number
-  /** One entry per method card actually drawn, best first. */
+  /** `#start-alt-toggle`'s label — 0 when there is nothing to disclose. */
+  disclosure: number
+  /**
+   * One entry per method card the screen can draw, best first. The first is
+   * the recommendation and is always on screen; the rest are one tap away.
+   */
   cards: Array<{ control: CaptureControlId, method: string, words: number, text: string }>
+  /** How many cards sit behind the disclosure. Zero means there is no control. */
+  alternatives: number
   /** `#capture-note`, when the resolver has something to say. */
   note: number
 }
@@ -285,6 +318,13 @@ export interface ScreenWords {
  * rule that the first plan to claim a control keeps it — a video and a photo
  * set are the same tap, and counting both would invent words the screen never
  * shows.
+ *
+ * It also mirrors what that function puts ON the screen, which since the
+ * disclosure landed is not the same as what it can draw: only the
+ * recommendation is open, and `#start-alt-toggle` costs its own two words
+ * whenever there is anything behind it. `totalExpanded` is the other state,
+ * kept because the claim this budget rests on — that the overrun was the
+ * un-recommended methods — is only checkable with both numbers in hand.
  */
 export function wordsBeforeCamera(
   subject: CaptureSubject,
@@ -302,9 +342,16 @@ export function wordsBeforeCamera(
     return { control, method: plan.method, words: countWords(text), text }
   })
   const note = rec.note ? countWords(rec.note) : 0
-  const total = copy.onboarding + copy.chrome + cards.reduce((a, c) => a + c.words, 0) + note
+  const alternatives = cards.length - 1
+  const disclosure = alternatives > 0 ? copy.disclosure : 0
+  const fixed = copy.onboarding + copy.chrome + disclosure + note
+  const total = fixed + (cards[0]?.words ?? 0)
+  const totalExpanded = fixed + cards.reduce((a, c) => a + c.words, 0)
 
-  return { total, onboarding: copy.onboarding, chrome: copy.chrome, cards, note }
+  return {
+    total, totalExpanded, onboarding: copy.onboarding, chrome: copy.chrome,
+    disclosure, cards, alternatives, note,
+  }
 }
 
 /** Every subject the screen offers. */

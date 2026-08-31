@@ -27,6 +27,13 @@
  * reads the markup differently from the way Chrome renders it, this is what
  * says so.
  *
+ * It also guards the shape that makes the number possible. The un-recommended
+ * methods are behind `#start-alt-toggle`, and a ceiling met by deleting the
+ * second sentence off every card would pass just as well while retracting the
+ * "size is not measured" clause capture_intent.test.ts exists to keep on
+ * screen — so the disclosure, and the keyboard path into it, are asserted here
+ * rather than inferred from a small total.
+ *
  * Run: npx playwright test --project=chromium-mock mock-scanner-startup-budget
  */
 import { test, expect, type Page } from '@playwright/test'
@@ -145,11 +152,43 @@ test.describe('scanner startup budget', () => {
     expect(startWords, 'start-screen words: browser vs tests/support/startup-budget.ts')
       .toBe(model.total - model.onboarding)
 
-    // Was 197, then 120, and 155 since 2026-08-30 — see the reasoning on
-    // WORDS_BEFORE_CAMERA_MAX. Held here too so the ceiling is checked against
-    // a real render and not only against the model.
+    // Was 197, then 120, then 155, and 110 since the disclosure landed — see
+    // the reasoning on WORDS_BEFORE_CAMERA_MAX. Held here too so the ceiling is
+    // checked against a real render and not only against the model.
     expect(onboardingWords + startWords, 'words shown before the camera')
       .toBeLessThanOrEqual(WORDS_BEFORE_CAMERA_MAX)
+
+    // The un-recommended methods are behind #start-alt-toggle, which is what
+    // brought that total back under the ceiling — so assert the disclosure is
+    // doing the work, not that the number happens to be small. Without this,
+    // deleting the second sentence off every card would pass the line above
+    // while removing the "size is not measured" clause that
+    // tests/unit/node/capture_intent.test.ts exists to keep on screen.
+    const toggle = page.locator('#start-alt-toggle')
+    await expect(toggle).toBeVisible()
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    // The recommendation is never behind it, and neither is the editor card.
+    await expect(page.locator('#start-paths [data-recommended="true"]')).toBeVisible()
+    await expect(page.locator('#start-editor-card')).toBeVisible()
+    await expect(page.locator('#start-upload-card')).toBeHidden()
+    await expect(page.locator('#start-tripod-card')).toBeHidden()
+
+    // Keyboard, because "one tap away" has to be one key away too. Focus the
+    // control and press Enter: the methods appear, and the next Tab walks into
+    // them rather than past them — which is the whole reason
+    // renderCaptureChoice() reorders the cards instead of setting CSS `order`.
+    await toggle.focus()
+    await page.keyboard.press('Enter')
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    await expect(page.locator('#start-tripod-card')).toBeVisible()
+    await expect(page.locator('#start-upload-card')).toBeVisible()
+    await page.keyboard.press('Tab')
+    await expect(page.locator('#start-tripod-card')).toBeFocused()
+
+    // Closed again, so the taps below start from the screen this test measured.
+    await toggle.focus()
+    await page.keyboard.press('Enter')
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
 
     // Tap 1 — skip the tutorial.
     await page.locator('#onboard-skip').click()

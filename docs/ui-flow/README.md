@@ -38,7 +38,8 @@ the history drawer — is the app's own behaviour against the live dev server.
 | --- | --- |
 | `01-ftue-step-1.png` | FTUE step 1 of 2 — "Allow camera & motion" |
 | `01-ftue-step-2.png` | FTUE step 2 of 2 — "Walk slowly"; the button reads "Get Started" here |
-| `02-start-screen.png` | Start screen, ready state — Scan a Place / Upload Content / Place Scan Editor |
+| `02-start-screen.png` | Start screen, ready state — the one recommended method, "Other ways", and the Place Scan Editor |
+| `02b-start-screen-other-ways.png` | The same screen with "Other ways" open — the methods that were ranked and not chosen |
 | `03-place-picker.png` | Place sheet as a Scan tap opens it (location card, two nav rows, Areas, Skip for now) |
 | `04-place-picker-nearby-empty.png` | "Places nearby" popup with no GPS fix — the empty state, and the "Show all N saved places" escape hatch |
 | `05-place-picker-all-places.png` | The same popup after tapping Show all |

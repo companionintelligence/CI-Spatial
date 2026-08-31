@@ -133,9 +133,27 @@ test.describe('mobile scanner flow screenshots', () => {
     // documentation shot should show the ready state a user can actually tap.
     await page.goto('/?mock=xr8')
     await expect(page.locator('#start-ar-btn')).toBeEnabled({ timeout: 30_000 })
-    await expect(page.locator('#start-upload-card')).toBeVisible()
+    // The un-recommended methods ship behind #start-alt-toggle now, so this is
+    // the screen as a first-time visitor meets it: one recommendation, the
+    // control that holds the rest, and the editor card. The upload card is on
+    // the shot below rather than this one.
+    await expect(page.locator('#start-alt-toggle')).toBeVisible()
     await expect(page.locator('#start-editor-card')).toBeVisible()
     await shot(page, '02-start-screen.png')
+
+    // And the same screen with the other ways open — the state a photograph
+    // has to show too, because it is where two of the three capture paths
+    // live. Both shots, not one: the collapsed screen is what the word budget
+    // (tests/support/startup-budget.ts) is measured against, and the expanded
+    // one is what "one tap away" actually costs.
+    await page.locator('#start-alt-toggle').click()
+    await expect(page.locator('#start-upload-card')).toBeVisible()
+    // The caret rotates over 180ms to say which way the list is; shooting on
+    // the click caught it edge-on, which photographs as a stray corner mark.
+    await page.waitForTimeout(400)
+    await shot(page, '02b-start-screen-other-ways.png')
+    await page.locator('#start-alt-toggle').click()
+    await expect(page.locator('#start-upload-card')).toBeHidden()
 
     // Does the three-card stack fit the phone? Recorded rather than asserted —
     // this file photographs the layout, the layout work decides what to do.
@@ -349,6 +367,10 @@ test.describe('mobile scanner flow screenshots', () => {
       })
     })
     await page.goto('/?mock=xr8')
+    // The upload path is not the recommended one under the mock, so it ships
+    // behind #start-alt-toggle. Open it — this test photographs the path a
+    // person takes, and they take it through that control.
+    await page.locator('#start-alt-toggle').click({ timeout: 20_000 })
     await expect(page.locator('#upload-video-btn')).toBeVisible({ timeout: 20_000 })
     await page.setInputFiles('#upload-video-input', {
       name: 'walkthrough.mp4', mimeType: 'video/mp4', buffer: Buffer.from('FAKE-VIDEO-BYTES'),

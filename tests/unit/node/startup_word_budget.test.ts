@@ -39,12 +39,12 @@ const where = (c: { subject: string, deviceName: string }) => `${c.subject} / ${
 
 test('every screen this can draw stays under the word budget', () => {
   // The point of computing rather than sampling. A browser run measures one
-  // combination; this is all 24. The mock renders 140 words and the worst real
-  // screen is 151 — a room or a building on a phone that advertises WebXR
+  // combination; this is all 24. The mock renders 92 words and the worst real
+  // screen is 103 — a room or a building on a phone that advertises WebXR
   // without having proven it, which is the exact device (XREAL Beam Pro) the
   // capture ladder was built for, and which pays an extra eleven-word hedge on
-  // top of three cards. Re-baselining against the convenient sample is the
-  // mistake the occlusion budget next door already documents.
+  // top of its recommendation. Re-baselining against the convenient sample is
+  // the mistake the occlusion budget next door already documents.
   const cases = allCases()
   const worst = cases[0]!
   for (const c of cases) {
@@ -60,27 +60,57 @@ test('every screen this can draw stays under the word budget', () => {
   // changed on purpose, re-measure, update this literal, and say in
   // WORDS_BEFORE_CAMERA_MAX why the new number is the right ceiling.
   assert.equal(
-    worst.words.total, 151,
-    `the worst screen is now ${where(worst)} at ${worst.words.total} words, not 151`,
+    worst.words.total, 103,
+    `the worst screen is now ${where(worst)} at ${worst.words.total} words, not 103`,
   )
 })
 
 test('the overrun is the un-recommended methods, not the recommendation', () => {
-  // This is the claim that says the fix is a design change and not a copy cut,
-  // so it is checked rather than asserted in a comment: what the person is
-  // actually being told to do — question, recommended card, hedge — still fits
-  // the ORIGINAL 120-word ceiling on every screen. The words over it are the
-  // two methods they were not recommended, sitting open instead of one tap
-  // away (index.html's own comment at #start-upload-card still describes them
-  // as hidden, and renderCaptureChoice()'s unused `alternatives` counter is
-  // what is left of the control that would have done it).
+  // The claim that said the fix was a design change and not a copy cut — and
+  // it stays here now that the change is made, because it is what says the
+  // disclosure is still earning its place rather than being decoration.
+  //
+  // Both halves are checked against the ORIGINAL 120-word ceiling, which is
+  // the number this argument was had against. What the person is told to do —
+  // question, recommended card, hedge, and the control itself — fits it on
+  // every screen. Open the un-recommended methods and some screen does not.
+  // The words were never in the copy, which is the reason none of it was cut:
+  // each card's second sentence carries what its path does NOT give you, and
+  // capture_intent.test.ts pins those clauses in place.
+  const ORIGINAL_CEILING = 120
+  let overran = 0
   for (const c of allCases()) {
-    const recommended = c.words.onboarding + c.words.chrome + (c.words.cards[0]?.words ?? 0) + c.words.note
     assert.ok(
-      recommended <= 120,
-      `${where(c)}: the recommendation alone is ${recommended} words — the overrun is no longer the alternatives`,
+      c.words.total <= ORIGINAL_CEILING,
+      `${where(c)}: the recommendation alone is ${c.words.total} words — the overrun is no longer the alternatives`,
+    )
+    if (c.words.totalExpanded > ORIGINAL_CEILING) {
+      overran += 1
+      assert.ok(
+        c.words.alternatives > 0,
+        `${where(c)}: over budget with nothing un-recommended on screen — the copy is the problem after all`,
+      )
+    }
+  }
+  assert.ok(overran > 0, 'no screen overran even with every method open — this test is proving nothing')
+})
+
+test('a screen with nothing to disclose is not charged for a disclosure', () => {
+  // renderCaptureChoice() hides the control when the recommendation is the
+  // only runnable method — a control that reveals nothing is worse than no
+  // control — so those screens must not be paying two words for a button
+  // nobody sees. There has to be at least one, or the branch is dead code.
+  let found = 0
+  for (const c of allCases()) {
+    if (c.words.alternatives > 0) continue
+    found += 1
+    assert.equal(c.words.disclosure, 0, `${where(c)}: charged for a control that is not on screen`)
+    assert.equal(
+      c.words.total, c.words.totalExpanded,
+      `${where(c)}: nothing to open, so opening it must change nothing`,
     )
   }
+  assert.ok(found > 0, 'no screen has a single runnable method — the hidden-control branch is unreachable')
 })
 
 test('no single method card outgrows its card', () => {
@@ -171,15 +201,20 @@ test('the mock screen is the one the Playwright spec measures', () => {
   // in-browser engine and nothing else, and `room` is preselected. Measured in
   // Chrome at 375x812 on 2026-08-30: 40 onboarding + 100 start screen = 140.
   const mock = wordsBeforeCamera(MOCK_CASE.subject, MOCK_CASE.device)
-  assert.equal(mock.cards.length, 3, 'the mock screen shows a recommendation and two alternatives')
+  assert.equal(mock.cards.length, 3, 'the mock screen can draw a recommendation and two alternatives')
+  assert.equal(mock.alternatives, 2, 'and two of the three are behind the disclosure')
   assert.equal(mock.note, 0, 'a proven engine gets no hedge')
   // Pinned to a browser measurement, so it cannot go stale in silence. If the
   // copy changed on purpose, re-run the spec (npm run loop --only=ui) and put
   // the number it reports here.
   assert.equal(
-    mock.total, 140,
-    `the model now says ${mock.total}; Chrome said 140 on 2026-08-30 — re-measure before trusting either`,
+    mock.total, 92,
+    `the model now says ${mock.total}; Chrome said 92 on 2026-08-30 — re-measure before trusting either`,
   )
+  // What the same screen was before the disclosure, and what Chrome measured
+  // on the build immediately before it (140). Kept because it is the size of
+  // what the control bought.
+  assert.equal(mock.totalExpanded, 142, 'the mock screen with both alternatives open, plus the control itself')
 })
 
 test('every subject has a screen', () => {
