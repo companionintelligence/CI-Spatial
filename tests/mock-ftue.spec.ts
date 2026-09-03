@@ -3,22 +3,34 @@
  *
  * Verifies the redesigned #start-screen presents both capture paths as
  * equal, distinct choices, and that each path works:
- *   - "Scan a room"    → #start-ar-btn starts live AR (?mock=xr8 → points
- *                         accumulate in #scan-stats)
- *   - "Upload a video" → the #start-upload-card label opens the hidden
- *                         #upload-video-input; a chosen file POSTs to the REAL
- *                         /ingest-video route on the isolated mock server (a
- *                         tiny fake blob — never a real video). We assert the
- *                         request reaches the route (a non-404 response) rather
- *                         than intercepting it.
+ *   - the live path   → #start-ar-btn starts live AR (?mock=xr8 → points
+ *                       accumulate in #scan-stats)
+ *   - the upload path → #start-upload-card opens the hidden
+ *                       #upload-video-input; a chosen file POSTs to the REAL
+ *                       /ingest-video route on the isolated mock server (a
+ *                       tiny fake blob — never a real video). We assert the
+ *                       request reaches the route (a non-404 response) rather
+ *                       than intercepting it.
  *   - onboarding overlay shows once, then not again (localStorage)
+ *
+ * The paths are named by role above and never by label, because since #223
+ * they have no fixed label: renderCaptureChoice() writes each card from
+ * resolveCapture()'s plan for the subject on screen, so #start-upload-card
+ * reads "Film a walkthrough" for a room and "Photograph it" for an object.
+ * The copy assertions below ask that same resolver rather than restating it.
  *
  * Mobile iPhone-15 viewport, chromium-mock project.
  *
  * Run: npx playwright test --project=chromium-mock mock-ftue
  */
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
 import { ONBOARDING_KEY } from '../src/shared/storage-keys'
+import {
+  deviceFromProbe,
+  resolveCapture,
+  type CaptureControlId,
+  type DeviceCapture,
+} from '../src/capture/capture-intent'
 
 // iPhone-15-ish viewport on the chromium-mock browser (a webkit device
 // descriptor can't be used under the chromium project, so set the metrics
@@ -30,6 +42,35 @@ test.use({
   hasTouch: true,
 })
 
+/**
+ * What this device has been found able to do — read off the page the way
+ * main.ts reads it (section 3b), and turned into a `DeviceCapture` by the same
+ * function the app calls, `deviceFromProbe()`.
+ *
+ * Asked rather than assumed. `?mock=xr8` pins one half of the answer — the
+ * mock engine is on `window`, so the in-browser live rung is available — while
+ * headless Chromium decides the other half by whether it advertises
+ * `immersive-ar` at all. Which of the two live rungs then wins is the
+ * resolver's business; a device literal typed in here would be this spec
+ * guessing at it a second time.
+ */
+async function captureDeviceOf(page: Page): Promise<DeviceCapture> {
+  return deviceFromProbe(await page.evaluate(async () => {
+    const xr = (navigator as unknown as {
+      xr?: { isSessionSupported(mode: string): Promise<boolean> }
+    }).xr
+    let immersiveArAdvertised = false
+    // A throw counts as "no", the same way isImmersiveARSupported() treats it.
+    try { immersiveArAdvertised = xr ? await xr.isSessionSupported('immersive-ar') : false } catch { /* no */ }
+    return {
+      secureContext: window.isSecureContext,
+      xr8Loaded: 'XR8' in window,
+      webxrApi: xr !== undefined,
+      immersiveArAdvertised,
+    }
+  }))
+}
+
 test.describe('FTUE two-path start screen', () => {
   test.setTimeout(90_000)
 
@@ -40,13 +81,54 @@ test.describe('FTUE two-path start screen', () => {
     const upload = page.locator('#start-upload-card')
 
     await expect(scan).toBeVisible({ timeout: 15_000 })
+    // Since the start screen recommends one method rather than presenting two,
+    // the upload path ships behind #start-alt-toggle. Open it, so what fails
+    // below is this test's pre-#223 copy and not its route to the card.
+    await page.locator('#start-alt-toggle').click({ timeout: 15_000 })
     await expect(upload).toBeVisible()
 
-    // Distinct copy: each card names its path and its one-line subtext.
-    await expect(scan).toContainText('Scan a Place')
-    await expect(scan).toContainText('walk the space')
-    await expect(upload).toContainText('Upload Content')
-    await expect(upload).toContainText('no AR needed')
+    // Distinct copy: each card names its path and its one-line subtext — but
+    // not copy this spec knows the words of. It used to paste them in ("Scan a
+    // Place", "Upload Content"), and #223 replaced that screen: the cards are
+    // now written per subject by renderCaptureChoice() from resolveCapture()'s
+    // plans (src/capture/capture-intent.ts). So ask the same resolver the
+    // screen asks, for the subject that ships preselected, and compare against
+    // what it hands back. Sentences retyped here would only drift again.
+    //
+    // The mock engine arrives as a dynamically-created <script>, which is async
+    // — so wait for it the way main.ts's boot does (waitForXR8) before reading
+    // the device, or `browserAr` reads 'no' on a page about to say otherwise.
+    await page.waitForFunction(() => 'XR8' in window, null, { timeout: 15_000 })
+    const rec = resolveCapture('room', await captureDeviceOf(page))
+    const plans = [rec.best, ...rec.alternatives]
+    // A video and a photo set are the same tap, and renderCaptureChoice gives a
+    // control to the FIRST plan that claims it — so find(), not filter().
+    const planOn = (control: CaptureControlId) => plans.find((plan) => plan.control === control)
+    const scanPlan = planOn('start-ar-btn')
+    const uploadPlan = planOn('start-upload-card')
+    expect(scanPlan, '?mock=xr8 loads the engine, so a live method must be on offer').toBeTruthy()
+    expect(uploadPlan, 'an upload method runs on every device there is').toBeTruthy()
+
+    for (const [name, card, plan] of [
+      ['scan', scan, scanPlan!],
+      ['upload', upload, uploadPlan!],
+    ] as const) {
+      // The exact strings renderCaptureChoice() writes, assembled the same way.
+      await expect(card.locator('.start-path-title'), `${name} card title`).toHaveText(plan.title)
+      await expect(card.locator('.start-path-sub'), `${name} card subtext`)
+        .toHaveText(`${plan.action} ${plan.result}`)
+      await expect(card, `${name} card aria-label`)
+        .toHaveAttribute('aria-label', `${plan.title} — ${plan.action} ${plan.result}`)
+      // Exactly one of the two is the recommendation, and the screen says which.
+      await expect(card, `${name} card data-recommended`)
+        .toHaveAttribute('data-recommended', String(plan === rec.best))
+    }
+
+    // Distinct on the screen, not merely in the table behind it.
+    expect(await scan.locator('.start-path-title').innerText())
+      .not.toBe(await upload.locator('.start-path-title').innerText())
+    expect(await scan.locator('.start-path-sub').innerText())
+      .not.toBe(await upload.locator('.start-path-sub').innerText())
 
     // Both cards clear a comfortable tap target (≥56px).
     const scanBox = await scan.boundingBox()

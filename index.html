@@ -1636,6 +1636,47 @@
          `display: flex` above outranks the UA stylesheet's [hidden] rule. */
       .start-path[hidden] { display: none; }
 
+      /* The disclosure that holds the un-recommended methods. Deliberately not
+         a .start-path: it is not a method, and a fourth card-shaped thing on
+         this stack would read as one. Quiet text, full-width tap target, and
+         it sits between the last capture card and the editor card — which is
+         where renderCaptureChoice() lays it out, so what is on screen, what
+         Tab walks and what a screen reader reads are one order. */
+      #start-alt-toggle {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        width: 100%;
+        /* Under the 68px cards on purpose — this is not one of them — but
+           still over the 44px tap target the rest of this screen keeps. */
+        min-height: 44px;
+        padding: 4px 12px;
+        border: 0;
+        border-radius: var(--ci-radius);
+        background: none;
+        color: var(--ci-muted);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      /* `hidden` alone cannot do this, for the same reason as the cards: the
+         `display: flex` above outranks the UA stylesheet's [hidden] rule. */
+      #start-alt-toggle[hidden] { display: none; }
+
+      #start-alt-toggle:hover { color: var(--ci-text); }
+
+      /* The state, said in the one place the label deliberately does not. */
+      .start-alt-caret { transition: transform 0.18s ease-out; }
+      #start-alt-toggle[aria-expanded='true'] .start-alt-caret { transform: rotate(180deg); }
+
+      @media (prefers-reduced-motion: reduce) {
+        .start-alt-caret { transition: none; }
+      }
+
       #start-ar-btn.start-path[data-recommended='true']:not(:disabled):hover {
         background: linear-gradient(180deg, rgba(114,221,212,1), rgba(114,221,212,0.88));
         box-shadow: 0 20px 54px rgba(114,221,212,0.22);
@@ -2577,14 +2618,19 @@
           </span>
         </button>
 
-        <!-- The upload path. Ships `hidden`: it is a real method and stays
-             all shown at once, but three cards named after the
-             machinery behind them was the screen this replaced, and the copy
-             here is written per subject by renderCaptureChoice() — filming a
-             room and photographing a chair are not the same instruction.
-             Hidden also costs no words, which is what pays for the question
-             above (tests/mock-scanner-startup-budget.spec.ts measures the
-             rendered text of #start-screen, and hidden text is not in it).
+        <!-- The upload path. Ships `hidden`, and renderCaptureChoice() decides
+             what happens to it: shown outright when it IS the recommendation,
+             and otherwise held behind #start-alt-toggle below. Never all three
+             at once — three cards named after the machinery behind them was
+             the screen this replaced, and three cards named after what you do
+             is still three answers to a question nobody was asked.
+
+             The copy here is written per subject by renderCaptureChoice() —
+             filming a room and photographing a chair are not the same
+             instruction. Hidden also costs no words, which is what pays for
+             the question above (tests/support/startup-budget.ts: the budget
+             counts the rendered text of #start-screen, and hidden text is not
+             in it).
 
              Whatever the subject, the sentence keeps saying that an upload
              rebuilds the room and catalogues nothing in it — measured: every
@@ -2625,6 +2671,30 @@
           </span>
         </button>
 
+        <!-- The methods that were not recommended, one tap away. Ships hidden
+             and is unhidden by renderCaptureChoice() once it knows there is
+             something behind it — a toggle that reveals nothing is worse than
+             no toggle.
+
+             It is NOT a fourth capture control and never starts a capture: the
+             cards behind it are the same three above, under the same ids (ADR
+             0001), and all this decides is whether they are on screen. Which
+             of them are the alternatives changes with the subject and with
+             what the device turns out to be able to do, so `aria-expanded` and
+             `aria-controls` are both rewritten per render rather than pinned
+             here.
+
+             Two words, because they are charged to the same budget as the
+             cards they replace (tests/support/startup-budget.ts): collapsing
+             two ~25-word cards behind this is what pays for the question
+             above. The state is on `aria-expanded` and on the caret, not in
+             the label — a label that flips between "Show" and "Hide" says
+             twice what the attribute already says once. -->
+        <button id="start-alt-toggle" type="button" hidden aria-expanded="false" aria-controls="start-upload-card start-tripod-card">
+          Other ways
+          <svg class="start-alt-caret" width="14px" height="14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m5 9 7 7 7-7"/></svg>
+        </button>
+
         <a id="start-editor-card" class="start-path" href="/editor" aria-label="Explore and edit existing places">
           <span class="start-path-icon" aria-hidden="true"><svg width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 5.5h16v13H4z"/><path d="M8 3.5v4M16 3.5v4M8 16.5h8M8 12.5h5"/></svg></span>
           <span class="start-path-copy">
@@ -2633,11 +2703,6 @@
           </span>
         </a>
       </div>
-
-      <!-- The methods that were not recommended, one tap away. Ships hidden
-           and is unhidden by renderCaptureChoice() once it knows there is
-           something behind it — a toggle that reveals nothing is worse than no
-           toggle. -->
 
       <!-- Why this method and not a better one, when that is worth saying.
            Written by renderCaptureChoice() from the resolver's note. -->

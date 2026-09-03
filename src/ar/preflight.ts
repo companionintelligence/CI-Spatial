@@ -75,13 +75,13 @@ export interface PreflightVerdict {
   /** Whether committing to a live AR scan is worth the user's time. */
   canScan: boolean
   /**
-   * Whether the paths that need no AR runtime — Tripod Scan first, Upload
-   * Content second — are where this device should be sent.
+   * Whether the paths that need no AR runtime — a tripod sweep first, an
+   * upload of existing footage second — are where this device should be sent.
    *
-   * Named for Upload Content because that was the only such path when this
-   * field was written, and kept: the question it answers ("has the live
-   * scanner run out of road here?") is unchanged, and what it routes to is a
-   * property of `detail`, which now offers both.
+   * The name is historical: an upload was the only such path when this field
+   * was written. Kept anyway, because the question it answers ("has the live
+   * scanner run out of road here?") is unchanged, and WHICH path it routes to
+   * is a property of `detail` rather than of this boolean.
    */
   routeToUpload: boolean
   /**
@@ -105,7 +105,7 @@ export interface PreflightVerdict {
 // Every verdict this is appended to has already concluded the device cannot scan,
 // so it must not end by recommending scanning.
 //
-// Tripod Scan now leads, and Upload Content follows. Both need no AR runtime, so
+// The tripod sweep leads and the upload follows. Both need no AR runtime, so
 // both are reachable on a phone that has just been found unable to scan — but
 // they are not equivalent, and the ordering says which is better here: sweeping
 // a room from several tripod spots reconstructed it from every side (36 of 36
@@ -119,12 +119,25 @@ export interface PreflightVerdict {
 // is an exact similarity of the room at an arbitrary size until a known length
 // calibrates it (server/capture/known_distance.ts), which is what
 // capture-intent.ts's `TRUE_TO_SIZE` records for both of these paths.
+//
+// Described, never named. This copy used to say "Tripod Scan" and "Upload
+// Content", which were the labels on two start-screen cards until #223 handed
+// the cards to renderCaptureChoice(): they are now written per subject from
+// capture-intent.ts's COPY table, so #start-upload-card reads "Film a
+// walkthrough" for a room and "Photograph it" for an object, and no single
+// name typed here could be right for both. Nothing in this file knows the
+// subject, so nothing in this file may name a control. Two other things
+// already do that job properly — the cards themselves, and `noteFor()`'s
+// "This phone cannot capture live; this one does." — and on the one path where
+// they are absent (the permission banner, shown when the start screen has
+// already been torn down) there is no control on screen to name either. What
+// is left here is the part that survives both: what these paths ARE.
 /** The same next steps, as a mid-sentence continuation. */
 const NO_AR_NEXT_STEP_LOWER =
-  'try Tripod Scan — a phone on a tripod sweeps the room from a few spots, with no AR involved — or use Upload Content to add a video or photos from this Place.'
+  'the other ways to capture need no AR and still work: a phone on a tripod swept from three to five spots, or a video or photos you already have of this Place.'
 
 const NO_AR_NEXT_STEP =
-  'Tripod Scan is the path for this device: a phone on a tripod sweeps the room from a few spots, with no AR involved. Upload Content is the other option if you already have a video or photos of this Place, though it rebuilds the room without cataloguing objects.'
+  'The other ways to capture need no AR and still work here. A phone on a tripod, swept from three to five spots, rebuilds the room from every side. A video or photos you already have of this Place is the other, though it rebuilds the room without cataloguing anything in it.'
 
 export interface ProbeEnv {
   /** `window.isSecureContext` — camera, WebXR and IndexedDB all require it. */
@@ -208,7 +221,7 @@ export function probeVerdict(env: ProbeEnv): PreflightVerdict {
     headline: 'AR ready to start',
     // Named, rather than presented as a green light, because this is the exact
     // claim that misled us for a week on the Beam Pro.
-    detail: 'This browser reports AR support. That only means the API is present — some devices answer yes with no AR service installed, and fail when the session opens. Upload Content is always available if it does.',
+    detail: 'This browser reports AR support. That only means the API is present — some devices answer yes with no AR service installed, and fail when the session opens. If this one does, the other ways to capture need no AR and still work.',
     canScan: true,
     routeToUpload: false,
     // The one warming-up verdict worth reading first: this is the sentence the
@@ -237,7 +250,7 @@ export function startFailureVerdict(err: unknown): PreflightVerdict {
     return {
       outcome: 'unavailable',
       headline: 'Camera access is blocked',
-      detail: 'Camera access is blocked, so the scanner cannot see the room. Allow camera access for this site in your browser or phone settings and reload, or use Upload Content to add a video or photos from this Place instead.',
+      detail: 'Camera access is blocked, so the scanner cannot see the room. Allow camera access for this site in your browser or phone settings and reload, or hand over a video or photos you already have of this Place instead.',
       canScan: false,
       routeToUpload: true,
       caveat: true,
@@ -361,9 +374,9 @@ export function firstFrameVerdict(obs: FirstFrameObservation): PreflightVerdict 
   return {
     outcome: 'degraded',
     headline: 'AR cannot lock on yet',
-    // No mention of Upload Content: this one is fixable where the person is
-    // standing, and sending them away from a live camera that works would be
-    // worse advice than saying nothing.
+    // No mention of the paths that need no AR: this one is fixable where the
+    // person is standing, and sending them away from a live camera that works
+    // would be worse advice than saying nothing.
     detail: 'The camera is running but AR has not locked on. Add light, point at something with more detail than a blank wall, and move slowly.',
     canScan: true,
     routeToUpload: false,

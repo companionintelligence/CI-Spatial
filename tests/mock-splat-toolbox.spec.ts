@@ -222,6 +222,9 @@ test.describe('Web scanner walkthrough-video upload', () => {
 
     await page.goto('/?mock=xr8')
     await expect(page.locator('#start-ar-btn')).toBeVisible({ timeout: 15_000 })
+    // Under the mock the upload path is an alternative, not the
+    // recommendation, so it sits behind #start-alt-toggle until asked for.
+    await page.locator('#start-alt-toggle').click({ timeout: 15_000 })
     await expect(page.locator('#upload-video-btn')).toBeVisible()
 
     // Feed a tiny fake video blob to the hidden file input (never a real 4K clip).

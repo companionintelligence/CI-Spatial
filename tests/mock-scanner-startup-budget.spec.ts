@@ -13,9 +13,35 @@
  * sits just above the measured value at the time of writing, so a real
  * regression trips it and a cosmetic tweak does not.
  *
+ * The word budget is no longer held here. It went 20 words over in #223 and
+ * stayed over, because this file only runs where a browser and a Vite server
+ * do — GitHub CI runs no Playwright at all, so the only thing that ever
+ * executed the assertion was a local `npm run loop`. It now lives in
+ * tests/unit/node/startup_word_budget.test.ts, which computes the same number
+ * from index.html and `resolveCapture()` for every subject x device and runs
+ * in `npm run verify`, hence on every push.
+ *
+ * What is left here is the half a model cannot have: this measures the DOM a
+ * browser actually paints, and asserts it against the model rather than
+ * against a literal. If the scanner in tests/support/startup-budget.ts ever
+ * reads the markup differently from the way Chrome renders it, this is what
+ * says so.
+ *
+ * It also guards the shape that makes the number possible. The un-recommended
+ * methods are behind `#start-alt-toggle`, and a ceiling met by deleting the
+ * second sentence off every card would pass just as well while retracting the
+ * "size is not measured" clause capture_intent.test.ts exists to keep on
+ * screen — so the disclosure, and the keyboard path into it, are asserted here
+ * rather than inferred from a small total.
+ *
  * Run: npx playwright test --project=chromium-mock mock-scanner-startup-budget
  */
 import { test, expect, type Page } from '@playwright/test'
+import {
+  MOCK_CASE,
+  WORDS_BEFORE_CAMERA_MAX,
+  wordsBeforeCamera,
+} from './support/startup-budget.ts'
 
 test.use({
   viewport: { width: 375, height: 812 },
@@ -115,7 +141,54 @@ test.describe('scanner startup budget', () => {
       Array.from(document.querySelectorAll('.onboard-desc'))
         .reduce((a, e) => a + ((e as HTMLElement).textContent || '').trim().split(/\s+/).filter(Boolean).length, 0))
     const startWords = await wordCount(page, '#start-screen')
-    expect(onboardingWords + startWords, 'words shown before the camera (was 197)').toBeLessThanOrEqual(120)
+
+    // `?mock=xr8` loads the in-browser engine and nothing else, and `room` is
+    // preselected — the one screen out of 24 this run renders. Parity first,
+    // because a budget met by a model that has stopped seeing half the screen
+    // is worse than no budget: the numbers must agree before either is trusted.
+    const model = wordsBeforeCamera(MOCK_CASE.subject, MOCK_CASE.device)
+    expect(onboardingWords, 'onboarding words: browser vs tests/support/startup-budget.ts')
+      .toBe(model.onboarding)
+    expect(startWords, 'start-screen words: browser vs tests/support/startup-budget.ts')
+      .toBe(model.total - model.onboarding)
+
+    // Was 197, then 120, then 155, and 110 since the disclosure landed — see
+    // the reasoning on WORDS_BEFORE_CAMERA_MAX. Held here too so the ceiling is
+    // checked against a real render and not only against the model.
+    expect(onboardingWords + startWords, 'words shown before the camera')
+      .toBeLessThanOrEqual(WORDS_BEFORE_CAMERA_MAX)
+
+    // The un-recommended methods are behind #start-alt-toggle, which is what
+    // brought that total back under the ceiling — so assert the disclosure is
+    // doing the work, not that the number happens to be small. Without this,
+    // deleting the second sentence off every card would pass the line above
+    // while removing the "size is not measured" clause that
+    // tests/unit/node/capture_intent.test.ts exists to keep on screen.
+    const toggle = page.locator('#start-alt-toggle')
+    await expect(toggle).toBeVisible()
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    // The recommendation is never behind it, and neither is the editor card.
+    await expect(page.locator('#start-paths [data-recommended="true"]')).toBeVisible()
+    await expect(page.locator('#start-editor-card')).toBeVisible()
+    await expect(page.locator('#start-upload-card')).toBeHidden()
+    await expect(page.locator('#start-tripod-card')).toBeHidden()
+
+    // Keyboard, because "one tap away" has to be one key away too. Focus the
+    // control and press Enter: the methods appear, and the next Tab walks into
+    // them rather than past them — which is the whole reason
+    // renderCaptureChoice() reorders the cards instead of setting CSS `order`.
+    await toggle.focus()
+    await page.keyboard.press('Enter')
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    await expect(page.locator('#start-tripod-card')).toBeVisible()
+    await expect(page.locator('#start-upload-card')).toBeVisible()
+    await page.keyboard.press('Tab')
+    await expect(page.locator('#start-tripod-card')).toBeFocused()
+
+    // Closed again, so the taps below start from the screen this test measured.
+    await toggle.focus()
+    await page.keyboard.press('Enter')
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
 
     // Tap 1 — skip the tutorial.
     await page.locator('#onboard-skip').click()

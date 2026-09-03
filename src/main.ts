@@ -223,7 +223,22 @@ let captureDevice: DeviceCapture = {
   browserAr: 'unknown',
 }
 
-/** Whether the methods that were not recommended are on screen. */
+/**
+ * Whether the methods that were not recommended are on screen.
+ *
+ * Starts closed. The screen's whole premise is that the person names the
+ * subject and the app names the method, and three cards open re-poses exactly
+ * the question it exists to stop asking — so the alternatives are one tap
+ * away rather than in front of everyone. Measured: the two un-recommended
+ * cards were 50 of the 140 words shown before the camera
+ * (tests/support/startup-budget.ts).
+ *
+ * Survives a re-render, because `setCaptureDevice()` can fire while a finger
+ * is on the list and a list that slams shut mid-read is worse than one that
+ * was never opened. It is reset only where the question itself changed — see
+ * `mountCaptureIntent()`.
+ */
+let altsExpanded = false
 
 function poseIsFinite(pose: Pose): boolean {
   return Number.isFinite(pose.position.x)
@@ -358,8 +373,8 @@ async function main() {
     // The start screen is torn down only once `provider.start()` has actually
     // resolved (section 5), not here. Removing it up front meant a device with
     // no working AR runtime landed on a dark screen holding a raw exception,
-    // with no retry and no route back to Upload Content — the one path that
-    // phone can still take, and it had just been deleted. Report progress on
+    // with no retry and no route back to the paths that need no AR runtime —
+    // the ones that phone can still take, and they had just been deleted. Report progress on
     // the button that was tapped, since #status-text sits behind this screen.
     const startStatus = document.querySelector<HTMLElement>('#start-ar-btn .start-path-status')
     if (startStatus) startStatus.textContent = 'Starting AR…'
@@ -658,9 +673,9 @@ async function main() {
   // Section 5 does not run until the user commits to a scan, and the two
   // failures worth naming (no AR service behind the API; an 8th Wall pipeline
   // that reports ready and emits nothing) are only visible after that. What IS
-  // knowable now goes on the start screen, beside the Upload Content card that
-  // is the alternative — including the honest caveat when the only evidence we
-  // have is a browser saying "yes" that a Beam Pro also says.
+  // knowable now goes on the start screen, beside the cards that are the
+  // alternative — including the honest caveat when the only evidence we have
+  // is a browser saying "yes" that a Beam Pro also says.
   const probeEnv = {
     secureContext: window.isSecureContext,
     xr8Loaded: xr8Available,
@@ -1419,8 +1434,10 @@ async function main() {
     // (z-index 10), which paints *under* #start-screen (z-index 20). So say it
     // on the start screen — on the button that was tapped, and in #ar-help,
     // the line already reserved there for "why AR isn't happening" — right
-    // beside the Upload Content card the next step points at. The banner is
-    // still written for the case where the start screen is already gone.
+    // beside the cards the verdict's next step describes. It describes them
+    // rather than naming them, because renderCaptureChoice() writes those
+    // labels per subject and preflight.ts has no subject. The banner is still
+    // written for the case where the start screen is already gone.
     setStartButtonState('unavailable', verdict.headline)
     const arHelp = document.getElementById('ar-help')
     if (arHelp) {
@@ -2259,7 +2276,7 @@ function mountPlacePicker(
       // explicit Place pick this way; unassigned (null) is supported
       // end-to-end (ensureSessionScanEntry, upload's projectId: null), so
       // Cancel should resume the same way instead of leaving the caller (AR
-      // start or Upload Content) as a dead click.
+      // start or the upload card) as a dead click.
       const action = pendingSelectionAction
       pendingSelectionAction = null
       action?.()
@@ -2822,12 +2839,29 @@ function renderCaptureChoice(): void {
   // A video and a photo set are the same tap, so the first plan to claim a
   // control keeps it — otherwise the second would overwrite the words of the
   // recommendation itself.
+  //
+  // Filled best-first, so the key order is the resolver's ranking and stays
+  // usable as one: a building ranks a walkthrough video above a tripod carried
+  // from room to room, and the list below is laid out in that order rather
+  // than in whatever order the controls happen to appear in the markup.
   const byControl = new Map<CaptureControlId, MethodPlan>()
   for (const plan of [rec.best, ...rec.alternatives]) {
     if (!byControl.has(plan.control)) byControl.set(plan.control, plan)
   }
 
-  let alternatives = 0
+  // How many runnable methods are not the recommendation — which is exactly
+  // how many cards sit behind the disclosure, because `byControl` holds one
+  // entry per control that has something to run and always holds the
+  // recommendation's own. Counted before the loop rather than in it, so the
+  // "nothing behind it" case below can settle the state the loop then reads.
+  const altControls = [...byControl.keys()].filter(id => id !== rec.best.control)
+  const alternatives = altControls.length
+  // A control that reveals nothing is worse than no control, and so is a
+  // remembered "open" for a list that is now empty: a later render must not
+  // spring open on the strength of a tap the person made about a different
+  // screen.
+  if (alternatives === 0) altsExpanded = false
+
   for (const id of CAPTURE_CONTROLS) {
     const el = document.getElementById(id)
     if (!el) continue
@@ -2841,7 +2875,6 @@ function renderCaptureChoice(): void {
       continue
     }
     const isBest = id === rec.best.control
-    if (!isBest) alternatives++
     const title = el.querySelector<HTMLElement>('.start-path-title')
     const sub = el.querySelector<HTMLElement>('.start-path-sub')
     // textContent, not innerHTML: #upload-video-btn is the title span itself,
@@ -2850,14 +2883,69 @@ function renderCaptureChoice(): void {
     if (sub) sub.textContent = `${plan.action} ${plan.result}`
     el.setAttribute('aria-label', `${plan.title} — ${plan.action} ${plan.result}`)
     el.dataset.recommended = String(isBest)
-    el.hidden = false
+    // The recommendation is never behind the disclosure, and neither is the
+    // editor card below it — this hides only the methods that were ranked and
+    // not chosen.
+    el.hidden = !isBest && !altsExpanded
   }
+
+  const toggle = document.getElementById('start-alt-toggle')
+  if (toggle) {
+    toggle.hidden = alternatives === 0
+    toggle.setAttribute('aria-expanded', String(altsExpanded))
+    // Rewritten per render because which cards these are is not a property of
+    // the markup: it moves with the subject and with what the device has been
+    // found able to do.
+    toggle.setAttribute('aria-controls', altControls.join(' '))
+  }
+
+  layoutStartPaths(paths, rec.best.control, altControls, toggle)
 
   const note = document.getElementById('capture-note')
   if (note) {
     note.textContent = rec.note ?? ''
     note.hidden = rec.note === null
   }
+}
+
+/**
+ * Put the cards in the order the resolver ranked them: recommendation, the
+ * control that reveals the rest, then the rest, then the editor card.
+ *
+ * The markup cannot ship this order, because which card is the recommendation
+ * is not known until a device has been probed — a phone with no live capture
+ * is recommended the tripod card, which sits third in the source. Left alone,
+ * the mint "start here" fill landed in the middle of the stack, and the
+ * disclosure would have sat either above the recommendation or below the cards
+ * it reveals.
+ *
+ * Reordering the DOM rather than setting `order` on the flex container is the
+ * point: `order` moves the pixels and leaves Tab and the screen reader walking
+ * the source, so a keyboard user would have reached the revealed cards by
+ * tabbing BACKWARDS past the control that revealed them.
+ *
+ * Only ever moves nodes when the order actually differs. Opening or closing
+ * the list does not change it — that is `hidden`, not position — and moving a
+ * node that currently has focus drops the focus to the body, which would take
+ * the focus off the toggle on the very tap that used it.
+ */
+function layoutStartPaths(
+  paths: HTMLElement,
+  best: CaptureControlId,
+  altControls: readonly CaptureControlId[],
+  toggle: HTMLElement | null,
+): void {
+  const wanted = [
+    document.getElementById(best),
+    toggle,
+    ...altControls.map(id => document.getElementById(id)),
+    document.getElementById('start-editor-card'),
+  ].filter((el): el is HTMLElement => el !== null)
+
+  const managed = new Set<Element>(wanted)
+  const current = Array.from(paths.children).filter(el => managed.has(el))
+  if (current.length === wanted.length && current.every((el, i) => el === wanted[i])) return
+  for (const el of wanted) paths.appendChild(el)
 }
 
 /**
@@ -2889,9 +2977,19 @@ function mountCaptureIntent(): void {
       captureSubject = subject
       // The list was opened about the previous subject; leaving it open would
       // show a set of methods answering a question that has changed.
+      altsExpanded = false
       renderCaptureChoice()
     })
   }
+
+  // The disclosure. A real <button>, so Enter and Space work and it takes a
+  // Tab stop without anything here adding one — and `renderCaptureChoice()`
+  // only flips `hidden` on other elements, so the focus stays where the
+  // person put it and the next Tab walks into what they just revealed.
+  document.getElementById('start-alt-toggle')?.addEventListener('click', () => {
+    altsExpanded = !altsExpanded
+    renderCaptureChoice()
+  })
 
   renderCaptureChoice()
 }
@@ -3335,8 +3433,8 @@ function mountTripodCapture(): void {
    * given up only when a pick actually came back — so a CANCELLED picker left
    * it held, and the next thing to open that same input had its files
    * swallowed by a sweep that was already over. Measured 2026-08-30: with the
-   * sheet closed, choosing a video on the Upload Content card uploaded
-   * nothing, and the explanation was written onto a sheet nobody could see.
+   * sheet closed, choosing a video on the upload card uploaded nothing, and
+   * the explanation was written onto a sheet nobody could see.
    *
    * Called wherever the sweep that took the claim stops being the thing on
    * screen. Never while a picker is genuinely open — the sheet is behind it,
@@ -3669,7 +3767,7 @@ function mountTripodCapture(): void {
     // File[] becomes an input's FileList; if it is missing, say so instead of
     // pretending the capture went anywhere.
     if (typeof DataTransfer === 'undefined') {
-      notice = 'This browser will not let the app hand the photos to the uploader. Use Upload Content and pick all of the spots’ photos together.'
+      notice = 'This browser will not let the app hand the photos to the uploader. Use the upload card on the start screen and pick all of the spots’ photos together.'
       render()
       return
     }
@@ -3821,8 +3919,10 @@ function cameraLightSource(): HTMLVideoElement | null {
  *
  * Reuses the two lines that screen already has for this — the Start button's
  * `.start-path-status` sub-label and `#ar-help` — rather than introducing an
- * overlay. `#ar-help` sits directly beside the Upload Content card, which is
- * where `routeToUpload` is pointing.
+ * overlay. `#ar-help` sits directly beside the cards that need no AR runtime,
+ * which is where `routeToUpload` is pointing. It says what those paths ARE
+ * rather than naming one: renderCaptureChoice() writes their labels per
+ * subject, so preflight.ts, which has no subject, names none.
  */
 function applyPreflightToStartScreen(verdict: PreflightVerdict): void {
   if (verdict.outcome === 'unavailable') {
