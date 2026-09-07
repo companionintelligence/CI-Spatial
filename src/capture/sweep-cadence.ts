@@ -17,20 +17,46 @@
  * browser capture to a host-side driver would make the camera path fail
  * whenever the driver is not running. So the page samples on its own clock.
  *
- * ## Why 700 ms
+ * ## Why the clock alone is not the cadence
  *
- * {@link SWEEP_SAMPLE_MS} is deliberately SHORTER than {@link GIMBAL_MIN_DWELL_MS}.
- * Sampling every 700 ms means every 800 ms window of time contains at least one
- * sample instant, so every dwell — however the page's clock happens to line up
- * with the gimbal's — is photographed at least once. The price is the two or so
- * samples that land mid-move and come out smeared; those are the frames the
- * server's ingest already drops (`server/main.ts` — "the script re-orders by
- * EXIF capture time and drops blurry frames"), and dropping them here as well
- * would risk emptying a spot the operator watched succeed. Filtering stays
- * where it is measured.
+ * The first version of this module sampled every 700 ms and stopped at 48
+ * frames. Measured on a real gimbal on 2026-08-29 that is 33.6 s of capture
+ * against a ten-position sweep that ran 60-90 s: a spot's photos covered
+ * roughly the first half of the arc and the far end of the room was never
+ * photographed at all. The cadence and the ceiling had been tuned against each
+ * other rather than against a sweep.
  *
- * A twelve-position sweep at ~2.5 s per position therefore banks around 43
- * photos, against the 36 that reconstructed a room at 36-of-36 usable.
+ * The knob that was wrong is neither of them on their own — it is that the
+ * page was spending its frame budget at a fixed rate on a sweep whose length
+ * it does not know. So banking is paced by the PICTURE instead:
+ *
+ *   - the view is settled and shows something the last banked photo did not
+ *     — the gimbal has arrived somewhere new and the picture has stopped
+ *     smearing, which is the one moment worth a photograph. One per position.
+ *   - or {@link SWEEP_FORCE_BANK_MS} has gone by without a photo. The floor,
+ *     and the reason a wrong threshold cannot empty a spot: at worst this
+ *     degrades to a photo every four seconds, spread across the whole window,
+ *     which is still the whole arc where 700 ms x 48 was the first half of it.
+ *
+ * A sweep of 60-90 s therefore banks roughly one sharp frame per position plus
+ * the floor's, about 25-40 photos spread end to end — against the 36 that
+ * reconstructed a room at 36-of-36 usable, and the 9 of 12 that solved one with
+ * 372 points. More frames of one wall was never the thing that was missing.
+ *
+ * {@link SWEEP_SAMPLE_MS} survives as the MINIMUM gap between two photos, and
+ * as the whole cadence on a page that cannot measure the picture at all (a
+ * canvas that will not give up its pixels): there, `motion`/`novelty` arrive
+ * null and this falls back to the plain 700 ms clock, which is shorter than
+ * {@link GIMBAL_MIN_DWELL_MS} so every dwell still contains a sample instant.
+ *
+ * ## Saying so when the view stops moving
+ *
+ * The operator has stepped out of the room. A gimbal that jams at position 4
+ * leaves the camera running, the frames arriving and the tally climbing — 48
+ * photos of one wall, and a screen that said only "48 photos". The same signal
+ * that paces the banking knows this: if nothing has moved for
+ * {@link SWEEP_STILL_WARN_MS}, {@link sweepMotionNotice} says so while the
+ * sweep is still recoverable.
  *
  * ## The one thing this module refuses
  *
@@ -49,13 +75,53 @@
  */
 
 /**
- * How often the page grabs a frame while a sweep runs.
+ * The shortest gap allowed between two banked photos.
  *
- * Shorter than the shortest dwell on purpose — see the module note. Changing
- * this above {@link GIMBAL_MIN_DWELL_MS} breaks the guarantee that every gimbal
- * position is photographed.
+ * Also the entire cadence when the picture cannot be measured — see the module
+ * note — which is why it stays below {@link GIMBAL_MIN_DWELL_MS}: on that
+ * fallback path every 800 ms dwell still contains a sample instant whatever the
+ * phase between the two clocks. Raising it above that dwell would break the
+ * only guarantee the fallback has.
  */
 export const SWEEP_SAMPLE_MS = 700
+
+/**
+ * Longest the sweep will go without banking anything, once the camera is live.
+ *
+ * The floor under the picture-led cadence, and the reason a badly chosen
+ * {@link VIEW_SETTLED} or {@link VIEW_NEW} cannot produce an empty spot: with
+ * both gates permanently shut this is still a photo every four seconds for the
+ * length of the sweep. Four rather than one because a frame taken mid-move is
+ * smeared and gets dropped at the far end anyway; this is coverage insurance,
+ * not the plan.
+ */
+export const SWEEP_FORCE_BANK_MS = 4_000
+
+/**
+ * How different two looks at the picture may be and still count as "not
+ * moving", as a mean absolute difference over a small grid of the frame, 0-1.
+ *
+ * Chosen, not measured — no gimbal was on the desk when this was written. It is
+ * safe to be wrong in either direction: too low and the gate simply never
+ * fires, leaving {@link SWEEP_FORCE_BANK_MS}; too high and a moving picture
+ * reads as settled, which banks a smeared frame that is dropped downstream.
+ * Neither can empty a spot, and neither can overrun a ceiling.
+ */
+export const VIEW_SETTLED = 0.015
+
+/**
+ * How different the settled picture must be from the last banked photo before
+ * it is worth another one. Same units, same "chosen, not measured" caveat.
+ */
+export const VIEW_NEW = 0.04
+
+/**
+ * How long the view may sit unchanged before the sheet says so.
+ *
+ * Longer than any dwell, and far shorter than a sweep: a jam at position 4 is
+ * worth interrupting a stepped-out operator for, a 1.5 s pause is not.
+ */
+export const SWEEP_STILL_WARN_MS = 20_000
 
 /**
  * The shortest dwell the gimbal is configured to hold at a position.
@@ -71,15 +137,24 @@ export const SWEEP_STALL_MS = 1500
 /**
  * Most photos one sweep will bank.
  *
- * A ceiling on an unattended loop, not a target. Twelve positions at ~2.5 s
- * each samples about 43 times, so this sits just above a full slow sweep; past
- * it, the sweep has stopped being a sweep and is photographing a room nobody is
- * turning the camera in.
+ * Still a ceiling on an unattended loop, and still not a target — past it, the
+ * sweep has stopped being a sweep and is photographing a room nobody is turning
+ * the camera in. Sized above what a legitimate full sweep can reach rather than
+ * beside it: {@link SWEEP_MAX_MS} of the floor alone is 37 photos, plus one per
+ * position for a sweep of up to twenty. It was 48, which a 90 s sweep hit at
+ * the 33 s mark and stopped photographing the room.
  */
-export const SWEEP_MAX_FRAMES = 48
+export const SWEEP_MAX_FRAMES = 64
 
-/** And the same ceiling in time, for a sweep whose camera went quiet. */
-export const SWEEP_MAX_MS = 90_000
+/**
+ * And the same ceiling in time, for a sweep whose camera went quiet.
+ *
+ * It was 90 s, which is the length of the longest sweep measured — a ceiling
+ * exactly at the size of the thing it is meant to be above. 150 s clears a slow
+ * ten-position arc with room to spare and still ends a camera nobody came back
+ * to.
+ */
+export const SWEEP_MAX_MS = 150_000
 
 /**
  * Longest edge of a banked photo, in pixels.
@@ -126,6 +201,28 @@ export interface CadenceState {
   readonly seenLive: boolean
   /** When `currentTime` was first seen frozen, or null while it is moving. */
   readonly stalledSinceMs: number | null
+  /**
+   * When the VIEW — what the camera is pointed at — was last seen to change.
+   *
+   * A different thing from `stalledSinceMs`, and the distinction is the whole
+   * of defect 3 on the 2026-08-29 run: a jammed gimbal delivers a perfectly
+   * healthy feed of a perfectly stationary wall. `currentTime` keeps moving,
+   * so the stall guard is right to say nothing; this is what notices.
+   *
+   * Null until the picture has been measured at all, which is also what
+   * {@link viewStillMs} reports as "not still" — an unmeasured picture must
+   * never be accused of having stopped.
+   */
+  readonly lastMovedAtMs: number | null
+  /**
+   * The view has moved since the last photo was banked.
+   *
+   * What holds the settled-and-new gate to ONE photo per gimbal position: the
+   * picture has to leave before it can arrive somewhere worth photographing
+   * again. Without it a long dwell would bank a photo every 700 ms of the same
+   * settled view, which is the frozen-feed failure with extra steps.
+   */
+  readonly movedSinceBank: boolean
   readonly ended: SweepEndReason | null
 }
 
@@ -146,6 +243,18 @@ export interface CameraTick {
    * banks nothing, ends nothing, and resets the stall baseline on the way back.
    */
   hidden?: boolean
+  /**
+   * How much the picture changed since the previous look, 0-1, or null when
+   * the page could not measure it (no pixels came back from the canvas, or
+   * this is the first look and there is nothing to compare against).
+   *
+   * A number, not a decision, so the thresholds stay in this module with the
+   * reasoning next to them and `sweep-camera.ts` keeps only the arithmetic of
+   * comparing two small grids.
+   */
+  motion?: number | null
+  /** The same measure against the LAST BANKED photo: is this view new? */
+  novelty?: number | null
 }
 
 export type CadenceAction =
@@ -164,6 +273,8 @@ export function startCadence(nowMs: number): CadenceState {
     lastCurrentTime: -1,
     seenLive: false,
     stalledSinceMs: null,
+    lastMovedAtMs: null,
+    movedSinceBank: false,
     ended: null,
   }
 }
@@ -174,9 +285,16 @@ export function endCadence(state: CadenceState, reason: SweepEndReason): Cadence
   return { ...state, ended: reason }
 }
 
-/** A frame was drawn, encoded and banked. The only thing that moves the tally. */
+/**
+ * A frame was drawn, encoded and banked. The only thing that moves the tally.
+ *
+ * It is also where `movedSinceBank` is spent, rather than at the moment
+ * {@link tickCadence} decides to take a photo: an encode that came back empty
+ * is not a photo, and a position whose only attempt failed has to stay eligible
+ * for the next one.
+ */
 export function noteCaptured(state: CadenceState): CadenceState {
-  return { ...state, captured: state.captured + 1 }
+  return { ...state, captured: state.captured + 1, movedSinceBank: false }
 }
 
 /**
@@ -203,7 +321,17 @@ export function tickCadence(state: CadenceState, tick: CameraTick): { state: Cad
     // Liveness has to be re-earned on the way back for the same reason it had
     // to be earned at the start: the first reading after a background is
     // indistinguishable from a camera that never came back.
-    return { state: { ...state, stalledSinceMs: null, lastCurrentTime: -1, seenLive: false }, action: 'wait' }
+    //
+    // `lastMovedAtMs` goes with it. Android stops the feed, so the picture is
+    // trivially unchanging for as long as the page is away — and without this
+    // the sheet came back accusing a perfectly good sweep of having jammed for
+    // the length of the background. Measured 2026-08-30 in a background tab:
+    // "the view has not moved for 73 seconds" over a gimbal that had been
+    // turning until 31 seconds earlier.
+    return {
+      state: { ...state, stalledSinceMs: null, lastCurrentTime: -1, seenLive: false, lastMovedAtMs: null },
+      action: 'wait',
+    }
   }
 
   // Nothing decodable yet — a camera still warming up. Not a stall: the stall
@@ -227,15 +355,86 @@ export function tickCadence(state: CadenceState, tick: CameraTick): { state: Cad
     next = state
   }
 
+  // What the picture itself is doing, recorded whether or not it is time for a
+  // photo — the stillness warning is about the view, not about the cadence.
+  const motion = typeof tick.motion === 'number' && Number.isFinite(tick.motion) ? tick.motion : null
+  const novelty = typeof tick.novelty === 'number' && Number.isFinite(tick.novelty) ? tick.novelty : null
+  if (motion !== null) {
+    next = motion > VIEW_SETTLED
+      ? { ...next, lastMovedAtMs: tick.nowMs, movedSinceBank: true }
+      // The first measured look starts the stillness clock; without it a sweep
+      // whose view never moves at all would report zero seconds still forever.
+      : { ...next, lastMovedAtMs: next.lastMovedAtMs ?? tick.nowMs }
+  }
+
   // Frozen, but not yet long enough to call it off. Bank nothing meanwhile —
   // the frame on offer is the same one already banked. Nor before the picture
   // has been watched to move at all.
   if (next.stalledSinceMs !== null || !next.seenLive) return { state: next, action: 'wait' }
 
-  const due = next.lastAttemptMs === null || tick.nowMs - next.lastAttemptMs >= SWEEP_SAMPLE_MS
-  if (!due) return { state: next, action: 'wait' }
+  const sinceAttempt = next.lastAttemptMs === null ? Infinity : tick.nowMs - next.lastAttemptMs
+  if (sinceAttempt < SWEEP_SAMPLE_MS) return { state: next, action: 'wait' }
 
-  return { state: { ...next, lastAttemptMs: tick.nowMs }, action: 'capture' }
+  const bank = { state: { ...next, lastAttemptMs: tick.nowMs }, action: 'capture' as const }
+
+  // Nothing measurable about the picture: the plain 700 ms clock, which is what
+  // this module was before, and what a page whose canvas will not read back
+  // still gets. Never a refusal — a sweep that cannot measure itself is still a
+  // sweep, and photographing it on a clock is exactly what it used to do.
+  if (motion === null || novelty === null) return bank
+
+  // The floor. Ahead of the gate on purpose: a sweep that has gone four seconds
+  // without a photo gets one whatever the thresholds think, which is what makes
+  // VIEW_SETTLED and VIEW_NEW safe to be wrong about.
+  if (sinceAttempt >= SWEEP_FORCE_BANK_MS) return bank
+
+  // Arrived somewhere new and stopped smearing.
+  if (motion <= VIEW_SETTLED && novelty >= VIEW_NEW && next.movedSinceBank) return bank
+
+  return { state: next, action: 'wait' }
+}
+
+/**
+ * Mean absolute difference between two small grids of the picture, 0-1.
+ *
+ * Null when either side is missing or they are different shapes, which is how
+ * the first look, a canvas that would not read back, and a camera that changed
+ * resolution mid-sweep all arrive at {@link tickCadence} as "not measured"
+ * rather than as a fabricated zero. A fabricated zero would read as a
+ * perfectly still view and trip the jam warning on a sweep that is fine.
+ */
+export function viewDifference(a: Uint8Array | null, b: Uint8Array | null): number | null {
+  if (!a || !b || a.length === 0 || a.length !== b.length) return null
+  let total = 0
+  for (let i = 0; i < a.length; i++) total += Math.abs(a[i]! - b[i]!)
+  return total / (a.length * 255)
+}
+
+/**
+ * How long the view has been sitting still, in ms. Zero while it is moving,
+ * and zero while nothing has been measured — see `lastMovedAtMs`.
+ */
+export function viewStillMs(state: CadenceState, nowMs: number): number {
+  if (state.lastMovedAtMs === null) return 0
+  return Math.max(0, nowMs - state.lastMovedAtMs)
+}
+
+/**
+ * The line that tells an operator who has left the room that it has stopped
+ * turning.
+ *
+ * Null until {@link SWEEP_STILL_WARN_MS}, because a sweep pausing is normal and
+ * a screen that cries wolf at every dwell is a screen nobody reads across a
+ * room. It names what the photos will be if this is left alone — that is the
+ * fact that was missing from "48 photos" — and it does not stop the sweep: the
+ * photos already taken are good ones, and the operator is the only one who can
+ * tell a jam from a slow arc.
+ */
+export function sweepMotionNotice(stillMs: number): string | null {
+  if (!Number.isFinite(stillMs) || stillMs < SWEEP_STILL_WARN_MS) return null
+  const seconds = Math.floor(stillMs / 1000)
+  return `The view has not moved for ${seconds} seconds — every photo since then is of the same wall. `
+    + 'Check the phone is still turning; the photos already taken are fine either way.'
 }
 
 /**

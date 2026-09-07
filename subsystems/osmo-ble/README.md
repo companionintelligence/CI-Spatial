@@ -116,6 +116,58 @@ is made unplannable rather than detected at position 14 of 105:
 Tilt has measured stops too — it converges down to about −40° but jams near +16° — and is
 range-checked the same way.
 
+### The arc moves when the tripod does — so it is measured, not assumed
+
+**The +82°…−100° above describes one tripod position and nothing else.** Pan's *width* is a
+property of the chassis; *where that width falls in the reported yaw frame* is fixed to the
+tripod base, and the reported frame is not. Measured 2026-08-29, one gimbal, one session:
+
+| | targets | reached | |
+| --- | --- | --- | --- |
+| position A | −174 / −144 / −114 | −175.6 / −145.6 / −116.0 | all converged |
+| *the tripod was carried a couple of metres and set down* | | | |
+| position B | 96 / 126 / 156 | 93.0 / 122.0 / 153.5 | all converged |
+| position B | −174 / −144 / −114 | **171.3 / 171.3 / 171.0** | none converged |
+| position B, probed directly | 171 | 171.1 | converged |
+| position B, probed directly | 178 / −175 / −150 | all 171.0–171.1 | stalled |
+
+The stop had moved 89° in the reported frame. A dome planned from the constants drove straight
+into it, and the run died saying only *"Gimbal stopped moving — 3 consecutive positions ended at
+the same pose"*, which sends the operator looking for a mechanical fault that is not there.
+
+So the arc is a **value that can be measured**, with the constants as the fallback:
+
+- `POST /api/arc-probe` (CLI: `arc-probe`, MCP: `probe_pan_arc`) drives to each end in ~35°
+  steps and reports where the stops actually are. A step that meets a stop reports the pose it
+  jammed at, and that pose **is** the stop — no bisection, no repeats, because every extra move
+  is another second of motor time against a limit. Measured live 2026-08-30: 7 moves, 85 s,
+  stops at **+169.6° and −17.9°**, and a second probe from a different start pose put the same
+  + stop at 169.5°.
+- The measurement is **inset 8° at each end** before anything plans inside it: a column planned
+  exactly on the contact point can report "converged" while resting against it.
+- `POST /api/grid-capture` probes at the **start of every station** by default (for a
+  centre/span plan — send `probeArc: false` to skip) and **re-derives the columns** inside what
+  it measured, keeping the column count so `total` stays true.
+- The measurement **does not outlive the setup it describes.** It is discarded when the capture
+  parks for a station move, on connect/disconnect, on a gimbal reset, when a sweep jams against
+  a limit the arc did not have, and after 15 minutes — the backstop for a tripod moved between
+  runs, which this process cannot observe at all.
+- Every place an arc is printed says whether it was measured here or is the fallback
+  (`describeArc()`, `status.panArc.source`). ADR 0005 rule 3: *"the built-in limits"* and
+  *"measured from this tripod position"* are different claims about the same two numbers.
+- When a sweep does jam, `diagnoseJam()` compares the pose it stopped at against the arc it was
+  planned with. If the arc claimed the gimbal still had travel that way, the message says the
+  reach has shifted, that the gimbal is not broken, and to re-probe — instead of the old advice
+  to hardware-reset the gimbal and check the cradle balance, which reproduces the jam exactly.
+
+Two safety properties this keeps, since the probe is the one routine that drives into a
+mechanical stop on purpose: it **stops asking** the moment a step meets a stop (the stop is
+touched once per end, not held against), and its move budget is deliberately short — the move
+loop only concludes "jammed" when the budget runs out, so `PROBE_MOVE_MAX_MS` *is* the worst
+case for how long the motors push. It is 10 s, i.e. about 20 s of contact for a whole probe. A
+move that is still travelling when the budget ends is re-aimed at the same target rather than
+stepped past, so a short budget costs a move, never a measurement.
+
 ### Configuring the phone it drives
 
 Only needed for the modes where **this backend takes the photos** — `POST /api/capture-photo`,

@@ -114,6 +114,11 @@ Motion / commands:
   probe <type> [--params json] [--wait ms] [--stop-type type] [--stop-params json]
                                           Send one command, report before/after moved:true/false
   recenter-probe [--duration seconds]    Shorthand for: probe recenter --stop-type none
+  arc-probe [--step deg]                Measure how far pan really swings from this tripod spot.
+                                        The arc is fixed to the BASE, so it moves when the tripod
+                                        does — re-run this after every move. The grid command does
+                                        it per station already; use this after a jam, or before
+                                        sweeping by hand.
 
 Automated capture:
   grid [--stations N]                     Sweep a dome, PAUSE while you carry the tripod to the
@@ -318,6 +323,24 @@ async function main() {
       return;
     }
 
+    // Measure how far pan can actually swing from where the tripod is standing. The arc is
+    // fixed to the base, not to the reported angles, so it has to be re-measured after every
+    // move of the tripod — see protocol/dome.mjs. `grid` does this per station on its own; this
+    // is the standalone version, for after a jam or before a hand-driven sweep.
+    case 'arc-probe': {
+      console.error('Measuring the reachable pan arc — the gimbal will sweep to each end and stop');
+      console.error('there. That is the measurement, not a fault. A minute or two.\n');
+      const result = await api('POST', '/api/arc-probe', {
+        stepDeg: flags.step ? Number(flags.step) : undefined,
+      });
+      print(result);
+      if (!result.ok) {
+        console.error('\nNo arc measured — plans fall back to the built-in limits, which were measured');
+        console.error('at a different tripod position and may not hold here.');
+      }
+      return;
+    }
+
     case 'recenter-probe':
       print(await api('POST', '/api/test/recenter-probe', {
         durationSeconds: flags.duration ? Number(flags.duration) : undefined,
@@ -440,6 +463,10 @@ async function main() {
             // reconstruction a real metric scale; MCP camera JPEGs carry none.
             capturePhotos: !flags['movement-only'],
             dwellMs: flags.dwell ? Number(flags.dwell) : undefined,
+            // Measure the reachable arc at each station and re-derive the columns inside it.
+            // On by default for a centre/span plan (the backend decides); --no-probe-arc opts
+            // out, at the cost of planning against limits measured at some other tripod spot.
+            ...(flags['no-probe-arc'] ? { probeArc: false } : {}),
           }),
         });
       } catch (err) {
@@ -552,6 +579,20 @@ async function main() {
               station.positions++;
               if (event.converged) station.converged++;
             }
+            writeManifest();
+          } else if (event.phase === 'arc-probe') {
+            // Narrated rather than silent: this is a minute of the gimbal deliberately driving
+            // to its stops, which looks exactly like the malfunction it exists to prevent.
+            if (event.state === 'start') console.error(`  measuring the reachable pan arc from this spot (${event.reason})…`);
+            if (event.state === 'result') console.error(`    ${event.target}° -> ${event.finalPan?.toFixed?.(1) ?? '?'}° ${event.converged ? 'reachable' : 'STOP'}`);
+            if (event.state === 'measured') console.error(`  arc: ${event.stops.minusDeg}° round to ${event.stops.plusDeg}° (${event.stopSpanDeg}° of travel, ${event.moves} moves)`);
+            if (event.state === 'failed') console.error(`  could not measure the arc: ${event.reason}`);
+          } else if (event.phase === 'arc-warning') {
+            console.error(`  WARNING: ${event.note}`);
+          } else if (event.phase === 'station-plan') {
+            console.error(`  columns for this station: ${event.pans.join(', ')}`);
+            manifest.stations.at(-1).pans = event.pans;
+            manifest.stations.at(-1).panArc = event.panArc;
             writeManifest();
           } else if (event.phase === 'station-done') {
             console.error(`  station ${event.station}: ${event.converged}/${event.positions} converged`);

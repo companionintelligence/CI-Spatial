@@ -26,7 +26,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { z } from 'zod';
 // The same arc the backend plans and validates against — imported so a plan this tool hands an
 // agent can never be one the backend then refuses (or worse, one the gimbal tries).
-import { planDomePans, unreachablePans, PAN_ARC_START_DEG, PAN_ARC_END_DEG, PAN_ARC_CENTER_DEG, PAN_ARC_SPAN_DEG, DEFAULT_PAN_SPAN_DEG, MIN_STATIONS_FOR_PARALLAX } from '../protocol/dome.mjs';
+import { planDomePans, unreachablePans, makeArc, describeArc, DEFAULT_PAN_ARC, PAN_ARC_START_DEG, PAN_ARC_END_DEG, PAN_ARC_CENTER_DEG, PAN_ARC_SPAN_DEG, DEFAULT_PAN_SPAN_DEG, MIN_STATIONS_FOR_PARALLAX } from '../protocol/dome.mjs';
 
 const BACKEND_URL = process.env.OSMO_BACKEND_URL || 'http://localhost:8788';
 
@@ -309,6 +309,25 @@ function createMcpServer() {
   );
 
   server.registerTool(
+    'probe_pan_arc',
+    {
+      title: 'Measure the reachable pan arc from this tripod position',
+      description:
+        'Drives the gimbal to each end of its pan travel and reports where the mechanical stops actually are RIGHT NOW. Do this after the tripod is set down, and again after every time it is moved. Why it is not optional: pan swings about 178 degrees and cannot rotate through the front, and WHERE that arc falls is fixed to the tripod BASE, not to the reported angles. Measured 2026-08-29 on one gimbal in one session — from one tripod position targets -174/-144/-114 all converged; the tripod was carried two metres and set down, and the same targets all stalled at 171, because the stop had moved 89 degrees in the reported frame. A plan built from the built-in limits drove straight into it and the run died reporting only that the gimbal had stopped moving. The backend remembers this measurement, plans every subsequent dome inside it, and forgets it whenever the tripod is (or may have been) moved. Costs a handful of moves; measured live 2026-08-30 at 7 moves and 85 seconds. Safe: it approaches each end at reduced speed, stops asking the moment a step meets a stop, and stops the motors on every exit path.',
+      inputSchema: {
+        stepDeg: z.number().min(10).max(60).optional().describe('How far each probe step reaches (default 35). Smaller is gentler and slower; accuracy does not depend on it, because a step that meets a stop reports the pose it jammed at.'),
+      },
+    },
+    async ({ stepDeg }) => {
+      try {
+        return textResult(await backendFetch('/api/arc-probe', { method: 'POST', body: { stepDeg } }));
+      } catch (err) {
+        return errorResult(err);
+      }
+    }
+  );
+
+  server.registerTool(
     'plan_scan_grid',
     {
       title: 'Plan a yaw/pitch grid scan',
@@ -324,13 +343,27 @@ function createMcpServer() {
       },
     },
     async ({ yawCount, pitchCount, yawRangeDeg, yawCenterDeg, pitchRangeDeg, stations }) => {
+      // Plan against the arc the backend has MEASURED from this tripod position, if it has one.
+      // Without this the tool is a pure function of constants that were measured somewhere else,
+      // which is how a plan comes back looking valid and drives into a stop. Falls back to the
+      // constants — and says which it used — when the backend is unreachable or has nothing
+      // measured; it never refuses to plan.
+      let arc = DEFAULT_PAN_ARC;
+      try {
+        const status = await backendFetch('/api/status');
+        if (status?.panArc?.source === 'measured') {
+          arc = makeArc({ startDeg: status.panArc.startDeg, endDeg: status.panArc.endDeg, source: 'measured', measuredAt: status.panArc.measuredAt });
+        }
+      } catch {
+        /* no backend to ask; the fallback is reported below rather than assumed silently */
+      }
       const yCount = yawCount ?? 7;
       const pCount = pitchCount ?? 2;
       const pRange = pitchRangeDeg ?? 30;
       const stationCount = stations ?? 1;
       let dome;
       try {
-        dome = planDomePans({ centerDeg: yawCenterDeg, spanDeg: yawRangeDeg ?? DEFAULT_PAN_SPAN_DEG, count: yCount });
+        dome = planDomePans({ centerDeg: yawCenterDeg, spanDeg: yawRangeDeg ?? DEFAULT_PAN_SPAN_DEG, count: yCount, arc });
       } catch (err) {
         return errorResult(err);
       }
@@ -348,14 +381,23 @@ function createMcpServer() {
       }
       // Belt and braces on the invariant this tool exists to hold: the planner already
       // guarantees it, and an agent acting on a bad plan drives real motors into a real stop.
-      const unreachable = unreachablePans(targets.map((t) => t.yawDeg));
+      const unreachable = unreachablePans(targets.map((t) => t.yawDeg), arc);
       if (unreachable.length) return errorResult(new Error(`planner produced ${unreachable.length} target(s) in the dead zone — this is a bug, do not drive them`));
       return textResult({
         totalTargets: targets.length,
         perStation: targets.length,
         stations: stationCount,
         totalAcrossStations: targets.length * stationCount,
-        yaw: { centerDeg: dome.centerDeg, spanDeg: dome.spanDeg, clampedFromDeg: dome.clampedFrom, reachableArc: dome.arc },
+        yaw: {
+          centerDeg: dome.centerDeg,
+          spanDeg: dome.spanDeg,
+          clampedFromDeg: dome.clampedFrom,
+          reachableArc: dome.arc,
+          // Never printed without its provenance: "measured here" and "measured at some other
+          // tripod position" are different claims about the same two numbers.
+          reachableArcNote: describeArc(arc),
+          ...(arc.source === 'measured' ? {} : { measureItFirst: 'Run probe_pan_arc — the arc is fixed to the tripod base and these limits were measured somewhere else.' }),
+        },
         ...(stationCount < MIN_STATIONS_FOR_PARALLAX
           ? {
             warning:

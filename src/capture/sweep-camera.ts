@@ -42,6 +42,8 @@ import {
   noteCaptured,
   startCadence,
   tickCadence,
+  viewDifference,
+  viewStillMs,
 } from './sweep-cadence'
 
 /**
@@ -67,6 +69,19 @@ export const SWEEP_CONSTRAINTS: MediaStreamConstraints = {
 /** How often the loop looks at the camera. Well under the sample period. */
 const TICK_MS = 120
 
+/**
+ * The grid the picture is reduced to before two looks are compared.
+ *
+ * Small on purpose. It has to survive sensor noise, auto-exposure and the JPEG
+ * grain of a room lit by one lamp without reading as movement, and it has to be
+ * cheap enough to compute eight times a second on a phone that is also encoding
+ * 1080p JPEGs. 32x24 is 768 numbers; a whole gimbal position moving through the
+ * frame changes most of them, and a camera breathing on its own gain changes
+ * almost none.
+ */
+const SIG_W = 32
+const SIG_H = 24
+
 export interface SweepCameraHooks {
   /** A photo was banked. `captured` is the running count, and it is the truth. */
   onFrame(file: File, captured: number): void
@@ -89,6 +104,17 @@ export class SweepCamera {
   private _stream: MediaStream | null = null
   private _video: HTMLVideoElement | null = null
   private _canvas: HTMLCanvasElement | null = null
+  /**
+   * The tiny canvas the picture is reduced onto, and the two grids the cadence
+   * compares: the previous look (is it moving?) and the last photo actually
+   * banked (is this somewhere new?).
+   *
+   * Both start null, which is how the first look reaches the cadence as
+   * "not measured" and gets the plain clock — see `viewDifference`.
+   */
+  private _sig: { canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D } | null = null
+  private _lastLook: Uint8Array | null = null
+  private _bankedLook: Uint8Array | null = null
   private _timer: ReturnType<typeof setInterval> | null = null
   private _cadence: CadenceState | null = null
   private _hooks: SweepCameraHooks
@@ -112,6 +138,14 @@ export class SweepCamera {
 
   get isRunning(): boolean { return this._timer !== null }
   get captured(): number { return this._cadence?.captured ?? 0 }
+  /**
+   * How long the view has been sitting still. Read by the sheet once a second
+   * so a gimbal that jams while the operator is out of the room is said out
+   * loud, rather than being visible only as a tally that keeps climbing.
+   */
+  get viewStillMs(): number {
+    return this._cadence ? viewStillMs(this._cadence, Date.now()) : 0
+  }
 
   /**
    * Open the camera and start banking frames into `spot`.
@@ -159,6 +193,9 @@ export class SweepCamera {
     }
 
     this._canvas = document.createElement('canvas')
+    this._sig = this._makeSignatureCanvas()
+    this._lastLook = null
+    this._bankedLook = null
     this._cadence = startCadence(Date.now())
     this._timer = setInterval(() => this._tick(), TICK_MS)
     return null
@@ -185,6 +222,9 @@ export class SweepCamera {
       this._video = null
     }
     this._canvas = null
+    this._sig = null
+    this._lastLook = null
+    this._bankedLook = null
     if (this._cadence) this._cadence = endCadence(this._cadence, 'stopped')
   }
 
@@ -194,13 +234,21 @@ export class SweepCamera {
     if (!video || !cadence) return
 
     const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden'
+    // Not while hidden: Android has stopped the feed, so the picture is
+    // trivially "still" and comparing it would start the jam clock on a page
+    // that is merely in the background.
+    const look = hidden ? null : this._look(video)
     const { state, action } = tickCadence(cadence, {
       nowMs: Date.now(),
       readyState: video.readyState,
       videoWidth: video.videoWidth,
       currentTime: video.currentTime,
       hidden,
+      motion: viewDifference(look, this._lastLook),
+      novelty: viewDifference(look, this._bankedLook),
     })
+    if (look) this._lastLook = look
+    else if (hidden) this._lastLook = null
     this._cadence = state
 
     if (action === 'end') {
@@ -212,6 +260,47 @@ export class SweepCamera {
     }
     if (action !== 'capture' || this._encoding) return
     void this._bank(video)
+  }
+
+  /**
+   * A cheap, comparable reduction of what the camera can see right now.
+   *
+   * Null whenever it cannot be taken honestly — no canvas, no 2D context, a
+   * frame with no size, or a browser that refuses `getImageData` (a tainted or
+   * unavailable read throws) — because a made-up grid would read as a view
+   * that never moves, which is exactly the accusation this signal exists to
+   * make.
+   */
+  private _look(video: HTMLVideoElement): Uint8Array | null {
+    const sig = this._sig
+    if (!sig || video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) return null
+    try {
+      sig.ctx.drawImage(video, 0, 0, SIG_W, SIG_H)
+      const { data } = sig.ctx.getImageData(0, 0, SIG_W, SIG_H)
+      const out = new Uint8Array(SIG_W * SIG_H)
+      for (let i = 0; i < out.length; i++) {
+        const p = i * 4
+        // Rec. 601 luma, integer-weighted: brightness is what a room's
+        // geometry moves through, and dropping colour makes an auto-white
+        // balance shift cost nothing.
+        out[i] = (data[p]! * 77 + data[p + 1]! * 150 + data[p + 2]! * 29) >> 8
+      }
+      return out
+    } catch {
+      return null
+    }
+  }
+
+  private _makeSignatureCanvas(): { canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D } | null {
+    if (typeof document === 'undefined') return null
+    const canvas = document.createElement('canvas')
+    canvas.width = SIG_W
+    canvas.height = SIG_H
+    // `willReadFrequently` because this canvas is read back eight times a
+    // second and never composited; without it Chrome keeps it on the GPU and
+    // every read is a stall.
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
+    return ctx ? { canvas, ctx } : null
   }
 
   /**
@@ -250,6 +339,10 @@ export class SweepCamera {
       if (!blob || blob.size === 0 || !this._cadence || this._cadence.ended) return
 
       this._cadence = noteCaptured(this._cadence)
+      // What the picture looked like when this photo was taken, so the next
+      // "is this somewhere new?" is asked against a view that was actually
+      // banked and not against one that was merely looked at.
+      this._bankedLook = this._lastLook
       const name = frameFileName(this._spot, this._cadence.captured)
       this._hooks.onFrame(new File([blob], name, { type: 'image/jpeg' }), this._cadence.captured)
     } finally {
