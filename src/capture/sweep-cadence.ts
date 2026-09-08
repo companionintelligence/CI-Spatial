@@ -111,7 +111,20 @@ export const VIEW_SETTLED = 0.015
 
 /**
  * How different the settled picture must be from the last banked photo before
- * it is worth another one. Same units, same "chosen, not measured" caveat.
+ * it is worth another one. Same units.
+ *
+ * Since measured, against two real gimbal sweeps of the same room photographed
+ * by the phone this path exists to serve (12 frames each, one per pan position,
+ * reduced by the same 32x24 Rec. 601 luma signature the runtime uses): the
+ * frame-to-frame difference across a pan step ran 0.160 to 0.255, median 0.198.
+ * Every one of the 22 steps cleared this gate, the smallest by a factor of four.
+ * So a real pan is nowhere near being mistaken for the same view, and the
+ * spacing between photos is set by {@link VIEW_SETTLED} and the dwell rather
+ * than by this number.
+ *
+ * {@link VIEW_SETTLED} has NOT been measured the same way and remains chosen:
+ * it governs how still a STATIONARY view looks, and those captures hold one
+ * frame per position, so they contain no two looks at the same pose to compare.
  */
 export const VIEW_NEW = 0.04
 
