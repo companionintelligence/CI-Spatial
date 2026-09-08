@@ -135,8 +135,16 @@ probe_one() {
     printf '      device  %s online\n' "✓"
   fi
 
-  if ! nc -z -G 4 "$fqdn" "$PORT" >/dev/null 2>&1; then
-    printf '      server  %s%s tcp %s refused — app not running, or bound to 127.0.0.1 instead of 0.0.0.0%s\n' \
+  # Reachability. Deliberately not `nc -z -G 4`: the connect-timeout flag `-G` is
+  # BSD/macOS-only, so under Git Bash on Windows — GNU netcat, or no `nc` at all —
+  # the probe always failed and every healthy device was reported "refused". curl
+  # is already used for the handshake below, ships on all three platforms, and
+  # hitting /health proves the app itself is answering rather than merely that a
+  # socket opened. No `-f`: only curl's exit status is consulted, so an HTTP error
+  # status still counts as reachable and the 503 session cap keeps reaching its
+  # own branch below.
+  if ! curl -s -m 4 -o /dev/null "http://$fqdn:$PORT/health"; then
+    printf '      server  %s%s no answer on port %s (/health, 4s) — app not running, or bound to 127.0.0.1 instead of 0.0.0.0%s\n' \
       "$RED" "✗" "$PORT" "$OFF"
     return
   fi
@@ -169,6 +177,11 @@ probe_one() {
 }
 
 cmd_check() {
+  # Both the reachability probe and the handshake go through curl. Without it
+  # every device would report unreachable — the same misdiagnosis the old
+  # `nc -z -G` probe produced on Windows, so say which tool is missing instead.
+  command -v curl >/dev/null 2>&1 || {
+    printf '`curl` is not on PATH — `check` cannot probe anything without it.\n' >&2; exit 1; }
   printf '%sAndroid MCP fleet%s  (tokens: env, then %s)\n\n' "$BOLD" "$OFF" "$ENV_FILE"
   printf '%s\n' "$DEVICES" | while IFS='|' read -r name host var desc; do
     probe_one "$name" "$host" "$var" "$desc"
