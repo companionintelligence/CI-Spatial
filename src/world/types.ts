@@ -627,6 +627,19 @@ export interface ScanManifest {
    *  local origin is a real marked physical point worth rendering an anchor for. */
   calibrationMethod?: ScanCalibration['method']
   calibrationStatus?: ScanCalibration['status']
+  /**
+   * This scan's own measured landmark→marker separation, metres, on the
+   * `'two-point-ground'` tier. Null on the one-point tier and on anything
+   * uncalibrated.
+   *
+   * Surfaced so the World Editor can draw where this scan *actually* put its
+   * heading marker against where the Place's stored frame says it should be.
+   * The two differ by the residual, and seeing that gap at room scale is more
+   * legible than reading a centimetre figure — across several scans the spread
+   * of actual markers around the stored one *is* the repeatability that
+   * ticket 0006 measures.
+   */
+  calibrationSeparationM?: number | null
   capturedAt: string | null
   pointCount: number | null
   detectionCount: number | null

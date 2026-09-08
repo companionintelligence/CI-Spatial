@@ -1577,10 +1577,12 @@ async function main() {
       bearing: () => geoTracker.snapshot()?.bearing ?? null,
       // Read fresh each poll — the scanner is accumulating points concurrently,
       // so this is exactly the value that changes while the modal is open.
-      ground: () => {
-        const estimate = pointCloud.groundEstimate()
-        return estimate ? { y: estimate.y, locked: estimate.locked } : null
-      },
+      // Passed through whole, not narrowed to { y, locked }: 0008 added
+      // inlierCount / residualM / fallback precisely so a wrong floor could be
+      // diagnosed instead of guessed at, and narrowing here is what kept them
+      // off the screen where the only person who can see the real floor is
+      // standing.
+      ground: () => pointCloud.groundEstimate(),
       // Reference photos (ticket 0007) reuse the existing capture path rather
       // than adding a second encoder: same RGBA -> ImageBitmap -> OffscreenCanvas
       // -> JPEG chain, same size caps. A rejection here ("Capture already

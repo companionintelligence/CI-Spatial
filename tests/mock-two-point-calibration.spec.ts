@@ -66,8 +66,8 @@ async function deletePlace(request: APIRequestContext, id: string | null): Promi
 }
 
 /** Boot the mock AR session with `placeName` selected, so calibration runs. */
-async function startArWithPlace(page: Page, placeName: string): Promise<void> {
-  await page.goto('/?mock=xr8')
+async function startArWithPlace(page: Page, placeName: string, query = ''): Promise<void> {
+  await page.goto(`/?mock=xr8${query}`)
   await page.locator('#start-ar-btn').waitFor({ state: 'attached', timeout: 30_000 })
   await page.waitForFunction(
     () => !(document.getElementById('start-ar-btn') as HTMLButtonElement | null)?.disabled,
@@ -616,6 +616,37 @@ test.describe('two-point calibration', () => {
       for (const p of local.photos) expect(p.bytes, `${p.role} blob has bytes`).toBeGreaterThan(0)
     } finally {
       await context.setOffline(false)
+      await deletePlace(request, place.id)
+    }
+  })
+
+  test('renders when the provider scene only exists a few frames after start', async ({ page, request }) => {
+    const place = await createPlace(request, 'scenedelay')
+    try {
+      // The real engine's timing. `provider.start()` resolves as soon as it has
+      // called XR8.run(); 8th Wall creates its Three.js scene on the first
+      // frame, so getScene() returns null for a short window — and calibration
+      // opens inside it.
+      //
+      // Capturing that null once disabled every visual in the flow for the
+      // whole session: no floor grid to sweep toward, no marker decals, no
+      // committed anchors. Each draw site just returned early, so it failed
+      // silently and looked like AR was broken. The mock used to fire onStart
+      // synchronously inside run(), which made it strictly more forgiving than
+      // the device and is why no test caught this.
+      await startArWithPlace(page, place.name, '&mockSceneDelay=6')
+
+      await expect(async () => {
+        expect(await sceneObjectNames(page)).toContain('calibration floor plane')
+      }).toPass({ timeout: 30_000 })
+
+      // And the rest of the flow still works, not just the grid.
+      await reachLandmarkStage(page)
+      await placeBothMarkers(page)
+      const names = await sceneObjectNames(page)
+      expect(names).toContain('calibration anchor landmark')
+      expect(names).toContain('calibration anchor heading')
+    } finally {
       await deletePlace(request, place.id)
     }
   })

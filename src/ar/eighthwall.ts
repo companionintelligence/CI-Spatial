@@ -74,6 +74,28 @@ const MIN_POINT_DISTANCE_M = 0.08
  */
 const MAX_POINT_DISTANCE_M = 12
 
+/**
+ * Camera translation between consecutive frames above which the pose is read
+ * as a **frame shift**, not as motion, in metres.
+ *
+ * SLAM refines its map as it goes and can redefine its own origin — on
+ * recovery from lost tracking, or when a loop closes. Every world-locked
+ * object then appears to jump together, and any points already harvested are
+ * expressed in a frame that no longer exists. That is invisible from inside
+ * the app: the pose keeps updating and tracking still reports NORMAL.
+ *
+ * 0.30 m at roughly 30 fps is ~9 m/s. Nobody walks a survey at that speed
+ * while holding a tablet, so anything over it is the map moving rather than
+ * the operator.
+ *
+ * **Adopted by decision, not by measurement.** Ticket 0006 closed unrun.
+ *
+ * **Revisit when:** a genuinely fast pan is counted as a shift (lower the
+ * frame rate assumption, or gate on tracking status too), or a shift small
+ * enough to matter slips under it.
+ */
+const POSE_JUMP_THRESHOLD_M = 0.30
+
 /** How long start() waits for /xr.js before giving up with a real error. */
 const XR_LOAD_TIMEOUT_MS = 10_000
 
@@ -266,6 +288,8 @@ export class EighthWallProvider implements ARProvider {
   private _scene: THREE.Scene | null = null
   private _latestWorldPoints: Array<{ x: number; y: number; z: number }> = []
   private _lastTrackingStatus = ''
+  private _poseJumps = 0
+  private _lastJumpM = 0
   private _diagLogged = false
   /**
    * Preflight subscriber and the state its verdict is made from.
@@ -349,6 +373,20 @@ export class EighthWallProvider implements ARProvider {
 
     const pose = poseFromReality(reality)
     if (!pose) return
+
+    // Frame-shift detection, before latestPose is overwritten. A discontinuity
+    // here is the map redefining its origin, not the operator moving — see
+    // POSE_JUMP_THRESHOLD_M. Counted rather than logged so the number can be
+    // put on screen, which is the only way it reaches anyone holding the
+    // device.
+    if (this._slamReady) {
+      const moved = poseDistance(pose.position, this.latestPose.position)
+      if (Number.isFinite(moved) && moved > POSE_JUMP_THRESHOLD_M) {
+        this._poseJumps++
+        this._lastJumpM = moved
+        console.warn(`[8thwall] pose jumped ${moved.toFixed(2)} m in one frame — world frame shifted`)
+      }
+    }
 
     this.latestPose = pose
 
@@ -870,6 +908,10 @@ export class EighthWallProvider implements ARProvider {
 
   getScene(): THREE.Scene | null {
     return this._scene
+  }
+
+  getTrackingDiagnostics(): { status: string; poseJumps: number; lastJumpM: number } {
+    return { status: this._lastTrackingStatus || 'UNKNOWN', poseJumps: this._poseJumps, lastJumpM: this._lastJumpM }
   }
 
   captureFrame(timeoutMs = 4000): Promise<RawFrame> {

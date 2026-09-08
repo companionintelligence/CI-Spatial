@@ -1302,6 +1302,19 @@
       .project-calibration-card h2 { margin: 5px 0 8px; font-family: var(--ci-font-display); font-size: 25px; font-weight: 500; }
       .project-calibration-card p { margin: 0 0 12px; color: var(--ci-muted); font-size: 13px; line-height: 1.45; }
       .project-calibration-status { color: #eff0f0; font-size: 12px; font-weight: 700; }
+      /* The floor fit's own numbers. Monospace so a changing value does not
+         reflow the line while the user is watching it settle. */
+      .project-calibration-ground {
+        margin-top: 6px;
+        color: #72ddd4;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        letter-spacing: -0.01em;
+      }
+      .project-calibration-ground[hidden] { display: none; }
+      /* A frame shift invalidates everything already placed, so it is not a
+         neutral diagnostic — it reads as a warning. */
+      .project-calibration-ground[data-state='warn'] { color: #ff9b9b; }
       /* Two-step flow (ticket 0004): restores the progress dots #141 removed,
          rather than introducing a new component. */
       .project-calibration-steps {
@@ -1342,19 +1355,32 @@
          (ticket 0007). Shown *before* the tap, because a photo needs no
          transform to be recognisable — the stored points themselves cannot be
          drawn until the alignment they are meant to help produce exists. */
+      /* Upper-right, and 60% of the width it had inside the card.
+         It used to sit *in* the calibration card, which is bottom-centred and
+         takes pointer events — so the photo pushed the card taller over the
+         exact part of the camera view the user is trying to tap, and the
+         reference disappeared behind the thing it was meant to guide. Out
+         here it stays visible while placing, and `pointer-events: none` keeps
+         every tap going through to the AR canvas beneath. */
       .project-calibration-reference {
-        margin-top: 10px;
-        padding: 9px 10px;
+        position: absolute;
+        top: max(12px, env(safe-area-inset-top));
+        right: max(12px, env(safe-area-inset-right));
+        width: 212px;
+        padding: 6px 7px;
         border: 1px solid rgba(114,221,212,0.24);
-        border-radius: 10px;
-        background: rgba(114,221,212,0.06);
+        border-radius: 8px;
+        background: rgba(5,22,31,0.86);
+        backdrop-filter: blur(10px);
+        box-shadow: 0 10px 28px rgba(0,0,0,0.38);
+        pointer-events: none;
       }
       .project-calibration-reference-head {
         display: flex;
         flex-wrap: wrap;
-        gap: 6px;
+        gap: 4px;
         align-items: baseline;
-        font-size: 10px;
+        font-size: 8px;
         font-weight: 800;
         letter-spacing: 0.1em;
         text-transform: uppercase;
@@ -1364,7 +1390,7 @@
          own words, and it is what disambiguates two photos of similar floor. */
       .project-calibration-reference-label {
         color: var(--ci-muted);
-        font-size: 11px;
+        font-size: 9px;
         font-weight: 600;
         letter-spacing: 0;
         text-transform: none;
@@ -1378,7 +1404,7 @@
       .project-calibration-reference-figure {
         position: relative;
         display: block;
-        margin: 8px 0 0;
+        margin: 5px 0 0;
         border-radius: 8px;
         overflow: hidden;
         line-height: 0;
@@ -1394,9 +1420,9 @@
          tap by referenceCrosshairPixels() (src/ar/reference-photo.ts). */
       .project-calibration-crosshair {
         position: absolute;
-        width: 22px;
-        height: 22px;
-        margin: -11px 0 0 -11px;
+        width: 14px;
+        height: 14px;
+        margin: -7px 0 0 -7px;
         border: 2px solid #ff6b6b;
         border-radius: 50%;
         box-shadow: 0 0 0 1px rgba(3,15,23,0.75), 0 0 8px rgba(255,107,107,0.5);
@@ -1408,16 +1434,16 @@
         position: absolute;
         background: #ff6b6b;
       }
-      .project-calibration-crosshair::before { left: 50%; top: -7px; width: 2px; height: 7px; margin-left: -1px; }
-      .project-calibration-crosshair::after  { top: 50%; left: -7px; height: 2px; width: 7px; margin-top: -1px; }
+      .project-calibration-crosshair::before { left: 50%; top: -5px; width: 2px; height: 5px; margin-left: -1px; }
+      .project-calibration-crosshair::after  { top: 50%; left: -5px; height: 2px; width: 5px; margin-top: -1px; }
       /* Missing, pending, or unreachable photos say which. An empty panel reads
          as "there is nothing to match", which on a Place whose upload merely
          failed is a lie that costs the user the re-acquisition they came for. */
       .project-calibration-reference-note {
-        margin: 8px 0 0;
+        margin: 5px 0 0;
         color: var(--ci-muted);
-        font-size: 11px;
-        line-height: 1.45;
+        font-size: 9px;
+        line-height: 1.4;
       }
       /* pointLabels capture. Optional by design — a label must never be a gate
          on finishing an alignment. */
