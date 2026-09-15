@@ -7,10 +7,10 @@
     <link rel="manifest" href="/manifest.json" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <!-- Montserrat (CI-Common canon font) — loaded async so an offline/slow
+    <!-- Manrope (CI-Common canon font) — loaded async so an offline/slow
          fonts CDN never blocks first paint; system-ui fallback covers the gap. -->
-    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@200;400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
-    <noscript><link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@200;400;500;600;700&display=swap" rel="stylesheet" /></noscript>
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
+    <noscript><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet" /></noscript>
     <link rel="icon" href="/icon-192.png" type="image/png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/icon-192.png" />
     <meta name="theme-color" content="#041620" />
@@ -68,20 +68,20 @@
         color-scheme: dark;
         /* CI-Common design tokens (@companionintelligence/tokens, dark set).
            This surface is dark-only (camera HUD), so the .dark values are the
-           canonical ones. --primary is the canon CI teal — lint-canon gated. */
-        --primary: #abd4d8;
+           canonical ones. --primary is the canon CI phthalo/sage — lint-canon gated. */
+        --primary: #c5e8dc;
         --primary-foreground: #041620;
         --background: #041620;
-        --card: #0a222e;
-        --border: #2c676d;
+        --card: #0c323c;
+        --border: #073038;
         --aqua: #00a9a7;
         --aqua-light: #72ddd4;
-        --success: #4ade80;
+        --success: #34d399;
         --success-foreground: #052e16;
         --warning: #fbbf24;
         --destructive: #ef7070;
         --radius: 0.625rem;
-        --font-sans: 'Montserrat', system-ui, sans-serif;
+        --font-sans: 'Manrope', system-ui, sans-serif;
         /* App aliases (pre-token names used throughout this stylesheet) */
         --ci-bg: var(--background);
         --ci-bg-elevated: rgba(5, 23, 32, 0.88);
