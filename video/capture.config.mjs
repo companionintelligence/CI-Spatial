@@ -214,7 +214,7 @@
  * 15. DO NOT MEASURE THE SEMANTIC LABELS IN THE RENDER LOOP — viewer.ts
  *     updateLabels() runs every frame, so an offsetWidth/getBoundingClientRect
  *     read there forces a synchronous layout mid-frame. A layout forced inside
- *     the Montserrat swap window bakes a slightly different text shaping, and
+ *     the Manrope swap window bakes a slightly different text shaping, and
  *     every chip then lands about a third of a pixel off. It looks like nothing
  *     and it is not the GPU noise in hazard 13: measured as ~2,800 differing
  *     pixels between a capture on a COLD Vite module graph and one on a warm
