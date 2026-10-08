@@ -22,11 +22,15 @@ name: Deno CI
 # quality gate runs locally, against Ollama, as a documented pre-merge step —
 # see docs/testing/TEST_INFRA.md's "Detection regression gate" section.
 
+# >>> ci-local:gated original triggers below, restore with `ci-local restore`
+# on:
+#   push:
+#     branches: [main]
+#   pull_request:
+#     branches: [main]
+#   workflow_dispatch:
+# <<< ci-local:gated
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
