@@ -102,6 +102,12 @@ tests/fixtures/lingbot-map/*.mov
 # personal paths). Highest precedence over the checked-in .mcp.json.
 .mcp.local.json
 
+# Claude Code per-machine settings. Its `env` block is one way to feed the
+# android-* bearer tokens to Claude Code, so it can hold secrets. Claude Code
+# often ignores it only through the user's *global* gitignore, which protects
+# nobody else's clone, nor a copy written by hand or by a script.
+.claude/settings.local.json
+
 # Claude Code preview/launch config — the dev-server URL embeds this machine's
 # Tailscale hostname, which vite.config.ts resolveHostname() derives per box.
 # Copy .claude/launch.json.example and fill in your own hostname.

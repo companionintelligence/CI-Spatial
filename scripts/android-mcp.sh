@@ -29,7 +29,7 @@ PORT=8080
 TAILNET_SUFFIX=capybara-ulmer.ts.net
 
 # name|tailnet host|env var|description  — mirrors the fleet table in
-# docs/DEVICE_TESTING.md. Keep the two in sync.
+# docs/testing/DEVICE_TESTING.md. Keep the two in sync.
 DEVICES='android-tab-s8-ultra|liams-tab-s8-ultra|ANDROID_MCP_TOKEN_TAB_S8_ULTRA|Galaxy Tab S8 Ultra (SM-X900)
 android-tab-s9-ultra|galaxy-tab-s9-ultra|ANDROID_MCP_TOKEN_TAB_S9_ULTRA|Galaxy Tab S9 Ultra (SM-X910)
 android-beam-pro-1|beam-pro-1|ANDROID_MCP_TOKEN_BEAM_PRO_1|XREAL X4000
