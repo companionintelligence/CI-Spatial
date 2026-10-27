@@ -740,6 +740,19 @@ The 8th Wall engine ships with a desktop simulator that replays pre-recorded SLA
 
 ---
 
+<!-- companion-hub-readme-deep-review -->
+
+## Data and deployment boundaries
+
+| Stage | Data handled |
+|---|---|
+| Capture | Camera and spatial scene input from the client device |
+| Processing | Optional local reconstruction/model pipeline |
+| Server | Local API and session state |
+| Viewer | Scene and WebXR presentation |
+
+The optional reconstruction toolchain is separate from the basic viewer/server flow. Camera capture requires the HTTPS setup described in Quick Start; keep model files, captured scenes, and any server credentials in the intended local storage and deployment boundary.
+
 ## License
 
 This repository is licensed under LifeScope INC's **Commercial Standard License**
