@@ -2,7 +2,16 @@
 
 <p align="center"><strong>Companion Scan turns AR captures and uploaded media into a private, structured record of a Place.</strong></p>
 
+[![release](https://img.shields.io/badge/release-not%20published-757575?style=flat-square)](https://github.com/companionintelligence/CI-Spatial/releases)
+[![platform](https://img.shields.io/badge/platform-WebXR%20%C2%B7%20iOS%20%C2%B7%20Android-0a6358?style=flat-square)](https://github.com/companionintelligence/CI-Spatial)
+[![License](https://img.shields.io/badge/license-Commercial%20Standard-8a5a00?style=flat-square)](LICENSE.md)
+[![Discord](https://img.shields.io/badge/chat-Discord-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.com/invite/yQp9hwpzAa)
+
 <p align="center"><a href="docs/README.md">Documentation</a> · <a href="#quick-setup">Get started</a> · <a href="#license">License</a> · <a href="https://docs.ci.computer/docs/reference/open-source-systems">Systems map</a></p>
+
+<p align="center">
+  <a href="https://xr.ci.computer"><img src="https://img.shields.io/badge/Open%20Companion%20Scan-Open%20Companion%20Scan-0a6358?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Open Companion Scan" height="30"></a>
+</p>
 
 It uses 8th Wall/WebXR for capture, an engine-agnostic vision layer for object detection, and Three.js for the **Companion Scan Spatial Editor** at `/editor`. Several scans combine in one Place, are assigned to Areas such as rooms or floors, and remain independently traceable through layers and Things. Inference defaults to local Ollama; bundled ONNX and deterministic mock CV engines are alternatives selected via `INFERENCE_MODE`.
 
@@ -40,6 +49,31 @@ The `osmo-gimbal` MCP server is already registered in this repo's [`.mcp.json`](
 Claude Code picks it up automatically once the backend above is running.
 
 ---
+
+
+## Screenshots
+
+<table>
+  <tr>
+    <td valign="top"><img src="docs/product/ui-manual/start-screen.png" alt="Companion Scan start screen" width="420"><p align="center">Companion Scan start screen</p></td>
+    <td valign="top"><img src="docs/product/ui-manual/scanner-hud-action-rail.png" alt="Mobile capture HUD" width="420"><p align="center">Mobile capture HUD</p></td>
+    <td valign="top"><img src="docs/product/ui-manual/viewer-overview.png" alt="Spatial editor overview" width="420"><p align="center">Spatial editor overview</p></td>
+  </tr>
+</table>
+
+
+## How it fits together
+
+Mobile capture creates a Place/Area/Scan record; selected inference and reconstruction services process the data, and the editor exports a portable scene.
+
+```mermaid
+flowchart LR
+  Capture[Mobile AR capture] --> Scan[Place, Area and Scan model]
+  Scan --> Inference[Ollama, ONNX or mock inference]
+  Inference --> Rebuild[Async reconstruction]
+  Rebuild --> Scene[Spatial editor and GLB export]
+  Scan --> Queue[Offline write queue]
+```
 
 ## Architecture & Flows
 
@@ -180,6 +214,13 @@ graph TD
 ---
 
 ## Features
+
+| Feature | What it provides |
+|---|---|
+| **Place-first capture** | Group scans into Places and Areas while retaining each scan's provenance. |
+| **Replaceable vision** | Select Ollama, ONNX or deterministic mock inference through one boundary. |
+| **Offline recovery** | Queue writes when disconnected and export scene geometry as GLB. |
+
 
 - **AR scanning** — 8th Wall OSS SLAM tracks the environment and accumulates a colourised point cloud in real time.
 - **Engine-agnostic inference** — object detection runs through a local Deno server whose engine is chosen by `INFERENCE_MODE`: `ollama` (default, runs whatever `OLLAMA_MODEL` names — `qwen3-vl:4b` by default, with the context window pinned by `OLLAMA_NUM_CTX`), `onnx` (bundled `LiquidAI/LFM2.5-VL-1.6B-ONNX` via `onnxruntime-node`), or `mock` (deterministic colour-blob CV engine for CI/tests). An on-device WebGPU path also exists — opt-in, offered wherever the browser exposes `navigator.gpu` (see [Inference](#inference) below). `npm run eval:cv` / `npm run bench:models` score `/infer` output against ground truth from a corpus selected by `CV_CORPUS`: `real` (default, `test-data/real/`) is human-verified photographs — the only fixture that can tell a working vision model from a fabricating one, so it's what `bench:models` uses to rank candidates; `synthetic` (`test-data/cv/`) is the generated colour-rectangle corpus, a regression fixture for the *mock* engine only — scoring a real model against it warns loudly instead of reporting a silent 0%. As of this writing the real corpus is scaffolded but has **0 photographs** (a manual/physical step, not yet done — see `docs/factory/06-detection-ground-truth/`), so `bench:models` cannot rank models until it is populated.
