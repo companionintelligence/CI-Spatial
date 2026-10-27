@@ -2,7 +2,7 @@
 
 <p align="center"><strong>Companion Scan turns AR captures and uploaded media into a private, structured record of a Place.</strong></p>
 
-<p align="center"><a href="docs/README.md">Documentation</a> · <a href="#quick-setup">Get started</a> · <a href="#license">License</a></p>
+<p align="center"><a href="docs/README.md">Documentation</a> · <a href="#quick-setup">Get started</a> · <a href="#license">License</a> · <a href="https://docs.ci.computer/docs/reference/open-source-systems">Systems map</a></p>
 
 It uses 8th Wall/WebXR for capture, an engine-agnostic vision layer for object detection, and Three.js for the **Companion Scan Spatial Editor** at `/editor`. Several scans combine in one Place, are assigned to Areas such as rooms or floors, and remain independently traceable through layers and Things. Inference defaults to local Ollama; bundled ONNX and deterministic mock CV engines are alternatives selected via `INFERENCE_MODE`.
 
