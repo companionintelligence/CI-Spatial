@@ -52,6 +52,9 @@ COPY *.ts deno.json deno.lock ./
 COPY server/ ./server/
 COPY src/world/ ./src/world/
 COPY src/shared/ ./src/shared/
+# server/inference.ts imports ../src/inference/lfm-driver.ts; omitting this broke
+# `deno cache` (Module not found) in the 2026-09-06 publish run.
+COPY src/inference/ ./src/inference/
 
 # Runtime worker scripts. The Python workers (lingbot-map, splat-detect) and
 # the Brush trainer need GPU-capable hosts — install them on the host and point
