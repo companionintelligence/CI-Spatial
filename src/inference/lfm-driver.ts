@@ -21,8 +21,8 @@
  * verbatim from inference.ts — this file changes nothing about *how* the
  * model runs, only *where* the runtime-specific calls are made.
  */
-import { parseDetections } from './prompt'
-import type { RawDetection } from './prompt'
+import { parseDetections } from './prompt.ts'
+import type { RawDetection } from './prompt.ts'
 
 // ─── The port: everything a runtime must supply ─────────────────────────────
 
