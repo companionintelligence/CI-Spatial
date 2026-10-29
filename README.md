@@ -4,7 +4,7 @@
 
 [![release](https://img.shields.io/badge/release-not%20published-757575?style=flat-square)](https://github.com/companionintelligence/CI-Spatial/releases)
 [![platform](https://img.shields.io/badge/platform-WebXR%20%C2%B7%20iOS%20%C2%B7%20Android-0a6358?style=flat-square)](https://github.com/companionintelligence/CI-Spatial)
-[![License](https://img.shields.io/badge/license-Commercial%20Standard-8a5a00?style=flat-square)](LICENSE.md)
+[![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-0a6358?style=flat-square)](LICENSE)
 [![Discord](https://img.shields.io/badge/chat-Discord-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.com/invite/yQp9hwpzAa)
 
 <p align="center"><a href="docs/README.md">Documentation</a> · <a href="#quick-setup">Get started</a> · <a href="#license">License</a> · <a href="https://docs.ci.computer/docs/reference/open-source-systems">Systems map</a></p>
@@ -796,13 +796,6 @@ The optional reconstruction toolchain is separate from the basic viewer/server f
 
 ## License
 
-This repository is licensed under LifeScope INC's **Commercial Standard License**
-(`CI-Commercial-1.0`) — see [`LICENSE.md`](LICENSE.md) for the full text. This is a
-restrictive commercial license, **not MIT** (a prior version of this section incorrectly
-stated MIT).
+Companion Scan is free and public under the [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0). The full text is in [`LICENSE`](LICENSE); common questions are answered in the [License FAQ](docs/License-FAQ.md). For commercial licensing, email support@companionintelligence.com.
 
-> **Open question:** whether the Commercial Standard License is the license this repo is
-> actually intended to carry (vs. MIT, as this section previously stated) has not been
-> confirmed by whoever owns licensing at LifeScope INC. Do not treat this repo as
-> MIT-licensed, and do not share it externally, until that's resolved. See
-> [docs/factory/foundation-updates/0001-reconcile-license-contradiction.md](docs/factory/foundation-updates/0001-reconcile-license-contradiction.md).
+Required Notice: Copyright LifeScope INC, DBA Companion Intelligence (https://ci.computer)
