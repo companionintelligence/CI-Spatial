@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Companion Scan</title>
     <link rel="manifest" href="/manifest.json" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -45,12 +45,11 @@
           document.head.appendChild(xrScript)
         }
 
-        // iOS Safari ignores user-scalable=no for pinch; the non-standard
-        // gesture* events are the reliable way to keep the AR view from
-        // zooming. touch-action handles Android/desktop.
-        for (const evt of ['gesturestart', 'gesturechange', 'gestureend']) {
-          document.addEventListener(evt, (e) => e.preventDefault(), { passive: false })
-        }
+        // Pinch-zoom stays on (WCAG 1.4.4): no user-scalable or maximum-scale in the viewport tag and no
+        // gesture* preventDefault (that was iOS Safari's way around the tag). The camera canvas keeps
+        // touch-action: none, so a pinch over it is the scanner's and the rest of the page zooms.
+        // tests/unit/node/viewport_zoom.test.ts fails on any of those coming back.
+        // A double-tap is not a zoom here (touch-action: manipulation); this only swallows the double-click.
         document.addEventListener('dblclick', (e) => e.preventDefault(), { passive: false })
       }
     </script>

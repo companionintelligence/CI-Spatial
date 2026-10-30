@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Companion Scan Spatial Editor</title>
     <link rel="manifest" href="/manifest.json" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -2739,14 +2739,6 @@
       </div>
     </div>
 
-    <script>
-      // iOS Safari ignores user-scalable=no for pinch; block page zoom with
-      // the non-standard gesture* events. OrbitControls pinch is unaffected
-      // (it listens to pointer events on the canvas, touch-action: none).
-      for (const evt of ['gesturestart', 'gesturechange', 'gestureend']) {
-        document.addEventListener(evt, (e) => e.preventDefault(), { passive: false })
-      }
-    </script>
     <script>
       // Keep the left rail focused on navigation. Existing panels move without
       // recreating their controls, so event bindings and current tool state stay intact.
