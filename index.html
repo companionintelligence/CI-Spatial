@@ -45,8 +45,8 @@
           document.head.appendChild(xrScript)
         }
 
-        // Pinch-zoom stays on (WCAG 1.4.4): no user-scalable or maximum-scale in the viewport tag and no
-        // gesture* preventDefault (that was iOS Safari's way around the tag). The camera canvas keeps
+        // Pinch-zoom stays on (WCAG 1.4.4): the viewport tag sets no scale limits and nothing cancels
+        // Safari's gesture events (that was the old way round the tag). The camera canvas keeps
         // touch-action: none, so a pinch over it is the scanner's and the rest of the page zooms.
         // tests/unit/node/viewport_zoom.test.ts fails on any of those coming back.
         // A double-tap is not a zoom here (touch-action: manipulation); this only swallows the double-click.
@@ -2561,6 +2561,22 @@
         -webkit-tap-highlight-color: transparent;
       }
       #help-btn.visible { display: flex; }
+
+      /* iOS Safari zooms the page into a focused field whose text is under 16px. The viewport tag used to
+         stop that (a page that cannot scale cannot zoom in); now that pinch-zoom is on, only the size does.
+         Touch screens only, so desktop sizes stay as designed. These fields are built in src/ (main.ts,
+         ui/panel.ts, ui/history.ts, ar/project-calibration.ts) with sizes from several rules above, some at
+         ID specificity, so this is !important: a floor, not a style. It must not shrink a field that is
+         already larger, which !important cannot tell, so the tripod distance fields (22px on purpose) are
+         left out of it.
+         tests/unit/node/viewport_zoom.test.ts fails if this page loses it. */
+      @media (pointer: coarse) {
+        input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"], [type="color"], [type="button"], [type="submit"], [type="reset"], [type="image"], [type="hidden"], .tripod-unit input),
+        select,
+        textarea {
+          font-size: 16px !important;
+        }
+      }
     </style>
   </head>
   <body>
