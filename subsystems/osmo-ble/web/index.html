@@ -459,11 +459,17 @@
 
   /* iOS Safari zooms the page into a focused field whose text is under 16px. The viewport tag used to
      stop that (a page that cannot scale cannot zoom in); now that pinch-zoom is on, only the size does.
-     Touch screens only, so desktop sizes stay as designed. Same selectors as the field rule near the top,
-     placed after it, so no !important is needed.
+     Touch screens only, so desktop sizes stay as designed. It takes every kind of field, not only the text,
+     number and select this page has today, so a textarea or a search box added later is not left at 13px.
+     It follows the field rule near the top and ties it on specificity (`:not()` counts its most specific
+     argument, here an attribute), so the later rule wins and no !important is needed.
      tests/unit/node/viewport_zoom.test.ts fails if this page loses it. */
   @media (pointer: coarse) {
-    input[type=text], input[type=number], select { font-size: 16px; }
+    input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"], [type="color"], [type="button"], [type="submit"], [type="reset"], [type="image"], [type="hidden"]),
+    select,
+    textarea {
+      font-size: 16px;
+    }
   }
 </style>
 </head>
