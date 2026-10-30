@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Companion Scan Spatial Editor</title>
     <link rel="manifest" href="/manifest.json" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -64,9 +64,10 @@
         color: var(--ci-paper);
         font-family: var(--font-sans);
         overflow: hidden;
-        /* Editor chrome is not a document: no selection/callout/page zoom.
-           Inputs opt back in; the 3D canvas gets touch-action: none so
-           OrbitControls owns pinch instead of the page. */
+        /* Editor chrome is not a document: no selection/callout/double-tap
+           zoom. Pinch-zoom of the page stays on (WCAG 1.4.4). Inputs opt
+           back in; the 3D canvas gets touch-action: none so OrbitControls
+           owns pinch over it instead of the page. */
         -webkit-user-select: none;
         user-select: none;
         -webkit-touch-callout: none;
@@ -2245,6 +2246,20 @@
           max-width: 190px;
         }
       }
+
+      /* iOS Safari zooms the page into a focused field whose text is under 16px. The viewport tag used to
+         stop that (a page that cannot scale cannot zoom in); now that pinch-zoom is on, only the size does.
+         Touch screens only, so desktop sizes stay as designed. !important because field rules above set
+         a size at a higher specificity than a bare element selector (.ci-select, and font: inherit on
+         .project-hierarchy-field): this is a floor, not a style.
+         tests/unit/node/viewport_zoom.test.ts fails if a page with text fields loses it. */
+      @media (pointer: coarse) {
+        input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"], [type="color"], [type="button"], [type="submit"], [type="reset"], [type="image"], [type="hidden"]),
+        select,
+        textarea {
+          font-size: 16px !important;
+        }
+      }
     </style>
   </head>
   <body>
@@ -2739,14 +2754,6 @@
       </div>
     </div>
 
-    <script>
-      // iOS Safari ignores user-scalable=no for pinch; block page zoom with
-      // the non-standard gesture* events. OrbitControls pinch is unaffected
-      // (it listens to pointer events on the canvas, touch-action: none).
-      for (const evt of ['gesturestart', 'gesturechange', 'gestureend']) {
-        document.addEventListener(evt, (e) => e.preventDefault(), { passive: false })
-      }
-    </script>
     <script>
       // Keep the left rail focused on navigation. Existing panels move without
       // recreating their controls, so event bindings and current tool state stay intact.

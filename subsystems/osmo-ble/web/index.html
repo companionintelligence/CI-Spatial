@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <title>Scanner Control</title>
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="theme-color" content="#041620" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -456,6 +456,15 @@
   body[data-pathway="server"] .status-pill[data-pathway-only="server"] { display: flex; }
   body[data-pathway="direct"] main .panel[data-pathway-only="direct"] { display: flex; }
   body[data-pathway="server"] main .panel[data-pathway-only="server"] { display: flex; }
+
+  /* iOS Safari zooms the page into a focused field whose text is under 16px. The viewport tag used to
+     stop that (a page that cannot scale cannot zoom in); now that pinch-zoom is on, only the size does.
+     Touch screens only, so desktop sizes stay as designed. Same selectors as the field rule near the top,
+     placed after it, so no !important is needed.
+     tests/unit/node/viewport_zoom.test.ts fails if this page loses it. */
+  @media (pointer: coarse) {
+    input[type=text], input[type=number], select { font-size: 16px; }
+  }
 </style>
 </head>
 <body data-pathway="server">
