@@ -20,7 +20,17 @@
  *
  *   4. Text fields under 16px. iOS Safari zooms the page into a focused field smaller than that, and a viewport tag
  *      with `maximum-scale=1` used to stop it. A page with text fields needs an `@media (pointer: coarse)` rule that
- *      sets input, select and textarea to 16px or more.
+ *      sets them to 16px or more, and the rule has to reach every kind of field the page declares. What counts:
+ *        - the media query is a positive `(pointer: coarse)` (`screen and`, `only` and other conditions beside it are
+ *          fine; `not`, `or`, `(pointer: fine)` and a list with any other query are not), and the rule sits directly in
+ *          that block, not in an at-rule nested inside it;
+ *        - the size is `px` or `rem`, 16px or more (the last `font-size` in the rule wins);
+ *        - the selector stands alone and is one of `input`, `input[type=x]`, `input:not([type=a], [type=b], ...)`,
+ *          `select` or `textarea`. `input[type=text]` does not take an <input> with no type attribute, as in CSS.
+ *          An ancestor, a class, a pseudo-class or a `:not` that names anything but a type is not counted, and the
+ *          message says which selector was ignored.
+ *      The kinds a page declares are read from its own markup: each <input> by its type (none, text, search, ...), each
+ *      <select> and each <textarea>; checkboxes, radios, sliders, files, buttons, colours and hidden inputs take no typing.
  *
  * Reads HTML (viewport tags, inline <style> and <script> blocks), .css files, and script files under src/ and
  * subsystems/ (never public/, whose scripts are vendored engine bundles). Skips node_modules, build output, vendored
@@ -35,9 +45,11 @@
  *   - a gesture handler whose preventDefault comes more than 400 characters after the event name, an
  *     `ongesturestart=` attribute, a `wheel` handler that cancels ctrl+wheel (desktop trackpad pinch), a `touchmove`
  *     handler that cancels two-finger moves;
- *   - text fields that script creates: they are invisible here, so the pages that build them are named in
- *     tests/unit/node/viewport_zoom.test.ts;
- *   - whether the 16px rule beats a more specific rule on the same field (measure it).
+ *   - runtime-built fields and the tripod exclusion are held by a named test, not by the generic rule: script creates
+ *     index.html's fields, so they are invisible here, and the page names itself in tests/unit/node/viewport_zoom.test.ts,
+ *     which also checks that its floor still leaves the 22px tripod distance fields out (`input:not(..., .tripod-unit input)`);
+ *     a floor that would shrink a field that is already bigger is not noticed anywhere else;
+ *   - whether the 16px rule beats a more specific rule on the same field (measure it), and `<style media="...">`.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, dirname, join, relative, resolve } from 'node:path'
@@ -151,57 +163,259 @@ export function gestureProblems(source, label = 'script') {
 /** Input types that take no typed text. iOS Safari does not zoom into these. */
 const NON_TEXT_INPUT = new Set(['checkbox', 'radio', 'range', 'file', 'hidden', 'button', 'submit', 'reset', 'image', 'color'])
 
+/** `[type=x]`, `[type="x"]` or `[type='x']`: the one attribute selector a field floor may use. */
+const TYPE_ATTRIBUTE = /^\[\s*type\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\]\s"']+))\s*\]$/i
+
+/**
+ * The parts of `text` between separator characters, ignoring a separator inside (...), [...] or a quoted string.
+ * Empty parts are dropped.
+ * @param {string} text
+ * @param {(char: string) => boolean} isSeparator
+ * @returns {string[]}
+ */
+function splitOutsideBrackets(text, isSeparator) {
+  const parts = []
+  let depth = 0
+  let quote = ''
+  let current = ''
+  for (const char of text) {
+    if (quote) {
+      if (char === quote) quote = ''
+    } else if (char === '"' || char === "'") {
+      quote = char
+    } else if (char === '(' || char === '[') {
+      depth++
+    } else if (char === ')' || char === ']') {
+      depth--
+    } else if (depth === 0 && isSeparator(char)) {
+      if (current.trim()) parts.push(current.trim())
+      current = ''
+      continue
+    }
+    current += char
+  }
+  if (current.trim()) parts.push(current.trim())
+  return parts
+}
+
+/**
+ * The `prelude { body }` blocks directly inside `css`. A block's body is returned as text, not looked into.
+ * @param {string} css comments already stripped
+ * @returns {Array<{ prelude: string, body: string }>}
+ */
+function blocksIn(css) {
+  const blocks = []
+  let depth = 0
+  let quote = ''
+  let prelude = ''
+  let body = ''
+  for (const char of css) {
+    if (depth === 0) {
+      if (char === '{') {
+        depth = 1
+        body = ''
+      } else if (char === ';') {
+        prelude = '' // a statement such as `@charset "utf-8";`
+      } else {
+        prelude += char
+      }
+      continue
+    }
+    if (quote) {
+      if (char === quote) quote = ''
+    } else if (char === '"' || char === "'") {
+      quote = char
+    } else if (char === '{') {
+      depth++
+    } else if (char === '}') {
+      depth--
+      if (depth === 0) {
+        blocks.push({ prelude: prelude.trim(), body })
+        prelude = ''
+        continue
+      }
+    }
+    body += char
+  }
+  return blocks
+}
+
+/**
+ * The size the last `font-size` declaration in a rule sets, in px, or undefined when it is not px or rem.
+ * @param {string} declarations
+ * @returns {number | undefined}
+ */
+function lastFontSizePx(declarations) {
+  const values = [...declarations.matchAll(/(?:^|[;\s])font-size\s*:\s*([^;}]+)/gi)].map((m) => m[1].trim())
+  const size = /^([\d.]+)(px|rem)\b/i.exec(values.at(-1) ?? '')
+  return size ? Number(size[1]) * (size[2].toLowerCase() === 'rem' ? 16 : 1) : undefined
+}
+
+/**
+ * Whether an `@media` rule applies on touch screens and nowhere else: every query in its list is a positive
+ * `(pointer: coarse)` one, for `all` or `screen`, with no `not` and no `or`.
+ * @param {string} prelude e.g. `@media screen and (pointer: coarse)`
+ * @returns {boolean}
+ */
+function isTouchOnlyMedia(prelude) {
+  const queries = splitOutsideBrackets(prelude.replace(/^@media\b/i, ''), (char) => char === ',')
+  return (
+    queries.length > 0 &&
+    queries.every((query) => {
+      if (/(?:^|\s)(?:not|or)(?=[\s(])/i.test(query)) return false
+      const mediaType = /^(?:only\s+)?([a-z-]+)\b/i.exec(query)?.[1].toLowerCase()
+      if (mediaType !== undefined && mediaType !== 'all' && mediaType !== 'screen') return false
+      return /\(\s*pointer\s*:\s*coarse\s*\)/i.test(query)
+    })
+  )
+}
+
+/**
+ * The selectors of the rules in the page's own <style> blocks that apply on touch screens only and set a size of
+ * MIN_FIELD_PX or more, whatever they select. Whitespace is collapsed.
+ * @param {string} html
+ * @returns {string[]}
+ */
+export function coarsePointerFloorSelectors(html) {
+  const css = stripComments([...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map((m) => m[1]).join('\n'))
+  const selectors = []
+  for (const media of blocksIn(css)) {
+    if (!/^@media\b/i.test(media.prelude) || !isTouchOnlyMedia(media.prelude)) continue
+    for (const rule of blocksIn(media.body)) {
+      // An at-rule inside the block narrows its condition again (`@media (max-width: 400px)`), so its rules are not the floor.
+      if (rule.prelude.startsWith('@')) continue
+      const px = lastFontSizePx(rule.body)
+      if (px === undefined || px < MIN_FIELD_PX) continue
+      selectors.push(...splitOutsideBrackets(rule.prelude, (char) => char === ',').map((selector) => selector.replace(/\s+/g, ' ')))
+    }
+  }
+  return selectors
+}
+
+/**
+ * The kinds of field that take typed text (or a pick, for a select) which the page's own markup declares, named the
+ * way a selector would name them: `input (no type attribute)`, `input[type=search]`, `select`, `textarea`. Sorted.
+ * @param {string} html
+ * @returns {string[]}
+ */
+export function fieldKinds(html) {
+  const markup = stripHtmlComments(html).replace(/<(style|script)\b[\s\S]*?<\/\1\s*>/gi, '')
+  const kinds = new Set()
+  for (const [tag, name] of markup.matchAll(/<(input|select|textarea)\b[^>]*>/gi)) {
+    const element = name.toLowerCase()
+    if (element !== 'input') {
+      kinds.add(element)
+      continue
+    }
+    const type = /\stype\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i.exec(tag)
+    const value = type ? (type[1] ?? type[2] ?? type[3]).toLowerCase() : undefined
+    if (value !== undefined && NON_TEXT_INPUT.has(value)) continue
+    kinds.add(value === undefined ? 'input (no type attribute)' : `input[type=${value}]`)
+  }
+  return [...kinds].sort()
+}
+
 /**
  * Whether the page's own markup (not its styles or scripts) holds a field that takes typed text.
  * @param {string} html
  * @returns {boolean}
  */
 export function hasTextFields(html) {
-  const markup = stripHtmlComments(html).replace(/<(style|script)\b[\s\S]*?<\/\1\s*>/gi, '')
-  for (const [tag, name] of markup.matchAll(/<(input|select|textarea)\b[^>]*>/gi)) {
-    if (name.toLowerCase() !== 'input') return true
-    const type = /\stype\s*=\s*["']?([\w-]+)/i.exec(tag)?.[1].toLowerCase() ?? 'text'
-    if (!NON_TEXT_INPUT.has(type)) return true
-  }
-  return false
+  return fieldKinds(html).length > 0
 }
 
 /**
- * Whether the page's own <style> blocks hold an `@media (pointer: coarse)` rule that sets an input, select or
- * textarea to MIN_FIELD_PX or more (px or rem). It does not say that the rule wins over another one on the same field.
+ * Whether the page's own <style> blocks hold an `@media (pointer: coarse)` rule, for touch screens only, that sets
+ * MIN_FIELD_PX or more (px or rem) on a selector ending in input, select or textarea. It does not say that the rule
+ * reaches every kind of field (see uncoveredFieldKinds) or that it wins over another rule on the same field.
  * @param {string} html
  * @returns {boolean}
  */
 export function hasCoarsePointerFieldFloor(html) {
-  const css = stripComments([...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map((m) => m[1]).join('\n'))
-  for (const open of css.matchAll(/@media[^{]*\(\s*pointer\s*:\s*coarse\s*\)[^{]*\{/gi)) {
-    // The block's body runs from the brace that opens the @media rule to the one that closes it.
-    const start = open.index + open[0].length
-    let depth = 1
-    let end = start
-    for (; end < css.length && depth > 0; end++) {
-      if (css[end] === '{') depth++
-      else if (css[end] === '}') depth--
-    }
-    for (const [, selectors, body] of css.slice(start, end - 1).matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-      if (!/\b(?:input|select|textarea)\b/i.test(selectors)) continue
-      const size = /(?:^|[;\s])font-size\s*:\s*([\d.]+)(px|rem)\b/i.exec(body)
-      if (size && Number(size[1]) * (size[2].toLowerCase() === 'rem' ? 16 : 1) >= MIN_FIELD_PX) return true
-    }
-  }
-  return false
+  return coarsePointerFloorSelectors(html).some((selector) => /^(?:input|select|textarea)(?![\w-])/i.test(lastCompound(selector)))
 }
 
 /**
- * A page with text fields and no touch-screen 16px floor for them.
+ * The last compound selector of a complex one: `.row input[type=text]` gives `input[type=text]`.
+ * @param {string} selector
+ * @returns {string}
+ */
+function lastCompound(selector) {
+  return splitOutsideBrackets(selector, (char) => /[\s>+~]/.test(char)).at(-1) ?? ''
+}
+
+/**
+ * What a floor selector takes, when it is one of the forms this check reads: `select`, `textarea`, `input`,
+ * `input[type=x]` and `input:not([type=a], [type=b], ...)`, each standing alone. Undefined for any other selector:
+ * one with an ancestor or sibling in front, a class, a pseudo-class, or a `:not` that names something but a type.
+ * @param {string} selector
+ * @returns {{ tag: string, only?: string, except: Set<string> } | undefined}
+ */
+function fieldSelectorCoverage(selector) {
+  const parts = splitOutsideBrackets(selector, (char) => /[\s>+~]/.test(char))
+  if (parts.length !== 1) return undefined
+  const tag = /^(input|select|textarea)(?![\w-])/i.exec(parts[0])?.[1].toLowerCase()
+  if (!tag) return undefined
+  const rest = parts[0].slice(tag.length)
+  if (rest === '') return { tag, except: new Set() }
+  if (tag !== 'input') return undefined
+  const only = TYPE_ATTRIBUTE.exec(rest)
+  if (only) return { tag, only: (only[1] ?? only[2] ?? only[3]).toLowerCase(), except: new Set() }
+  const not = /^:not\(([\s\S]*)\)$/i.exec(rest)
+  if (!not) return undefined
+  const except = new Set()
+  for (const entry of splitOutsideBrackets(not[1], (char) => char === ',')) {
+    const type = TYPE_ATTRIBUTE.exec(entry)
+    if (!type) return undefined
+    except.add((type[1] ?? type[2] ?? type[3]).toLowerCase())
+  }
+  return except.size > 0 ? { tag, except } : undefined
+}
+
+/**
+ * Whether a floor selector, read by fieldSelectorCoverage, takes a kind of field named by fieldKinds.
+ * @param {{ tag: string, only?: string, except: Set<string> }} floor
+ * @param {string} kind
+ * @returns {boolean}
+ */
+function floorTakes(floor, kind) {
+  if (kind === 'select' || kind === 'textarea') return floor.tag === kind
+  if (floor.tag !== 'input') return false
+  const type = kind === 'input (no type attribute)' ? undefined : kind.slice('input[type='.length, -1)
+  if (floor.only !== undefined) return type === floor.only
+  return type === undefined || !floor.except.has(type)
+}
+
+/**
+ * The kinds of field the page declares that its touch-screen floor does not reach. Only selectors this check can
+ * read count; the others cover nothing.
+ * @param {string} html
+ * @returns {string[]}
+ */
+export function uncoveredFieldKinds(html) {
+  const floors = coarsePointerFloorSelectors(html).map(fieldSelectorCoverage).filter((floor) => floor !== undefined)
+  return fieldKinds(html).filter((kind) => !floors.some((floor) => floorTakes(floor, kind)))
+}
+
+/**
+ * A page with text fields and no touch-screen 16px floor for them, or a floor that leaves a kind of field out.
  * @param {string} html
  * @param {string} [label] shown in front of the message
  * @returns {string[]}
  */
 export function focusZoomProblems(html, label = 'page') {
-  if (!hasTextFields(html) || hasCoarsePointerFieldFloor(html)) return []
+  if (!hasTextFields(html)) return []
+  if (!hasCoarsePointerFieldFloor(html)) {
+    return [
+      `${label}: has text fields but no \`@media (pointer: coarse)\` rule that sets input, select and textarea to ${MIN_FIELD_PX}px or more; iOS Safari zooms into a focused field under that, and nothing stops it once the page can be pinch-zoomed`,
+    ]
+  }
+  const uncovered = uncoveredFieldKinds(html)
+  if (uncovered.length === 0) return []
+  const ignored = [...new Set(coarsePointerFloorSelectors(html).filter((selector) => fieldSelectorCoverage(selector) === undefined))]
+  const unread = ignored.length > 0 ? ` (not counted, because this check cannot read it: ${ignored.map((selector) => `\`${selector}\``).join(', ')})` : ''
   return [
-    `${label}: has text fields but no \`@media (pointer: coarse)\` rule that sets input, select and textarea to ${MIN_FIELD_PX}px or more; iOS Safari zooms into a focused field under that, and nothing stops it once the page can be pinch-zoomed`,
+    `${label}: the \`@media (pointer: coarse)\` rule that sets fields to ${MIN_FIELD_PX}px does not cover ${uncovered.join(', ')}; iOS Safari zooms into a focused field under that. Name each kind the page declares on its own, as input, input[type=x], input:not([type=a], [type=b]), select or textarea${unread}`,
   ]
 }
 

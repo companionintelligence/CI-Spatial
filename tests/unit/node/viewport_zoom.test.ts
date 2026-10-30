@@ -23,6 +23,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import {
+  coarsePointerFloorSelectors,
+  fieldKinds,
   focusZoomProblems,
   gestureProblems,
   hasCoarsePointerFieldFloor,
@@ -30,6 +32,7 @@ import {
   htmlZoomProblems,
   inlineRootStyleProblems,
   rootTouchActionProblems,
+  uncoveredFieldKinds,
   viewportProblems,
   zoomProblemsIn,
 } from '../../../scripts/check-viewport-zoom.mjs'
@@ -77,10 +80,37 @@ test('the pages with text fields keep them at 16px on touch screens, so iOS does
   // sees. index.html builds its fields in src/ (main.ts, ui/panel.ts, ui/history.ts, ar/project-calibration.ts), so
   // the checker cannot tell it needs the rule: it is named here by hand.
   const withFields = ['viewer.html', 'subsystems/osmo-ble/web/index.html']
-  for (const page of withFields) assert.ok(hasTextFields(read(page)), `${page} has text fields in its markup`)
+  for (const page of withFields) {
+    assert.ok(hasTextFields(read(page)), `${page} has text fields in its markup`)
+    assert.deepEqual(uncoveredFieldKinds(read(page)), [], `${page}: every kind of field it declares is at 16px under (pointer: coarse)`)
+  }
   for (const page of ['index.html', ...withFields]) {
     assert.ok(hasCoarsePointerFieldFloor(read(page)), `${page} sets its fields to 16px under (pointer: coarse)`)
   }
+})
+
+// index.html's fields exist only at run time, so the generic rule cannot see which of them its floor reaches. The two
+// tripod distance fields are 22px on purpose (a finger-sized number entry), and the floor is !important: it must not
+// shrink them. They are kept out of it by `input:not(..., .tripod-unit input)`, and this is what holds that.
+const keepsTripodFieldsOut = (html: string) => coarsePointerFloorSelectors(html).some((selector) => /^input:not\(.*\.tripod-unit input.*\)$/i.test(selector))
+
+test('index.html leaves its tripod distance fields, which are 22px on purpose, out of the 16px floor', () => {
+  const html = read('index.html')
+  assert.ok(keepsTripodFieldsOut(html), 'the floor selector names .tripod-unit input inside :not(...)')
+  // The same page with the exclusion taken out would shrink them with every other check green; this one notices.
+  const without = html.replace(/,\s*\.tripod-unit input/, '')
+  assert.notEqual(without, html, 'the exclusion was found to take out')
+  assert.equal(keepsTripodFieldsOut(without), false)
+  assert.ok(hasCoarsePointerFieldFloor(without), 'and the generic rule still calls it a floor')
+  // The class is the one the fields are built with, and the page still styles them at 22px.
+  assert.match(read('src/main.ts'), /class="tripod-unit"[^>]*>\s*<input id="tripod-metres"/)
+  assert.match(html, /\.tripod-unit input\s*\{[^}]*font-size:\s*22px/)
+})
+
+test('Scanner Control\'s floor already takes the kinds of field a later edit is likely to add', () => {
+  const html = read('subsystems/osmo-ble/web/index.html')
+  const later = '<textarea></textarea><input type="search"><input type="password"><input type="email"><input type="tel"><input type="url"><input>'
+  assert.deepEqual(uncoveredFieldKinds(html + later), [])
 })
 
 // ── viewport tags ────────────────────────────────────────────────────────────
@@ -261,6 +291,200 @@ for (const [name, css] of [
     assert.equal(hasCoarsePointerFieldFloor(withFields('<input>', css)), true)
   })
 }
+
+// ── which kinds of field a page declares ────────────────────────────────────
+
+test('fieldKinds names each kind the markup declares the way a selector would, and skips what takes no typing', () => {
+  const markup =
+    '<input><input type="TEXT"><input type=search><select></select><textarea></textarea><input type="checkbox"><INPUT TYPE=range><input type="hidden"><input type=\'file\'>'
+  assert.deepEqual(fieldKinds(withFields(markup)), ['input (no type attribute)', 'input[type=search]', 'input[type=text]', 'select', 'textarea'])
+  assert.deepEqual(fieldKinds('<!-- <input> --><script>"<select>"</script><style>/* <textarea> */</style>'), [])
+  assert.equal(hasTextFields(withFields('<input type="checkbox">')), false)
+})
+
+// ── the 16px floor has to be what it says it is ─────────────────────────────
+
+// A rule only counts as the floor when its selector ends in a field element (input, select or textarea), not in a class,
+// an id or an attribute that merely contains the word.
+for (const [name, css] of [
+  ['a class that contains the word input', '@media (pointer: coarse) { .input-hint { font-size: 16px; } }'],
+  ['an id and an attribute that contain a field name', '@media (pointer: coarse) { #select-all, [data-textarea] { font-size: 16px; } }'],
+  ['a custom element and a class on a div', '@media (pointer: coarse) { my-input, div.input { font-size: 16px; } }'],
+  ['a rule for what comes after a field', '@media (pointer: coarse) { input + span, select ~ .hint { font-size: 16px; } }'],
+]) {
+  test(`focusZoomProblems fails on a touch-screen rule for ${name}`, () => {
+    assert.equal(hasCoarsePointerFieldFloor(withFields('<input type="text">', css)), false)
+    assert.equal(focusZoomProblems(withFields('<input type="text">', css), 'page.html').length, 1)
+  })
+}
+
+// The media condition has to be a positive (pointer: coarse): a negated or other query puts the floor on the wrong screens.
+for (const [name, query] of [
+  ['a negated query', 'not all and (pointer: coarse)'],
+  ['a negated condition', 'not (pointer: coarse)'],
+  ['a fine pointer', '(pointer: fine)'],
+  ['no pointer', '(pointer: none)'],
+  ['coarse or a narrow window', '(pointer: coarse), (max-width: 600px)'],
+  ['coarse or fine', '(pointer: coarse), (pointer: fine)'],
+  ['an `or` condition', '(pointer: coarse) or (max-width: 600px)'],
+  ['hover only', '(hover: none)'],
+]) {
+  test(`focusZoomProblems fails on a 16px rule under ${name}`, () => {
+    const css = `@media ${query} { input, select, textarea { font-size: 16px; } }`
+    assert.equal(hasCoarsePointerFieldFloor(withFields('<input type="text">', css)), false)
+    assert.equal(focusZoomProblems(withFields('<input type="text">', css), 'page.html').length, 1)
+  })
+}
+
+for (const [name, query] of [
+  ['a media type', 'screen and (pointer: coarse)'],
+  ['only and a media type', 'only screen and (pointer: coarse)'],
+  ['hover: none beside it', '(hover: none) and (pointer: coarse)'],
+  ['no space after the colon', '(pointer:coarse)'],
+  ['another condition beside it', '(min-width: 0px) and (pointer: coarse)'],
+  ['upper case', 'SCREEN AND (POINTER: COARSE)'],
+]) {
+  test(`focusZoomProblems accepts a 16px rule under ${name}`, () => {
+    const css = `@media ${query} { input, select, textarea { font-size: 16px; } }`
+    assert.equal(hasCoarsePointerFieldFloor(withFields('<input type="text">', css)), true)
+    assert.deepEqual(focusZoomProblems(withFields('<input type="text">', css), 'page.html'), [])
+  })
+}
+
+// Print, speech and the like are not the screen a phone shows the page on.
+for (const query of ['print and (pointer: coarse)', 'speech and (pointer: coarse)', 'only tv and (pointer: coarse)']) {
+  test(`focusZoomProblems fails on a 16px rule under ${query}`, () => {
+    const css = `@media ${query} { input, select, textarea { font-size: 16px; } }`
+    assert.equal(hasCoarsePointerFieldFloor(withFields('<input type="text">', css)), false)
+    assert.equal(focusZoomProblems(withFields('<input type="text">', css), 'page.html').length, 1)
+  })
+}
+
+// As in CSS, the last font-size in a rule is the one that applies, and one that is not px or rem is not a floor.
+test('the last font-size in a rule is the one that counts', () => {
+  const page = (declarations: string) => withFields('<input>', `@media (pointer: coarse) { input { ${declarations} } }`)
+  assert.equal(hasCoarsePointerFieldFloor(page('font-size: 12px; font-size: 16px')), true)
+  assert.equal(hasCoarsePointerFieldFloor(page('font-size: 16px; font-size: 12px')), false)
+  assert.equal(hasCoarsePointerFieldFloor(page('font-size: 16px; font-size: 1em')), false)
+})
+
+// An at-rule inside the touch-screen block narrows it again, so what is in it is not the floor.
+test('focusZoomProblems does not count a rule nested in another condition inside the touch-screen block', () => {
+  const css = '@media (pointer: coarse) { @media (max-width: 400px) { input, select, textarea { font-size: 16px; } } }'
+  assert.equal(focusZoomProblems(withFields('<input type="text">', css), 'page.html').length, 1)
+  // Next to a rule that does count, the nested one covers nothing, and the message does not mistake the at-rule for a selector.
+  const beside = '@media (pointer: coarse) { input[type=text] { font-size: 16px; } @media (max-width: 400px) { select { font-size: 16px; } } }'
+  const [problem, ...rest] = focusZoomProblems(withFields('<input type="text"><select></select>', beside), 'page.html')
+  assert.match(problem ?? '', /page\.html: .*does not cover select\b/)
+  assert.doesNotMatch(problem ?? '', /max-width/)
+  assert.deepEqual(rest, [])
+})
+
+// The floor has to reach every kind of field the page declares, not just some of them. Scanner Control's floor used to
+// name only input[type=text], input[type=number] and select, so a textarea or a search box added later would have
+// been left at 13px with a green check.
+const NARROW_FLOOR = '@media (pointer: coarse) { input[type=text], input[type=number], select { font-size: 16px; } }'
+const TEXT_NUMBER_SELECT = '<input type="text"><input type="number"><select><option>a</option></select><input type="checkbox">'
+
+test('a floor that names the kinds the page has is enough (what Scanner Control declares today)', () => {
+  assert.deepEqual(focusZoomProblems(withFields(TEXT_NUMBER_SELECT, NARROW_FLOOR), 'page.html'), [])
+})
+
+for (const [name, extra, kind] of [
+  ['a textarea', '<textarea></textarea>', 'textarea'],
+  ['a search box', '<input type="search">', 'input\\[type=search\\]'],
+  ['a password box', '<input type="password">', 'input\\[type=password\\]'],
+  ['an input with no type attribute, which is text but which [type=text] does not match', '<input>', 'input \\(no type attribute\\)'],
+  ['an email box', "<input type='EMAIL'>", 'input\\[type=email\\]'],
+]) {
+  test(`focusZoomProblems names the kind the floor leaves out when the page adds ${name}`, () => {
+    const [problem, ...rest] = focusZoomProblems(withFields(TEXT_NUMBER_SELECT + extra, NARROW_FLOOR), 'page.html')
+    assert.match(problem, new RegExp(`page\\.html: .*does not cover ${kind}`))
+    assert.deepEqual(rest, [])
+  })
+}
+
+test('focusZoomProblems names every uncovered kind in one message', () => {
+  const fields = TEXT_NUMBER_SELECT + '<textarea></textarea><input type="search"><input type="password">'
+  const [problem, ...rest] = focusZoomProblems(withFields(fields, NARROW_FLOOR), 'page.html')
+  assert.match(problem, /does not cover input\[type=password\], input\[type=search\], textarea\b/)
+  assert.deepEqual(rest, [])
+})
+
+test('the selector forms are matched the way CSS matches them', () => {
+  const page = (fields: string, selector: string) => withFields(fields, `@media (pointer: coarse) { ${selector} { font-size: 16px; } }`)
+  // `input` takes every input, with or without a type attribute.
+  assert.deepEqual(focusZoomProblems(page('<input><input type="search"><input type="text">', 'input'), 'p.html'), [])
+  // `:not([type=...])` takes everything not in its list, and an input with no type attribute is not in any list.
+  assert.deepEqual(focusZoomProblems(page('<input><input type="search"><input type="text">', 'input:not([type="checkbox"], [type=radio])'), 'p.html'), [])
+  // ... but not what its list names.
+  assert.match(focusZoomProblems(page('<input type="text"><input type="search">', 'input:not([type=text])'), 'p.html')[0], /does not cover input\[type=text\]/)
+  // The commas inside :not(...) do not split the selector list, and the list does not need to be on one line.
+  assert.deepEqual(
+    focusZoomProblems(page('<input type="text"><select></select><textarea></textarea>', 'input:not([type=checkbox],\n  [type=radio]), select, textarea'), 'p.html'),
+    [],
+  )
+  // Several rules and several @media blocks add up.
+  assert.deepEqual(
+    focusZoomProblems(
+      withFields(
+        '<input type="text"><select></select><textarea></textarea>',
+        '@media (pointer: coarse) { input[type="text"] { font-size: 16px; } } @media screen and (pointer: coarse) { select { font-size: 1rem } textarea { font-size: 17px } }',
+      ),
+      'p.html',
+    ),
+    [],
+  )
+  // Names are case-insensitive, and so are quotes round a type.
+  assert.deepEqual(focusZoomProblems(page('<INPUT TYPE=Search><SELECT></SELECT>', "INPUT[ TYPE = 'SEARCH' ], SELECT"), 'p.html'), [])
+})
+
+// A selector this check cannot read is not trusted: it leaves the kinds it might have covered named as uncovered.
+for (const [name, selector] of [
+  ['an ancestor in front', '.row input'],
+  ['a class on the field', 'input.wide'],
+  ['a pseudo-class', 'input:focus'],
+  ['an input narrowed by :not(.class)', 'input:not(.tripod)'],
+  ['a :not list that is not only [type]', 'input:not([type=checkbox], .tripod-unit input)'],
+]) {
+  test(`focusZoomProblems does not count ${name}, and says which selector it ignored`, () => {
+    const css = `@media (pointer: coarse) { ${selector} { font-size: 16px; } }`
+    const [problem, ...rest] = focusZoomProblems(withFields('<input type="text"><select></select>', css), 'p.html')
+    assert.match(problem ?? '', /p\.html: .*does not cover input\[type=text\], select/)
+    assert.ok((problem ?? '').includes(`\`${selector}\``), `the message names ${selector}`)
+    assert.deepEqual(rest, [])
+  })
+}
+
+// A selector that does not end in a field element at all is not a floor, so the page has none.
+for (const [name, selector] of [
+  [':is()', ':is(input, select, textarea)'],
+  ['the universal selector', '*'],
+]) {
+  test(`focusZoomProblems finds no floor in ${name}`, () => {
+    const css = `@media (pointer: coarse) { ${selector} { font-size: 16px; } }`
+    assert.equal(hasCoarsePointerFieldFloor(withFields('<input type="text">', css)), false)
+    assert.match(focusZoomProblems(withFields('<input type="text">', css), 'p.html')[0] ?? '', /p\.html: has text fields but no `@media \(pointer: coarse\)` rule/)
+  })
+}
+
+test('a selector with an ancestor or sibling in front covers nothing, whichever end of it names the field', () => {
+  const css = '@media (pointer: coarse) { input .wide, .row input, input ~ input { font-size: 16px; } }'
+  const [problem, ...rest] = focusZoomProblems(withFields('<input type="text">', css), 'p.html')
+  assert.match(problem ?? '', /p\.html: .*does not cover input\[type=text\]/)
+  assert.deepEqual(rest, [])
+})
+
+test('the command exits 1 and names the kind when a page adds a field its floor does not reach', () => {
+  inTempDir({ 'form.html': withFields(TEXT_NUMBER_SELECT + '<textarea></textarea>', NARROW_FLOOR) }, (dir) => {
+    const result = cli(dir)
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /form\.html: .*does not cover textarea/)
+  })
+  inTempDir({ 'form.html': withFields(TEXT_NUMBER_SELECT + '<textarea></textarea>', FLOOR) }, (dir) => {
+    assert.equal(cli(dir).status, 0)
+  })
+})
 
 // ── iOS gesture events ───────────────────────────────────────────────────────
 
