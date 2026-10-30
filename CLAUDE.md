@@ -20,7 +20,7 @@ npm start                    # Deno API (:8000) + Vite HTTPS dev server (:5173)
 deno task check              # type-check server/main.ts (do this after any server/main.ts change)
 npm run typecheck:tests      # type-check tests/*.spec.ts — `tsc --noEmit` does NOT
 deno task test                # Deno unit tests
-npm run test:viewport        # pinch-zoom must stay on (WCAG 1.4.4): viewport tags, root touch-action, iOS gesture* handlers
+npm run test:viewport        # pinch-zoom must stay on (WCAG 1.4.4): viewport tags, root touch-action, iOS gesture* handlers, 16px text fields on touch screens. Local only: both workflows are manual
 npm run qr -- "/scanner.html?world=default"   # QR code for on-device testing
 npm run logs:watch           # stream a phone's console over the wire (?debug=remote)
 ```
