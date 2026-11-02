@@ -1,3 +1,4 @@
+import { wsUrl } from '../shared/api-base.ts'
 /**
  * LiveFeed — desktop viewer-side WebRTC receiver.
  *
@@ -127,8 +128,7 @@ export class LiveFeed {
   // ── Signaling ──────────────────────────────────────────────────────────────
 
   private _openSignal(): void {
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-    const url = `${proto}://${location.host}/rtc-signal?role=viewer&room=${encodeURIComponent(this._roomId)}`
+    const url = wsUrl(`/rtc-signal?role=viewer&room=${encodeURIComponent(this._roomId)}`)
 
     // Guarded: `new WebSocket()` throws synchronously on a malformed URL or a
     // blocked scheme, and this runs inside the Live button's click handler —

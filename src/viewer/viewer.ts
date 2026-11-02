@@ -61,6 +61,7 @@ import type {
   WorldJobType,
   WorldProject,
 } from '../world/types'
+import { apiCredentials, apiUrl, wsUrl } from '../shared/api-base.ts'
 
 // Place composition remains opt-in while its building/floor/room editing flow
 // is refined. The static HTML stays hidden unless this build-time flag is set.
@@ -150,10 +151,11 @@ const initialWorldSlug = query.get('world')
   || (activeProjectId ? `project-${activeProjectId}` : 'default')
 
 function withAccessToken(url: string): string {
-  if (!accessToken) return url
-  const parsed = new URL(url, location.origin)
+  const target = apiUrl(url)
+  if (!accessToken) return target
+  const parsed = new URL(target, location.origin)
   parsed.searchParams.set('token', accessToken)
-  return parsed.pathname + parsed.search + parsed.hash
+  return target.startsWith('/') ? parsed.pathname + parsed.search + parsed.hash : parsed.href
 }
 
 function accessHeaders(extra: HeadersInit = {}): HeadersInit {
@@ -164,9 +166,9 @@ async function refreshAccountChip(): Promise<void> {
   const chip = document.getElementById('account-chip') as HTMLAnchorElement | null
   if (!chip) return
   const redirect = `/editor${location.search}`
-  chip.href = `/authenticate/oidc?redirect=${encodeURIComponent(redirect)}`
+  chip.href = apiUrl(`/authenticate/oidc?redirect=${encodeURIComponent(redirect)}`)
   try {
-    const response = await fetch('/authenticate/whoami', { credentials: 'same-origin' })
+    const response = await fetch(apiUrl('/authenticate/whoami'), { credentials: apiCredentials() })
     if (!response.ok) return
     const account = await response.json() as { name?: string | null; email?: string | null }
     chip.textContent = account.name || account.email || 'Companion account'
@@ -1361,7 +1363,7 @@ async function loadScanIntoWorld(scan: ScanManifest): Promise<void> {
 
 async function fetchOptimizationManifest(filename: string): Promise<OptimizationManifest | null> {
   try {
-    const resp = await withTransientRetry(() => fetch(`/scans/${encodeURIComponent(filename)}/manifest`))
+    const resp = await withTransientRetry(() => fetch(apiUrl(`/scans/${encodeURIComponent(filename)}/manifest`)))
     if (!resp.ok) return null
     const manifest = await resp.json() as OptimizationManifest
     return manifest.artifacts?.optimized ? manifest : null
@@ -1377,7 +1379,7 @@ async function fetchOptimizationManifest(filename: string): Promise<Optimization
 // surfaced immediately.
 function loadGlbRoot(url: string): Promise<THREE.Group> {
   return withTransientRetry(() => new Promise<THREE.Group>((resolve, reject) => {
-    loader.load(url, (gltf) => {
+    loader.load(apiUrl(url), (gltf) => {
       const g = gltf as { scene?: THREE.Group; scenes?: THREE.Group[] }
       const root = g.scene ?? g.scenes?.[0]
       if (root) resolve(root)
@@ -4499,7 +4501,7 @@ document.getElementById('btn-load-splat-url')?.addEventListener('click', () => {
   const input = document.getElementById('splat-url-input') as HTMLInputElement | null
   const url = input?.value.trim()
   if (!url) return
-  void addSplat({ kind: 'url', url })
+  void addSplat({ kind: 'url', url: apiUrl(url) })
   if (input) input.value = ''
 })
 document.getElementById('splat-file-input')?.addEventListener('change', (e) => {
@@ -4639,10 +4641,9 @@ function setTransformMode(mode: 'translate' | 'rotate' | 'scale'): void {
 let worldRefreshTimer: ReturnType<typeof setTimeout> | null = null
 
 function connectServerEvents(): void {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
   let ws: WebSocket
   try {
-    ws = new WebSocket(`${proto}://${location.host}/events`)
+    ws = new WebSocket(wsUrl('/events'))
   } catch {
     return
   }

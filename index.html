@@ -12,7 +12,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
     <noscript><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet" /></noscript>
     <link rel="icon" href="/icon-192.png" type="image/png" />
-    <link rel="apple-touch-icon" sizes="180x180" href="/icon-192.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <meta name="theme-color" content="#041620" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -1740,10 +1740,25 @@
         50%      { opacity: 0.85; }
       }
 
+      /* While the engine loads, the mark's outer ring turns, so the wait has
+         motion of its own. The :has() reaches the mark from the button's busy state. */
+      #start-screen:has(#start-ar-btn[aria-busy="true"]) #start-brand-mark::before {
+        border-color: transparent;
+        border-top-color: #72ddd4;
+        animation: start-brand-turn 1.6s linear infinite;
+      }
+
+      @keyframes start-brand-turn {
+        to { transform: rotate(360deg); }
+      }
+
       @media (prefers-reduced-motion: reduce) {
         #start-ar-btn.start-path[aria-busy="true"]:disabled {
           animation: none;
           opacity: 0.7;
+        }
+        #start-screen:has(#start-ar-btn[aria-busy="true"]) #start-brand-mark::before {
+          animation: none;
         }
       }
 
@@ -2562,7 +2577,7 @@
       #onboard-next-btn:active { transform: scale(0.94); opacity: 0.85; }
       #onboard-skip {
         background: none; border: none; color: var(--ci-muted);
-        font-size: 13px; cursor: pointer; padding: 8px 16px;
+        font-size: 14px; cursor: pointer; min-height: 44px; padding: 12px 20px;
         -webkit-tap-highlight-color: transparent;
       }
       /* ── Persistent help button ── */
@@ -2608,7 +2623,7 @@
          The second step also reports what this install can reach (Companion Memory,
          the model, sign-in). Those rows count against the first-run word budget, so
          adding copy to this overlay means re-measuring it there. -->
-    <div id="onboarding-overlay">
+    <div id="onboarding-overlay" role="dialog" aria-modal="true" aria-label="Getting started with Companion Scan">
       <div class="onboard-step active" data-step="0">
         <div class="onboard-icon"><svg width="44px" height="44px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 8.5A1.5 1.5 0 0 1 4.5 7h2.7l1.2-2h6.2l1.2 2h2.7A1.5 1.5 0 0 1 20 8.5v9A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5z"/><circle cx="11.75" cy="13" r="3.4"/></svg></div>
         <div class="onboard-title">Allow camera &amp; motion</div>

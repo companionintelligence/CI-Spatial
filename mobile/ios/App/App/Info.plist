@@ -72,5 +72,7 @@
 	<string>Scan reads the phone's orientation to record which way the camera faced during the walkthrough.</string>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 </dict>
 </plist>

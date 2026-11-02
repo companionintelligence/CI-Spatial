@@ -26,6 +26,7 @@
  * See docs/factory/10-4d-person-capture/0004-durable-clip-storage.md.
  */
 import type { RecordedClip } from './clip-recorder'
+import { apiUrl } from '../shared/api-base.ts'
 
 export interface ClipUploadResult {
   sessionId: string
@@ -61,7 +62,7 @@ export function uploadPersonClip(clip: RecordedClip, opts: ClipUploadOptions = {
 
   return new Promise<ClipUploadResult>((resolve, reject) => {
     const xhr = new XMLHttpRequest()
-    xhr.open('POST', '/ingest-video')
+    xhr.open('POST', apiUrl('/ingest-video'))
 
     xhr.upload.addEventListener('progress', ev => {
       if (ev.lengthComputable && opts.onProgress) {

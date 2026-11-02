@@ -23,6 +23,7 @@
 
 import { REMOTE_LOG_KEY } from '../shared/storage-keys'
 import { hasDebugFlag } from '../shared/debug-flags'
+import { apiUrl } from '../shared/api-base.ts'
 
 type LogLevel = 'error' | 'warn' | 'log'
 
@@ -80,7 +81,7 @@ function flush(useKeepalive = false): void {
   const entries = buffer
   buffer = []
   try {
-    fetch('/client-logs', {
+    fetch(apiUrl('/client-logs'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ entries, ua: navigator.userAgent }),
