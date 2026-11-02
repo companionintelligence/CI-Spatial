@@ -9,7 +9,7 @@ Capacitor 8 iOS and Android shell around the Scan web app in the repo root.
 - **Measure first.** The mobile wrapping assessment (2026-10-31, section 2, row "Scan") gates this app on measurement on real devices. Apple 4.2.1 rates a bare wrapper around an AR app as high review risk.
 - **WebXR and AR do not run in the shell.** WebXR is unavailable in both WebViews. The 8th Wall path (`public/xr.js`) needs the camera and sensors, and it has not been run in the shell. Treat AR as unverified here.
 - **xr.js licence.** `public/xr.js` is Niantic's proprietary XR ENGINE LICENSE AGREEMENT. Clause 1.2 forbids use in a paid product whose value derives from the software. It is bundled into this shell. Do not upload a store binary until the licence has been checked.
-- **No server yet.** The web code calls relative URLs (`/projects`, `/sessions`, `/worlds`, `/authenticate`, `/events`). In the shell these resolve to `capacitor://localhost` (iOS) or `https://localhost` (Android), where nothing answers. A base-URL helper is needed before the shell can reach a Companion Scan server.
+- **Server origin.** The shell reaches a Companion Scan server only through `VITE_API_BASE` (see *Server origin* below). Companion Account sign-in does not carry into the shell, because its session cookie belongs to the server's origin. Sign in on the web.
 
 ## Build
 
@@ -23,6 +23,15 @@ npm run open:android
 ```
 
 `npm run build` writes `www/`, which `cap sync` copies into both native projects. Git ignores everything `cap sync` writes, so run `npm run sync` after a clone.
+
+## Icons and launch screens
+
+The app icon, the Android adaptive icon and both launch screens are generated from
+the Scan mark in `public/icon-512.png` by `scripts/native-art.sh` (macOS, uses `sips`).
+Run it after changing the mark, then `npm run sync`. The root test `npm run
+test:native-art` checks the sizes, and that the iOS icon has no alpha channel. The
+mark is a 512 px raster, so the iOS 1024 px icon is an upscale. A 1024 px vector
+master is the next step for store art.
 
 ## Decisions (provisional)
 
@@ -76,3 +85,5 @@ The bundle is `app/build/outputs/bundle/release/app-release.aab`.
 
 - The store gates in PR #244: the measurement step, and the xr.js licence check before any store binary.
 - `PrivacyInfo.xcprivacy`, the privacy policy, and the App Privacy and Play data-safety answers. Location goes to OpenStreetMap Nominatim, and captures go to the Scan server.
+- Companion Account sign-in in the shell. It needs a token path, because the session cookie does not reach the shell's origin.
+- A 1024 px vector master for the app icon (see *Icons and launch screens*).

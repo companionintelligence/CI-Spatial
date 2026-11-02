@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { resolveApiUrl, resolveWsUrl } from '../../../src/shared/api-base.ts'
+import { resolveApiCredentials, resolveApiUrl, resolveWsUrl } from '../../../src/shared/api-base.ts'
 
 const PAGE = { protocol: 'https:', host: 'scan.ci.computer' }
 
@@ -34,4 +34,9 @@ test('absolute and protocol-relative URLs pass through unchanged', () => {
   const base = 'https://scan.example.ts.net'
   assert.equal(resolveApiUrl(base, 'https://other.example/x'), 'https://other.example/x')
   assert.equal(resolveApiUrl(base, '//cdn.example/x.js'), '//cdn.example/x.js')
+})
+
+test('credentials: cookies stay first-party without a base, and cross to a configured server', () => {
+  assert.equal(resolveApiCredentials(''), 'same-origin')
+  assert.equal(resolveApiCredentials('https://scan.example.ts.net'), 'include')
 })

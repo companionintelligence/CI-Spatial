@@ -39,12 +39,14 @@ const where = (c: { subject: string, deviceName: string }) => `${c.subject} / ${
 
 test('every screen this can draw stays under the word budget', () => {
   // The point of computing rather than sampling. A browser run measures one
-  // combination; this is all 24. The mock renders 92 words and the worst real
-  // screen is 103 — a room or a building on a phone that advertises WebXR
+  // combination; this is all 24. The mock renders 99 words and the worst real
+  // screen is 110 — a room or a building on a phone that advertises WebXR
   // without having proven it, which is the exact device (XREAL Beam Pro) the
   // capture ladder was built for, and which pays an extra eleven-word hedge on
-  // top of its recommendation. Re-baselining against the convenient sample is
-  // the mistake the occlusion budget next door already documents.
+  // top of its recommendation. The 7 words over the old 103 are the connections
+  // step's static line, "Scan finds these itself. Nothing to type." Re-baselining
+  // against the convenient sample is the mistake the occlusion budget next door
+  // already documents.
   const cases = allCases()
   const worst = cases[0]!
   for (const c of cases) {
@@ -60,8 +62,8 @@ test('every screen this can draw stays under the word budget', () => {
   // changed on purpose, re-measure, update this literal, and say in
   // WORDS_BEFORE_CAMERA_MAX why the new number is the right ceiling.
   assert.equal(
-    worst.words.total, 103,
-    `the worst screen is now ${where(worst)} at ${worst.words.total} words, not 103`,
+    worst.words.total, 110,
+    `the worst screen is now ${where(worst)} at ${worst.words.total} words, not 110`,
   )
 })
 
@@ -208,13 +210,13 @@ test('the mock screen is the one the Playwright spec measures', () => {
   // copy changed on purpose, re-run the spec (npm run loop --only=ui) and put
   // the number it reports here.
   assert.equal(
-    mock.total, 92,
-    `the model now says ${mock.total}; Chrome said 92 on 2026-08-30 — re-measure before trusting either`,
+    mock.total, 99,
+    `the model now says ${mock.total}; Chrome measured 99 on 2026-11-02 (47 onboarding + 52 start screen) — re-measure before trusting either`,
   )
   // What the same screen was before the disclosure, and what Chrome measured
   // on the build immediately before it (140). Kept because it is the size of
   // what the control bought.
-  assert.equal(mock.totalExpanded, 142, 'the mock screen with both alternatives open, plus the control itself')
+  assert.equal(mock.totalExpanded, 149, 'the mock screen with both alternatives open, plus the control itself')
 })
 
 test('every subject has a screen', () => {

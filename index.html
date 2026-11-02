@@ -12,7 +12,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
     <noscript><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet" /></noscript>
     <link rel="icon" href="/icon-192.png" type="image/png" />
-    <link rel="apple-touch-icon" sizes="180x180" href="/icon-192.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <meta name="theme-color" content="#041620" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -1740,10 +1740,25 @@
         50%      { opacity: 0.85; }
       }
 
+      /* While the engine loads, the mark's outer ring turns, so the wait has
+         motion of its own. The :has() reaches the mark from the button's busy state. */
+      #start-screen:has(#start-ar-btn[aria-busy="true"]) #start-brand-mark::before {
+        border-color: transparent;
+        border-top-color: #72ddd4;
+        animation: start-brand-turn 1.6s linear infinite;
+      }
+
+      @keyframes start-brand-turn {
+        to { transform: rotate(360deg); }
+      }
+
       @media (prefers-reduced-motion: reduce) {
         #start-ar-btn.start-path[aria-busy="true"]:disabled {
           animation: none;
           opacity: 0.7;
+        }
+        #start-screen:has(#start-ar-btn[aria-busy="true"]) #start-brand-mark::before {
+          animation: none;
         }
       }
 
@@ -2531,6 +2546,18 @@
         font-family: var(--ci-font-display);
       }
       .onboard-desc { font-size: 14px; line-height: 1.6; color: var(--ci-muted); }
+      .onboard-conn-list { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+      .onboard-conn {
+        display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; align-items: baseline;
+        padding: 10px 12px; border-radius: 10px; background: rgba(255,255,255,0.06);
+        text-align: left; font-size: 14px;
+      }
+      .onboard-conn-label { color: var(--ci-text); font-weight: 600; }
+      .onboard-conn-text { color: var(--ci-muted); justify-self: end; text-align: right; }
+      .onboard-conn[data-state="ok"] .onboard-conn-text { color: #72ddd4; }
+      .onboard-conn[data-state="warn"] .onboard-conn-text { color: #f0c36b; }
+      .onboard-conn-hint { grid-column: 1 / -1; font-size: 12px; color: var(--ci-muted); }
+      .onboard-conn a { grid-column: 1 / -1; justify-self: end; color: #72ddd4; font-weight: 600; }
       .onboard-dots { display: flex; gap: 8px; }
       .onboard-dot {
         width: 8px; height: 8px; border-radius: 50%;
@@ -2547,7 +2574,7 @@
       #onboard-next-btn:active { transform: scale(0.94); opacity: 0.85; }
       #onboard-skip {
         background: none; border: none; color: var(--ci-muted);
-        font-size: 13px; cursor: pointer; padding: 8px 16px;
+        font-size: 14px; cursor: pointer; min-height: 44px; padding: 12px 20px;
         -webkit-tap-highlight-color: transparent;
       }
       /* ── Persistent help button ── */
@@ -2590,7 +2617,7 @@
          explained (capture modes, the quality chip, export) is a control the
          user can see on screen, labelled where it lives — a tutorial read once
          and forgotten was the wrong place for it. Re-openable any time via #help-btn. -->
-    <div id="onboarding-overlay">
+    <div id="onboarding-overlay" role="dialog" aria-modal="true" aria-label="Getting started with Companion Scan">
       <div class="onboard-step active" data-step="0">
         <div class="onboard-icon"><svg width="44px" height="44px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 8.5A1.5 1.5 0 0 1 4.5 7h2.7l1.2-2h6.2l1.2 2h2.7A1.5 1.5 0 0 1 20 8.5v9A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5z"/><circle cx="11.75" cy="13" r="3.4"/></svg></div>
         <div class="onboard-title">Allow camera &amp; motion</div>
@@ -2601,8 +2628,17 @@
         <div class="onboard-title">Walk slowly</div>
         <div class="onboard-desc">Move steadily and keep the camera up. Moving fast loses tracking. Coverage fills in as you go.</div>
       </div>
+      <div class="onboard-step" data-step="2">
+        <div class="onboard-icon"><svg width="44px" height="44px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg></div>
+        <div class="onboard-title">Your Companion connections</div>
+        <div class="onboard-desc">Scan finds these itself. Nothing to type.</div>
+        <div id="onboard-connections" class="onboard-conn-list" aria-live="polite">
+          <div class="onboard-conn" data-state="busy"><span class="onboard-conn-text">Checking…</span></div>
+        </div>
+      </div>
       <div class="onboard-dots">
         <div class="onboard-dot active"></div>
+        <div class="onboard-dot"></div>
         <div class="onboard-dot"></div>
       </div>
       <button id="onboard-next-btn">Next</button>

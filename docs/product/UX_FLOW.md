@@ -122,11 +122,11 @@ The three steps, quoted verbatim from `index.html`:
 
 | Step | Icon | Title (`.onboard-title`) | Description (`.onboard-desc`) |
 |---|---|---|---|
-| 0 | 📸 | **Camera & Motion Access** | "Companion Scan needs your camera to see the room and motion sensors to track your position. You'll be prompted to allow both." |
-| 1 | 🔄 | **Scan Your Space** | "Move slowly and steadily around the room. Point at different surfaces — the app builds a 3D point cloud in real time. Tap the capture button to identify objects with AI." |
-| 2 | 💾 | **Export & Open Place** | "When done, export your scan as a .glb file. Open the Spatial Editor to explore, label, and compose scans in the same Place." |
+| 0 | camera | **Allow camera & motion** | "We use the camera to see the room, and motion sensors to know where you are standing. Tap Allow when your phone asks." |
+| 1 | refresh | **Walk slowly** | "Move steadily and keep the camera up. Moving fast loses tracking. Coverage fills in as you go." |
+| 2 | link | **Your Companion connections** | "Scan finds these itself. Nothing to type." Then one row per service, built from `src/shared/connections.ts`: Companion Account, Companion Memory and Vision model. See [Companion Hub](../operations/COMPANION_HUB.md). |
 
-**Controls:** `#onboard-next-btn` (label flips to **`Get Started`** on the last step), three `.onboard-dot` progress dots, and `#onboard-skip` (**`Skip tutorial`**). On finish or skip, `finish()` writes `localStorage['companion-scan-onboarded'] = '1'` and hides the overlay.
+**Controls:** `#onboard-next-btn` (label flips to **`Get Started`** on the last step), three `.onboard-dot` progress dots, and `#onboard-skip` (**`Skip`**, a 44 px touch target). The overlay is a `role="dialog"`. On finish or skip, `finish()` writes `localStorage['companion-scan-onboarded'] = '1'` and hides the overlay.
 
 **Skip paths:** `skipOnboarding = searchParams.has('mock') || searchParams.get('onboarding') === '0'`. So **`?onboarding=0`** or **any `?mock`** value bypasses the overlay entirely (`?mock=webxr` additionally installs the iwer WebXR emulation runtime).
 
@@ -309,7 +309,7 @@ The everyday user must understand there are **four distinct capture pipelines**,
 | `splat-train` | ✅ | `.splat.ply` (+ `.compressed.ply` + manifest); **Splat Toolbox** status "Trained splat ready — N gaussians", toggle, Download .ply |
 | `splat-detect` | ✅ | `.interactions.json` (+ manifest); **Splat Toolbox → Detect objects**; 3D boxes + labels in viewport |
 | `splat-finish` | ✅ | `.sog` + `.compressed.ply` (+ manifest); auto-chains after `splat-train` unless `SPLAT_FINISH_AUTO=0` |
-| `memory-push` | ✅ | `memory-event` (a `capture.scan` push to CI-Server); job list only — inert unless `CI_SERVER_URL` + token are set |
+| `memory-push` | ✅ | `memory-event` (a `capture.scan` push to CI-Server); job list only — inert until the Companion Hub connects Companion Memory (it sets `CI_SERVER_URL` and `CI_SERVER_TOKEN`), or both are set by hand. See [Companion Hub](../operations/COMPANION_HUB.md) |
 | `export-world` | ⚠ | `world-export-plan` at `/worlds/<slug>`; job list only — **not yet a bundled download** |
 | `optimize-scan` | ✅ | `.opt.glb` + `.lodN.glb` + `.manifest.json`; surfaces as the per-scan status chip and progressive LOD loading — deliberately **not** in the job list (see above) |
 

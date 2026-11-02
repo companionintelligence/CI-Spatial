@@ -40,3 +40,23 @@ export function apiUrl(path: string): string {
 export function wsUrl(path: string): string {
   return resolveWsUrl(API_BASE, path, location)
 }
+
+/** The `credentials` a request to `path` needs. Cookies cross to another origin only with `include`. */
+export function resolveApiCredentials(base: string): RequestCredentials {
+  return base ? 'include' : 'same-origin'
+}
+
+/** The `credentials` for a request made with `apiUrl()`. */
+export function apiCredentials(): RequestCredentials {
+  return resolveApiCredentials(API_BASE)
+}
+
+/**
+ * True inside a Capacitor shell. The shell's page is on another origin than the
+ * server, and the session cookie the server sets belongs to the server's origin,
+ * so the shell cannot hold a Companion Account session. Sign-in happens in a browser.
+ */
+export function isNativeShell(): boolean {
+  const cap = (globalThis as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor
+  return cap?.isNativePlatform?.() === true
+}

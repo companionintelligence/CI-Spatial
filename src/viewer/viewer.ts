@@ -61,7 +61,7 @@ import type {
   WorldJobType,
   WorldProject,
 } from '../world/types'
-import { apiUrl, wsUrl } from '../shared/api-base.ts'
+import { apiCredentials, apiUrl, wsUrl } from '../shared/api-base.ts'
 
 // Place composition remains opt-in while its building/floor/room editing flow
 // is refined. The static HTML stays hidden unless this build-time flag is set.
@@ -168,7 +168,7 @@ async function refreshAccountChip(): Promise<void> {
   const redirect = `/editor${location.search}`
   chip.href = apiUrl(`/authenticate/oidc?redirect=${encodeURIComponent(redirect)}`)
   try {
-    const response = await fetch(apiUrl('/authenticate/whoami'), { credentials: 'same-origin' })
+    const response = await fetch(apiUrl('/authenticate/whoami'), { credentials: apiCredentials() })
     if (!response.ok) return
     const account = await response.json() as { name?: string | null; email?: string | null }
     chip.textContent = account.name || account.email || 'Companion account'

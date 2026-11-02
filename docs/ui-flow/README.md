@@ -91,10 +91,11 @@ the viewport is precisely what a keyboard does to it.
 
 ## Other things these shots show, unprompted
 
-- **Onboarding is 2 steps, not 5.** The previous version of this spec drove the
+- **Onboarding is 3 steps, not 5.** The previous version of this spec drove the
   overlay by toggling `.active` on `.onboard-step` indices 0–4 and wrote five
-  PNGs. `index.html` has only `data-step="0"` and `data-step="1"`, so shots 3, 4
-  and 5 were the same screen photographed three more times. The spec now steps
+  PNGs. `index.html` has `data-step="0"` to `data-step="2"`, so shots 4 and 5 were
+  the same screen photographed twice more. The third step is the Companion
+  connections, which show a live status, so its shot needs a running server. The spec now steps
   the real Next button and stops when it says "Get Started", and
   `measurements.json` records the count it found.
 - **The scanner action rail overlaps the side panel.** In `15`, `17`–`20` the

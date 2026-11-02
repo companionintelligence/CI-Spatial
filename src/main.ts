@@ -134,6 +134,7 @@ import {
 } from './capture/capture-intent'
 import * as THREE from 'three'
 import { apiUrl } from './shared/api-base.ts'
+import { renderConnections } from './shared/connections.ts'
 
 const CAPTURE_FRAME_TIMEOUT_MS = 8000
 const TRACKING_WAIT_MS = 2500
@@ -1271,11 +1272,16 @@ async function main() {
       const skipBtn = document.getElementById('onboard-skip') as HTMLButtonElement
       let current = 0
 
+      const connections = ob.querySelector<HTMLElement>('#onboard-connections')
+
       function goToStep(n: number) {
         steps.forEach((s, i) => s.classList.toggle('active', i === n))
         dots.forEach((d, i) => d.classList.toggle('active', i === n))
         nextBtn.textContent = n === steps.length - 1 ? 'Get Started' : 'Next'
         current = n
+        // The connections are asked for when their step is shown, not at boot,
+        // so a slow server cannot hold up the camera permission steps.
+        if (connections && steps[n]?.contains(connections)) void renderConnections(connections)
       }
 
       goToStep(0)

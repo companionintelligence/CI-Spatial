@@ -112,12 +112,13 @@ test.describe('scanner startup budget', () => {
     await page.goto('/?mock=xr8&onboarding=1')
     await expect(page.locator('#onboarding-overlay')).toBeVisible({ timeout: 15_000 })
 
-    // Two steps. This is the only thing between a first-run visitor and the
+    // Three steps: camera and motion, walking speed, and the Companion
+    // connections. This is the only thing between a first-run visitor and the
     // camera; it went 3 → 5 once without anyone noticing.
-    await expect(page.locator('.onboard-step')).toHaveCount(2)
+    await expect(page.locator('.onboard-step')).toHaveCount(3)
     // The dots are the progress affordance — a mismatch silently lies about
     // how much is left, which is exactly what a five-dot/five-step wall did.
-    await expect(page.locator('.onboard-dot')).toHaveCount(2)
+    await expect(page.locator('.onboard-dot')).toHaveCount(3)
 
     const words = await page.evaluate(() =>
       Array.from(document.querySelectorAll('.onboard-desc'))

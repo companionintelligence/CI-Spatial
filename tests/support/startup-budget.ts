@@ -86,11 +86,17 @@ import {
  * prediction was good — the worst screen went 153 -> 103 and the mock 140 ->
  * 92. So the ceiling comes back down with it, as that comment said it should.
  *
- * 110 sits just above the worst case, the same rule the occlusion budget next
+ * 110 sat just above the worst case, the same rule the occlusion budget next
  * door follows. The seven words of slack are the point: an alternative card is
  * ~25 words, so nothing can quietly drift back onto this screen open.
+ *
+ * 135 since the connections step. The step's rows are written at runtime from
+ * `checkConnections()` (src/shared/connections.ts), so this static count never
+ * sees them. The copy table is pinned instead: no row can exceed 22 words, and
+ * 110 + 22 = 132 leaves three words of slack. The browser count below sees the
+ * static body text only, which is why it still matches this model exactly.
  */
-export const WORDS_BEFORE_CAMERA_MAX = 110
+export const WORDS_BEFORE_CAMERA_MAX = 135
 
 /**
  * One method card — title, what you do, what you get. Measured worst: 26.
@@ -110,7 +116,7 @@ export const METHOD_CARD_WORDS_MAX = 30
  */
 export const START_SCREEN_CHROME_MAX = 28
 
-/** Onboarding bodies. Measured: 40. Same ceiling the Playwright spec holds. */
+/** Onboarding bodies. Measured: 47 (40 before the connections step). Same ceiling the Playwright spec holds. */
 export const ONBOARDING_WORDS_MAX = 60
 
 // ── Counting ────────────────────────────────────────────────────────────────

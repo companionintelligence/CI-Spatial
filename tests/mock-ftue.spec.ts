@@ -268,4 +268,24 @@ test.describe('FTUE two-path start screen', () => {
     await expect(page.locator('#start-ar-btn')).toBeVisible({ timeout: 15_000 })
     await expect(overlay).toBeHidden()
   })
+
+  test('the connections step draws one row per Companion service', async ({ page }) => {
+    await page.goto('/?mock=xr8&onboarding=1')
+    const overlay = page.locator('#onboarding-overlay')
+    await expect(overlay).toBeVisible({ timeout: 15_000 })
+    // A dialog, so a screen reader announces it and reads its steps as one thing.
+    await expect(overlay).toHaveAttribute('role', 'dialog')
+
+    // Two steps forward reaches the connections step, which asks the server
+    // what it found. Whatever the server answers, each service gets its row.
+    const next = page.locator('#onboard-next-btn')
+    await next.click()
+    await next.click()
+    const rows = page.locator('#onboard-connections .onboard-conn')
+    await expect(rows).toHaveCount(3, { timeout: 10_000 })
+    await expect(rows.nth(0).locator('.onboard-conn-label')).toHaveText('Companion Account')
+    await expect(rows.nth(1).locator('.onboard-conn-label')).toHaveText('Companion Memory')
+    await expect(rows.nth(2).locator('.onboard-conn-label')).toHaveText('Vision model')
+    await expect(page.locator('#onboard-next-btn')).toHaveText('Get Started')
+  })
 })
