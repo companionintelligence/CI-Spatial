@@ -75,5 +75,4 @@ The bundle is `app/build/outputs/bundle/release/app-release.aab`.
 ## Not done
 
 - The store gates in PR #244: the measurement step, and the xr.js licence check before any store binary.
-- Android launcher icons are still the Capacitor template. iOS uses the Scan mark.
 - `PrivacyInfo.xcprivacy`, the privacy policy, and the App Privacy and Play data-safety answers. Location goes to OpenStreetMap Nominatim, and captures go to the Scan server.
