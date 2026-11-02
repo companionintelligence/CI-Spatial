@@ -28,13 +28,14 @@
  *
  * Env (names follow CI-Server / CI-Common):
  *   PORTAL_OIDC_ENABLED        master switch (default: off)
- *   OIDC_ISSUER_URL            Portal origin, e.g. https://portal.example.com
+ *   OIDC_ISSUER_URL            Portal origin, e.g. https://portal.example.com. The sign-in
+ *                              endpoints are discovered from it (see discoverPortal)
  *   OIDC_CLIENT_ID             public client id (default: ci-web-xr-scan) — must be
  *                              registered in Portal's PUBLIC_CLIENTS
  *   APP_BASE_URL               this app's stable public origin (Hub-injected);
  *                              falls back to x-forwarded-proto/host, then Host
  *   PORTAL_OIDC_ALLOWED_EMAILS comma-separated account allowlist (empty = reject)
- *   PORTAL_OIDC_JWKS_URI       JWKS endpoint (default: ${issuer}/api/auth/jwks)
+ *   PORTAL_OIDC_JWKS_URI       optional JWKS override (default: the discovered jwks_uri)
  *   PORTAL_OIDC_AUDIENCE       comma-separated accepted aud values (default: client id)
  *   SESSION_SECRET             HMAC key for the session cookie (default: random per
  *                              boot — restarts invalidate sessions)
@@ -50,6 +51,7 @@ export interface PortalAuthConfig {
   clientId: string
   publicBaseUrl: string | null
   allowedEmails: string[]
+  /** Optional JWKS override. Empty means the jwks_uri CI-Portal publishes. */
   jwksUri: string
   audience: string[]
   sessionSecret: string
@@ -67,11 +69,156 @@ export function configFromEnv(env: (k: string) => string | undefined = Deno.env.
     publicBaseUrl: env('APP_BASE_URL')?.replace(/\/+$/, '') ?? null,
     allowedEmails: (env('PORTAL_OIDC_ALLOWED_EMAILS') ?? '')
       .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
-    jwksUri: env('PORTAL_OIDC_JWKS_URI') ?? (issuerUrl ? `${issuerUrl}/api/auth/jwks` : ''),
+    jwksUri: env('PORTAL_OIDC_JWKS_URI') ?? '',
     audience: (env('PORTAL_OIDC_AUDIENCE') ?? clientId)
       .split(',').map((s) => s.trim()).filter(Boolean),
     sessionSecret: env('SESSION_SECRET') ?? crypto.randomUUID() + crypto.randomUUID(),
     sessionTtlSec: 7 * 24 * 60 * 60,
+  }
+}
+
+// ── CI-Portal metadata (OpenID Connect Discovery) ────────────────────────────
+
+/** The part of CI-Portal's OpenID metadata this app uses. */
+export interface PortalMetadata {
+  issuer: string
+  authorizationEndpoint: string
+  tokenEndpoint: string
+  userinfoEndpoint: string
+  jwksUri: string
+  /** `discovered` when the Portal's own metadata was read; `default` when it could not be. */
+  source: 'discovered' | 'default'
+}
+
+/**
+ * Where CI-Portal's metadata may be published, in the order tried. The first is the OIDC Discovery 1.0
+ * location. The second is where CI-Portal's Better-Auth serves it: its issuer is the bare origin, so the
+ * document sits under /api/auth, not at the origin root, where the Hub answers with its web app.
+ */
+export function metadataUrls(issuerUrl: string): string[] {
+  return [
+    `${issuerUrl}/.well-known/openid-configuration`,
+    `${issuerUrl}/api/auth/.well-known/openid-configuration`,
+  ]
+}
+
+/** The paths CI-Portal has always been reached at. Used only when its metadata cannot be read. */
+export function defaultMetadata(issuerUrl: string): PortalMetadata {
+  return {
+    issuer: issuerUrl,
+    authorizationEndpoint: `${issuerUrl}/api/auth/oauth2/authorize`,
+    tokenEndpoint: `${issuerUrl}/api/auth/oauth2/token`,
+    userinfoEndpoint: `${issuerUrl}/api/auth/oauth2/userinfo`,
+    jwksUri: `${issuerUrl}/api/auth/jwks`,
+    source: 'default',
+  }
+}
+
+/**
+ * Accepts a metadata document only if it describes this issuer. Its issuer identifier must be the one
+ * configured, and every endpoint it names must be on that origin, so a document cannot send the sign-in
+ * or the code exchange anywhere else. Where it lists its methods, it must offer the code flow with PKCE
+ * S256. Anything else is null.
+ */
+export function parseMetadata(doc: unknown, issuerUrl: string): PortalMetadata | null {
+  if (!doc || typeof doc !== 'object') return null
+  const d = doc as Record<string, unknown>
+  if (typeof d.issuer !== 'string' || d.issuer.replace(/\/+$/, '') !== issuerUrl) return null
+  const origin = new URL(issuerUrl).origin
+  // undefined: not advertised. false: advertised, but not a URL on this origin.
+  const endpoint = (key: string): string | undefined | false => {
+    const value = d[key]
+    if (value === undefined) return undefined
+    try {
+      return typeof value === 'string' && new URL(value).origin === origin ? value : false
+    } catch {
+      return false
+    }
+  }
+  const authorization = endpoint('authorization_endpoint')
+  const token = endpoint('token_endpoint')
+  const userinfo = endpoint('userinfo_endpoint')
+  const jwks = endpoint('jwks_uri')
+  if (!authorization || !token || userinfo === false || jwks === false) return null
+  const methods = d.code_challenge_methods_supported
+  if (Array.isArray(methods) && !methods.includes('S256')) return null
+  const responseTypes = d.response_types_supported
+  if (Array.isArray(responseTypes) && !responseTypes.includes('code')) return null
+  const fallback = defaultMetadata(issuerUrl)
+  return {
+    issuer: issuerUrl,
+    authorizationEndpoint: authorization,
+    tokenEndpoint: token,
+    userinfoEndpoint: userinfo ?? fallback.userinfoEndpoint,
+    jwksUri: jwks ?? fallback.jwksUri,
+    source: 'discovered',
+  }
+}
+
+/**
+ * Reads CI-Portal's metadata from the first place it is published that passes parseMetadata. When none
+ * does, the usual paths come back, and `problem` names what was wrong with each place tried.
+ */
+export async function discoverPortal(
+  issuerUrl: string,
+  fetchFn: typeof fetch,
+): Promise<{ metadata: PortalMetadata; problem: string | null }> {
+  const problems: string[] = []
+  for (const url of metadataUrls(issuerUrl)) {
+    try {
+      const res = await fetchFn(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(5_000) })
+      if (!res.ok) {
+        await res.body?.cancel()
+        problems.push(`${url} answered ${res.status}`)
+        continue
+      }
+      // A path the Portal does not serve can come back as its web app's HTML. That is not a metadata document.
+      if (!(res.headers.get('content-type') ?? '').includes('json')) {
+        await res.body?.cancel()
+        problems.push(`${url} is not JSON`)
+        continue
+      }
+      const metadata = parseMetadata(await res.json(), issuerUrl)
+      if (metadata) return { metadata, problem: null }
+      problems.push(`${url} does not describe ${issuerUrl}`)
+    } catch (e) {
+      problems.push(`${url}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+  return { metadata: defaultMetadata(issuerUrl), problem: problems.join('; ') }
+}
+
+/** A successful read is kept for an hour; a failed one is tried again after a minute. */
+const METADATA_TTL_MS = 60 * 60 * 1000
+const METADATA_RETRY_MS = 60 * 1000
+
+/**
+ * The metadata for one issuer, read on first use and then on that schedule. Callers that arrive while a
+ * read is in flight share it. Each read is logged, so the setup log says what this boot found.
+ */
+export function createMetadataCache(
+  issuerUrl: string,
+  fetchFn: typeof fetch,
+  now: () => number = Date.now,
+): () => Promise<PortalMetadata> {
+  let current: { metadata: PortalMetadata; expiresAt: number } | null = null
+  let inflight: Promise<PortalMetadata> | null = null
+  const read = async (): Promise<PortalMetadata> => {
+    const { metadata, problem } = await discoverPortal(issuerUrl, fetchFn)
+    current = { metadata, expiresAt: now() + (problem ? METADATA_RETRY_MS : METADATA_TTL_MS) }
+    if (problem) {
+      console.warn(`[portal-auth] CI-Portal metadata not discovered (${problem}); using the default endpoints`)
+    } else {
+      console.log(`[portal-auth] CI-Portal metadata discovered for ${issuerUrl}`)
+    }
+    return metadata
+  }
+  return () => {
+    if (current && current.expiresAt > now()) return Promise.resolve(current.metadata)
+    inflight ??= read().finally(() => {
+      inflight = null
+    })
+    return inflight
   }
 }
 
@@ -187,6 +334,8 @@ export function safeRelativePath(p: string | undefined | null): string | null {
 export interface PortalAuthDeps {
   /** Returns the post-login destination (e.g. the owner share link for the default world). */
   ownerDestination: () => Promise<string>
+  /** Carries discovery and the Portal's token and userinfo calls. Tests pass a stub. */
+  fetch?: typeof fetch
 }
 
 const STATE_COOKIE = 'oidc_state'
@@ -259,7 +408,19 @@ export function registerPortalAuth(app: Hono, cfg: PortalAuthConfig, deps: Porta
     return
   }
   console.log(`[portal-auth] Companion Account sign-in enabled (issuer ${cfg.issuerUrl}, client ${cfg.clientId})`)
-  const jwks = cfg.jwksUri ? createRemoteJWKSet(new URL(cfg.jwksUri)) : null
+  const portalFetch = deps.fetch ?? fetch
+  const metadata = createMetadataCache(cfg.issuerUrl, portalFetch)
+  // Read at boot, so the setup log says what CI-Portal offered before anyone signs in.
+  void metadata()
+  // One JWKS set per URL: jose caches the keys it has fetched inside the set.
+  let jwksSet: { url: string; keys: ReturnType<typeof createRemoteJWKSet> } | null = null
+  const jwksFor = (url: string) => {
+    const current = jwksSet
+    if (current && current.url === url) return current.keys
+    const keys = createRemoteJWKSet(new URL(url))
+    jwksSet = { url, keys }
+    return keys
+  }
   // One-time codes from shell sign-ins, waiting for the shell to exchange them. In memory on purpose:
   // a code lives for a minute, and a restart only sends the shell back to sign in again.
   const shellCodes = new Map<string, { challenge: string; claims: SessionClaims; expiresAt: number }>()
@@ -285,7 +446,7 @@ export function registerPortalAuth(app: Hono, cfg: PortalAuthConfig, deps: Porta
     if (wanted) setCookie(c, REDIRECT_COOKIE, wanted, HANDSHAKE_TTL_SEC, '/authenticate')
 
     const redirectUri = `${resolveBaseUrl(c, cfg)}/authenticate/oidc/callback`
-    const url = new URL(`${cfg.issuerUrl}/api/auth/oauth2/authorize`)
+    const url = new URL((await metadata()).authorizationEndpoint)
     url.searchParams.set('client_id', cfg.clientId)
     url.searchParams.set('redirect_uri', redirectUri)
     url.searchParams.set('response_type', 'code')
@@ -314,7 +475,7 @@ export function registerPortalAuth(app: Hono, cfg: PortalAuthConfig, deps: Porta
     const redirectUri = `${resolveBaseUrl(c, cfg)}/authenticate/oidc/callback`
     let tokenResp: Response
     try {
-      tokenResp = await fetch(`${cfg.issuerUrl}/api/auth/oauth2/token`, {
+      tokenResp = await portalFetch((await metadata()).tokenEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
@@ -337,7 +498,7 @@ export function registerPortalAuth(app: Hono, cfg: PortalAuthConfig, deps: Porta
     const tokens = await tokenResp.json() as { access_token?: string }
     if (!tokens.access_token) return c.text('Portal returned no access token', 502)
 
-    const uiResp = await fetch(`${cfg.issuerUrl}/api/auth/oauth2/userinfo`, {
+    const uiResp = await portalFetch((await metadata()).userinfoEndpoint, {
       headers: { Authorization: `Bearer ${tokens.access_token}` },
       signal: AbortSignal.timeout(10_000),
     }).catch(() => null)
@@ -434,11 +595,13 @@ export function registerPortalAuth(app: Hono, cfg: PortalAuthConfig, deps: Porta
         return c.json({ sub: claims.sub, email: claims.email, name: claims.name ?? null, via: 'shell-token' })
       }
     }
-    if (auth?.startsWith('Bearer ') && jwks) {
+    if (auth?.startsWith('Bearer ')) {
       try {
-        // Portal's Better-Auth jwt plugin issues iss = `${origin}/api/auth`.
-        const { payload } = await jwtVerify(auth.slice(7), jwks, {
-          issuer: `${cfg.issuerUrl}/api/auth`,
+        const meta = await metadata()
+        // The metadata names the bare origin as issuer. The Better-Auth jwt plugin has always put
+        // `${origin}/api/auth` in iss, so both name this Portal and both are accepted.
+        const { payload } = await jwtVerify(auth.slice(7), jwksFor(cfg.jwksUri || meta.jwksUri), {
+          issuer: [meta.issuer, `${cfg.issuerUrl}/api/auth`],
           audience: cfg.audience,
         })
         // A valid Portal token proves *who* the caller is, not that they are

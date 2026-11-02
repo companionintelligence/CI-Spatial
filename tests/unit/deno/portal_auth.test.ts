@@ -80,11 +80,34 @@ Deno.test('configFromEnv: defaults + fail-closed allowlist', () => {
   assert(cfg.enabled, 'enabled')
   assertEquals(cfg.issuerUrl, 'https://portal.example', 'trailing slash stripped')
   assertEquals(cfg.clientId, 'ci-web-xr-scan', 'default client id')
-  assertEquals(cfg.jwksUri, 'https://portal.example/api/auth/jwks', 'derived jwks')
+  assertEquals(cfg.jwksUri, '', 'discovered unless overridden')
   assertEquals(cfg.allowedEmails.length, 0, 'empty allowlist = reject everyone')
 })
 
 // ── Integration: full callback flow against a stub Portal IdP ────────────────
+
+/** The document CI-Portal publishes for an origin. */
+function metadataFor(origin: string): Record<string, unknown> {
+  return {
+    issuer: origin,
+    authorization_endpoint: `${origin}/api/auth/oauth2/authorize`,
+    token_endpoint: `${origin}/api/auth/oauth2/token`,
+    userinfo_endpoint: `${origin}/api/auth/oauth2/userinfo`,
+    jwks_uri: `${origin}/api/auth/jwks`,
+    response_types_supported: ['code'],
+    code_challenge_methods_supported: ['S256'],
+  }
+}
+
+/** Serves one origin's metadata and nothing else, so a test that needs no Portal never leaves the machine. */
+function metadataOnly(origin: string): typeof fetch {
+  return ((input: string | URL | Request) => {
+    if (String(input) === `${origin}/api/auth/.well-known/openid-configuration`) {
+      return Promise.resolve(Response.json(metadataFor(origin)))
+    }
+    return Promise.resolve(new Response('not found', { status: 404 }))
+  }) as unknown as typeof fetch
+}
 
 function stubPortal(opts: { email?: string | null; emailVerified?: boolean }): { url: string; close: () => Promise<void>; seen: Record<string, unknown> } {
   const seen: Record<string, unknown> = {}
@@ -94,6 +117,7 @@ function stubPortal(opts: { email?: string | null; emailVerified?: boolean }): {
       seen.tokenBody = Object.fromEntries(new URLSearchParams(await req.text()))
       return Response.json({ access_token: 'stub-access', token_type: 'Bearer' })
     }
+    if (u.pathname === '/api/auth/.well-known/openid-configuration') return Response.json(metadataFor(u.origin))
     if (u.pathname === '/api/auth/oauth2/userinfo') {
       seen.userinfoAuth = req.headers.get('authorization')
       return Response.json({ sub: 'portal-user-1', email: opts.email, email_verified: opts.emailVerified ?? true, name: 'Test User' })
@@ -104,20 +128,25 @@ function stubPortal(opts: { email?: string | null; emailVerified?: boolean }): {
   return { url: `http://127.0.0.1:${addr.port}`, close: () => server.shutdown(), seen }
 }
 
-function testApp(issuer: string, allowed: string[]): Hono {
+function testApp(issuer: string, allowed: string[], portalFetch?: typeof fetch): Hono {
+  // The loopback stub Portal serves its own metadata. Any other issuer gets a stub, so no test reaches the network.
+  const fetchFn = portalFetch ?? (issuer.startsWith('http://127.0.0.1') ? undefined : metadataOnly(issuer))
   const cfg: PortalAuthConfig = {
     enabled: true,
     issuerUrl: issuer,
     clientId: 'ci-web-xr-scan',
     publicBaseUrl: 'https://scan.example',
     allowedEmails: allowed,
-    jwksUri: `${issuer}/api/auth/jwks`,
+    jwksUri: '',
     audience: ['ci-web-xr-scan'],
     sessionSecret: 'integration-secret',
     sessionTtlSec: 3600,
   }
   const app = new Hono()
-  registerPortalAuth(app, cfg, { ownerDestination: () => Promise.resolve('/viewer.html?world=default&token=owner-tok') })
+  registerPortalAuth(app, cfg, {
+    ownerDestination: () => Promise.resolve('/viewer.html?world=default&token=owner-tok'),
+    fetch: fetchFn,
+  })
   return app
 }
 
