@@ -13,6 +13,7 @@ import {
   createStateNonce,
   registerPortalAuth,
   safeRelativePath,
+  SHELL_RETURN_URL,
   signSession,
   verifySession,
   type PortalAuthConfig,
@@ -288,4 +289,138 @@ Deno.test('status: on a stock install nothing else in the sign-in flow is regist
   registerPortalAuth(app, configFromEnv(() => undefined), { ownerDestination: () => Promise.resolve('/') })
   assertEquals((await app.request('https://scan.example/authenticate/oidc')).status, 404, 'initiate')
   assertEquals((await app.request('https://scan.example/authenticate/whoami')).status, 404, 'whoami')
+})
+
+/** Runs the Portal leg of a shell sign-in and returns the app-scheme URL the callback redirected to. */
+async function shellCallback(app: Hono, challenge: string): Promise<string> {
+  const init = await app.request(`https://scan.example/authenticate/oidc?shell=1&challenge=${challenge}`)
+  const jar = cookiesFrom(init)
+  const state = jar.get('oidc_state')!
+  const cb = await app.request(
+    `https://scan.example/authenticate/oidc/callback?code=shell-authcode&state=${state}`,
+    { headers: { cookie: `oidc_state=${state}; oidc_pkce=${jar.get('oidc_pkce')}; oidc_shell=${challenge}` } },
+  )
+  assertEquals(cb.status, 302, `shell callback should redirect, got ${cb.status}: ${await cb.text()}`)
+  assertEquals(cookiesFrom(cb).has('cs_session'), false, 'the shell gets no session cookie')
+  return cb.headers.get('location')!
+}
+
+async function exchange(app: Hono, code: string, verifier: string): Promise<Response> {
+  return await app.request('https://scan.example/authenticate/shell/exchange', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ code, verifier }),
+  })
+}
+
+Deno.test('shell: initiate refuses a challenge that is not PKCE-shaped, before any Portal redirect', async () => {
+  const app = testApp('https://portal.example', ['a@b.c'])
+  const res = await app.request('https://scan.example/authenticate/oidc?shell=1&challenge=too-short')
+  assertEquals(res.status, 400)
+  assertEquals(res.headers.get('location'), null, 'no redirect to the Portal')
+})
+
+Deno.test('shell: the callback ends in the app scheme, and the code trades for a Bearer token once', async () => {
+  const portal = stubPortal({ email: 'owner@example.com' })
+  try {
+    const app = testApp(portal.url, ['owner@example.com'])
+    const { verifier, challenge } = await createPkcePair()
+    const loc = await shellCallback(app, challenge)
+    assert(loc.startsWith(`${SHELL_RETURN_URL}?code=`), `app-scheme return, got ${loc}`)
+    const code = new URL(loc).searchParams.get('code')!
+
+    const first = await exchange(app, code, verifier)
+    assertEquals(first.status, 200)
+    assertEquals(first.headers.get('cache-control'), 'no-store')
+    const body = await first.json() as { token: string; email: string; name: string | null }
+    assertEquals(body.email, 'owner@example.com')
+    assertEquals(body.name, 'Test User')
+
+    const who = await app.request('https://scan.example/authenticate/whoami', {
+      headers: { authorization: `Bearer ${body.token}` },
+    })
+    assertEquals(who.status, 200)
+    const me = await who.json() as Record<string, unknown>
+    assertEquals(me['email'], 'owner@example.com')
+    assertEquals(me['via'], 'shell-token')
+
+    assertEquals((await exchange(app, code, verifier)).status, 400, 'the code is single use')
+  } finally {
+    await portal.close()
+  }
+})
+
+Deno.test('shell: a wrong verifier fails, and it uses the code up so the right one cannot retry', async () => {
+  const portal = stubPortal({ email: 'owner@example.com' })
+  try {
+    const app = testApp(portal.url, ['owner@example.com'])
+    const { verifier, challenge } = await createPkcePair()
+    const code = new URL(await shellCallback(app, challenge)).searchParams.get('code')!
+    const other = await createPkcePair()
+    assertEquals((await exchange(app, code, other.verifier)).status, 400, 'verifier must match the challenge')
+    assertEquals((await exchange(app, code, verifier)).status, 400, 'the code is spent by the failed attempt')
+  } finally {
+    await portal.close()
+  }
+})
+
+Deno.test('shell: a malformed exchange body is refused without touching the code store', async () => {
+  const app = testApp('https://portal.example', ['a@b.c'])
+  const bad = [
+    { code: 'x' },
+    { code: '', verifier: 'a'.repeat(43) },
+    { code: 'x', verifier: 'short' },
+  ]
+  for (const body of bad) {
+    const res = await app.request('https://scan.example/authenticate/shell/exchange', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    assertEquals(res.status, 400, JSON.stringify(body))
+  }
+  const notJson = await app.request('https://scan.example/authenticate/shell/exchange', { method: 'POST', body: '{' })
+  assertEquals(notJson.status, 400)
+})
+
+Deno.test('shell cookie: a web sign-in after a shell one still ends at the owner link, not the app', async () => {
+  const portal = stubPortal({ email: 'owner@example.com' })
+  try {
+    const app = testApp(portal.url, ['owner@example.com'])
+    const init = await app.request('https://scan.example/authenticate/oidc')
+    assert(init.headers.getSetCookie().some((c) => c.startsWith('oidc_shell=;')), 'a web initiate clears the shell cookie')
+    const jar = cookiesFrom(init)
+    const state = jar.get('oidc_state')!
+    const cb = await app.request(
+      `https://scan.example/authenticate/oidc/callback?code=c&state=${state}`,
+      { headers: { cookie: `oidc_state=${state}; oidc_pkce=${jar.get('oidc_pkce')}` } },
+    )
+    assertEquals(cb.headers.get('location'), '/viewer.html?world=default&token=owner-tok')
+  } finally {
+    await portal.close()
+  }
+})
+
+Deno.test('shell token: a token for an account since removed from the allowlist is refused', async () => {
+  const app = testApp('https://portal.example', ['still@example.com'])
+  const token = await signSession(
+    { sub: 'u2', email: 'removed@example.com', exp: Math.floor(Date.now() / 1000) + 60 },
+    'integration-secret',
+  )
+  const res = await app.request('https://scan.example/authenticate/whoami', {
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assertEquals(res.status, 403)
+})
+
+Deno.test('shell token: a forged or tampered Bearer is 401, never a session', async () => {
+  const app = testApp('https://portal.example', ['a@b.c'])
+  const forged = await signSession(
+    { sub: 'u3', email: 'a@b.c', exp: Math.floor(Date.now() / 1000) + 60 },
+    'some-other-secret',
+  )
+  const res = await app.request('https://scan.example/authenticate/whoami', {
+    headers: { authorization: `Bearer ${forged}` },
+  })
+  assertEquals(res.status, 401)
 })

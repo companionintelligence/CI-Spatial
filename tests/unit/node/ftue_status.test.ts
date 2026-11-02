@@ -7,6 +7,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  SIGN_IN_FAILED,
   SIGN_IN_HREF,
   fetchFtueSnapshot,
   ftueRowText,
@@ -75,13 +76,28 @@ test('sign-in: on gives a same-origin control that returns to the scanner; off s
 test('every state of every row is free of addresses and secrets', () => {
   const memories: FtueSnapshot['memory'][] = [null, { enabled: false }, { enabled: true }, { enabled: true, reachable: false }]
   const engines: FtueSnapshot['engine'][] = [null, { model: MODEL, engineLoadState: 'loading' }, { model: MODEL, engineLoadState: 'ready' }, { model: MODEL, engineLoadState: 'failed' }]
-  const signIns: FtueSnapshot['signIn'][] = [null, { enabled: false }, { enabled: true }]
+  const signIns: FtueSnapshot['signIn'][] = [
+    null,
+    { enabled: false },
+    { enabled: true },
+    { enabled: true, signedIn: true },
+    { enabled: true, problem: SIGN_IN_FAILED },
+  ]
   for (const memory of memories) for (const engine of engines) for (const signIn of signIns) {
     for (const row of ftueRows({ memory, engine, signIn })) {
       const shown = ftueRowText(row)
       assert.doesNotMatch(shown, /https?:|\/api|token|key/i, `"${shown}" must not show an address or a secret`)
     }
   }
+})
+
+test('sign-in in a shell: a held session says so and offers nothing; a failed sign-in keeps the control and says so', () => {
+  const signedIn = ftueRows({ memory: null, engine: null, signIn: { enabled: true, signedIn: true } })[2]!
+  assert.equal(ftueRowText(signedIn), 'Sign-in Signed in.')
+  assert.equal(signedIn.link, undefined, 'nothing left to press')
+
+  const failed = ftueRows({ memory: null, engine: null, signIn: { enabled: true, problem: SIGN_IN_FAILED } })[2]!
+  assert.deepEqual(failed.link, { href: SIGN_IN_HREF, text: SIGN_IN_FAILED })
 })
 
 test('fetch: reads the named fields only, so a URL or token in a reply cannot reach the screen', async () => {
