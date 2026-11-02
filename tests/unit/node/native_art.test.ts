@@ -55,7 +55,9 @@ test('Android adaptive icon: foreground at 108 dp per density, background is the
     ROOT + 'mobile/android/app/src/main/res/values/ic_launcher_background.xml',
     'utf8',
   )
-  assert.match(background, /name="ic_launcher_background">#061A24</, 'the adaptive background must match the mark')
+  // The owner's flat reticle sits on #041620 (scripts/generate-icons.mjs BG), the same brand dark as the
+  // web, iOS and Capacitor shells. #061A24 was the background of the glow icon this test first checked.
+  assert.match(background, /name="ic_launcher_background">#041620</, 'the adaptive background must match the mark')
 })
 
 test('Android launch screens keep their folder sizes', () => {

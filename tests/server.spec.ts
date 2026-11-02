@@ -5,7 +5,7 @@
  *   Playwright → Vite dev server (port 5173, or VITE_PORT if set) → Deno server (port 8000)
  *
  * Tests are project-agnostic (no browser) and run under the webkit-desktop
- * project so they execute once per CI run.
+ * project, so `npm test` runs each of them once.
  */
 import { test, expect, type APIRequestContext } from '@playwright/test'
 import { createHash } from 'crypto'

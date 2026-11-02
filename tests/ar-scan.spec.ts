@@ -108,7 +108,7 @@ test.describe('App loads', () => {
   test('viewer page exposes PWA metadata for installed editor launches', async ({ page }) => {
     await page.goto(`${BASE_URL}/viewer.html?world=default`, { waitUntil: 'domcontentloaded' })
     await expect(page.locator('link[rel="manifest"]')).toHaveAttribute('href', '/manifest.json')
-    await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute('href', '/icon-192.png')
+    await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute('href', '/apple-touch-icon.png')
     await expect(page.locator('meta[name="apple-mobile-web-app-capable"]')).toHaveAttribute('content', 'yes')
   })
 })

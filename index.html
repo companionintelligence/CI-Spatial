@@ -377,6 +377,10 @@
         color: #72ddd4;
         transform: scale(0.94);
       }
+      /* Hidden for every visitor for now: the link targets localhost:8787 on the visitor's own phone, which never answers.
+         Remove the hidden attribute in the markup to show it again. */
+      #gimbal-link[hidden] { display: none !important; }
+
       /* Gimbal Control — subsystems/osmo-ble, its own web app/server (see docs/operations/GIMBAL_INTEGRATION.md);
          opens in a new tab so no unsaved-scan-progress guard is needed (that guard only applies
          to same-tab nav links — see navLinks in src/main.ts). */
@@ -750,7 +754,7 @@
       #autosave-status {
         border-top: 1px solid rgba(255, 255, 255, 0.07);
         padding: 4px 9px;
-        color: rgba(239,240,240,0.45);
+        color: rgba(239,240,240,0.6);
         font-size: 10px;
         line-height: 1.35;
       }
@@ -798,12 +802,12 @@
         font-weight: 700;
         text-transform: uppercase;
         letter-spacing: 0.08em;
-        color: rgba(255, 255, 255, 0.4);
+        color: rgba(255, 255, 255, 0.6);
       }
       #infer-dialog-close {
         background: none;
         border: none;
-        color: rgba(255, 255, 255, 0.35);
+        color: rgba(255, 255, 255, 0.6);
         font-size: 13px;
         cursor: pointer;
         padding: 0 2px;
@@ -836,7 +840,8 @@
         transition: transform 0.3s ease;
         display: flex;
         flex-direction: column;
-        z-index: 15;
+        /* Above the scanner rail (16) and the help button (17): while open, the panel's own close button and rows must take the taps. */
+        z-index: 18;
       }
 
       #side-panel.open {
@@ -938,6 +943,7 @@
         right: calc(max(14px, env(safe-area-inset-right)) + 60px);
         transform: translateY(50%);
         padding: 8px 16px;
+        min-height: 44px;
         font-size: 13px;
         font-weight: 700;
         color: #041620;
@@ -1057,7 +1063,7 @@
 
       .panel-btn-ghost {
         width: 100%;
-        min-height: 40px;
+        min-height: 44px;
         padding: 10px 12px;
         background: rgba(255, 255, 255, 0.05);
         color: rgba(255, 255, 255, 0.72);
@@ -1101,8 +1107,8 @@
       }
 
       .ci-icon-btn--sm {
-        width: 36px;
-        height: 36px;
+        width: 44px;
+        height: 44px;
         font-size: 16px;
       }
 
@@ -1113,7 +1119,7 @@
       }
 
       .ci-toolbar-pill {
-        min-height: 38px;
+        min-height: 44px;
         padding: 0 14px;
         border-radius: var(--ci-pill-radius);
         border: 1px solid var(--ci-line);
@@ -2315,7 +2321,7 @@
         margin-bottom: 10px;
       }
       .place-popup-title { color: var(--ci-muted); font-size: 13px; font-weight: 700; text-transform: uppercase; }
-      .place-popup-close { border: 0; background: transparent; color: var(--ci-accent); font-size: 12px; font-weight: 700; }
+      .place-popup-close { min-width: 44px; min-height: 44px; border: 0; background: transparent; color: var(--ci-accent); font-size: 12px; font-weight: 700; }
       .place-popup-scroll { display: grid; gap: 8px; max-height: 46vh; overflow: auto; }
 
       /* Areas for the selected place. <details> so the open/closed state is the
@@ -2393,7 +2399,7 @@
       }
       .place-coordinate-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
       .place-new-name-preview { min-height: 14px; color: var(--ci-muted); font-size: 11px; }
-      #place-new-save { min-height: 40px; border: 0; border-radius: 7px; color: #042226; background: #72ddd4; font-weight: 700; }
+      #place-new-save { min-height: 44px; border: 0; border-radius: 7px; color: #042226; background: #72ddd4; font-weight: 700; }
       #place-area-list { display:grid; gap:5px; max-height:160px; overflow:auto; }
       #place-area-list .place-option { display:grid; gap:3px; padding:8px 9px; text-align:left; border:1px solid var(--ci-line); border-radius:7px; color:var(--ci-text); background:var(--ci-surface); }
       #place-area-list .place-option-selected { border-color:rgba(114,221,212,.72); background:rgba(114,221,212,.1); }
@@ -2441,7 +2447,7 @@
         padding: 10px 14px 14px;
         background: #05141c;
       }
-      .place-sheet-actions button { flex: 1; min-height: 40px; border: 1px solid var(--ci-line); border-radius: 7px; color: var(--ci-text); background: var(--ci-surface); }
+      .place-sheet-actions button { flex: 1; min-height: 44px; border: 1px solid var(--ci-line); border-radius: 7px; color: var(--ci-text); background: var(--ci-surface); }
       /* The confirm button names what it will do ("Scan This Place" / "Upload
          to This Place"), so it should also look like the thing you came here
          to press — it sat visually identical to Cancel. */
@@ -2514,8 +2520,8 @@
       /* Leaflet dark-mode overrides */
       .leaflet-container { background: #0a222e !important; font-family: inherit; }
       .leaflet-control-zoom a { background: rgba(20,22,32,0.9) !important; color: #fff !important; border-color: rgba(255,255,255,0.1) !important; }
-      .leaflet-control-attribution { background: rgba(0,0,0,0.5) !important; color: rgba(255,255,255,0.3) !important; font-size: 9px !important; }
-      .leaflet-control-attribution a { color: rgba(255,255,255,0.4) !important; }
+      .leaflet-control-attribution { background: rgba(0,0,0,0.5) !important; color: rgba(255,255,255,0.6) !important; font-size: 9px !important; }
+      .leaflet-control-attribution a { color: rgba(255,255,255,0.6) !important; }
       .leaflet-control-zoom { display: none; } /* hide zoom in small map */
 
       @keyframes rtc-live-pulse {
@@ -2584,13 +2590,15 @@
       #help-btn {
         position: fixed; top: calc(env(safe-area-inset-top, 0px) + 10px);
         right: 14px; z-index: 17;
-        width: 36px; height: 36px; border-radius: 50%;
+        width: 44px; height: 44px; border-radius: 50%;
         background: var(--ci-bg-elevated); border: 1px solid var(--ci-line);
         color: var(--ci-muted); font-size: 16px; font-weight: 700;
         cursor: pointer; display: none; align-items: center; justify-content: center;
         -webkit-tap-highlight-color: transparent;
       }
       #help-btn.visible { display: flex; }
+      /* The side panel's top corner sits under this button. While the panel is open that corner is the panel's, so the help button steps aside. */
+      body.side-panel-open #help-btn { visibility: hidden; }
 
       /* iOS Safari zooms the page into a focused field whose text is under 16px. The viewport tag used to
          stop that (a page that cannot scale cannot zoom in); now that pinch-zoom is on, only the size does.
@@ -2627,7 +2635,7 @@
       <div class="onboard-step active" data-step="0">
         <div class="onboard-icon"><svg width="44px" height="44px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 8.5A1.5 1.5 0 0 1 4.5 7h2.7l1.2-2h6.2l1.2 2h2.7A1.5 1.5 0 0 1 20 8.5v9A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5z"/><circle cx="11.75" cy="13" r="3.4"/></svg></div>
         <div class="onboard-title">Allow camera &amp; motion</div>
-        <div class="onboard-desc">We use the camera to see the room, and motion sensors to know where you are standing. Tap Allow when your phone asks.</div>
+        <div class="onboard-desc">We use the camera to see the room, and motion sensors to know where you are standing. Your phone asks when you start.</div>
       </div>
       <div class="onboard-step" data-step="1">
         <div class="onboard-icon"><svg width="44px" height="44px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20.4 4.2v4.2h-4.2"/><circle cx="12" cy="12" r="1.6"/></svg></div>
@@ -2773,7 +2781,7 @@
           <svg class="start-alt-caret" width="14px" height="14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m5 9 7 7 7-7"/></svg>
         </button>
 
-        <a id="start-editor-card" class="start-path" href="/editor" aria-label="Explore and edit existing places">
+        <a id="start-editor-card" class="start-path" href="/editor" aria-label="Place Scan Editor. Explore and edit existing places.">
           <span class="start-path-icon" aria-hidden="true"><svg width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 5.5h16v13H4z"/><path d="M8 3.5v4M16 3.5v4M8 16.5h8M8 12.5h5"/></svg></span>
           <span class="start-path-copy">
             <span class="start-path-title">Place Scan Editor</span>
@@ -2909,10 +2917,10 @@
 
       <button id="finish-scan-btn" class="finish-btn">Menu</button>
       <button id="capture-btn" aria-label="Capture"></button>
-      <div id="scanner-action-rail" aria-label="Scanner actions">
+      <div id="scanner-action-rail" role="group" aria-label="Scanner actions">
         <a href="/webxr.html" id="xr-mode-link" aria-label="Switch AR runtime" title="Switch to WebXR scanner (HelloXR on iOS)"><svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3.4 9.6A1.7 1.7 0 0 1 5.1 8h13.8a1.7 1.7 0 0 1 1.7 1.6v4.3a1.7 1.7 0 0 1-1.7 1.7h-3.2l-1.9-2.2h-3.6l-1.9 2.2H5.1a1.7 1.7 0 0 1-1.7-1.7z"/></svg></a>
         <a href="/viewer.html" id="viewer-link" aria-label="Open 3D Viewer" title="Desktop 3D Viewer"><svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="4.5" width="18" height="12" rx="1.6"/><path d="M9 20h6M12 16.5V20"/></svg></a>
-        <a href="http://localhost:8787/" id="gimbal-link" target="_blank" rel="noopener noreferrer" aria-label="Open Gimbal Control" title="Gimbal Control (Osmo Mobile 6 — subsystems/osmo-ble)"><svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4.2"/><path d="M12 3.4v2.4M12 18.2v2.4M3.4 12h2.4M18.2 12h2.4M6.2 6.2l1.7 1.7M16.1 16.1l1.7 1.7M6.2 17.8l1.7-1.7M16.1 7.9l1.7-1.7"/></svg></a>
+        <a href="http://localhost:8787/" id="gimbal-link" hidden target="_blank" rel="noopener noreferrer" aria-label="Open Gimbal Control" title="Gimbal Control (Osmo Mobile 6 — subsystems/osmo-ble)"><svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4.2"/><path d="M12 3.4v2.4M12 18.2v2.4M3.4 12h2.4M18.2 12h2.4M6.2 6.2l1.7 1.7M16.1 16.1l1.7 1.7M6.2 17.8l1.7-1.7M16.1 7.9l1.7-1.7"/></svg></a>
         <div class="scanner-rail-divider" style="width:20px; height:1px; background:rgba(255,255,255,0.15); margin:4px 0; align-self:center; flex-shrink:0;"></div>
         <button id="panel-toggle" aria-label="Detections" data-count=""><svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 3.4 8.4 4.3-8.4 4.3-8.4-4.3z"/><path d="m4.4 12 7.6 3.9 7.6-3.9"/><path d="m4.4 16.2 7.6 3.9 7.6-3.9"/></svg></button>
         <button id="stream-btn" aria-label="Stream keyframes" title="Stream keyframes to server">
@@ -2956,6 +2964,15 @@
         <div id="history-body"></div>
       </div>
     </div>
+    <script>
+      // The start button ships "Preparing…" until the app module boots. If the
+      // bundle never loads, say so instead of leaving "Preparing…" up for good.
+      setTimeout(function () {
+        var button = document.getElementById('start-ar-btn')
+        var line = button && button.querySelector('.start-path-status')
+        if (button && button.disabled && line) line.textContent = 'Still loading. Reload to try again.'
+      }, 10000)
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

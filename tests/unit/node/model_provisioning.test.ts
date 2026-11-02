@@ -63,9 +63,9 @@ test('MODEL_FILES is META followed by ONNX_FILES, with no duplicates', () => {
   assert.equal(new Set(MODEL_FILES).size, MODEL_FILES.length)
 })
 
-test('formatBytes: null/NaN read as unknown, not 0', () => {
-  assert.equal(formatBytes(null), 'unknown size')
-  assert.equal(formatBytes(Number.NaN), 'unknown size')
+test('formatBytes: null/NaN read as not reported, not 0', () => {
+  assert.equal(formatBytes(null), 'size not reported')
+  assert.equal(formatBytes(Number.NaN), 'size not reported')
 })
 
 test('formatBytes: renders GB above the 0.1 GB threshold, MB below it', () => {

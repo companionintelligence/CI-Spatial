@@ -26,12 +26,7 @@ npm run open:android
 
 ## Icons and launch screens
 
-The app icon, the Android adaptive icon and both launch screens are generated from
-the Scan mark in `public/icon-512.png` by `scripts/native-art.sh` (macOS, uses `sips`).
-Run it after changing the mark, then `npm run sync`. The root test `npm run
-test:native-art` checks the sizes, and that the iOS icon has no alpha channel. The
-mark is a 512 px raster, so the iOS 1024 px icon is an upscale. A 1024 px vector
-master is the next step for store art.
+The app icon and both launch screens are drawn from `scripts/icon-source/scan-reticle.svg` by `npm run gen-icons` at the repo root. The background is the night-space colour `#041620`, the one `index.html`, `public/manifest.json` and `capacitor.config.ts` use. `tests/unit/node/app_icons.test.ts` fails if they drift apart. Rerun the script after changing the reticle or the colour, and don't edit the PNGs by hand.
 
 ## Decisions (provisional)
 
