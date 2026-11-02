@@ -162,8 +162,29 @@ function rewriteEditorRoute() {
   }
 }
 
+// The native shell (mobile/) is built with VITE_DISABLE_PWA set. A WKWebView custom
+// scheme cannot register a service worker, so that build leaves out the worker, the
+// manifest and the link to the manifest. The hosted web build never sets the variable.
+function pwaSwitch() {
+  const off = Boolean(process.env.VITE_DISABLE_PWA)
+  let outDir = ''
+  return {
+    name: 'pwa-switch',
+    configResolved(config: { root: string; build: { outDir: string } }) {
+      outDir = path.resolve(config.root, config.build.outDir)
+    },
+    transformIndexHtml(html: string) {
+      return off ? html.replace(/<link rel="manifest"[^>]*>\s*/g, '') : html
+    },
+    closeBundle() {
+      if (!off) return
+      for (const file of ['sw.js', 'manifest.json']) fs.rmSync(path.join(outDir, file), { force: true })
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: tsCert ? [rewriteEditorRoute()] : [basicSsl(), rewriteEditorRoute()],
+  plugins: tsCert ? [rewriteEditorRoute(), pwaSwitch()] : [basicSsl(), rewriteEditorRoute(), pwaSwitch()],
   build: {
     rollupOptions: {
       input: {

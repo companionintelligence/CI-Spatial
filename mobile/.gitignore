@@ -1,0 +1,17 @@
+# Installed here, not in the root workspace.
+node_modules/
+
+# The PWA-off web build, copied in by `npm run build:web`.
+www/
+
+# Written by `cap sync` into each native project. Regenerated on every sync.
+ios/App/App/public/
+ios/App/App/capacitor.config.json
+ios/App/CapApp-SPM/
+ios/App/App/config.xml
+ios/capacitor-cordova-ios-plugins/
+android/app/src/main/assets/public/
+android/app/src/main/assets/capacitor.config.json
+android/app/src/main/assets/plugins/
+android/app/src/main/assets/capacitor.plugins.json
+android/capacitor-cordova-android-plugins/

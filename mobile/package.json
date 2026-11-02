@@ -1,0 +1,23 @@
+{
+  "name": "ci-spatial-scan-mobile-shell",
+  "version": "0.1.0",
+  "private": true,
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "description": "Scan native iOS + Android shell (Capacitor 8). SCAFFOLD, NOT FOR STORE SUBMISSION. Standalone npm project, deliberately NOT a root workspace: it ships the PWA-off web build from www/ via webDir and never imports the web code.",
+  "scripts": {
+    "build:web": "cd .. && npx tsc --noEmit && VITE_DISABLE_PWA=1 npx vite build --outDir mobile/www --emptyOutDir",
+    "sync": "cap sync",
+    "build": "npm run build:web && npm run sync",
+    "open:ios": "cap open ios",
+    "open:android": "cap open android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.6.0",
+    "@capacitor/core": "^8.6.0",
+    "@capacitor/ios": "^8.6.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.6.0",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,6 +1,8 @@
 import { SW_SYNC_TAG } from './shared/storage-keys'
 
 export function registerPWA(): void {
+  // The native shell is built with VITE_DISABLE_PWA set; see pwaSwitch() in vite.config.ts.
+  if (import.meta.env.VITE_DISABLE_PWA) return
   if (typeof window === 'undefined') return
   if (!('serviceWorker' in navigator)) return
   if (!window.isSecureContext) return
