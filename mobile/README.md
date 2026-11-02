@@ -42,7 +42,7 @@ npm run open:android
 
 ## Icons and launch screens
 
-The app icon and both launch screens are drawn from `public/ci-logo-mark.svg` by `npm run gen-icons` at the repo root. The background is the night-space colour `#041620`, the one `index.html`, `public/manifest.json` and `capacitor.config.ts` use. `tests/unit/node/app_icons.test.ts` fails if they drift apart. Rerun the script after changing the mark or the colour, and don't edit the PNGs by hand.
+The app icon and both launch screens are drawn from `scripts/icon-source/scan-reticle.svg` by `npm run gen-icons` at the repo root. The background is the night-space colour `#041620`, the one `index.html`, `public/manifest.json` and `capacitor.config.ts` use. `tests/unit/node/app_icons.test.ts` fails if they drift apart. Rerun the script after changing the reticle or the colour, and don't edit the PNGs by hand.
 
 ## Not done
 

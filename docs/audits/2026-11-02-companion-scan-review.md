@@ -13,13 +13,13 @@
 
 ### Icons and launch screens
 
-- The icons are drawn from `public/ci-logo-mark.svg` by `npm run gen-icons`. The script replaces `scripts/generate-icons.mjs`, which drew the scanner reticle by hand. The old script is in git history.
+- The icons are drawn from `scripts/icon-source/scan-reticle.svg` by `npm run gen-icons`. The icon is Companion Scan's own: the scanner reticle from the original `scripts/generate-icons.mjs` (in git history on `origin/main`), redrawn as SVG so the web, iOS and Android icons come from one source.
 - Web: `icon-192.png` and `icon-512.png` (purpose `any`), `icon-maskable-512.png` (purpose `maskable`, with the mark inside the safe circle), and `apple-touch-icon.png` at 180 px. The manifest now declares the three separately. The old manifest declared one image as `any maskable`, which Android crops badly.
 - iOS: a 1024 px app icon and launch images, all opaque RGB, because App Store builds reject an alpha channel. The launch storyboard background is the night-space colour, not white.
 - Android: launcher, round and adaptive foreground icons for each density, and splash images for each portrait and landscape bucket. The Android 12+ splash background is `#041620`. Two unreferenced Capacitor vector drawables were removed.
 - One background colour, `#041620`, is used by the manifest, the HTML theme colour, the Capacitor config, both launch screens and the generator. `tests/unit/node/app_icons.test.ts` fails if they drift apart.
 
-**Decision for the owner:** the app icon is now the Companion mark. The scanner reticle is in git history if you want it back.
+**Decision (resolved 2026-11-02):** Companion Scan keeps its own icon, the scanner reticle, not the shared Companion mark. The web icon keeps the original design. The iOS and Android icons are new: origin/main had only Capacitor's defaults there.
 
 ### Loading
 
@@ -125,7 +125,7 @@ These need a product or design decision, or more work than a low-risk fix.
 
 ## Decisions for the owner
 
-1. App icon: the Companion mark (this branch) or the scanner reticle (git history).
+1. App icon: resolved. Companion Scan keeps its own reticle icon (see the icons section).
 2. Place creation: require coordinates even when a name is given?
 3. First-run status rows when the server is down: hide them, or keep "Status unavailable."?
 4. CI: keep the gates manual-only, or run `verify` on push and PR?

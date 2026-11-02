@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * Generates every app icon and launch image from the Companion mark, so the
- * PWA, the iOS shell and the Android shell ship one design:
+ * Generates every app icon and launch image from Companion Scan's own icon, the
+ * scanner reticle, so the PWA, the iOS shell and the Android shell ship one design:
  *
  *   npm run gen-icons
  *
- * The source is public/ci-logo-mark.svg. The background is the night-space
+ * The source is scripts/icon-source/scan-reticle.svg. The background is the night-space
  * colour the app already uses (--background, theme_color, the Capacitor
  * backgroundColor). Chromium draws each image through Playwright, which is
  * already a dev dependency, so nothing new is installed.
@@ -27,16 +27,16 @@ const BG_RGB = [0x04, 0x16, 0x20]
 // writes an opaque RGB PNG. `round` clips to a circle, `transparent` drops the
 // background (Android adaptive foregrounds).
 const WEB = [
-  { out: 'public/icon-192.png', width: 192, height: 192, mark: 0.62 },
-  { out: 'public/icon-512.png', width: 512, height: 512, mark: 0.62 },
+  { out: 'public/icon-192.png', width: 192, height: 192, mark: 0.82 },
+  { out: 'public/icon-512.png', width: 512, height: 512, mark: 0.82 },
   // Maskable icons are cropped to a circle or squircle, so the mark sits inside the central 80%.
-  { out: 'public/icon-maskable-512.png', width: 512, height: 512, mark: 0.46 },
-  { out: 'public/apple-touch-icon.png', width: 180, height: 180, mark: 0.62, rgb: true },
+  { out: 'public/icon-maskable-512.png', width: 512, height: 512, mark: 0.55 },
+  { out: 'public/apple-touch-icon.png', width: 180, height: 180, mark: 0.82, rgb: true },
 ]
 
 const IOS_ICON = 'mobile/ios/App/App/Assets.xcassets'
 const IOS = [
-  { out: `${IOS_ICON}/AppIcon.appiconset/AppIcon-512@2x.png`, width: 1024, height: 1024, mark: 0.62, rgb: true },
+  { out: `${IOS_ICON}/AppIcon.appiconset/AppIcon-512@2x.png`, width: 1024, height: 1024, mark: 0.82, rgb: true },
   // The launch image is scaled to fill the screen and cropped at the sides, so the mark stays small and central.
   ...['splash-2732x2732.png', 'splash-2732x2732-1.png', 'splash-2732x2732-2.png'].map((file) => ({
     out: `${IOS_ICON}/Splash.imageset/${file}`,
@@ -53,14 +53,14 @@ const FOREGROUND = { mdpi: 108, hdpi: 162, xhdpi: 216, xxhdpi: 324, xxxhdpi: 432
 // Android 7.1+ round launchers take the round icon; the foreground keeps the mark inside the 66dp safe circle.
 const ANDROID = [
   ...Object.entries(LEGACY).flatMap(([density, size]) => [
-    { out: `${ANDROID_RES}/mipmap-${density}/ic_launcher.png`, width: size, height: size, mark: 0.62 },
-    { out: `${ANDROID_RES}/mipmap-${density}/ic_launcher_round.png`, width: size, height: size, mark: 0.62, round: true },
+    { out: `${ANDROID_RES}/mipmap-${density}/ic_launcher.png`, width: size, height: size, mark: 0.82 },
+    { out: `${ANDROID_RES}/mipmap-${density}/ic_launcher_round.png`, width: size, height: size, mark: 0.82, round: true },
   ]),
   ...Object.entries(FOREGROUND).map(([density, size]) => ({
     out: `${ANDROID_RES}/mipmap-${density}/ic_launcher_foreground.png`,
     width: size,
     height: size,
-    mark: 0.46,
+    mark: 0.55,
     transparent: true,
   })),
 ]
@@ -84,7 +84,7 @@ const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0
 
 /** The mark's own markup, without its <svg> wrapper, so it can be placed at any size. */
 function markInner() {
-  const svg = readFileSync(join(ROOT, 'public/ci-logo-mark.svg'), 'utf8')
+  const svg = readFileSync(join(ROOT, 'scripts/icon-source/scan-reticle.svg'), 'utf8')
   return svg.slice(svg.indexOf('>', svg.indexOf('<svg')) + 1, svg.lastIndexOf('</svg>'))
 }
 
