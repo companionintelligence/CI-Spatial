@@ -1,0 +1,16 @@
+# Companion Scan
+
+> Companion Scan is a web app for iPhone and Android that captures a 3D map of a room with your phone's camera. Scans are saved in your browser and sent to a Companion Scan server you run, such as a Companion Hub.
+
+Companion Scan is part of the Companion Intelligence platform (https://ci.computer/). It installs to the home screen as a web app. AR capture needs a phone with a camera; the 3D viewer and the server also run on a computer. The docs cover installing it from the Companion Hub App Store, setup and where scans are stored.
+
+## Pages
+
+- [Companion Scan](https://scan.ci.computer/): the scanner app
+- [Companion Scan docs](https://docs.ci.computer/docs/apps-available/first-party-apps/spatial-scan): install from the Companion Hub App Store (beta), setup and storage
+
+## Optional
+
+- [Source code](https://github.com/companionintelligence/CI-Spatial): project README and documentation
+- [Companion Intelligence documentation](https://docs.ci.computer/): platform documentation
+- [Companion Intelligence](https://ci.computer/): the platform this app belongs to
