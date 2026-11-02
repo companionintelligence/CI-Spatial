@@ -60,6 +60,7 @@ import {
   type MethodPlan,
 } from '../../src/capture/capture-intent.ts'
 import {
+  SIGN_IN_FAILED,
   ftueRowText,
   ftueRows,
   type EngineStatus,
@@ -343,7 +344,13 @@ export function ftueStatusWordsMax(): number {
     null,
     ...(['loading', 'ready', 'failed'] as const).map((engineLoadState) => ({ model: 'Ollama/qwen3-vl:4b', engineLoadState })),
   ]
-  const signIn: Array<SignInStatus | null> = [null, { enabled: false }, { enabled: true }]
+  const signIn: Array<SignInStatus | null> = [
+    null,
+    { enabled: false },
+    { enabled: true },
+    { enabled: true, signedIn: true },
+    { enabled: true, problem: SIGN_IN_FAILED },
+  ]
   let worst = 0
   for (const m of memory) for (const e of engine) for (const s of signIn) {
     const snap: FtueSnapshot = { memory: m, engine: e, signIn: s }

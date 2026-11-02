@@ -399,7 +399,7 @@ The second step of the first-run overlay lists three things about this install. 
 |---|---|---|
 | Companion Memory | `GET /memory/status` | Connected, set up but not reachable, or not connected. Not connected points to Companion Hub. |
 | Model | `GET /health` (`model`, `engineLoadState`) | The model in use, and whether it loaded. If it did not load, scans run in server-only mode and get no object labels. |
-| Sign-in | `GET /authenticate/status` | "Sign in with Companion Account" when sign-in is on, or "Off on this install." |
+| Sign-in | `GET /authenticate/status` | "Sign in with Companion Account" when sign-in is on, or "Off on this install." In the native shell, "Signed in." once the shell holds a session. |
 
 A row reads "Status unavailable." when its endpoint does not answer. Reading the Companion Memory row makes the server probe the configured Companion Memory once: an empty-batch POST with a five-second timeout.
 
@@ -420,11 +420,11 @@ The server reads these settings. Defaults are the code's own, and the Hub column
 | `OIDC_CLIENT_ID` | `ci-web-xr-scan` | Must match the CI-Portal client registration. Do not rename it. | Not set by the Hub. |
 | `APP_BASE_URL` | taken from the request | Public origin used to build the sign-in redirect. Set it when a proxy does not forward the host. | Set by the Hub when the app is exposed (to confirm for this app). |
 | `PORTAL_OIDC_ALLOWED_EMAILS` | empty, which admits nobody | Comma-separated allowlist of signed-in emails. Fails closed. | The app form's allowlist field. |
-| `SESSION_SECRET` | random per boot | Signs the sign-in session cookie. Set it on any server you restart, or everyone is signed out. | Not set by the Hub. |
+| `SESSION_SECRET` | random per boot | Signs the sign-in session: the browser cookie and the native shell's token. Set it on any server you restart, or everyone is signed out. | Not set by the Hub. |
 
 When Companion Hub hosts the scanner, the Hub fills the memory and inference values from the app's store manifest (`hub_integration` in `ci-web-xr-scan/config.json` in the CI-Marketplace repo), so nobody types them by hand. The Hub writes the memory values after a completed connect. The app form also has advanced fields for an external Companion Memory, which you can fill instead. The server reads its memory settings once at boot, so a connect needs a server restart. Whether the Hub restarts the app itself is to confirm.
 
-Sign-in is off unless `PORTAL_OIDC_ENABLED` is on. The first-run control starts it at `/authenticate/oidc?redirect=/`, which returns to the scanner after CI-Portal. A direct visit to `/authenticate/oidc` lands in the world editor instead. When sign-in is off, the only sign-in route registered is `/authenticate/status`.
+Sign-in is off unless `PORTAL_OIDC_ENABLED` is on. The first-run control starts it at `/authenticate/oidc?redirect=/`, which returns to the scanner after CI-Portal. A direct visit to `/authenticate/oidc` lands in the world editor instead. When sign-in is off, the only sign-in route registered is `/authenticate/status`. A native shell starts the same sign-in with `shell=1` and a PKCE challenge, and gets its session from `POST /authenticate/shell/exchange`; see [mobile/README.md](mobile/README.md#companion-account-sign-in).
 
 ### Capture geometry: walk the camera, don't spin it
 
@@ -644,6 +644,7 @@ The full, canonical route table lives in [docs/architecture.md](docs/architectur
 | `GET` | `/memory/status` | Returns `{ enabled, baseUrl, sourceSystem, reachable? }`. Never returns the token. |
 | `GET` | `/authenticate/status` | Returns `{ enabled }`: whether "Sign in with Companion Account" is on. Boolean only. |
 | `GET` | `/authenticate/oidc` | Starts Companion Account sign-in when it is on. The callback, `/authenticate/whoami` and `POST /authenticate/logout` complete the flow. |
+| `POST` | `/authenticate/shell/exchange` | A native shell trades the one-time code from its sign-in, with its PKCE verifier, for a session token (`{ token, email, name }`). Single use, 60 seconds. |
 | `POST` | `/infer` | Multipart `image` → `RawDetection[]` |
 | `POST` | `/process-scan` | Sync scan analysis: `object-count`, `scene-description`, `floor-plan` |
 | `POST` | `/upload-scan` | Multipart `file` (.glb) + optional `metadata` (JSON) → saves to `scans/` |

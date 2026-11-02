@@ -53,8 +53,8 @@ export function apiCredentials(): RequestCredentials {
 
 /**
  * True inside a Capacitor shell. The shell's page is on another origin than the
- * server, and the session cookie the server sets belongs to the server's origin,
- * so the shell cannot hold a Companion Account session. Sign-in happens in a browser.
+ * server, so the server's session cookie never reaches it. A shell signs in through
+ * src/shared/shell-sign-in.ts and holds a Bearer token instead.
  */
 export function isNativeShell(): boolean {
   const cap = (globalThis as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor

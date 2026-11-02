@@ -57,7 +57,8 @@ import { AROverlay } from './ui/overlay'
 import { writeStatus, type StatusPriority } from './ui/status-line'
 import { SidePanel, type ExportOutcome } from './ui/panel'
 import { SessionHistory } from './ui/history'
-import { renderFtueStatus } from './ui/ftue-status'
+import { renderFtueStatus, SIGN_IN_FAILED } from './ui/ftue-status'
+import { initShellSignIn } from './shared/shell-sign-in'
 import { exportToGLB } from './export/gltf'
 import { isServerSessionId } from './shared/session-id.ts'
 import { exportSessionSummary } from './export/summary'
@@ -1258,6 +1259,11 @@ async function main() {
 
   // ── 4b. Onboarding overlay — show once on first visit ────────────────────────
   const ONBOARD_KEY = ONBOARDING_KEY
+
+  // Shell sign-in: the browser sheet hands the app back here. Outside a shell this does nothing.
+  void initShellSignIn((signedIn) => {
+    void renderFtueStatus(document.getElementById('ftue-status'), fetch, signedIn ? undefined : SIGN_IN_FAILED)
+  })
 
   function runOnboarding(_isReplay = false): Promise<void> {
     return new Promise<void>((resolve) => {

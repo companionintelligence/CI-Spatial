@@ -22,6 +22,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- The sign-in return from the browser sheet (src/shared/shell-sign-in.ts). -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="com.companionintelligence.scan" android:host="auth" />
+            </intent-filter>
+
         </activity>
 
         <provider
