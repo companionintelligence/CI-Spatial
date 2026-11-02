@@ -57,6 +57,7 @@ import { AROverlay } from './ui/overlay'
 import { writeStatus, type StatusPriority } from './ui/status-line'
 import { SidePanel, type ExportOutcome } from './ui/panel'
 import { SessionHistory } from './ui/history'
+import { renderFtueStatus } from './ui/ftue-status'
 import { exportToGLB } from './export/gltf'
 import { isServerSessionId } from './shared/session-id.ts'
 import { exportSessionSummary } from './export/summary'
@@ -1263,6 +1264,9 @@ async function main() {
       const ob = document.getElementById('onboarding-overlay')
       if (!ob) { resolve(); return }
       ob.classList.add('visible')
+      // Setup rows for the second step. Not awaited: the overlay never waits on the
+      // server, and a failed read shows as "Status unavailable." in its row.
+      void renderFtueStatus(document.getElementById('ftue-status'))
 
       const steps = ob.querySelectorAll<HTMLElement>('.onboard-step')
       const dots = ob.querySelectorAll<HTMLElement>('.onboard-dot')

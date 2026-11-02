@@ -102,6 +102,7 @@ if (tsCert) {
 const PROXIED_ROUTES = [
   '/infer',
   '/health',
+  '/memory', // GET /memory/status, read by the first-run status rows
   '/upload-scan',
   '/upload-summary',
   '/ingest-video',

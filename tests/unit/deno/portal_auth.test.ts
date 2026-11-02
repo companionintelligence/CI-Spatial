@@ -262,3 +262,30 @@ Deno.test('session: non-ASCII claims survive the round-trip', async () => {
   const claims = await verifySession(token, secret)
   assertEquals(claims?.name, 'José Ámundsen 日本', 'UTF-8 must not be mangled to latin-1')
 })
+
+Deno.test('status: reports whether sign-in is on, as a boolean and nothing else', async () => {
+  const cases: Array<[string, Record<string, string>, boolean]> = [
+    ['stock install', {}, false],
+    ['switch on, issuer set', { PORTAL_OIDC_ENABLED: '1', OIDC_ISSUER_URL: 'https://portal.example' }, true],
+    ['switch on, no issuer', { PORTAL_OIDC_ENABLED: 'true' }, false],
+    ['issuer set, switch off', { OIDC_ISSUER_URL: 'https://portal.example' }, false],
+  ]
+  for (const [name, vars, want] of cases) {
+    const cfg = configFromEnv((k) => vars[k])
+    const app = new Hono()
+    registerPortalAuth(app, cfg, { ownerDestination: () => Promise.resolve('/') })
+    const res = await app.request('https://scan.example/authenticate/status')
+    assertEquals(res.status, 200, `${name}: the status route is always registered`)
+    const body = await res.json() as Record<string, unknown>
+    assertEquals(body['enabled'], want, name)
+    // Boolean only: the issuer, client id and allowlist must never reach a browser from here.
+    assertEquals(Object.keys(body).join(','), 'enabled', `${name}: no other field`)
+  }
+})
+
+Deno.test('status: on a stock install nothing else in the sign-in flow is registered', async () => {
+  const app = new Hono()
+  registerPortalAuth(app, configFromEnv(() => undefined), { ownerDestination: () => Promise.resolve('/') })
+  assertEquals((await app.request('https://scan.example/authenticate/oidc')).status, 404, 'initiate')
+  assertEquals((await app.request('https://scan.example/authenticate/whoami')).status, 404, 'whoami')
+})

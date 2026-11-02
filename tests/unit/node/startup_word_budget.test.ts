@@ -30,6 +30,7 @@ import {
   WORDS_BEFORE_CAMERA_MAX,
   allCases,
   countWords,
+  ftueStatusWordsMax,
   readStaticCopy,
   staticVisibleText,
   wordsBeforeCamera,
@@ -39,8 +40,8 @@ const where = (c: { subject: string, deviceName: string }) => `${c.subject} / ${
 
 test('every screen this can draw stays under the word budget', () => {
   // The point of computing rather than sampling. A browser run measures one
-  // combination; this is all 24. The mock renders 92 words and the worst real
-  // screen is 103 — a room or a building on a phone that advertises WebXR
+  // combination; this is all 24. The mock renders 124 words and the worst real
+  // screen is 135 (the first-run status rows are 32 of each) — a room or a building on a phone that advertises WebXR
   // without having proven it, which is the exact device (XREAL Beam Pro) the
   // capture ladder was built for, and which pays an extra eleven-word hedge on
   // top of its recommendation. Re-baselining against the convenient sample is
@@ -60,9 +61,24 @@ test('every screen this can draw stays under the word budget', () => {
   // changed on purpose, re-measure, update this literal, and say in
   // WORDS_BEFORE_CAMERA_MAX why the new number is the right ceiling.
   assert.equal(
-    worst.words.total, 103,
-    `the worst screen is now ${where(worst)} at ${worst.words.total} words, not 103`,
+    worst.words.total, 135,
+    `the worst screen is now ${where(worst)} at ${worst.words.total} words, not 135`,
   )
+})
+
+test('the first-run status rows cost what their copy says, and the screen carries them', () => {
+  // Pinned like the worst screen above: a copy change in src/ui/ftue-status.ts
+  // moves this number, and the ceiling has to move on purpose, with the reason
+  // written in WORDS_BEFORE_CAMERA_MAX. Every screen pays for the rows, because
+  // they are read on the second onboarding step whatever the subject or device.
+  assert.equal(
+    ftueStatusWordsMax(), 32,
+    `the status rows now cost ${ftueStatusWordsMax()} words at worst, not 32 — re-measure WORDS_BEFORE_CAMERA_MAX`,
+  )
+  assert.equal(readStaticCopy().status, ftueStatusWordsMax(), 'the static copy and the screen agree on the rows')
+  for (const c of allCases()) {
+    assert.equal(c.words.status, 32, `${where(c)}: the status rows are not on this screen's total`)
+  }
 })
 
 test('the overrun is the un-recommended methods, not the recommendation', () => {
@@ -77,7 +93,11 @@ test('the overrun is the un-recommended methods, not the recommendation', () => 
   // The words were never in the copy, which is the reason none of it was cut:
   // each card's second sentence carries what its path does NOT give you, and
   // capture_intent.test.ts pins those clauses in place.
-  const ORIGINAL_CEILING = 120
+  // The status rows (32 words, on every first-run screen) landed after this
+  // argument was made, so the ceiling it was made against moves by the same
+  // amount. The question stays the one it was: does the overrun come from the
+  // alternatives alone?
+  const ORIGINAL_CEILING = 120 + ftueStatusWordsMax()
   let overran = 0
   for (const c of allCases()) {
     assert.ok(
@@ -206,15 +226,20 @@ test('the mock screen is the one the Playwright spec measures', () => {
   assert.equal(mock.note, 0, 'a proven engine gets no hedge')
   // Pinned to a browser measurement, so it cannot go stale in silence. If the
   // copy changed on purpose, re-run the spec (npm run loop --only=ui) and put
-  // the number it reports here.
+  // the number it reports here. The status rows are left out of this pin: the
+  // browser shows whatever the three endpoints answer, and the spec holds that
+  // to the rows' worst case rather than to a single measured value.
   assert.equal(
-    mock.total, 92,
-    `the model now says ${mock.total}; Chrome said 92 on 2026-08-30 — re-measure before trusting either`,
+    mock.total - mock.status, 92,
+    `the model now says ${mock.total - mock.status} before the status rows; Chrome said 92 on 2026-08-30 — re-measure before trusting either`,
   )
   // What the same screen was before the disclosure, and what Chrome measured
   // on the build immediately before it (140). Kept because it is the size of
   // what the control bought.
-  assert.equal(mock.totalExpanded, 142, 'the mock screen with both alternatives open, plus the control itself')
+  assert.equal(
+    mock.totalExpanded - mock.status, 142,
+    'the mock screen with both alternatives open, plus the control itself (before the status rows)',
+  )
 })
 
 test('every subject has a screen', () => {
