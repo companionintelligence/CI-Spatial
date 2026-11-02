@@ -10,7 +10,7 @@
 <p align="center"><a href="docs/README.md">Documentation</a> · <a href="#quick-setup">Get started</a> · <a href="#license">License</a> · <a href="https://docs.ci.computer/docs/reference/open-source-systems">Systems map</a></p>
 
 <p align="center">
-  <a href="https://xr.ci.computer"><img src="https://img.shields.io/badge/Open%20Companion%20Scan-Open%20Companion%20Scan-0a6358?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Open Companion Scan" height="30"></a>
+  <a href="https://docs.ci.computer/docs/apps-available/first-party-apps/spatial-scan"><img src="https://img.shields.io/badge/Companion%20Scan%20docs-Companion%20Scan%20docs-0a6358?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Companion Scan docs" height="30"></a>
 </p>
 
 It uses 8th Wall/WebXR for capture, an engine-agnostic vision layer for object detection, and Three.js for the **Companion Scan Spatial Editor** at `/editor`. Several scans combine in one Place, are assigned to Areas such as rooms or floors, and remain independently traceable through layers and Things. Inference defaults to local Ollama; bundled ONNX and deterministic mock CV engines are alternatives selected via `INFERENCE_MODE`.
