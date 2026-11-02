@@ -39,9 +39,12 @@ app in the Portal as a custom domain. Until then, sign-in from that domain fails
 Sign-in is fail-closed. `PORTAL_OIDC_ALLOWED_EMAILS` must list the accounts that may
 sign in, and an empty list admits nobody.
 
-The session is a cookie on the server's own origin. The native shells run on another
-origin. Whether the shell keeps that session is not verified on a device, so plan on
-signing in with a browser there.
+The session is a cookie on the server's own origin, so a browser keeps it. A native shell
+runs on another origin and cannot send that cookie, so it signs in through the system
+browser sheet and holds a Bearer token instead. The flow is in
+[mobile/README.md](../../mobile/README.md#companion-account-sign-in). It has run on the
+iOS simulator against a stand-in Portal. A real Portal account, and Android, are not
+verified.
 
 ## Companion Memory
 
@@ -59,7 +62,7 @@ curl -s https://<server>/authenticate/status # {"enabled": true} or {"enabled": 
 
 ## Not yet
 
-- Whether the native shells keep a Companion Account session is not verified on a
-  device (see *Sign-on*).
+- The native shell's sign-in is verified on the iOS simulator only, against a stand-in
+  Portal, and not on Android (see *Sign-on*).
 - The store listing runs the published image. A Hub install of this build waits on
   the owner's approval.

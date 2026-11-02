@@ -19,8 +19,11 @@
  *                                        "off on this install" can be told from "on".
  *   GET  /authenticate/oidc            → 302 to Portal authorize (sets state+PKCE cookies)
  *   GET  /authenticate/oidc/callback   → validates state, exchanges code, mints session
- *   GET  /authenticate/whoami          → { sub, email, name } for a valid session; also
- *                                        accepts a Portal-issued Bearer JWT (JWKS-verified)
+ *   GET  /authenticate/oidc?shell=1&challenge=…  → the same, for a native shell. The callback ends
+ *                                        in SHELL_RETURN_URL with a one-time code, not a cookie
+ *   POST /authenticate/shell/exchange  → { code, verifier } → { token, email, name }, the shell's session
+ *   GET  /authenticate/whoami          → { sub, email, name } for a valid session; also accepts the
+ *                                        shell's Bearer token, or a Portal-issued Bearer JWT (JWKS-verified)
  *   POST /authenticate/logout          → clears the session cookie
  *
  * Env (names follow CI-Server / CI-Common):
@@ -89,6 +92,14 @@ export async function createPkcePair(): Promise<{ verifier: string; challenge: s
 export function createStateNonce(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32))
   return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+/** Equal length and equal bytes, with no early exit on the first difference. */
+function sameText(a: string, b: string): boolean {
+  if (a.length !== b.length) return false
+  let diff = 0
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  return diff === 0
 }
 
 async function hmacKey(secret: string): Promise<CryptoKey> {
@@ -182,7 +193,18 @@ const STATE_COOKIE = 'oidc_state'
 const PKCE_COOKIE = 'oidc_pkce'
 const REDIRECT_COOKIE = 'oidc_redirect'
 const SESSION_COOKIE = 'cs_session'
+const SHELL_CHALLENGE_COOKIE = 'oidc_shell'
 const HANDSHAKE_TTL_SEC = 600
+/**
+ * Where a shell sign-in ends. Fixed, never read from the request, so the redirect cannot be aimed
+ * elsewhere. It is the app's bundle id, registered as a URL scheme in mobile/ios and mobile/android.
+ * Keep it in step with SHELL_RETURN_PREFIX in src/shared/shell-sign-in.ts.
+ */
+export const SHELL_RETURN_URL = 'com.companionintelligence.scan://auth'
+/** How long the one-time code from a shell sign-in waits to be exchanged. */
+const SHELL_CODE_TTL_MS = 60_000
+/** A PKCE verifier or challenge: 32 random bytes, base64url, 43 characters. */
+const PKCE_SHAPE = /^[A-Za-z0-9_-]{43}$/
 
 function cookie(c: Context, name: string): string | null {
   const header = c.req.header('cookie') ?? ''
@@ -238,9 +260,23 @@ export function registerPortalAuth(app: Hono, cfg: PortalAuthConfig, deps: Porta
   }
   console.log(`[portal-auth] Companion Account sign-in enabled (issuer ${cfg.issuerUrl}, client ${cfg.clientId})`)
   const jwks = cfg.jwksUri ? createRemoteJWKSet(new URL(cfg.jwksUri)) : null
+  // One-time codes from shell sign-ins, waiting for the shell to exchange them. In memory on purpose:
+  // a code lives for a minute, and a restart only sends the shell back to sign in again.
+  const shellCodes = new Map<string, { challenge: string; claims: SessionClaims; expiresAt: number }>()
+  const sweepShellCodes = () => {
+    const now = Date.now()
+    for (const [code, entry] of shellCodes) if (entry.expiresAt < now) shellCodes.delete(code)
+  }
 
   // 1. Initiate: PKCE + state cookies, redirect to Portal authorize.
   app.get('/authenticate/oidc', async (c) => {
+    // A shell sign-in carries the PKCE challenge the shell made. The callback keeps it, so only the
+    // shell that started the sign-in can exchange the code the callback issues.
+    const shell = c.req.query('shell') === '1'
+    const shellChallenge = c.req.query('challenge') ?? ''
+    if (shell && !PKCE_SHAPE.test(shellChallenge)) return c.text('Shell sign-in needs a PKCE challenge', 400)
+    if (shell) setCookie(c, SHELL_CHALLENGE_COOKIE, shellChallenge, HANDSHAKE_TTL_SEC, '/authenticate')
+    else clearCookie(c, SHELL_CHALLENGE_COOKIE, '/authenticate')
     const { verifier, challenge } = await createPkcePair()
     const state = createStateNonce()
     setCookie(c, STATE_COOKIE, state, HANDSHAKE_TTL_SEC, '/authenticate')
@@ -336,6 +372,19 @@ export function registerPortalAuth(app: Hono, cfg: PortalAuthConfig, deps: Porta
       name: profile.name,
       exp: Math.floor(Date.now() / 1000) + cfg.sessionTtlSec,
     }
+    const shellChallenge = cookie(c, SHELL_CHALLENGE_COOKIE)
+    clearCookie(c, SHELL_CHALLENGE_COOKIE, '/authenticate')
+    if (shellChallenge && PKCE_SHAPE.test(shellChallenge)) {
+      // The shell's origin never receives the session cookie, which belongs to this server's origin.
+      // It gets a one-time code instead, and trades it, with its own verifier, for the session token.
+      sweepShellCodes()
+      const shellCode = b64url(crypto.getRandomValues(new Uint8Array(32)))
+      shellCodes.set(shellCode, { challenge: shellChallenge, claims, expiresAt: Date.now() + SHELL_CODE_TTL_MS })
+      clearCookie(c, REDIRECT_COOKIE, '/authenticate')
+      console.log(`[portal-auth] ${profile.email} signed in via Companion Account (shell)`)
+      return c.redirect(`${SHELL_RETURN_URL}?code=${shellCode}`, 302)
+    }
+
     setCookie(c, SESSION_COOKIE, await signSession(claims, cfg.sessionSecret), cfg.sessionTtlSec)
     console.log(`[portal-auth] ${profile.email} signed in via Companion Account`)
 
@@ -344,7 +393,31 @@ export function registerPortalAuth(app: Hono, cfg: PortalAuthConfig, deps: Porta
     return c.redirect(wanted ?? await deps.ownerDestination(), 302)
   })
 
-  // 3. Who am I — session cookie, or a Portal-issued Bearer JWT (resource-server path).
+  // 2b. Shell exchange: the one-time code, plus the verifier only the shell holds, for the session token.
+  app.post('/authenticate/shell/exchange', async (c) => {
+    const body = await c.req.json().catch(() => null) as { code?: unknown; verifier?: unknown } | null
+    const code = typeof body?.code === 'string' ? body.code : ''
+    const verifier = typeof body?.verifier === 'string' ? body.verifier : ''
+    if (!code || !PKCE_SHAPE.test(verifier)) {
+      return c.json({ error: 'Sign-in could not be confirmed. Start again.' }, 400)
+    }
+    sweepShellCodes()
+    const entry = shellCodes.get(code)
+    shellCodes.delete(code) // single use, whatever the verifier turns out to be
+    if (!entry) return c.json({ error: 'Sign-in expired. Start again.' }, 400)
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))
+    if (!sameText(b64url(new Uint8Array(digest)), entry.challenge)) {
+      return c.json({ error: 'Sign-in could not be confirmed. Start again.' }, 400)
+    }
+    c.header('Cache-Control', 'no-store')
+    return c.json({
+      token: await signSession(entry.claims, cfg.sessionSecret),
+      email: entry.claims.email,
+      name: entry.claims.name ?? null,
+    })
+  })
+
+  // 3. Who am I — session cookie, the shell's Bearer token, or a Portal-issued Bearer JWT (resource-server path).
   app.get('/authenticate/whoami', async (c) => {
     const sess = cookie(c, SESSION_COOKIE)
     if (sess) {
@@ -352,6 +425,15 @@ export function registerPortalAuth(app: Hono, cfg: PortalAuthConfig, deps: Porta
       if (claims) return c.json({ sub: claims.sub, email: claims.email, name: claims.name ?? null, via: 'session' })
     }
     const auth = c.req.header('authorization')
+    if (auth?.startsWith('Bearer ')) {
+      // The shell's token is the same signed session, read from the header. The allowlist is checked on every call,
+      // so removing an email from PORTAL_OIDC_ALLOWED_EMAILS ends that account's shell access at once.
+      const claims = await verifySession(auth.slice(7), cfg.sessionSecret)
+      if (claims) {
+        if (!isAllowedEmail(cfg, claims.email)) return c.json({ error: 'Not authorized for this scanner' }, 403)
+        return c.json({ sub: claims.sub, email: claims.email, name: claims.name ?? null, via: 'shell-token' })
+      }
+    }
     if (auth?.startsWith('Bearer ') && jwks) {
       try {
         // Portal's Better-Auth jwt plugin issues iss = `${origin}/api/auth`.
