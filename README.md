@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/companionintelligence/.github/main/profile/assets/icons/companion-scan.png" width="96" height="96" alt="Companion Scan icon">
+</p>
+
 <h1 align="center">Companion Scan</h1>
 
 <p align="center"><strong>Companion Scan turns AR captures and uploaded media into a private, structured record of a Place.</strong></p>
