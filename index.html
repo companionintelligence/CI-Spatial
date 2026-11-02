@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
     <title>Companion Scan: capture a 3D map of a room</title>
     <meta name="description" content="Point your phone at a room to capture a 3D map. Scans are saved in your browser and sent to a Companion Scan server you run, such as a Companion Hub." />
     <meta name="robots" content="index, follow" />
@@ -513,7 +513,10 @@
       #history-drawer {
         pointer-events: none;
         position: fixed;
-        inset: 0;
+        top: var(--vv-top, 0px);
+        left: 0;
+        right: 0;
+        height: var(--vv-h, 100%);
         z-index: 40;
         background: rgba(0, 0, 0, 0);
         transition: background 0.3s;
@@ -1829,9 +1832,15 @@
         }
       }
 
+      /* The visible area, not the layout viewport: --vv-h and --vv-top come from
+         visualViewport (src/ui/keyboard.ts). With the keyboard up, a dialog
+         sized to the screen has its bottom under the keyboard. */
       .place-sheet {
         position: fixed;
-        inset: 0;
+        top: var(--vv-top, 0px);
+        left: 0;
+        right: 0;
+        height: var(--vv-h, 100%);
         z-index: 80;
         display: grid;
         align-items: center;
@@ -2346,7 +2355,10 @@
          second dialog language. */
       .place-popup {
         position: fixed;
-        inset: 0;
+        top: var(--vv-top, 0px);
+        left: 0;
+        right: 0;
+        height: var(--vv-h, 100%);
         z-index: 90;
         display: grid;
         align-items: center;
@@ -2440,7 +2452,28 @@
       .place-option strong { font-size: 14px; }
       .place-option span { color: var(--ci-muted); font-size: 11px; }
 
-      #place-new-form { display: grid; gap: 8px; }
+      /* The fields scroll and Save stays where it is. The popup is only as tall
+         as the visible area, so with the keyboard up a Save button at the end of
+         a scrolling form was below the fold for the visitor who is typing. */
+      #place-new-popup .place-popup-panel { display: flex; flex-direction: column; }
+      #place-new-popup .place-popup-head { flex: none; }
+      #place-new-form {
+        display: grid;
+        grid-template-rows: minmax(0, 1fr) auto;
+        gap: 8px;
+        flex: 1 1 auto;
+        min-height: 0;
+      }
+      .place-new-fields {
+        display: grid;
+        align-content: start;
+        gap: 8px;
+        min-height: 0;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
+      }
+      .place-new-footer { display: grid; gap: 8px; padding-top: 4px; }
       #place-new-form label { display: grid; gap: 4px; min-width: 0; color: var(--ci-muted); font-size: 11px; }
       /* min-width:0 is load-bearing, not tidying. A bare <input>'s automatic
          minimum size is its intrinsic ~20-character width, and the two of them
@@ -2674,6 +2707,18 @@
         select,
         textarea {
           font-size: 16px !important;
+        }
+        /* Touch targets: the place form's fields and selects are 44px tall on a
+           touch screen, the floor the rest of the app already keeps. */
+        #place-new-form input,
+        #place-new-form select,
+        #place-area-new-form input,
+        #place-area-kind {
+          min-height: 44px !important;
+        }
+        #place-new-form label,
+        .place-new-name-preview {
+          font-size: 12px !important;
         }
       }
     </style>

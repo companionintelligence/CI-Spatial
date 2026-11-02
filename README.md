@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/companionintelligence/.github/main/profile/assets/icons/companion-scan.png" width="96" height="96" alt="Companion Scan icon">
+</p>
+
 <h1 align="center">Companion Scan</h1>
 
 <p align="center"><strong>Companion Scan turns AR captures and uploaded media into a private, structured record of a Place.</strong></p>
@@ -416,13 +420,15 @@ The server reads these settings. Defaults are the code's own, and the Hub column
 | `CI_SERVER_URL` | unset (memory push inert) | Companion Memory API base, for example `http://host:8642/api`. | Written after the user connects Companion Memory in the Hub. |
 | `CI_SERVER_TOKEN` | unset (memory push inert) | Companion Memory API key, sent as `x-api-key`. No route or screen shows it. | Written after the user connects Companion Memory in the Hub. |
 | `PORTAL_OIDC_ENABLED` | off | `1` or `true` turns on "Sign in with Companion Account". | The app form's sign-in switch (default off). |
-| `OIDC_ISSUER_URL` | unset | CI-Portal base URL. Sign-in stays off while it is empty. | From the Hub's Companion cloud URL (`hub_integration.oidc`). |
+| `OIDC_ISSUER_URL` | unset | CI-Portal base URL. Sign-in stays off while it is empty. The sign-in endpoints are discovered from it. | From the Hub's Companion cloud URL (`hub_integration.oidc`). |
 | `OIDC_CLIENT_ID` | `ci-web-xr-scan` | Must match the CI-Portal client registration. Do not rename it. | Not set by the Hub. |
 | `APP_BASE_URL` | taken from the request | Public origin used to build the sign-in redirect. Set it when a proxy does not forward the host. | Set by the Hub when the app is exposed (to confirm for this app). |
 | `PORTAL_OIDC_ALLOWED_EMAILS` | empty, which admits nobody | Comma-separated allowlist of signed-in emails. Fails closed. | The app form's allowlist field. |
 | `SESSION_SECRET` | random per boot | Signs the sign-in session: the browser cookie and the native shell's token. Set it on any server you restart, or everyone is signed out. | Not set by the Hub. |
 
 When Companion Hub hosts the scanner, the Hub fills the memory and inference values from the app's store manifest (`hub_integration` in `ci-web-xr-scan/config.json` in the CI-Marketplace repo), so nobody types them by hand. The Hub writes the memory values after a completed connect. The app form also has advanced fields for an external Companion Memory, which you can fill instead. The server reads its memory settings once at boot, so a connect needs a server restart. Whether the Hub restarts the app itself is to confirm.
+
+The sign-in endpoints (authorize, token, userinfo and JWKS) are not set by hand. The server reads them from CI-Portal's OpenID metadata, at `${OIDC_ISSUER_URL}/.well-known/openid-configuration` or, where CI-Portal serves it under its auth routes, at `${OIDC_ISSUER_URL}/api/auth/.well-known/openid-configuration`. It accepts the metadata only if its issuer is `OIDC_ISSUER_URL`, every endpoint is on that origin, and PKCE S256 is offered. The boot log says what it found. If neither location can be read, the server uses the usual `/api/auth/` paths and logs a warning. `PORTAL_OIDC_JWKS_URI` overrides the JWKS URL only.
 
 Sign-in is off unless `PORTAL_OIDC_ENABLED` is on. The first-run control starts it at `/authenticate/oidc?redirect=/`, which returns to the scanner after CI-Portal. A direct visit to `/authenticate/oidc` lands in the world editor instead. When sign-in is off, the only sign-in route registered is `/authenticate/status`. A native shell starts the same sign-in with `shell=1` and a PKCE challenge, and gets its session from `POST /authenticate/shell/exchange`; see [mobile/README.md](mobile/README.md#companion-account-sign-in).
 

@@ -69,6 +69,7 @@ import { WEBRTC_LIVE_ENABLED } from './rtc/feature'
 import { registerPWA } from './pwa'
 import { installRemoteLog } from './debug/remote-log'
 import { iconLabel } from './ui/icons'
+import { installKeyboardAvoidance } from './ui/keyboard'
 import { ONBOARDING_KEY, PLACE_SELECTION_SESSION_KEY } from './shared/storage-keys'
 import { hasDebugFlag } from './shared/debug-flags'
 import { formatPoseDelta, poseDelta } from './capture/pose-delta'
@@ -288,6 +289,9 @@ async function main() {
 
   // Remote log mirror — inert unless armed via ?debug=remote or localStorage
   installRemoteLog()
+  // Fields under the on-screen keyboard: publish the visible height and bring
+  // the focused field back on screen (src/ui/keyboard.ts).
+  installKeyboardAvoidance()
 
   // Walkthrough-video upload — a server-side path that needs no AR runtime or
   // secure context, so wire it before the isSecureContext bail-out below.
@@ -2143,23 +2147,27 @@ function mountPlacePicker(
             <button id="place-new-close" type="button" class="place-popup-close">Close</button>
           </div>
           <div id="place-new-form">
-            <label>Address<input id="place-new-address" type="text" maxlength="160" placeholder="Detected from device location" /></label>
-            <div class="place-coordinate-grid">
-              <label>Latitude<input id="place-new-lat" type="number" step="any" /></label>
-              <label>Longitude<input id="place-new-lng" type="number" step="any" /></label>
+            <div class="place-new-fields">
+              <label>Address<input id="place-new-address" type="text" maxlength="160" placeholder="Detected from device location" /></label>
+              <div class="place-coordinate-grid">
+                <label>Latitude<input id="place-new-lat" type="number" step="any" /></label>
+                <label>Longitude<input id="place-new-lng" type="number" step="any" /></label>
+              </div>
+              <label>Project type
+                <select id="place-new-type" class="ci-select">
+                  <option value="building">Building</option>
+                  <option value="floor">Floor</option>
+                  <option value="room" selected>Room</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label>Project name<input id="place-new-name" type="text" maxlength="80" placeholder="e.g. Living room" /></label>
+              <div id="place-new-name-preview" class="place-new-name-preview"></div>
             </div>
-            <label>Project type
-              <select id="place-new-type" class="ci-select">
-                <option value="building">Building</option>
-                <option value="floor">Floor</option>
-                <option value="room" selected>Room</option>
-                <option value="other">Other</option>
-              </select>
-            </label>
-            <label>Project name<input id="place-new-name" type="text" maxlength="80" placeholder="e.g. Living room" /></label>
-            <div id="place-new-name-preview" class="place-new-name-preview"></div>
-            <button id="place-new-save" type="button">Save new place</button>
-            <p id="place-new-status" class="place-new-name-preview" role="status" aria-live="polite"></p>
+            <div class="place-new-footer">
+              <button id="place-new-save" type="button">Save new place</button>
+              <p id="place-new-status" class="place-new-name-preview" role="status" aria-live="polite"></p>
+            </div>
           </div>
         </div>
       </div>`
