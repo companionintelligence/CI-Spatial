@@ -59,6 +59,14 @@ import {
   type DeviceCapture,
   type MethodPlan,
 } from '../../src/capture/capture-intent.ts'
+import {
+  ftueRowText,
+  ftueRows,
+  type EngineStatus,
+  type FtueSnapshot,
+  type MemoryStatus,
+  type SignInStatus,
+} from '../../src/ui/ftue-status.ts'
 
 // ── The budget ──────────────────────────────────────────────────────────────
 
@@ -89,8 +97,15 @@ import {
  * 110 sits just above the worst case, the same rule the occlusion budget next
  * door follows. The seven words of slack are the point: an alternative card is
  * ~25 words, so nothing can quietly drift back onto this screen open.
+ *
+ * Raised to 142 when the first-run status rows landed. They sit on the second
+ * onboarding step, so they are read before the camera, and their worst case is
+ * 32 words (ftueStatusWordsMax()). The worst screen went 103 -> 135, and the
+ * same seven words of slack went on top. That is a deliberate spend for the
+ * rows the first-run screen now shows (Companion Memory, the model, sign-in),
+ * not drift.
  */
-export const WORDS_BEFORE_CAMERA_MAX = 110
+export const WORDS_BEFORE_CAMERA_MAX = 142
 
 /**
  * One method card — title, what you do, what you get. Measured worst: 26.
@@ -252,6 +267,12 @@ export interface StaticCopy {
   onboarding: number
   /** `#start-alt-toggle`'s label, charged only to screens that show it. */
   disclosure: number
+  /**
+   * The first-run status rows, worst case over every answer the three endpoints
+   * can give. Runtime-owned: computed from src/ui/ftue-status.ts, because the
+   * markup ships `#ftue-status` empty (readStaticCopy checks that).
+   */
+  status: number
   /** For failure messages: the chrome, as it reads. */
   chromeText: string
 }
@@ -282,7 +303,53 @@ export function readStaticCopy(html: string = indexHtml()): StaticCopy {
     throw new Error(`startup-budget: ${steps} onboarding steps but ${descs.length} bodies — the scanner is missing copy`)
   }
 
-  return { chrome, disclosure, onboarding: descs.reduce((a, d) => a + countWords(d), 0), chromeText }
+  // The status rows are drawn at runtime, so the markup must ship the list empty,
+  // on the second step, with nothing else in it. Static copy added there would be
+  // counted by the browser spec and missed here.
+  const list = html.match(/<ul id="ftue-status"[^>]*>([\s\S]*?)<\/ul>/)
+  if (!list) throw new Error('startup-budget: no #ftue-status in index.html — the status rows are not on the first-run screen')
+  if ((list[1] ?? '').trim() !== '') {
+    throw new Error('startup-budget: #ftue-status ships static text — the rows are runtime-owned, so their copy belongs in src/ui/ftue-status.ts')
+  }
+  const at = html.indexOf('id="ftue-status"')
+  if (!(html.indexOf('data-step="1"') < at && at < html.indexOf('id="onboard-next-btn"'))) {
+    throw new Error('startup-budget: #ftue-status is not on the second onboarding step')
+  }
+
+  return {
+    chrome,
+    disclosure,
+    onboarding: descs.reduce((a, d) => a + countWords(d), 0),
+    status: ftueStatusWordsMax(),
+    chromeText,
+  }
+}
+
+/**
+ * The status rows' worst case: the most words any combination of the three
+ * endpoints' answers can put on the second onboarding step. Each endpoint's
+ * possible answers are enumerated and the rows are the module's own, so this
+ * number moves with the copy in src/ui/ftue-status.ts and nothing else.
+ */
+export function ftueStatusWordsMax(): number {
+  const memory: Array<MemoryStatus | null> = [
+    null,
+    { enabled: false },
+    { enabled: true, reachable: false },
+    { enabled: true, reachable: true },
+    { enabled: true },
+  ]
+  const engine: Array<EngineStatus | null> = [
+    null,
+    ...(['loading', 'ready', 'failed'] as const).map((engineLoadState) => ({ model: 'Ollama/qwen3-vl:4b', engineLoadState })),
+  ]
+  const signIn: Array<SignInStatus | null> = [null, { enabled: false }, { enabled: true }]
+  let worst = 0
+  for (const m of memory) for (const e of engine) for (const s of signIn) {
+    const snap: FtueSnapshot = { memory: m, engine: e, signIn: s }
+    worst = Math.max(worst, ftueRows(snap).reduce((a, row) => a + countWords(ftueRowText(row)), 0))
+  }
+  return worst
 }
 
 export interface ScreenWords {
@@ -309,6 +376,12 @@ export interface ScreenWords {
   alternatives: number
   /** `#capture-note`, when the resolver has something to say. */
   note: number
+  /**
+   * The first-run status rows, worst case, on the second onboarding step. Counted
+   * in `total`. The browser spec measures what they actually say and holds that
+   * to this ceiling, not to equality, because the answers depend on the server.
+   */
+  status: number
 }
 
 /**
@@ -344,13 +417,13 @@ export function wordsBeforeCamera(
   const note = rec.note ? countWords(rec.note) : 0
   const alternatives = cards.length - 1
   const disclosure = alternatives > 0 ? copy.disclosure : 0
-  const fixed = copy.onboarding + copy.chrome + disclosure + note
+  const fixed = copy.onboarding + copy.chrome + disclosure + note + copy.status
   const total = fixed + (cards[0]?.words ?? 0)
   const totalExpanded = fixed + cards.reduce((a, c) => a + c.words, 0)
 
   return {
     total, totalExpanded, onboarding: copy.onboarding, chrome: copy.chrome,
-    disclosure, cards, alternatives, note,
+    disclosure, cards, alternatives, note, status: copy.status,
   }
 }
 
