@@ -1,4 +1,5 @@
 import type { PlaceArea, Project, ScanManifest } from '../world/types'
+import { apiUrl } from '../shared/api-base.ts'
 
 export class PlacesPanel {
   constructor(
@@ -38,7 +39,7 @@ export class PlacesPanel {
         await this.putProject({ ...project, name: input.value.trim() })
       })
       section.querySelector<HTMLButtonElement>('[data-action="delete"]')?.addEventListener('click', async () => {
-        const response = await fetch(`/projects/${encodeURIComponent(project.projectId)}`, { method: 'DELETE', headers: this.headers() })
+        const response = await fetch(apiUrl(`/projects/${encodeURIComponent(project.projectId)}`), { method: 'DELETE', headers: this.headers() })
         if (!response.ok) alert(await response.text())
         await this.refresh()
       })
@@ -71,7 +72,7 @@ export class PlacesPanel {
       section.querySelector<HTMLButtonElement>('[data-action="merge"]')?.addEventListener('click', async () => {
         const sourceProjectId = prompt('Source project id to merge into this place')
         if (!sourceProjectId) return
-        await fetch(`/projects/${encodeURIComponent(project.projectId)}/merge`, {
+        await fetch(apiUrl(`/projects/${encodeURIComponent(project.projectId)}/merge`), {
           method: 'POST',
           headers: { ...this.headers(), 'Content-Type': 'application/json' },
           body: JSON.stringify({ sourceProjectId }),
@@ -113,13 +114,13 @@ export class PlacesPanel {
   }
 
   private async fetchProjects(): Promise<Project[]> {
-    const response = await fetch('/projects', { headers: this.headers() })
+    const response = await fetch(apiUrl('/projects'), { headers: this.headers() })
     if (!response.ok) return []
     return await response.json() as Project[]
   }
 
   private async putProject(project: Project): Promise<void> {
-    await fetch(`/projects/${encodeURIComponent(project.projectId)}`, {
+    await fetch(apiUrl(`/projects/${encodeURIComponent(project.projectId)}`), {
       method: 'PUT',
       headers: { ...this.headers(), 'Content-Type': 'application/json' },
       body: JSON.stringify(project),
@@ -131,7 +132,7 @@ export class PlacesPanel {
     const scan = this.selectedScan()
     if (!scan) return
     const area = project.areas?.find(candidate => candidate.areaId === areaId) ?? null
-    await fetch(`/projects/${encodeURIComponent(project.projectId)}/scans/${encodeURIComponent(scan.scanId)}`, {
+    await fetch(apiUrl(`/projects/${encodeURIComponent(project.projectId)}/scans/${encodeURIComponent(scan.scanId)}`), {
       method: 'PATCH',
       headers: { ...this.headers(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ floorId: area?.floorId ?? null, roomId: area?.roomId ?? null, areaId }),

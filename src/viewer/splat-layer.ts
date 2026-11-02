@@ -46,6 +46,7 @@ import type {
   SplatAlignManifest as ServerSplatAlignManifest,
 } from '../world/types'
 import { loadSplat, disposeSplat, applyRowMajorTransform, type LoadedSplat } from './splat-viewer'
+import { apiUrl } from '../shared/api-base.ts'
 
 /**
  * Viewer-side read of a splat-train manifest — the real server type
@@ -505,10 +506,11 @@ export async function fetchScanSplatLayer(
  */
 function withOrigin(fetcher: (url: string) => Promise<Response>, url: string): string {
   // The viewer passes a token-appending fetcher whose output stays same-origin,
-  // so a relative URL is correct in production. Test harnesses that need a
-  // cross-origin URL pass an absolute one via the manifest path already.
+  // so a relative URL is correct in production. The Capacitor shell has no
+  // same origin, so apiUrl() adds the server's origin there. Test harnesses
+  // that need a cross-origin URL pass an absolute one via the manifest path already.
   void fetcher
-  return url
+  return apiUrl(url)
 }
 
 export function disposeScanSplatLayer(layer: ScanSplatLayer): void {

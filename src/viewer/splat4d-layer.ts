@@ -30,6 +30,7 @@
 import type { Person4DManifest } from '../world/types'
 import { disposeSplat, loadSplat, type LoadedSplat } from './splat-viewer'
 import { frameIndexAt, PlaybackClock, windowAround } from './playback-clock'
+import { apiUrl } from '../shared/api-base.ts'
 
 /**
  * Frames kept resident either side of the playhead.
@@ -70,7 +71,7 @@ export interface Splat4DCallbacks {
 export async function fetchPerson4DManifest(scanFilename: string): Promise<Person4DManifest | null> {
   const base = scanFilename.replace(/\.glb$/, '')
   try {
-    const res = await fetch(`/scans/${encodeURIComponent(`${base}.4d-capture.manifest.json`)}`)
+    const res = await fetch(apiUrl(`/scans/${encodeURIComponent(`${base}.4d-capture.manifest.json`)}`))
     if (!res.ok) return null
     const manifest = await res.json() as Person4DManifest
     // Only a completed run has a sequence to play. A skipped one (no GPU host
@@ -128,7 +129,7 @@ export async function createSplat4DLayer(
     const attempt = (async () => {
       for (const ext of ['sog', 'ply'] as const) {
         try {
-          const mesh = await loadSplat({ kind: 'url', url: frameUrl(base, index, ext) })
+          const mesh = await loadSplat({ kind: 'url', url: apiUrl(frameUrl(base, index, ext)) })
           if (disposed) { disposeSplat(mesh); return null }
           mesh.mesh.visible = false
           loaded.set(index, mesh)

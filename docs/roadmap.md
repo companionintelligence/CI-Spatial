@@ -109,7 +109,7 @@ known-failures baseline" for what that file is and how the gate uses it.
 
 - **PWA / offline** — manifest + icons, installable on iOS/Android; Service
   Worker caches the app shell.
-- **Onboarding + accessibility** — 3-step onboarding overlay (gated on
+- **Onboarding + accessibility** — 2-step onboarding overlay, whose second step lists setup status (gated on
   `localStorage['companion-scan-onboarded']`, replayable via `#help-btn`,
   skippable with `?onboarding=0` or `?mock`), accessible controls.
 

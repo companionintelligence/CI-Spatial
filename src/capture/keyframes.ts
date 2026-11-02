@@ -17,6 +17,7 @@
  */
 import type { ARProvider, Pose } from '../ar/provider'
 import { isQueuedOffline } from '../shared/offline-queue'
+import { apiUrl } from '../shared/api-base.ts'
 
 export interface KeyframeStreamerOptions {
   /** Min time between keyframes (default 1200 ms) */
@@ -124,7 +125,7 @@ export class KeyframeStreamer {
   /** Open a server session and begin pose-delta keyframing. */
   async start(): Promise<void> {
     if (this._active) return
-    const resp = await fetch('/sessions', {
+    const resp = await fetch(apiUrl('/sessions'), {
       method: 'POST',
       signal: AbortSignal.timeout(10_000),
     })
@@ -183,7 +184,7 @@ export class KeyframeStreamer {
     this.onSessionId?.(null)
 
     try {
-      await fetch(`/sessions/${sessionId}/finalize`, {
+      await fetch(apiUrl(`/sessions/${sessionId}/finalize`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(finalize ?? {}),
@@ -319,7 +320,7 @@ export class KeyframeStreamer {
         const form = new FormData()
         form.append('image', kf.blob, `kf-${kf.meta['index']}.jpg`)
         form.append('meta', JSON.stringify(kf.meta))
-        const resp = await fetch(`/sessions/${this._sessionId}/keyframes`, {
+        const resp = await fetch(apiUrl(`/sessions/${this._sessionId}/keyframes`), {
           method: 'POST',
           body: form,
           signal: AbortSignal.timeout(20_000),

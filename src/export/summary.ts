@@ -19,6 +19,7 @@ import type { DetectionStore } from '../scene/store'
 import type { PointCloud } from '../scene/pointcloud'
 import type { Pose } from '../ar/provider'
 import type { GeoFix } from '../geo/geo-tracker'
+import { apiUrl } from '../shared/api-base.ts'
 
 export interface SummaryData {
   store: DetectionStore
@@ -285,7 +286,7 @@ async function uploadSummary(content: string, filename: string, store: Detection
     const form = new FormData()
     form.append('file', new Blob([content], { type: 'text/markdown' }), filename)
     form.append('sessionId', store.sessionId)
-    const resp = await fetch('/upload-summary', { method: 'POST', body: form })
+    const resp = await fetch(apiUrl('/upload-summary'), { method: 'POST', body: form })
     if (resp.ok) {
       const body = await resp.json() as { filename: string }
       console.log(`[summary] Uploaded to server: ${body.filename}`)

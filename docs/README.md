@@ -49,6 +49,7 @@ description it fits rather than at this level.
 | [operations/DEPLOY.md](operations/DEPLOY.md) | Self-hosting and deployment — Deno server, Vite proxy, Ollama, and Tailscale/HTTPS setup. |
 | [operations/PLATFORM_SUPPORT.md](operations/PLATFORM_SUPPORT.md) | What runs on which OS and accelerator, what is untested, and `server/capabilities.ts` — the probe that answers "what can this machine actually do?" for your own box. |
 | [operations/CI.md](operations/CI.md) | What CI runs, and what it deliberately does not. |
+| [operations/COMPANION_HUB.md](operations/COMPANION_HUB.md) | How Scan finds Companion Memory, the vision model and Companion Account sign-in when the Companion Hub installs it. |
 | [operations/GIMBAL_INTEGRATION.md](operations/GIMBAL_INTEGRATION.md) | DJI Osmo Mobile 6 gimbal control over BLE, the `osmo-gimbal` MCP server, and automated grid capture into the ingest pipeline. |
 | [operations/COLMAP_SETUP.md](operations/COLMAP_SETUP.md) | Installing COLMAP for the `colmap-poses` pose solve — including why the supported install lands somewhere `which` cannot see. |
 
