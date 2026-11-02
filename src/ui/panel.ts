@@ -314,6 +314,8 @@ export class SidePanel {
   setOpen(open: boolean): void {
     this.isOpen = open
     this.panel.classList.toggle('open', open)
+    // The help button sits in the panel's top corner; while the panel is open that corner belongs to the panel.
+    document.body.classList.toggle('side-panel-open', open)
     const count = this.store.detections.size
     this.toggle.setAttribute('data-count', count > 0 ? String(count) : '')
   }

@@ -67,10 +67,14 @@ function classifyHttpError(status: number, bodyText: string): { error: InferServ
   if (status === 504) {
     return { error: new InferServerError(`Inference server 504: ${message}`, 'timeout', status), retry: false }
   }
-  // 502 = transient proxy failure (server restarting behind Vite) — worth retrying.
+  // 502: the Vite proxy could not reach the server (restarting, or Tailscale is down).
+  // To the person that is a network failure, so it gets the network message and a retry.
+  if (status === 502) {
+    return { error: new InferServerError(`Inference server 502: ${message}`, 'network', status), retry: true }
+  }
   return {
     error: new InferServerError(`Inference server returned ${status}: ${message}`, 'http', status),
-    retry: status === 502,
+    retry: false,
   }
 }
 

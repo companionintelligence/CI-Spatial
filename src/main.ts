@@ -1998,7 +1998,11 @@ function mountPlacePicker(
   document.body.appendChild(sheet)
 
   const render = async () => {
-    const projects = await fetchProjects().catch(() => [])
+    let listFailed = false
+    const projects = await fetchProjects().catch(() => {
+      listFailed = true
+      return []
+    })
     const fix = geoTracker.snapshot()
     const distanced = projects.map(project => ({
       project,
@@ -2110,6 +2114,7 @@ function mountPlacePicker(
                GPS fix saw only "Create New Place Project" and "Cancel", so the
                one button that leads to the camera looked like the one that
                gives up on it. -->
+          <button id="place-back-btn" type="button">Back</button>
           <button id="place-skip-btn" type="button">Skip for now</button>
         </div>
       </div>
@@ -2145,6 +2150,7 @@ function mountPlacePicker(
             <label>Project name<input id="place-new-name" type="text" maxlength="80" placeholder="e.g. Living room" /></label>
             <div id="place-new-name-preview" class="place-new-name-preview"></div>
             <button id="place-new-save" type="button">Save new place</button>
+            <p id="place-new-status" class="place-new-name-preview" role="status" aria-live="polite"></p>
           </div>
         </div>
       </div>`
@@ -2165,10 +2171,14 @@ function mountPlacePicker(
       status.innerHTML = '<span class="place-location-address">Location unavailable. You can still create a place by entering coordinates.</span>'
     }
 
-    // Status messages from the popups (save failures, validation) have to land
-    // somewhere the user is looking. The location card is the only always-
-    // visible block, so route them there rather than into a popup that may
-    // have closed by the time the message arrives.
+    // Save errors and validation for the new-place form. They go under the
+    // form's own Save button: the location card they used to land in is covered
+    // by the popup, so the person saw nothing happen.
+    const formStatus = sheet.querySelector<HTMLElement>('#place-new-status')!
+    const setFormStatus = (message: string) => {
+      formStatus.textContent = message
+    }
+    // Area errors still land in the location card: the Areas section is not covered by a popup.
     const setStatusMessage = (message: string) => {
       status.innerHTML = `<span class="place-location-address">${escapeHtml(message)}</span>`
     }
@@ -2205,9 +2215,11 @@ function mountPlacePicker(
     if (nearby.length === 0) {
       const empty = document.createElement('p')
       empty.className = 'place-empty'
-      empty.textContent = fix
-        ? 'No saved places within 100 m of this fix.'
-        : 'No location fix, so distance to your saved places is unknown.'
+      empty.textContent = listFailed
+        ? 'Couldn\'t load your places. Try again.'
+        : fix
+          ? 'No saved places within 100 m of this fix.'
+          : 'No location fix, so distance to your saved places is unknown.'
       nearbyList.appendChild(empty)
       if (others.length > 0) {
         const showAll = document.createElement('button')
@@ -2287,6 +2299,11 @@ function mountPlacePicker(
       pendingSelectionAction = null
       action?.()
     })
+    // Back closes the sheet without a Place and without resuming the action that opened it.
+    sheet.querySelector<HTMLButtonElement>('#place-back-btn')?.addEventListener('click', () => {
+      pendingSelectionAction = null
+      sheet.hidden = true
+    })
 
     async function createPlace(): Promise<void> {
       const projectName = newName.value.trim()
@@ -2296,7 +2313,7 @@ function mountPlacePicker(
       const longitude = Number(lng.value)
       const name = composeProjectName(address, projectName)
       if (!name || !placeType || !Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
-        setStatusMessage('Enter a project name and valid latitude/longitude.')
+        setFormStatus('Enter a project name and valid latitude/longitude.')
         return
       }
       const geoPose = { ...fixToGeoPose(fix), lat: latitude, lng: longitude, address: address || fix?.address || null, displayAddress: address || fix?.displayAddress || null }
@@ -2306,7 +2323,7 @@ function mountPlacePicker(
         body: JSON.stringify({ name, placeType, address, geoPose }),
       })
       if (!response.ok) {
-        setStatusMessage('Could not save this place. Try again.')
+        setFormStatus('Could not save this place. Try again.')
         return
       }
       const project = await response.json() as Project
@@ -2659,7 +2676,7 @@ function showArHelp(): void {
     // happen before AR runtime detection has failed. Fall back to the
     // permission banner, a sibling of the start screen that survives it, so
     // "no AR runtime" can never end as a blank screen with no explanation.
-    showPermissionBanner(`AR is not available on this device. ${plain}`)
+    showPermissionBanner(`AR is not available on this device. ${plain}`, 'AR is not available')
     return
   }
 
@@ -2788,7 +2805,9 @@ function wireContentUpload(): void {
           openLink.hidden = false
         }
       } else {
-        let message = `Upload failed (${xhr.status})`
+        let message = xhr.status >= 500
+          ? 'Upload failed: server unreachable, try again later'
+          : `Upload failed (${xhr.status})`
         try {
           const body = JSON.parse(xhr.responseText) as { error?: string; maxBytes?: number }
           if (body.error) message = `Upload failed: ${body.error}`

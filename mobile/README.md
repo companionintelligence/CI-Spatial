@@ -40,6 +40,10 @@ npm run open:android
 | iOS purpose strings | Camera, location when in use, motion | The code asks for these. No microphone: every `getUserMedia` call sets `audio: false`. No photo-library key: the file input uses the system picker. |
 | Android permissions | `CAMERA`, `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION` | Device motion needs no Android permission. |
 
+## Icons and launch screens
+
+The app icon and both launch screens are drawn from `public/ci-logo-mark.svg` by `npm run gen-icons` at the repo root. The background is the night-space colour `#041620`, the one `index.html`, `public/manifest.json` and `capacitor.config.ts` use. `tests/unit/node/app_icons.test.ts` fails if they drift apart. Rerun the script after changing the mark or the colour, and don't edit the PNGs by hand.
+
 ## Not done
 
-Signing, App Store Connect, Play Console, store listings, the app icon (Capacitor's default), `PrivacyInfo.xcprivacy`, the privacy policy and the Play data-safety answers. The data-safety answers must cover location: the web code sends coordinates to OpenStreetMap Nominatim for reverse geocoding.
+Signing, App Store Connect, Play Console, store listings, `PrivacyInfo.xcprivacy`, the privacy policy and the Play data-safety answers. The data-safety answers must cover location: the web code sends coordinates to OpenStreetMap Nominatim for reverse geocoding.
