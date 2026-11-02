@@ -10,10 +10,7 @@
 // specifier.
 import { normalizeDetections, parseDetections } from './prompt.ts'
 import type { RawDetection } from './prompt'
-
-// Empty string = same origin, proxied through Vite dev server (no mixed content).
-// Vite forwards /infer and /health to http://localhost:8000.
-const SERVER_URL = ''
+import { apiUrl } from '../shared/api-base.ts'
 
 const MAX_ATTEMPTS = 3
 // Client deadline exceeds the server's 60s budget so the server 504 arrives first.
@@ -82,7 +79,7 @@ export async function inferViaServer(imageBlob: Blob): Promise<RawDetection[]> {
     let failure: { error: InferServerError; retry: boolean }
 
     try {
-      const response = await fetch(`${SERVER_URL}/infer`, {
+      const response = await fetch(apiUrl('/infer'), {
         method: 'POST',
         body: form,
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),

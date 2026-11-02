@@ -269,7 +269,12 @@ function localScriptPath(relative: string): string {
 const LINGBOT_MAP_SCRIPT = Deno.env.get('LINGBOT_MAP_SCRIPT') ??
   localScriptPath('./scripts/lingbot_map_worker.py')
 
+// The iOS shell loads the app from this origin (mobile/capacitor.config.ts). The
+// Android shell's https://localhost already passes the localhost check below.
+const NATIVE_SHELL_ORIGIN = 'capacitor://localhost'
+
 function isAllowedOrigin(origin: string): boolean {
+  if (origin === NATIVE_SHELL_ORIGIN) return true
   try {
     const { hostname, protocol } = new URL(origin)
     if (protocol !== 'http:' && protocol !== 'https:') return false

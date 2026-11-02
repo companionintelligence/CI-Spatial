@@ -133,6 +133,7 @@ import {
   type MethodPlan,
 } from './capture/capture-intent'
 import * as THREE from 'three'
+import { apiUrl } from './shared/api-base.ts'
 
 const CAPTURE_FRAME_TIMEOUT_MS = 8000
 const TRACKING_WAIT_MS = 2500
@@ -1605,7 +1606,7 @@ async function main() {
         const local = await projectStore.getReferencePhoto(photo.localKey).catch(() => null)
         if (local?.blob) return URL.createObjectURL(local.blob)
         if (!photo.url) return null
-        const res = await fetch(photo.url).catch(() => null)
+        const res = await fetch(apiUrl(photo.url)).catch(() => null)
         if (!res?.ok) return null
         return URL.createObjectURL(await res.blob())
       },
@@ -1897,7 +1898,7 @@ function setAutosaveStatus(text: string): void {
 function revealDownloadLink(uploadedFilename: string): void {
   const link = document.getElementById('export-download-link') as HTMLAnchorElement | null
   if (!link) return
-  link.href = `/scans/${encodeURIComponent(uploadedFilename)}`
+  link.href = apiUrl(`/scans/${encodeURIComponent(uploadedFilename)}`)
   // Hint the save-as name; same-origin, so the browser honours it.
   link.download = uploadedFilename
   link.style.display = 'inline-block'
@@ -2296,7 +2297,7 @@ function mountPlacePicker(
         return
       }
       const geoPose = { ...fixToGeoPose(fix), lat: latitude, lng: longitude, address: address || fix?.address || null, displayAddress: address || fix?.displayAddress || null }
-      const response = await fetch('/projects', {
+      const response = await fetch(apiUrl('/projects'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, placeType, address, geoPose }),
@@ -2364,7 +2365,7 @@ function mountPlacePicker(
         parentAreaId: currentSelected.areas?.find(candidate => candidate.kind === 'site')?.areaId ?? null,
       }
       const update = { ...currentSelected, areas: [...(currentSelected.areas ?? []), area] }
-      const response = await fetch(`/projects/${encodeURIComponent(currentSelected.projectId)}`, {
+      const response = await fetch(apiUrl(`/projects/${encodeURIComponent(currentSelected.projectId)}`), {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(update),
       })
       if (!response.ok) {
@@ -2432,7 +2433,7 @@ function escapeHtml(value: string): string {
 }
 
 async function fetchProjects(): Promise<Project[]> {
-  const response = await fetch('/projects')
+  const response = await fetch(apiUrl('/projects'))
   if (!response.ok) return []
   return await response.json() as Project[]
 }
@@ -2519,7 +2520,7 @@ async function uploadReferencePhoto(projectId: string, photo: PendingReferencePh
       capturedAt: photo.capturedAt,
       ...(photo.label ? { label: photo.label } : {}),
     }))
-    const res = await fetch(`/projects/${encodeURIComponent(projectId)}/reference-photos`, {
+    const res = await fetch(apiUrl(`/projects/${encodeURIComponent(projectId)}/reference-photos`), {
       method: 'POST',
       body: form,
     })
@@ -2535,7 +2536,7 @@ async function uploadReferencePhoto(projectId: string, photo: PendingReferencePh
 /** Mirror the locally-created project frame so other devices use the same references. */
 async function persistProjectSpatialFrame(project: Project): Promise<void> {
   try {
-    const response = await fetch(`/projects/${encodeURIComponent(project.projectId)}`, {
+    const response = await fetch(apiUrl(`/projects/${encodeURIComponent(project.projectId)}`), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(project),
@@ -2755,7 +2756,7 @@ function wireContentUpload(): void {
     }
 
     const xhr = new XMLHttpRequest()
-    xhr.open('POST', oneVideo ? '/ingest-video' : '/ingest-photos')
+    xhr.open('POST', apiUrl(oneVideo ? '/ingest-video' : '/ingest-photos'))
     xhr.upload.addEventListener('progress', (e) => {
       if (!progress || !e.lengthComputable) return
       progress.textContent = `Uploading… ${Math.round((e.loaded / e.total) * 100)}%`
@@ -4219,7 +4220,7 @@ async function requestServerProcessing(action: string, store: DetectionStore, fi
   const overlay = setupStatusOverlay()
   overlay.setStatus(`Processing: ${action}…`)
   try {
-    const resp = await fetch('/process-scan', {
+    const resp = await fetch(apiUrl('/process-scan'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -4349,7 +4350,7 @@ async function initDrawerGeoMap(fix: GeoFix | null): Promise<void> {
     if (placeholder) placeholder.style.display = 'none'
 
     // Fetch + plot all stored scan locations
-    void fetch('/scan-locations', { signal: AbortSignal.timeout(5000) }).then(async (r) => {
+    void fetch(apiUrl('/scan-locations'), { signal: AbortSignal.timeout(5000) }).then(async (r) => {
       if (!r.ok) return
       const locations = await r.json() as Array<{ lat: number; lng: number; filename: string; address: string | null }>
       for (const loc of locations) {

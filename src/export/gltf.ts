@@ -39,6 +39,7 @@ import type { ScanProvenance } from '../shared/provenance'
 import type { ScanEntry } from '../project/project-store'
 import type { GeoFix } from '../geo/geo-tracker'
 import type { ScanQualitySummary } from '../world/types'
+import { apiUrl } from '../shared/api-base.ts'
 
 // Per-category colour palette (used for detection boxes and semantic view)
 const LABEL_COLORS: Record<string, number> = {
@@ -458,7 +459,7 @@ async function uploadToServer(
     const form = new FormData()
     form.append('file', new Blob([buffer], { type: 'model/gltf-binary' }), filename)
     form.append('metadata', metadata)
-    const resp = await fetch('/upload-scan', { method: 'POST', body: form })
+    const resp = await fetch(apiUrl('/upload-scan'), { method: 'POST', body: form })
     // Queued offline is a 2xx, so the success branch below used to run and
     // destructure a `filename` the queued response does not carry — yielding
     // undefined, which the caller reports as a failed server sync for an

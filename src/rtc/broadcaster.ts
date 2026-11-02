@@ -1,3 +1,4 @@
+import { wsUrl } from '../shared/api-base.ts'
 /**
  * RtcBroadcaster — phone-side WebRTC video broadcaster.
  *
@@ -297,8 +298,7 @@ export class RtcBroadcaster {
   }
 
   private _signalUrl(): string {
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-    return `${proto}://${location.host}/rtc-signal?role=phone&room=${encodeURIComponent(this._roomId)}`
+    return wsUrl(`/rtc-signal?role=phone&room=${encodeURIComponent(this._roomId)}`)
   }
 
   private _status(state: BroadcasterStatus['state'], message: string): void {

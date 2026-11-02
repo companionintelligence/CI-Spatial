@@ -15,3 +15,11 @@ android/app/src/main/assets/capacitor.config.json
 android/app/src/main/assets/plugins/
 android/app/src/main/assets/capacitor.plugins.json
 android/capacitor-cordova-android-plugins/
+
+# Release signing: never commit keys or their passwords.
+android/keystore.properties
+*.jks
+*.keystore
+
+# Archives and other build products written outside the native projects.
+build/

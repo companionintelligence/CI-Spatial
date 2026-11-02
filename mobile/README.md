@@ -40,6 +40,40 @@ npm run open:android
 | iOS purpose strings | Camera, location when in use, motion | The code asks for these. No microphone: every `getUserMedia` call sets `audio: false`. No photo-library key: the file input uses the system picker. |
 | Android permissions | `CAMERA`, `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION` | Device motion needs no Android permission. |
 
+## Server origin
+
+The shell has no server of its own. `VITE_API_BASE` must be the Scan server's https origin, for example `https://scan.example.ts.net`. `npm run build` refuses to run without one (`scripts/check-api-base.mjs`). Every server path in `src/` goes through `apiUrl()` or `wsUrl()` in `src/shared/api-base.ts`. With the variable unset, the hosted web app's URLs are unchanged.
+
+```bash
+VITE_API_BASE=https://<server-origin> npm run build
+```
+
+The server accepts the shell's origins: `capacitor://localhost` (iOS, allowed in `server/main.ts`) and `https://localhost` (Android, already allowed). Sign-in, live events and capture have not run in the shell on a device.
+
+## Publishing
+
+Nothing in this folder uploads anything. The steps below need the owner's Apple and Google accounts.
+
+**iOS (TestFlight).** Create the App Store Connect app for `com.companionintelligence.scan` first. Then, from `mobile/ios/App`:
+
+```bash
+xcodebuild -project App.xcodeproj -scheme App -configuration Release \
+  -destination 'generic/platform=iOS' -archivePath ../../build/Scan.xcarchive \
+  DEVELOPMENT_TEAM=<team-id> archive
+```
+
+Export and upload from Xcode Organizer, or with `xcodebuild -exportArchive` and an `app-store-connect` export options plist.
+
+**Android (Play internal testing).** Create the Play app for `com.companionintelligence.scan` and an upload key. Write `mobile/android/keystore.properties` (git-ignored) with `storeFile`, `storePassword`, `keyAlias` and `keyPassword`. Then, from `mobile/android`:
+
+```bash
+./gradlew bundleRelease
+```
+
+The bundle is `app/build/outputs/bundle/release/app-release.aab`.
+
 ## Not done
 
-Signing, App Store Connect, Play Console, store listings, the app icon (Capacitor's default), `PrivacyInfo.xcprivacy`, the privacy policy and the Play data-safety answers. The data-safety answers must cover location: the web code sends coordinates to OpenStreetMap Nominatim for reverse geocoding.
+- The store gates in PR #244: the measurement step, and the xr.js licence check before any store binary.
+- Android launcher icons are still the Capacitor template. iOS uses the Scan mark.
+- `PrivacyInfo.xcprivacy`, the privacy policy, and the App Privacy and Play data-safety answers. Location goes to OpenStreetMap Nominatim, and captures go to the Scan server.
