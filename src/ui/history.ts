@@ -61,7 +61,7 @@ export class SessionHistory {
       this.body.innerHTML = `
         <div style="padding:40px 16px;text-align:center;">
           <div style="font-size:32px;opacity:0.25;margin-bottom:12px;">🗂</div>
-          <p style="color:rgba(255,255,255,0.35);font-size:13px;line-height:1.5;">
+          <p style="color:rgba(255,255,255,0.6);font-size:13px;line-height:1.5;">
             No saved sessions yet.<br>Scan a room to create one.
           </p>
         </div>`

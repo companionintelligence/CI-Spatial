@@ -229,7 +229,7 @@ export function parseContentRangeTotal(header: string | null): number | null {
 }
 
 export function formatBytes(bytes: number | null): string {
-  if (bytes === null || !Number.isFinite(bytes)) return 'unknown size'
+  if (bytes === null || !Number.isFinite(bytes)) return 'size not reported'
   const gb = bytes / 1024 ** 3
   if (gb >= 0.1) return `${gb.toFixed(1)} GB`
   const mb = bytes / 1024 ** 2

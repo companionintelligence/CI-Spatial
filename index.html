@@ -754,7 +754,7 @@
       #autosave-status {
         border-top: 1px solid rgba(255, 255, 255, 0.07);
         padding: 4px 9px;
-        color: rgba(239,240,240,0.45);
+        color: rgba(239,240,240,0.6);
         font-size: 10px;
         line-height: 1.35;
       }
@@ -802,12 +802,12 @@
         font-weight: 700;
         text-transform: uppercase;
         letter-spacing: 0.08em;
-        color: rgba(255, 255, 255, 0.4);
+        color: rgba(255, 255, 255, 0.6);
       }
       #infer-dialog-close {
         background: none;
         border: none;
-        color: rgba(255, 255, 255, 0.35);
+        color: rgba(255, 255, 255, 0.6);
         font-size: 13px;
         cursor: pointer;
         padding: 0 2px;
@@ -1063,7 +1063,7 @@
 
       .panel-btn-ghost {
         width: 100%;
-        min-height: 40px;
+        min-height: 44px;
         padding: 10px 12px;
         background: rgba(255, 255, 255, 0.05);
         color: rgba(255, 255, 255, 0.72);
@@ -1107,8 +1107,8 @@
       }
 
       .ci-icon-btn--sm {
-        width: 36px;
-        height: 36px;
+        width: 44px;
+        height: 44px;
         font-size: 16px;
       }
 
@@ -1119,7 +1119,7 @@
       }
 
       .ci-toolbar-pill {
-        min-height: 38px;
+        min-height: 44px;
         padding: 0 14px;
         border-radius: var(--ci-pill-radius);
         border: 1px solid var(--ci-line);
@@ -2505,8 +2505,8 @@
       /* Leaflet dark-mode overrides */
       .leaflet-container { background: #0a222e !important; font-family: inherit; }
       .leaflet-control-zoom a { background: rgba(20,22,32,0.9) !important; color: #fff !important; border-color: rgba(255,255,255,0.1) !important; }
-      .leaflet-control-attribution { background: rgba(0,0,0,0.5) !important; color: rgba(255,255,255,0.3) !important; font-size: 9px !important; }
-      .leaflet-control-attribution a { color: rgba(255,255,255,0.4) !important; }
+      .leaflet-control-attribution { background: rgba(0,0,0,0.5) !important; color: rgba(255,255,255,0.6) !important; font-size: 9px !important; }
+      .leaflet-control-attribution a { color: rgba(255,255,255,0.6) !important; }
       .leaflet-control-zoom { display: none; } /* hide zoom in small map */
 
       @keyframes rtc-live-pulse {
@@ -2616,7 +2616,7 @@
          The second step also reports what this install can reach (Companion Memory,
          the model, sign-in). Those rows count against the first-run word budget, so
          adding copy to this overlay means re-measuring it there. -->
-    <div id="onboarding-overlay">
+    <div id="onboarding-overlay" role="dialog" aria-modal="true" aria-label="Getting started">
       <div class="onboard-step active" data-step="0">
         <div class="onboard-icon"><svg width="44px" height="44px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 8.5A1.5 1.5 0 0 1 4.5 7h2.7l1.2-2h6.2l1.2 2h2.7A1.5 1.5 0 0 1 20 8.5v9A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5z"/><circle cx="11.75" cy="13" r="3.4"/></svg></div>
         <div class="onboard-title">Allow camera &amp; motion</div>
@@ -2902,7 +2902,7 @@
 
       <button id="finish-scan-btn" class="finish-btn">Menu</button>
       <button id="capture-btn" aria-label="Capture"></button>
-      <div id="scanner-action-rail" aria-label="Scanner actions">
+      <div id="scanner-action-rail" role="group" aria-label="Scanner actions">
         <a href="/webxr.html" id="xr-mode-link" aria-label="Switch AR runtime" title="Switch to WebXR scanner (HelloXR on iOS)"><svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3.4 9.6A1.7 1.7 0 0 1 5.1 8h13.8a1.7 1.7 0 0 1 1.7 1.6v4.3a1.7 1.7 0 0 1-1.7 1.7h-3.2l-1.9-2.2h-3.6l-1.9 2.2H5.1a1.7 1.7 0 0 1-1.7-1.7z"/></svg></a>
         <a href="/viewer.html" id="viewer-link" aria-label="Open 3D Viewer" title="Desktop 3D Viewer"><svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="4.5" width="18" height="12" rx="1.6"/><path d="M9 20h6M12 16.5V20"/></svg></a>
         <a href="http://localhost:8787/" id="gimbal-link" hidden target="_blank" rel="noopener noreferrer" aria-label="Open Gimbal Control" title="Gimbal Control (Osmo Mobile 6 — subsystems/osmo-ble)"><svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4.2"/><path d="M12 3.4v2.4M12 18.2v2.4M3.4 12h2.4M18.2 12h2.4M6.2 6.2l1.7 1.7M16.1 16.1l1.7 1.7M6.2 17.8l1.7-1.7M16.1 7.9l1.7-1.7"/></svg></a>

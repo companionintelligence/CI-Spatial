@@ -1282,6 +1282,9 @@ async function main() {
       }
 
       goToStep(0)
+      // The overlay is modal: move focus into it, so a keyboard or screen-reader
+      // user starts on its button rather than wherever focus was before it opened.
+      nextBtn.focus()
 
       function cleanupAndFinish() {
         localStorage.setItem(ONBOARD_KEY, '1')

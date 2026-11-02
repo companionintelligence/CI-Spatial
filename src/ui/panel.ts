@@ -110,7 +110,7 @@ export class SidePanel {
     panelHeader.innerHTML = `
       <div style="min-width:0;">
         <div style="color:#fff;font-size:15px;font-weight:800;">Review & Export</div>
-        <div id="scan-flow-steps" style="color:rgba(255,255,255,0.34);font-size:10px;letter-spacing:0.06em;text-transform:uppercase;margin-top:3px;">
+        <div id="scan-flow-steps" style="color:rgba(255,255,255,0.6);font-size:10px;letter-spacing:0.06em;text-transform:uppercase;margin-top:3px;">
           Scan · Review · Edit · Export
         </div>
       </div>`
@@ -126,6 +126,14 @@ export class SidePanel {
     this.toggle.addEventListener('click', () => this.setOpen(!this.isOpen))
 
     // ── Footer buttons ─────────────────────────────────────────────────────
+    // Says why the export actions are unavailable. _setActionsEnabled() shows it
+    // only while they are disabled, and points each disabled control at it.
+    const exportHint = document.createElement('p')
+    exportHint.id = 'panel-export-hint'
+    exportHint.hidden = true
+    exportHint.textContent = 'Export unlocks after you scan an object.'
+    exportHint.style.cssText = 'margin:0;font-size:12px;line-height:1.5;color:rgba(255,255,255,0.6);'
+    this.footer.appendChild(exportHint)
     const exportBtn = document.createElement('button')
     exportBtn.className = 'panel-btn-primary'
     exportBtn.id = 'panel-export-glb-btn'
@@ -163,7 +171,7 @@ export class SidePanel {
       const processWrap = document.createElement('div')
       processWrap.style.cssText = 'display:flex;flex-direction:column;gap:4px;'
       const label = document.createElement('div')
-      label.style.cssText = 'color:rgba(255,255,255,0.3);font-size:10px;text-transform:uppercase;letter-spacing:0.08em;padding:4px 0 2px;'
+      label.style.cssText = 'color:rgba(255,255,255,0.6);font-size:10px;text-transform:uppercase;letter-spacing:0.08em;padding:4px 0 2px;'
       label.textContent = 'Server Processing'
       processWrap.appendChild(label)
       const actions: [string, IconName, string][] = [
@@ -210,7 +218,7 @@ export class SidePanel {
       aiWrap.style.cssText = 'display:flex;flex-direction:column;gap:4px;padding-top:4px;border-top:1px solid rgba(255,255,255,0.06);'
 
       const aiLabel = document.createElement('div')
-      aiLabel.style.cssText = 'color:rgba(255,255,255,0.3);font-size:10px;text-transform:uppercase;letter-spacing:0.08em;padding:4px 0 2px;'
+      aiLabel.style.cssText = 'color:rgba(255,255,255,0.6);font-size:10px;text-transform:uppercase;letter-spacing:0.08em;padding:4px 0 2px;'
       aiLabel.textContent = 'AI Engine'
       aiWrap.appendChild(aiLabel)
 
@@ -251,8 +259,8 @@ export class SidePanel {
 
       const aiNote = document.createElement('div')
       aiNote.id = 'ai-engine-note'
-      aiNote.style.cssText = 'font-size:10px;color:rgba(255,255,255,0.25);padding:2px 0;'
-      aiNote.textContent = this.webGPUUnavailableReason ?? 'Server uses all machine cores'
+      aiNote.style.cssText = 'font-size:10px;color:rgba(255,255,255,0.6);padding:2px 0;'
+      aiNote.textContent = this.webGPUUnavailableReason ?? 'Runs on the scan server'
       aiWrap.appendChild(aiNote)
 
       // ── On-device model provisioning (wave 05 ticket 0002) ────────────────
@@ -269,7 +277,7 @@ export class SidePanel {
 
         const modelStatusText = document.createElement('div')
         modelStatusText.id = 'model-provision-status'
-        modelStatusText.style.cssText = 'font-size:10px;color:rgba(255,255,255,0.45);min-width:0;'
+        modelStatusText.style.cssText = 'font-size:10px;color:rgba(255,255,255,0.6);min-width:0;'
         modelStatusText.textContent = 'On-device model: checking…'
         this._modelStatusText = modelStatusText
 
@@ -345,7 +353,7 @@ export class SidePanel {
       // it must survive updateInferMode() calls, not just mount() (wave 05
       // ticket 0004's "says so specifically" acceptance criterion).
       note.textContent = this.webGPUUnavailableReason
-        ?? (mode === 'server' ? 'Server uses all machine cores' : 'On-device — no data leaves your phone')
+        ?? (mode === 'server' ? 'Runs on the scan server' : 'On-device — no data leaves your phone')
     }
   }
 
@@ -417,12 +425,19 @@ export class SidePanel {
       'panel-export-glb-btn',
       'panel-export-summary-btn',
     ]
+    const hint = document.getElementById('panel-export-hint')
+    if (hint) hint.hidden = enabled
+    const apply = (btn: HTMLButtonElement) => {
+      btn.disabled = !enabled
+      if (enabled) btn.removeAttribute('aria-describedby')
+      else btn.setAttribute('aria-describedby', 'panel-export-hint')
+    }
     for (const id of ids) {
       const btn = document.getElementById(id) as HTMLButtonElement | null
-      if (btn) btn.disabled = !enabled
+      if (btn) apply(btn)
     }
     for (const btn of this.footer.querySelectorAll<HTMLButtonElement>('[data-needs-objects]')) {
-      btn.disabled = !enabled
+      apply(btn)
     }
   }
 
@@ -435,7 +450,7 @@ export class SidePanel {
       this.content.innerHTML = `
         <div style="padding:24px 16px;text-align:center;">
           <div style="margin-bottom:10px;opacity:0.3;">${icon('pin', { size: '32px' })}</div>
-          <p style="color:rgba(255,255,255,0.4);font-size:13px;line-height:1.5;">
+          <p style="color:rgba(255,255,255,0.6);font-size:13px;line-height:1.5;">
             No objects yet.<br>Tap the capture button to scan.
           </p>
         </div>`
@@ -453,7 +468,7 @@ export class SidePanel {
       <span style="color:rgba(255,255,255,0.5);font-size:11px;text-transform:uppercase;letter-spacing:0.08em;">
         ${count} Object${count === 1 ? '' : 's'}${selCount > 0 ? ` · ${selCount} sel.` : ''}
       </span>
-      <span style="color:rgba(255,255,255,0.25);font-size:10px;">X · Y · Z</span>`
+      <span style="color:rgba(255,255,255,0.6);font-size:10px;">X · Y · Z</span>`
     this.content.appendChild(header)
 
     for (const [key, det] of sorted) {

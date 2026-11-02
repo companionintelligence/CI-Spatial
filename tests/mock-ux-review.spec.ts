@@ -62,3 +62,31 @@ test('the side panel takes the taps in its own top corner, not the help button b
   })
   expect(ownCorner).toBe(true)
 })
+
+test('the first-run overlay is a labelled dialog and takes focus', async ({ page }) => {
+  await page.goto('/?mock=xr8&onboarding=1')
+  const overlay = page.locator('#onboarding-overlay')
+  await expect(overlay).toHaveClass(/visible/, { timeout: 20_000 })
+  await expect(overlay).toHaveAttribute('role', 'dialog')
+  await expect(overlay).toHaveAttribute('aria-modal', 'true')
+  await expect(page.locator('#onboard-next-btn')).toBeFocused()
+})
+
+test('the panel controls meet the 44px target floor', async ({ page }) => {
+  await startArScan(page, { waitForPoints: false })
+  await page.click('#panel-toggle')
+  await expect(page.locator('#side-panel')).toHaveClass(/open/, { timeout: 10_000 })
+  for (const selector of ['.ci-icon-btn--sm[aria-label="Close panel"]', '#panel-export-summary-btn', '.ci-toolbar-pill']) {
+    const heights = await page.locator(selector).evaluateAll((els) => els.map((el) => el.getBoundingClientRect().height))
+    expect(heights.length, selector).toBeGreaterThan(0)
+    for (const h of heights) expect(h, selector).toBeGreaterThanOrEqual(44)
+  }
+})
+
+test('a disabled export says why, and its button points at the reason', async ({ page }) => {
+  await startArScan(page, { waitForPoints: false })
+  await page.click('#panel-toggle')
+  await expect(page.locator('#side-panel')).toHaveClass(/open/, { timeout: 10_000 })
+  await expect(page.locator('#panel-export-hint')).toBeVisible()
+  await expect(page.locator('#panel-export-glb-btn')).toHaveAttribute('aria-describedby', 'panel-export-hint')
+})
