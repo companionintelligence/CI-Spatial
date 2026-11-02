@@ -19,6 +19,10 @@ import {
   runLingBotMapReconstruction,
 } from '../../../server/lingbot-map/lingbot_map.ts'
 
+// `true` is /usr/bin/true on macOS and /bin/true on Linux. The tests spawn it as the
+// "python" so the worker exits 0 without doing any work.
+const TRUE_BIN = Deno.build.os === 'darwin' ? '/usr/bin/true' : '/bin/true'
+
 Deno.test('isValidSessionDir accepts canonical session ids', () => {
   assert(isValidSessionDir('/tmp/scans/sessions/sess-12345-abcde'))
 })
@@ -161,7 +165,7 @@ Deno.test('an unrecognised LINGBOT_MAP_DEVICE fails before spawning', async () =
 
 Deno.test({
   name: 'the backend the worker actually used is read back off its manifest',
-  permissions: { run: ['/bin/true'], read: true, write: true, env: true },
+  permissions: { run: [TRUE_BIN], read: true, write: true, env: true },
   fn: async () => {
     // params.resolvedDevice/deviceVendor are already written by
     // scripts/lingbot_map_worker.py, so this reads an existing contract rather
@@ -183,7 +187,7 @@ Deno.test({
       const result = await runLingBotMapReconstruction({
         sessionDir,
         scriptPath: `${tmp}/missing.py`,
-        python: '/bin/true',
+        python: TRUE_BIN,
       })
       assertEquals(result.status, 'skipped')
       assertEquals(result.resolvedDevice, 'cpu')
