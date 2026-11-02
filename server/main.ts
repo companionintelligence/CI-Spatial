@@ -343,7 +343,8 @@ const engineLoadPromise = engine.load().then(() => {
   modelLoaded = true
 }).catch((e) => {
   console.error('[server] Model load failed:', e.message)
-  console.error('[server] Running in server-only mode (VLM inference will be unavailable/fallback to WebGPU)')
+  // The server never falls back to WebGPU: the browser's on-device path is opt-in and separate.
+  console.error('[server] Running in server-only mode: inference is unavailable, so scans get no object labels (GET /health reports engineLoadState)')
 }).finally(() => {
   engineLoadSettled = true
 })

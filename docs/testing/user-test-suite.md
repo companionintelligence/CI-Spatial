@@ -128,7 +128,7 @@ npm run test:auth:unit
 
 | Feature group | Fastest user-level test | Deeper automated coverage |
 |---|---|---|
-| FTUE and help | Force onboarding with `?mock=xr8&onboarding=1`; step through all 3 cards, and check that each Companion service has a row on the third. | `mock-ui-mobile` onboarding screenshots. |
+| FTUE and help | Force onboarding with `?mock=xr8&onboarding=1`; step through both cards, and check the setup rows on the second. | `mock-ui-mobile` onboarding screenshots. |
 | Secure remote access | Tablet MCP smoke against the Tailscale URL. | `iphone-usb` Playwright project with `VITE_URL`. |
 | Live AR scan HUD | Real-Camera Device Protocol on a physical device. | `mock-xr8-scan`, `mock-ui-mobile` for simulated coverage only. |
 | Capture and inference | Capture one mock frame. | `api-cv-mock`, `mock-xr8-scan`, `eval:cv`. |

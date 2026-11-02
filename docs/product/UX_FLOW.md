@@ -49,7 +49,7 @@ queue.
 flowchart TD
   subgraph ftue ["Phase 0 - Install / FTUE - phone"]
     A1["Open HTTPS link -> #start-screen"]
-    A2["3-step onboarding overlay"]
+    A2["2-step onboarding overlay with setup status"]
     A3["Grant camera + motion"]
     A1 --> A2 --> A3
   end
@@ -118,15 +118,14 @@ flowchart TD
 
 The first painted, interactive surface for a first-time user is the **onboarding overlay** (`#onboarding-overlay`, z-index 25) stacked on top of `#start-screen` (z-index 20). It is gated on the `localStorage` key **`companion-scan-onboarded`** (constant `ONBOARD_KEY`) and shows only when `!skipOnboarding && !localStorage.getItem(ONBOARD_KEY)`.
 
-The three steps, quoted verbatim from `index.html`:
+The two steps, quoted verbatim from `index.html`:
 
 | Step | Icon | Title (`.onboard-title`) | Description (`.onboard-desc`) |
 |---|---|---|---|
 | 0 | camera | **Allow camera & motion** | "We use the camera to see the room, and motion sensors to know where you are standing. Tap Allow when your phone asks." |
-| 1 | refresh | **Walk slowly** | "Move steadily and keep the camera up. Moving fast loses tracking. Coverage fills in as you go." |
-| 2 | link | **Your Companion connections** | "Scan finds these itself. Nothing to type." Then one row per service, built from `src/shared/connections.ts`: Companion Account, Companion Memory and Vision model. See [Companion Hub](../operations/COMPANION_HUB.md). |
+| 1 | refresh | **Walk slowly** | "Move steadily and keep the camera up. Moving fast loses tracking. Coverage fills in as you go." Below it, three setup rows from `src/ui/ftue-status.ts`: Companion Memory, Model and Sign-in. See [First-run setup status](../../README.md#first-run-setup-status-and-settings). |
 
-**Controls:** `#onboard-next-btn` (label flips to **`Get Started`** on the last step), three `.onboard-dot` progress dots, and `#onboard-skip` (**`Skip`**, a 44 px touch target). The overlay is a `role="dialog"`. On finish or skip, `finish()` writes `localStorage['companion-scan-onboarded'] = '1'` and hides the overlay.
+**Controls:** `#onboard-next-btn` (label flips to **`Get Started`** on the last step), two `.onboard-dot` progress dots, and `#onboard-skip` (**`Skip`**, a 44 px touch target). The overlay is a `role="dialog"`. On finish or skip, `finish()` writes `localStorage['companion-scan-onboarded'] = '1'` and hides the overlay.
 
 **Skip paths:** `skipOnboarding = searchParams.has('mock') || searchParams.get('onboarding') === '0'`. So **`?onboarding=0`** or **any `?mock`** value bypasses the overlay entirely (`?mock=webxr` additionally installs the iwer WebXR emulation runtime).
 
@@ -192,7 +191,7 @@ Rework the overlay to teach outcomes and set expectations for the four capture m
 
 **Screens/controls today:**
 - `#start-screen` — brand eyebrow `Companion Intelligence`, title **`Companion Scan`**, subtitle **`Private spatial memory for places you own.`**, primary CTA **`Start AR`** (`#start-ar-btn`), quiet secondary **`or upload a walkthrough video`** (`#upload-video-btn` → hidden `#upload-video-input`), and a conditional `#ar-help` block (shown only when no AR runtime is found).
-- `#onboarding-overlay` — the 3 steps in §3.1.
+- `#onboarding-overlay` — the 2 steps in §3.1.
 - Permission prompts — iOS motion (from the `Start AR` click), then camera (from `provider.start`).
 
 **Guidance signals:** `#status-text` walks `Press Start AR to begin` → `Move camera to initialise tracking…`. On first SLAM lock it flips once to `Tracking — tap to capture`. `#start-ar-btn` is enabled well *before* the status reaches `Press Start AR to begin` — it goes live at the top of the boot, and that status is only the prompt shown if the user hasn't already tapped. See **Readiness** in §3.1.

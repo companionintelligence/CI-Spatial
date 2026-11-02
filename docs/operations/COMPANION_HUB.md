@@ -3,8 +3,9 @@
 A Scan server installed from the Companion App Store, on a Companion Hub, finds
 three things without anyone typing a URL or a key: the Companion Account it signs
 people in with, the Companion Memory it pushes finished scans to, and the vision
-model it asks to find objects. This page says where each one comes from, what the
-first-run screen shows about them, and what still has to be true for each to work.
+model it asks to find objects. This page covers where each one comes from and what
+must be true for sign-on to work. The first-run rows, their copy and the settings
+table are in the README's [First-run setup status and settings](../../README.md#first-run-setup-status-and-settings).
 
 ## What the Hub provides
 
@@ -20,30 +21,8 @@ writes into the app when it installs or connects it.
 | Vision model | `inference.ollama_host: OLLAMA_HOST`, `vision_model: OLLAMA_MODEL` | the engine host and the model name | `server/inference.ts` |
 
 Sign-in is a form field, "Sign in with Companion Intelligence", and it is off by
-default. Companion Memory connects when someone connects it in the Hub, and the Hub
-restarts the app then. The form also has advanced fields for an external CI-Server
-URL and key. Leave those blank for a Hub install.
-
-## What the first-run screen shows
-
-The onboarding overlay's third step asks the server for its status
-(`/authenticate/whoami`, `/memory/status` and `/health`) and draws one row per
-service. Nothing is typed in. The rows come from `src/shared/connections.ts`.
-
-| Row | State | Shown as |
-| --- | --- | --- |
-| Companion Account | signed in | Signed in as *name* |
-| | sign-in on, not signed in | Not signed in, with a Sign in link |
-| | sign-in off on this server | Sign-in is off here |
-| | in the native shell | Sign in on the web |
-| Companion Memory | connected | Connected |
-| | connected, not answering | Connected, unreachable |
-| | not connected | Not connected, with a hint to connect it in the Companion Hub |
-| Vision model | ready | *model* ready |
-| | loading | Loading *model* |
-| | not available | Unavailable |
-
-A check that fails shows "Can't check" on its row. It never holds the overlay up.
+default. Companion Memory connects when someone connects it in the Hub. Leave the
+form's advanced Companion Memory fields blank for a Hub install.
 
 ## Sign-on
 
@@ -61,7 +40,8 @@ Sign-in is fail-closed. `PORTAL_OIDC_ALLOWED_EMAILS` must list the accounts that
 sign in, and an empty list admits nobody.
 
 The session is a cookie on the server's own origin. The native shells run on another
-origin and cannot hold that cookie, so sign-in happens in a browser there.
+origin. Whether the shell keeps that session is not verified on a device, so plan on
+signing in with a browser there.
 
 ## Companion Memory
 
@@ -74,12 +54,12 @@ push sends the Hub's minted key as `x-api-key`. It does not yet call CI-Memory's
 ```bash
 curl -s https://<server>/health              # model, modelReady, engineLoadState
 curl -s https://<server>/memory/status       # enabled and reachable; never the key
-curl -s -o /dev/null -w '%{http_code}\n' https://<server>/authenticate/whoami
-# 404 when sign-in is off, 401 when signed out, 200 with the account when signed in
+curl -s https://<server>/authenticate/status # {"enabled": true} or {"enabled": false}
 ```
 
 ## Not yet
 
-- The native shells cannot keep a Companion Account session (see *Sign-on*).
+- Whether the native shells keep a Companion Account session is not verified on a
+  device (see *Sign-on*).
 - The store listing runs the published image. A Hub install of this build waits on
   the owner's approval.

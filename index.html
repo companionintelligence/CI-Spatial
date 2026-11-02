@@ -2546,18 +2546,21 @@
         font-family: var(--ci-font-display);
       }
       .onboard-desc { font-size: 14px; line-height: 1.6; color: var(--ci-muted); }
-      .onboard-conn-list { display: flex; flex-direction: column; gap: 8px; width: 100%; }
-      .onboard-conn {
-        display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; align-items: baseline;
-        padding: 10px 12px; border-radius: 10px; background: rgba(255,255,255,0.06);
-        text-align: left; font-size: 14px;
+      /* First-run status rows (src/ui/ftue-status.ts). Label and text are block-level,
+         so innerText breaks a line between them and the word count matches the screen. */
+      .ftue-status {
+        list-style: none; margin: 4px 0 0; padding: 0; width: 100%;
+        display: flex; flex-direction: column; gap: 10px;
+        font-size: 14px; line-height: 1.5; color: var(--ci-muted);
       }
-      .onboard-conn-label { color: var(--ci-text); font-weight: 600; }
-      .onboard-conn-text { color: var(--ci-muted); justify-self: end; text-align: right; }
-      .onboard-conn[data-state="ok"] .onboard-conn-text { color: #72ddd4; }
-      .onboard-conn[data-state="warn"] .onboard-conn-text { color: #f0c36b; }
-      .onboard-conn-hint { grid-column: 1 / -1; font-size: 12px; color: var(--ci-muted); }
-      .onboard-conn a { grid-column: 1 / -1; justify-self: end; color: #72ddd4; font-weight: 600; }
+      .ftue-label { display: block; font-weight: 700; color: var(--ci-text); }
+      .ftue-text { display: block; }
+      .ftue-signin {
+        display: flex; align-items: center; justify-content: center; min-height: 44px;
+        padding: 0 20px; border-radius: var(--ci-pill-radius); text-decoration: none;
+        border: 1px solid rgba(114,221,212,0.7); color: #72ddd4; font-weight: 700;
+        -webkit-tap-highlight-color: transparent;
+      }
       .onboard-dots { display: flex; gap: 8px; }
       .onboard-dot {
         width: 8px; height: 8px; border-radius: 50%;
@@ -2616,7 +2619,10 @@
          whether the scan is any good. Everything the old five-step version
          explained (capture modes, the quality chip, export) is a control the
          user can see on screen, labelled where it lives — a tutorial read once
-         and forgotten was the wrong place for it. Re-openable any time via #help-btn. -->
+         and forgotten was the wrong place for it. Re-openable any time via #help-btn.
+         The second step also reports what this install can reach (Companion Memory,
+         the model, sign-in). Those rows count against the first-run word budget, so
+         adding copy to this overlay means re-measuring it there. -->
     <div id="onboarding-overlay" role="dialog" aria-modal="true" aria-label="Getting started with Companion Scan">
       <div class="onboard-step active" data-step="0">
         <div class="onboard-icon"><svg width="44px" height="44px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 8.5A1.5 1.5 0 0 1 4.5 7h2.7l1.2-2h6.2l1.2 2h2.7A1.5 1.5 0 0 1 20 8.5v9A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5z"/><circle cx="11.75" cy="13" r="3.4"/></svg></div>
@@ -2627,18 +2633,13 @@
         <div class="onboard-icon"><svg width="44px" height="44px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20.4 4.2v4.2h-4.2"/><circle cx="12" cy="12" r="1.6"/></svg></div>
         <div class="onboard-title">Walk slowly</div>
         <div class="onboard-desc">Move steadily and keep the camera up. Moving fast loses tracking. Coverage fills in as you go.</div>
-      </div>
-      <div class="onboard-step" data-step="2">
-        <div class="onboard-icon"><svg width="44px" height="44px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg></div>
-        <div class="onboard-title">Your Companion connections</div>
-        <div class="onboard-desc">Scan finds these itself. Nothing to type.</div>
-        <div id="onboard-connections" class="onboard-conn-list" aria-live="polite">
-          <div class="onboard-conn" data-state="busy"><span class="onboard-conn-text">Checking…</span></div>
-        </div>
+        <!-- Filled by renderFtueStatus() (src/ui/ftue-status.ts) from three read-only
+             endpoints. Its words are not in this markup, so the startup word budget
+             counts them from that module instead. -->
+        <ul id="ftue-status" class="ftue-status" aria-label="Setup on this install"></ul>
       </div>
       <div class="onboard-dots">
         <div class="onboard-dot active"></div>
-        <div class="onboard-dot"></div>
         <div class="onboard-dot"></div>
       </div>
       <button id="onboard-next-btn">Next</button>

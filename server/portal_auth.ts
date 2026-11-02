@@ -14,7 +14,9 @@
  * Per CI-Common's email-trust policy this uses allowlist-only gating
  * (PORTAL_OIDC_ALLOWED_EMAILS); an empty allowlist fails closed.
  *
- * Routes (all inert 404s unless PORTAL_OIDC_ENABLED=1):
+ * Routes (all but /status are inert 404s unless PORTAL_OIDC_ENABLED=1):
+ *   GET  /authenticate/status          → { enabled }, boolean only. Always registered, so
+ *                                        "off on this install" can be told from "on".
  *   GET  /authenticate/oidc            → 302 to Portal authorize (sets state+PKCE cookies)
  *   GET  /authenticate/oidc/callback   → validates state, exchanges code, mints session
  *   GET  /authenticate/whoami          → { sub, email, name } for a valid session; also
@@ -220,7 +222,15 @@ export function resolveBaseUrl(c: Context, cfg: PortalAuthConfig): string {
   return `${proto}://${host}`
 }
 
+/** True only when the master switch is on AND an issuer is set. This is what GET /authenticate/status reports. */
+export function signInEnabled(cfg: PortalAuthConfig): boolean {
+  return cfg.enabled && cfg.issuerUrl !== ''
+}
+
 export function registerPortalAuth(app: Hono, cfg: PortalAuthConfig, deps: PortalAuthDeps) {
+  // Registered before the early return below, and nothing else on this path is:
+  // a stock install must be able to say sign-in is off, and this route says only that.
+  app.get('/authenticate/status', (c) => c.json({ enabled: signInEnabled(cfg) }))
   if (!cfg.enabled) return
   if (!cfg.issuerUrl) {
     console.warn('[portal-auth] PORTAL_OIDC_ENABLED is set but OIDC_ISSUER_URL is empty — sign-in disabled')

@@ -57,6 +57,7 @@ import { AROverlay } from './ui/overlay'
 import { writeStatus, type StatusPriority } from './ui/status-line'
 import { SidePanel, type ExportOutcome } from './ui/panel'
 import { SessionHistory } from './ui/history'
+import { renderFtueStatus } from './ui/ftue-status'
 import { exportToGLB } from './export/gltf'
 import { isServerSessionId } from './shared/session-id.ts'
 import { exportSessionSummary } from './export/summary'
@@ -133,8 +134,6 @@ import {
   type MethodPlan,
 } from './capture/capture-intent'
 import * as THREE from 'three'
-import { apiUrl } from './shared/api-base.ts'
-import { renderConnections } from './shared/connections.ts'
 
 const CAPTURE_FRAME_TIMEOUT_MS = 8000
 const TRACKING_WAIT_MS = 2500
@@ -1265,6 +1264,9 @@ async function main() {
       const ob = document.getElementById('onboarding-overlay')
       if (!ob) { resolve(); return }
       ob.classList.add('visible')
+      // Setup rows for the second step. Not awaited: the overlay never waits on the
+      // server, and a failed read shows as "Status unavailable." in its row.
+      void renderFtueStatus(document.getElementById('ftue-status'))
 
       const steps = ob.querySelectorAll<HTMLElement>('.onboard-step')
       const dots = ob.querySelectorAll<HTMLElement>('.onboard-dot')
@@ -1272,16 +1274,11 @@ async function main() {
       const skipBtn = document.getElementById('onboard-skip') as HTMLButtonElement
       let current = 0
 
-      const connections = ob.querySelector<HTMLElement>('#onboard-connections')
-
       function goToStep(n: number) {
         steps.forEach((s, i) => s.classList.toggle('active', i === n))
         dots.forEach((d, i) => d.classList.toggle('active', i === n))
         nextBtn.textContent = n === steps.length - 1 ? 'Get Started' : 'Next'
         current = n
-        // The connections are asked for when their step is shown, not at boot,
-        // so a slow server cannot hold up the camera permission steps.
-        if (connections && steps[n]?.contains(connections)) void renderConnections(connections)
       }
 
       goToStep(0)
@@ -1612,7 +1609,7 @@ async function main() {
         const local = await projectStore.getReferencePhoto(photo.localKey).catch(() => null)
         if (local?.blob) return URL.createObjectURL(local.blob)
         if (!photo.url) return null
-        const res = await fetch(apiUrl(photo.url)).catch(() => null)
+        const res = await fetch(photo.url).catch(() => null)
         if (!res?.ok) return null
         return URL.createObjectURL(await res.blob())
       },
@@ -1904,7 +1901,7 @@ function setAutosaveStatus(text: string): void {
 function revealDownloadLink(uploadedFilename: string): void {
   const link = document.getElementById('export-download-link') as HTMLAnchorElement | null
   if (!link) return
-  link.href = apiUrl(`/scans/${encodeURIComponent(uploadedFilename)}`)
+  link.href = `/scans/${encodeURIComponent(uploadedFilename)}`
   // Hint the save-as name; same-origin, so the browser honours it.
   link.download = uploadedFilename
   link.style.display = 'inline-block'
@@ -2303,7 +2300,7 @@ function mountPlacePicker(
         return
       }
       const geoPose = { ...fixToGeoPose(fix), lat: latitude, lng: longitude, address: address || fix?.address || null, displayAddress: address || fix?.displayAddress || null }
-      const response = await fetch(apiUrl('/projects'), {
+      const response = await fetch('/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, placeType, address, geoPose }),
@@ -2371,7 +2368,7 @@ function mountPlacePicker(
         parentAreaId: currentSelected.areas?.find(candidate => candidate.kind === 'site')?.areaId ?? null,
       }
       const update = { ...currentSelected, areas: [...(currentSelected.areas ?? []), area] }
-      const response = await fetch(apiUrl(`/projects/${encodeURIComponent(currentSelected.projectId)}`), {
+      const response = await fetch(`/projects/${encodeURIComponent(currentSelected.projectId)}`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(update),
       })
       if (!response.ok) {
@@ -2439,7 +2436,7 @@ function escapeHtml(value: string): string {
 }
 
 async function fetchProjects(): Promise<Project[]> {
-  const response = await fetch(apiUrl('/projects'))
+  const response = await fetch('/projects')
   if (!response.ok) return []
   return await response.json() as Project[]
 }
@@ -2526,7 +2523,7 @@ async function uploadReferencePhoto(projectId: string, photo: PendingReferencePh
       capturedAt: photo.capturedAt,
       ...(photo.label ? { label: photo.label } : {}),
     }))
-    const res = await fetch(apiUrl(`/projects/${encodeURIComponent(projectId)}/reference-photos`), {
+    const res = await fetch(`/projects/${encodeURIComponent(projectId)}/reference-photos`, {
       method: 'POST',
       body: form,
     })
@@ -2542,7 +2539,7 @@ async function uploadReferencePhoto(projectId: string, photo: PendingReferencePh
 /** Mirror the locally-created project frame so other devices use the same references. */
 async function persistProjectSpatialFrame(project: Project): Promise<void> {
   try {
-    const response = await fetch(apiUrl(`/projects/${encodeURIComponent(project.projectId)}`), {
+    const response = await fetch(`/projects/${encodeURIComponent(project.projectId)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(project),
@@ -2762,7 +2759,7 @@ function wireContentUpload(): void {
     }
 
     const xhr = new XMLHttpRequest()
-    xhr.open('POST', apiUrl(oneVideo ? '/ingest-video' : '/ingest-photos'))
+    xhr.open('POST', oneVideo ? '/ingest-video' : '/ingest-photos')
     xhr.upload.addEventListener('progress', (e) => {
       if (!progress || !e.lengthComputable) return
       progress.textContent = `Uploading… ${Math.round((e.loaded / e.total) * 100)}%`
@@ -4226,7 +4223,7 @@ async function requestServerProcessing(action: string, store: DetectionStore, fi
   const overlay = setupStatusOverlay()
   overlay.setStatus(`Processing: ${action}…`)
   try {
-    const resp = await fetch(apiUrl('/process-scan'), {
+    const resp = await fetch('/process-scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -4356,7 +4353,7 @@ async function initDrawerGeoMap(fix: GeoFix | null): Promise<void> {
     if (placeholder) placeholder.style.display = 'none'
 
     // Fetch + plot all stored scan locations
-    void fetch(apiUrl('/scan-locations'), { signal: AbortSignal.timeout(5000) }).then(async (r) => {
+    void fetch('/scan-locations', { signal: AbortSignal.timeout(5000) }).then(async (r) => {
       if (!r.ok) return
       const locations = await r.json() as Array<{ lat: number; lng: number; filename: string; address: string | null }>
       for (const loc of locations) {

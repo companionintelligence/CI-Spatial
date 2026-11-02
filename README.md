@@ -10,7 +10,7 @@
 <p align="center"><a href="docs/README.md">Documentation</a> · <a href="#quick-setup">Get started</a> · <a href="#license">License</a> · <a href="https://docs.ci.computer/docs/reference/open-source-systems">Systems map</a></p>
 
 <p align="center">
-  <a href="https://xr.ci.computer"><img src="https://img.shields.io/badge/Open%20Companion%20Scan-Open%20Companion%20Scan-0a6358?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Open Companion Scan" height="30"></a>
+  <a href="https://docs.ci.computer/docs/apps-available/first-party-apps/spatial-scan"><img src="https://img.shields.io/badge/Companion%20Scan%20docs-Companion%20Scan%20docs-0a6358?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Companion Scan docs" height="30"></a>
 </p>
 
 It uses 8th Wall/WebXR for capture, an engine-agnostic vision layer for object detection, and Three.js for the **Companion Scan Spatial Editor** at `/editor`. Several scans combine in one Place, are assigned to Areas such as rooms or floors, and remain independently traceable through layers and Things. Inference defaults to local Ollama; bundled ONNX and deterministic mock CV engines are alternatives selected via `INFERENCE_MODE`.
@@ -144,11 +144,11 @@ flowchart TB
 ```
 
 ### 2. User Flow
-The onboarding overlay guides new users through motion permissions, tracking speed guidelines, and the Companion connections: Companion Account, Companion Memory and the vision model, which the Companion Hub sets up when Scan is installed there. Real-time verdict updates indicate scan quality.
+The onboarding overlay guides new users through camera and motion permission and walking speed. Its second step also lists this install's setup status (see [First-run setup status and settings](#first-run-setup-status-and-settings)). Real-time verdict updates indicate scan quality.
 
 ```mermaid
 graph TD
-    A[Start: Open HTTPS link / PWA] --> B[Onboarding Overlay: 3 Steps]
+    A[Start: Open HTTPS link / PWA] --> B[Onboarding Overlay: 2 Steps]
     B --> C[Allow Camera & Motion Access]
     C --> D[Choose Capture Method start-screen]
     D --> D1[📡 Live AR scanning]
@@ -225,7 +225,7 @@ graph TD
 - **AR scanning** — 8th Wall OSS SLAM tracks the environment and accumulates a colourised point cloud in real time.
 - **Engine-agnostic inference** — object detection runs through a local Deno server whose engine is chosen by `INFERENCE_MODE`: `ollama` (default, runs whatever `OLLAMA_MODEL` names — `qwen3-vl:4b` by default, with the context window pinned by `OLLAMA_NUM_CTX`), `onnx` (bundled `LiquidAI/LFM2.5-VL-1.6B-ONNX` via `onnxruntime-node`), or `mock` (deterministic colour-blob CV engine for CI/tests). An on-device WebGPU path also exists — opt-in, offered wherever the browser exposes `navigator.gpu` (see [Inference](#inference) below). `npm run eval:cv` / `npm run bench:models` score `/infer` output against ground truth from a corpus selected by `CV_CORPUS`: `real` (default, `test-data/real/`) is human-verified photographs — the only fixture that can tell a working vision model from a fabricating one, so it's what `bench:models` uses to rank candidates; `synthetic` (`test-data/cv/`) is the generated colour-rectangle corpus, a regression fixture for the *mock* engine only — scoring a real model against it warns loudly instead of reporting a silent 0%. As of this writing the real corpus is scaffolded but has **0 photographs** (a manual/physical step, not yet done — see `docs/factory/06-detection-ground-truth/`), so `bench:models` cannot rank models until it is populated.
 - **3D object pins** — detected objects are placed at their SLAM-resolved world positions as live 3D labels tracking the scene.
-- **Onboarding Overlay** — 3-step interactive overlay: permission prompts, movement speeds, and the Companion connections, which show whether Companion Account, Companion Memory and the vision model are ready. Bypasses automatically on CI/mocks and replays on help button click. See [Companion Hub](docs/operations/COMPANION_HUB.md).
+- **Onboarding Overlay** — 2-step interactive overlay guiding users through permission prompts and walking speed. Its second step lists this install's setup status (see [First-run setup status and settings](#first-run-setup-status-and-settings)). Bypasses automatically on CI/mocks and replays on help button click.
 - **HUD Quality Verdict** — Real-time rendering of `qualityMonitor.summary()` status directly on the phone HUD as a colorized verdict chip (`✓ Ready`, `⚠ Review`, `❌ Sparse`) next to the status row.
 - **HUD Menu button** — Primary affordance to the right of the capture button, on its centre line, to quickly open the Side Panel and scroll to the export and synchronization settings.
 - **Accidental Leave Guards** — Intercepts navigation buttons and window unload requests if active point cloud data or poses are in memory to prevent accidental scan losses.
@@ -390,6 +390,41 @@ For persistent serving from a Linux box (systemd units, GPU inference, cert rene
 ### First-time use / everyday flow
 
 New here? [docs/product/UX_FLOW.md](docs/product/UX_FLOW.md) walks the whole happy path as a user story — install and onboarding on the phone, scanning a room, structuring scans into the 4D world in the desktop editor, queuing reconstruction jobs, and sharing a world — plus the mental model for the four capture modes (manual tap, auto-capture, keyframe streaming, and WebRTC live). For the full documentation index see [docs/README.md](docs/README.md).
+
+### First-run setup status and settings
+
+The second step of the first-run overlay lists three things about this install. Each row comes from an endpoint on the scanner's own origin. The status rows contact no third-party host and show no address or key.
+
+| Row | Read from | What it says |
+|---|---|---|
+| Companion Memory | `GET /memory/status` | Connected, set up but not reachable, or not connected. Not connected points to Companion Hub. |
+| Model | `GET /health` (`model`, `engineLoadState`) | The model in use, and whether it loaded. If it did not load, scans run in server-only mode and get no object labels. |
+| Sign-in | `GET /authenticate/status` | "Sign in with Companion Account" when sign-in is on, or "Off on this install." |
+
+A row reads "Status unavailable." when its endpoint does not answer. Reading the Companion Memory row makes the server probe the configured Companion Memory once: an empty-batch POST with a five-second timeout.
+
+`engineLoadState: ready` means Ollama answered and a model was resolved. It does not mean a capture has run. The engine loads once, when the server starts, and is not retried, so start Ollama before the Deno server, or restart the server after you start Ollama.
+
+The server reads these settings. Defaults are the code's own, and the Hub column says where Companion Hub supplies a value.
+
+| Variable | Default | Effect | Companion Hub |
+|---|---|---|---|
+| `INFERENCE_MODE` | `ollama` | Engine: `ollama`, `onnx` or `mock`. | Not set by the Hub. |
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama address. A bare `host:port` is accepted. | From the Hub's AI settings (`hub_integration.inference`). |
+| `OLLAMA_MODEL` | `qwen3-vl:4b` | Vision model to run. If that tag is not pulled, the server uses a substitute, and `/health` reports the one in use. | From the Hub's AI settings (`vision_model`). |
+| `OLLAMA_NUM_CTX` | `8192` | Context window for each Ollama call. Values above 131072 are clamped; invalid values fall back to 8192. | Not set by the Hub. |
+| `CI_SERVER_URL` | unset (memory push inert) | Companion Memory API base, for example `http://host:8642/api`. | Written after the user connects Companion Memory in the Hub. |
+| `CI_SERVER_TOKEN` | unset (memory push inert) | Companion Memory API key, sent as `x-api-key`. No route or screen shows it. | Written after the user connects Companion Memory in the Hub. |
+| `PORTAL_OIDC_ENABLED` | off | `1` or `true` turns on "Sign in with Companion Account". | The app form's sign-in switch (default off). |
+| `OIDC_ISSUER_URL` | unset | CI-Portal base URL. Sign-in stays off while it is empty. | From the Hub's Companion cloud URL (`hub_integration.oidc`). |
+| `OIDC_CLIENT_ID` | `ci-web-xr-scan` | Must match the CI-Portal client registration. Do not rename it. | Not set by the Hub. |
+| `APP_BASE_URL` | taken from the request | Public origin used to build the sign-in redirect. Set it when a proxy does not forward the host. | Set by the Hub when the app is exposed (to confirm for this app). |
+| `PORTAL_OIDC_ALLOWED_EMAILS` | empty, which admits nobody | Comma-separated allowlist of signed-in emails. Fails closed. | The app form's allowlist field. |
+| `SESSION_SECRET` | random per boot | Signs the sign-in session cookie. Set it on any server you restart, or everyone is signed out. | Not set by the Hub. |
+
+When Companion Hub hosts the scanner, the Hub fills the memory and inference values from the app's store manifest (`hub_integration` in `ci-web-xr-scan/config.json` in the CI-Marketplace repo), so nobody types them by hand. The Hub writes the memory values after a completed connect. The app form also has advanced fields for an external Companion Memory, which you can fill instead. The server reads its memory settings once at boot, so a connect needs a server restart. Whether the Hub restarts the app itself is to confirm.
+
+Sign-in is off unless `PORTAL_OIDC_ENABLED` is on. The first-run control starts it at `/authenticate/oidc?redirect=/`, which returns to the scanner after CI-Portal. A direct visit to `/authenticate/oidc` lands in the world editor instead. When sign-in is off, the only sign-in route registered is `/authenticate/status`.
 
 ### Capture geometry: walk the camera, don't spin it
 
@@ -603,7 +638,10 @@ The full, canonical route table lives in [docs/architecture.md](docs/architectur
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/health` | Returns `{ status: "ok", model: "..." }` |
+| `GET` | `/health` | Returns `{ status, model, mode, modelReady, engineLoadState }`. `engineLoadState` is `loading`, `ready` or `failed`. |
+| `GET` | `/memory/status` | Returns `{ enabled, baseUrl, sourceSystem, reachable? }`. Never returns the token. |
+| `GET` | `/authenticate/status` | Returns `{ enabled }`: whether "Sign in with Companion Account" is on. Boolean only. |
+| `GET` | `/authenticate/oidc` | Starts Companion Account sign-in when it is on. The callback, `/authenticate/whoami` and `POST /authenticate/logout` complete the flow. |
 | `POST` | `/infer` | Multipart `image` → `RawDetection[]` |
 | `POST` | `/process-scan` | Sync scan analysis: `object-count`, `scene-description`, `floor-plan` |
 | `POST` | `/upload-scan` | Multipart `file` (.glb) + optional `metadata` (JSON) → saves to `scans/` |

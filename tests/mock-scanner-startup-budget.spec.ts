@@ -112,13 +112,12 @@ test.describe('scanner startup budget', () => {
     await page.goto('/?mock=xr8&onboarding=1')
     await expect(page.locator('#onboarding-overlay')).toBeVisible({ timeout: 15_000 })
 
-    // Three steps: camera and motion, walking speed, and the Companion
-    // connections. This is the only thing between a first-run visitor and the
+    // Two steps. This is the only thing between a first-run visitor and the
     // camera; it went 3 → 5 once without anyone noticing.
-    await expect(page.locator('.onboard-step')).toHaveCount(3)
+    await expect(page.locator('.onboard-step')).toHaveCount(2)
     // The dots are the progress affordance — a mismatch silently lies about
     // how much is left, which is exactly what a five-dot/five-step wall did.
-    await expect(page.locator('.onboard-dot')).toHaveCount(3)
+    await expect(page.locator('.onboard-dot')).toHaveCount(2)
 
     const words = await page.evaluate(() =>
       Array.from(document.querySelectorAll('.onboard-desc'))
@@ -142,6 +141,12 @@ test.describe('scanner startup budget', () => {
       Array.from(document.querySelectorAll('.onboard-desc'))
         .reduce((a, e) => a + ((e as HTMLElement).textContent || '').trim().split(/\s+/).filter(Boolean).length, 0))
     const startWords = await wordCount(page, '#start-screen')
+    // The status rows are written at runtime. Count their parts, not textContent:
+    // a label and its text are separate blocks, and textContent would fuse them.
+    await expect(page.locator('#ftue-status li')).toHaveCount(3, { timeout: 15_000 })
+    const statusWords = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('#ftue-status .ftue-label, #ftue-status .ftue-text, #ftue-status .ftue-signin'))
+        .map((e) => e.textContent || '').join(' ').trim().split(/\s+/).filter(Boolean).length)
 
     // `?mock=xr8` loads the in-browser engine and nothing else, and `room` is
     // preselected — the one screen out of 24 this run renders. Parity first,
@@ -151,12 +156,17 @@ test.describe('scanner startup budget', () => {
     expect(onboardingWords, 'onboarding words: browser vs tests/support/startup-budget.ts')
       .toBe(model.onboarding)
     expect(startWords, 'start-screen words: browser vs tests/support/startup-budget.ts')
-      .toBe(model.total - model.onboarding)
+      .toBe(model.total - model.onboarding - model.status)
+    // The rows say what the three endpoints answer, which differs between a
+    // bare mock and a running install. So they are held to their worst case.
+    expect(statusWords, 'status-row words: browser vs the worst case in tests/support/startup-budget.ts')
+      .toBeLessThanOrEqual(model.status)
 
-    // Was 197, then 120, then 155, and 110 since the disclosure landed — see
-    // the reasoning on WORDS_BEFORE_CAMERA_MAX. Held here too so the ceiling is
-    // checked against a real render and not only against the model.
-    expect(onboardingWords + startWords, 'words shown before the camera')
+    // Was 197, then 120, then 155, 110 since the disclosure landed, and 142 since
+    // the first-run status rows did — see the reasoning on WORDS_BEFORE_CAMERA_MAX.
+    // Held here too so the ceiling is checked against a real render and not only
+    // against the model.
+    expect(onboardingWords + startWords + statusWords, 'words shown before the camera')
       .toBeLessThanOrEqual(WORDS_BEFORE_CAMERA_MAX)
 
     // The un-recommended methods are behind #start-alt-toggle, which is what
