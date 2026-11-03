@@ -123,7 +123,7 @@ The two steps, quoted verbatim from `index.html`:
 | Step | Icon | Title (`.onboard-title`) | Description (`.onboard-desc`) |
 |---|---|---|---|
 | 0 | camera | **Allow camera & motion** | "We use the camera to see the room, and motion sensors to know where you are standing. Tap Allow when your phone asks." |
-| 1 | refresh | **Walk slowly** | "Move steadily and keep the camera up. Moving fast loses tracking. Coverage fills in as you go." Below it, three setup rows from `src/ui/ftue-status.ts`: Companion Memory, Model and Sign-in. See [First-run setup status](../../README.md#first-run-setup-status-and-settings). |
+| 1 | refresh | **Walk slowly** | "Move steadily and keep the camera up. Moving fast loses tracking. Coverage fills in as you go." Below it, three setup rows from `src/ui/ftue-status.ts`: Companion Memory, Model and Sign-in. When none of them answers, one Server row replaces them. See [First-run setup status](../../README.md#first-run-setup-status-and-settings). |
 
 **Controls:** `#onboard-next-btn` (label flips to **`Get Started`** on the last step), two `.onboard-dot` progress dots, and `#onboard-skip` (**`Skip`**, a 44 px touch target). The overlay is a `role="dialog"`. On finish or skip, `finish()` writes `localStorage['companion-scan-onboarded'] = '1'` and hides the overlay.
 

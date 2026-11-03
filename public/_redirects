@@ -1,0 +1,3 @@
+# Cloudflare Pages only. server/main.ts and vite.config.ts do the same rewrite themselves.
+/editor /viewer 200
+/editor/ /viewer 200

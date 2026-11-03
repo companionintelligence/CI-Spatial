@@ -38,7 +38,7 @@ export interface SignInStatus {
   problem?: string
 }
 
-/** A null field means that endpoint did not answer usefully, and its row says so. */
+/** A null field means that endpoint did not answer usefully. Its row says so. All three null is one Server row instead. */
 export interface FtueSnapshot {
   memory: MemoryStatus | null
   engine: EngineStatus | null

@@ -22,8 +22,14 @@ const APP_SHELL = [
   '/xr-slam.js',
 ]
 
+// Every server path a page reads with GET. A path missing here falls through to
+// staleWhileRevalidate, which answers from the cache first and only overwrites an
+// entry on a 2xx, so one bad 200 is served for good.
 const API_PREFIXES = [
   '/health',
+  '/memory',
+  '/authenticate',
+  '/project-locations',
   '/infer',
   '/upload-scan',
   '/upload-summary',

@@ -141,9 +141,10 @@ test.describe('scanner startup budget', () => {
       Array.from(document.querySelectorAll('.onboard-desc'))
         .reduce((a, e) => a + ((e as HTMLElement).textContent || '').trim().split(/\s+/).filter(Boolean).length, 0))
     const startWords = await wordCount(page, '#start-screen')
-    // The status rows are written at runtime. Count their parts, not textContent:
-    // a label and its text are separate blocks, and textContent would fuse them.
-    await expect(page.locator('#ftue-status li')).toHaveCount(3, { timeout: 15_000 })
+    // The status rows are written at runtime, all at once: one row when no server
+    // answers, three when one does. Count their parts, not textContent: a label and
+    // its text are separate blocks that textContent would fuse.
+    await expect(page.locator('#ftue-status li').first()).toBeAttached({ timeout: 15_000 })
     const statusWords = await page.evaluate(() =>
       Array.from(document.querySelectorAll('#ftue-status .ftue-label, #ftue-status .ftue-text, #ftue-status .ftue-signin'))
         .map((e) => e.textContent || '').join(' ').trim().split(/\s+/).filter(Boolean).length)
