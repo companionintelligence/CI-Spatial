@@ -61,7 +61,7 @@ import type {
   WorldJobType,
   WorldProject,
 } from '../world/types'
-import { apiCredentials, apiUrl, wsUrl } from '../shared/api-base.ts'
+import { apiCredentials, apiUrl, shellSessionToken, withSessionToken, wsUrl } from '../shared/api-base.ts'
 
 // Place composition remains opt-in while its building/floor/room editing flow
 // is refined. The static HTML stays hidden unless this build-time flag is set.
@@ -1729,7 +1729,7 @@ async function addFrameObservationLayers(
   const thumbStride = Math.max(1, Math.ceil(frames.length / 12))
   for (let i = 0; i < frames.length; i += thumbStride) {
     const frame = frames[i]!
-    const texture = textureLoader.load(withAccessToken(frame.rgbUrl))
+    const texture = textureLoader.load(withSessionToken(withAccessToken(frame.rgbUrl), shellSessionToken()))
     texture.colorSpace = THREE.SRGBColorSpace
     const aspect = frame.intrinsics.width / Math.max(1, frame.intrinsics.height)
     const plane = new THREE.Mesh(
@@ -2419,7 +2419,7 @@ function setSplatDownloadLink(scan: ScanManifest | null, layer?: ScanSplatLayer)
     if (!scan) {
       link.hidden = true
     } else {
-      link.href = withAccessToken(splatPlyUrl(scan))
+      link.href = withSessionToken(withAccessToken(splatPlyUrl(scan)), shellSessionToken())
       link.setAttribute('download', `${scan.name || scan.scanId}.splat.ply`)
       link.hidden = false
     }
@@ -2430,7 +2430,7 @@ function setSplatDownloadLink(scan: ScanManifest | null, layer?: ScanSplatLayer)
     if (!finishOk || !scan) {
       sogLink.hidden = true
     } else {
-      sogLink.href = withAccessToken(splatSogUrl(scan))
+      sogLink.href = withSessionToken(withAccessToken(splatSogUrl(scan)), shellSessionToken())
       sogLink.setAttribute('download', `${scan.name || scan.scanId}.sog`)
       sogLink.hidden = false
     }

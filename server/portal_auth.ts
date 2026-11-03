@@ -59,6 +59,12 @@ export interface PortalAuthConfig {
   sessionTtlSec: number
 }
 
+/**
+ * The session key when SESSION_SECRET is unset: random once per process, so every config built in
+ * this process signs and checks with the same key. Drawing it per call split sign-in from the guard.
+ */
+const PROCESS_SESSION_SECRET = crypto.randomUUID() + crypto.randomUUID()
+
 export function configFromEnv(env: (k: string) => string | undefined = Deno.env.get): PortalAuthConfig {
   const issuerUrl = (env('OIDC_ISSUER_URL') ?? '').replace(/\/+$/, '')
   const clientId = env('OIDC_CLIENT_ID') ?? 'ci-web-xr-scan'
@@ -72,7 +78,7 @@ export function configFromEnv(env: (k: string) => string | undefined = Deno.env.
     jwksUri: env('PORTAL_OIDC_JWKS_URI') ?? '',
     audience: (env('PORTAL_OIDC_AUDIENCE') ?? clientId)
       .split(',').map((s) => s.trim()).filter(Boolean),
-    sessionSecret: env('SESSION_SECRET') ?? crypto.randomUUID() + crypto.randomUUID(),
+    sessionSecret: env('SESSION_SECRET') ?? PROCESS_SESSION_SECRET,
     sessionTtlSec: 7 * 24 * 60 * 60,
   }
 }
@@ -302,6 +308,35 @@ export function isAllowedEmail(cfg: PortalAuthConfig, email: string | undefined 
 }
 
 /**
+ * Who is calling, as a Companion Account session: the session cookie in a browser, the shell's
+ * Bearer token in the app, or the same token as a `token` query parameter, for media and
+ * WebSocket URLs that cannot carry a header. Only an allowlisted email counts.
+ */
+export async function scanSessionFor(c: Context, cfg: PortalAuthConfig): Promise<SessionClaims | null> {
+  const candidates: string[] = []
+  const sess = cookie(c, SESSION_COOKIE)
+  if (sess) candidates.push(sess)
+  const auth = c.req.header('authorization')
+  if (auth?.startsWith('Bearer ')) candidates.push(auth.slice(7))
+  const queryToken = c.req.query('token')
+  if (queryToken) candidates.push(queryToken)
+  for (const token of candidates) {
+    const claims = await verifySession(token, cfg.sessionSecret)
+    if (claims && isAllowedEmail(cfg, claims.email)) return claims
+  }
+  return null
+}
+
+/** Middleware for the Scan's own API: a request without an allowlisted Companion session gets a 401. */
+export function requireScanSession(cfg: PortalAuthConfig) {
+  return async (c: Context, next: () => Promise<void>): Promise<Response | void> => {
+    const claims = await scanSessionFor(c, cfg)
+    if (!claims) return c.json({ error: 'Sign in with your Companion Account to use this Scan.' }, 401)
+    await next()
+  }
+}
+
+/**
  * Open-redirect guard: only same-origin relative paths survive.
  *
  * Pattern-matching alone is not enough. The WHATWG URL parser strips ASCII
@@ -341,7 +376,7 @@ export interface PortalAuthDeps {
 const STATE_COOKIE = 'oidc_state'
 const PKCE_COOKIE = 'oidc_pkce'
 const REDIRECT_COOKIE = 'oidc_redirect'
-const SESSION_COOKIE = 'cs_session'
+export const SESSION_COOKIE = 'cs_session'
 const SHELL_CHALLENGE_COOKIE = 'oidc_shell'
 const HANDSHAKE_TTL_SEC = 600
 /**
