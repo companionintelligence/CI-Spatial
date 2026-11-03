@@ -111,7 +111,8 @@ import { runSplatFinish } from './splat/splat_finish.ts'
 import { runSenseNovaVision, senseNovaTask } from './sensenova_vision.ts'
 import { runPanopticScan } from './panoptic/panoptic_scan.ts'
 import { runPanopticLift } from './panoptic/panoptic_lift.ts'
-import { configFromEnv as portalAuthConfig, registerPortalAuth } from './portal_auth.ts'
+import { configFromEnv as portalAuthConfig, registerPortalAuth, requireScanSession } from './portal_auth.ts'
+import { isAllowedOrigin as isAllowedByList, originOf, type OriginAllowlist } from './origin.ts'
 import {
   configFromEnv as memoryPushConfig,
   pushScanToMemory,
@@ -222,7 +223,8 @@ const SUMMARIES_DIR = Deno.env.get('SUMMARIES_DIR') ?? './summaries'
 const SESSIONS_DIR = Deno.env.get('SESSIONS_DIR') ?? `${SCANS_DIR}/sessions`
 const WORLDS_DIR = Deno.env.get('WORLDS_DIR') ?? './worlds'
 const MAX_KEYFRAMES_PER_SESSION = 2000
-const WORLD_STRICT_AUTH = Deno.env.get('WORLD_STRICT_AUTH') === '1'
+// Strict world auth is the default once sign-in is on: a world write needs that world's token.
+const WORLD_STRICT_AUTH = Deno.env.get('WORLD_STRICT_AUTH') === '1' || portalAuthConfig().enabled
 // /infer hardening knobs
 const INFER_MAX_IMAGE_BYTES = Number(Deno.env.get('INFER_MAX_IMAGE_BYTES') ?? '') || 12_000_000
 // Thumbnail sample rate for a person clip. Low because the clip itself is the
@@ -269,25 +271,15 @@ function localScriptPath(relative: string): string {
 const LINGBOT_MAP_SCRIPT = Deno.env.get('LINGBOT_MAP_SCRIPT') ??
   localScriptPath('./scripts/lingbot_map_worker.py')
 
-// The iOS shell loads the app from this origin (mobile/capacitor.config.ts). The
-// Android shell's https://localhost already passes the localhost check below.
-const NATIVE_SHELL_ORIGIN = 'capacitor://localhost'
+// Who may call the Scan from a browser: the shells, this machine and the tailnet, and the app's own
+// public address. The rules are in server/origin.ts; CORS and the WebSocket upgrade both ask them.
+const ORIGIN_ALLOWLIST: OriginAllowlist = {
+  prefix: ALLOWED_ORIGIN_PREFIX,
+  publicOrigin: originOf(portalAuthConfig().publicBaseUrl),
+}
 
 function isAllowedOrigin(origin: string): boolean {
-  if (origin === NATIVE_SHELL_ORIGIN) return true
-  try {
-    const { hostname, protocol } = new URL(origin)
-    if (protocol !== 'http:' && protocol !== 'https:') return false
-    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]') return true
-    if (hostname.endsWith('.ts.net')) return true
-    if (/^192\.168\.\d+\.\d+$/.test(hostname)) return true
-    if (/^10\.\d+\.\d+\.\d+$/.test(hostname)) return true
-    if (/^172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+$/.test(hostname)) return true
-    if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+$/.test(hostname)) return true
-    return origin.startsWith(ALLOWED_ORIGIN_PREFIX)
-  } catch {
-    return false
-  }
+  return isAllowedByList(origin, ORIGIN_ALLOWLIST)
 }
 
 for (const dir of [SCANS_DIR, SUMMARIES_DIR, SESSIONS_DIR, WORLDS_DIR]) {
@@ -378,6 +370,26 @@ app.use(
     credentials: true,
   }),
 )
+
+// Once sign-in is on, every data, write and compute route needs a Companion session, because the
+// Scan can be reached from the public web. /health, /authenticate/* and the app bundle stay open.
+// SCAN_REQUIRE_AUTH=1 applies the same gate with sign-in off, and then no request gets in.
+const SESSION_GUARDED_PATHS = [
+  '/capabilities', '/infer', '/client-logs', '/upload-scan', '/upload-summary', '/scans',
+  '/scan-locations', '/project-locations', '/sessions', '/takes', '/ingest-video', '/ingest-photos',
+  '/process-scan', '/projects', '/jobs', '/events', '/rtc-signal', '/memory/status',
+]
+const scanAuthCfg = portalAuthConfig()
+if (scanAuthCfg.enabled || Deno.env.get('SCAN_REQUIRE_AUTH') === '1') {
+  const sessionGuard = requireScanSession(scanAuthCfg)
+  for (const path of SESSION_GUARDED_PATHS) {
+    app.use(path, sessionGuard)
+    app.use(`${path}/*`, sessionGuard)
+  }
+  // The world list and creation need a session. A single world's reads stay as designed, and its
+  // writes need that world's token.
+  app.use('/worlds', sessionGuard)
+}
 
 app.get('/health', (c) => c.json({
   status: 'ok',
@@ -5397,7 +5409,8 @@ app.post('/worlds/:slug/jobs', async (c) => {
 
 app.get('/worlds/:slug/frames/:scanId', async (c) => {
   const world = await loadWorld(c.req.param('slug'))
-  const denied = denyUnlessWorldRole(c, world, 'viewer', { allowAnonymous: true })
+  // A scan's frames are its data, so a frame needs the world's token. Anonymous viewing covers the world itself.
+  const denied = denyUnlessWorldRole(c, world, 'viewer')
   if (denied) return denied
   const scan = world.scans.find(s => s.scanId === c.req.param('scanId'))
   if (!scan) return c.json({ error: 'Scan not found' }, 404)

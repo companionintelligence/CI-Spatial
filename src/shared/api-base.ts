@@ -36,9 +36,9 @@ export function apiUrl(path: string): string {
   return resolveApiUrl(API_BASE, path)
 }
 
-/** A server path such as `/events` as a WebSocket URL. */
+/** A server path such as `/events` as a WebSocket URL. A shell adds its session token, since a socket cannot send a header. */
 export function wsUrl(path: string): string {
-  return resolveWsUrl(API_BASE, path, location)
+  return withSessionToken(resolveWsUrl(API_BASE, path, location), shellSessionToken())
 }
 
 /** The `credentials` a request to `path` needs. Cookies cross to another origin only with `include`. */
@@ -59,4 +59,27 @@ export function apiCredentials(): RequestCredentials {
 export function isNativeShell(): boolean {
   const cap = (globalThis as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor
   return cap?.isNativePlatform?.() === true
+}
+
+/** Where a shell keeps its Companion session token (src/shared/shell-sign-in.ts writes it). */
+export const SHELL_SESSION_KEY = 'companion-scan-shell-session'
+
+/** The shell's session token, or null outside a shell or before its sign-in. Blocked storage reads as no token. */
+export function shellSessionToken(): string | null {
+  if (!isNativeShell()) return null
+  try {
+    return globalThis.localStorage?.getItem(SHELL_SESSION_KEY) ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * `url` with the session token as a `token` parameter, for the requests that cannot send a header:
+ * media and sockets. Unchanged without a token.
+ */
+export function withSessionToken(url: string, token: string | null): string {
+  if (!token) return url
+  const separator = url.includes('?') ? '&' : '?'
+  return `${url}${separator}token=${encodeURIComponent(token)}`
 }

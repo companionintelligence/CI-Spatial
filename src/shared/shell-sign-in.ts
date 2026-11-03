@@ -10,13 +10,13 @@
  * The server half is server/portal_auth.ts (SHELL_RETURN_URL, POST /authenticate/shell/exchange).
  * The plugins are read from Capacitor.Plugins, so the web build does not bundle them.
  */
-import { apiUrl, isNativeShell } from './api-base.ts'
+import { apiUrl, isNativeShell, SHELL_SESSION_KEY, shellSessionToken } from './api-base.ts'
 
 /** The app's URL scheme and sign-in host. Keep in step with SHELL_RETURN_URL in server/portal_auth.ts. */
 export const SHELL_RETURN_PREFIX = 'com.companionintelligence.scan://auth'
 
 const PENDING_KEY = 'companion-scan-shell-sign-in'
-const TOKEN_KEY = 'companion-scan-shell-session'
+const TOKEN_KEY = SHELL_SESSION_KEY
 /** A sign-in that has not come back to the app in this long is abandoned. */
 const PENDING_TTL_MS = 10 * 60_000
 const CHECK_TIMEOUT_MS = 8_000
@@ -153,6 +153,7 @@ export async function shellSignedIn(fetchFn: typeof fetch = fetch): Promise<bool
  */
 export async function initShellSignIn(onFinished: (signedIn: boolean) => void): Promise<void> {
   if (!isNativeShell()) return
+  installShellSession()
   const app = plugins().App
   if (!app) return
   const finish = async (url: string | undefined) => {
@@ -163,3 +164,36 @@ export async function initShellSignIn(onFinished: (signedIn: boolean) => void): 
   await app.addListener('appUrlOpen', ({ url }) => { void finish(url) })
   void finish((await app.getLaunchUrl?.())?.url)
 }
+
+let sessionFetchInstalled = false
+
+/**
+ * The server answers only a signed-in Companion session, and in the shell that session is a Bearer
+ * token. So every request to the server carries it, unless the caller set its own Authorization:
+ * fetch, and XMLHttpRequest (the photo and clip uploads). Installed once, and only inside a shell
+ * that has a server origin. `server` defaults to this build's API origin; tests pass their own.
+ */
+export function installShellSession(server = apiUrl('/').slice(0, -1)): void {
+  if (sessionFetchInstalled || !isNativeShell() || typeof globalThis.fetch !== 'function') return
+  if (!server) return
+  sessionFetchInstalled = true
+  const nativeFetch = globalThis.fetch.bind(globalThis)
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const token = shellSessionToken()
+    const url = input instanceof Request ? input.url : String(input)
+    if (!token || !url.startsWith(`${server}/`)) return nativeFetch(input, init)
+    const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+    if (!headers.has('Authorization')) headers.set('Authorization', `Bearer ${token}`)
+    return nativeFetch(input, { ...init, headers })
+  }) as typeof fetch
+
+  const nativeOpen = XMLHttpRequest.prototype.open
+  XMLHttpRequest.prototype.open = function (this: XMLHttpRequest, method: string, url: string | URL, ...rest: unknown[]) {
+    Reflect.apply(nativeOpen, this, [method, url, ...rest])
+    const token = shellSessionToken()
+    if (token && String(url).startsWith(`${server}/`)) this.setRequestHeader('Authorization', `Bearer ${token}`)
+  }
+}
+
+// Installed as soon as the module loads, so the first request of a launch already carries the token.
+installShellSession()

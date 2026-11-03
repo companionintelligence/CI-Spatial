@@ -432,6 +432,8 @@ The sign-in endpoints (authorize, token, userinfo and JWKS) are not set by hand.
 
 Sign-in is off unless `PORTAL_OIDC_ENABLED` is on. The first-run control starts it at `/authenticate/oidc?redirect=/`, which returns to the scanner after CI-Portal. A direct visit to `/authenticate/oidc` lands in the world editor instead. When sign-in is off, the only sign-in route registered is `/authenticate/status`. A native shell starts the same sign-in with `shell=1` and a PKCE challenge, and gets its session from `POST /authenticate/shell/exchange`; see [mobile/README.md](mobile/README.md#companion-account-sign-in).
 
+Once sign-in is on, the API needs a Companion session. The session comes as the browser cookie, as a `Bearer` token from the app, or as a `token` query parameter for media and sockets. The data, write and compute routes (scans, sessions, projects, uploads, ingest, inference, jobs, events) answer `401` without one, and `/health`, `/authenticate/*` and the app bundle stay open. World writes need that world's token. `SCAN_REQUIRE_AUTH=1` applies the same gate with sign-in off, and then no request gets in. A public Scan needs sign-in on.
+
 ### Capture geometry: walk the camera, don't spin it
 
 This is the single biggest difference between a scan that reconstructs and one that does not, and it is not a tuning problem.
