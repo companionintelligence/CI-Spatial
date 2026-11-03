@@ -34,13 +34,23 @@ function fakeFetch(routes: Record<string, { status?: number, body: unknown } | '
   return { fetchFn, asked }
 }
 
+test('no endpoint answering is one row that names what is missing, not three unknowns', () => {
+  const rows = ftueRows({ memory: null, engine: null, signIn: null })
+  assert.equal(rows.length, 1)
+  assert.equal(
+    ftueRowText(rows[0]!),
+    'Server None answered. Sign-in, saved projects and object labels need one.',
+  )
+  assert.equal(rows[0]!.link, undefined)
+})
+
 test('memory: says not connected, and sends the reader to Companion Hub', () => {
   const [row] = ftueRows({ memory: { enabled: false }, engine: null, signIn: null })
   assert.equal(ftueRowText(row!), 'Companion Memory Not connected. Connect Companion Memory in Companion Hub.')
 })
 
 test('memory: connected, configured but unreachable, and unavailable are three different rows', () => {
-  const text = (memory: FtueSnapshot['memory']) => ftueRowText(ftueRows({ memory, engine: null, signIn: null })[0]!)
+  const text = (memory: FtueSnapshot['memory']) => ftueRowText(ftueRows({ memory, engine: null, signIn: { enabled: false } })[0]!)
   assert.equal(text({ enabled: true, reachable: true }), 'Companion Memory Connected.')
   assert.equal(text({ enabled: true }), 'Companion Memory Connected.', 'no probe result still reads as configured')
   assert.equal(text({ enabled: true, reachable: false }), 'Companion Memory Set up, but not reachable.')
@@ -70,7 +80,7 @@ test('sign-in: on gives a same-origin control that returns to the scanner; off s
 
   const off = ftueRowText(ftueRows({ memory: null, engine: null, signIn: { enabled: false } })[2]!)
   assert.equal(off, 'Sign-in Off on this install.')
-  assert.equal(ftueRows({ memory: null, engine: null, signIn: null })[2]!.text, 'Status unavailable.')
+  assert.equal(ftueRows({ memory: { enabled: false }, engine: null, signIn: null })[2]!.text, 'Status unavailable.')
 })
 
 test('every state of every row is free of addresses and secrets', () => {

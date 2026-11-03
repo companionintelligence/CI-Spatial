@@ -92,6 +92,33 @@ systemctl --user start cscan-server cscan-web       # back to persistent mode
 **Updating the deployment**: `git pull && systemctl --user restart cscan-web`
 (the unit rebuilds the bundle on start unless `CSCAN_SKIP_BUILD=1`).
 
+## The public site (scan.ci.computer)
+
+`scan.ci.computer` is not this server. It is the static `vite build` output on the
+Cloudflare Pages project `ci-spatial-scan`, with nothing behind it, and it only
+changes when someone deploys it:
+
+```bash
+npm run build
+npx wrangler pages deploy dist --project-name=ci-spatial-scan --branch=main
+```
+
+So the page runs there, and everything that needs the Deno server does not:
+sign-in, saved projects, Companion Memory and the vision model. The first-run
+screen says so with its Server row.
+
+`public/404.html` is what makes Pages answer an unknown path with a 404. Without
+that file Pages serves `index.html` with a 200 for every path it has no file for,
+so `/projects`, `/authenticate/status` and the model files under `/models/` all
+look like they exist.
+
+After a deploy, check both:
+
+```bash
+curl -s https://scan.ci.computer/robots.txt | head -1          # User-agent: *
+curl -s -o /dev/null -w '%{http_code}\n' https://scan.ci.computer/projects   # 404
+```
+
 ## GPU policy (2× 24GB example)
 
 The system Ollama unit is pinned to GPU0 via

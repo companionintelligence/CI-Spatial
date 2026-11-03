@@ -57,9 +57,13 @@ export const SIGN_IN_HREF = '/authenticate/oidc?redirect=%2F'
 export const SIGN_IN_FAILED = 'Sign-in failed. Try again.'
 
 const UNAVAILABLE = 'Status unavailable.'
+const NO_SERVER = 'None answered. Sign-in, saved projects and object labels need one.'
 const FETCH_TIMEOUT_MS = 8_000
 
 export function ftueRows(s: FtueSnapshot): FtueRow[] {
+  // Nothing answered, which is what the static public site always sees. One plain
+  // row says more than three that each read "Status unavailable."
+  if (!s.memory && !s.engine && !s.signIn) return [{ label: 'Server', text: NO_SERVER }]
   return [memoryRow(s.memory), modelRow(s.engine), signInRow(s.signIn)]
 }
 
