@@ -405,7 +405,7 @@ The second step of the first-run overlay lists three things about this install. 
 | Model | `GET /health` (`model`, `engineLoadState`) | The model in use, and whether it loaded. If it did not load, scans run in server-only mode and get no object labels. |
 | Sign-in | `GET /authenticate/status` | "Sign in with Companion Account" when sign-in is on, or "Off on this install." In the native shell, "Signed in." once the shell holds a session. |
 
-A row reads "Status unavailable." when its endpoint does not answer. Reading the Companion Memory row makes the server probe the configured Companion Memory once: an empty-batch POST with a five-second timeout.
+A row reads "Status unavailable." when its endpoint does not answer. When none of the three answers, as on the static public site, one Server row replaces them: "None answered. Sign-in, saved projects and object labels need one." Reading the Companion Memory row makes the server probe the configured Companion Memory once: an empty-batch POST with a five-second timeout.
 
 `engineLoadState: ready` means Ollama answered and a model was resolved. It does not mean a capture has run. The engine loads once, when the server starts, and is not retried, so start Ollama before the Deno server, or restart the server after you start Ollama.
 

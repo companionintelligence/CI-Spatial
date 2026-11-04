@@ -1276,7 +1276,7 @@ async function main() {
       if (!ob) { resolve(); return }
       ob.classList.add('visible')
       // Setup rows for the second step. Not awaited: the overlay never waits on the
-      // server, and a failed read shows as "Status unavailable." in its row.
+      // server. A failed read says so in the rows.
       void renderFtueStatus(document.getElementById('ftue-status'))
 
       const steps = ob.querySelectorAll<HTMLElement>('.onboard-step')

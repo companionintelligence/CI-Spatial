@@ -169,6 +169,11 @@ async function refreshAccountChip(): Promise<void> {
   chip.href = apiUrl(`/authenticate/oidc?redirect=${encodeURIComponent(redirect)}`)
   try {
     const response = await fetch(apiUrl('/authenticate/whoami'), { credentials: apiCredentials() })
+    // No such route: sign-in is off on this install, or no server is here at all. The link would open a 404.
+    if (response.status === 404) {
+      chip.remove()
+      return
+    }
     if (!response.ok) return
     const account = await response.json() as { name?: string | null; email?: string | null }
     chip.textContent = account.name || account.email || 'Companion account'
@@ -1679,7 +1684,7 @@ async function addFrameObservationLayers(
   layers: Map<LayerType, Set<THREE.Object3D>>,
 ): Promise<void> {
   const response = await withTransientRetry(() => fetch(withAccessToken(scan.frameSetUrl!)))
-  if (!response.ok) throw new Error(`${response.status} ${await response.text()}`)
+  if (!response.ok) throw await httpError(response)
   const payload = await response.json() as { frames?: FrameObservation[] }
   const frames = payload.frames ?? []
   if (frames.length === 0) {
@@ -4260,11 +4265,21 @@ async function withTransientRetry<T>(op: () => Promise<T>, retries = 3): Promise
   }
 }
 
+/**
+ * The error for a failed response. An HTML body is a host's error page, not a
+ * message: a static host answers every server path with its 404 page. These errors
+ * end up on screen, so all of that markup would be printed over the scene.
+ */
+async function httpError(response: Response): Promise<Error> {
+  const isHtml = response.headers.get('content-type')?.includes('text/html')
+  return new Error(isHtml ? `${response.status}: no Scan server answered` : `${response.status} ${await response.text()}`)
+}
+
 /** GET + parse JSON, riding out transient network drops during load. */
 function fetchJson<T>(url: string): Promise<T> {
   return withTransientRetry(async () => {
     const response = await fetch(withAccessToken(url), { headers: accessHeaders() })
-    if (!response.ok) throw new Error(`${response.status} ${await response.text()}`)
+    if (!response.ok) throw await httpError(response)
     return await response.json() as T
   })
 }
