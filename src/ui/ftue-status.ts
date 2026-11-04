@@ -115,6 +115,21 @@ async function getJson<T extends object>(fetchFn: typeof fetch, path: string): P
 }
 
 /**
+ * Hides a control that needs the Scan server when this host has none. Only a 404
+ * says that: the static public site answers every server path with one. A network
+ * failure leaves the control alone, because it can't tell us the server is missing.
+ */
+export async function hideWithoutServer(el: Pick<HTMLElement, 'hidden'> | null, fetchFn: typeof fetch = fetch): Promise<void> {
+  if (!el) return
+  try {
+    const res = await fetchFn(apiUrl('/health'), { credentials: 'same-origin', signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
+    if (res.status === 404) el.hidden = true
+  } catch {
+    // Offline or timed out, which says nothing about whether a server exists.
+  }
+}
+
+/**
  * Asks the three endpoints in parallel. A failure, a timeout, or a reply with the
  * wrong shape becomes null for that field. Each field is rebuilt from the named
  * keys only. A shell also checks the session it stored, once sign-in is on.

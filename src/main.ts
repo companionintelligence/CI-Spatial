@@ -57,7 +57,7 @@ import { AROverlay } from './ui/overlay'
 import { writeStatus, type StatusPriority } from './ui/status-line'
 import { SidePanel, type ExportOutcome } from './ui/panel'
 import { SessionHistory } from './ui/history'
-import { renderFtueStatus, SIGN_IN_FAILED } from './ui/ftue-status'
+import { hideWithoutServer, renderFtueStatus, SIGN_IN_FAILED } from './ui/ftue-status'
 import { initShellSignIn } from './shared/shell-sign-in'
 import { apiUrl, shellSessionToken, withSessionToken } from './shared/api-base.ts'
 import { exportToGLB } from './export/gltf'
@@ -478,6 +478,8 @@ async function main() {
     }
   }
   pointEditorLinksAtPlace(selectedProject?.projectId ?? null)
+  // The editor reads places from the Scan server, so its card only leads to an error without one.
+  void hideWithoutServer(document.getElementById('start-editor-card'))
   requestPlaceSelection = placePicker.open
   const pointCloud = new PointCloud(0.05)   // 5 cm voxel deduplication grid
   const poseHistory: Pose[] = []
