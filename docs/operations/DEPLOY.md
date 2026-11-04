@@ -113,8 +113,8 @@ so `/projects`, `/authenticate/status` and the model files under `/models/` all
 look like they exist.
 
 `public/_redirects` gives Pages the one rewrite the Deno server's static handler
-does: `/editor` serves the editor page. Without it the editor card on the start
-screen opens the 404 page.
+does: `/editor` serves the editor page. The start screen hides its editor card when
+`/health` is a 404, so the rewrite only matters for someone opening `/editor` directly.
 
 After a deploy, check all three:
 

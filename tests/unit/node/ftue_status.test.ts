@@ -11,6 +11,7 @@ import {
   SIGN_IN_HREF,
   fetchFtueSnapshot,
   ftueRowText,
+  hideWithoutServer,
   ftueRows,
   type FtueSnapshot,
 } from '../../../src/ui/ftue-status.ts'
@@ -136,6 +137,19 @@ test('fetch: a failure, a timeout-shaped throw, or a malformed reply becomes una
   })
   const snap = await fetchFtueSnapshot(fetchFn)
   assert.deepEqual(snap, { memory: null, engine: null, signIn: null })
+})
+
+test('hideWithoutServer: only a 404 hides the control, since a static host has no server', async () => {
+  const hiddenAfter = async (routes: Parameters<typeof fakeFetch>[0]) => {
+    const el = { hidden: false }
+    await hideWithoutServer(el, fakeFetch(routes).fetchFn)
+    return el.hidden
+  }
+  assert.equal(await hiddenAfter({ '/health': { status: 404, body: '<!doctype html>' } }), true)
+  assert.equal(await hiddenAfter({ '/health': { body: { status: 'ok' } } }), false)
+  assert.equal(await hiddenAfter({ '/health': { status: 500, body: {} } }), false, 'a broken server is still a server')
+  assert.equal(await hiddenAfter({ '/health': 'throw' }), false, 'offline says nothing about a server')
+  await hideWithoutServer(null, fakeFetch({}).fetchFn)
 })
 
 test('fetch: an engine state the screen does not know is unavailable, not guessed', async () => {
