@@ -49,12 +49,21 @@ export function resolveThingTagsForScan(
   return resolved
 }
 
+/**
+ * Fold one patch into the tags resolved so far for a target. Per field:
+ *
+ *   null       clears it, so the target falls back to its AI label
+ *   a string   sets it, unless the string is empty
+ *   undefined  keeps whatever an earlier patch set
+ *
+ * An empty string is not a clear. It keeps the current value, as it always has.
+ */
 function applyPatch(resolved: Map<string, ResolvedThingTag>, targetId: string, patch: EditPatch): void {
-  const current = resolved.get(targetId) ?? {}
-  resolved.set(targetId, {
-    ...current,
-    ...(patch.category ? { category: patch.category } : {}),
-    ...(patch.label ? { label: patch.label } : {}),
-    ...(patch.notes ? { notes: patch.notes } : {}),
-  })
+  const next: ResolvedThingTag = { ...(resolved.get(targetId) ?? {}) }
+  for (const field of ['category', 'label', 'notes'] as const) {
+    const value: string | null | undefined = patch[field]
+    if (value === null) delete next[field]
+    else if (value) next[field] = value
+  }
+  resolved.set(targetId, next)
 }

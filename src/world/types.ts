@@ -597,7 +597,8 @@ export interface EditPatch {
   targetId: string
   scope: 'scan' | 'object' | 'point-selection' | 'layer' | 'world' | 'thing'
   transform?: TransformPatch
-  label?: string
+  /** `null` is an explicit clear: the target falls back to its AI label. Absent keeps the current label. */
+  label?: string | null
   category?: string
   notes?: string
   visible?: boolean
