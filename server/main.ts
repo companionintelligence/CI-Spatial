@@ -129,6 +129,8 @@ import {
   shouldIncludeStoredScanInWorld,
 } from './world/world_membership.ts'
 import { runThingCorrespondence, thingLikesForScan, type DetectionLike } from './thing_match.ts'
+import { composeWorldExport, readScanGlb } from './world_export.ts'
+import type { Document } from '@gltf-transform/core'
 import type {
   EditPatch,
   Floor,
@@ -2210,6 +2212,11 @@ function worldPath(slug: string): string {
   return `${WORLDS_DIR}/${safeSlug(slug)}.json`
 }
 
+/** The whole-Place glTF the export-world job writes beside the world manifest. */
+function worldExportPath(slug: string): string {
+  return `${WORLDS_DIR}/${safeSlug(slug)}.world.glb`
+}
+
 function scanMetaPath(filename: string): string {
   return `${SCANS_DIR}/${filename.replace(/\.glb$/, '.json')}`
 }
@@ -3357,12 +3364,17 @@ async function _dispatchWorldJob(slug: string, jobId: string): Promise<void> {
       return
     }
 
+    if (job.type === 'export-world') {
+      await _runExportWorldJob(slug, jobId)
+      return
+    }
+
     if (job.type === 'optimize-scan') {
       await _runOptimizeScanJob(slug, jobId)
       return
     }
 
-    // Generic placeholder-type completion path (the seven WorldJobTypes with
+    // Generic placeholder-type completion path (the six WorldJobTypes with
     // no dedicated runner — ADR 0003 "Placeholder WorldJobTypes"). Was its
     // own detached `setTimeout(..., 650)`; now `await sleep(650)` so the pump
     // waits for it to settle before dequeuing the next entry, per ADR 0003
@@ -3470,6 +3482,83 @@ async function _runThingCorrespondenceJob(slug: string, jobId: string): Promise<
     })
   } catch (err) {
     console.error('[thing-correspondence] job failed:', err)
+    await failWorldJob(slug, jobId, errorMessage(err))
+  }
+}
+
+/**
+ * The scan GLB the viewer draws for a scan: the optimize-scan output that the
+ * scan's manifest names, else the raw upload. This is the rule
+ * `loadScanIntoWorld` applies in src/viewer/viewer.ts, so the export holds
+ * what the editor shows. Null when that file is not on disk.
+ */
+async function scanGlbBytesForExport(filename: string): Promise<Uint8Array | null> {
+  const base = filename.replace(/\.glb$/, '')
+  let target = filename
+  try {
+    const manifest = JSON.parse(await Deno.readTextFile(`${SCANS_DIR}/${base}.manifest.json`)) as OptimizeScanManifest
+    if (manifest.artifacts?.optimized?.filename) target = manifest.artifacts.optimized.filename
+  } catch { /* no manifest: the viewer loads the raw upload */ }
+  try {
+    return await Deno.readFile(`${SCANS_DIR}/${target}`)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * `export-world`: one tagged glTF for the whole Place (world_export.ts). Reads
+ * each scan's GLB as the viewer does, composes them in the Place frame, and
+ * writes `<slug>.world.glb` beside the world manifest. Any scan that could not
+ * be included is named in the result, never dropped silently.
+ */
+async function _runExportWorldJob(slug: string, jobId: string): Promise<void> {
+  try {
+    const world = await loadWorld(slug)
+    const scanGlbs = new Map<string, Document>()
+    const unreadable: string[] = []
+    for (const scan of world.scans) {
+      const bytes = await scanGlbBytesForExport(scan.filename)
+      // A missing file is reported by the composer as a missing scan.
+      if (!bytes) continue
+      try {
+        scanGlbs.set(scan.scanId, await readScanGlb(bytes))
+      } catch (err) {
+        unreadable.push(`Could not read the GLB for "${scan.name || scan.filename}": ${errorMessage(err)}.`)
+      }
+    }
+
+    const exported = await composeWorldExport(world, scanGlbs)
+    const path = worldExportPath(slug)
+    const tmp = `${path}.${crypto.randomUUID()}.tmp`
+    await Deno.writeFile(tmp, exported.bytes)
+    await Deno.rename(tmp, path)
+
+    const warnings = [...exported.warnings, ...unreadable]
+    const summary = `Exported ${exported.scanCount} scan${exported.scanCount === 1 ? '' : 's'} and ` +
+      `${exported.thingCount} Thing${exported.thingCount === 1 ? '' : 's'} to ${safeSlug(slug)}.world.glb.`
+    const result = [summary, ...warnings].join(' ')
+
+    await commitWorldJob(slug, jobId, (currentJob) => {
+      currentJob.status = 'completed'
+      currentJob.result = result
+      currentJob.artifacts = [{
+        type: 'world-glb',
+        label: `${world.name} world export (.world.glb)`,
+        url: `/worlds/${encodeURIComponent(safeSlug(slug))}/export.glb`,
+        metadata: {
+          bytes: exported.bytes.byteLength,
+          scanCount: exported.scanCount,
+          thingCount: exported.thingCount,
+          missingScans: exported.missingScans,
+          warnings,
+        },
+      }]
+      currentJob.progress = 1
+      currentJob.updatedAt = new Date().toISOString()
+    })
+  } catch (err) {
+    console.error('[export-world] job failed:', err)
     await failWorldJob(slug, jobId, errorMessage(err))
   }
 }
@@ -5015,7 +5104,10 @@ function jobResultFor(job: WorldJob): string {
     case 'memory-push':
       return 'Scan pushed to Companion Memory as a capture.scan event with the GLB attached.'
     case 'export-world':
-      return 'World export manifest is ready for a combined GLB and semantic JSON worker.'
+      // Dead branch at runtime: _runExportWorldJob always sets currentJob.result
+      // itself (it names any scan left out), and never calls jobResultFor.
+      // Present only so this switch stays exhaustive under `deno check`.
+      return 'World export written beside the world manifest.'
     case 'optimize-scan':
       // Dead branch at runtime: _runOptimizeScanJob always sets
       // currentJob.result itself (the size-reduction note, ADR 0003's
@@ -5111,13 +5203,6 @@ function jobArtifactsFor(job: WorldJob, world: WorldProject): WorldJob['artifact
         label: `${scan.name} SenseNova inputs`,
         metadata: { sessionId: scan.sessionId, task: job.payload?.['task'] ?? 'recon3d' },
       }] : []
-    case 'export-world':
-      return [{
-        type: 'world-export-plan',
-        label: `${world.name} export manifest`,
-        url: `/worlds/${encodeURIComponent(world.shareSlug)}`,
-        metadata: { scans: world.scans.length, patches: world.editPatches.length },
-      }]
     case 'ingest':
     case 'merge-points':
     case 'memory-push':
@@ -5411,6 +5496,26 @@ app.get('/worlds/:slug/frames/:scanId', async (c) => {
     sessionId: scan.sessionId,
     count: frames.length,
     frames,
+  })
+})
+
+// The file the export-world job built. Same guard as the other world-level
+// reads (GET /worlds/:slug, /patches, /jobs): a viewer, anonymous when the
+// world itself is open to anonymous viewing. Its scan geometry is already
+// served unauthenticated at /scans/*.glb.
+app.get('/worlds/:slug/export.glb', async (c) => {
+  const slug = c.req.param('slug')
+  const world = await loadWorld(slug)
+  const denied = denyUnlessWorldRole(c, world, 'viewer', { allowAnonymous: true })
+  if (denied) return denied
+  const data = await Deno.readFile(worldExportPath(slug)).catch(() => null)
+  if (!data) return c.json({ error: 'World export has not been built. Queue an export-world job for this world first.' }, 404)
+  return new Response(data, {
+    headers: {
+      'Content-Type': 'model/gltf-binary',
+      'Content-Disposition': `attachment; filename="${safeSlug(slug)}.world.glb"`,
+      'Cache-Control': 'no-cache',
+    },
   })
 })
 
