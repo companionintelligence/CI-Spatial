@@ -13,6 +13,7 @@ import * as THREE from 'three'
 import type { ARProvider } from '../ar/provider'
 import type { DetectionStore } from '../scene/store'
 import { writeStatus, type StatusPriority } from './status-line'
+import { cameraViewRect, ndcToScreen } from './pin-geometry'
 
 declare const XR8: {
   addCameraPipelineModule(mod: object): void
@@ -234,6 +235,9 @@ export class AROverlay {
   private tickPins(camera: THREE.Camera): void {
     const w = window.innerWidth
     const h = window.innerHeight
+    // The camera canvas can be smaller than the viewport (contain fit). Pins map through its rect.
+    const canvas = document.getElementById('camerafeed')
+    const view = cameraViewRect(canvas ? canvas.getBoundingClientRect() : null, { width: w, height: h })
     const camPos = new THREE.Vector3()
     camera.getWorldPosition(camPos)
     const proj = new THREE.Vector3()
@@ -248,8 +252,9 @@ export class AROverlay {
       // Behind camera (NDC z > 1)
       if (proj.z > 1) { wrap.style.display = 'none'; continue }
 
-      const sx = ((proj.x + 1) / 2) * w
-      const sy = ((-proj.y + 1) / 2) * h
+      const screen = ndcToScreen(proj.x, proj.y, view)
+      const sx = screen.x
+      const sy = screen.y
       const dist = camPos.distanceTo(new THREE.Vector3(x, y, z))
 
       if (sx < -100 || sx > w + 100 || sy < -100 || sy > h + 100 || dist > 20) {
