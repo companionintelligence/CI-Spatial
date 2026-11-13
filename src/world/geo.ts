@@ -295,3 +295,16 @@ export function matrixTranslation(matrix: number[]): Vec3 {
     z: Number(matrix[14] ?? 0),
   }
 }
+
+/**
+ * Applies a column-major 4x4 matrix to a point. This is the layout of
+ * `scan.localToWorld`, `composeYUpTransform` and three.js `Matrix4.elements`, which is
+ * what the viewer applies to a scan root. Maps a session-frame point into the Place frame.
+ */
+export function transformPoint(matrix: number[], p: Vec3): Vec3 {
+  return {
+    x: matrix[0] * p.x + matrix[4] * p.y + matrix[8] * p.z + matrix[12],
+    y: matrix[1] * p.x + matrix[5] * p.y + matrix[9] * p.z + matrix[13],
+    z: matrix[2] * p.x + matrix[6] * p.y + matrix[10] * p.z + matrix[14],
+  }
+}

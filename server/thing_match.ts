@@ -1,3 +1,4 @@
+import { identityMatrix, transformPoint } from '../src/world/geo.ts'
 import type { ScanManifest, Thing, ThingObservation, Vec3, WorldProject } from '../src/world/types.ts'
 
 export const THING_MATCH_RADIUS_M = 0.75
@@ -36,6 +37,33 @@ export interface ThingMatchResult {
 export function normalizeThingLabel(label: string): string {
   const token = label.toLowerCase().trim().replace(/[^a-z0-9]+/g, ' ').split(/\s+/).filter(Boolean)[0] ?? 'object'
   return SYNONYMS.get(token) ?? token
+}
+
+/**
+ * One scan's detections, ready for correspondence. Each position arrives in the scan's own
+ * session frame, so it goes through the scan's localToWorld into the Place frame. Without
+ * this, two sessions with different origins compared raw coordinates: the same object could
+ * duplicate and unrelated objects could merge. A scan with no localToWorld (an older world)
+ * keeps its session frame, the same as before.
+ */
+export function thingLikesForScan(
+  scan: { scanId: string; sessionId: string | null; capturedAt?: string | null; localToWorld?: number[] | null },
+  withPositions: ReadonlyArray<{ label: string; confidence?: number | null; worldPos: Vec3 }>,
+): DetectionLike[] {
+  const matrix = scan.localToWorld && scan.localToWorld.length === 16 ? scan.localToWorld : identityMatrix()
+  return withPositions.map((detection, index) => {
+    const safeName = detection.label.replace(/[^a-zA-Z0-9]/g, '_').replace(/^_+/, '') || 'Object'
+    const name = `${safeName}_${String(index + 1).padStart(3, '0')}`
+    return {
+      scanId: scan.scanId,
+      sessionId: scan.sessionId,
+      targetId: `${scan.scanId}:${name}:lod`,
+      label: detection.label,
+      confidence: detection.confidence,
+      worldPos: transformPoint(matrix, detection.worldPos),
+      observedAt: scan.capturedAt,
+    }
+  })
 }
 
 export function runThingCorrespondence(

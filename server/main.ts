@@ -128,7 +128,7 @@ import {
   scanProjectId,
   shouldIncludeStoredScanInWorld,
 } from './world/world_membership.ts'
-import { runThingCorrespondence, type DetectionLike } from './thing_match.ts'
+import { runThingCorrespondence, thingLikesForScan, type DetectionLike } from './thing_match.ts'
 import type {
   EditPatch,
   Floor,
@@ -3529,19 +3529,9 @@ async function detectionLikesForWorld(world: WorldProject): Promise<DetectionLik
 
     const withPositions = detectionsFromMeta(meta['detections'])
     if (withPositions.length > 0) {
-      withPositions.forEach((detection, index) => {
-        const safeName = detection.label.replace(/[^a-zA-Z0-9]/g, '_').replace(/^_+/, '') || 'Object'
-        const name = `${safeName}_${String(index + 1).padStart(3, '0')}`
-        detections.push({
-          scanId: scan.scanId,
-          sessionId: scan.sessionId,
-          targetId: `${scan.scanId}:${name}:lod`,
-          label: detection.label,
-          confidence: detection.confidence,
-          worldPos: detection.worldPos,
-          observedAt: scan.capturedAt,
-        })
-      })
+      // Positions are in this scan's session frame. thingLikesForScan maps them into the Place
+      // frame through the scan's localToWorld, so scans from different sessions compare.
+      detections.push(...thingLikesForScan(scan, withPositions))
       continue
     }
 

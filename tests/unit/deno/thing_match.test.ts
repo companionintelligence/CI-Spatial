@@ -1,6 +1,11 @@
 import { assertEquals } from 'jsr:@std/assert@^1.0.0/equals'
 import { assertThrows } from 'jsr:@std/assert@^1.0.0/throws'
-import { MAX_THINGS_PER_WORLD, normalizeThingLabel, runThingCorrespondence } from '../../../server/thing_match.ts'
+import {
+  MAX_THINGS_PER_WORLD,
+  normalizeThingLabel,
+  runThingCorrespondence,
+  thingLikesForScan,
+} from '../../../server/thing_match.ts'
 import type { Thing, ThingObservation } from '../../../src/world/types.ts'
 
 Deno.test('normalizes common object synonyms', () => {
@@ -90,4 +95,60 @@ Deno.test('reuses observation natural key on rerun', () => {
     worldPos: { x: 0, y: 0, z: 0 },
   }])
   assertEquals(result.observations[0].observationId, 'obs-existing')
+})
+
+/** A column-major translation, the layout of scan.localToWorld. */
+function translation(x: number, y: number, z: number): number[] {
+  return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1]
+}
+
+Deno.test('a detection is placed in the Place frame through its scan localToWorld', () => {
+  const [detection] = thingLikesForScan(
+    { scanId: 'scan-b', sessionId: 'sess-b', capturedAt: '2026-01-02T00:00:00Z', localToWorld: translation(3, 0, 0) },
+    [{ label: 'chair', confidence: 0.9, worldPos: { x: -3, y: 0, z: 0 } }],
+  )
+  assertEquals(detection.worldPos, { x: 0, y: 0, z: 0 })
+})
+
+Deno.test('the same local position in two sessions with different origins does not merge', () => {
+  const first = thingLikesForScan(
+    { scanId: 'scan-a', sessionId: 'sess-a', capturedAt: '2026-01-01T00:00:00Z', localToWorld: translation(0, 0, 0) },
+    [{ label: 'chair', confidence: 0.9, worldPos: { x: 0, y: 0, z: 0 } }],
+  )
+  const second = thingLikesForScan(
+    { scanId: 'scan-b', sessionId: 'sess-b', capturedAt: '2026-01-02T00:00:00Z', localToWorld: translation(10, 0, 0) },
+    [{ label: 'chair', confidence: 0.9, worldPos: { x: 0, y: 0, z: 0 } }],
+  )
+  const result = runThingCorrespondence(
+    { worldId: 'world-a', things: [], thingObservations: [] },
+    [...first, ...second],
+    '2026-01-02T00:00:00Z',
+  )
+  assertEquals(result.things.length, 2)
+})
+
+Deno.test('the same object seen from two origins merges once both are in the Place frame', () => {
+  const first = thingLikesForScan(
+    { scanId: 'scan-a', sessionId: 'sess-a', capturedAt: '2026-01-01T00:00:00Z', localToWorld: translation(0, 0, 0) },
+    [{ label: 'chair', confidence: 0.9, worldPos: { x: 0, y: 0, z: 0 } }],
+  )
+  const second = thingLikesForScan(
+    { scanId: 'scan-b', sessionId: 'sess-b', capturedAt: '2026-01-02T00:00:00Z', localToWorld: translation(3, 0, 0) },
+    [{ label: 'seat', confidence: 0.8, worldPos: { x: -3, y: 0, z: 0 } }],
+  )
+  const result = runThingCorrespondence(
+    { worldId: 'world-a', things: [], thingObservations: [] },
+    [...first, ...second],
+    '2026-01-02T00:00:00Z',
+  )
+  assertEquals(result.things.length, 1)
+  assertEquals(result.things[0].observationIds.length, 2)
+})
+
+Deno.test('a scan with no localToWorld keeps its session frame, as older worlds did', () => {
+  const [detection] = thingLikesForScan(
+    { scanId: 'scan-old', sessionId: null, capturedAt: null, localToWorld: null },
+    [{ label: 'lamp', worldPos: { x: 1, y: 2, z: 3 } }],
+  )
+  assertEquals(detection.worldPos, { x: 1, y: 2, z: 3 })
 })
