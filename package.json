@@ -70,6 +70,7 @@
     "bench:models": "node scripts/bench-models.mjs",
     "setup:models": "node scripts/setup-models.mjs",
     "qr": "node scripts/qr.mjs",
+    "device:preflight": "node scripts/device-preflight.mjs",
     "ingest:video": "node scripts/ingest-video.mjs",
     "ingest:photos": "node scripts/ingest-photos.mjs",
     "links:house": "node scripts/house-links.mjs",
