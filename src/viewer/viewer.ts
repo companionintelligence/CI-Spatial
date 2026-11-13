@@ -31,6 +31,7 @@ import {
 } from './panoptic-layer'
 import { buildTrainJobRequest, buildDetectJobRequest } from './splat-toolbox'
 import { buildThingObservationIndex, resolveThingTagsForScan } from '../shared/thing_tags'
+import { accessTokenHeaders, addAccessToken } from '../shared/access-token'
 import { PlacesPanel } from './places'
 import {
   computeQualityTier,
@@ -151,15 +152,11 @@ const initialWorldSlug = query.get('world')
   || (activeProjectId ? `project-${activeProjectId}` : 'default')
 
 function withAccessToken(url: string): string {
-  const target = apiUrl(url)
-  if (!accessToken) return target
-  const parsed = new URL(target, location.origin)
-  parsed.searchParams.set('token', accessToken)
-  return target.startsWith('/') ? parsed.pathname + parsed.search + parsed.hash : parsed.href
+  return addAccessToken(url, accessToken)
 }
 
 function accessHeaders(extra: HeadersInit = {}): HeadersInit {
-  return accessToken ? { ...extra, Authorization: `Bearer ${accessToken}` } : extra
+  return accessTokenHeaders(accessToken, extra)
 }
 
 async function refreshAccountChip(): Promise<void> {
