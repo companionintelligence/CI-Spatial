@@ -398,7 +398,7 @@ Building on the merged accessibility/onboarding work:
 ## 7. Open questions / next design iterations
 
 1. **Guided world flow.** Should the desktop editor gain an explicit, dismissible "Import → Align → Reconstruct → Export" wizard for first-time worlds, or stay a flat expert panel with better in-context hints? What's the right default for a non-expert vs a returning power user?
-2. **Placeholder-vs-real legibility.** What's the clearest way to show that `align-scan` / `merge-points` / `export-world` currently record intent rather than produce artifacts — a badge, a disabled state, a "coming soon" tag — without lying about capability?
+2. **Placeholder-vs-real legibility.** What's the clearest way to show that `align-scan` / `merge-points` currently record intent rather than produce artifacts — a badge, a disabled state, a "coming soon" tag — without lying about capability?
 3. **Time navigation.** The data for a real 4D experience exists (`capturedAt`, per-frame timestamps, `EditPatch[]` history). What's the first useful slice — a two-scan before/after toggle, a camera-path scrubber, or an edit-history timeline?
 4. **Verdict-gated export.** Once the verdict is on the phone, how hard should `needs-rescan` gate export — a soft confirm, or a stronger nudge? How do we avoid nagging users who legitimately want a partial scan?
 5. **Capture-mode defaults.** Should keyframe streaming be on by default (so reconstruction jobs "just work" later) or stay opt-in to save bandwidth? How do we teach the tradeoff without a wall of text?
