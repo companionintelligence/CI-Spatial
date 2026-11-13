@@ -596,6 +596,11 @@ export interface EditPatch {
    */
   targetId: string
   scope: 'scan' | 'object' | 'point-selection' | 'layer' | 'world' | 'thing'
+  /**
+   * For scope 'thing', `transform.position` moves the Thing in the Place frame (the
+   * frame of Thing.position) and `label` relabels it. The latest of each wins; see
+   * resolveThingEditsForWorld() in src/shared/thing_tags.ts.
+   */
   transform?: TransformPatch
   label?: string
   category?: string
