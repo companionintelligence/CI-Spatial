@@ -1,0 +1,45 @@
+name: Desktop Build
+
+# Unsigned developer artifacts only. This does not upload a GitHub release or
+# submit to a store. Review desktop/README.md before changing the release policy.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Companion Scan (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    env:
+      VITE_API_BASE: https://scan-ci.invalid
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.18.0'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install web dependencies
+        run: npm ci
+      - name: Install desktop shell dependencies
+        run: npm install --prefix desktop --no-audit --no-fund
+      - name: Check shell config
+        run: npm run test:native --prefix desktop
+      - name: Build installer
+        run: npm run build --prefix desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scan-desktop-${{ matrix.os }}
+          path: desktop/src-tauri/target/release/bundle/**
+          if-no-files-found: error
+          retention-days: 14
