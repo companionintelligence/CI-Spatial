@@ -29,7 +29,8 @@ from _torch_device import resolve_torch_device  # noqa: E402
 
 def fake_torch(*, cuda: bool = False, hip: str | None = None,
                mps_available: bool = False, mps_built: bool = False,
-               cuda_raises: bool = False) -> types.SimpleNamespace:
+               cuda_raises: bool = False, xpu: bool | None = None,
+               xpu_raises: bool = False) -> types.SimpleNamespace:
     """A stand-in with only the attributes the resolver actually probes."""
 
     def is_available() -> bool:
@@ -48,12 +49,21 @@ def fake_torch(*, cuda: bool = False, hip: str | None = None,
     )
     t.float16 = "float16"
     t.float32 = "float32"
+    # Only torch builds with Intel's XPU support have the attribute at all.
+    if xpu is not None or xpu_raises:
+        def xpu_is_available() -> bool:
+            if xpu_raises:
+                raise RuntimeError("no Level Zero driver")
+            return bool(xpu)
+
+        t.xpu = types.SimpleNamespace(is_available=xpu_is_available)
     return t
 
 
 NVIDIA = dict(cuda=True)
 ROCM = dict(cuda=True, hip="6.2.41133")
 APPLE = dict(mps_available=True, mps_built=True)
+XPU = dict(xpu=True)
 BARE = dict()
 
 
@@ -179,6 +189,65 @@ class DtypeAndCudnnPolicy(unittest.TestCase):
     def test_label_is_loggable(self):
         self.assertEqual(resolve_torch_device(fake_torch(**ROCM)).label, "cuda (AMD ROCm, fp16)")
         self.assertEqual(resolve_torch_device(fake_torch(**BARE)).label, "cpu (CPU, fp32)")
+
+
+class IntelXpu(unittest.TestCase):
+    def test_auto_picks_xpu_on_an_intel_gpu_box(self):
+        d = resolve_torch_device(fake_torch(**XPU))
+        self.assertEqual(d.device, "xpu")
+        self.assertEqual(d.vendor, "Intel XPU")
+        self.assertFalse(d.is_cuda)
+        self.assertFalse(d.fp16_ok, "fp16 on Intel is unmeasured, so it must not be assumed")
+        self.assertIn("fp32 until", d.reason)
+
+    def test_torch_without_an_xpu_attribute_is_not_an_error(self):
+        # Every CUDA, ROCm, MPS and CPU wheel lacks torch.xpu entirely.
+        self.assertEqual(resolve_torch_device(fake_torch(**BARE)).device, "cpu")
+
+    def test_broken_xpu_probe_falls_back_instead_of_raising(self):
+        self.assertEqual(resolve_torch_device(fake_torch(xpu_raises=True)).device, "cpu")
+
+    def test_cuda_still_wins_over_xpu(self):
+        self.assertEqual(resolve_torch_device(fake_torch(cuda=True, xpu=True)).device, "cuda")
+
+    def test_apple_still_wins_over_xpu(self):
+        d = resolve_torch_device(fake_torch(mps_available=True, mps_built=True, xpu=True))
+        self.assertEqual(d.device, "mps")
+
+    def test_explicit_xpu_is_honoured_when_present(self):
+        self.assertEqual(resolve_torch_device(fake_torch(**XPU), "xpu").device, "xpu")
+
+    def test_indexed_xpu_passes_through_verbatim_without_fp16(self):
+        d = resolve_torch_device(fake_torch(**XPU), "xpu:1")
+        self.assertEqual(d.device, "xpu:1")
+        self.assertFalse(d.fp16_ok)
+
+    def test_explicit_xpu_downgrades_with_a_reason_when_absent(self):
+        d = resolve_torch_device(fake_torch(**NVIDIA), "xpu")
+        self.assertEqual(d.device, "cpu")
+        self.assertIn("downgraded to cpu", d.reason)
+
+    def test_xpu_is_a_declared_choice(self):
+        from _torch_device import CHOICES
+
+        self.assertIn("xpu", CHOICES)
+
+
+class AutocastPolicy(unittest.TestCase):
+    def test_nvidia_and_rocm_autocast_in_fp16(self):
+        self.assertTrue(resolve_torch_device(fake_torch(**NVIDIA)).use_autocast_fp16())
+        self.assertTrue(resolve_torch_device(fake_torch(**ROCM)).use_autocast_fp16())
+        self.assertTrue(resolve_torch_device(fake_torch(**NVIDIA), "cuda:1").use_autocast_fp16())
+
+    def test_mps_is_fp16_capable_but_never_autocast(self):
+        # lingbot runs fp32 on MPS until autocast there has actually been run.
+        d = resolve_torch_device(fake_torch(**APPLE))
+        self.assertTrue(d.fp16_ok)
+        self.assertFalse(d.use_autocast_fp16())
+
+    def test_cpu_and_xpu_never_autocast_in_fp16(self):
+        self.assertFalse(resolve_torch_device(fake_torch(**BARE)).use_autocast_fp16())
+        self.assertFalse(resolve_torch_device(fake_torch(**XPU)).use_autocast_fp16())
 
 
 if __name__ == "__main__":

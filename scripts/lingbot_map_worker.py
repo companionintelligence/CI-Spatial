@@ -405,11 +405,16 @@ def run(args: argparse.Namespace) -> int:
 
         print(f"[lingbot-map] streaming inference over {len(paths)} frames", file=sys.stderr)
         with torch.no_grad():
-            if dev.fp16_ok:
+            if dev.use_autocast_fp16():
                 # halves activation memory; norm layers stay fp32 automatically
                 with torch.autocast(device_type=device.split(":")[0], dtype=torch.float16):
                     output = model(images)  # type: ignore[operator]
             else:
+                if dev.fp16_ok:
+                    print(
+                        f"[lingbot-map] fp16 autocast is wired for cuda and xpu only; running fp32 on {device}",
+                        file=sys.stderr,
+                    )
                 output = model(images)  # type: ignore[operator]
 
         # ── Extract poses + point cloud from the model output ──────────────
@@ -577,6 +582,9 @@ def _norm_rgb(v: Any) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Unsupported ops fall back to CPU on Apple MPS instead of aborting the run.
+    # Set before torch is imported; a no-op on CUDA, ROCm, XPU and CPU.
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     p = argparse.ArgumentParser(description="LingBot-Map reconstruction worker for Companion Scan sessions")
     p.add_argument("--session-dir", required=True, help="Path to scans/sessions/<id>/")
     p.add_argument(
@@ -586,8 +594,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     # "mps" is new here: auto already picks it on Apple Silicon, but an operator
     # debugging a Mac needs to be able to ask for it (and to be told when it is
-    # unavailable) rather than have argparse reject the word.
-    p.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
+    # unavailable) rather than have argparse reject the word. "xpu" is the same
+    # for Intel GPUs under torch.xpu.
+    p.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps", "xpu"])
     p.add_argument("--keyframe-interval", type=int, default=1)
     p.add_argument("--max-frames", type=int, default=512)
     p.add_argument("--image-size", type=int, default=DEFAULT_IMAGE_SIZE)

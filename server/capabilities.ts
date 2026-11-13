@@ -82,6 +82,8 @@ export interface TorchReport {
   cudaAvailable?: boolean
   /** `torch.backends.mps.is_available()`, absent on non-Apple builds. */
   mpsAvailable?: boolean
+  /** `torch.xpu.is_available()` — Intel GPUs. False on every non-Intel wheel. */
+  xpuAvailable?: boolean
   /** What this interpreter would actually compute on. */
   accelerator?: Accelerator
   /** Interpreter version, when the probe ran at all. */
@@ -90,7 +92,7 @@ export interface TorchReport {
   error?: string
 }
 
-export type Accelerator = 'cuda' | 'rocm' | 'mps' | 'cpu'
+export type Accelerator = 'cuda' | 'rocm' | 'mps' | 'xpu' | 'cpu'
 
 export interface ToolCapability {
   id: string
@@ -515,6 +517,10 @@ export const TORCH_PROBE_SOURCE = [
   '    d["cudaAvailable"] = bool(torch.cuda.is_available())',
   '    b = getattr(torch.backends, "mps", None)',
   '    d["mpsAvailable"] = bool(b and b.is_available())',
+  '    try:',
+  '        d["xpuAvailable"] = bool(torch.xpu.is_available())',
+  '    except Exception:',
+  '        d["xpuAvailable"] = False',
   'except Exception as e:',
   '    d["error"] = "%s: %s" % (type(e).__name__, e)',
   'print(json.dumps(d))',
@@ -533,10 +539,14 @@ export function deriveAccelerator(t: {
   cudaAvailable?: boolean
   hipBuild?: string | null
   mpsAvailable?: boolean
+  xpuAvailable?: boolean
 }): Accelerator {
   if (t.cudaAvailable && t.hipBuild) return 'rocm'
   if (t.cudaAvailable) return 'cuda'
   if (t.mpsAvailable) return 'mps'
+  // Intel GPUs under torch.xpu. Checked after CUDA and MPS, the same order
+  // scripts/_torch_device.py uses, so the two never disagree about a box.
+  if (t.xpuAvailable) return 'xpu'
   return 'cpu'
 }
 
@@ -563,6 +573,7 @@ export function parseTorchProbe(stdout: string): TorchReport {
     hipBuild: (raw.hipBuild ?? null) as string | null,
     cudaAvailable: raw.cudaAvailable === true,
     mpsAvailable: raw.mpsAvailable === true,
+    xpuAvailable: raw.xpuAvailable === true,
     ...(python ? { python } : {}),
   }
   report.accelerator = deriveAccelerator(report)

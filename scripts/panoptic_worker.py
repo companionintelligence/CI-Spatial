@@ -74,9 +74,9 @@ def parse_args() -> argparse.Namespace:
         "--device",
         default=None,
         help=(
-            "torch device: auto (default), cpu, cuda, cuda:N, mps. auto prefers "
-            "CUDA/ROCm, then Apple MPS, then cpu. Anything else is passed to "
-            "torch unvalidated. See scripts/_torch_device.py."
+            "torch device: auto (default), cpu, cuda, cuda:N, mps, xpu. auto prefers "
+            "CUDA/ROCm, then Apple MPS, then Intel XPU, then cpu. Anything else is "
+            "passed to torch unvalidated. See scripts/_torch_device.py."
         ),
     )
     return p.parse_args()
@@ -175,6 +175,11 @@ def resolve_thing_split(raw, id2label: dict[int, str]):
 
 
 def main() -> int:
+    # Unsupported ops fall back to CPU on Apple MPS instead of aborting the run.
+    # Set before torch is imported; a no-op on CUDA, ROCm, XPU and CPU.
+    import os
+
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     args = parse_args()
 
     # Imported inside main so `--help` works in a venv that has not finished

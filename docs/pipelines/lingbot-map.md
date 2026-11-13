@@ -56,7 +56,7 @@ Mobile app   ──upload .glb──►  Deno server  ──fork──►  scrip
 | `LINGBOT_MAP_PYTHON` | `python3` | Server, picks the python that has lingbot-map + torch installed. |
 | `LINGBOT_MAP_MODEL_PATH` | (unset) | Path to the LingBot-Map checkpoint. If unset the worker emits a `skipped` manifest with a remediation hint. |
 | `LINGBOT_MAP_SCRIPT` | `./scripts/lingbot_map_worker.py` | Override the worker location (useful for read-only deployments). |
-| `LINGBOT_MAP_DEVICE` | `auto` | Torch backend to request (`auto`/`cpu`/`cuda`/`mps`). `auto` is a request, not an answer — `scripts/_torch_device.py` silently downgrades an unreachable backend to CPU, so read `params.resolvedDevice` and `params.deviceVendor` back out of the manifest to find out what actually ran. |
+| `LINGBOT_MAP_DEVICE` | `auto` | Torch backend to request (`auto`/`cpu`/`cuda`/`mps`/`xpu`). fp16 autocast runs on `cuda` and `xpu` only; MPS and CPU run fp32. Per-vendor setup is in [GPU_BACKENDS.md](../operations/GPU_BACKENDS.md). `auto` is a request, not an answer — `scripts/_torch_device.py` silently downgrades an unreachable backend to CPU, so read `params.resolvedDevice` and `params.deviceVendor` back out of the manifest to find out what actually ran. |
 
 ## Setup (one time, on the inference box)
 

@@ -40,15 +40,17 @@ AUTO = "auto"
 CPU = "cpu"
 CUDA = "cuda"
 MPS = "mps"
+XPU = "xpu"
 
 # Accepted by `--device`. Anything else is still passed through to torch
 # verbatim (see `resolve_torch_device`), because `panoptic_worker.py --device`
 # has always been free-form and `cuda:1` is a real thing operators pass.
-CHOICES = (AUTO, CPU, CUDA, MPS)
+CHOICES = (AUTO, CPU, CUDA, MPS, XPU)
 
 VENDOR_NVIDIA = "NVIDIA CUDA"
 VENDOR_ROCM = "AMD ROCm"
 VENDOR_APPLE = "Apple MPS"
+VENDOR_INTEL = "Intel XPU"
 VENDOR_CPU = "CPU"
 VENDOR_UNVALIDATED = "unvalidated"
 
@@ -110,6 +112,15 @@ class TorchDevice:
         """
         return self.is_cuda
 
+    def use_autocast_fp16(self) -> bool:
+        """Whether to wrap a forward pass in `torch.autocast(..., float16)`.
+
+        Only CUDA (NVIDIA and ROCm) and XPU are wired. MPS reports `fp16_ok`, so
+        its weights may be half precision, but autocast on MPS has never been run
+        in this repo; the lingbot worker runs fp32 there rather than guess.
+        """
+        return self.fp16_ok and self.device.split(":")[0] in (CUDA, XPU)
+
 
 def _cuda_available(torch: Any) -> bool:
     # A broken CUDA install can raise here rather than return False; a worker
@@ -169,16 +180,40 @@ def _cpu_result(requested: str, reason: str) -> TorchDevice:
     )
 
 
+def _xpu_available(torch: Any) -> bool:
+    # Intel GPUs need Intel's torch build (`torch.xpu`). A CUDA, ROCm, MPS or
+    # CPU wheel has no such attribute at all, which is an answer, not an error.
+    try:
+        xpu = getattr(torch, "xpu", None)
+        return xpu is not None and bool(xpu.is_available())
+    except Exception:
+        return False
+
+
+def _xpu_result(device: str, requested: str, reason: str) -> TorchDevice:
+    return TorchDevice(
+        device=device,
+        vendor=VENDOR_INTEL,
+        # fp32 until someone measures fp16 on Intel hardware. Same rule as the
+        # unvalidated branch: do not claim fp16 is safe where nobody has tried.
+        fp16_ok=False,
+        is_cuda=False,
+        is_rocm=False,
+        requested=requested,
+        reason=f"{reason}; fp32 until fp16 is measured on Intel hardware",
+    )
+
+
 def resolve_torch_device(torch: Any, requested: str | None = None) -> TorchDevice:
     """Pick the best backend `torch` can actually reach, and say why.
 
     `torch` is passed in rather than imported so this is testable without it.
     `requested` is the worker's `--device` (None/"" means `auto`).
 
-    Priority when `auto`: CUDA (NVIDIA or ROCm) → MPS → CPU. CUDA first because
-    it is the one path with measured numbers on this fleet; MPS second because
-    it beats CPU on the only hardware that has it; CPU last because it always
-    works.
+    Priority when `auto`: CUDA (NVIDIA or ROCm) → MPS → XPU (Intel) → CPU. CUDA
+    first because it is the one path with measured numbers on this fleet; MPS
+    next because it beats CPU on the only hardware that has it; XPU after that
+    because it is the least exercised; CPU last because it always works.
 
     An explicit request is honoured when the backend is there and **downgraded
     to CPU with a reason** when it is not — never raised. Optional GPU tooling
@@ -217,8 +252,16 @@ def resolve_torch_device(torch: Any, requested: str | None = None) -> TorchDevic
             "requested mps, but torch.backends.mps is not available and built — downgraded to cpu",
         )
 
+    if req == XPU or req.startswith(XPU + ":"):
+        if _xpu_available(torch):
+            return _xpu_result(req, req, "requested explicitly")
+        return _cpu_result(
+            req,
+            f"requested {req}, but torch.xpu.is_available() is False — downgraded to cpu",
+        )
+
     if req != AUTO:
-        # Not a backend this repo knows (torch grows them: xpu, hpu, …). Hand it
+        # Not a backend this repo knows (torch grows them: hpu, …). Hand it
         # to torch unchanged so the escape hatch keeps working, but do not claim
         # fp16 is safe somewhere nobody has tried.
         return TorchDevice(
@@ -248,4 +291,6 @@ def resolve_torch_device(torch: Any, requested: str | None = None) -> TorchDevic
             requested=req,
             reason="auto: torch.backends.mps is available and built",
         )
-    return _cpu_result(req, "auto: no CUDA/ROCm/MPS backend available")
+    if _xpu_available(torch):
+        return _xpu_result(XPU, req, "auto: torch.xpu.is_available()")
+    return _cpu_result(req, "auto: no CUDA/ROCm/MPS/XPU backend available")
