@@ -5,9 +5,10 @@ node_modules/
 www/
 
 # Written by `cap sync` into each native project. Regenerated on every sync.
+# ios/App/CapApp-SPM/Package.swift is NOT ignored: the Xcode project references the
+# CapApp-SPM package, and `cap sync` only takes the SPM path when that folder exists.
 ios/App/App/public/
 ios/App/App/capacitor.config.json
-ios/App/CapApp-SPM/
 ios/App/App/config.xml
 ios/capacitor-cordova-ios-plugins/
 android/app/src/main/assets/public/
