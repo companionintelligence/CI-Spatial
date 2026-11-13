@@ -9,6 +9,9 @@
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
 
+        <!-- ARCore is optional, so the app installs on devices without it. ArCoreApk installs it when the AR session starts. -->
+        <meta-data android:name="com.google.ar.core" android:value="optional" />
+
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"
             android:name=".MainActivity"
@@ -51,4 +54,6 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- AR is optional for the app as a whole. See the ARCore meta-data in the application element. -->
+    <uses-feature android:name="android.hardware.camera.ar" android:required="false" />
 </manifest>
