@@ -1,0 +1,89 @@
+name: Mobile Build
+
+# Unsigned debug artifacts for device QA. This does not upload to Google Play
+# or App Store Connect. Scan AR capture and the xr.js licence remain release gates.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22.18.0'
+  VITE_API_BASE: https://scan-ci.invalid
+
+jobs:
+  android:
+    name: Android (debug APK)
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Install web dependencies
+        run: npm ci
+      - name: Install Android shell dependencies
+        run: npm ci --prefix mobile
+      - name: Check shell config
+        run: npm run test:native --prefix mobile
+      - name: Build and sync web app
+        run: npm run build --prefix mobile
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: ''
+      - run: sdkmanager "platform-tools" "platforms;android-36" "build-tools;35.0.0"
+      - name: Build debug APK
+        working-directory: mobile/android
+        run: ./gradlew assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scan-android-debug-apk
+          path: mobile/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  ios:
+    name: iOS (Simulator app)
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Install web dependencies
+        run: npm ci
+      - name: Install iOS shell dependencies
+        run: npm ci --prefix mobile
+      - name: Check shell config
+        run: npm run test:native --prefix mobile
+      - name: Build and sync web app
+        run: npm run build --prefix mobile
+      - name: Build iOS Simulator app
+        working-directory: mobile/ios/App
+        run: |
+          xcodebuild -project App.xcodeproj -scheme App -configuration Debug \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES build
+      - name: Package iOS Simulator app
+        run: |
+          APP=$(find mobile/ios/App/build/Build/Products -name 'App.app' -type d | head -1)
+          test -d "$APP"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" scan-ios-simulator.app.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scan-ios-simulator-app
+          path: scan-ios-simulator.app.zip
+          if-no-files-found: error
+          retention-days: 14
