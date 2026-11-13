@@ -40,7 +40,7 @@ The app icon and both launch screens are drawn from `scripts/icon-source/scan-re
 | Zoom | On, both platforms | WCAG 1.4.4. Capacitor defaults this to off. |
 | PWA | Off in this build | `VITE_DISABLE_PWA` drops the service worker, the manifest and the link to it. See `pwaSwitch()` in `vite.config.ts`. |
 | Sentry | None | The web code has no Sentry SDK. |
-| Plugins | Capacitor core, App, Browser | App and Browser carry Companion Account sign-in from the browser sheet back to the app. No ARKit, ARCore or other native plugin. |
+| Plugins | Capacitor core, App, Browser, ArSession | App and Browser carry Companion Account sign-in from the browser sheet back to the app. ArSession is the native AR session (ARKit on iOS, ARCore on Android) behind `src/ar/native-provider.ts`. It starts and stops the session, and iOS pushes poses. There is no camera feed or frame capture yet. |
 | URL scheme | `com.companionintelligence.scan://auth` | Where a shell sign-in ends. Registered in `Info.plist` (`CFBundleURLTypes`) and `AndroidManifest.xml` (an intent filter). Must match `SHELL_RETURN_URL` in `server/portal_auth.ts`. |
 | iOS purpose strings | Camera, location when in use, motion | The code asks for these. No microphone: every `getUserMedia` call sets `audio: false`. No photo-library key: the file input uses the system picker. |
 | Android permissions | `CAMERA`, `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION` | Device motion needs no Android permission. |
