@@ -107,3 +107,58 @@ Deno.test('object patch keeps scan scoping', () => {
   assertEquals(resolveThingTagsForScan(patches, [thing], buildThingObservationIndex(observations), 'scan-a').size, 1)
   assertEquals(resolveThingTagsForScan(patches, [thing], buildThingObservationIndex(observations), 'scan-b').size, 0)
 })
+
+Deno.test('an explicit null clears a label an earlier patch set', () => {
+  const patches = [
+    patch({ patchId: 'one', scanId: 'scan-a', label: 'armchair', originTargetId: 'scan-a/chair' }),
+    patch({ patchId: 'two', scanId: 'scan-a', label: null, originTargetId: 'scan-a/chair' }),
+  ]
+  const result = resolveThingTagsForScan(patches, [thing], buildThingObservationIndex(observations), 'scan-a')
+  assertEquals(result.get('scan-a/chair')?.label, undefined)
+  assertEquals(result.get('scan-a/chair'), {})
+})
+
+Deno.test('a clear removes only the field it names', () => {
+  const patches = [
+    patch({ patchId: 'one', scanId: 'scan-a', label: 'armchair', category: 'seating', originTargetId: 'scan-a/chair' }),
+    patch({ patchId: 'two', scanId: 'scan-a', label: null, originTargetId: 'scan-a/chair' }),
+  ]
+  const result = resolveThingTagsForScan(patches, [thing], buildThingObservationIndex(observations), 'scan-a')
+  assertEquals(result.get('scan-a/chair'), { category: 'seating' })
+})
+
+Deno.test('a clear reaches every session the thing was seen in', () => {
+  const setLabel = patch({ patchId: 'one', scanId: 'scan-a', label: 'armchair', originTargetId: 'scan-a/chair' })
+  const clear = patch({ patchId: 'two', scanId: 'scan-a', label: null, originTargetId: 'scan-a/chair' })
+  const index = buildThingObservationIndex(observations)
+  assertEquals(resolveThingTagsForScan([setLabel], [thing], index, 'scan-b').get('scan-b/chair')?.label, 'armchair')
+  assertEquals(resolveThingTagsForScan([setLabel, clear], [thing], index, 'scan-b').get('scan-b/chair')?.label, undefined)
+})
+
+Deno.test('a clear on an object removes its label', () => {
+  const patches = [
+    patch({ scope: 'object', scanId: 'scan-a', targetId: 'scan-a/chair', label: 'armchair' }),
+    patch({ scope: 'object', patchId: 'clear', scanId: 'scan-a', targetId: 'scan-a/chair', label: null }),
+  ]
+  const result = resolveThingTagsForScan(patches, [thing], buildThingObservationIndex(observations), 'scan-a')
+  assertEquals(result.get('scan-a/chair')?.label, undefined)
+})
+
+Deno.test('an undefined field keeps the label an earlier patch set', () => {
+  // A category-only patch says nothing about the label, so the label survives it.
+  const patches = [
+    patch({ patchId: 'one', scanId: 'scan-a', label: 'armchair', originTargetId: 'scan-a/chair' }),
+    patch({ patchId: 'two', scanId: 'scan-a', category: 'seating', originTargetId: 'scan-a/chair' }),
+  ]
+  const result = resolveThingTagsForScan(patches, [thing], buildThingObservationIndex(observations), 'scan-a')
+  assertEquals(result.get('scan-a/chair'), { label: 'armchair', category: 'seating' })
+})
+
+Deno.test('an empty string is not a clear and keeps the current label', () => {
+  const patches = [
+    patch({ patchId: 'one', scanId: 'scan-a', label: 'armchair', originTargetId: 'scan-a/chair' }),
+    patch({ patchId: 'two', scanId: 'scan-a', label: '', originTargetId: 'scan-a/chair' }),
+  ]
+  const result = resolveThingTagsForScan(patches, [thing], buildThingObservationIndex(observations), 'scan-a')
+  assertEquals(result.get('scan-a/chair')?.label, 'armchair')
+})

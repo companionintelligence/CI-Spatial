@@ -602,7 +602,8 @@ export interface EditPatch {
    * resolveThingEditsForWorld() in src/shared/thing_tags.ts.
    */
   transform?: TransformPatch
-  label?: string
+  /** `null` is an explicit clear: the target falls back to its AI label. Absent keeps the current label. */
+  label?: string | null
   category?: string
   notes?: string
   visible?: boolean

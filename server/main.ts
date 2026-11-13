@@ -5394,7 +5394,9 @@ app.post('/worlds/:slug/patches', async (c) => {
       targetId,
       scope,
       transform: body.transform,
-      label: objectKey(body.label) ?? undefined,
+      // An explicit null is a clear and has to reach the patch log as null. objectKey()
+      // would turn it into "no label", which leaves the old label in place.
+      label: body.label === null ? null : (objectKey(body.label) ?? undefined),
       category: objectKey(body.category) ?? undefined,
       notes: objectKey(body.notes) ?? undefined,
       visible: typeof body.visible === 'boolean' ? body.visible : undefined,

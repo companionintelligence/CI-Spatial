@@ -7,6 +7,7 @@
  */
 import * as THREE from 'three'
 import { matchesObjectFilter, parseObjectFilter } from './object-filter'
+import { displayLabel, filterCatalogue, labelOptions, type CatalogueFilter, type CatalogueItem } from './catalogue-filter'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
@@ -30,7 +31,7 @@ import {
   type ScanPanopticLayer,
 } from './panoptic-layer'
 import { buildTrainJobRequest, buildDetectJobRequest } from './splat-toolbox'
-import { buildThingObservationIndex, resolveThingTagsForScan } from '../shared/thing_tags'
+import { buildThingObservationIndex, resolveThingTagsForScan, type ResolvedThingTag } from '../shared/thing_tags'
 import { accessTokenHeaders, addAccessToken } from '../shared/access-token'
 import { PlacesPanel } from './places'
 import {
@@ -99,11 +100,16 @@ interface Label3D {
 
 interface InventoryItem {
   id: string
+  /** The label the reconstruction produced. The row shows userLabel over it when there is one. */
   label: string
   scanId: string
   position: { x: number; y: number; z: number }
   confidence: number | null
   source: 'thing' | 'detection'
+  /** The user's relabel as the patches resolve for this scan, or null. */
+  userLabel: string | null
+  /** For a Thing, the observation's object id in this scan, the fallback target of a relabel. Null for a detection. */
+  originTargetId: string | null
 }
 
 interface LoadedScan {
@@ -195,6 +201,8 @@ let liveFeed: LiveFeed | null = null
 const labelContainer = document.getElementById('viewport')!
 const loadedScans = new Map<string, LoadedScan>()
 const scanItems = new Map<string, HTMLElement>()
+/** The catalogue's search, label and scan filters. The Things list owns the controls; the Items tree reads them. */
+const catalogueFilter: CatalogueFilter = { query: '', label: '', scanId: '' }
 let timelineSessions: Array<{ key: string; time: number; label: string; scanIds: string[] }> = []
 let timelineStart = Number.NEGATIVE_INFINITY
 let timelineEnd = Number.POSITIVE_INFINITY
@@ -1071,36 +1079,195 @@ function renderThingsPanel(): void {
   const summary = document.getElementById('things-panel-summary')
   if (!list || !summary || !world) return
 
-  const byLabel = new Map<string, { count: number; confidence: number | null; item: InventoryItem }>()
-  for (const scan of world.scans.filter(scanInTimeline)) {
+  const rows = catalogueRows()
+  syncCatalogueControls(rows)
+  const rowById = new Map<string, CatalogueRow>(rows.map(row => [row.item.id, row] as const))
+  const shown = filterCatalogue(rows.map(row => row.catalogue), catalogueFilter)
+    .map(catalogue => rowById.get(catalogue.id))
+    .filter((row): row is CatalogueRow => row !== undefined)
+    .sort((a, b) => displayLabel(a.catalogue).localeCompare(displayLabel(b.catalogue)))
+
+  summary.textContent = rows.length === 0
+    ? 'No Things are visible in the current scan range.'
+    : catalogueIsFiltered()
+      ? `${shown.length} of ${rows.length} identified thing${rows.length === 1 ? '' : 's'} match these filters.`
+      : `${rows.length} identified thing${rows.length === 1 ? '' : 's'} in the visible scan range.`
+  if (shown.length === 0 && rows.length > 0) {
+    const empty = document.createElement('div')
+    empty.className = 'catalogue-empty'
+    empty.textContent = 'Nothing matches these filters. Clear them to see every Thing.'
+    list.replaceChildren(empty)
+    return
+  }
+  list.replaceChildren(...shown.map(thingsListRow))
+}
+
+/** One catalogue row: a Thing, or an object no Thing claims, with the item focusItem() flies to. */
+interface CatalogueRow {
+  /** The item in the first scan it was seen in. focusItem() needs its position, not just its scan. */
+  item: InventoryItem
+  catalogue: CatalogueItem
+}
+
+/**
+ * The catalogue across the scans in the timeline: one row per Thing, however
+ * many scans it was seen in. An object no Thing claims is a row of its own.
+ */
+function catalogueRows(): CatalogueRow[] {
+  const rows = new Map<string, CatalogueRow>()
+  for (const scan of world?.scans.filter(scanInTimeline) ?? []) {
     for (const item of inventoryItems(scan.scanId)) {
-      const key = item.label.trim().toLocaleLowerCase()
-      const current = byLabel.get(key)
-      if (current) {
-        current.count += 1
-        current.confidence = Math.max(current.confidence ?? 0, item.confidence ?? 0) || null
+      const row = rows.get(item.id)
+      if (row) {
+        row.catalogue = {
+          ...row.catalogue,
+          scanIds: [...row.catalogue.scanIds, scan.scanId],
+          userLabel: row.catalogue.userLabel ?? item.userLabel,
+        }
       } else {
-        // The first observation is what the row goes to, so keep the whole item —
-        // focusItem() needs its position, not just the scan it was seen in.
-        byLabel.set(key, { count: 1, confidence: item.confidence, item })
+        rows.set(item.id, { item, catalogue: catalogueItemOf(item) })
       }
     }
   }
+  return [...rows.values()]
+}
 
-  const things = [...byLabel.entries()].sort(([a], [b]) => a.localeCompare(b))
-  summary.textContent = things.length
-    ? `${things.length} identified thing${things.length === 1 ? '' : 's'} in the visible scan range.`
-    : 'No Things are visible in the current scan range.'
-  list.replaceChildren()
-  for (const [label, thing] of things) {
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.className = 'things-list-item'
-    const confidence = thing.confidence == null ? '' : ` · ${Math.round(thing.confidence * 100)}%`
-    button.innerHTML = `<strong>${escHtml(label)}</strong><span>${thing.count} observation${thing.count === 1 ? '' : 's'}${confidence}</span>`
-    button.addEventListener('click', () => focusItem(thing.item))
-    list.appendChild(button)
+function catalogueItemOf(item: InventoryItem): CatalogueItem {
+  return { id: item.id, aiLabel: item.label, userLabel: item.userLabel, scanIds: [item.scanId] }
+}
+
+/** What an item is called on screen: its user label when it has one, its AI label otherwise. */
+function itemDisplayLabel(item: InventoryItem): string {
+  return displayLabel(catalogueItemOf(item))
+}
+
+function catalogueIsFiltered(filter: CatalogueFilter = catalogueFilter): boolean {
+  return Boolean(filter.query?.trim() || filter.label || filter.scanId)
+}
+
+/** The Items tree follows the filters only while the Things tab, where their controls are, is open. */
+function catalogueFilterForItems(): CatalogueFilter {
+  return document.getElementById('tab-things')?.classList.contains('active') ? catalogueFilter : {}
+}
+
+/** The items of one scan that the catalogue filters keep, in their original order. */
+function catalogueItemsForScan(scanId: string, filter: CatalogueFilter): InventoryItem[] {
+  const items = inventoryItems(scanId)
+  if (!catalogueIsFiltered(filter)) return items
+  const kept = new Set(
+    filterCatalogue(items.map(catalogueItemOf), { query: filter.query, label: filter.label }).map(item => item.id),
+  )
+  return items.filter(item => kept.has(item.id))
+}
+
+/** Redraw everything the catalogue filters touch: the Things list and the Items tree. */
+function renderCatalogue(): void {
+  renderThingsPanel()
+  renderItemsPanel()
+}
+
+/**
+ * Fill the label and scan selects and the relabel suggestions from the current
+ * rows. A selection that no longer exists is dropped, so a filter cannot hide
+ * every row for a reason its select does not show.
+ */
+function syncCatalogueControls(rows: CatalogueRow[]): void {
+  const labels = labelOptions(rows.map(row => row.catalogue))
+  if (catalogueFilter.label && !labels.includes(catalogueFilter.label)) catalogueFilter.label = ''
+
+  const labelSelect = document.getElementById('catalogue-label-filter') as HTMLSelectElement | null
+  labelSelect?.replaceChildren(new Option('All labels', ''), ...labels.map(label => new Option(label, label)))
+  if (labelSelect) labelSelect.value = catalogueFilter.label ?? ''
+
+  const scans = world?.scans.filter(scanInTimeline) ?? []
+  if (catalogueFilter.scanId && !scans.some(scan => scan.scanId === catalogueFilter.scanId)) catalogueFilter.scanId = ''
+  const scanSelect = document.getElementById('catalogue-scan-filter') as HTMLSelectElement | null
+  scanSelect?.replaceChildren(new Option('All scans', ''), ...scans.map(scan => new Option(scan.name, scan.scanId)))
+  if (scanSelect) scanSelect.value = catalogueFilter.scanId ?? ''
+
+  const suggestions = document.getElementById('catalogue-label-options')
+  suggestions?.replaceChildren(...labels.map((label) => {
+    const option = document.createElement('option')
+    option.value = label
+    return option
+  }))
+}
+
+/** One Things row: a button that focuses the item, with the relabel control under it. */
+function thingsListRow(row: CatalogueRow): HTMLElement {
+  const { item, catalogue } = row
+  const wrapper = document.createElement('div')
+  wrapper.className = 'things-list-row'
+
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.className = 'things-list-item'
+  const where = catalogue.scanIds.length > 1
+    ? `${catalogue.scanIds.length} scans`
+    : (world?.scans.find(scan => scan.scanId === item.scanId)?.name ?? item.scanId)
+  const meta = [
+    where,
+    item.confidence == null ? null : `${Math.round(item.confidence * 100)}%`,
+    catalogue.userLabel ? `AI label: ${catalogue.aiLabel}` : null,
+  ].filter(Boolean).join(' · ')
+  button.innerHTML = `<strong>${escHtml(displayLabel(catalogue))}</strong><span>${escHtml(meta)}</span>`
+  button.addEventListener('click', () => focusItem(item))
+  wrapper.append(button, catalogueRelabelForm(row))
+  return wrapper
+}
+
+/** The relabel control under a row: a label field with the known labels as suggestions, Save, and Clear. */
+function catalogueRelabelForm(row: CatalogueRow): HTMLFormElement {
+  const { catalogue } = row
+  const form = document.createElement('form')
+  form.className = 'catalogue-relabel'
+  form.innerHTML = `
+    <input class="ci-input catalogue-relabel-input" type="text" list="catalogue-label-options" placeholder="Relabel" autocomplete="off" aria-label="New label for ${escHtml(displayLabel(catalogue))}" />
+    <button type="submit" class="catalogue-relabel-save">Save</button>
+    <button type="button" class="catalogue-relabel-clear" title="Go back to the AI label"${catalogue.userLabel ? '' : ' disabled'}>Clear</button>
+    <span class="catalogue-relabel-status" role="status"></span>
+  `
+  form.addEventListener('submit', (event) => {
+    event.preventDefault()
+    const input = form.querySelector<HTMLInputElement>('.catalogue-relabel-input')
+    const label = input?.value.trim() ?? ''
+    if (label) void saveCatalogueLabel(row, label, form)
+    else setCatalogueStatus(form, 'Type a label, or use Clear to go back to the AI label.')
+  })
+  form.querySelector<HTMLButtonElement>('.catalogue-relabel-clear')?.addEventListener('click', () => {
+    void saveCatalogueLabel(row, null, form)
+  })
+  return form
+}
+
+function setCatalogueStatus(form: HTMLFormElement, text: string): void {
+  const status = form.querySelector<HTMLElement>('.catalogue-relabel-status')
+  if (status) status.textContent = text
+}
+
+/**
+ * Save a relabel, or a clear (label null), through postEditPatch(). A Thing is
+ * relabelled as a Thing, so the patch reaches every scan it was seen in. An
+ * object no Thing claims is relabelled as the object it is.
+ */
+async function saveCatalogueLabel(row: CatalogueRow, label: string | null, form: HTMLFormElement): Promise<void> {
+  const { item } = row
+  const controls = [...form.querySelectorAll<HTMLButtonElement | HTMLInputElement>('input, button')]
+  const wasDisabled = controls.map(control => control.disabled)
+  controls.forEach(control => { control.disabled = true })
+  setCatalogueStatus(form, label ? 'Saving…' : 'Clearing…')
+  const body = item.originTargetId
+    ? { scope: 'thing' as const, targetId: item.id, scanId: item.scanId, originTargetId: item.originTargetId, label }
+    : { scope: 'object' as const, targetId: item.id, scanId: item.scanId, label }
+  try {
+    await postEditPatch(body)
+  } catch (error) {
+    controls.forEach((control, index) => { control.disabled = wasDisabled[index] ?? false })
+    setCatalogueStatus(form, `Could not save: ${errorMessage(error)}`)
+    return
   }
+  // Outside the try: a failure while redrawing is a bug, not a save that did not happen.
+  renderCatalogue()
 }
 
 function activeWorldUrl(): string {
@@ -1577,7 +1744,7 @@ function applyStoredPatches(root: THREE.Object3D, scan: ScanManifest): void {
 
     if (patch.transform?.matrix) applyMatrix(target, patch.transform.matrix)
     if (patch.category) target.userData['tag'] = patch.category
-    if (patch.label) target.userData['label'] = patch.label
+    if (patch.label !== undefined) setObjectLabel(target, patch.label)
     if (patch.notes) target.userData['notes'] = patch.notes
     if (typeof patch.visible === 'boolean') target.visible = patch.visible
   }
@@ -1589,6 +1756,18 @@ function applyStoredPatches(root: THREE.Object3D, scan: ScanManifest): void {
     if (tag.label) target.userData['label'] = tag.label
     if (tag.notes) target.userData['notes'] = tag.notes
   }
+}
+
+/**
+ * Show a relabel on a scene object. The label the GLB came with is kept under
+ * `aiLabel` the first time, so a clear (null) can put it back.
+ */
+function setObjectLabel(target: THREE.Object3D, label: string | null): void {
+  const data = target.userData as Record<string, unknown>
+  if (!('aiLabel' in data)) data['aiLabel'] = data['label']
+  if (label) data['label'] = label
+  else if (typeof data['aiLabel'] === 'string') data['label'] = data['aiLabel']
+  else delete data['label']
 }
 
 function collectLayerNodes(root: THREE.Object3D): Map<LayerType, Set<THREE.Object3D>> {
@@ -3047,7 +3226,9 @@ async function postEditPatch(body: Partial<EditPatch> & { targetId: string; scop
   })
   if (!response.ok) throw new Error(await response.text())
   const payload = await response.json() as PatchResponse
-  world = payload.world
+  // The patch response carries every scan in the world. Scope it the way the
+  // loaders do, or a save would pull other places' scans into this view.
+  world = scopeWorldToActiveProject(payload.world)
   renderWorldPanel()
 }
 
@@ -3065,8 +3246,22 @@ function serializeTransform(obj: THREE.Object3D): EditPatch['transform'] {
 
 function inventoryItems(scanId: string | null = null): InventoryItem[] {
   if (!world) return []
+  const current = world
 
-  const observations = world.thingObservations ?? []
+  const observations = current.thingObservations ?? []
+  // A relabel is a patch, so an item's user label is whatever the patches resolve
+  // to in its scan: the same answer applyStoredPatches() gives the 3D view.
+  const observationIndex = buildThingObservationIndex(observations)
+  const tagsByScan = new Map<string, Map<string, ResolvedThingTag>>()
+  const userLabelIn = (targetScanId: string, targetId: string): string | null => {
+    let tags = tagsByScan.get(targetScanId)
+    if (!tags) {
+      tags = resolveThingTagsForScan(current.editPatches, current.things ?? [], observationIndex, targetScanId)
+      tagsByScan.set(targetScanId, tags)
+    }
+    return tags.get(targetId)?.label ?? null
+  }
+
   if (world.things.length > 0) {
     const preferredObservations = scanId
       ? observations.filter(observation => observation.scanId === scanId)
@@ -3092,6 +3287,8 @@ function inventoryItems(scanId: string | null = null): InventoryItem[] {
           position: observation?.worldPos ?? thing.position,
           confidence: observation?.confidence ?? null,
           source: 'thing',
+          userLabel: observation ? userLabelIn(observation.scanId, observation.targetId) : null,
+          originTargetId: observation?.targetId ?? null,
         }
       })
   }
@@ -3104,6 +3301,8 @@ function inventoryItems(scanId: string | null = null): InventoryItem[] {
     loaded.root.updateMatrixWorld(true)
     loaded.root.traverse((node) => {
       const data = node.userData as Record<string, unknown>
+      // `label` can already carry a relabel from applyStoredPatches(); `aiLabel`
+      // is what the GLB came with, so the row can show the AI label under a relabel.
       const label = typeof data['label'] === 'string' ? data['label'] : ''
       if (!label) return
       // The renderer can label an optimized proxy that no longer has a Mesh
@@ -3111,13 +3310,16 @@ function inventoryItems(scanId: string | null = null): InventoryItem[] {
       // one-label-per-ancestor rule used by createSemanticLabels().
       if (hasLabelledAncestor(node, loaded.root)) return
       const position = node.getWorldPosition(new THREE.Vector3())
+      const id = String(data['objectId'] ?? node.uuid)
       records.push({
-        id: String(data['objectId'] ?? node.uuid),
-        label,
+        id,
+        label: typeof data['aiLabel'] === 'string' ? data['aiLabel'] : label,
         scanId: loadedScanId,
         position: { x: position.x, y: position.y, z: position.z },
         confidence: typeof data['confidence'] === 'number' ? data['confidence'] : null,
         source: 'detection',
+        userLabel: userLabelIn(loadedScanId, id),
+        originTargetId: null,
       })
     })
   }
@@ -3214,7 +3416,7 @@ function appendPlacementNote(parent: HTMLElement, verdict: PlacementVerdict): vo
   parent.appendChild(note)
 }
 
-function appendOutlinerScan(parent: HTMLElement, scan: ScanManifest, items: InventoryItem[]): void {
+function appendOutlinerScan(parent: HTMLElement, scan: ScanManifest, items: InventoryItem[], filtered: boolean): void {
   const row = document.createElement('button')
   row.type = 'button'
   row.className = 'scene-tree-scan'
@@ -3228,6 +3430,9 @@ function appendOutlinerScan(parent: HTMLElement, scan: ScanManifest, items: Inve
   parent.appendChild(row)
 
   if (items.length === 0) {
+    // A filter that emptied this scan says nothing about whether it was located,
+    // so the placement verdict would explain the wrong thing.
+    if (filtered) return
     // An empty Things list under a good-looking reconstruction is the one place
     // a person goes looking for an explanation, and until now it had none — a
     // capture that structurally CANNOT locate objects and one whose placement
@@ -3240,12 +3445,12 @@ function appendOutlinerScan(parent: HTMLElement, scan: ScanManifest, items: Inve
     return
   }
   const things = createOutlinerGroup('things', 'Things', `${items.length} identified`, scan.scanId === selectedScanId)
-  for (const item of items.sort((a, b) => a.label.localeCompare(b.label))) {
+  for (const item of items.sort((a, b) => itemDisplayLabel(a).localeCompare(itemDisplayLabel(b)))) {
     const thing = document.createElement('button')
     thing.type = 'button'
     thing.className = 'scene-tree-thing'
     const confidence = item.confidence == null ? '' : ` · ${Math.round(item.confidence * 100)}%`
-    thing.innerHTML = `<span>${escHtml(item.label)}</span><small>${formatItemPosition(item.position)}${confidence}</small>`
+    thing.innerHTML = `<span>${escHtml(itemDisplayLabel(item))}</span><small>${formatItemPosition(item.position)}${confidence}</small>`
     thing.addEventListener('click', () => focusItem(item))
     things.appendChild(thing)
   }
@@ -3269,13 +3474,18 @@ function renderItemsPanel(): void {
   const selectedScan = selectedScanId
     ? world.scans.find(scan => scan.scanId === selectedScanId) ?? null
     : null
-  const visibleScans = world.scans.filter(scanInTimeline)
-  const itemsByScan = new Map(visibleScans.map(scan => [scan.scanId, inventoryItems(scan.scanId)]))
+  // The catalogue filters narrow this tree too, while the Things tab shows them.
+  const filter = catalogueFilterForItems()
+  const filtered = catalogueIsFiltered(filter)
+  const visibleScans = world.scans.filter(scanInTimeline).filter(scan => !filter.scanId || scan.scanId === filter.scanId)
+  const itemsByScan = new Map(visibleScans.map(scan => [scan.scanId, catalogueItemsForScan(scan.scanId, filter)]))
   list.innerHTML = ''
   renderReviewComments()
 
   if (visibleScans.length === 0) {
-    list.innerHTML = `<div class="inventory-empty">No scans are in this date range. Expand the range to show this Place.</div>`
+    list.innerHTML = filtered
+      ? `<div class="inventory-empty">Nothing matches these catalogue filters.</div>`
+      : `<div class="inventory-empty">No scans are in this date range. Expand the range to show this Place.</div>`
     return
   }
 
@@ -3310,7 +3520,7 @@ function renderItemsPanel(): void {
       for (const [roomName, room] of floor.rooms) {
         const roomNode = createOutlinerGroup('room', roomName, `${room.scans.length} scan${room.scans.length === 1 ? '' : 's'}`, Boolean(selectedScan && outlinerLocationForScan(selectedScan).building === buildingName && outlinerLocationForScan(selectedScan).floor === floorName && outlinerLocationForScan(selectedScan).room === roomName))
         for (const scan of room.scans.sort((a, b) => (a.capturedAt ?? '').localeCompare(b.capturedAt ?? ''))) {
-          appendOutlinerScan(roomNode, scan, itemsByScan.get(scan.scanId) ?? [])
+          appendOutlinerScan(roomNode, scan, itemsByScan.get(scan.scanId) ?? [], filtered)
         }
         floorNode.appendChild(roomNode)
       }
@@ -4356,6 +4566,19 @@ document.querySelectorAll('.sidebar-tab').forEach(button => {
   button.addEventListener('click', () => {
     switchSidebarTab((button as HTMLButtonElement).dataset['tab']!)
   })
+})
+
+document.getElementById('catalogue-search')?.addEventListener('input', (event) => {
+  catalogueFilter.query = (event.target as HTMLInputElement).value
+  renderCatalogue()
+})
+document.getElementById('catalogue-label-filter')?.addEventListener('change', (event) => {
+  catalogueFilter.label = (event.target as HTMLSelectElement).value
+  renderCatalogue()
+})
+document.getElementById('catalogue-scan-filter')?.addEventListener('change', (event) => {
+  catalogueFilter.scanId = (event.target as HTMLSelectElement).value
+  renderCatalogue()
 })
 
 document.getElementById('project-place-type')?.addEventListener('change', () => {
