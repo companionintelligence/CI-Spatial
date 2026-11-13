@@ -99,14 +99,20 @@ where that measurement lives.
 
 ## Accelerators
 
-| | NVIDIA / CUDA | AMD / ROCm | Apple Silicon / Metal + MPS | CPU only |
-| --- | --- | --- | --- | --- |
-| Driver detected by the report | **VERIFIED** (nvidia-smi) | UNVERIFIED (`rocminfo` / `rocm-smi` probe never exercised on AMD hardware) | UNVERIFIED (derived from `Deno.build`, no hardware) | n/a |
-| torch reports the device | **VERIFIED** — `2.13.0+cu130`, `cuda_available=True`, `version.hip=None` | UNVERIFIED | UNVERIFIED | **VERIFIED** — a torch-less `python3` is reported as such |
-| ffmpeg ingest | **VERIFIED** | UNVERIFIED | UNVERIFIED | works — ffmpeg here is CPU |
-| COLMAP poses | **VERIFIED** | UNVERIFIED | UNVERIFIED | works by design — `USE_GPU = '0'` in colmap_poses.ts, CPU feature extraction is the portable default |
-| Brush / Spirula training | UNVERIFIED (present, not run in this pass) | UNVERIFIED | UNVERIFIED | **Known not to work** — both need a Vulkan/Metal device |
-| 4D person capture (4DAnyone) | **Known not to work on this host** — needs ~44 GiB on one CUDA device; this GPU has 12282 MiB. Runs off-box only (ADR 0006) | UNVERIFIED | UNVERIFIED | Known not to work |
+| | NVIDIA / CUDA | AMD / ROCm | Apple Silicon / Metal + MPS | Intel / XPU | CPU only |
+| --- | --- | --- | --- | --- | --- |
+| Driver detected by the report | **VERIFIED** (nvidia-smi, on an RTX 4080 Laptop in the 2026-08-30 probe and an RTX 3070 on 2026-11-12) | UNVERIFIED (`rocminfo` / `rocm-smi` probe never exercised on AMD hardware) | UNVERIFIED (derived from `Deno.build`, no hardware) | UNVERIFIED — the report does not probe Intel GPU hardware; the torch check below is the only signal |
+| torch reports the device | **VERIFIED** — `2.13.0+cu130` (2026-08-30) and `2.11.0+cu128` on an RTX 3070 (2026-11-12): `cuda_available=True`, `version.hip=None` | UNVERIFIED | UNVERIFIED | UNVERIFIED — `torch.xpu.is_available()` is probed; a CUDA wheel answers `False` | **VERIFIED** — a torch-less `python3` is reported as such |
+| Worker device resolution (`scripts/_torch_device.py`) | **VERIFIED** on real torch 2.11.0+cu128, RTX 3070, 2026-11-12: auto → `cuda (NVIDIA CUDA, fp16)`; an fp16 autocast forward ran on the GPU; an explicit `xpu` request downgraded to CPU with a reason | UNVERIFIED — fake-torch unit tests only | UNVERIFIED — fake-torch unit tests only; workers set `PYTORCH_ENABLE_MPS_FALLBACK` | UNVERIFIED — fake-torch unit tests only; fp32 by policy | VERIFIED — the resolver's CPU path |
+| Panoptic segmentation (Mask2Former) | **VERIFIED** end to end on 2026-11-12, RTX 3070: two real phone frames → 10 segments, device `cuda (NVIDIA CUDA, fp16)` | UNVERIFIED | UNVERIFIED | UNVERIFIED | Unmeasured here |
+| ffmpeg ingest | **VERIFIED** | UNVERIFIED | UNVERIFIED | UNVERIFIED | works — ffmpeg here is CPU |
+| COLMAP poses | **VERIFIED** | UNVERIFIED | UNVERIFIED | UNVERIFIED | works by design — `USE_GPU = '0'` in colmap_poses.ts, CPU feature extraction is the portable default |
+| Brush / Spirula training | UNVERIFIED (present, not run in this pass) | UNVERIFIED (Vulkan) | UNVERIFIED (Brush needs Metal; Spirula has no macOS build here) | UNVERIFIED (Vulkan) | **Known not to work** — both need a Vulkan/Metal device |
+| 4D person capture (4DAnyone) | **Known not to work on this host** — needs ~44 GiB on one CUDA device; this GPU has 8192 MiB (RTX 4080 host: 12282 MiB). Runs off-box only (ADR 0006) | Not supported (NVIDIA-only) | Not supported | Not supported | Known not to work |
+| SenseNova Recon3D | Not run in this pass (needs CUDA 12.x and FlashAttention; `scripts/setup-sensenova-wsl.sh`) | Not supported | Not supported | Not supported | Not supported |
+
+Per-vendor setup, the stage-by-backend matrix and the environment variables are in
+[GPU_BACKENDS.md](GPU_BACKENDS.md).
 
 ### ROCm is not a separate branch, and must not become one
 

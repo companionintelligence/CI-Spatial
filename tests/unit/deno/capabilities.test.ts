@@ -279,6 +279,36 @@ Deno.test('deriveAccelerator: a ROCm torch is rocm, not cuda', async () => {
   await Promise.resolve()
 })
 
+Deno.test('deriveAccelerator: an Intel XPU torch is xpu, and loses to CUDA and MPS', () => {
+  // Same order as scripts/_torch_device.py: CUDA, then MPS, then XPU.
+  assertEquals(deriveAccelerator({ cudaAvailable: false, xpuAvailable: true }), 'xpu')
+  assertEquals(deriveAccelerator({ cudaAvailable: true, xpuAvailable: true }), 'cuda')
+  assertEquals(deriveAccelerator({ cudaAvailable: false, mpsAvailable: true, xpuAvailable: true }), 'mps')
+  assertEquals(deriveAccelerator({ cudaAvailable: false, xpuAvailable: false }), 'cpu')
+})
+
+Deno.test('parseTorchProbe: an Intel XPU payload reports xpu', () => {
+  const t = parseTorchProbe(JSON.stringify({
+    python: '3.12.3',
+    torch: '2.8.0+xpu',
+    cudaBuild: null,
+    hipBuild: null,
+    cudaAvailable: false,
+    mpsAvailable: false,
+    xpuAvailable: true,
+  }))
+  assertEquals(t.present, true)
+  assertEquals(t.xpuAvailable, true)
+  assertEquals(t.accelerator, 'xpu')
+})
+
+Deno.test('parseTorchProbe: a torch without an xpu key is not xpu', () => {
+  // Every pre-XPU probe payload, and every non-Intel wheel, omits the key.
+  const t = parseTorchProbe(JSON.stringify({ python: '3.12.3', torch: '2.13.0+cu130', cudaBuild: '13.0', hipBuild: null, cudaAvailable: true, mpsAvailable: false }))
+  assertEquals(t.accelerator, 'cuda')
+  assertEquals(t.xpuAvailable, false)
+})
+
 Deno.test('parseTorchProbe: a real CUDA payload', () => {
   const t = parseTorchProbe(JSON.stringify({
     python: '3.12.3',

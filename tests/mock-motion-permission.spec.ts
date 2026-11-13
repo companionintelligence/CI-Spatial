@@ -10,9 +10,10 @@
  * `../docs/product/UX_FLOW.md` §3.2 item 3 was written to kill exactly this path; the
  * banner and its copy were already correct, only the trigger was wrong.
  *
- * Headless Chromium has `DeviceOrientationEvent` but not `requestPermission`
- * (that is iOS Safari only), so each test installs the API it wants via
- * `addInitScript` before the app's module runs.
+ * Each test installs the API it wants via `addInitScript` before the app's
+ * module runs. Do not rely on the browser lacking `requestPermission`: newer
+ * Chromium builds ship it, so the
+ * no-API case removes it explicitly.
  *
  * Run: npx playwright test --project=chromium-mock mock-motion-permission
  */
@@ -80,7 +81,14 @@ test.describe('motion permission', () => {
   test('a platform without the API shows no banner', async ({ page }) => {
     // Android and desktop have no requestPermission at all. There is nothing
     // to grant, so nothing to warn about — the filter that drops the absent
-    // calls is what keeps this quiet.
+    // calls is what keeps this quiet. Remove the method explicitly, because
+    // this browser may ship it.
+    await page.addInitScript(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      delete (DeviceOrientationEvent as any).requestPermission
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      delete (DeviceMotionEvent as any).requestPermission
+    })
     await startAR(page)
 
     await expect(page.locator('#scan-stats')).toHaveText(/\d+ pts/, { timeout: 30_000 })

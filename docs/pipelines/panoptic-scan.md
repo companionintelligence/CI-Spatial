@@ -93,7 +93,9 @@ matters here because torch/transformers do not yet support 3.14:
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv --python 3.12 ~/.venvs/panoptic
-uv pip install --python ~/.venvs/panoptic/bin/python torch torchvision transformers pillow numpy
+uv pip install --python ~/.venvs/panoptic/bin/python torch torchvision transformers pillow numpy scipy
+# scipy is required: transformers' Mask2Former builds its loss at construction time and
+# raises "requires the scipy library" without it. Verified on 2026-11-12 with torch 2.11.0+cu128.
 
 # (where `python3 -m venv` already works, that plus pip install of the same
 #  five packages is equivalent — uv is only avoiding the ensurepip problem.)
