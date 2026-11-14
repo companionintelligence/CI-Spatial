@@ -210,10 +210,12 @@ export default defineConfig({
     hmr: { host: HOSTNAME },
     proxy,
     // Vite answers CORS preflights itself, before the proxy above reaches the Deno API. The Capacitor
-    // shells call the API from capacitor://localhost (iOS) or https://localhost (Android), so without
-    // this a shell's JSON request fails its preflight here in dev. Vite's own localhost pattern is kept.
+    // shells call the API from capacitor://localhost (iOS) or https://localhost (Android), and the
+    // desktop shell from tauri://localhost (macOS, Linux) or http(s)://tauri.localhost (Windows), so
+    // without this a shell's JSON request fails its preflight here in dev. Vite's own localhost
+    // pattern is kept, and it already covers tauri.localhost. server/origin.ts lists the same origins.
     cors: {
-      origin: [/^https?:\/\/(?:(?:[^:]+\.)?localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/, 'capacitor://localhost'],
+      origin: [/^https?:\/\/(?:(?:[^:]+\.)?localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/, 'capacitor://localhost', 'tauri://localhost'],
     },
     // These are runtime data stores written by the Deno API (uploaded scans,
     // optimized GLBs/LODs, world state) and served to the browser through the
