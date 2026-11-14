@@ -7,6 +7,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  SERVER_NONE_SET,
   SIGN_IN_FAILED,
   SIGN_IN_HREF,
   fetchFtueSnapshot,
@@ -152,6 +153,16 @@ test('hideWithoutServer: only a 404 hides the control, since a static host has n
   await hideWithoutServer(null, fakeFetch({}).fetchFn)
 })
 
+test('hideWithoutServer: a control hidden for a missing server comes back once one answers', async () => {
+  // A shell whose person has just saved a server address asks again (src/main.ts).
+  const el = { hidden: true }
+  await hideWithoutServer(el, fakeFetch({ '/health': { body: { status: 'ok' } } }).fetchFn)
+  assert.equal(el.hidden, false)
+  const offline = { hidden: true }
+  await hideWithoutServer(offline, fakeFetch({ '/health': 'throw' }).fetchFn)
+  assert.equal(offline.hidden, true, 'offline still changes nothing')
+})
+
 test('fetch: an engine state the screen does not know is unavailable, not guessed', async () => {
   const { fetchFn } = fakeFetch({
     '/memory/status': { body: { enabled: false } },
@@ -161,4 +172,45 @@ test('fetch: an engine state the screen does not know is unavailable, not guesse
   const snap = await fetchFtueSnapshot(fetchFn)
   assert.equal(snap.engine, null)
   assert.deepEqual(snap.signIn, { enabled: true })
+})
+
+// ── A native shell: its own Server row, naming the server the person set ─────────────────
+
+const SERVER = 'https://scan.example.ts.net:8443'
+const ANSWERED: FtueSnapshot = { memory: { enabled: true, reachable: true }, engine: { model: MODEL, engineLoadState: 'ready' }, signIn: { enabled: true } }
+
+test('shell: with no server set there is one row, and its control adds one', () => {
+  const rows = ftueRows({ memory: null, engine: null, signIn: null }, { origin: null })
+  assert.equal(rows.length, 1)
+  assert.equal(ftueRowText(rows[0]!), `Server ${SERVER_NONE_SET} Add server`)
+  assert.deepEqual(rows[0]!.control, { action: 'server', text: 'Add server' })
+})
+
+test('shell: a server that did not answer is named, and can be changed', () => {
+  const rows = ftueRows({ memory: null, engine: null, signIn: null }, { origin: SERVER })
+  assert.equal(rows.length, 1)
+  assert.equal(
+    ftueRowText(rows[0]!),
+    'Server scan.example.ts.net:8443 did not answer. Sign-in, saved projects and object labels need it. Change',
+  )
+})
+
+test('shell: a server that answered heads the three status rows', () => {
+  const rows = ftueRows(ANSWERED, { origin: SERVER })
+  assert.deepEqual(rows.map((row) => row.label ?? row.link?.text), ['Server', 'Companion Memory', 'Model', 'Sign in with Companion Account'])
+  assert.equal(ftueRowText(rows[0]!), 'Server scan.example.ts.net:8443 Change')
+  assert.deepEqual(rows.slice(1), ftueRows(ANSWERED), 'the status rows are the browser rows, word for word')
+})
+
+test('shell: the Server row shows the host the person typed, and no scheme, path or token', () => {
+  for (const snapshot of [ANSWERED, { memory: null, engine: null, signIn: null }]) {
+    const shown = ftueRowText(ftueRows(snapshot, { origin: SERVER })[0]!)
+    assert.doesNotMatch(shown, /https?:|\/|token|key/i, `"${shown}"`)
+  }
+})
+
+test('browser: no control is ever drawn, so the hosted site keeps its rows', () => {
+  for (const snapshot of [ANSWERED, { memory: null, engine: null, signIn: null }]) {
+    assert.ok(ftueRows(snapshot).every((row) => row.control === undefined))
+  }
 })

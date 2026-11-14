@@ -1,7 +1,8 @@
 # Companion Scan desktop shell
 
 Tauri 2 wraps the bundled Scan web app for macOS and Windows. The app connects to
-a Scan server configured by `VITE_API_BASE`; it does not run the Scan server.
+the Scan server whose https address the person sets in it (the editor asks for one
+when none is set); it does not run the Scan server.
 
 ```sh
 cd desktop
@@ -10,8 +11,9 @@ npm run dev
 npm run build
 ```
 
-Set `VITE_API_BASE` in the parent environment when building for a server. Do not
-ship a developer's private LAN address in a public release.
+A build can name a default server with `VITE_API_BASE` in the parent environment;
+an address saved in the app overrides it. Do not ship a developer's private LAN
+address in a public release.
 
 ## Store and feature gates
 

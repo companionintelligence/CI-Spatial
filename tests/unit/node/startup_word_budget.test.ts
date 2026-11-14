@@ -81,6 +81,22 @@ test('the first-run status rows cost what their copy says, and the screen carrie
   }
 })
 
+test('a native shell pays for its Server row, and its worst screen still fits the ceiling', () => {
+  // The shells (Android, iOS, desktop) put a Server row above the three status
+  // rows: the host the person saved and a Change control. That is three words on
+  // the browser's worst case, because the row only names the server when the
+  // status rows below it have answered. Pinned like the browser's number, so a
+  // copy change in src/ui/ftue-status.ts has to come back here on purpose.
+  const shellRows = ftueStatusWordsMax(true)
+  assert.equal(shellRows, 35, `a shell's status rows now cost ${shellRows} words at worst, not 35`)
+  for (const c of allCases()) {
+    const total = c.words.total - c.words.status + shellRows
+    assert.ok(total <= WORDS_BEFORE_CAMERA_MAX, `${where(c)} in a shell: ${total} words, budget ${WORDS_BEFORE_CAMERA_MAX}`)
+  }
+  const worst = allCases()[0]!
+  assert.equal(worst.words.total - worst.words.status + shellRows, 138, 'the worst shell screen is the browser one plus the Server row')
+})
+
 test('the overrun is the un-recommended methods, not the recommendation', () => {
   // The claim that said the fix was a design change and not a copy cut — and
   // it stays here now that the change is made, because it is what says the

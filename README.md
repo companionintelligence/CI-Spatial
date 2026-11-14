@@ -397,7 +397,7 @@ New here? [docs/product/UX_FLOW.md](docs/product/UX_FLOW.md) walks the whole hap
 
 ### First-run setup status and settings
 
-The second step of the first-run overlay lists three things about this install. Each row comes from an endpoint on the scanner's own origin. The status rows contact no third-party host and show no address or key.
+The second step of the first-run overlay lists three things about this install. Each row comes from an endpoint on the scanner's own origin (in the apps, on the Scan server set on the device; see below). The status rows contact no third-party host and show no address or key. The one exception is the apps' Server row, which names the host the person typed.
 
 | Row | Read from | What it says |
 |---|---|---|
@@ -406,6 +406,12 @@ The second step of the first-run overlay lists three things about this install. 
 | Sign-in | `GET /authenticate/status` | "Sign in with Companion Account" when sign-in is on, or "Off on this install." In the native shell, "Signed in." once the shell holds a session. |
 
 A row reads "Status unavailable." when its endpoint does not answer. When none of the three answers, as on the static public site, one Server row replaces them: "None answered. Sign-in, saved projects and object labels need one." Reading the Companion Memory row makes the server probe the configured Companion Memory once: an empty-batch POST with a five-second timeout.
+
+#### The Scan server in the Android, iOS and desktop apps
+
+The apps have no server of their own. They talk to the person's own Scan server, such as the one on their Companion Hub, and its address is set on the device. In the apps a Server row comes first on the second step: "None set" with an Add server control, the server's host with a Change control, or the host followed by "did not answer". The control opens a form that tests the address (`GET /health`) and saves it. The editor has the same form under Navigate, Scan server, and asks for an address when none is set. Either way the address is kept in the app's storage (`companion-scan-server`, `src/shared/api-base.ts`), and saving a different server drops the session token, which belongs to the old one. A build can name a default server with `VITE_API_BASE`; an address saved on the device wins over it. The hosted web app never reads the saved address, so the public site behaves as it always has.
+
+Only `https://` addresses are accepted, and an address is an origin: no path, query or user name. Plain `http` is refused rather than allowed, because no documented setup needs it. A Companion Hub serves its apps over HTTPS, a self-hosted server on a tailnet uses a `tailscale cert` certificate ([docs/operations/DEPLOY.md](docs/operations/DEPLOY.md)), and the phone browser already needs HTTPS for the camera. The Android app refuses cleartext and mixed content (`mobile/capacitor.config.ts`), the desktop app's content security policy allows only `https:` and `wss:` to remote hosts, and the session token must not cross a network in clear text. A server that only answers plain `http` on a LAN needs TLS in front of it before the apps can use it.
 
 `engineLoadState: ready` means Ollama answered and a model was resolved. It does not mean a capture has run. The engine loads once, when the server starts, and is not retried, so start Ollama before the Deno server, or restart the server after you start Ollama.
 

@@ -10,12 +10,12 @@
  * The server half is server/portal_auth.ts (SHELL_RETURN_URL, POST /authenticate/shell/exchange).
  * The plugins are read from Capacitor.Plugins, so the web build does not bundle them.
  */
-import { apiUrl, isNativeShell, SHELL_SESSION_KEY, shellSessionToken } from './api-base.ts'
+import { apiBase, apiUrl, isNativeShell, SHELL_SESSION_KEY, SHELL_SIGN_IN_PENDING_KEY, shellSessionToken } from './api-base.ts'
 
 /** The app's URL scheme and sign-in host. Keep in step with SHELL_RETURN_URL in server/portal_auth.ts. */
 export const SHELL_RETURN_PREFIX = 'com.companionintelligence.scan://auth'
 
-const PENDING_KEY = 'companion-scan-shell-sign-in'
+const PENDING_KEY = SHELL_SIGN_IN_PENDING_KEY
 const TOKEN_KEY = SHELL_SESSION_KEY
 /** A sign-in that has not come back to the app in this long is abandoned. */
 const PENDING_TTL_MS = 10 * 60_000
@@ -170,28 +170,34 @@ let sessionFetchInstalled = false
 /**
  * The server answers only a signed-in Companion session, and in the shell that session is a Bearer
  * token. So every request to the server carries it, unless the caller set its own Authorization:
- * fetch, and XMLHttpRequest (the photo and clip uploads). Installed once, and only inside a shell
- * that has a server origin. `server` defaults to this build's API origin; tests pass their own.
+ * fetch, and XMLHttpRequest (the photo and clip uploads). Installed once, inside any shell. The
+ * server is read on every request, because the person can change it while the app runs, and a
+ * request to any other origin never gets the token. `server` defaults to the current Scan server
+ * (apiBase()); tests pass their own.
  */
-export function installShellSession(server = apiUrl('/').slice(0, -1)): void {
+export function installShellSession(server: string | (() => string) = apiBase): void {
   if (sessionFetchInstalled || !isNativeShell() || typeof globalThis.fetch !== 'function') return
-  if (!server) return
   sessionFetchInstalled = true
+  const toServer = (url: string): boolean => {
+    const origin = typeof server === 'function' ? server() : server
+    return origin !== '' && url.startsWith(`${origin}/`)
+  }
   const nativeFetch = globalThis.fetch.bind(globalThis)
   globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const token = shellSessionToken()
     const url = input instanceof Request ? input.url : String(input)
-    if (!token || !url.startsWith(`${server}/`)) return nativeFetch(input, init)
+    if (!token || !toServer(url)) return nativeFetch(input, init)
     const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
     if (!headers.has('Authorization')) headers.set('Authorization', `Bearer ${token}`)
     return nativeFetch(input, { ...init, headers })
   }) as typeof fetch
 
+  if (typeof XMLHttpRequest !== 'function') return
   const nativeOpen = XMLHttpRequest.prototype.open
   XMLHttpRequest.prototype.open = function (this: XMLHttpRequest, method: string, url: string | URL, ...rest: unknown[]) {
     Reflect.apply(nativeOpen, this, [method, url, ...rest])
     const token = shellSessionToken()
-    if (token && String(url).startsWith(`${server}/`)) this.setRequestHeader('Authorization', `Bearer ${token}`)
+    if (token && toServer(String(url))) this.setRequestHeader('Authorization', `Bearer ${token}`)
   }
 }
 
