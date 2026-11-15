@@ -186,6 +186,12 @@ export const SHELL_SESSION_KEY = 'companion-scan-shell-session'
 /** Where a shell keeps the PKCE verifier of a sign-in it started, until the browser hands the app back. */
 export const SHELL_SIGN_IN_PENDING_KEY = 'companion-scan-shell-sign-in'
 
+/**
+ * Where a shell keeps the one-time codes of the latest sign-in returns it was handed, so that a
+ * return handed over again on a later page load is not finished a second time.
+ */
+export const SHELL_SIGN_IN_CODES_KEY = 'companion-scan-shell-sign-in-codes'
+
 /** The shell's session token, or null outside a shell or before its sign-in. Blocked storage reads as no token. */
 export function shellSessionToken(): string | null {
   if (!isNativeShell()) return null

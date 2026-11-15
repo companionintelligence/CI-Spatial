@@ -19,6 +19,7 @@ import {
   isDesktopShell,
   isNativeShell,
   SHELL_SESSION_KEY,
+  SHELL_SIGN_IN_CODES_KEY,
   SHELL_SIGN_IN_PENDING_KEY,
   shellSessionToken,
 } from './api-base.ts'
@@ -34,9 +35,12 @@ export const SHELL_RETURN_PREFIX = 'com.companionintelligence.scan://auth'
 export const DESKTOP_RETURN_PREFIX = 'computer.ci.scan.desktop://auth'
 
 const PENDING_KEY = SHELL_SIGN_IN_PENDING_KEY
+const CODES_KEY = SHELL_SIGN_IN_CODES_KEY
 const TOKEN_KEY = SHELL_SESSION_KEY
 /** A sign-in that has not come back to the app in this long is abandoned. */
 const PENDING_TTL_MS = 10 * 60_000
+/** How many of the latest return codes the app remembers, so that none is finished twice. */
+const CODES_KEPT = 10
 const CHECK_TIMEOUT_MS = 8_000
 const CODE_SHAPE = /^[A-Za-z0-9_-]{43}$/
 
@@ -149,20 +153,54 @@ export async function beginShellSignIn(): Promise<void> {
   await open(apiUrl(shellSignInPath(challenge, isDesktopShell() ? 'desktop' : 'phone')))
 }
 
+/** The one-time code in a return to the app, or null when it has none of the shape the server makes. */
+function returnCode(url: string): string | null {
+  try {
+    const code = new URL(url).searchParams.get('code') ?? ''
+    return CODE_SHAPE.test(code) ? code : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Notes `code` as handed to the app, and says whether it was handed over before. The latest
+ * CODES_KEPT codes are kept, the most recently seen first, so a launch URL handed back on every
+ * page load stays known however many sign-ins follow it.
+ */
+function seenBefore(code: string): boolean {
+  let seen: string[] = []
+  try {
+    const list = JSON.parse(readStorage(CODES_KEY) ?? '[]') as unknown
+    if (Array.isArray(list)) seen = list.filter((item): item is string => typeof item === 'string')
+  } catch {
+    // An unreadable list remembers nothing; it is written afresh below.
+  }
+  writeStorage(CODES_KEY, JSON.stringify([code, ...seen.filter((item) => item !== code)].slice(0, CODES_KEPT)))
+  return seen.includes(code)
+}
+
 /**
  * Finishes a sign-in that came back to the app through `url`. Returns true when the
  * shell now holds a session, false when the sign-in failed, and null when `url` is not
  * a return for a sign-in this app started (a duplicate, a stale launch URL, or any other link).
+ *
+ * Two kinds of link are ignored, and leave a sign-in in progress as it was:
+ * - A link to the app's scheme without a code of the shape the server sends. Any web page can
+ *   open such a link, and it must not cancel the person's sign-in.
+ * - A code the app was handed before. On every page load the desktop app's deep-link plugin
+ *   hands over the last link of the process again (getCurrent()), and the phone app its launch
+ *   URL. A return that already ended one sign-in would otherwise take the verifier of the next.
  */
 export async function finishShellSignIn(url: string): Promise<boolean | null> {
   if (!url.startsWith(`${returnPrefix()}?`)) return null
+  const code = returnCode(url)
+  if (!code || seenBefore(code)) return null
   const verifier = pendingVerifier()
   if (!verifier) return null
   writeStorage(PENDING_KEY, null)
   // The phone's browser sheet belongs to the app and is closed. A desktop's browser is the person's own.
   void plugins().Browser?.close().catch(() => undefined)
-  const code = new URL(url).searchParams.get('code') ?? ''
-  if (!CODE_SHAPE.test(code)) return false
   try {
     const res = await fetch(apiUrl('/authenticate/shell/exchange'), {
       method: 'POST',

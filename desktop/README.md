@@ -65,6 +65,11 @@ through the person's default browser:
    a session token, keeps it in the WebView's storage, and sends it as
    `Authorization: Bearer`.
 
+The deep-link plugin hands every page the process's last link again, so the app keeps the
+latest codes it was handed and ignores any it has seen: a return that ended one sign-in
+never ends the next. A link to the scheme without a code of the server's shape is ignored
+too, so a web page that opens one cannot cancel a sign-in in progress.
+
 CI-Portal redirects only to the Scan server's own `/authenticate/oidc/callback`, so the
 scheme needs no Portal registration. A server with sign-in off needs none of this: the
 editor drops its account control and everything else works. Not verified: a sign-in
