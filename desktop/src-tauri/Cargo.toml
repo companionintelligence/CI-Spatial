@@ -1,16 +1,21 @@
 [package]
 name = "companion-scan-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "Companion Scan desktop shell"
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.90"
 publish = false
 
 [build-dependencies]
-tauri-build = { version = "=2.12.5", features = [] }
+tauri-build = { version = "=2.7.4", features = [] }
 
 [dependencies]
+# tauri::generate_context!() reads the plugins section of tauri.conf.json with serde_json.
+serde_json = "=1.0.154"
 tauri = { version = "=2.12.5", features = [] }
+tauri-plugin-deep-link = "=2.6.3"
+tauri-plugin-opener = "=2.7.3"
+tauri-plugin-single-instance = { version = "=2.5.5", features = ["deep-link"] }
 
 [profile.release]
 codegen-units = 1

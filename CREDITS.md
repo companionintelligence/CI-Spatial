@@ -27,6 +27,16 @@ The frameworks and libraries that define how this repository is built.
 | <img src="https://github.com/Microsoft.png?size=40" width="20" height="20" alt=""> | [`onnxruntime-web`](https://github.com/Microsoft/onnxruntime#readme) | MIT | A Javascript library for running ONNX models on browsers |
 | <img src="https://github.com/websockets.png?size=40" width="20" height="20" alt=""> | [`ws`](https://github.com/websockets/ws) | MIT | Simple to use, blazing fast and thoroughly tested websocket client and server for Node.js |
 
+<!-- Maintained by hand: these ship with the app, but no manifest declares them. -->
+
+| | Project | Licence | What it does |
+| :-: | --- | --- | --- |
+|  | [Niantic Spatial XR Engine (8th Wall)](https://github.com/8thwall/engine) | [XR Engine License Agreement](https://github.com/8thwall/engine/blob/main/LICENSE) (proprietary, binary only; see [NOTICE.md](NOTICE.md)) | The SLAM tracking behind AR capture, vendored as `public/xr.js` and its files |
+|  | [Draco](https://github.com/google/draco) decoder | Apache-2.0 | Decodes Draco-compressed scans, copied to `public/draco/` from three.js |
+|  | [QR Code generator library](https://www.nayuki.io/page/qr-code-generator-library) (Project Nayuki) | MIT | Draws the share-link QR codes, vendored in `src/third-party/qrcodegen/` |
+|  | [Tauri](https://tauri.app) | MIT or Apache-2.0 | The desktop app's shell |
+|  | [Capacitor](https://capacitorjs.com) | MIT | The Android and iOS apps' shell |
+
 ## 3. Build and tooling
 
 | | Project | Licence | What it does |

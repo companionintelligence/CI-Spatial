@@ -1,19 +1,21 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Companion Scan",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "computer.ci.scan.desktop",
   "build": {
-    "beforeDevCommand": "cd .. && npm run dev -- --host 127.0.0.1",
-    "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "cd .. && npm run build",
-    "frontendDist": "../../dist"
+    "beforeDevCommand": "cd .. && npx vite --config vite.http.config.ts --host 127.0.0.1",
+    "devUrl": "http://localhost:5199",
+    "beforeBuildCommand": "node ../scripts/native/build-web.mjs desktop",
+    "frontendDist": "../dist"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "label": "main",
         "title": "Companion Scan",
+        "url": "viewer.html",
         "width": 1440,
         "height": 960,
         "minWidth": 960,
@@ -26,17 +28,31 @@
       "capabilities": [
         "default"
       ],
-      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data: https:; media-src 'self' blob: data: https:; worker-src 'self' blob:; connect-src 'self' https: wss: http://localhost:* ws://localhost:* blob:"
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-hashes' 'sha256-MhtPZXr7+LpJUY5qtMutB+qWfQtMaPccfe7QXtCcEYc='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob: https:; font-src 'self' data: https:; media-src 'self' blob: data: https:; worker-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost https: wss: http://localhost:* ws://localhost:* blob: data:",
+      "dangerousDisableAssetCspModification": [
+        "style-src"
+      ]
     }
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": [
+      "nsis",
+      "msi",
+      "app",
+      "dmg",
+      "deb",
+      "rpm"
+    ],
+    "publisher": "Companion Intelligence",
+    "copyright": "Copyright LifeScope INC, DBA Companion Intelligence",
+    "license": "PolyForm-Noncommercial-1.0.0",
     "category": "GraphicsAndDesign",
-    "shortDescription": "Capture, inspect, and export spatial scans",
+    "shortDescription": "Inspect, edit and export spatial scans",
     "macOS": {
       "minimumSystemVersion": "12.0",
-      "infoPlist": "Info.plist"
+      "infoPlist": "Info.plist",
+      "signingIdentity": "-"
     },
     "icon": [
       "icons/32x32.png",
@@ -45,5 +61,14 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "computer.ci.scan.desktop"
+        ]
+      }
+    }
   }
 }

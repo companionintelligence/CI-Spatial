@@ -61,7 +61,7 @@ intervals on 2026-06-11, each with a `geoPose` resolved to a street address, a
 `pointCount`, a `detectionCount` and a `qualitySummary`. Jobs continued to run
 against that world as late as 2026-07-07.
 
-Nothing needs downloading first: the 8th Wall OSS engine is **committed**
+Nothing needs downloading first: the 8th Wall engine (Niantic Spatial's proprietary binary, not open source; see NOTICE.md) is **committed**
 (`public/xr.js`, plus `xr-slam.js` / `xr-face.js`, ~1 MB), despite `index.html:27`
 still telling you to fetch it from 8th.io/xrjs.
 

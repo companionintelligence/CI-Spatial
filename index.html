@@ -91,6 +91,8 @@
       // AR engine selection:
       //   ?mock=xr8  → scripted XR8 mock (automated tests, no device/binary)
       //   ?ar=webxr  → skip the SLAM binary entirely (HelloXR / WebXR mode)
+      //   desktop app (Tauri, which sets __TAURI_INTERNALS__) → no engine: the desktop
+      //                app is the editor and viewer, and its bundle leaves the engine out
       //   default    → real 8th Wall engine from public/xr.js
       {
         const params = new URLSearchParams(location.search)
@@ -98,7 +100,7 @@
           const mockScript = document.createElement('script')
           mockScript.src = '/test-fixtures/xr8-mock.js'
           document.head.appendChild(mockScript)
-        } else if (params.get('ar') !== 'webxr') {
+        } else if (params.get('ar') !== 'webxr' && !('__TAURI_INTERNALS__' in window)) {
           const xrScript = document.createElement('script')
           xrScript.async = true
           xrScript.src = '/xr.js'

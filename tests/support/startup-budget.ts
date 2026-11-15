@@ -66,6 +66,7 @@ import {
   type EngineStatus,
   type FtueSnapshot,
   type MemoryStatus,
+  type ShellServer,
   type SignInStatus,
 } from '../../src/ui/ftue-status.ts'
 
@@ -331,8 +332,13 @@ export function readStaticCopy(html: string = indexHtml()): StaticCopy {
  * endpoints' answers can put on the second onboarding step. Each endpoint's
  * possible answers are enumerated and the rows are the module's own, so this
  * number moves with the copy in src/ui/ftue-status.ts and nothing else.
+ *
+ * `shell` counts a native shell's screen instead, which adds its Server row
+ * (no server set, set but silent, or set and answering). The host in that row
+ * is one word, whatever it is. The browser's screen, and so every literal pinned
+ * against it, is the default.
  */
-export function ftueStatusWordsMax(): number {
+export function ftueStatusWordsMax(shell = false): number {
   const memory: Array<MemoryStatus | null> = [
     null,
     { enabled: false },
@@ -351,10 +357,13 @@ export function ftueStatusWordsMax(): number {
     { enabled: true, signedIn: true },
     { enabled: true, problem: SIGN_IN_FAILED },
   ]
+  const servers: Array<ShellServer | undefined> = shell
+    ? [{ origin: null }, { origin: 'https://scan.example.ts.net:8443' }]
+    : [undefined]
   let worst = 0
-  for (const m of memory) for (const e of engine) for (const s of signIn) {
+  for (const server of servers) for (const m of memory) for (const e of engine) for (const s of signIn) {
     const snap: FtueSnapshot = { memory: m, engine: e, signIn: s }
-    worst = Math.max(worst, ftueRows(snap).reduce((a, row) => a + countWords(ftueRowText(row)), 0))
+    worst = Math.max(worst, ftueRows(snap, server).reduce((a, row) => a + countWords(ftueRowText(row)), 0))
   }
   return worst
 }

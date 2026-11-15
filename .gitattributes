@@ -1,0 +1,7 @@
+# The Niantic Spatial XR Engine (8th Wall) may be redistributed only in the form Niantic
+# publishes it (XR Engine License Agreement, section 1.1). A checkout that converts line
+# endings, such as Git for Windows with core.autocrlf=true, rewrites xr.js, xr-slam.js and
+# xr-face.js, and a build from that checkout ships the changed copy. Never convert them.
+# scripts/native/check-xr-engine.mjs checks each engine file against Niantic's published hashes.
+/public/xr*.js -text
+/public/resources/** -text

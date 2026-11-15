@@ -59,7 +59,7 @@ import { SidePanel, type ExportOutcome } from './ui/panel'
 import { SessionHistory } from './ui/history'
 import { hideWithoutServer, renderFtueStatus, SIGN_IN_FAILED } from './ui/ftue-status'
 import { initShellSignIn } from './shared/shell-sign-in'
-import { apiUrl, shellSessionToken, withSessionToken } from './shared/api-base.ts'
+import { apiUrl, editorPath, isDesktopShell, isNativeShell, SCAN_SERVER_CHANGE_EVENT, shellSessionToken, withSessionToken } from './shared/api-base.ts'
 import { exportToGLB } from './export/gltf'
 import { isServerSessionId } from './shared/session-id.ts'
 import { exportSessionSummary } from './export/summary'
@@ -288,6 +288,16 @@ async function main() {
     ? false
     : searchParams.has('mock') || searchParams.get('onboarding') === '0'
 
+  // A native shell serves its bundle as plain files, so the markup's `/editor` (a server and
+  // Pages rewrite) would fall back to this scanner page. Point the editor links at the file
+  // before anything below can return early; pointEditorLinksAtPlace() adds the Place later.
+  if (isNativeShell()) {
+    for (const id of ['start-editor-card', 'upload-video-open']) {
+      const link = document.getElementById(id)
+      if (link instanceof HTMLAnchorElement) link.href = editorPath()
+    }
+  }
+
   // Remote log mirror — inert unless armed via ?debug=remote or localStorage
   installRemoteLog()
   // Fields under the on-screen keyboard: publish the visible height and bring
@@ -472,7 +482,9 @@ async function main() {
    */
   function pointEditorLinksAtPlace(projectId: string | null): void {
     const suffix = projectId ? `?project=${encodeURIComponent(projectId)}` : ''
-    for (const [id, base] of [['start-editor-card', '/editor'], ['viewer-link', '/viewer.html']] as const) {
+    // editorPath() is /editor on a server and the public site, which rewrite it, and
+    // /viewer.html in a native shell, which has no rewrite and would show the scanner.
+    for (const [id, base] of [['start-editor-card', editorPath()], ['viewer-link', '/viewer.html']] as const) {
       const link = document.getElementById(id)
       if (link instanceof HTMLAnchorElement) link.href = `${base}${suffix}`
     }
@@ -480,6 +492,10 @@ async function main() {
   pointEditorLinksAtPlace(selectedProject?.projectId ?? null)
   // The editor reads places from the Scan server, so its card only leads to an error without one.
   void hideWithoutServer(document.getElementById('start-editor-card'))
+  // A native shell's server can be changed on the first-run screen. The card follows it.
+  globalThis.addEventListener(SCAN_SERVER_CHANGE_EVENT, () => {
+    void hideWithoutServer(document.getElementById('start-editor-card'))
+  })
   requestPlaceSelection = placePicker.open
   const pointCloud = new PointCloud(0.05)   // 5 cm voxel deduplication grid
   const poseHistory: Pose[] = []
@@ -638,7 +654,10 @@ async function main() {
   // later. The fallback then called createWebXRProvider(), which throws on any
   // Android Chrome without ARCore, and main() returned with the user's tap still
   // sitting behind the Place picker — a button that did nothing, with no error.
-  const xr8Available = forcedMode === 'webxr' ? false : await waitForXR8(XR8_LOAD_TIMEOUT_MS)
+  // The desktop app never loads the engine (index.html skips it there, and the desktop
+  // bundle leaves it out), so waiting the full timeout for it would only delay the
+  // start screen's upload path by 20 s.
+  const xr8Available = forcedMode === 'webxr' || isDesktopShell() ? false : await waitForXR8(XR8_LOAD_TIMEOUT_MS)
 
   if (xr8Available) {
     try {
@@ -2820,9 +2839,9 @@ function wireContentUpload(): void {
         if (progress) progress.textContent = line
         extras?.settle(true, line)
         if (openLink) {
-          openLink.href = uploadPlaceTarget.projectId
-            ? `/editor?project=${encodeURIComponent(uploadPlaceTarget.projectId)}`
-            : '/editor'
+          openLink.href = editorPath(uploadPlaceTarget.projectId
+            ? `?project=${encodeURIComponent(uploadPlaceTarget.projectId)}`
+            : '')
           openLink.hidden = false
         }
       } else {

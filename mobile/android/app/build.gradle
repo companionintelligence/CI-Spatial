@@ -1,11 +1,32 @@
 apply plugin: 'com.android.application'
 
-// Release signing comes from android/keystore.properties (git-ignored). Without that file
-// bundleRelease still builds, but the bundle is unsigned and Play will not accept it.
-def keystoreProperties = new Properties()
-def keystorePropertiesFile = rootProject.file('keystore.properties')
-if (keystorePropertiesFile.exists()) {
-    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+// Release signing, from one of two places, all or nothing:
+//   1. The environment, as the release workflow sets it: ANDROID_SIGNING_STORE_FILE (a path),
+//      ANDROID_SIGNING_STORE_PASSWORD, ANDROID_SIGNING_KEY_ALIAS and ANDROID_SIGNING_KEY_PASSWORD.
+//   2. android/keystore.properties (git-ignored), for a local build: storeFile, storePassword,
+//      keyAlias and keyPassword.
+// With neither, assembleRelease and bundleRelease still build, unsigned: Android will not install
+// that APK and Play will not accept that bundle. No key or password lives in this repository.
+def signingEnvNames = [
+    storeFile    : 'ANDROID_SIGNING_STORE_FILE',
+    storePassword: 'ANDROID_SIGNING_STORE_PASSWORD',
+    keyAlias     : 'ANDROID_SIGNING_KEY_ALIAS',
+    keyPassword  : 'ANDROID_SIGNING_KEY_PASSWORD',
+]
+def signingFromEnv = signingEnvNames.collectEntries { field, name -> [(field): System.getenv(name)] }
+def releaseSigning = null
+if (signingFromEnv.values().every { it }) {
+    releaseSigning = signingFromEnv
+} else if (signingFromEnv.values().any { it }) {
+    def missing = signingEnvNames.findAll { field, name -> !signingFromEnv[field] }.values()
+    throw new GradleException("Release signing from the environment is incomplete: set ${missing.join(', ')} too, or none of them.")
+} else {
+    def keystorePropertiesFile = rootProject.file('keystore.properties')
+    if (keystorePropertiesFile.exists()) {
+        def keystoreProperties = new Properties()
+        keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }
+        releaseSigning = signingEnvNames.keySet().collectEntries { field -> [(field): keystoreProperties[field]] }
+    }
 }
 
 android {
@@ -15,8 +36,10 @@ android {
         applicationId "com.companionintelligence.scan"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        // In step with the desktop app's version (scripts/native/check-versions.mjs). versionCode
+        // goes up by one with every release.
+        versionCode 2
+        versionName "0.2.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -26,19 +49,20 @@ android {
     }
     signingConfigs {
         release {
-            if (keystorePropertiesFile.exists()) {
-                storeFile rootProject.file(keystoreProperties['storeFile'])
-                storePassword keystoreProperties['storePassword']
-                keyAlias keystoreProperties['keyAlias']
-                keyPassword keystoreProperties['keyPassword']
+            if (releaseSigning) {
+                storeFile rootProject.file(releaseSigning.storeFile)
+                storePassword releaseSigning.storePassword
+                keyAlias releaseSigning.keyAlias
+                keyPassword releaseSigning.keyPassword
             }
         }
     }
     buildTypes {
         release {
             minifyEnabled false
+            debuggable false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
-            if (keystorePropertiesFile.exists()) {
+            if (releaseSigning) {
                 signingConfig signingConfigs.release
             }
         }
@@ -49,6 +73,16 @@ repositories {
     flatDir{
         dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
     }
+}
+
+// The libraries in the release APK are locked in app/gradle.lockfile, and the app's third-party
+// notices list them from it (scripts/native/third-party-notices.mjs). The release build uses the
+// versions locked there, and fails when it would take in a library the lockfile does not list or
+// leave out one it does, so the notices cannot fall behind the APK. After changing a dependency,
+// or Capacitor, run `npx cap sync android` in mobile/ and then, here in mobile/android:
+//   ./gradlew :app:dependencies --configuration releaseRuntimeClasspath --write-locks
+configurations.matching { it.name == 'releaseRuntimeClasspath' }.configureEach {
+    resolutionStrategy.activateDependencyLocking()
 }
 
 dependencies {
