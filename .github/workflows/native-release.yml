@@ -16,6 +16,10 @@ name: Native Release
 #
 # The installers are unsigned, apart from the macOS app's ad-hoc signature. The publish job runs
 # only after every build job has succeeded, and uses the gh CLI rather than a release action.
+#
+# Only the publish job can write to the repository, and it installs no dependencies. Every other
+# job has a read-only token, since the build jobs run npm, Cargo and Gradle code. No checkout keeps
+# its token in .git/config (persist-credentials: false): nothing here runs git with credentials.
 on:
   workflow_dispatch:
     inputs:
@@ -35,7 +39,7 @@ on:
           - skip
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: native-release-${{ inputs.tag }}
@@ -53,6 +57,8 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
@@ -61,6 +67,8 @@ jobs:
         run: |
           node scripts/native/check-versions.mjs --tag "$TAG"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+      # A read-only token sees published releases and pre-releases (the ones gh release create
+      # would refuse at the end), but not drafts.
       - name: No release has the tag yet
         env:
           GH_TOKEN: ${{ github.token }}
@@ -107,6 +115,8 @@ jobs:
       BUNDLE_DIR: ${{ matrix.bundle-dir }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
@@ -168,6 +178,8 @@ jobs:
       VERSION: ${{ needs.prepare.outputs.version }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
@@ -269,10 +281,14 @@ jobs:
     needs: [prepare, desktop, android]
     runs-on: ubuntu-22.04
     timeout-minutes: 15
+    permissions:
+      contents: write
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version

@@ -85,12 +85,11 @@ test('the notes say everything the release policy asks, whatever signed the APK'
   }
 })
 
-test('the release workflow: manual only, write access, every build first, gh and no release action', () => {
+test('the release workflow: manual only, every build first, gh and no release action', () => {
   const wf = read('.github/workflows/native-release.yml').replace(/\r\n/g, '\n')
   assert.match(wf, /^on:\n {2}workflow_dispatch:\n {4}inputs:\n {6}tag:\n[\s\S]*?required: true/m)
   assert.match(wf, /android_signing:[\s\S]*?default: auto[\s\S]*?options:\n {10}- auto\n {10}- keystore\n {10}- throwaway\n {10}- skip\n/)
   assert.doesNotMatch(wf, /^ {2}(push|pull_request|schedule|release):/m, 'nothing but a dispatch starts it')
-  assert.match(wf, /^permissions:\n {2}contents: write\n/m)
   assert.match(wf, /publish:\n[\s\S]*?needs: \[prepare, desktop, android\]/)
   assert.match(wf, /gh release create "\$TAG" out\/\*[\s\S]*?--prerelease[\s\S]*?--notes-file notes\.md/)
   const uses = [...wf.matchAll(/uses: (\S+)/g)].map((m) => m[1]!)
@@ -102,6 +101,27 @@ test('the release workflow: manual only, write access, every build first, gh and
   assert.ok(secretLines.every((line) => /\$\{\{ secrets\.ANDROID_KEY(STORE_BASE64|STORE_PASSWORD|_ALIAS|_PASSWORD) \}\}/.test(line)))
   assert.match(wf, /trap 'rm -f "\$keystore"' EXIT/, 'the keystore file is deleted when the step ends')
   assert.match(wf, /keytool -genkeypair/, 'a throwaway key is made in the job')
+})
+
+/** Each job's text under jobs:, by its id, in file order. */
+function workflowJobs(wf: string): Record<string, string> {
+  const jobs = wf.split(/^jobs:\n/m)[1] ?? ''
+  return Object.fromEntries(jobs.split(/^ {2}(?=[\w-]+:\n)/m).filter(Boolean).map((job) => [job.slice(0, job.indexOf(':')), job]))
+}
+
+test('only the publish job can write, and no checkout keeps its token for the build code to read', () => {
+  const wf = read('.github/workflows/native-release.yml').replace(/\r\n/g, '\n')
+  const jobs = workflowJobs(wf)
+  assert.deepEqual(Object.keys(jobs), ['prepare', 'desktop', 'android', 'publish'])
+  assert.match(wf, /^permissions:\n {2}contents: read\n\n/m, 'every job reads by default')
+  assert.match(jobs.publish ?? '', /^ {4}permissions:\n {6}contents: write\n {4}\S/m, 'the publish job writes releases, and asks for nothing more')
+  assert.equal(wf.match(/^ *permissions:/gm)?.length, 2, 'no other job sets its own permissions')
+  assert.equal(wf.match(/^ +[\w-]+: write$/gm)?.length, 1, 'write is granted once, to the publish job')
+  for (const [id, job] of Object.entries(jobs)) {
+    const checkouts = [...job.matchAll(/^( +)- uses: actions\/checkout@.*\n((?:\1 {2}.*\n)*)/gm)]
+    assert.equal(checkouts.length, 1, `${id}: one checkout`)
+    assert.match(checkouts[0]?.[2] ?? '', /^ +with:\n +persist-credentials: false\n/m, `${id}: the checkout leaves no token in .git/config`)
+  }
 })
 
 test('the desktop builds: Windows NSIS and MSI, a universal ad-hoc signed macOS dmg, Linux deb and rpm', () => {
