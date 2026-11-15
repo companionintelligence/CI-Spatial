@@ -14,7 +14,10 @@
  *      see pwaSwitch() in vite.config.ts) into desktop/dist or mobile/www.
  *   4. The desktop app is the editor and viewer, with no AR capture, so its bundle leaves out the
  *      8th Wall engine: xr.js, xr-slam.js, xr-face.js and resources/.
- *   5. The bundle is checked for what must not be in it, and its contents are listed.
+ *   5. No app bundles what NATIVE_EXCLUDED lists. public/ is copied whole, and a developer's
+ *      public/models (the on-device model weights, whose licence is unchecked) would otherwise
+ *      ride along into an installer or an APK.
+ *   6. The bundle is checked for what must not be in it, and its contents are listed.
  */
 import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
@@ -32,6 +35,18 @@ export const ENGINE_FILES = ['xr.js', 'xr-slam.js', 'xr-face.js', 'resources']
 
 /** The PWA files pwaSwitch() removes when VITE_DISABLE_PWA is set. A shell cannot use them. */
 export const PWA_FILES = ['sw.js', 'manifest.json']
+
+/**
+ * What no app bundle carries, though the web build copies it out of public/ when it is there.
+ * Keys are paths in the bundle; values say why.
+ */
+export const NATIVE_EXCLUDED = {
+  'models': 'the LFM2.5-VL-1.6B-ONNX weights download_models.py fetches into public/models (git-ignored, about '
+    + '2.2 GB). Their licence (LiquidAI lfm1.0) has not been checked for redistribution, so no app ships them.',
+  'real-camera-artifacts': 'screenshots from device test runs, kept for the test docs. They are not app assets, '
+    + 'and they show a test machine\'s own address bar.',
+  'test-fixtures': 'the XR8 mock and a synthetic test image, used only by automated tests.',
+}
 
 /** The .env files `vite build` reads (mode production). */
 const ENV_FILES = ['.env', '.env.local', '.env.production', '.env.production.local']
@@ -51,7 +66,7 @@ export function viteVariablesInEnvFiles(dir = ROOT) {
 
 /** What a finished bundle must not contain, as relative paths that exist in it. */
 export function forbiddenInBundle(outDir, shell) {
-  const names = [...PWA_FILES, ...(shell === 'desktop' ? ENGINE_FILES : [])]
+  const names = [...PWA_FILES, ...Object.keys(NATIVE_EXCLUDED), ...(shell === 'desktop' ? ENGINE_FILES : [])]
   return names.filter((name) => existsSync(join(outDir, name)))
 }
 
@@ -91,6 +106,11 @@ export function buildShellWeb(shell) {
   node('node_modules/typescript/bin/tsc', ['--noEmit'])
   node('node_modules/vite/bin/vite.js', ['build', '--outDir', outRel, '--emptyOutDir'], { VITE_DISABLE_PWA: '1' })
 
+  for (const [name, why] of Object.entries(NATIVE_EXCLUDED)) {
+    if (!existsSync(join(outDir, name))) continue
+    rmSync(join(outDir, name), { recursive: true, force: true })
+    console.warn(`[native web build] left out ${name}/: ${why}`)
+  }
   if (shell === 'desktop') {
     for (const name of ENGINE_FILES) rmSync(join(outDir, name), { recursive: true, force: true })
   }

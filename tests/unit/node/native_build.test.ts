@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   ENGINE_FILES,
+  NATIVE_EXCLUDED,
   OUT_DIRS,
   PWA_FILES,
   forbiddenInBundle,
@@ -40,6 +41,19 @@ test('a .env file that sets a VITE_ variable is found, so a native build can ref
   try {
     assert.deepEqual(viteVariablesInEnvFiles(dir), [['.env', 'VITE_HOSTNAME'], ['.env.production.local', 'VITE_API_BASE']])
     assert.deepEqual(viteVariablesInEnvFiles(scratch({ '.env': 'SESSION_SECRET=x\n' })), [], 'only VITE_ variables reach a bundle')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('no app bundle may hold the on-device model weights, whose licence is unchecked, or the test-only files', () => {
+  assert.deepEqual(Object.keys(NATIVE_EXCLUDED), ['models', 'real-camera-artifacts', 'test-fixtures'])
+  assert.match(NATIVE_EXCLUDED.models, /LFM2\.5-VL/)
+  const dir = scratch({ 'index.html': '', 'models/LFM2.5-VL-1.6B-ONNX/onnx/model.onnx': '', 'test-fixtures/room.jpg': '' })
+  try {
+    for (const shell of ['desktop', 'mobile'] as const) {
+      assert.deepEqual(forbiddenInBundle(dir, shell), ['models', 'test-fixtures'], shell)
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
