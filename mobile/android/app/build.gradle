@@ -75,6 +75,16 @@ repositories {
     }
 }
 
+// The libraries in the release APK are locked in app/gradle.lockfile, and the app's third-party
+// notices list them from it (scripts/native/third-party-notices.mjs). The release build uses the
+// versions locked there, and fails when it would take in a library the lockfile does not list or
+// leave out one it does, so the notices cannot fall behind the APK. After changing a dependency,
+// or Capacitor, run `npx cap sync android` in mobile/ and then, here in mobile/android:
+//   ./gradlew :app:dependencies --configuration releaseRuntimeClasspath --write-locks
+configurations.matching { it.name == 'releaseRuntimeClasspath' }.configureEach {
+    resolutionStrategy.activateDependencyLocking()
+}
+
 dependencies {
     implementation fileTree(include: ['*.jar'], dir: 'libs')
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"

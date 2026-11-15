@@ -42,10 +42,12 @@ Everything else in the apps and in this repository's manifests is under a permis
 Each app carries `THIRD-PARTY-NOTICES.txt` and `LICENSE.txt` in its bundle, and shows them
 under Legal notices. The notices are generated from the lockfiles for exactly what that bundle
 contains (`scripts/native/third-party-notices.mjs`): the npm packages in the web bundle, the
-desktop app's linked Rust crates, the Android runtime, and the components above. Each comes with
-its licence text. For a package that ships none, its project's text is kept in
-`scripts/native/licence-texts/`, and the generator stops while any component is left without
-one. Each native release attaches the merged notices of all its builds.
+desktop app's linked Rust crates, the Android runtime and every library in the release APK,
+transitive ones included (pinned in `mobile/android/app/gradle.lockfile`, which the release
+build enforces), and the components above. Each comes with its licence text. For a package that
+ships none, its project's text is kept in `scripts/native/licence-texts/`, and the generator
+stops while any component is left without one. Each native release attaches the merged notices
+of all its builds.
 
 ## First-party code
 

@@ -17,8 +17,11 @@
  *   - Rust crates (desktop): the crates linked into the app, walked through Cargo.lock's
  *     normal dependencies with `cargo metadata --locked` for each target, with the licence
  *     files from each crate's source. MPL-2.0 crates also get where to download their source.
- *   - Android (mobile): Capacitor's Android runtime from mobile/package-lock.json, and the
- *     libraries the Gradle build declares (Gradle keeps no lockfile here).
+ *   - Android (mobile): Capacitor's Android runtime from mobile/package-lock.json, and every
+ *     library in the release APK, direct or transitive, from the Gradle lockfile
+ *     (mobile/android/app/gradle.lockfile). The release build uses the versions locked there,
+ *     and fails when its libraries are not the ones the lockfile lists, so this list cannot fall
+ *     behind the APK.
  *   - Components no package manager knows: the vendored XR Engine (mobile), the Draco decoder,
  *     the onnxruntime-web WASM files, qrcodegen, and the WebView2 loader (Windows).
  *
@@ -50,6 +53,7 @@ export const SUPPLIED_TEXT_SOURCES = {
   'objc2-LICENSE-MIT.txt': 'https://github.com/madsmtm/objc2/blob/main/LICENSE-MIT.txt',
   // Copied without the contact addresses that follow two of the names in its copyright lines.
   'dlopen2-LICENSE.txt': 'https://github.com/OpenByteDev/dlopen2/blob/master/LICENSE',
+  'cordova-android-NOTICE.txt': 'https://github.com/apache/cordova-android/blob/14.0.1/NOTICE',
 }
 
 /**
@@ -258,7 +262,7 @@ function addRustCrates(notices, targets) {
   return crates.size
 }
 
-/** Capacitor's Android runtime, from mobile/package-lock.json, and what the Gradle build declares. */
+/** Capacitor's Android runtime, from mobile/package-lock.json, and every library in the APK, from the Gradle lockfile. */
 function addAndroid(notices) {
   const lock = readJson(join(ROOT, 'mobile', 'package-lock.json'))
   const runtime = ['@capacitor/android', '@capacitor/app', '@capacitor/browser', '@capacitor/core']
@@ -275,40 +279,58 @@ function addAndroid(notices) {
       source: repositoryOf(pkg) ?? `https://www.npmjs.com/package/${name}/v/${entry.version}`,
     }, licenceFiles(dir))
   }
-  // Gradle declares these in mobile/android (versions from variables.gradle) and in Capacitor's own
-  // Android libraries. They are AndroidX and Google libraries, published under Apache-2.0.
-  // A version is the app's own (variables.gradle), else the default the library's build.gradle sets.
-  const variables = readFileSync(join(ROOT, 'mobile', 'android', 'variables.gradle'), 'utf8')
-  const defaults = new Map()
-  const gradleFiles = [
-    join(ROOT, 'mobile', 'android', 'app', 'build.gradle'),
-    join(ROOT, 'mobile', 'node_modules', '@capacitor', 'android', 'capacitor', 'build.gradle'),
-    join(ROOT, 'mobile', 'node_modules', '@capacitor', 'app', 'android', 'build.gradle'),
-    join(ROOT, 'mobile', 'node_modules', '@capacitor', 'browser', 'android', 'build.gradle'),
-  ].filter(existsSync)
-  for (const file of gradleFiles) {
-    const text = readFileSync(file, 'utf8')
-    for (const [, name, fallback] of text.matchAll(/(\w+)\s*=\s*project\.hasProperty\('\w+'\)\s*\?\s*rootProject\.ext\.\w+\s*:\s*'([^']+)'/g)) {
-      if (!defaults.has(name)) defaults.set(name, fallback)
-    }
+  // Every library in the release APK, direct or transitive, as the Gradle lockfile pins it.
+  if (!existsSync(ANDROID_LOCKFILE)) {
+    throw new Error('mobile/android/app/gradle.lockfile is missing. In mobile/android, after npx cap sync android, run '
+      + './gradlew :app:dependencies --configuration releaseRuntimeClasspath --write-locks')
   }
-  const version = (name) => variables.match(new RegExp(`${name}\\s*=\\s*'([^']+)'`))?.[1] ?? defaults.get(name)
-  const apache = licenceFiles(join(ROOT, 'node_modules', 'typescript')).filter((text) => text.startsWith('Apache License'))
-  for (const file of gradleFiles) {
-    for (const match of readFileSync(file, 'utf8').matchAll(/^\s*(?:implementation|api)\s*\(?\s*["']([\w.-]+):([\w.-]+):([^"']+)["']/gm)) {
-      const [, group, artifact, spec] = match
-      if (!/^(androidx\.|com\.google\.|org\.jetbrains\.kotlin)/.test(group)) continue
-      const resolved = spec.startsWith('$') ? version(spec.slice(1)) ?? spec : spec
-      notices.add({
-        group: 'android',
-        name: `${group}:${artifact}`,
-        version: resolved,
-        licence: 'Apache-2.0',
-        source: group.startsWith('androidx.') ? 'https://developer.android.com/jetpack/androidx' : `https://mvnrepository.com/artifact/${group}/${artifact}`,
-      }, apache)
+  const unknown = []
+  for (const { group, artifact, version } of lockedLibraries(readFileSync(ANDROID_LOCKFILE, 'utf8'))) {
+    // A BOM only aligns the versions of other libraries; it puts nothing in the APK.
+    if (artifact.endsWith('-bom')) continue
+    const name = `${group}:${artifact}`
+    const known = ANDROID_LICENCES.find((entry) => entry.match.test(name))
+    if (!known) {
+      unknown.push(`${name}:${version}`)
+      continue
     }
+    notices.add({ group: 'android', name, version, licence: known.licence, source: known.source },
+      [...apacheText(), ...(known.notice ? [suppliedText(known.notice)] : [])])
+  }
+  if (unknown.length) {
+    throw new Error(`the Android app's libraries include some of no known licence: ${unknown.join(', ')}. `
+      + 'Check the licence of each (its POM, and the LICENSE in its AAR), then add it to ANDROID_LICENCES in scripts/native/third-party-notices.mjs.')
   }
 }
+
+/** The lockfile that pins every library of the Android app's release build (mobile/android/app/build.gradle). */
+export const ANDROID_LOCKFILE = join(ROOT, 'mobile', 'android', 'app', 'gradle.lockfile')
+
+/** The libraries a Gradle lockfile pins for `configuration`, as `{ group, artifact, version }`. */
+export function lockedLibraries(text, configuration = 'releaseRuntimeClasspath') {
+  const libraries = []
+  for (const line of text.split(/\r?\n/)) {
+    const match = line.match(/^([^#=:\s]+):([^=:\s]+):([^=:\s]+)=(.*)$/)
+    if (match?.[4].split(',').includes(configuration)) libraries.push({ group: match[1], artifact: match[2], version: match[3] })
+  }
+  return libraries
+}
+
+/**
+ * The licence of each library the Android app's release build pins, by `group:artifact`, as each
+ * library's POM declares it (and the LICENSE.txt the AndroidX AARs carry). All are under the Apache
+ * License 2.0; Cordova also has a NOTICE file, which section 4(d) of that licence asks to pass on.
+ * A library that matches none stops the notices: check its licence, then add it here.
+ */
+export const ANDROID_LICENCES = [
+  { match: /^androidx\./, licence: 'Apache-2.0', source: 'https://developer.android.com/jetpack/androidx' },
+  { match: /^org\.apache\.cordova:framework$/, licence: 'Apache-2.0', source: 'https://github.com/apache/cordova-android', notice: 'cordova-android-NOTICE.txt' },
+  { match: /^org\.jetbrains\.kotlin:kotlin-stdlib/, licence: 'Apache-2.0', source: 'https://github.com/JetBrains/kotlin' },
+  { match: /^org\.jetbrains\.kotlinx:kotlinx-coroutines-/, licence: 'Apache-2.0', source: 'https://github.com/Kotlin/kotlinx.coroutines' },
+  { match: /^org\.jetbrains:annotations$/, licence: 'Apache-2.0', source: 'https://github.com/JetBrains/java-annotations' },
+  { match: /^org\.jspecify:jspecify$/, licence: 'Apache-2.0', source: 'https://github.com/jspecify/jspecify' },
+  { match: /^com\.google\.guava:listenablefuture$/, licence: 'Apache-2.0', source: 'https://github.com/google/guava' },
+]
 
 function addVendored(notices, shell, targets) {
   if (shell === 'mobile') {
@@ -404,7 +426,7 @@ export function mergeNotices(parts) {
 const GROUPS = [
   ['vendored', 'Components no package manager lists'],
   ['npm', 'npm packages in the web bundle (from package-lock.json)'],
-  ['android', 'Android runtime (from mobile/package-lock.json and the Gradle build)'],
+  ['android', 'Android runtime and libraries (from mobile/package-lock.json and mobile/android/app/gradle.lockfile)'],
   ['rust', 'Rust crates linked into the desktop app (from desktop/src-tauri/Cargo.lock)'],
 ]
 

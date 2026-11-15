@@ -13,6 +13,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  ANDROID_LICENCES,
+  ANDROID_LOCKFILE,
   CRATE_TEXTS_FROM,
   SUPPLIED_TEXTS,
   SUPPLIED_TEXT_SOURCES,
@@ -20,6 +22,7 @@ import {
   componentsWithoutText,
   licenceFiles,
   linkedCrates,
+  lockedLibraries,
   mergeNotices,
   packageOfModule,
   renderNotices,
@@ -113,6 +116,42 @@ test("the engine notice in every Android app's notices is the one the app shows"
   assert.ok(source.includes(XR_ENGINE_NOTICE.creator))
   assert.ok(source.includes(XR_ENGINE_NOTICE.copyright))
   assert.ok(source.includes(XR_ENGINE_NOTICE.licenceUrl))
+})
+
+// ── The Android app's libraries, from the Gradle lockfile ──────────────────────────────────────
+
+test("a Gradle lockfile's libraries are read for one configuration, and nothing else in it", () => {
+  const text = [
+    '# This is a Gradle generated file for dependency locking.',
+    'androidx.core:core:1.17.0=debugRuntimeClasspath,releaseRuntimeClasspath',
+    'androidx.test:runner:1.6.0=debugAndroidTestRuntimeClasspath',
+    'org.apache.cordova:framework:14.0.1=releaseRuntimeClasspath',
+    'empty=',
+    '',
+  ].join('\r\n')
+  assert.deepEqual(lockedLibraries(text), [
+    { group: 'androidx.core', artifact: 'core', version: '1.17.0' },
+    { group: 'org.apache.cordova', artifact: 'framework', version: '14.0.1' },
+  ])
+  assert.deepEqual(lockedLibraries(text, 'debugAndroidTestRuntimeClasspath').map((l: { artifact: string }) => l.artifact), ['runner'])
+})
+
+test('every library the release APK holds is locked, transitive ones included, and each has a known licence', () => {
+  const gradle = readFileSync(join(ROOT, 'mobile/android/app/build.gradle'), 'utf8')
+  assert.match(gradle, /configurations\.matching \{ it\.name == 'releaseRuntimeClasspath' \}\.configureEach \{\s*resolutionStrategy\.activateDependencyLocking\(\)/,
+    'the release build takes the locked versions, and fails when its libraries are not the locked ones')
+  const libraries = lockedLibraries(readFileSync(ANDROID_LOCKFILE, 'utf8')) as Array<{ group: string; artifact: string; version: string }>
+  const names = libraries.map((l) => `${l.group}:${l.artifact}`)
+  // The ones the earlier list, read from the build.gradle files, left out.
+  for (const name of ['org.apache.cordova:framework', 'androidx.lifecycle:lifecycle-runtime', 'androidx.savedstate:savedstate',
+    'androidx.emoji2:emoji2', 'androidx.startup:startup-runtime', 'androidx.profileinstaller:profileinstaller',
+    'androidx.tracing:tracing', 'org.jetbrains.kotlin:kotlin-stdlib', 'org.jetbrains.kotlinx:kotlinx-coroutines-core']) {
+    assert.ok(names.includes(name), name)
+  }
+  const unknown = names.filter((name) => !name.endsWith('-bom') && !ANDROID_LICENCES.some((entry: { match: RegExp }) => entry.match.test(name)))
+  assert.deepEqual(unknown, [], 'a library with no known licence stops the notices')
+  const cordova = ANDROID_LICENCES.find((entry: { match: RegExp }) => entry.match.test('org.apache.cordova:framework')) as { notice?: string }
+  assert.equal(cordova.notice, 'cordova-android-NOTICE.txt', "Cordova's NOTICE goes with it (Apache-2.0 section 4(d))")
 })
 
 test('every supplied licence text is on file, says where it came from, and carries no e-mail address', () => {
