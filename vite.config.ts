@@ -184,8 +184,33 @@ function pwaSwitch() {
   }
 }
 
+// The native apps' third-party notices list each npm package in the bundle
+// (scripts/native/third-party-notices.mjs). scripts/native/build-web.mjs sets
+// NATIVE_BUNDLE_REPORT to a file, and this plugin writes the module ids of the main
+// build and of the worker builds into it. The hosted web build never sets it, and
+// then the plugin is not added at all.
+const BUNDLE_REPORT = process.env.NATIVE_BUNDLE_REPORT
+const bundledModules = new Set<string>()
+function bundleReport(file: string) {
+  return {
+    name: 'native-bundle-report',
+    generateBundle(_options: unknown, bundle: Record<string, { type: string, moduleIds?: string[], modules?: Record<string, unknown> }>) {
+      for (const output of Object.values(bundle)) {
+        if (output.type !== 'chunk') continue
+        for (const id of output.moduleIds ?? Object.keys(output.modules ?? {})) {
+          if (!id.startsWith('\0')) bundledModules.add(id)
+        }
+      }
+      fs.writeFileSync(file, JSON.stringify({ modules: [...bundledModules].sort() }, null, 2))
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: tsCert ? [rewriteEditorRoute(), pwaSwitch()] : [basicSsl(), rewriteEditorRoute(), pwaSwitch()],
+  plugins: [
+    ...(tsCert ? [rewriteEditorRoute(), pwaSwitch()] : [basicSsl(), rewriteEditorRoute(), pwaSwitch()]),
+    ...(BUNDLE_REPORT ? [bundleReport(BUNDLE_REPORT)] : []),
+  ],
   build: {
     rollupOptions: {
       input: {
@@ -241,6 +266,7 @@ export default defineConfig({
   },
   worker: {
     format: 'es',
+    ...(BUNDLE_REPORT ? { plugins: () => [bundleReport(BUNDLE_REPORT)] } : {}),
   },
   optimizeDeps: {
     exclude: ['@huggingface/transformers'],

@@ -37,6 +37,12 @@ Not everything here is under a permissive licence. These are the exceptions:
 Everything else in the apps and in this repository's manifests is under a permissive licence
 (MIT, Apache-2.0, ISC, BSD, Zlib, Unicode-3.0 or similar).
 
+Each app carries `THIRD-PARTY-NOTICES.txt` and `LICENSE.txt` in its bundle, and shows them
+under Legal notices. The notices are generated from the lockfiles for exactly what that bundle
+contains (`scripts/native/third-party-notices.mjs`): the npm packages in the web bundle, the
+desktop app's linked Rust crates, the Android runtime, and the components above, with every
+licence text. Each native release attaches the merged notices of all its builds.
+
 ## First-party code
 
 Except as noted above, the contents of this repository are

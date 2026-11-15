@@ -17,18 +17,29 @@
  *   5. No app bundles what NATIVE_EXCLUDED lists. public/ is copied whole, and a developer's
  *      public/models (the on-device model weights, whose licence is unchecked) would otherwise
  *      ride along into an installer or an APK.
- *   6. The bundle is checked for what must not be in it, and its contents are listed.
+ *   6. The bundle gets THIRD-PARTY-NOTICES.txt, generated from the lockfiles for exactly what it
+ *      contains (scripts/native/third-party-notices.mjs), and LICENSE.txt. The app's Legal notices
+ *      view shows both. The same notices go to <shell>/build/third-party-notices.json, which the
+ *      release workflow merges into the release asset.
+ *   7. The bundle is checked for what must not be in it, and its contents are listed.
  */
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { apiBaseProblem } from '../../mobile/scripts/check-api-base.mjs'
+import { bundleNotices, renderNotices, rustTargets } from './third-party-notices.mjs'
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
 /** Where each shell's bundle goes. */
 export const OUT_DIRS = { desktop: 'desktop/dist', mobile: 'mobile/www' }
+
+/** Where each shell's notices JSON and module list go: git-ignored build/ folders, never inside the bundle. */
+export const BUILD_DIRS = { desktop: 'desktop/build', mobile: 'mobile/build' }
+
+/** The licence files every bundle carries at its root. The Legal notices view reads them. */
+export const NOTICE_FILES = ['THIRD-PARTY-NOTICES.txt', 'LICENSE.txt']
 
 /** The AR engine. The desktop bundle leaves it out: the editor and viewer never load it. */
 export const ENGINE_FILES = ['xr.js', 'xr-slam.js', 'xr-face.js', 'resources']
@@ -103,8 +114,19 @@ export function buildShellWeb(shell) {
       + 'A native build must not carry local settings. Move them out of the .env file, or set them in the environment for this build.')
   }
 
+  if (shell === 'mobile' && !existsSync(join(ROOT, 'mobile', 'node_modules', '@capacitor', 'android'))) {
+    fail('mobile/node_modules is missing: run npm ci --prefix mobile first. The notices list its Android runtime.')
+  }
+  const buildDir = join(ROOT, BUILD_DIRS[shell])
+  mkdirSync(buildDir, { recursive: true })
+  const report = join(buildDir, 'bundle-modules.json')
+  rmSync(report, { force: true })
+
   node('node_modules/typescript/bin/tsc', ['--noEmit'])
-  node('node_modules/vite/bin/vite.js', ['build', '--outDir', outRel, '--emptyOutDir'], { VITE_DISABLE_PWA: '1' })
+  node('node_modules/vite/bin/vite.js', ['build', '--outDir', outRel, '--emptyOutDir'], {
+    VITE_DISABLE_PWA: '1',
+    NATIVE_BUNDLE_REPORT: report,
+  })
 
   for (const [name, why] of Object.entries(NATIVE_EXCLUDED)) {
     if (!existsSync(join(outDir, name))) continue
@@ -116,6 +138,15 @@ export function buildShellWeb(shell) {
   }
   const left = forbiddenInBundle(outDir, shell)
   if (left.length) fail(`${outRel} still contains ${left.join(', ')}`)
+
+  if (!existsSync(report)) fail(`the build wrote no module list to ${report}, so its notices cannot be made`)
+  const modules = JSON.parse(readFileSync(report, 'utf8')).modules
+  const notices = bundleNotices({ shell, bundledModules: modules, targets: shell === 'desktop' ? rustTargets() : [] })
+  const version = JSON.parse(readFileSync(join(ROOT, 'desktop', 'package.json'), 'utf8')).version
+  writeFileSync(join(outDir, 'THIRD-PARTY-NOTICES.txt'), renderNotices(notices, version))
+  copyFileSync(join(ROOT, 'LICENSE'), join(outDir, 'LICENSE.txt'))
+  writeFileSync(join(buildDir, 'third-party-notices.json'), JSON.stringify(notices))
+  console.log(`[native web build] notices: ${notices.components.length} components (${notices.titles.join('; ')})`)
 
   const entries = readdirSync(outDir).sort()
   const total = entries.reduce((sum, entry) => sum + sizeOf(join(outDir, entry)), 0)
