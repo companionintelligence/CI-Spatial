@@ -7,9 +7,9 @@ name: Native Release
 #                    v0.1.0 is the container pre-release. No release and no git tag may have the
 #                    name yet: the release makes the tag, on the commit it built.
 #   android_signing  auto (default): the release key in the repository secrets when all four are
-#                    set, otherwise a throwaway key. keystore: the release key, or fail. throwaway:
-#                    a key generated in the job with keytool, used once and never stored. skip: an
-#                    unsigned APK, named so.
+#                    set, a throwaway key when none is, and a failed run when only some are.
+#                    keystore: the release key, or fail. throwaway: a key generated in the job
+#                    with keytool, used once and never stored. skip: an unsigned APK, named so.
 #
 # Release key secrets: ANDROID_KEYSTORE_BASE64 (the keystore file, base64), ANDROID_KEYSTORE_PASSWORD,
 # ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD. Nothing else is secret, and no API key, server
@@ -231,17 +231,27 @@ jobs:
           set -euo pipefail
           keystore="$RUNNER_TEMP/android-signing.jks"
           trap 'rm -f "$keystore"' EXIT
-          have_secrets=false
-          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASSWORD" ]; then
-            have_secrets=true
-          fi
+          # The names of the release-key secrets that are empty (names only, never values).
+          missing=()
+          [ -n "$KEYSTORE_BASE64" ] || missing+=(ANDROID_KEYSTORE_BASE64)
+          [ -n "$KEYSTORE_PASSWORD" ] || missing+=(ANDROID_KEYSTORE_PASSWORD)
+          [ -n "$KEY_ALIAS" ] || missing+=(ANDROID_KEY_ALIAS)
+          [ -n "$KEY_PASSWORD" ] || missing+=(ANDROID_KEY_PASSWORD)
           mode="$SIGNING"
           if [ "$mode" = auto ]; then
-            if $have_secrets; then mode=keystore; else mode=throwaway; fi
+            case "${#missing[@]}" in
+              0) mode=keystore ;;
+              4) mode=throwaway ;;
+              # Some but not all is a mistake, such as a misnamed secret, not a choice. A throwaway
+              # key would make everyone who installs this APK uninstall it, and lose their scans,
+              # before they could install the first build signed with the release key.
+              *) echo "::error::android_signing is auto, but only $((4 - ${#missing[@]})) of the four release-key secrets are set (missing: ${missing[*]}). Set all four to sign with the release key, or run again with android_signing throwaway."
+                 exit 1 ;;
+            esac
           fi
           case "$mode" in
             keystore)
-              $have_secrets || { echo "::error::android_signing is keystore, but the four ANDROID_KEY* secrets are not all set."; exit 1; }
+              [ "${#missing[@]}" -eq 0 ] || { echo "::error::android_signing is keystore, but these release-key secrets are not set: ${missing[*]}."; exit 1; }
               printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore"
               export ANDROID_SIGNING_STORE_FILE="$keystore" ANDROID_SIGNING_STORE_PASSWORD="$KEYSTORE_PASSWORD"
               export ANDROID_SIGNING_KEY_ALIAS="$KEY_ALIAS" ANDROID_SIGNING_KEY_PASSWORD="$KEY_PASSWORD" ;;

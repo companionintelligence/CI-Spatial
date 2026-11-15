@@ -97,10 +97,10 @@ notices. The Android release build signs from four environment variables or the 
 2. Dispatch **Native Release** with the tag `v<version>` (for example `v0.2.0`; `v0.1.0` is the
    container pre-release) and `android_signing`: `auto` signs with the release key when the four
    repository secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`
-   and `ANDROID_KEY_PASSWORD` are set, and otherwise with a throwaway key made in the job and
-   never stored. The tag must not exist yet, as a release or as a git tag: the release makes it
-   on the commit it built, and the workflow stops if it finds one, before building and again
-   just before publishing.
+   and `ANDROID_KEY_PASSWORD` are set, with a throwaway key made in the job and never stored when
+   none of them is, and stops when only some are. The tag must not exist yet, as a release or as
+   a git tag: the release makes it on the commit it built, and the workflow stops if it finds
+   one, before building and again just before publishing.
 3. The workflow builds every installer and the APK, and publishes only when all of them
    succeeded: a GitHub pre-release with the installers, the APK, `LICENSE`,
    `THIRD-PARTY-NOTICES.txt`, `SHA256SUMS.txt` and notes on installing each one.

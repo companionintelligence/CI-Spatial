@@ -124,6 +124,24 @@ test('only the publish job can write, and no checkout keeps its token for the bu
   }
 })
 
+test('auto signing takes the release key with all four secrets, a throwaway key with none, and stops with only some', () => {
+  const wf = read('.github/workflows/native-release.yml').replace(/\r\n/g, '\n')
+  const apk = wf.slice(wf.indexOf('        id: apk\n'), wf.indexOf('      - name: Check the APK'))
+  const secrets: Array<[string, string]> = [
+    ['KEYSTORE_BASE64', 'ANDROID_KEYSTORE_BASE64'],
+    ['KEYSTORE_PASSWORD', 'ANDROID_KEYSTORE_PASSWORD'],
+    ['KEY_ALIAS', 'ANDROID_KEY_ALIAS'],
+    ['KEY_PASSWORD', 'ANDROID_KEY_PASSWORD'],
+  ]
+  for (const [env, secret] of secrets) {
+    assert.ok(apk.includes(`${env}: \${{ secrets.${secret} }}`), `${env} comes from ${secret}`)
+    assert.ok(apk.includes(`[ -n "$${env}" ] || missing+=(${secret})`), `an empty ${secret} is named, never its value`)
+  }
+  assert.match(apk, /if \[ "\$mode" = auto \]; then\n +case "\$\{#missing\[@\]\}" in\n +0\) mode=keystore ;;\n +4\) mode=throwaway ;;\n/, 'all four or none decide')
+  assert.match(apk, /\n +\*\) echo "::error::android_signing is auto, but only [^\n]*\$\{missing\[\*\]\}[^\n]*"\n +exit 1 ;;\n +esac\n/, 'one to three secrets set stops the run, naming the missing ones')
+  assert.match(apk, /keystore\)\n +\[ "\$\{#missing\[@\]\}" -eq 0 \] \|\| \{ echo "::error::[^\n]*"; exit 1; \}/, 'keystore needs all four')
+})
+
 test('no git tag may have the name: prepare checks it, and publish again right before gh release create', () => {
   const wf = read('.github/workflows/native-release.yml').replace(/\r\n/g, '\n')
   const jobs = workflowJobs(wf)
