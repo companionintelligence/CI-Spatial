@@ -8,11 +8,16 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  CRATE_TEXTS_FROM,
+  SUPPLIED_TEXTS,
+  SUPPLIED_TEXT_SOURCES,
+  TEXTS_DIR,
+  componentsWithoutText,
   licenceFiles,
   linkedCrates,
   mergeNotices,
@@ -108,4 +113,29 @@ test("the engine notice in every Android app's notices is the one the app shows"
   assert.ok(source.includes(XR_ENGINE_NOTICE.creator))
   assert.ok(source.includes(XR_ENGINE_NOTICE.copyright))
   assert.ok(source.includes(XR_ENGINE_NOTICE.licenceUrl))
+})
+
+test('every supplied licence text is on file, says where it came from, and carries no e-mail address', () => {
+  const files = readdirSync(TEXTS_DIR).sort()
+  assert.deepEqual(files, Object.keys(SUPPLIED_TEXT_SOURCES).sort(), 'each file has its origin, and each origin its file')
+  for (const used of Object.values(SUPPLIED_TEXTS as Record<string, string[]>).flat()) assert.ok(files.includes(used), used)
+  for (const file of files) {
+    const text = readFileSync(join(TEXTS_DIR, file), 'utf8')
+    assert.ok(text.trim().length > 100, `${file} holds a licence`)
+    assert.doesNotMatch(text, /[\w.+-]+@[\w-]+\.[\w.-]+/, `${file}: no e-mail address`)
+  }
+  assert.deepEqual(CRATE_TEXTS_FROM, { 'alloc-stdlib': 'alloc-no-stdlib' })
+  const supplied: Record<string, string[] | undefined> = SUPPLIED_TEXTS
+  for (const crate of ['webview2-com', 'webview2-com-macros', 'webview2-com-sys', 'objc2', 'block2', 'objc2-encode', 'objc2-foundation', 'dlopen2', 'dlopen2_derive']) {
+    assert.ok(supplied[`rust:${crate}`], `${crate}, which ships no licence file on Windows, macOS or Linux`)
+  }
+  assert.ok(supplied['npm:onnxruntime-web'])
+})
+
+test('a component left without a licence text is named, so the notices are not made', () => {
+  assert.deepEqual(componentsWithoutText(mergeNotices([PART_A])), [])
+  assert.deepEqual(componentsWithoutText(PART_B), ['vendored Niantic Spatial XR Engine (8th Wall) 1.0.0'])
+  const source = readFileSync(join(ROOT, 'scripts/native/third-party-notices.mjs'), 'utf8').replace(/\r\n/g, '\n')
+  const build = source.slice(source.indexOf('export function bundleNotices'))
+  assert.match(build, /const bare = componentsWithoutText\(json\)\n {2}if \(bare\.length\) \{\n {4}throw new Error/)
 })

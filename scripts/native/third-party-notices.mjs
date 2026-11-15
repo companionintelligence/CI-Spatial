@@ -21,6 +21,10 @@
  *     libraries the Gradle build declares (Gradle keeps no lockfile here).
  *   - Components no package manager knows: the vendored XR Engine (mobile), the Draco decoder,
  *     the onnxruntime-web WASM files, qrcodegen, and the WebView2 loader (Windows).
+ *
+ * Every component gets its licence text: the files it ships, or, for one that ships none, its
+ * project's text kept in scripts/native/licence-texts/ (SUPPLIED_TEXTS). The notices are not
+ * made while any component is left without a text.
  */
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
@@ -31,6 +35,60 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
 const LICENCE_FILE = /^(licen[cs]e|copying|notice|unlicense)([._-].*)?$/i
+
+/** Licence texts for components that ship none of their own, as their projects publish them. */
+export const TEXTS_DIR = join(ROOT, 'scripts', 'native', 'licence-texts')
+
+/** Where each file in TEXTS_DIR was copied from. */
+export const SUPPLIED_TEXT_SOURCES = {
+  'onnxruntime-LICENSE.txt': 'https://github.com/microsoft/onnxruntime/blob/v1.21.1/LICENSE',
+  'webview2-rs-LICENSE.txt': 'https://github.com/wravery/webview2-rs/blob/main/LICENSE',
+  'Microsoft.Web.WebView2-LICENSE.txt': 'the licence of the Microsoft.Web.WebView2 1.0.3800.47 package, '
+    + 'https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.3800.47/License',
+  // The 0.6 crates' own repository state names MIT and links the OSI template; this is the
+  // project's MIT file with its copyright line.
+  'objc2-LICENSE-MIT.txt': 'https://github.com/madsmtm/objc2/blob/main/LICENSE-MIT.txt',
+  // Copied without the contact addresses that follow two of the names in its copyright lines.
+  'dlopen2-LICENSE.txt': 'https://github.com/OpenByteDev/dlopen2/blob/master/LICENSE',
+}
+
+/**
+ * The texts in TEXTS_DIR that stand in for the licence files a package or crate does not ship,
+ * keyed by the component's group and name. Only used when the component has no file of its own.
+ */
+export const SUPPLIED_TEXTS = {
+  'npm:onnxruntime-web': ['onnxruntime-LICENSE.txt'],
+  'rust:webview2-com': ['webview2-rs-LICENSE.txt'],
+  'rust:webview2-com-macros': ['webview2-rs-LICENSE.txt'],
+  'rust:webview2-com-sys': ['webview2-rs-LICENSE.txt'],
+  'rust:block2': ['objc2-LICENSE-MIT.txt'],
+  'rust:objc2': ['objc2-LICENSE-MIT.txt'],
+  'rust:objc2-encode': ['objc2-LICENSE-MIT.txt'],
+  'rust:objc2-foundation': ['objc2-LICENSE-MIT.txt'],
+  'rust:dlopen2': ['dlopen2-LICENSE.txt'],
+  'rust:dlopen2_derive': ['dlopen2-LICENSE.txt'],
+}
+
+/** Crates that ship no licence file, and the crate from the same repository, under the same licence, whose files apply. */
+export const CRATE_TEXTS_FROM = { 'alloc-stdlib': 'alloc-no-stdlib' }
+
+/** A text from TEXTS_DIR, as the notices print it. */
+function suppliedText(file) {
+  return readFileSync(join(TEXTS_DIR, file), 'utf8').replace(/\r\n/g, '\n').trim()
+}
+
+/** The note for a component whose texts come from SUPPLIED_TEXTS. */
+function suppliedNote(kind, files) {
+  return `The ${kind} ships no licence file; the text below is its project's (${files.map((file) => SUPPLIED_TEXT_SOURCES[file]).join('; ')}).`
+}
+
+let apacheLicence = null
+
+/** The Apache License 2.0, as TypeScript's package ships it, for components under it that ship no copy. */
+function apacheText() {
+  apacheLicence ??= licenceFiles(join(ROOT, 'node_modules', 'typescript')).filter((text) => text.startsWith('Apache License'))
+  return apacheLicence
+}
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'))
@@ -99,15 +157,17 @@ function addNpmPackages(notices, bundledModules) {
     if (!entry) throw new Error(`${name} is in the bundle but not in package-lock.json`)
     const dir = join(ROOT, 'node_modules', name)
     const pkg = existsSync(join(dir, 'package.json')) ? readJson(join(dir, 'package.json')) : {}
-    const texts = licenceFiles(dir)
+    const shipped = licenceFiles(dir)
+    const supplied = shipped.length ? [] : SUPPLIED_TEXTS[`npm:${name}`] ?? []
     notices.add({
       group: 'npm',
       name,
       version: entry.version,
       licence: entry.license ?? pkg.license ?? 'not declared',
       source: repositoryOf(pkg) ?? `https://www.npmjs.com/package/${name}/v/${entry.version}`,
-      note: texts.length ? undefined : `The package ships no licence file; its package.json declares ${entry.license ?? 'no licence'}.`,
-    }, texts)
+      note: shipped.length ? undefined : supplied.length ? suppliedNote('package', supplied)
+        : `The package ships no licence file; its package.json declares ${entry.license ?? 'no licence'}.`,
+    }, shipped.length ? shipped : supplied.map(suppliedText))
   }
   return names
 }
@@ -162,10 +222,24 @@ function addRustCrates(notices, targets) {
     const apache = texts.find((text) => /^\s*Apache License\s+Version 2\.0/.test(text))
     if (apache) shared['Apache-2.0'] ??= apache
   }
-  for (const [pkg, texts] of textsOf) {
+  // A crate that ships no licence file gets, in this order: the files of a crate from its own
+  // repository (CRATE_TEXTS_FROM), its project's text (SUPPLIED_TEXTS), or the standard text of
+  // its MPL-2.0 or Apache-2.0 licence, which names no copyright holder.
+  const fallback = (pkg, licence) => {
+    const sibling = CRATE_TEXTS_FROM[pkg.name]
+    const siblingTexts = sibling ? [...textsOf].find(([other]) => other.name === sibling)?.[1] ?? [] : []
+    if (siblingTexts.length) {
+      return { texts: siblingTexts, note: `The crate ships no licence file; the text below is ${sibling}'s, from the same repository and under the same licence.` }
+    }
+    const supplied = SUPPLIED_TEXTS[`rust:${pkg.name}`] ?? []
+    if (supplied.length) return { texts: supplied.map(suppliedText), note: suppliedNote('crate', supplied) }
+    const standard = ['MPL-2.0', 'Apache-2.0'].filter((id) => licence.includes(id) && shared[id]).map((id) => shared[id])
+    if (standard.length) return { texts: standard, note: 'The crate ships no licence file; the standard text of its licence is below.' }
+    return { texts: [], note: 'The crate ships no licence file.' }
+  }
+  for (const [pkg, shipped] of textsOf) {
     const licence = pkg.license ?? (pkg.license_file ? `see ${pkg.license_file}` : 'not declared')
-    const shipped = texts.length > 0
-    if (!shipped) for (const id of ['MPL-2.0', 'Apache-2.0']) if (licence.includes(id) && shared[id]) texts.push(shared[id])
+    const { texts, note } = shipped.length ? { texts: shipped, note: null } : fallback(pkg, licence)
     const crate = `https://crates.io/crates/${pkg.name}/${pkg.version}`
     const mpl = /MPL-2\.0/.test(licence)
     notices.add({
@@ -177,7 +251,7 @@ function addRustCrates(notices, targets) {
       note: [
         mpl ? `MPL-2.0 source: ${crate}, download https://static.crates.io/crates/${pkg.name}/${pkg.name}-${pkg.version}.crate`
           + (pkg.repository ? `, repository ${pkg.repository}` : '') + '. The files under MPL-2.0 are unmodified.' : null,
-        shipped ? null : texts.length ? 'The crate ships no licence file; the standard text of its licence is below.' : 'The crate ships no licence file.',
+        note,
       ].filter(Boolean).join(' ') || undefined,
     }, texts)
   }
@@ -238,17 +312,22 @@ function addAndroid(notices) {
 
 function addVendored(notices, shell, targets) {
   if (shell === 'mobile') {
+    // The notice section 1.3.2 of the Agreement asks for, as the app's Legal notices view shows it
+    // (src/ui/legal-notices.ts). The Agreement itself is proprietary and linked, not reproduced.
     notices.add({
       group: 'vendored',
       name: 'Niantic Spatial XR Engine (8th Wall), @8thwall/engine-binary',
       version: '1.0.0',
       licence: 'XR Engine License Agreement (proprietary, binary only)',
       source: 'https://github.com/8thwall/engine/blob/main/LICENSE',
-      note: 'This product includes the XR Engine software developed by Niantic Spatial, Inc. '
-        + 'Copyright © 2026 Niantic Spatial, Inc. All rights reserved. The XR Engine is licensed under the XR Engine '
-        + 'License Agreement, linked above, and is provided "as is", without warranties of any kind (section 4 of the '
-        + 'Agreement). Files: xr.js, xr-slam.js, xr-face.js and resources/, unmodified.',
-    })
+      note: 'Files: xr.js, xr-slam.js, xr-face.js and resources/, unmodified.',
+    }, [[
+      'This product includes the XR Engine software developed by Niantic Spatial, Inc.',
+      'Copyright © 2026 Niantic Spatial, Inc. All rights reserved.',
+      'The XR Engine is licensed under the XR Engine License Agreement, '
+        + 'https://github.com/8thwall/engine/blob/main/LICENSE, not under the licence of this app. It is provided '
+        + '"as is", without warranties of any kind; section 4 (Disclaimers) of the Agreement sets out the disclaimer.',
+    ].join('\n\n')])
   }
   const draco = join(ROOT, 'node_modules', 'three', 'examples', 'jsm', 'libs', 'draco')
   notices.add({
@@ -257,14 +336,18 @@ function addVendored(notices, shell, targets) {
     licence: 'Apache-2.0',
     source: 'https://github.com/google/draco',
     note: existsSync(join(draco, 'README.md')) ? 'The three.js copy states the Apache License 2.0 in its README.' : undefined,
-  }, licenceFiles(join(ROOT, 'node_modules', 'typescript')).filter((text) => text.startsWith('Apache License')))
+  }, apacheText())
+  const ort = readJson(join(ROOT, 'node_modules', 'onnxruntime-web', 'package.json')).version
+  const ortTexts = licenceFiles(join(ROOT, 'node_modules', 'onnxruntime-web'))
   notices.add({
     group: 'vendored',
     name: 'onnxruntime-web WebAssembly runtime (Microsoft), copied to ort/',
-    version: readJson(join(ROOT, 'node_modules', 'onnxruntime-web', 'package.json')).version,
+    version: ort,
     licence: 'MIT',
     source: 'https://github.com/microsoft/onnxruntime',
-  }, licenceFiles(join(ROOT, 'node_modules', 'onnxruntime-web')))
+    note: (ortTexts.length ? '' : `${suppliedNote('package', SUPPLIED_TEXTS['npm:onnxruntime-web'])} `)
+      + `The WebAssembly build also contains third-party code, which onnxruntime lists with its licences in https://github.com/microsoft/onnxruntime/blob/v${ort}/ThirdPartyNotices.txt.`,
+  }, ortTexts.length ? ortTexts : SUPPLIED_TEXTS['npm:onnxruntime-web'].map(suppliedText))
   const qr = readFileSync(join(ROOT, 'src', 'third-party', 'qrcodegen', 'qrcodegen.ts'), 'utf8')
   const qrHeader = qr.match(/^\/\*([\s\S]*?)\*\//)?.[1].split('\n').map((line) => line.replace(/^\s*\* ?/, '')).join('\n').trim()
   notices.add({
@@ -277,11 +360,16 @@ function addVendored(notices, shell, targets) {
     notices.add({
       group: 'vendored',
       name: 'Microsoft Edge WebView2 loader (WebView2LoaderStatic.lib), linked through the webview2-com-sys crate',
-      licence: 'WebView2 SDK licence (Microsoft)',
+      licence: 'WebView2 SDK licence (Microsoft, BSD-style)',
       source: 'https://www.nuget.org/packages/Microsoft.Web.WebView2',
-      note: 'Copyright (C) Microsoft Corporation. Distributed under the licence of the Microsoft.Web.WebView2 package.',
-    })
+      note: 'Distributed under the licence of the Microsoft.Web.WebView2 package, below.',
+    }, [suppliedText('Microsoft.Web.WebView2-LICENSE.txt')])
   }
+}
+
+/** The components left with no licence text, by group, name and version. The notices are not made while there are any. */
+export function componentsWithoutText(notices) {
+  return notices.components.filter((c) => !c.texts?.length).map((c) => `${c.group} ${c.name}${c.version ? ` ${c.version}` : ''}`)
 }
 
 /** Builds the notices for one bundle. */
@@ -291,7 +379,13 @@ export function bundleNotices({ shell, bundledModules, targets = [], title }) {
   addNpmPackages(notices, bundledModules)
   if (shell === 'mobile') addAndroid(notices)
   if (shell === 'desktop') addRustCrates(notices, targets)
-  return notices.toJSON()
+  const json = notices.toJSON()
+  const bare = componentsWithoutText(json)
+  if (bare.length) {
+    throw new Error(`no licence text for: ${bare.join('; ')}. Copy each one's licence from its project into `
+      + 'scripts/native/licence-texts/, and name the file in SUPPLIED_TEXTS (and its origin in SUPPLIED_TEXT_SOURCES).')
+  }
+  return json
 }
 
 /** Merges notices of several bundles into one. */
