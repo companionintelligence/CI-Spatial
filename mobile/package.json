@@ -1,6 +1,6 @@
 {
   "name": "ci-spatial-scan-mobile-shell",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "license": "PolyForm-Noncommercial-1.0.0",
   "description": "Scan native iOS + Android shell (Capacitor 8). SCAFFOLD, NOT FOR STORE SUBMISSION. Standalone npm project, deliberately NOT a root workspace: it ships the PWA-off web build from www/ via webDir and never imports the web code.",

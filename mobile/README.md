@@ -81,7 +81,12 @@ xcodebuild -project App.xcodeproj -scheme App -configuration Release \
 
 Export and upload from Xcode Organizer, or with `xcodebuild -exportArchive` and an `app-store-connect` export options plist.
 
-**Android (Play internal testing).** Create the Play app for `com.companionintelligence.scan` and an upload key. Write `mobile/android/keystore.properties` (git-ignored) with `storeFile`, `storePassword`, `keyAlias` and `keyPassword`. Then, from `mobile/android`:
+**Android (Play internal testing).** Create the Play app for `com.companionintelligence.scan` and an upload key. Give Gradle the key in one of two ways, all four values or none:
+
+- the environment, as the release workflow does: `ANDROID_SIGNING_STORE_FILE` (the keystore's path), `ANDROID_SIGNING_STORE_PASSWORD`, `ANDROID_SIGNING_KEY_ALIAS` and `ANDROID_SIGNING_KEY_PASSWORD`;
+- or `mobile/android/keystore.properties` (git-ignored), for a local build, with `storeFile`, `storePassword`, `keyAlias` and `keyPassword`.
+
+With neither, the release build is unsigned; with only some of the environment variables, Gradle stops and names the missing ones. The release build type is never debuggable. Then, from `mobile/android`:
 
 ```bash
 ./gradlew bundleRelease
