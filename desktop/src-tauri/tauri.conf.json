@@ -28,7 +28,7 @@
       "capabilities": [
         "default"
       ],
-      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-hashes' 'sha256-MhtPZXr7+LpJUY5qtMutB+qWfQtMaPccfe7QXtCcEYc='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob: https:; font-src 'self' data: https:; media-src 'self' blob: data: https:; worker-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost https: wss: http://localhost:* ws://localhost:* blob:",
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-hashes' 'sha256-MhtPZXr7+LpJUY5qtMutB+qWfQtMaPccfe7QXtCcEYc='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob: https:; font-src 'self' data: https:; media-src 'self' blob: data: https:; worker-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost https: wss: http://localhost:* ws://localhost:* blob: data:",
       "dangerousDisableAssetCspModification": [
         "style-src"
       ]

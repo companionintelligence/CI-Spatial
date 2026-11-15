@@ -46,6 +46,8 @@ test('Scan desktop policy keeps TLS for remote services and WebAssembly for loca
   assert.match(csp, /connect-src[^;]*https:/);
   assert.doesNotMatch(csp, /connect-src[^;]*\shttp:(\s|;|$)/, 'no plain http to remote hosts');
   assert.match(csp, /connect-src[^;]*ipc: http:\/\/ipc\.localhost/, 'the IPC protocol, so plugins need no postMessage fallback');
+  // Spark (the splat renderer) and three's zstd decoder fetch their WebAssembly from data: URLs.
+  assert.match(csp, /connect-src[^;]*\sdata:(\s|;|$)/, 'WebAssembly that ships as a data: URL');
   assert.match(csp, /script-src[^;]*wasm-unsafe-eval/);
 });
 
