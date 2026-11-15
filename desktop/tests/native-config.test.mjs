@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
@@ -10,16 +11,41 @@ const pkg = JSON.parse(await readFile(path.join(here, '../package.json'), 'utf8'
 
 test('Scan desktop is a bundled Tauri app with a local development server', () => {
   assert.equal(config.productName, 'Companion Scan');
-  assert.equal(config.build.devUrl, 'http://localhost:5173');
+  // vite.config.ts serves HTTPS; vite.http.config.ts is the plain-HTTP dev server the webview can load.
+  assert.equal(config.build.devUrl, 'http://localhost:5199');
+  assert.match(config.build.beforeDevCommand, /--config vite\.http\.config\.ts/);
   assert.equal(path.basename(config.build.frontendDist), 'dist');
   assert.equal(config.app.security.capabilities.includes('default'), true);
   assert.equal(config.build.serverUrl, undefined);
   assert.equal(pkg.devDependencies['@tauri-apps/cli'], '2.12.4');
 });
 
+test('the desktop app opens the editor, from a bundle of its own built without the PWA', () => {
+  assert.equal(config.app.windows.length, 1);
+  assert.equal(config.app.windows[0].url, 'viewer.html', 'the editor and viewer, not the phone scanner');
+  assert.equal(config.build.beforeBuildCommand, 'node ../scripts/native/build-web.mjs desktop');
+  assert.equal(path.resolve(here, '../src-tauri', config.build.frontendDist), path.resolve(here, '../dist'), 'desktop/dist, not the web build in dist/');
+});
+
+test('the editor\'s style attributes and its font loader run under the policy', async () => {
+  const csp = config.app.security.csp;
+  // A nonce in style-src switches 'unsafe-inline' off, and with it every style attribute the pages use.
+  assert.deepEqual(config.app.security.dangerousDisableAssetCspModification, ['style-src']);
+  assert.match(csp, /style-src 'self' 'unsafe-inline' https:\/\/fonts\.googleapis\.com/);
+  // viewer.html and index.html load the font stylesheet with an onload handler, allowed by its hash alone.
+  for (const page of ['viewer.html', 'index.html']) {
+    const handler = (await readFile(path.join(here, '../..', page), 'utf8')).match(/onload="([^"]+)"/)?.[1];
+    assert.ok(handler, page);
+    const hash = createHash('sha256').update(handler).digest('base64');
+    assert.ok(csp.includes(`'unsafe-hashes' 'sha256-${hash}'`), `${page}: the handler ${handler} is allowed by its hash`);
+  }
+});
+
 test('Scan desktop policy keeps TLS for remote services and WebAssembly for local inference', () => {
   const csp = config.app.security.csp;
   assert.match(csp, /connect-src[^;]*https:/);
+  assert.doesNotMatch(csp, /connect-src[^;]*\shttp:(\s|;|$)/, 'no plain http to remote hosts');
+  assert.match(csp, /connect-src[^;]*ipc: http:\/\/ipc\.localhost/, 'the IPC protocol, so plugins need no postMessage fallback');
   assert.match(csp, /script-src[^;]*wasm-unsafe-eval/);
 });
 

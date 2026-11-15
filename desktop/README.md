@@ -11,6 +11,26 @@ npm run dev
 npm run build
 ```
 
+## What the app is
+
+The desktop app is the Place Scan Editor and viewer. Its window opens `viewer.html`.
+There is no AR capture on a desktop, so the app never loads the 8th Wall engine, and
+its bundle leaves it out.
+
+- `npm run build` runs `scripts/native/build-web.mjs desktop` first. That is the root
+  Vite build with `VITE_DISABLE_PWA=1` (no service worker, no web manifest) into
+  `desktop/dist`, without `xr.js`, `xr-slam.js`, `xr-face.js` and `resources/`. It
+  refuses a `.env` file that sets a `VITE_` variable, so no local setting is baked in.
+- Links stay inside the app only when they are its own pages. The start screen's editor
+  card goes to `/viewer.html`, because `/editor` is a rewrite that only a Scan server
+  and the public site make; in the app an unknown path falls back to the scanner. A
+  link to anywhere else (a server's own pages, a licence) opens in the default browser
+  (`external_links` in `src-tauri/src/main.rs`). The editor's "Scan a Place" opens the
+  start screen, which offers uploads but no live capture. The WebXR scanner entry is
+  removed in the app, which has no WebXR.
+- `npm run dev` serves the app from `vite.http.config.ts` on port 5199, because the
+  main Vite config serves HTTPS with a certificate the webview does not trust.
+
 A build can name a default server with `VITE_API_BASE` in the parent environment;
 an address saved in the app overrides it. Do not ship a developer's private LAN
 address in a public release.
@@ -51,8 +71,8 @@ must be in Applications, or opened once, before the system knows its scheme.
   build is for reviewing, editing, and managing scans; live AR capture remains
   in the web/headset path until a supported native capture implementation is
   selected and verified.
-- Confirm the `public/xr.js` licence permits the intended distribution before
-  shipping any bundle that includes it.
+- The desktop bundle does not include `public/xr.js` or the rest of the engine, so
+  the engine's licence conditions do not apply to it.
 - Add product artwork, signing, notarization, privacy declarations, and a
   manual release workflow before store submission.
 

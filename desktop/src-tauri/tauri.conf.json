@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "identifier": "computer.ci.scan.desktop",
   "build": {
-    "beforeDevCommand": "cd .. && npm run dev -- --host 127.0.0.1",
-    "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "cd .. && npm run build",
-    "frontendDist": "../../dist"
+    "beforeDevCommand": "cd .. && npx vite --config vite.http.config.ts --host 127.0.0.1",
+    "devUrl": "http://localhost:5199",
+    "beforeBuildCommand": "node ../scripts/native/build-web.mjs desktop",
+    "frontendDist": "../dist"
   },
   "app": {
     "withGlobalTauri": true,
@@ -15,6 +15,7 @@
       {
         "label": "main",
         "title": "Companion Scan",
+        "url": "viewer.html",
         "width": 1440,
         "height": 960,
         "minWidth": 960,
@@ -27,7 +28,10 @@
       "capabilities": [
         "default"
       ],
-      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data: https:; media-src 'self' blob: data: https:; worker-src 'self' blob:; connect-src 'self' https: wss: http://localhost:* ws://localhost:* blob:"
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-hashes' 'sha256-MhtPZXr7+LpJUY5qtMutB+qWfQtMaPccfe7QXtCcEYc='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob: https:; font-src 'self' data: https:; media-src 'self' blob: data: https:; worker-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost https: wss: http://localhost:* ws://localhost:* blob:",
+      "dangerousDisableAssetCspModification": [
+        "style-src"
+      ]
     }
   },
   "bundle": {

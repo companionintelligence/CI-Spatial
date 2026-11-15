@@ -1,0 +1,108 @@
+#!/usr/bin/env node
+/**
+ * The web build a native shell ships: `node scripts/native/build-web.mjs desktop|mobile`.
+ *
+ * Both shells bundle the Scan web app rather than loading a page from a server. This is that
+ * build, run by desktop/src-tauri/tauri.conf.json (beforeBuildCommand) and mobile/package.json
+ * (build:web), the same way on Windows, macOS and Linux:
+ *
+ *   1. VITE_API_BASE may be unset: the app then asks for the person's Scan server. When it is
+ *      set it must be an https origin (mobile/scripts/check-api-base.mjs).
+ *   2. No .env file may set a VITE_ variable. Vite would bake it into the bundle, and a native
+ *      build must carry no developer's address, key or secret.
+ *   3. tsc --noEmit, then vite build with VITE_DISABLE_PWA=1 (no service worker and no manifest,
+ *      see pwaSwitch() in vite.config.ts) into desktop/dist or mobile/www.
+ *   4. The desktop app is the editor and viewer, with no AR capture, so its bundle leaves out the
+ *      8th Wall engine: xr.js, xr-slam.js, xr-face.js and resources/.
+ *   5. The bundle is checked for what must not be in it, and its contents are listed.
+ */
+import { spawnSync } from 'node:child_process'
+import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { dirname, join, relative, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { apiBaseProblem } from '../../mobile/scripts/check-api-base.mjs'
+
+export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
+
+/** Where each shell's bundle goes. */
+export const OUT_DIRS = { desktop: 'desktop/dist', mobile: 'mobile/www' }
+
+/** The AR engine. The desktop bundle leaves it out: the editor and viewer never load it. */
+export const ENGINE_FILES = ['xr.js', 'xr-slam.js', 'xr-face.js', 'resources']
+
+/** The PWA files pwaSwitch() removes when VITE_DISABLE_PWA is set. A shell cannot use them. */
+export const PWA_FILES = ['sw.js', 'manifest.json']
+
+/** The .env files `vite build` reads (mode production). */
+const ENV_FILES = ['.env', '.env.local', '.env.production', '.env.production.local']
+
+/** The VITE_ variables a .env file in `dir` would put into a build: `[file, name]` pairs. */
+export function viteVariablesInEnvFiles(dir = ROOT) {
+  const found = []
+  for (const file of ENV_FILES) {
+    const path = join(dir, file)
+    if (!existsSync(path)) continue
+    for (const match of readFileSync(path, 'utf8').matchAll(/^\s*(?:export\s+)?(VITE_[A-Za-z0-9_]+)\s*=/gm)) {
+      found.push([file, match[1]])
+    }
+  }
+  return found
+}
+
+/** What a finished bundle must not contain, as relative paths that exist in it. */
+export function forbiddenInBundle(outDir, shell) {
+  const names = [...PWA_FILES, ...(shell === 'desktop' ? ENGINE_FILES : [])]
+  return names.filter((name) => existsSync(join(outDir, name)))
+}
+
+function sizeOf(path) {
+  const stat = statSync(path)
+  if (!stat.isDirectory()) return stat.size
+  return readdirSync(path).reduce((total, entry) => total + sizeOf(join(path, entry)), 0)
+}
+
+function fail(message) {
+  console.error(`[native web build] ${message}`)
+  process.exit(1)
+}
+
+function node(script, args, env) {
+  const run = spawnSync(process.execPath, [join(ROOT, script), ...args], {
+    cwd: ROOT,
+    stdio: 'inherit',
+    env: { ...process.env, ...env },
+  })
+  if (run.status !== 0) fail(`${script} ${args.join(' ')} exited with ${run.status}`)
+}
+
+export function buildShellWeb(shell) {
+  const outRel = OUT_DIRS[shell]
+  if (!outRel) fail(`unknown shell "${shell}": use one of ${Object.keys(OUT_DIRS).join(', ')}`)
+  const outDir = join(ROOT, outRel)
+
+  const problem = apiBaseProblem(process.env.VITE_API_BASE)
+  if (problem) fail(problem)
+  const baked = viteVariablesInEnvFiles()
+  if (baked.length) {
+    fail(`refusing to build: ${baked.map(([file, name]) => `${file} sets ${name}`).join(', ')}. `
+      + 'A native build must not carry local settings. Move them out of the .env file, or set them in the environment for this build.')
+  }
+
+  node('node_modules/typescript/bin/tsc', ['--noEmit'])
+  node('node_modules/vite/bin/vite.js', ['build', '--outDir', outRel, '--emptyOutDir'], { VITE_DISABLE_PWA: '1' })
+
+  if (shell === 'desktop') {
+    for (const name of ENGINE_FILES) rmSync(join(outDir, name), { recursive: true, force: true })
+  }
+  const left = forbiddenInBundle(outDir, shell)
+  if (left.length) fail(`${outRel} still contains ${left.join(', ')}`)
+
+  const entries = readdirSync(outDir).sort()
+  const total = entries.reduce((sum, entry) => sum + sizeOf(join(outDir, entry)), 0)
+  console.log(`[native web build] ${shell}: ${relative(ROOT, outDir)} holds ${entries.length} entries, ${(total / 1e6).toFixed(1)} MB`)
+  for (const entry of entries) console.log(`  ${entry}${statSync(join(outDir, entry)).isDirectory() ? '/' : ''} ${(sizeOf(join(outDir, entry)) / 1e3).toFixed(0)} kB`)
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  buildShellWeb(process.argv[2])
+}

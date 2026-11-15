@@ -42,7 +42,8 @@ function serverMenuItem(doc: Document): HTMLButtonElement {
   item.className = 'workspace-menu-link'
   item.style.textAlign = 'left'
   item.style.cursor = 'pointer'
-  item.style.font = 'inherit'
+  // The menu's other entries are links; a button takes the browser's font unless told otherwise.
+  item.style.fontFamily = 'inherit'
   const title = doc.createElement('span')
   title.textContent = 'Scan server'
   const detail = doc.createElement('small')
@@ -90,6 +91,9 @@ function wireAccountChip(doc: Document): void {
 export function mountShellMenu(doc: Document = document): void {
   if (!isNativeShell()) return
   ensureShellStyles(doc)
+  // The shells' WebViews have no WebXR, so the WebXR scanner would only explain that it cannot
+  // start. Removed rather than hidden: the menu's links are display: grid, which beats `hidden`.
+  doc.getElementById('webxr-link')?.remove()
   const panel = doc.querySelector('#workspace-menu .workspace-menu-panel')
   if (panel) {
     const divider = panel.querySelector('.workspace-menu-divider')
