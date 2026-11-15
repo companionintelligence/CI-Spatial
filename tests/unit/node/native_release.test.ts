@@ -48,3 +48,29 @@ test('the Android release build is not debuggable', () => {
   assert.match(release, /debuggable false/)
   assert.doesNotMatch(read('mobile/android/app/src/main/AndroidManifest.xml'), /android:debuggable/)
 })
+
+// ── The build workflows ─────────────────────────────────────────────────────────────────────
+
+test('the desktop builds: Windows NSIS and MSI, a universal ad-hoc signed macOS dmg, Linux deb and rpm', () => {
+  for (const file of ['.github/workflows/desktop-build.yml']) {
+    const wf = read(file).replace(/\r\n/g, '\n')
+    assert.match(wf, /os: windows-latest\n.*\n {12}tauri-args: --bundles nsis,msi/, `${file}: Windows`)
+    assert.match(wf, /os: macos-latest\n.*aarch64-apple-darwin x86_64-apple-darwin\n {12}tauri-args: --target universal-apple-darwin --bundles app,dmg/, `${file}: macOS universal`)
+    assert.match(wf, /os: ubuntu-22\.04\n.*\n {12}tauri-args: --bundles deb,rpm/, `${file}: Linux`)
+    assert.match(wf, /libwebkit2gtk-4\.1-dev/, `${file}: WebKitGTK 4.1`)
+    assert.doesNotMatch(wf, /appimage/i, `${file}: no AppImage`)
+    for (const m of wf.matchAll(/uses: (\S+)/g)) assert.match(m[1]!, /^actions\/[\w-]+@[0-9a-f]{40}$/, `${file}: ${m[1]}`)
+  }
+  const tauri = JSON.parse(read('desktop/src-tauri/tauri.conf.json'))
+  assert.equal(tauri.bundle.macOS.signingIdentity, '-', 'ad-hoc signed, so Apple silicon offers Open Anyway')
+  assert.deepEqual(tauri.bundle.targets, ['nsis', 'msi', 'app', 'dmg', 'deb', 'rpm'])
+})
+
+test('the mobile build workflow pins its actions, uses no third-party action, and bakes no server in', () => {
+  for (const file of ['.github/workflows/mobile-build.yml', '.github/workflows/desktop-build.yml']) {
+    const wf = read(file)
+    for (const m of wf.matchAll(/uses: (\S+)/g)) assert.match(m[1]!, /^actions\/[\w-]+@[0-9a-f]{40}$/, `${file}: ${m[1]}`)
+    assert.doesNotMatch(wf, /^\s*VITE_API_BASE\s*:/m, `${file}: no server address built in`)
+    assert.doesNotMatch(wf, /android-actions\/setup-android|dtolnay\/rust-toolchain/, `${file}: no third-party action`)
+  }
+})

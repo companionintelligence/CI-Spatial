@@ -1,7 +1,12 @@
 name: Mobile Build
 
-# Unsigned debug artifacts for device QA. This does not upload to Google Play
-# or App Store Connect. Scan AR capture and the xr.js licence remain release gates.
+# Debug artifacts for device QA, kept for 14 days: an Android debug APK, signed with the runner's
+# own debug key, and an unsigned iOS Simulator app. This does not upload to Google Play or App
+# Store Connect, and it publishes nothing: native-release.yml makes the GitHub pre-release with a
+# release APK. Scan AR capture has not run on a phone yet; mobile/README.md lists the gates.
+#
+# No VITE_API_BASE: the app asks for the person's own Scan server, and no address, key or
+# secret is built in.
 on:
   workflow_dispatch:
 
@@ -12,40 +17,39 @@ concurrency:
   group: mobile-build-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  NODE_VERSION: '22.18.0'
-  VITE_API_BASE: https://scan-ci.invalid
-
 jobs:
   android:
     name: Android (debug APK)
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
       - name: Install web dependencies
         run: npm ci
       - name: Install Android shell dependencies
         run: npm ci --prefix mobile
-      - name: Check shell config
-        run: npm run test:native --prefix mobile
-      - name: Build and sync web app
-        run: npm run build --prefix mobile
-      - uses: actions/setup-java@v4
+      - name: Check shell config, app versions and the XR Engine files
+        run: |
+          npm run test:native --prefix mobile
+          node scripts/native/check-versions.mjs
+          node scripts/native/check-xr-engine.mjs
+      - name: Build the web app and sync it into the Android project
+        run: |
+          npm run build:web --prefix mobile
+          cd mobile && npx cap sync android
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
           distribution: temurin
           java-version: '21'
-      - uses: android-actions/setup-android@v3
-        with:
-          packages: ''
-      - run: sdkmanager "platform-tools" "platforms;android-36" "build-tools;35.0.0"
+      - name: Android SDK packages (the runner's own SDK)
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-36" "build-tools;35.0.0" > /dev/null
       - name: Build debug APK
         working-directory: mobile/android
         run: ./gradlew assembleDebug --no-daemon
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: scan-android-debug-apk
           path: mobile/android/app/build/outputs/apk/debug/*.apk
@@ -57,10 +61,10 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
       - name: Install web dependencies
         run: npm ci
       - name: Install iOS shell dependencies
@@ -81,7 +85,7 @@ jobs:
           APP=$(find mobile/ios/App/build/Build/Products -name 'App.app' -type d | head -1)
           test -d "$APP"
           ditto -c -k --sequesterRsrc --keepParent "$APP" scan-ios-simulator.app.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: scan-ios-simulator-app
           path: scan-ios-simulator.app.zip

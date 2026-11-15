@@ -1,7 +1,12 @@
 name: Desktop Build
 
-# Unsigned developer artifacts only. This does not upload a GitHub release or
-# submit to a store. Review desktop/README.md before changing the release policy.
+# Developer builds of the desktop app (the editor and viewer) for Windows, macOS and Linux, kept
+# as Actions artifacts for 14 days. Nothing is published here: native-release.yml makes the
+# GitHub pre-release, from the same build steps. The installers are unsigned, except that the
+# macOS app is ad-hoc signed (bundle.macOS.signingIdentity "-"). See desktop/README.md.
+#
+# No VITE_API_BASE: the app asks for the person's own Scan server, and no address, key or
+# secret is built in.
 on:
   workflow_dispatch:
 
@@ -14,32 +19,58 @@ concurrency:
 
 jobs:
   build:
-    name: Companion Scan (${{ matrix.os }})
+    name: Companion Scan (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
-    env:
-      VITE_API_BASE: https://scan-ci.invalid
+        include:
+          - name: Windows
+            os: windows-latest
+            rust-targets: x86_64-pc-windows-msvc
+            tauri-args: --bundles nsis,msi
+            bundle-dir: desktop/src-tauri/target/release/bundle
+          - name: macOS universal
+            os: macos-latest
+            rust-targets: aarch64-apple-darwin x86_64-apple-darwin
+            tauri-args: --target universal-apple-darwin --bundles app,dmg
+            bundle-dir: desktop/src-tauri/target/universal-apple-darwin/release/bundle
+          - name: Linux
+            os: ubuntu-22.04
+            rust-targets: x86_64-unknown-linux-gnu
+            tauri-args: --bundles deb,rpm
+            bundle-dir: desktop/src-tauri/target/release/bundle
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '22.18.0'
-      - uses: dtolnay/rust-toolchain@stable
+          node-version-file: .node-version
+      - name: Rust toolchain (the runner's rustup)
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add ${{ matrix.rust-targets }}
+      - name: WebKitGTK 4.1 and the other Tauri build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential file libwebkit2gtk-4.1-dev libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev
       - name: Install web dependencies
         run: npm ci
       - name: Install desktop shell dependencies
-        run: npm install --prefix desktop --no-audit --no-fund
-      - name: Check shell config
-        run: npm run test:native --prefix desktop
-      - name: Build installer
-        run: npm run build --prefix desktop
-      - uses: actions/upload-artifact@v4
+        run: npm ci --prefix desktop
+      - name: Check shell config and app versions
+        run: |
+          npm run test:native --prefix desktop
+          node scripts/native/check-versions.mjs
+      - name: Build installers
+        run: npm run build --prefix desktop -- ${{ matrix.tauri-args }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: scan-desktop-${{ matrix.os }}
-          path: desktop/src-tauri/target/release/bundle/**
+          name: scan-desktop-${{ runner.os }}
+          path: ${{ matrix.bundle-dir }}/**
           if-no-files-found: error
           retention-days: 14
