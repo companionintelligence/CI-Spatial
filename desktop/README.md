@@ -35,8 +35,11 @@ app never loads the 8th Wall engine, and its bundle leaves it out.
   (`external_links` in `src-tauri/src/main.rs`). The editor's "Scan a Place" opens the
   start screen, which offers uploads but no live capture. The WebXR scanner entry is
   removed in the app, which has no WebXR.
-- The Navigate menu has the Scan server (set, test and change it) and Legal notices
-  (Companion Scan's licence and the open-source licences in the app).
+- The app has no first-run screen: the window opens the editor, and the scanner page
+  never reaches its onboarding without an AR runtime. Its setup is in the editor's
+  Navigate menu instead: the Scan server (set, test and change it; the editor also asks
+  for one on launch while none is set), Legal notices (Companion Scan's licence and the
+  open-source licences in the app), and the account control that signs in.
 - `npm run dev` serves the app from `vite.http.config.ts` on port 5199, because the
   main Vite config serves HTTPS with a certificate the webview does not trust.
 
@@ -51,9 +54,10 @@ on Windows), so the Scan server's session cookie never reaches it. The server ac
 those origins (`server/origin.ts`). The app signs in the way the phone app does,
 through the person's default browser:
 
-1. The editor's account control (Navigate menu), or the first-run Sign-in row, opens
-   the server's sign-in with `shell=desktop` and a PKCE challenge the app made
-   (`src/shared/shell-sign-in.ts`).
+1. The account control at the foot of the editor's Navigate menu ("Connect account")
+   opens the server's sign-in in the default browser, with `shell=desktop` and a PKCE
+   challenge the app made (`src/shared/shell-sign-in.ts`). With no Scan server set, it
+   asks for one first.
 2. After CI-Portal, the server sends the browser to
    `computer.ci.scan.desktop://auth?code=…`, a one-time code that lasts 60 seconds
    (`DESKTOP_RETURN_URL` in `server/portal_auth.ts`).

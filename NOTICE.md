@@ -21,8 +21,10 @@ Not everything here is under a permissive licence. These are the exceptions:
   that uses the engine must name Niantic Spatial as its creator, carry its copyright notice,
   and refer to the Agreement and its disclaimer of warranties (section 1.3.2). The hosted web
   app and the Android and iOS apps include it, and the apps show this notice under Legal
-  notices. The desktop app leaves it out. The files are @8thwall/engine-binary 1.0.0 byte for
-  byte; `scripts/native/check-xr-engine.mjs` checks them against its published hashes.
+  notices. The hosted web app does not show it yet; whether it must is on the owner's XR
+  Engine sign-off list (mobile/README.md, *xr.js licence*). The desktop app leaves it out. The
+  files are @8thwall/engine-binary 1.0.0 byte for byte; `scripts/native/check-xr-engine.mjs`
+  checks them against its published hashes.
 
   > This product includes the XR Engine software developed by Niantic Spatial, Inc.
   >
