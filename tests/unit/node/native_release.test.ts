@@ -49,10 +49,63 @@ test('the Android release build is not debuggable', () => {
   assert.doesNotMatch(read('mobile/android/app/src/main/AndroidManifest.xml'), /android:debuggable/)
 })
 
-// ── The build workflows ─────────────────────────────────────────────────────────────────────
+// ── The release itself: file names, notes, and the workflow that publishes them ─────────────
+
+test('release files are named for their platform, and the APK for how it is signed', async () => {
+  const { assetName, SIGNING_MODES } = await import('../../../scripts/native/release-notes.mjs')
+  assert.deepEqual(SIGNING_MODES, ['keystore', 'throwaway', 'skip'])
+  assert.equal(assetName('windows-setup', '0.2.0'), 'companion-scan_0.2.0_windows-x64-setup.exe')
+  assert.equal(assetName('macos-dmg', '0.2.0'), 'companion-scan_0.2.0_macos-universal.dmg')
+  assert.deepEqual(SIGNING_MODES.map((mode: string) => assetName('android-apk', '0.2.0', mode)), [
+    'companion-scan_0.2.0_android-release-key.apk',
+    'companion-scan_0.2.0_android-throwaway-key.apk',
+    'companion-scan_0.2.0_android-unsigned.apk',
+  ])
+  assert.throws(() => assetName('android-apk', '0.2.0', 'auto'), /unknown signing mode/, 'auto is resolved before naming')
+})
+
+test('the notes say everything the release policy asks, whatever signed the APK', async () => {
+  const { releaseNotes, SIGNING_MODES } = await import('../../../scripts/native/release-notes.mjs')
+  for (const signing of SIGNING_MODES) {
+    const notes: string = releaseNotes({ version: '0.2.0', signing, cert: 'ab'.repeat(32), commit: 'deadbeef' })
+    assert.doesNotMatch(notes, /\{\{/, `${signing}: every placeholder filled`)
+    const policy: Array<[RegExp, string]> = [
+      [/pre-release, not a store build/, 'a pre-release, not a store build'],
+      [/SmartScreen[\s\S]*More info\*\*, then \*\*Run anyway/, 'SmartScreen'],
+      [/right-click \(or Control-click\)[\s\S]*\*\*Open\*\*[\s\S]*Open Anyway/, 'macOS Open and Open Anyway'],
+      [/sudo apt install \.\/companion-scan_0\.2\.0_linux-amd64\.deb/, 'deb'],
+      [/sudo dnf install \.\/companion-scan_0\.2\.0_linux-x86_64\.rpm/, 'rpm'],
+      [/allow installs from the browser or file manager/, 'Android sideloading'],
+      [/signed with a different key, uninstall this one first/, 'a differently signed build needs an uninstall'],
+      [/need your own Scan server[\s\S]*docs\/operations\/COMPANION_HUB\.md/, 'the user\'s own Scan server, with the Hub docs'],
+      [/AR capture in the Android app has not been tried on a phone yet/, 'AR untried on phones'],
+      [/desktop app is the editor and viewer only/, 'desktop is the editor and viewer'],
+    ]
+    for (const [pattern, what] of policy) assert.match(notes, pattern, `${signing}: ${what}`)
+  }
+})
+
+test('the release workflow: manual only, write access, every build first, gh and no release action', () => {
+  const wf = read('.github/workflows/native-release.yml').replace(/\r\n/g, '\n')
+  assert.match(wf, /^on:\n {2}workflow_dispatch:\n {4}inputs:\n {6}tag:\n[\s\S]*?required: true/m)
+  assert.match(wf, /android_signing:[\s\S]*?default: auto[\s\S]*?options:\n {10}- auto\n {10}- keystore\n {10}- throwaway\n {10}- skip\n/)
+  assert.doesNotMatch(wf, /^ {2}(push|pull_request|schedule|release):/m, 'nothing but a dispatch starts it')
+  assert.match(wf, /^permissions:\n {2}contents: write\n/m)
+  assert.match(wf, /publish:\n[\s\S]*?needs: \[prepare, desktop, android\]/)
+  assert.match(wf, /gh release create "\$TAG" out\/\*[\s\S]*?--prerelease[\s\S]*?--notes-file notes\.md/)
+  const uses = [...wf.matchAll(/uses: (\S+)/g)].map((m) => m[1]!)
+  assert.ok(uses.length > 0)
+  for (const action of uses) assert.match(action, /^actions\/[\w-]+@[0-9a-f]{40}$/, `${action}: GitHub's own actions only, pinned to a commit`)
+  assert.doesNotMatch(wf, /VITE_API_BASE|VITE_[A-Z_]+:/, 'no server address or other VITE_ value is built in')
+  const secretLines = wf.split('\n').filter((line) => line.includes('secrets.'))
+  assert.equal(secretLines.length, 4, 'the four release-key secrets, and nothing else')
+  assert.ok(secretLines.every((line) => /\$\{\{ secrets\.ANDROID_KEY(STORE_BASE64|STORE_PASSWORD|_ALIAS|_PASSWORD) \}\}/.test(line)))
+  assert.match(wf, /trap 'rm -f "\$keystore"' EXIT/, 'the keystore file is deleted when the step ends')
+  assert.match(wf, /keytool -genkeypair/, 'a throwaway key is made in the job')
+})
 
 test('the desktop builds: Windows NSIS and MSI, a universal ad-hoc signed macOS dmg, Linux deb and rpm', () => {
-  for (const file of ['.github/workflows/desktop-build.yml']) {
+  for (const file of ['.github/workflows/native-release.yml', '.github/workflows/desktop-build.yml']) {
     const wf = read(file).replace(/\r\n/g, '\n')
     assert.match(wf, /os: windows-latest\n.*\n {12}tauri-args: --bundles nsis,msi/, `${file}: Windows`)
     assert.match(wf, /os: macos-latest\n.*aarch64-apple-darwin x86_64-apple-darwin\n {12}tauri-args: --target universal-apple-darwin --bundles app,dmg/, `${file}: macOS universal`)
