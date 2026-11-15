@@ -2969,11 +2969,13 @@ function warnOnScanIdCollision(world: WorldProject): void {
 /**
  * Best client-facing base URL: request origin → forwarded host → Vite default. A native shell's
  * origin is its own bundle on the device (capacitor://localhost, tauri://localhost, …), which no one
- * else can open, so a request from a shell falls through to the address it reached this server at.
+ * else can open, so a request from a shell gets this server's public address (APP_BASE_URL) when it
+ * has one, and otherwise the address the request reached this server at.
  */
 function clientBaseUrl(c: { req: { url: string; header: (name: string) => string | undefined } }): string {
   const origin = c.req.header('origin')
   if (origin && isAllowedOrigin(origin) && !isNativeShellOrigin(origin)) return origin
+  if (origin && isNativeShellOrigin(origin) && ORIGIN_ALLOWLIST.publicOrigin) return ORIGIN_ALLOWLIST.publicOrigin
 
   const forwardedHost = c.req.header('x-forwarded-host')
   if (forwardedHost) {
