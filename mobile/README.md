@@ -54,6 +54,7 @@ The app icon and both launch screens are drawn from `scripts/icon-source/scan-re
 | URL scheme | `com.companionintelligence.scan://auth` | Where a shell sign-in ends. Registered in `Info.plist` (`CFBundleURLTypes`) and `AndroidManifest.xml` (an intent filter). Must match `SHELL_RETURN_URL` in `server/portal_auth.ts`. |
 | iOS purpose strings | Camera, location when in use, motion | The code asks for these. No microphone: every `getUserMedia` call sets `audio: false`. No photo-library key: the file input uses the system picker. |
 | Android permissions | `CAMERA`, `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION` | Device motion needs no Android permission. |
+| Android backup | Off: `allowBackup="false"`, and `res/xml/data_extraction_rules.xml` excludes every domain from cloud backup and device-to-device transfer | The WebView's storage holds the session token and the scans. `allowBackup="false"` alone still lets Android 12 and later copy them to a new phone. |
 | Version | `versionName` 0.2.0, `versionCode` 2 | In step with the desktop app (`scripts/native/check-versions.mjs`). Raise `versionCode` by one with every release. |
 | Release signing | Four environment variables, or `keystore.properties` | See *Publishing*. The release build type is never debuggable. |
 
@@ -75,7 +76,7 @@ The server accepts the shell's origins: `capacitor://localhost` (iOS) and `https
 
 The shell's origin never receives the server's session cookie, so the shell signs in another way. "Sign in with Companion Account" opens the server's sign-in in the system browser sheet, with a PKCE challenge the shell made. The server completes the Portal sign-in as it does on the web. Then it redirects to `com.companionintelligence.scan://auth?code=…`, with a one-time code that lasts 60 seconds. The app opens that URL, closes the sheet, and trades the code and its verifier at `POST /authenticate/shell/exchange` for a session token. From then on the shell sends the token as `Authorization: Bearer`, and the first-run status row reads "Signed in." The code is in `src/shared/shell-sign-in.ts`, and the server half is in `server/portal_auth.ts`. The desktop app uses the same code with its own scheme; see [desktop/README.md](../desktop/README.md#companion-account-sign-in).
 
-- The token is the server's signed session, valid for seven days. The shell keeps it in the WebView's `localStorage`. Move it to the Keychain (iOS) or the Keystore (Android) before a store build.
+- The token is the server's signed session, valid for seven days. The shell keeps it in the WebView's `localStorage`. The Android app is left out of backup and device-to-device transfer (see *Decisions*), so the token does not leave the phone that way. Move it to the Keychain (iOS) or the Keystore (Android) before a store build.
 - There is no sign-out in the shell, as there is none on the web. A token lasts until it expires. The server checks the allowlist on every call, so removing an account from `PORTAL_OIDC_ALLOWED_EMAILS` ends its shell access at once.
 - Verified on the iOS simulator: the full round trip, the status row after an app restart, and the app returning from the sheet. That run used a local stand-in for the Portal, not the real one. Android is not verified: its intent filter and Custom Tabs return have not run on a device.
 

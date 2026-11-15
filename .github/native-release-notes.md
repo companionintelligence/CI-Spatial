@@ -27,7 +27,7 @@ Companion Scan {{VERSION}} for desktop and Android. **This is a pre-release, not
 
 **Linux.** Install the package with your package manager, which also installs WebKitGTK 4.1: `sudo apt install ./{{LINUX_DEB}}` or `sudo dnf install ./{{LINUX_RPM}}`.
 
-**Android.** Download the APK on the phone and open it. Android asks you to allow installs from the browser or file manager you used; allow it for that app. {{ANDROID_SIGNING}} Android installs an update only when it is signed with the same key as the app already installed. When a later build is signed with a different key, uninstall this one first, which also removes the scans it keeps on the phone.
+**Android.** Download the APK on the phone and open it. Android asks you to allow installs from the browser or file manager you used; allow it for that app. {{ANDROID_SIGNING}} Android installs an update only when it is signed with the same key as the app already installed. When a later build is signed with a different key, uninstall this one first, which also removes the scans it keeps on the phone. The app is left out of Android backup and phone-to-phone transfer, so its scans and sign-in stay on this phone only.
 
 To check a download against `SHA256SUMS.txt`: `sha256sum -c SHA256SUMS.txt --ignore-missing` on Linux, `shasum -a 256 -c SHA256SUMS.txt --ignore-missing` on macOS, or `Get-FileHash <file>` in PowerShell on Windows.
 

@@ -1,8 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- No backup and no device-to-device transfer: the WebView's storage holds the session
+         token and the scans, which stay on this phone. allowBackup="false" covers Android 11 and
+         earlier; on Android 12 and later it still allows a device transfer, which the
+         dataExtractionRules (res/xml/data_extraction_rules.xml) turn off with cloud backup. -->
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        tools:targetApi="31"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
