@@ -72,6 +72,11 @@ function wireAccountChip(doc: Document): void {
   const chip = doc.getElementById('account-chip')
   chip?.addEventListener('click', (event) => {
     event.preventDefault()
+    // A sign-in happens on a server, so with none set the control asks for one first.
+    if (!apiBase()) {
+      changeServer()
+      return
+    }
     beginShellSignIn().then(
       () => { chip.textContent = CHIP_CONTINUE },
       () => { chip.textContent = CHIP_UNAVAILABLE },
