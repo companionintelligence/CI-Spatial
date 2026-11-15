@@ -81,20 +81,21 @@ test('the first-run status rows cost what their copy says, and the screen carrie
   }
 })
 
-test('a native shell pays for its Server row, and its worst screen still fits the ceiling', () => {
+test('a native shell pays for its Server and legal rows, and its worst screen still fits the ceiling', () => {
   // The shells (Android, iOS, desktop) put a Server row above the three status
-  // rows: the host the person saved and a Change control. That is three words on
-  // the browser's worst case, because the row only names the server when the
-  // status rows below it have answered. Pinned like the browser's number, so a
-  // copy change in src/ui/ftue-status.ts has to come back here on purpose.
+  // rows (the host the person saved and a Change control, three words) and a
+  // Legal notices control below them (two words), which the XR Engine licence
+  // asks an app to carry where a person can find it. That is five words on the
+  // browser's worst case. Pinned like the browser's number, so a copy change in
+  // src/ui/ftue-status.ts has to come back here on purpose.
   const shellRows = ftueStatusWordsMax(true)
-  assert.equal(shellRows, 35, `a shell's status rows now cost ${shellRows} words at worst, not 35`)
+  assert.equal(shellRows, 37, `a shell's status rows now cost ${shellRows} words at worst, not 37`)
   for (const c of allCases()) {
     const total = c.words.total - c.words.status + shellRows
     assert.ok(total <= WORDS_BEFORE_CAMERA_MAX, `${where(c)} in a shell: ${total} words, budget ${WORDS_BEFORE_CAMERA_MAX}`)
   }
   const worst = allCases()[0]!
-  assert.equal(worst.words.total - worst.words.status + shellRows, 138, 'the worst shell screen is the browser one plus the Server row')
+  assert.equal(worst.words.total - worst.words.status + shellRows, 140, 'the worst shell screen is the browser one plus the two rows')
 })
 
 test('the overrun is the un-recommended methods, not the recommendation', () => {

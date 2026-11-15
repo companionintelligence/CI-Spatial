@@ -179,16 +179,19 @@ test('fetch: an engine state the screen does not know is unavailable, not guesse
 const SERVER = 'https://scan.example.ts.net:8443'
 const ANSWERED: FtueSnapshot = { memory: { enabled: true, reachable: true }, engine: { model: MODEL, engineLoadState: 'ready' }, signIn: { enabled: true } }
 
-test('shell: with no server set there is one row, and its control adds one', () => {
+const LEGAL = { control: { action: 'legal', text: 'Legal notices' } }
+
+test('shell: with no server set there is one Server row, and its control adds one', () => {
   const rows = ftueRows({ memory: null, engine: null, signIn: null }, { origin: null })
-  assert.equal(rows.length, 1)
+  assert.equal(rows.length, 2)
   assert.equal(ftueRowText(rows[0]!), `Server ${SERVER_NONE_SET} Add server`)
   assert.deepEqual(rows[0]!.control, { action: 'server', text: 'Add server' })
+  assert.deepEqual(rows[1], LEGAL)
 })
 
 test('shell: a server that did not answer is named, and can be changed', () => {
   const rows = ftueRows({ memory: null, engine: null, signIn: null }, { origin: SERVER })
-  assert.equal(rows.length, 1)
+  assert.equal(rows.length, 2)
   assert.equal(
     ftueRowText(rows[0]!),
     'Server scan.example.ts.net:8443 did not answer. Sign-in, saved projects and object labels need it. Change',
@@ -197,15 +200,25 @@ test('shell: a server that did not answer is named, and can be changed', () => {
 
 test('shell: a server that answered heads the three status rows', () => {
   const rows = ftueRows(ANSWERED, { origin: SERVER })
-  assert.deepEqual(rows.map((row) => row.label ?? row.link?.text), ['Server', 'Companion Memory', 'Model', 'Sign in with Companion Account'])
+  assert.deepEqual(rows.map((row) => row.label ?? row.link?.text ?? row.control?.text), ['Server', 'Companion Memory', 'Model', 'Sign in with Companion Account', 'Legal notices'])
   assert.equal(ftueRowText(rows[0]!), 'Server scan.example.ts.net:8443 Change')
-  assert.deepEqual(rows.slice(1), ftueRows(ANSWERED), 'the status rows are the browser rows, word for word')
+  assert.deepEqual(rows.slice(1, -1), ftueRows(ANSWERED), 'the status rows are the browser rows, word for word')
 })
 
 test('shell: the Server row shows the host the person typed, and no scheme, path or token', () => {
   for (const snapshot of [ANSWERED, { memory: null, engine: null, signIn: null }]) {
     const shown = ftueRowText(ftueRows(snapshot, { origin: SERVER })[0]!)
     assert.doesNotMatch(shown, /https?:|\/|token|key/i, `"${shown}"`)
+  }
+})
+
+test('shell: every screen ends with the legal notices, the place the XR Engine licence asks an app to carry them', () => {
+  for (const origin of [null, SERVER]) {
+    for (const snapshot of [ANSWERED, { memory: null, engine: null, signIn: null }]) {
+      const rows = ftueRows(snapshot, { origin })
+      assert.deepEqual(rows.at(-1), LEGAL)
+      assert.equal(ftueRowText(rows.at(-1)!), 'Legal notices')
+    }
   }
 })
 

@@ -21,6 +21,7 @@
 import { apiBase, apiUrl, isNativeShell } from '../shared/api-base.ts'
 import { beginShellSignIn, shellSignedIn } from '../shared/shell-sign-in.ts'
 import { mountServerForm } from './server-setting.ts'
+import { openLegalNotices } from './legal-notices.ts'
 import { ensureShellStyles } from './shell-dialog.ts'
 
 export interface MemoryStatus {
@@ -55,8 +56,11 @@ export interface FtueRow {
   text?: string
   /** The sign-in control. It returns to the scanner, not the editor. In a shell it starts the browser sheet. */
   link?: { href: string, text: string }
-  /** A shell's control, drawn as a button after the row's text. `server` opens the Scan server form. */
-  control?: { action: 'server', text: string }
+  /**
+   * A shell's control, drawn as a button after the row's text. `server` opens the Scan server
+   * form; `legal` opens the legal notices (src/ui/legal-notices.ts).
+   */
+  control?: { action: 'server' | 'legal', text: string }
 }
 
 /**
@@ -90,9 +94,15 @@ export function ftueRows(s: FtueSnapshot, shell?: ShellServer): FtueRow[] {
  * A shell's rows. The Server row comes first and always has a control, because in a
  * shell the server is the person's to choose: none set yet, set but silent, or set
  * and answering (then the three status rows follow it). The row names the server by
- * its host, which the person typed; nothing a server returns is shown.
+ * its host, which the person typed; nothing a server returns is shown. The last row
+ * opens the legal notices, which the XR Engine licence asks an app to carry where a
+ * person can find them; this overlay is reachable at any time through the help button.
  */
 function shellRows(s: FtueSnapshot, shell: ShellServer): FtueRow[] {
+  return [...serverRows(s, shell), { control: { action: 'legal', text: 'Legal notices' } }]
+}
+
+function serverRows(s: FtueSnapshot, shell: ShellServer): FtueRow[] {
   if (!shell.origin) return [{ label: 'Server', text: SERVER_NONE_SET, control: { action: 'server', text: 'Add server' } }]
   const host = new URL(shell.origin).host
   const change = { action: 'server', text: 'Change' } as const
@@ -225,16 +235,20 @@ export function drawFtueRows(list: HTMLElement, rows: FtueRow[]): void {
       label.textContent = row.label
       li.append(label)
     }
-    const text = document.createElement('span')
-    text.className = 'ftue-text'
-    text.textContent = row.text ?? ''
-    li.append(text)
+    // A row that is only a control (the legal notices) has no text to draw.
+    if (row.text !== undefined || !row.control) {
+      const text = document.createElement('span')
+      text.className = 'ftue-text'
+      text.textContent = row.text ?? ''
+      li.append(text)
+    }
     if (row.control) {
       const button = document.createElement('button')
       button.type = 'button'
       button.className = 'cs-btn ftue-control'
       button.dataset['action'] = row.control.action
-      button.setAttribute('aria-expanded', 'false')
+      if (row.control.action === 'server') button.setAttribute('aria-expanded', 'false')
+      else button.setAttribute('aria-haspopup', 'dialog')
       button.textContent = row.control.text
       li.append(button)
     }
@@ -262,6 +276,7 @@ export async function renderFtueStatus(
   drawFtueRows(list, ftueRows(snapshot, shell))
   wireShellSignIn(list)
   wireServerControl(list, () => { void renderFtueStatus(list, fetchFn) })
+  list.querySelector('button.ftue-control[data-action="legal"]')?.addEventListener('click', () => { openLegalNotices() })
 }
 
 /**

@@ -10,6 +10,7 @@
  */
 import { apiBase, isNativeShell } from '../shared/api-base.ts'
 import { beginShellSignIn, initShellSignIn } from '../shared/shell-sign-in.ts'
+import { openLegalNotices } from '../ui/legal-notices.ts'
 import { openServerDialog } from '../ui/server-setting.ts'
 import { ensureShellStyles } from '../ui/shell-dialog.ts'
 
@@ -34,25 +35,24 @@ export function changeServer(): void {
   })
 }
 
-/** The Navigate menu entry: "Scan server", with the host it is set to. */
-function serverMenuItem(doc: Document): HTMLButtonElement {
+/** A Navigate menu entry drawn as a button: the menu's other entries are links. */
+function menuButton(doc: Document, id: string, title: string, detail: string, onClick: () => void): HTMLButtonElement {
   const item = doc.createElement('button')
   item.type = 'button'
-  item.id = 'shell-server-link'
+  item.id = id
   item.className = 'workspace-menu-link'
   item.style.textAlign = 'left'
   item.style.cursor = 'pointer'
-  // The menu's other entries are links; a button takes the browser's font unless told otherwise.
+  // A button takes the browser's font unless told otherwise.
   item.style.fontFamily = 'inherit'
-  const title = doc.createElement('span')
-  title.textContent = 'Scan server'
-  const detail = doc.createElement('small')
-  const origin = apiBase()
-  detail.textContent = origin ? new URL(origin).host : 'None set. Places and scans live on one.'
-  item.append(title, detail)
+  const name = doc.createElement('span')
+  name.textContent = title
+  const small = doc.createElement('small')
+  small.textContent = detail
+  item.append(name, small)
   item.addEventListener('click', () => {
     doc.getElementById('workspace-menu')?.removeAttribute('open')
-    changeServer()
+    onClick()
   })
   return item
 }
@@ -97,7 +97,15 @@ export function mountShellMenu(doc: Document = document): void {
   const panel = doc.querySelector('#workspace-menu .workspace-menu-panel')
   if (panel) {
     const divider = panel.querySelector('.workspace-menu-divider')
-    panel.insertBefore(serverMenuItem(doc), divider)
+    const origin = apiBase()
+    panel.insertBefore(
+      menuButton(doc, 'shell-server-link', 'Scan server', origin ? new URL(origin).host : 'None set. Places and scans live on one.', changeServer),
+      divider,
+    )
+    panel.insertBefore(
+      menuButton(doc, 'shell-legal-link', 'Legal notices', 'Licences for the software in this app.', () => { openLegalNotices() }),
+      divider,
+    )
   }
   wireAccountChip(doc)
   if (!apiBase()) changeServer()

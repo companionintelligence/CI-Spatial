@@ -8,7 +8,7 @@ Capacitor 8 iOS and Android shell around the Scan web app in the repo root.
 
 - **Measure first.** The mobile wrapping assessment (2026-10-31, section 2, row "Scan") gates this app on measurement on real devices. Apple 4.2.1 rates a bare wrapper around an AR app as high review risk.
 - **WebXR and AR do not run in the shell.** WebXR is unavailable in both WebViews. The 8th Wall path (`public/xr.js`) needs the camera and sensors, and it has not been run in the shell. Treat AR as unverified here.
-- **xr.js licence.** `public/xr.js` is Niantic's proprietary XR ENGINE LICENSE AGREEMENT. Clause 1.2 forbids use in a paid product whose value derives from the software. It is bundled into this shell. Do not upload a store binary until the licence has been checked.
+- **xr.js licence.** `public/xr.js` and its files are Niantic Spatial's proprietary XR Engine, under the XR Engine License Agreement, and they are bundled into this shell unmodified. The Agreement and Niantic's guidance allow the original binary in a free app that shows Niantic's copyright notice and a link to the Agreement; the app shows both under Legal notices (`src/ui/legal-notices.ts`, on the first-run screen and in the editor's Navigate menu). Clause 1.2 still forbids a paid product whose value comes mainly from the engine, so re-check it before any paid build. Niantic can end the licence on five days' notice (section 7.2).
 - **Server address.** The shell reaches the Scan server whose address the person sets in the app (see *Server address* below). Companion Account sign-in runs in the system browser sheet and gives the shell a session token (see *Companion Account sign-in*). It is verified on the iOS simulator against a stand-in Portal only.
 
 ## Build
@@ -91,7 +91,7 @@ The bundle is `app/build/outputs/bundle/release/app-release.aab`.
 
 ## Not done
 
-- The store gates in PR #244: the measurement step, and the xr.js licence check before any store binary.
+- The store gates in PR #244: the measurement step, and the owner's sign-off on the XR Engine licence (see *xr.js licence* above) before any store binary.
 - `PrivacyInfo.xcprivacy`, the privacy policy, and the App Privacy and Play data-safety answers. Location goes to OpenStreetMap Nominatim, and captures go to the Scan server.
 - Companion Account sign-in against the real Portal, and on Android. Both are unverified (see *Companion Account sign-in*).
 - Keychain or Keystore storage for the shell's session token. It is in `localStorage` for now.
