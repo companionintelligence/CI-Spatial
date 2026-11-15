@@ -124,6 +124,24 @@ test('only the publish job can write, and no checkout keeps its token for the bu
   }
 })
 
+test('no git tag may have the name: prepare checks it, and publish again right before gh release create', () => {
+  const wf = read('.github/workflows/native-release.yml').replace(/\r\n/g, '\n')
+  const jobs = workflowJobs(wf)
+  const check = 'git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null || status=$?'
+  for (const id of ['prepare', 'publish']) {
+    const job = jobs[id] ?? ''
+    assert.equal(job.split(check).length - 1, 1, `${id}: one tag check`)
+    const after = job.slice(job.indexOf(check))
+    // Only exit code 2 means "no such ref"; 0 is a tag, and anything else is a failed check.
+    assert.match(after, /^ +case "\$status" in\n +2\) ;;\n +0\) echo "::error::[^\n]*"; exit 1 ;;\n +\*\) echo "::error::[^\n]*"; exit 1 ;;\n +esac\n/m, `${id}: only exit code 2 lets the release go on`)
+  }
+  const publish = jobs.publish ?? ''
+  const tagCheck = publish.indexOf(check)
+  const create = publish.indexOf('gh release create "$TAG"')
+  assert.ok(tagCheck > 0 && create > tagCheck, 'publish checks the tag first')
+  assert.doesNotMatch(publish.slice(tagCheck, create), /^ +- (name|uses):/m, 'in the same step as gh release create, with nothing in between')
+})
+
 test('the desktop builds: Windows NSIS and MSI, a universal ad-hoc signed macOS dmg, Linux deb and rpm', () => {
   for (const file of ['.github/workflows/native-release.yml', '.github/workflows/desktop-build.yml']) {
     const wf = read(file).replace(/\r\n/g, '\n')

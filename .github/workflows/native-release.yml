@@ -4,7 +4,8 @@ name: Native Release
 #
 #   tag              The release tag: v and the apps' version, for example v0.2.0
 #                    (scripts/native/check-versions.mjs holds the six places it is written).
-#                    v0.1.0 is the container pre-release.
+#                    v0.1.0 is the container pre-release. No release and no git tag may have the
+#                    name yet: the release makes the tag, on the commit it built.
 #   android_signing  auto (default): the release key in the repository secrets when all four are
 #                    set, otherwise a throwaway key. keystore: the release key, or fail. throwaway:
 #                    a key generated in the job with keytool, used once and never stored. skip: an
@@ -77,6 +78,18 @@ jobs:
             echo "::error::A release called $TAG exists already."
             exit 1
           fi
+      # gh release create makes the tag on the commit built here (--target), but it ignores
+      # --target when the tag exists already: pushed by hand, say, or left by a deleted release.
+      # The builds would then be published under another commit. The publish job checks again.
+      - name: No tag has the name yet
+        run: |
+          status=0
+          git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null || status=$?
+          case "$status" in
+            2) ;;
+            0) echo "::error::The tag $TAG exists already, on a commit that may not be $GITHUB_SHA."; exit 1 ;;
+            *) echo "::error::Could not check for the tag $TAG: git ls-remote exited with $status."; exit 1 ;;
+          esac
       - name: The XR Engine files are Niantic's published bytes
         run: node scripts/native/check-xr-engine.mjs
       - name: No model weights or local settings in the checkout
@@ -316,6 +329,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # The tag again, as prepare checked it: one pushed while the builds ran would make
+          # gh release create ignore --target and publish these files under its commit.
+          status=0
+          git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null || status=$?
+          case "$status" in
+            2) ;;
+            0) echo "::error::The tag $TAG exists already, on a commit that may not be $GITHUB_SHA."; exit 1 ;;
+            *) echo "::error::Could not check for the tag $TAG: git ls-remote exited with $status."; exit 1 ;;
+          esac
           gh release create "$TAG" out/* \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
