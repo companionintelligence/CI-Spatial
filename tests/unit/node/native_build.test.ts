@@ -85,7 +85,7 @@ test("the mobile build stops on an XR Engine that is not Niantic's bytes, as a c
     }
     assert.deepEqual(engineProblemsInBundle(dir, 'mobile'), [], 'the engine as published')
     writeFileSync(join(dir, 'xr-slam.js'), readFileSync(join(dir, 'xr-slam.js'), 'utf8').replace(/\n/g, '\r\n'))
-    assert.deepEqual(engineProblemsInBundle(dir, 'mobile').map(([file]: [string, string]) => file), ['xr-slam.js'])
+    assert.deepEqual(engineProblemsInBundle(dir, 'mobile').map(([file]) => file), ['xr-slam.js'])
     assert.deepEqual(engineProblemsInBundle(dir, 'desktop'), [], 'the desktop bundle carries no engine to check')
     // buildShellWeb fails on any of them, once the bundle is built and before its notices are written.
     const build = readFileSync(join(ROOT, 'scripts/native/build-web.mjs'), 'utf8').replace(/\r\n/g, '\n')
