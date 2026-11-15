@@ -2,27 +2,37 @@
 
 Capacitor 8 iOS and Android shell around the Scan web app in the repo root.
 
-**Scaffold, not for store submission.** Nothing here is signed, uploaded or listed.
+**Not a store build.** The Android app is published only as a GitHub pre-release: a release APK built by `.github/workflows/native-release.yml` and signed with the project's release key or a throwaway key (see *Publishing*). Nothing is uploaded to Google Play or the App Store, and iOS is not built for release at all.
 
-## Gates before any store build
+## Gates
+
+Still open for the Android pre-release:
+
+- **AR capture has not run on a phone.** See *WebXR and AR* below. The release notes say so.
+- **The identifiers are provisional.** `com.companionintelligence.scan` names where the app keeps its local scans, and is permanent once on Google Play, so confirm it before people rely on a build.
+- **iOS and the stores are the owner's to do.** They need the owner's Apple and Google accounts (see *Publishing*).
+
+Before any store build, also:
 
 - **Measure first.** The mobile wrapping assessment (2026-10-31, section 2, row "Scan") gates this app on measurement on real devices. Apple 4.2.1 rates a bare wrapper around an AR app as high review risk.
-- **WebXR and AR do not run in the shell.** WebXR is unavailable in both WebViews. The 8th Wall path (`public/xr.js`) needs the camera and sensors, and it has not been run in the shell. Treat AR as unverified here.
+- **WebXR and AR.** WebXR is unavailable in both WebViews. The 8th Wall path (`public/xr.js`) needs the camera and sensors, and it has not been run in the shell. Treat AR as unverified here.
 - **xr.js licence.** `public/xr.js` and its files are Niantic Spatial's proprietary XR Engine, under the XR Engine License Agreement, and they are bundled into this shell unmodified. The Agreement and Niantic's guidance allow the original binary in a free app that shows Niantic's copyright notice and a link to the Agreement; the app shows both under Legal notices (`src/ui/legal-notices.ts`, on the first-run screen and in the editor's Navigate menu). Clause 1.2 still forbids a paid product whose value comes mainly from the engine, so re-check it before any paid build. Niantic can end the licence on five days' notice (section 7.2).
 - **Server address.** The shell reaches the Scan server whose address the person sets in the app (see *Server address* below). Companion Account sign-in runs in the system browser sheet and gives the shell a session token (see *Companion Account sign-in*). It is verified on the iOS simulator against a stand-in Portal only.
 
 ## Build
 
-Run these inside this directory. It is a standalone npm project, not part of the root workspace.
+Run these inside this directory, after `npm ci` in the repo root. It is a standalone npm project, not part of the root workspace.
 
 ```bash
-npm install     # once
-npm run build   # web build with VITE_DISABLE_PWA=1 into www/, then cap sync
+npm ci                    # once
+npm run build             # the web build into www/, then cap sync for both platforms
 npm run open:ios
 npm run open:android
 ```
 
-`npm run build` writes `www/`, which `cap sync` copies into both native projects. Git ignores everything `cap sync` writes, so run `npm run sync` after a clone.
+For Android alone, as the workflows do: `npm run build:web`, then `npx cap sync android`, then `./gradlew assembleRelease` (or `assembleDebug`) in `android/`.
+
+`npm run build:web` is `scripts/native/build-web.mjs mobile`: the root Vite build with `VITE_DISABLE_PWA=1` into `www/`, without the model weights (`public/models`, whose licence is unchecked) or the test-only files, with `THIRD-PARTY-NOTICES.txt` and `LICENSE.txt` added. It refuses a `.env` file that sets a `VITE_` variable, so no local setting is baked in. `scripts/native/check-xr-engine.mjs www` checks that the XR Engine files are Niantic's published bytes. Git ignores everything `cap sync` writes, so run `npm run sync` after a clone.
 
 ## Icons and launch screens
 
@@ -44,6 +54,8 @@ The app icon and both launch screens are drawn from `scripts/icon-source/scan-re
 | URL scheme | `com.companionintelligence.scan://auth` | Where a shell sign-in ends. Registered in `Info.plist` (`CFBundleURLTypes`) and `AndroidManifest.xml` (an intent filter). Must match `SHELL_RETURN_URL` in `server/portal_auth.ts`. |
 | iOS purpose strings | Camera, location when in use, motion | The code asks for these. No microphone: every `getUserMedia` call sets `audio: false`. No photo-library key: the file input uses the system picker. |
 | Android permissions | `CAMERA`, `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION` | Device motion needs no Android permission. |
+| Version | `versionName` 0.2.0, `versionCode` 2 | In step with the desktop app (`scripts/native/check-versions.mjs`). Raise `versionCode` by one with every release. |
+| Release signing | Four environment variables, or `keystore.properties` | See *Publishing*. The release build type is never debuggable. |
 
 ## Server address
 
@@ -57,7 +69,7 @@ VITE_API_BASE=https://<server-origin> npm run build
 
 `scripts/check-api-base.mjs` lets the variable be unset, and refuses a value that is not an https origin.
 
-The server accepts the shell's origins: `capacitor://localhost` (iOS, allowed in `server/main.ts`) and `https://localhost` (Android, already allowed). In dev, Vite answers CORS preflights before its proxy, so `vite.config.ts` lists the same two origins. Without that, the shell's JSON requests fail in dev. Live events and capture have not run in the shell on a device.
+The server accepts the shell's origins: `capacitor://localhost` (iOS) and `https://localhost` (Android), in `server/origin.ts`, beside the desktop app's. In dev, Vite answers CORS preflights before its proxy, so `vite.config.ts` lists the same origins. Without that, the shell's JSON requests fail in dev. Live events and capture have not run in the shell on a device.
 
 ## Companion Account sign-in
 
@@ -69,7 +81,9 @@ The shell's origin never receives the server's session cookie, so the shell sign
 
 ## Publishing
 
-Nothing in this folder uploads anything. The steps below need the owner's Apple and Google accounts.
+**GitHub pre-release (Android).** `.github/workflows/native-release.yml`, run by hand with a tag, builds the release APK with the desktop installers and publishes them together; see the README's *Desktop and Android apps*. Its `android_signing` input picks the key: `auto` uses the release key when the repository secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD` are all set, and otherwise a throwaway key generated in the job and never stored; `keystore` and `throwaway` force one, and `skip` publishes an unsigned APK. The APK's name says which. Android updates an app only with a build signed by the same key, so every APK signed with a throwaway key needs the previous one uninstalled first.
+
+**Stores.** Nothing in this folder uploads anything. The steps below need the owner's Apple and Google accounts.
 
 **iOS (TestFlight).** Create the App Store Connect app for `com.companionintelligence.scan` first. Then, from `mobile/ios/App`:
 
@@ -96,6 +110,7 @@ The bundle is `app/build/outputs/bundle/release/app-release.aab`.
 
 ## Not done
 
+- AR capture on a real phone: camera, motion and location prompts, the 8th Wall SLAM start, GLB export, and the sign-in return on Android.
 - The store gates in PR #244: the measurement step, and the owner's sign-off on the XR Engine licence (see *xr.js licence* above) before any store binary.
 - `PrivacyInfo.xcprivacy`, the privacy policy, and the App Privacy and Play data-safety answers. Location goes to OpenStreetMap Nominatim, and captures go to the Scan server.
 - Companion Account sign-in against the real Portal, and on Android. Both are unverified (see *Companion Account sign-in*).

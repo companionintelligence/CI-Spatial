@@ -54,6 +54,67 @@ Claude Code picks it up automatically once the backend above is running.
 
 ---
 
+## Desktop and Android apps
+
+The same web app also ships as two native apps, built from this repository: a desktop app for
+Windows, macOS and Linux ([`desktop/`](desktop/README.md), Tauri 2) and an Android app
+([`mobile/`](mobile/README.md), Capacitor 8). Pre-releases are published on
+[GitHub Releases](https://github.com/companionintelligence/CI-Spatial/releases) by
+[`.github/workflows/native-release.yml`](.github/workflows/native-release.yml). They are not in
+any app store.
+
+| | Desktop app | Android app |
+|---|---|---|
+| What it is | The Place Scan Editor and viewer. It opens the editor, and it cannot capture. | The scanner and the editor. AR capture (the 8th Wall engine in the app's WebView) has not been tried on a phone yet. |
+| Scan server | The person's own, such as the one on their Companion Hub: its https address is set in the app ([why https only](#the-scan-server-in-the-android-ios-and-desktop-apps)). | The same. |
+| Companion Account | Signs in through the default browser and comes back on `computer.ci.scan.desktop://auth`. | Signs in through the browser sheet and comes back on `com.companionintelligence.scan://auth`. |
+| Release files | NSIS and MSI installers (Windows), a universal dmg (macOS, ad-hoc signed), deb and rpm (Linux). All unsigned apart from the macOS ad-hoc signature. | A release APK, signed with the release key or a throwaway key, and named for which. |
+| Engine | Leaves the XR Engine out. | Carries the XR Engine unmodified, and shows Niantic's notice. |
+
+Each app carries `THIRD-PARTY-NOTICES.txt` (generated from the lockfiles for exactly what that
+bundle contains) and `LICENSE.txt`, and shows both under Legal notices. No server address, API
+key or secret is built into either app, and no model weights ship in them.
+
+### Building them
+
+```bash
+npm ci
+npm ci --prefix desktop && npm run build --prefix desktop     # this OS's installers
+npm ci --prefix mobile && npm run build:web --prefix mobile   # then:
+(cd mobile && npx cap sync android) && (cd mobile/android && ./gradlew assembleRelease)
+```
+
+Both web builds go through [`scripts/native/build-web.mjs`](scripts/native/build-web.mjs), which
+builds without the service worker, leaves the engine out of the desktop app, leaves model weights
+and test files out of both, refuses a `.env` file that sets a `VITE_` variable, and writes the
+notices. The Android release build signs from four environment variables or the git-ignored
+`mobile/android/keystore.properties` ([mobile/README.md](mobile/README.md#publishing)).
+
+### Publishing a pre-release
+
+1. Set the next version in all six places, and raise the Android `versionCode` by one.
+   `node scripts/native/check-versions.mjs` says whether they agree.
+2. Dispatch **Native Release** with the tag `v<version>` (for example `v0.2.0`; `v0.1.0` is the
+   container pre-release) and `android_signing`: `auto` signs with the release key when the four
+   repository secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`
+   and `ANDROID_KEY_PASSWORD` are set, and otherwise with a throwaway key made in the job and
+   never stored.
+3. The workflow builds every installer and the APK, and publishes only when all of them
+   succeeded: a GitHub pre-release with the installers, the APK, `LICENSE`,
+   `THIRD-PARTY-NOTICES.txt`, `SHA256SUMS.txt` and notes on installing each one.
+
+### Not done yet
+
+- The identifiers are provisional: `computer.ci.scan.desktop` and `com.companionintelligence.scan`.
+  They name where each app keeps its local data, so change them before people rely on a build.
+- AR capture in the Android app has not run on a phone, and Companion Account sign-in has not run
+  against a real Portal on either app.
+- The installers are not code-signed or notarized, so Windows and macOS warn on first open.
+- iOS, Google Play and the App Store are out of scope here: they need the owner's Apple and
+  Google accounts ([mobile/README.md](mobile/README.md#publishing)).
+
+---
+
 
 ## Screenshots
 
