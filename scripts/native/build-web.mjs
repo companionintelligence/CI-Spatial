@@ -21,13 +21,17 @@
  *      contains (scripts/native/third-party-notices.mjs), and LICENSE.txt. The app's Legal notices
  *      view shows both. The same notices go to <shell>/build/third-party-notices.json, which the
  *      release workflow merges into the release asset.
- *   7. The bundle is checked for what must not be in it, and its contents are listed.
+ *   7. The bundle is checked for what must not be in it. The mobile bundle must also carry the XR
+ *      Engine exactly as Niantic publishes it (scripts/native/check-xr-engine.mjs): a Windows clone
+ *      made before .gitattributes holds converted copies in public/, which the build would ship.
+ *      Then its contents are listed.
  */
 import { spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { apiBaseProblem } from '../../mobile/scripts/check-api-base.mjs'
+import { ENGINE_PACKAGE, engineProblems } from './check-xr-engine.mjs'
 import { bundleNotices, renderNotices, rustTargets } from './third-party-notices.mjs'
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -79,6 +83,14 @@ export function viteVariablesInEnvFiles(dir = ROOT) {
 export function forbiddenInBundle(outDir, shell) {
   const names = [...PWA_FILES, ...Object.keys(NATIVE_EXCLUDED), ...(shell === 'desktop' ? ENGINE_FILES : [])]
   return names.filter((name) => existsSync(join(outDir, name)))
+}
+
+/**
+ * The XR Engine files in a finished bundle that are missing or not Niantic's published bytes, as
+ * `[file, problem]` pairs. Only the mobile app carries the engine; the desktop bundle has none.
+ */
+export function engineProblemsInBundle(outDir, shell) {
+  return shell === 'mobile' ? engineProblems(outDir) : []
 }
 
 function sizeOf(path) {
@@ -138,6 +150,12 @@ export function buildShellWeb(shell) {
   }
   const left = forbiddenInBundle(outDir, shell)
   if (left.length) fail(`${outRel} still contains ${left.join(', ')}`)
+  const engine = engineProblemsInBundle(outDir, shell)
+  if (engine.length) {
+    fail(`${outRel} does not carry ${ENGINE_PACKAGE} as Niantic publishes it, and its licence allows no other form: `
+      + `${engine.map(([file, problem]) => `${file} (${problem})`).join('; ')}. A checkout that converted line endings `
+      + 'is the usual cause: delete public/xr*.js and run `git checkout -- public` (.gitattributes keeps them unconverted).')
+  }
 
   if (!existsSync(report)) fail(`the build wrote no module list to ${report}, so its notices cannot be made`)
   const modules = JSON.parse(readFileSync(report, 'utf8')).modules

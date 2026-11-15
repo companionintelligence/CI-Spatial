@@ -32,7 +32,7 @@ npm run open:android
 
 For Android alone, as the workflows do: `npm run build:web`, then `npx cap sync android`, then `./gradlew assembleRelease` (or `assembleDebug`) in `android/`.
 
-`npm run build:web` is `scripts/native/build-web.mjs mobile`: the root Vite build with `VITE_DISABLE_PWA=1` into `www/`, without the model weights (`public/models`, whose licence is unchecked) or the test-only files, with `THIRD-PARTY-NOTICES.txt` and `LICENSE.txt` added. It refuses a `.env` file that sets a `VITE_` variable, so no local setting is baked in. `scripts/native/check-xr-engine.mjs www` checks that the XR Engine files are Niantic's published bytes. Git ignores everything `cap sync` writes, so run `npm run sync` after a clone.
+`npm run build:web` is `scripts/native/build-web.mjs mobile`: the root Vite build with `VITE_DISABLE_PWA=1` into `www/`, without the model weights (`public/models`, whose licence is unchecked) or the test-only files, with `THIRD-PARTY-NOTICES.txt` and `LICENSE.txt` added. It refuses a `.env` file that sets a `VITE_` variable, so no local setting is baked in. It also stops unless the XR Engine files in `www/` are Niantic's published bytes (`scripts/native/check-xr-engine.mjs`), which a Windows clone made before `.gitattributes` does not have: delete `public/xr*.js` and run `git checkout -- public` to fix one. Git ignores everything `cap sync` writes, so run `npm run sync` after a clone.
 
 ## Icons and launch screens
 

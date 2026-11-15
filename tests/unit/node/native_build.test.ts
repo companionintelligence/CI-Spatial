@@ -7,7 +7,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -15,9 +15,12 @@ import {
   NATIVE_EXCLUDED,
   OUT_DIRS,
   PWA_FILES,
+  ROOT,
+  engineProblemsInBundle,
   forbiddenInBundle,
   viteVariablesInEnvFiles,
 } from '../../../scripts/native/build-web.mjs'
+import { ENGINE_SHA256 } from '../../../scripts/native/check-xr-engine.mjs'
 
 function scratch(files: Record<string, string>): string {
   const dir = mkdtempSync(join(tmpdir(), 'native-build-'))
@@ -68,6 +71,27 @@ test('the desktop bundle may not hold the AR engine; neither bundle may hold the
     assert.deepEqual(PWA_FILES, ['sw.js', 'manifest.json'])
     assert.deepEqual(forbiddenInBundle(dir, 'desktop'), ['sw.js', 'xr.js', 'xr-slam.js', 'resources'])
     assert.deepEqual(forbiddenInBundle(dir, 'mobile'), ['sw.js'], 'the Android app ships the engine, which it runs')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("the mobile build stops on an XR Engine that is not Niantic's bytes, as a converted Windows checkout would ship", () => {
+  const dir = mkdtempSync(join(tmpdir(), 'native-build-'))
+  try {
+    for (const file of Object.keys(ENGINE_SHA256)) {
+      mkdirSync(join(dir, file, '..'), { recursive: true })
+      copyFileSync(join(ROOT, 'public', file), join(dir, file))
+    }
+    assert.deepEqual(engineProblemsInBundle(dir, 'mobile'), [], 'the engine as published')
+    writeFileSync(join(dir, 'xr-slam.js'), readFileSync(join(dir, 'xr-slam.js'), 'utf8').replace(/\n/g, '\r\n'))
+    assert.deepEqual(engineProblemsInBundle(dir, 'mobile').map(([file]: [string, string]) => file), ['xr-slam.js'])
+    assert.deepEqual(engineProblemsInBundle(dir, 'desktop'), [], 'the desktop bundle carries no engine to check')
+    // buildShellWeb fails on any of them, once the bundle is built and before its notices are written.
+    const build = readFileSync(join(ROOT, 'scripts/native/build-web.mjs'), 'utf8').replace(/\r\n/g, '\n')
+    const body = build.slice(build.indexOf('export function buildShellWeb'))
+    assert.match(body, /const engine = engineProblemsInBundle\(outDir, shell\)\n {2}if \(engine\.length\) \{\n {4}fail\(/)
+    assert.ok(body.indexOf('engineProblemsInBundle(outDir, shell)') < body.indexOf('bundleNotices('))
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
