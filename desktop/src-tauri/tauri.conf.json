@@ -10,6 +10,7 @@
     "frontendDist": "../../dist"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "label": "main",
@@ -45,5 +46,14 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "computer.ci.scan.desktop"
+        ]
+      }
+    }
   }
 }

@@ -9,10 +9,12 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
+  DESKTOP_RETURN_PREFIX,
   SHELL_RETURN_PREFIX,
   beginShellSignIn,
   createShellPkce,
   finishShellSignIn,
+  initShellSignIn,
   shellSignInPath,
   shellSignedIn,
 } from '../../../src/shared/shell-sign-in.ts'
@@ -195,6 +197,133 @@ test('outside a shell there is no token to check, and nothing is sent', async ()
     shell.storage.set(TOKEN_KEY, 'token-in-a-browser')
     assert.equal(await shellSignedIn(), false)
     assert.equal(shell.requests.length, 0)
+  } finally {
+    restore()
+    shell.restore()
+  }
+})
+
+// ── The desktop app (Tauri): the default browser out, the deep-link plugin back ─────────────
+
+/** A desktop shell: Tauri's globals with the opener and deep-link plugins, storage, and fetch. */
+function installDesktop(respond: (url: string) => Response, launchedWith: string[] | null = null) {
+  const storage = new Map<string, string>()
+  const opened: string[] = []
+  const requests: Recorded[] = []
+  let deliver: ((urls: string[]) => void) | null = null
+  const restores = [
+    stubGlobal('Capacitor', undefined),
+    stubGlobal('__TAURI_INTERNALS__', {}),
+    stubGlobal('__TAURI__', {
+      opener: { openUrl: async (url: string) => { opened.push(url) } },
+      deepLink: {
+        getCurrent: async () => launchedWith,
+        onOpenUrl: async (handler: (urls: string[]) => void) => { deliver = handler },
+      },
+    }),
+    stubGlobal('localStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => { storage.set(key, value) },
+      removeItem: (key: string) => { storage.delete(key) },
+    }),
+    stubGlobal('fetch', async (input: string | URL | Request, init: RequestInit = {}) => {
+      const url = String(input)
+      requests.push({
+        url,
+        body: typeof init.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : undefined,
+        headers: (init.headers ?? {}) as Record<string, string>,
+      })
+      return respond(url)
+    }),
+  ]
+  return {
+    storage,
+    opened,
+    requests,
+    deliver: (urls: string[]) => deliver?.(urls),
+    restore: () => restores.forEach((put) => put()),
+  }
+}
+
+const exchangeOk = (url: string) => {
+  if (url.endsWith('/authenticate/shell/exchange')) return Response.json({ token: 'desktop-token', email: 'a@example.com', name: 'A' })
+  throw new Error(`unexpected request to ${url}`)
+}
+
+test('the desktop return is the scheme the server redirects to and the one the desktop app registers', () => {
+  const server = readFileSync(new URL('../../../server/portal_auth.ts', import.meta.url), 'utf8')
+  assert.ok(
+    server.includes(`export const DESKTOP_RETURN_URL = '${DESKTOP_RETURN_PREFIX}'`),
+    'server/portal_auth.ts and src/shared/shell-sign-in.ts must name the same desktop return URL',
+  )
+  const tauri = JSON.parse(readFileSync(new URL('../../../desktop/src-tauri/tauri.conf.json', import.meta.url), 'utf8')) as {
+    plugins?: { 'deep-link'?: { desktop?: { schemes?: string[] } } }
+  }
+  const scheme = new URL(DESKTOP_RETURN_PREFIX).protocol.slice(0, -1)
+  assert.deepEqual(tauri.plugins?.['deep-link']?.desktop?.schemes, [scheme], 'the installers register the scheme the server returns to')
+  assert.notEqual(DESKTOP_RETURN_PREFIX, SHELL_RETURN_PREFIX, 'the desktop app has its own scheme')
+})
+
+test('desktop: the sign-in path asks the server to return to the desktop app', () => {
+  assert.equal(shellSignInPath('B'.repeat(43), 'desktop'), `/authenticate/oidc?shell=desktop&challenge=${'B'.repeat(43)}`)
+})
+
+test('desktop: a sign-in opens the default browser, and its return trades the code for a token', async () => {
+  const shell = installDesktop(exchangeOk)
+  try {
+    shell.storage.set('companion-scan-server', 'https://scan.example.ts.net')
+    await beginShellSignIn()
+    assert.equal(shell.opened.length, 1)
+    const opened = new URL(shell.opened[0]!)
+    assert.equal(opened.origin, 'https://scan.example.ts.net', 'the saved server, in the system browser')
+    assert.equal(opened.searchParams.get('shell'), 'desktop')
+    const challenge = opened.searchParams.get('challenge')!
+
+    assert.equal(await finishShellSignIn(`${SHELL_RETURN_PREFIX}?code=${CODE}`), null, "the phone app's return is not this app's")
+    assert.equal(await finishShellSignIn(`${DESKTOP_RETURN_PREFIX}?code=${CODE}`), true)
+    const exchange = shell.requests[0]!
+    assert.equal(exchange.url, 'https://scan.example.ts.net/authenticate/shell/exchange')
+    assert.equal(await s256(exchange.body?.['verifier'] as string), challenge)
+    assert.equal(shell.storage.get(TOKEN_KEY), 'desktop-token')
+  } finally {
+    shell.restore()
+  }
+})
+
+test('desktop: a return delivered while the app runs is finished, and so is one that launched it', async () => {
+  const running = installDesktop(exchangeOk)
+  try {
+    const results: boolean[] = []
+    await beginShellSignIn()
+    await initShellSignIn((signedIn) => { results.push(signedIn) })
+    running.deliver([`${DESKTOP_RETURN_PREFIX}?code=${CODE}`])
+    await new Promise((settle) => setTimeout(settle, 20))
+    assert.deepEqual(results, [true])
+    running.deliver([`${DESKTOP_RETURN_PREFIX}?code=${CODE}`])
+    await new Promise((settle) => setTimeout(settle, 20))
+    assert.deepEqual(results, [true], 'the same link again is ignored')
+  } finally {
+    running.restore()
+  }
+
+  const cold = installDesktop(exchangeOk, [`${DESKTOP_RETURN_PREFIX}?code=${CODE}`])
+  try {
+    cold.storage.set(PENDING_KEY, JSON.stringify({ verifier: 'v'.repeat(43), startedAt: Date.now() }))
+    const results: boolean[] = []
+    await initShellSignIn((signedIn) => { results.push(signedIn) })
+    await new Promise((settle) => setTimeout(settle, 20))
+    assert.deepEqual(results, [true], 'the link that started the app finishes the sign-in')
+  } finally {
+    cold.restore()
+  }
+})
+
+test('desktop: without the opener plugin the sign-in says so instead of pretending to start', async () => {
+  const shell = installDesktop(exchangeOk)
+  const restore = stubGlobal('__TAURI__', {})
+  try {
+    await assert.rejects(beginShellSignIn(), /cannot open the system browser/)
+    assert.equal(shell.storage.has(PENDING_KEY), false, 'no sign-in is left pending')
   } finally {
     restore()
     shell.restore()

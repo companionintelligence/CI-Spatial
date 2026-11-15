@@ -28,3 +28,29 @@ test('desktop build generates all required platform icons', () => {
   assert.match(pkg.scripts.icons, /^tauri icon /);
   assert.match(pkg.scripts.build, /npm run icons && tauri build/);
 });
+
+const capabilities = JSON.parse(await readFile(path.join(here, '../src-tauri/capabilities/default.json'), 'utf8'));
+const cargoToml = await readFile(path.join(here, '../src-tauri/Cargo.toml'), 'utf8');
+const mainRs = await readFile(path.join(here, '../src-tauri/src/main.rs'), 'utf8');
+
+test('the Rust crates are pinned to published versions, tauri-build to the one Cargo.lock holds', async () => {
+  const lock = await readFile(path.join(here, '../src-tauri/Cargo.lock'), 'utf8');
+  const locked = (name) => lock.match(new RegExp(`name = "${name}"\r?\nversion = "([^"]+)"`))?.[1];
+  for (const name of ['tauri', 'tauri-build', 'tauri-plugin-deep-link', 'tauri-plugin-opener', 'tauri-plugin-single-instance']) {
+    const pinned = cargoToml.match(new RegExp(`^${name} = (?:\{ version = )?"=([^"]+)"`, 'm'))?.[1];
+    assert.ok(pinned, `${name} is pinned with =`);
+    assert.equal(locked(name), pinned, `${name}: Cargo.toml and Cargo.lock agree`);
+  }
+  assert.match(cargoToml, /tauri-plugin-single-instance = \{[^}]*features = \["deep-link"\]/, 'a second launch hands its link to the first');
+});
+
+test('sign-in comes back through the desktop app scheme, and the app opens only https pages outside itself', () => {
+  assert.equal(config.app.withGlobalTauri, true, 'src/shared/shell-sign-in.ts reads window.__TAURI__');
+  assert.deepEqual(config.plugins['deep-link'].desktop.schemes, ['computer.ci.scan.desktop']);
+  assert.deepEqual(capabilities.windows, ['main']);
+  const opener = capabilities.permissions.filter((p) => (typeof p === 'string' ? p : p.identifier).startsWith('opener:'));
+  assert.deepEqual(opener, [{ identifier: 'opener:allow-open-url', allow: [{ url: 'https://*' }] }], 'no file paths, no plain http');
+  assert.ok(capabilities.permissions.includes('deep-link:default'));
+  const singleInstance = mainRs.indexOf('tauri_plugin_single_instance::init');
+  assert.ok(singleInstance > 0 && singleInstance < mainRs.indexOf('tauri_plugin_deep_link::init'), 'single-instance is registered first');
+});

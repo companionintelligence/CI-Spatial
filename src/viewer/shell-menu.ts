@@ -1,6 +1,7 @@
 /**
  * What the editor adds inside a native shell (Android, iOS and desktop): the Scan
- * server it talks to, in the Navigate menu, and a prompt for one when none is set.
+ * server it talks to, in the Navigate menu, a prompt for one when none is set, and
+ * Companion Account sign-in through the system browser.
  *
  * The hosted editor draws none of this. Its server is the origin that served it.
  * A shell has no server of its own, so the person's own Scan server (on their
@@ -8,6 +9,7 @@
  * the device by src/shared/api-base.ts.
  */
 import { apiBase, isNativeShell } from '../shared/api-base.ts'
+import { beginShellSignIn, initShellSignIn } from '../shared/shell-sign-in.ts'
 import { openServerDialog } from '../ui/server-setting.ts'
 import { ensureShellStyles } from '../ui/shell-dialog.ts'
 
@@ -54,6 +56,32 @@ function serverMenuItem(doc: Document): HTMLButtonElement {
   return item
 }
 
+/** The account chip's words while a sign-in is out in the browser, after one fails, and when this build cannot open a browser. */
+export const CHIP_CONTINUE = 'Continue in your browser'
+export const CHIP_FAILED = 'Sign-in failed. Try again.'
+export const CHIP_UNAVAILABLE = 'Sign-in is not available in this app'
+
+/**
+ * In a shell the account chip signs in through the system browser (src/shared/shell-sign-in.ts).
+ * Its href would load the server's sign-in page inside the app, where the session cannot follow.
+ * A finished sign-in reloads the editor, which then reads everything with the new session. A
+ * server with sign-in off has no chip: viewer.ts removes it when /authenticate/whoami is a 404.
+ */
+function wireAccountChip(doc: Document): void {
+  const chip = doc.getElementById('account-chip')
+  chip?.addEventListener('click', (event) => {
+    event.preventDefault()
+    beginShellSignIn().then(
+      () => { chip.textContent = CHIP_CONTINUE },
+      () => { chip.textContent = CHIP_UNAVAILABLE },
+    )
+  })
+  void initShellSignIn((signedIn) => {
+    if (signedIn) location.reload()
+    else if (chip) chip.textContent = CHIP_FAILED
+  })
+}
+
 /**
  * Adds the shell's entries to the Navigate menu, and asks for a server straight away
  * when none is set, since the editor can show nothing without one. Does nothing
@@ -67,5 +95,6 @@ export function mountShellMenu(doc: Document = document): void {
     const divider = panel.querySelector('.workspace-menu-divider')
     panel.insertBefore(serverMenuItem(doc), divider)
   }
+  wireAccountChip(doc)
   if (!apiBase()) changeServer()
 }

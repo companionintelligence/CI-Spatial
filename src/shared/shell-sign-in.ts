@@ -1,19 +1,37 @@
 /**
- * Companion Account sign-in in the Capacitor shells.
+ * Companion Account sign-in in the native shells: the Capacitor phone apps and the Tauri desktop app.
  *
- * The shell's page lives on capacitor://localhost (iOS) or https://localhost (Android), and
- * the server's session cookie belongs to the server's origin, so the shell cannot carry it.
- * Sign-in runs in the system browser sheet instead. The server ends it by handing the app a
- * one-time code through the app's URL scheme. The shell trades that code, with the PKCE
+ * The shell's page lives on its own origin (capacitor://localhost, https://localhost,
+ * tauri://localhost or http://tauri.localhost), and the server's session cookie belongs to the
+ * server's origin, so the shell cannot carry it. Sign-in runs in the system browser instead: the
+ * browser sheet on a phone, the default browser on a desktop. The server ends it by handing the
+ * app a one-time code through the app's own URL scheme. The shell trades that code, with the PKCE
  * verifier only it holds, for a session token, and sends the token as a Bearer header.
  *
- * The server half is server/portal_auth.ts (SHELL_RETURN_URL, POST /authenticate/shell/exchange).
- * The plugins are read from Capacitor.Plugins, so the web build does not bundle them.
+ * The server half is server/portal_auth.ts (SHELL_RETURN_URL, DESKTOP_RETURN_URL and
+ * POST /authenticate/shell/exchange). The Portal only ever redirects to the Scan server's own
+ * callback, so neither app scheme is registered with it. The plugins are read from
+ * Capacitor.Plugins and window.__TAURI__, so the web build does not bundle them.
  */
-import { apiBase, apiUrl, isNativeShell, SHELL_SESSION_KEY, SHELL_SIGN_IN_PENDING_KEY, shellSessionToken } from './api-base.ts'
+import {
+  apiBase,
+  apiUrl,
+  isDesktopShell,
+  isNativeShell,
+  SHELL_SESSION_KEY,
+  SHELL_SIGN_IN_PENDING_KEY,
+  shellSessionToken,
+} from './api-base.ts'
 
-/** The app's URL scheme and sign-in host. Keep in step with SHELL_RETURN_URL in server/portal_auth.ts. */
+/** The phone app's URL scheme and sign-in host. Keep in step with SHELL_RETURN_URL in server/portal_auth.ts. */
 export const SHELL_RETURN_PREFIX = 'com.companionintelligence.scan://auth'
+
+/**
+ * The desktop app's URL scheme and sign-in host, registered by its installers
+ * (desktop/src-tauri/tauri.conf.json, plugins.deep-link). Keep in step with DESKTOP_RETURN_URL in
+ * server/portal_auth.ts.
+ */
+export const DESKTOP_RETURN_PREFIX = 'computer.ci.scan.desktop://auth'
 
 const PENDING_KEY = SHELL_SIGN_IN_PENDING_KEY
 const TOKEN_KEY = SHELL_SESSION_KEY
@@ -36,6 +54,27 @@ interface NativePlugins {
 
 function plugins(): NativePlugins {
   return (globalThis as { Capacitor?: { Plugins?: NativePlugins } }).Capacitor?.Plugins ?? {}
+}
+
+/**
+ * The part of the desktop app's global Tauri API this module uses (tauri.conf.json sets
+ * withGlobalTauri). The opener and deep-link plugins add these in desktop/src-tauri/src/main.rs.
+ */
+interface DesktopPlugins {
+  opener?: { openUrl(url: string): Promise<void> }
+  deepLink?: {
+    getCurrent(): Promise<string[] | null>
+    onOpenUrl(handler: (urls: string[]) => void): Promise<unknown>
+  }
+}
+
+function desktopPlugins(): DesktopPlugins {
+  return (globalThis as { __TAURI__?: DesktopPlugins }).__TAURI__ ?? {}
+}
+
+/** The return this app's sign-in ends in: the desktop app's scheme in the desktop shell, else the phone app's. */
+function returnPrefix(): string {
+  return isDesktopShell() ? DESKTOP_RETURN_PREFIX : SHELL_RETURN_PREFIX
 }
 
 function base64url(bytes: Uint8Array): string {
@@ -67,9 +106,12 @@ function writeStorage(key: string, value: string | null): void {
   }
 }
 
-/** The server path that starts a shell sign-in, with the shell's PKCE challenge. */
-export function shellSignInPath(challenge: string): string {
-  return `/authenticate/oidc?shell=1&challenge=${challenge}`
+/**
+ * The server path that starts a shell sign-in, with the shell's PKCE challenge. `shell=1` is the
+ * phone app, as it always was; `shell=desktop` makes the server return to the desktop app instead.
+ */
+export function shellSignInPath(challenge: string, app: 'phone' | 'desktop' = 'phone'): string {
+  return `/authenticate/oidc?shell=${app === 'desktop' ? 'desktop' : '1'}&challenge=${challenge}`
 }
 
 /** The verifier of a sign-in the app started recently, or null. */
@@ -85,16 +127,26 @@ function pendingVerifier(): string | null {
   }
 }
 
+/** How this build opens a page in the system browser: the Browser sheet on a phone, the default browser on a desktop. */
+function systemBrowser(): ((url: string) => Promise<void>) | null {
+  if (isDesktopShell()) {
+    const opener = desktopPlugins().opener
+    return opener ? (url) => opener.openUrl(url) : null
+  }
+  const browser = plugins().Browser
+  return browser ? (url) => browser.open({ url }) : null
+}
+
 /**
- * Opens the server's sign-in in the browser sheet. The verifier waits in storage
- * until the app comes back. Throws if the Browser plugin is not in this build.
+ * Opens the server's sign-in in the system browser. The verifier waits in storage
+ * until the app comes back. Throws if this build cannot open the system browser.
  */
 export async function beginShellSignIn(): Promise<void> {
-  const browser = plugins().Browser
-  if (!browser) throw new Error('The Browser plugin is not in this build')
+  const open = systemBrowser()
+  if (!open) throw new Error('This build cannot open the system browser')
   const { verifier, challenge } = await createShellPkce()
   writeStorage(PENDING_KEY, JSON.stringify({ verifier, startedAt: Date.now() }))
-  await browser.open({ url: apiUrl(shellSignInPath(challenge)) })
+  await open(apiUrl(shellSignInPath(challenge, isDesktopShell() ? 'desktop' : 'phone')))
 }
 
 /**
@@ -103,10 +155,11 @@ export async function beginShellSignIn(): Promise<void> {
  * a return for a sign-in this app started (a duplicate, a stale launch URL, or any other link).
  */
 export async function finishShellSignIn(url: string): Promise<boolean | null> {
-  if (!url.startsWith(`${SHELL_RETURN_PREFIX}?`)) return null
+  if (!url.startsWith(`${returnPrefix()}?`)) return null
   const verifier = pendingVerifier()
   if (!verifier) return null
   writeStorage(PENDING_KEY, null)
+  // The phone's browser sheet belongs to the app and is closed. A desktop's browser is the person's own.
   void plugins().Browser?.close().catch(() => undefined)
   const code = new URL(url).searchParams.get('code') ?? ''
   if (!CODE_SHAPE.test(code)) return false
@@ -150,17 +203,28 @@ export async function shellSignedIn(fetchFn: typeof fetch = fetch): Promise<bool
  * Listens for the app's URL opens, so a sign-in that ends while the app runs is finished here,
  * and so is one that launched the app from cold. `onFinished` gets the result of each sign-in
  * this app started. Does nothing outside a shell.
+ *
+ * On a desktop the return comes through the deep-link plugin. On Windows and Linux the link starts
+ * a second copy of the app, and the single-instance plugin hands it to this one.
  */
 export async function initShellSignIn(onFinished: (signedIn: boolean) => void): Promise<void> {
   if (!isNativeShell()) return
   installShellSession()
-  const app = plugins().App
-  if (!app) return
   const finish = async (url: string | undefined) => {
     if (!url) return
     const result = await finishShellSignIn(url)
     if (result !== null) onFinished(result)
   }
+  if (isDesktopShell()) {
+    const deepLink = desktopPlugins().deepLink
+    if (!deepLink) return
+    await deepLink.onOpenUrl((urls) => { for (const url of urls) void finish(url) })
+    const current = await deepLink.getCurrent().catch(() => null)
+    for (const url of current ?? []) void finish(url)
+    return
+  }
+  const app = plugins().App
+  if (!app) return
   await app.addListener('appUrlOpen', ({ url }) => { void finish(url) })
   void finish((await app.getLaunchUrl?.())?.url)
 }
