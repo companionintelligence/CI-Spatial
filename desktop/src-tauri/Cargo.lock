@@ -478,7 +478,7 @@ dependencies = [
 
 [[package]]
 name = "companion-scan-desktop"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde_json",
  "tauri",

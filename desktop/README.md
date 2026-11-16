@@ -94,7 +94,7 @@ must be in Applications, or opened once, before the system knows its scheme.
   so on Apple silicon macOS offers **Open** from the right-click menu, or **Open Anyway**
   in Privacy & Security, instead of calling the download damaged. Windows SmartScreen
   warns on first run.
-- The app's version is 0.2.0, written in `tauri.conf.json`, `src-tauri/Cargo.toml`
+- The app's version is 0.2.1, written in `tauri.conf.json`, `src-tauri/Cargo.toml`
   (and `Cargo.lock`) and `package.json`, in step with the Android app.
   `node scripts/native/check-versions.mjs` checks all of them.
 

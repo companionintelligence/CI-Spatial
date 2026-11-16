@@ -15,17 +15,17 @@ import { androidVersionCode, appVersions, versionProblems } from '../../../scrip
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const read = (path: string) => readFileSync(join(ROOT, path), 'utf8')
 
-test('the desktop and Android apps are both 0.2.0, written the same in all six places', () => {
+test('the desktop and Android apps are both 0.2.1, written the same in all six places', () => {
   const versions = appVersions()
   assert.equal(Object.keys(versions).length, 6)
-  for (const [file, version] of Object.entries(versions)) assert.equal(version, '0.2.0', file)
-  assert.equal(androidVersionCode(), 2, 'versionCode rises with each release; 1 was the scaffold')
+  for (const [file, version] of Object.entries(versions)) assert.equal(version, '0.2.1', file)
+  assert.equal(androidVersionCode(), 3, 'versionCode rises with each release: 2 was 0.2.0, 1 was the scaffold')
   assert.deepEqual(versionProblems(), [])
 })
 
 test('a release tag must be v and the apps\' version, with no suffix the MSI installer would refuse', () => {
-  assert.deepEqual(versionProblems('v0.2.0'), [])
-  assert.match(versionProblems('v0.2.1').join(), /does not match the apps' version 0\.2\.0/)
+  assert.deepEqual(versionProblems('v0.2.1'), [])
+  assert.match(versionProblems('v0.2.2').join(), /does not match the apps' version 0\.2\.1/)
   assert.match(versionProblems('0.2.0').join(), /is not v and a plain x\.y\.z version/)
   assert.match(versionProblems('v0.2.0-alpha.1').join(), /is not v and a plain x\.y\.z version/)
 })

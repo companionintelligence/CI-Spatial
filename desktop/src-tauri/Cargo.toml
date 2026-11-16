@@ -1,6 +1,6 @@
 [package]
 name = "companion-scan-desktop"
-version = "0.2.0"
+version = "0.2.1"
 description = "Companion Scan desktop shell"
 edition = "2021"
 rust-version = "1.90"
