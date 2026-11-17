@@ -117,7 +117,7 @@ The shell runs AR natively, with ARKit on iOS and ARCore on Android, through the
 
 **Known gaps.**
 
-- Android: Capacitor offers no pause hook to plugins, so backgrounding the app is not handled. The next frame reports a camera error, and the web app starts the session again.
+- Android: Capacitor calls the plugin's `handleOnPause()` when the activity pauses, and the plugin does not override it, so backgrounding does not pause the ARCore session. `handleOnResume()` only resumes the GL view. When the camera is lost, the frame loop reports an error, and nothing restarts the session.
 - iOS: ARKit stops the session when the app is backgrounded. The plugin reports the interruption as tracking `notAvailable`, and autosaves the map of a named Place (ADR 0010). The pose events carry the state again after the app returns.
 - The keyframe upload does not send the depth map yet (`FrameObservation.depthUrl` in `src/world/types.ts` is the slot for it).
 
