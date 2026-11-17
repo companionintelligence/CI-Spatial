@@ -21,6 +21,8 @@ export interface NativeARCapabilities {
   supported: boolean
   /** True when the device can also return metric depth (LiDAR, or ARCore's depth API). */
   depth: boolean
+  /** True when the native layer can save a world map and start a session from one (ARKit only). */
+  worldMap?: boolean
   /** Why `supported` is false, when the native layer knows. */
   reason?: string
 }
@@ -42,6 +44,23 @@ export interface NativeStartResult {
   rect: NativeRect
   /** Width over height of the camera image in display orientation. Equals rect.width / rect.height. */
   cameraAspect: number
+  /**
+   * Set when start() was given a world map name. `loaded`: the saved map is the session's starting map, and the
+   * session relocalizes into its coordinates (tracking reads limited.relocalizing until it does). `missing`: no
+   * map has that name, or the name cannot be a file name, so the session starts fresh. `unreadable`: a file exists
+   * under the name but does not decode, so the session starts fresh and the file is left in place.
+   */
+  worldMap?: NativeWorldMapStart
+}
+
+/** What a native start reports about a requested world map. */
+export type NativeWorldMapStart = 'loaded' | 'missing' | 'unreadable'
+
+/** A world map saved on the phone. The map itself never leaves the device. */
+export interface NativeWorldMapSaved {
+  name: string
+  /** Size of the archived map, in bytes. */
+  bytes: number
 }
 
 export interface NativeDepthPayload {
@@ -106,11 +125,16 @@ export interface NativeErrorEvent {
 /** The ScanAR plugin's methods and events, as Capacitor exposes them to the web app. */
 export interface ScanARPlugin {
   capabilities(): Promise<NativeARCapabilities>
-  start(options: { depth: boolean; hitGrid: number }): Promise<NativeStartResult>
+  start(options: { depth: boolean; hitGrid: number; worldMap?: string }): Promise<NativeStartResult>
   stop(): Promise<void>
   captureFrame(options: { depth: boolean }): Promise<NativeFrame>
   /** A single hit test at normalised (0..1) coordinates of the overlay rect. */
   hitTest(options: { x: number; y: number }): Promise<NativeHitSample>
+  /**
+   * Saves the running session's world map under `name`. iOS (ARKit) only: the Android plugin has no such
+   * method, so it is optional here and the provider checks for it.
+   */
+  saveWorldMap?(options: { name: string }): Promise<NativeWorldMapSaved>
   addListener(event: 'pose', listener: (e: NativePoseEvent) => void): Promise<NativeListenerHandle>
   addListener(event: 'points', listener: (e: NativePointsEvent) => void): Promise<NativeListenerHandle>
   addListener(event: 'hits', listener: (e: NativeHitsEvent) => void): Promise<NativeListenerHandle>

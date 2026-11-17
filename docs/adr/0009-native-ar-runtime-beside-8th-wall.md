@@ -30,7 +30,7 @@ Constraints this satisfies:
 ## Consequences
 
 - The 8th Wall configuration (`public/xr.js`, `XR8_LOAD_TIMEOUT_MS`, `createEighthWallProvider`) is unchanged. A native phone does not wait for the engine, and it loads only when a native session fails.
-- Neither native path has run on a device. The Android debug build compiles. The Swift is not compiled anywhere yet: the build host has no Xcode. The first on-device run is the gate: an ARKit iPhone with and without LiDAR, and an ARCore phone such as the Galaxy Tab S9 Ultra or the Tab S8 Ultra in `docs/testing/DEVICE_TESTING.md`.
+- Neither native path has run on a device. The Android debug build compiles. The mobile-build workflow compiles the Swift when someone runs it by hand (it is not a push check); this build host has no Xcode. The first on-device run is the gate: an ARKit iPhone with and without LiDAR, and an ARCore phone such as the Galaxy Tab S9 Ultra or the Tab S8 Ultra in `docs/testing/DEVICE_TESTING.md`.
 - The `xr.js` licence (see `mobile/README.md`) still gates any store build, because the fallback is the 8th Wall engine.
-- Android cannot pause the session when the app is backgrounded, because Capacitor offers no pause hook to plugins. iOS does not report ARKit's interruption yet. Both are known gaps.
+- Android does not yet pause the session when the app is backgrounded. Capacitor calls `handleOnPause()` on every plugin when the activity pauses, so the plugin can pause its session there; that is not done yet. iOS reports an ARKit interruption as tracking `notAvailable`, and [ADR 0010](0010-ios-world-maps-stay-on-the-phone.md) covers its world maps.
 - Revisit this decision when the first device run shows the contain-fit overlay out of register with the camera, when exact hit tests are too slow for calibration, or when a store review asks for the 8th Wall engine to be removed from the shell.
