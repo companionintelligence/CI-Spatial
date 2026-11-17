@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Brand colours from the web app (index.html, public/manifest.json). -->
+    <!-- Action bar: the top of the page background gradient (#072433, index.html html/body). -->
+    <color name="colorPrimary">#072433</color>
+    <!-- Status bar colour: AppTheme maps it to the status bar (styles.xml). Keep it equal to the manifest theme_color. -->
+    <!-- The launch activity does not inherit AppTheme, so this mapping does not reach it. -->
+    <color name="colorPrimaryDark">#041620</color>
+    <!-- Accent: the aqua the dark screens use (index.html, the aqua-light CSS variable). -->
+    <color name="colorAccent">#72ddd4</color>
+</resources>

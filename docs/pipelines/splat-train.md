@@ -123,10 +123,11 @@ COLMAP_BIN=$HOME/.local/micromamba/envs/colmap/bin/colmap
 
 Two notes worth keeping:
 
-- **`.env` is not read by the server.** Nothing in `package.json` or `deno.json` passes
-  `--env-file`, and `server/main.ts` only ever calls `Deno.env.get`. Putting `BRUSH_BIN` in
-  `.env` alone does nothing — export it into the shell that runs `npm start`
-  (`set -a; . ./.env; set +a` works).
+- **`.env` is read only when `npm run server`, `npm start` or `deno task dev|start` starts the
+  server.** They pass `--env-file`, so Deno loads `.env` from the directory it starts in, and
+  `server/main.ts` then reads it through `Deno.env.get`. A server started any other way (the
+  systemd unit, the Docker image, a bare `deno run`) does not read it: export `BRUSH_BIN` into
+  that process's environment (`set -a; . ./.env; set +a` works in a shell).
 - **Check the driver's flags against the build you got.** `server/splat/splat_train.ts` passes
   `--total-train-iters`, `--sh-degree`, `--max-resolution`, `--export-every`, `--export-path`,
   `--export-name` and `--eval-every`; all seven exist in the build above, but Brush is a moving

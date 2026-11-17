@@ -47,6 +47,7 @@ export type IconName =
   | 'box'
   | 'points'
   | 'home'
+  | 'trash'
 
 /** Path/shape bodies, drawn in a 24x24 box. */
 const PATHS: Record<IconName, string> = {
@@ -107,7 +108,10 @@ const PATHS: Record<IconName, string> = {
   // Point cloud
   points:
     '<circle cx="6.2" cy="7.4" r="1.5"/><circle cx="12" cy="4.8" r="1.5"/><circle cx="17.8" cy="7.8" r="1.5"/><circle cx="4.9" cy="14.2" r="1.5"/><circle cx="10.6" cy="11.6" r="1.5"/><circle cx="16.6" cy="14" r="1.5"/><circle cx="8" cy="19.2" r="1.5"/><circle cx="14.4" cy="19.4" r="1.5"/>',
-  home: '<path d="M4 10.6 12 4l8 6.6V19a1.4 1.4 0 0 1-1.4 1.4H5.4A1.4 1.4 0 0 1 4 19z"/><path d="M9.8 20.4v-6h4.4v6"/>'
+  home: '<path d="M4 10.6 12 4l8 6.6V19a1.4 1.4 0 0 1-1.4 1.4H5.4A1.4 1.4 0 0 1 4 19z"/><path d="M9.8 20.4v-6h4.4v6"/>',
+  // Delete — a lid, a handle, the bin, and two lines inside it
+  trash:
+    '<path d="M4 6.8h16"/><path d="M9.5 6.8V4.6c0-.5.4-.9.9-.9h3.2c.5 0 .9.4.9.9v2.2"/><path d="M6.2 6.8l.9 12.1c.1 1 .9 1.7 1.9 1.7h5.9c1 0 1.8-.7 1.9-1.7l.9-12.1"/><path d="M10.2 11v5.6M13.8 11v5.6"/>'
 }
 
 export interface IconOptions {

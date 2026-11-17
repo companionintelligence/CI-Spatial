@@ -445,6 +445,27 @@
         color: rgba(255,255,255,0.6);
       }
 
+      /* What a scan's calibration does not prove, and the warning when its frame was made another way from the Place's.
+         The words carry the meaning; the colour only echoes it. */
+      .scan-calibration-note {
+        margin-top: 2px;
+        font-size: 11px;
+        color: rgba(255,255,255,0.6);
+      }
+      .scan-calibration-note[data-tone="warn"] { color: #ffb74d; }
+
+      /* Which reference a scan was made against (src/viewer/frame-banner.ts): a chip on the row, a banner, and the Previous reference layer. */
+      .frame-banner { margin: 8px 10px; padding: 8px 10px; border: 1px solid rgba(255,183,77,0.35); border-radius: 8px; background: rgba(255,183,77,0.08); color: rgba(255,255,255,0.85); font-size: 11px; line-height: 1.45; }
+      .frame-banner[hidden] { display: none; }
+      .frame-banner div + div { margin-top: 3px; }
+      .scan-frame-line { margin-top: 3px; }
+      .scan-frame-chip { display: inline-block; padding: 1px 7px; border: 1px solid rgba(255,255,255,0.3); border-radius: 999px; color: rgba(255,255,255,0.75); font-size: 10px; font-weight: 700; }
+      .scan-frame-chip[data-kind="previous-reference"] { border-color: rgba(255,183,77,0.6); color: #ffb74d; }
+      .scan-group-heading { padding: 10px 14px 4px; color: rgba(255,255,255,0.6); font-size: 10px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; }
+      /* A scan of a previous reference is set apart by the heading above it and a quieter name. The row is not dimmed as a whole: that left
+         the chip and the meta text below the contrast small text needs, and overrode the timeline's dimming of a scan outside the window. */
+      .scan-item.scan-previous-reference .scan-name { color: rgba(255,255,255,0.7); }
+
       /* ── Edit panel ── */
       #edit-panel-content,
       #world-panel-content,
@@ -706,6 +727,7 @@
         white-space: nowrap;
       }
       .tag-chip:hover { background: rgba(255,255,255,0.08); color: #fff; }
+      .tag-chip.pending { opacity: 0.45; }
       .tag-chip.active {
         background: rgba(114,221,212,0.18);
         border-color: rgba(114,221,212,0.5);
@@ -777,6 +799,13 @@
         text-overflow: ellipsis;
         white-space: nowrap;
       }
+
+      /* One alignment check: the place-register proposal for a scan (src/viewer/register-proposal.ts). */
+      .register-card { display: grid; gap: 3px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.06); }
+      .register-card:last-child { border-bottom: none; }
+      .register-headline { font-size: 12px; font-weight: 700; color: #72ddd4; }
+      .register-actions { display: flex; gap: 6px; margin-top: 4px; }
+      .register-actions .job-btn { min-height: 34px; padding: 0 12px; }
 
       .copy-link-btn,
       .job-btn,
@@ -873,6 +902,70 @@
         color: #4ade80;
       }
 
+      /* Place precisely and Compare (src/viewer/stitch-tools.ts) */
+      #stitch-section[hidden],
+      #stitch-compare[hidden],
+      #stitch-match[hidden] { display: none; }
+      #stitch-section button:disabled,
+      #stitch-compare button:disabled,
+      #transform-scale:disabled { opacity: 0.4; cursor: not-allowed; }
+      .stitch-row { display: grid; grid-template-columns: 1fr 76px; gap: 4px 8px; align-items: center; margin-top: 8px; }
+      .stitch-row label { font-size: 11px; color: rgba(255,255,255,0.75); }
+      .stitch-unit { color: rgba(255,255,255,0.45); }
+      .stitch-field {
+        min-width: 0;
+        width: 100%;
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 6px;
+        color: #fff;
+        font-size: 12px;
+        padding: 5px 6px;
+        text-align: right;
+      }
+      .stitch-nudges { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+      .stitch-nudges .transform-btn { padding: 4px 0; }
+      .stitch-snap-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; margin-top: 10px; font-size: 11px; color: rgba(255,255,255,0.75); }
+      .stitch-actions { display: grid; grid-template-columns: 1fr; gap: 5px; margin-top: 10px; }
+      .stitch-size { margin-top: 10px; }
+      .stitch-size summary { cursor: pointer; font-size: 11px; font-weight: 700; color: rgba(255,255,255,0.65); }
+      .stitch-size-row { display: grid; grid-template-columns: 1fr 76px; gap: 6px 8px; align-items: center; margin-top: 6px; }
+      .stitch-size-row label { font-size: 11px; color: rgba(255,255,255,0.75); }
+      .stitch-size-row .job-btn { grid-column: 1 / -1; }
+      .stitch-swatches { display: flex; flex-wrap: wrap; gap: 6px; }
+      .stitch-swatch {
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        border: 2px solid rgba(255,255,255,0.25);
+        color: rgba(255,255,255,0.8);
+        font-size: 12px;
+        line-height: 1;
+        cursor: pointer;
+        background: transparent;
+      }
+      .stitch-swatch[aria-pressed="true"] { border-color: #fff; box-shadow: 0 0 0 2px rgba(114,221,212,0.6); }
+      .stitch-ghost-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 11px; color: rgba(255,255,255,0.75); cursor: pointer; }
+      #edit-save-transform.stitch-unsaved { border-color: #ffb74d; color: #ffb74d; background: rgba(255,183,77,0.14); }
+      @media (pointer: coarse) {
+        .stitch-nudges .transform-btn,
+        .stitch-swatch { min-height: 40px; min-width: 40px; }
+        .stitch-swatch { width: 40px; height: 40px; }
+      }
+      /* A scan with a move that has not been saved, and a scan with a tint, in the list. */
+      .scan-item.scan-dirty .scan-status::before { content: '● Not saved · '; color: #ffb74d; font-weight: 700; }
+      /* The upload's placement was set aside by the server (ScanManifest.projectTransformRejected); the row's title says why. */
+      .scan-item.scan-flagged .scan-meta::after { content: ' · Calibration not used'; color: #ffb74d; }
+      .scan-item.scan-tinted .scan-name::before {
+        content: '';
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        margin-right: 6px;
+        border-radius: 50%;
+        background: var(--scan-tint);
+      }
+
       .layer-toggle {
         width: 16px;
         height: 16px;
@@ -885,6 +978,15 @@
         font-size: 11px;
         color: rgba(255,255,255,0.6);
         line-height: 1.4;
+      }
+
+      /* A job's own outcome sentence, three lines at most; the whole sentence is the row's title. */
+      .job-result {
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 3;
+        line-clamp: 3;
+        overflow: hidden;
       }
 
       /* Shared native select treatment. `color-scheme` and option colors keep
@@ -1810,7 +1912,42 @@
         font-size: 10px;
         line-height: 1.4;
       }
+      .catalogue-controls { display: grid; gap: 6px; }
+      .catalogue-filters { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; }
+      .catalogue-field { display: grid; gap: 3px; min-width: 0; }
+      .catalogue-field > span {
+        color: var(--ci-muted);
+        font-size: 10px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .catalogue-field .ci-input,
+      .catalogue-field .ci-select { width: 100%; min-width: 0; box-sizing: border-box; }
+      .catalogue-empty { color: var(--ci-muted); font-size: 11px; line-height: 1.4; padding: 4px 2px; }
       #things-list { display: grid; gap: 6px; }
+      .things-list-row { display: grid; gap: 4px; }
+      .catalogue-relabel {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+        margin: 0;
+      }
+      .catalogue-relabel-input { flex: 1 1 120px; min-width: 0; box-sizing: border-box; min-height: 32px; }
+      .catalogue-relabel button {
+        min-height: 32px;
+        padding: 0 10px;
+        border: 1px solid rgba(114, 221, 212, 0.32);
+        border-radius: 7px;
+        background: rgba(8, 28, 38, 0.92);
+        color: var(--ci-paper);
+        font-size: 11px;
+        cursor: pointer;
+      }
+      .catalogue-relabel button:hover:not(:disabled) { border-color: rgba(114, 221, 212, 0.7); }
+      .catalogue-relabel button:disabled { opacity: 0.45; cursor: default; }
+      .catalogue-relabel-status { flex-basis: 100%; color: var(--ci-muted); font-size: 10px; }
+      .catalogue-relabel-status:empty { display: none; }
       .things-list-item {
         width: 100%;
         min-height: 44px;
@@ -2386,6 +2523,7 @@
               </div>
               <div id="timeline-label">All scans</div>
             </div>
+            <div id="frame-banner" class="frame-banner" role="status" hidden></div>
             <div id="scan-list">
               <div id="scan-list-empty">Loading scans…</div>
             </div>
@@ -2398,6 +2536,23 @@
                 <strong>Things</strong>
                 <span id="things-panel-summary">Loading Things...</span>
               </div>
+              <div class="catalogue-controls">
+                <label class="catalogue-field">
+                  <span>Search</span>
+                  <input class="ci-input" id="catalogue-search" type="search" placeholder="chair, desk  ·  -wall" autocomplete="off" aria-label="Search things by label" title="Matches the label you set or the AI label. Comma or space separated; prefix a term with - to hide it." />
+                </label>
+                <div class="catalogue-filters">
+                  <label class="catalogue-field">
+                    <span>Label</span>
+                    <select class="ci-select" id="catalogue-label-filter" aria-label="Filter things by label"><option value="">All labels</option></select>
+                  </label>
+                  <label class="catalogue-field">
+                    <span>Scan</span>
+                    <select class="ci-select" id="catalogue-scan-filter" aria-label="Filter things by scan"><option value="">All scans</option></select>
+                  </label>
+                </div>
+              </div>
+              <datalist id="catalogue-label-options"></datalist>
               <div id="things-list"></div>
             </div>
           </div>
@@ -2409,11 +2564,17 @@
                 <div class="edit-section-title">Guided Processing</div>
                 <div class="layer-meta" style="margin-bottom:8px;">Select a scan, then move through one clear outcome at a time. Source media and prior layers remain intact.</div>
                 <div class="processing-flow" id="processing-flow">
-                  <div class="processing-step"><div><strong>1. Prepare</strong><span>Index media, extract layers, and check alignment.</span></div><button class="job-btn" data-workflow="prepare">Prepare</button></div>
-                  <div class="processing-step"><div><strong>2. Understand</strong><span>Run semantic analysis and link durable Things.</span></div><button class="job-btn" data-workflow="understand">Understand</button></div>
+                  <div class="processing-step"><div><strong>1. Prepare</strong><span>Not built yet: indexing and layer extraction. Adds no-op notes to the job list.</span></div><button class="job-btn" data-workflow="prepare">Prepare</button></div>
+                  <div class="processing-step"><div><strong>2. Understand</strong><span>Link durable Things. Semantic analysis is not built yet and adds a no-op note.</span></div><button class="job-btn" data-workflow="understand">Understand</button></div>
                   <div class="processing-step"><div><strong>3. Reconstruct</strong><span>Build a dense map or photoreal splat from keyframes.</span></div><button class="job-btn" data-workflow="reconstruct">Reconstruct</button></div>
                   <div class="processing-step"><div><strong>4. Publish</strong><span>Sync Place and Thing context, then prepare an export.</span></div><button class="job-btn" data-workflow="publish">Publish</button></div>
                 </div>
+              </div>
+
+              <div class="edit-section" id="register-proposals-section" hidden>
+                <div class="edit-section-title">Alignment checks</div>
+                <div class="layer-meta" style="margin-bottom:8px;">Compares a scan's walls with the Place's other scans. Nothing moves until you press Apply.</div>
+                <div id="register-proposals"></div>
               </div>
 
               <details class="layer-tool">
@@ -2422,7 +2583,6 @@
                 <select class="ci-select ci-select-block" id="job-type" aria-label="Processing job">
                   <option value="ingest">Ingest</option>
                   <option value="extract-layers">Extract layers</option>
-                  <option value="align-scan">Align scan</option>
                   <option value="merge-points">Merge points</option>
                   <option value="semantic-pass">Semantic pass</option>
                   <option value="depth-reconstruct">Depth reconstruct</option>
@@ -2433,6 +2593,7 @@
                   <option value="splat-finish">Splat finish (compress)</option>
                   <option value="sensenova-vision">SenseNova Vision</option>
                   <option value="export-world">Export world</option>
+                  <option value="place-register">Alignment check (proposes a move)</option>
                 </select>
                 <button class="job-btn" id="btn-queue-job" style="width:100%;">Queue Job</button>
                 <div id="job-list" style="margin-top:8px;">
@@ -2486,6 +2647,17 @@
                 <summary><span><span class="layer-tool-name">Scene layers</span><span class="layer-tool-hint">Show source geometry, points, tags, and sidecars.</span></span></summary>
                 <div class="layer-tool-body" id="layer-list">
                   <div class="layer-meta">Loading layers...</div>
+                </div>
+              </details>
+
+              <details class="layer-tool" id="frame-reference-section">
+                <summary><span><span class="layer-tool-name">Previous reference</span><span class="layer-tool-hint">Scans measured against a reference other than the current one.</span></span></summary>
+                <div class="layer-tool-body">
+                  <label class="layer-row" style="display:flex;align-items:center;gap:8px;margin:12px 0 6px;">
+                    <input type="checkbox" id="frame-previous-toggle" class="layer-toggle" checked />
+                    <span>Dim them and list them apart</span>
+                  </label>
+                  <div class="layer-meta" id="frame-previous-status">No scan in this Place is from a previous reference.</div>
                 </div>
               </details>
 
@@ -2614,6 +2786,7 @@
           <!-- Edit panel -->
           <div class="sidebar-panel" id="tab-edit" role="tabpanel" aria-labelledby="tab-btn-edit">
             <div id="edit-panel-content">
+              <div id="edit-save-status" role="status" aria-live="polite" style="font-size:11px;min-height:0;margin:0 0 8px;"></div>
               <div class="no-selection-msg" id="edit-no-selection">
                 Click a scan or object in the viewport to move it, label it, and assign semantic categories.
               </div>
@@ -2634,6 +2807,67 @@
                     <button class="transform-btn" id="transform-scale">Scale</button>
                   </div>
                   <button class="job-btn" id="edit-save-transform" style="width:100%;margin-top:7px;">Save Transform</button>
+                </div>
+
+                <!-- Shown only for a whole scan. src/viewer/stitch-tools.ts fills the nudge buttons and swatches. -->
+                <div class="edit-section" id="stitch-section" hidden>
+                  <div class="edit-section-title">Place precisely</div>
+                  <p class="layer-meta" id="stitch-pivot-note"></p>
+                  <div class="stitch-row">
+                    <label for="stitch-x">Along X <span class="stitch-unit">cm</span></label>
+                    <input class="stitch-field" id="stitch-x" type="number" inputmode="decimal" step="0.1" value="0" />
+                    <div class="stitch-nudges" data-axis="x"></div>
+                  </div>
+                  <div class="stitch-row">
+                    <label for="stitch-z">Along Z <span class="stitch-unit">cm</span></label>
+                    <input class="stitch-field" id="stitch-z" type="number" inputmode="decimal" step="0.1" value="0" />
+                    <div class="stitch-nudges" data-axis="z"></div>
+                  </div>
+                  <div class="stitch-row">
+                    <label for="stitch-y">Height <span class="stitch-unit">cm</span></label>
+                    <input class="stitch-field" id="stitch-y" type="number" inputmode="decimal" step="0.1" value="0" />
+                    <div class="stitch-nudges" data-axis="y"></div>
+                  </div>
+                  <div class="stitch-row">
+                    <label for="stitch-yaw" title="Positive turns the scan from +Z toward +X">Turn <span class="stitch-unit">degrees</span></label>
+                    <input class="stitch-field" id="stitch-yaw" type="number" inputmode="decimal" step="0.1" value="0" />
+                    <div class="stitch-nudges" data-axis="yaw"></div>
+                  </div>
+                  <p class="layer-meta">Numbers are how far the scan has moved since it was last saved.</p>
+                  <label class="stitch-snap-row" for="stitch-snap"><span>Snap dragging to</span>
+                    <select class="ci-select" id="stitch-snap">
+                      <option value="off">Off</option>
+                      <option value="fine">1 cm and 0.5°</option>
+                      <option value="coarse">5 cm and 2°</option>
+                    </select>
+                  </label>
+                  <div class="stitch-actions">
+                    <button type="button" class="job-btn" id="stitch-discard">Discard changes</button>
+                    <button type="button" class="job-btn" id="stitch-reset">Reset to calibrated</button>
+                    <button type="button" class="job-btn" id="stitch-undo">Undo last save</button>
+                  </div>
+                  <div class="layer-meta" id="stitch-status" role="status" aria-live="polite"></div>
+                  <details class="stitch-size" id="stitch-size">
+                    <summary>Fix size</summary>
+                    <p class="layer-meta">Changes how big the whole scan is. Use it only when a distance you know measures wrong.</p>
+                    <div class="stitch-size-row">
+                      <label for="stitch-size-field">Size, in times</label>
+                      <input class="stitch-field" id="stitch-size-field" type="number" inputmode="decimal" step="0.001" min="0.5" max="2" value="1" />
+                      <button type="button" class="job-btn" id="stitch-size-apply">Apply size</button>
+                    </div>
+                  </details>
+                </div>
+
+                <div class="edit-section" id="stitch-compare" hidden>
+                  <div class="edit-section-title">Compare</div>
+                  <div class="stitch-swatches" id="stitch-swatches" role="group" aria-label="Tint this scan"></div>
+                  <label class="stitch-ghost-row" for="stitch-ghost"><input type="checkbox" id="stitch-ghost" /> <span>See through (50%)</span></label>
+                  <div class="stitch-actions">
+                    <button type="button" class="job-btn" id="stitch-tint-all">Tint every scan apart</button>
+                    <button type="button" class="job-btn" id="stitch-tint-clear">Clear tints</button>
+                  </div>
+                  <!-- Appears when a registration proposal is registered (StitchTools.setNeighbourMatch). -->
+                  <button type="button" class="job-btn" id="stitch-match" hidden>Match to neighbour</button>
                 </div>
 
                 <div class="edit-section">

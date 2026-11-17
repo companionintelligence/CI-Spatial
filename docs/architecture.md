@@ -328,25 +328,28 @@ Routes are registered at the top level of `server/main.ts`. (Server-side Deno mo
 | `/upload-summary` | POST | Multipart `{ file: File(.md) }` | `{"filename":"..."}` | Saves a summary document to `./summaries/`. |
 | `/sessions` | POST | None | `{"sessionId":"sess-..."}` (201) | Opens a keyframe capture session (`scans/sessions/<id>/`). |
 | `/sessions` / `/sessions/:id` | GET | — | Session record(s) | Inspect capture sessions. |
-| `/sessions/:id/keyframes` | POST | Multipart `{ image: JPEG, meta: JSON }` | `{"ok":true,"index":N}` | Streams pose+intrinsics-tagged keyframes — raw input for dense reconstruction. |
+| `/sessions/:id/keyframes` | POST | Multipart `{ image: JPEG, meta: JSON }` | `{"ok":true,"index":N}` | Streams pose+intrinsics-tagged keyframes — raw input for dense reconstruction. A repeated index (a retry) overwrites its frame and adds no second line to `keyframes.jsonl`. `413` when the session would pass `KEYFRAME_SESSION_MAX_BYTES` (default 2 GiB), judged from the frames on disk. |
 | `/sessions/:id/finalize` | POST | JSON `{ glbFilename?, pointCount?, … }` | Session record | Links a session to its exported scan; enqueues optimization if needed. |
 | `/sessions/:id/lingbot-map.manifest.json` | GET | — | Manifest JSON | LingBot-Map reconstruction sidecar. |
 | `/sessions/:id/*.point-cloud.ply` | GET | — | Binary PLY | Reconstructed point-cloud sidecar. |
 | `/sessions/:id/*.poses.json` | GET | — | Poses JSON | Per-frame camera poses sidecar. |
-| `/ingest-video` | POST | Multipart `{ video: File, name?, fps? }` | `202 { sessionId, scanId, jobId, frameCount }` | Video-upload → keyframe session (no `.glb` on disk); extracts frames via `scripts/ingest-video.mjs`. |
+| `/ingest-video` | POST | Multipart `{ video: File, name?, fps? }` | `202 { sessionId, scanId, jobId, frameCount }` | Video-upload → keyframe session (no `.glb` on disk); extracts frames via `scripts/ingest-video.mjs`. The script is killed after `INGEST_VIDEO_TIMEOUT_MS` (default 30 min) and the request fails with that reason. |
+| `/ingest-photos` | POST | Multipart `{ files: File[], name?, projectId?, areaId?, stations?, knownDistances? }` | `202 { sessionId, scanId, jobId, frameCount, droppedBlurry }` | Photo set → keyframe session, through `scripts/ingest-photos.mjs`. `413` with a reason before any photo is written when the upload is over `INGEST_MAX_PHOTOS_BYTES` (default `1500000000`: 1000 photos at 1.5 MB), has more than `INGEST_MAX_PHOTOS_COUNT` photos (default 1000), or one photo is over `UPLOAD_MAX_FRAME_BYTES`. The script's node child is killed after `INGEST_PHOTOS_TIMEOUT_MS` (default 30 min). |
+| `/sessions/:id/clip/:file` | GET | Optional `Range` header | `video/mp4` or `video/webm`, `200` or `206` | The durable person clip. A ranged response carries at most 8 MiB (`MAX_RANGE_BYTES`, `server/http_range.ts`). Content-Range states the bytes sent, and a client must follow it to fetch the rest. The off-box person-4D downloader is expected to follow Content-Range. Nothing in this repo checks that until the downloader has been checked. |
 | `/worlds` | GET/POST | `WorldProject` list / create | `WorldProject[]` / `WorldProject` | The multi-scan 4D editor backend. |
 | `/worlds/:slug` | GET | Slug param | `WorldProject` | Fetch a world (read-only view when opened via a `shareSlug`). |
-| `/worlds/:slug/frames/:scanId` | GET | — | Frame observations | Per-scan camera-path / frame stream. |
+| `/worlds/:slug/frames/:scanId` | GET | — | Frame observations | Per-scan camera-path / frame stream. Scan data, so it needs a viewer's world token wherever strict world auth is on (see Roles & Tokens below); only an install that is open by design serves it without one. |
+| `/worlds/:slug/export.glb` | GET | — | `model/gltf-binary`, sent as an attachment | The Place's `<slug>.world.glb`, written by the `export-world` job (see World Job Types below). `404` until a job has built it. It holds every scan's decoded geometry, so it follows the same viewer rule as `/worlds/:slug/frames/:scanId`, not the open read that `GET /worlds/:slug` has. |
 | `/worlds/:slug/*.splat` | GET | — | Splat binary | Trained 3DGS splat sidecar. |
 | `/jobs` / `/jobs/:id` | GET | — | legacy `Job[]` / `Job` | Back-compat view of `optimize-scan` WorldJobs, translated to the retired JobQueue's response shape (ADR 0003) — response is byte-identical to the pre-merge API. |
 | `/rtc-signal` | GET | Query `room`, `role` | WebSocket upgrade (101) | WebRTC signaling relay between `phone` and `viewer`. |
 | `/events` | GET | None | WebSocket upgrade (101) | Broadcast stream: `scan-added`, `job-update`, `session-*`. The viewer subscribes to refresh scans and job chips live. |
-| `/client-logs` | POST | JSON log batch | `{"ok":true}` | Remote debug-log sink from mobile clients. |
+| `/client-logs` | POST | JSON `{ entries: [{ ts, level, msg, stack?, url? }], ua? }` | `204` | Remote debug-log sink from phones. More than `CLIENT_LOG_MAX_ENTRIES` entries (default 50) is refused with `413`, and so is a body over 16 KiB. `msg` is kept to 1000 characters, `stack` to 2000 and `ua` to 256. Records go to `scans/client-logs.jsonl`, which rotates to `.1` at `CLIENT_LOGS_MAX_BYTES` (default 10 MiB). |
 | `/projects` | GET | None | `Project[]` | Lists projects from `projects.json`. |
 | `/projects` | POST | JSON `{ name, address, notes }` | `Project` (201) | Creates a project with a default ground floor. |
 | `/projects/:id` | GET/PUT/DELETE | ID param / `Project` | `Project` / `{"ok":true}` | Fetch, update, or delete a project. |
 
-CORS: allowed origins are matched against `ALLOWED_ORIGIN_PREFIX` (see section 5), covering localhost, local subnet IPs, and `.ts.net` Tailscale hostnames.
+CORS: an origin is admitted only when it is on the allowlist in `server/origin.ts`. The allowlist is `ALLOWED_ORIGIN_PREFIX` (see section 5), `TAILSCALE_HOSTNAME` as `https://<host>`, `APP_BASE_URL`, and the origins of the three native shells: `capacitor://localhost` (iOS), `https://localhost` (Android), and the desktop app's `tauri://localhost`, `http://tauri.localhost` and `https://tauri.localhost` (`NATIVE_SHELL_ORIGIN`, `ANDROID_SHELL_ORIGIN` and `DESKTOP_SHELL_ORIGINS`). The shell origins need no setting. Localhost and private-network addresses are admitted only with `ALLOW_DEV_ORIGINS=1`, so the `/events` and `/rtc-signal` sockets of a developer's browser on `https://localhost:5173`, or of the desktop app's dev window on `http://localhost:5199`, are refused without it. A bare `.ts.net` suffix admits nothing, because every tailnet shares it. The WebSocket upgrade and the two file routes that build their own response use the same allowlist.
 
 ### World & Multi-Scan ENU Model
 
@@ -359,7 +362,7 @@ A **world** (`WorldProject`, `src/world/types.ts`) is an anchored spatial contai
 
 #### Roles & Tokens (`WORLD_STRICT_AUTH`)
 
-Places/projects carry role-scoped membership (`MemberRole`: `owner | editor | commenter | viewer | scanner`) and share slugs. The environment flag `WORLD_STRICT_AUTH=1` (`server/main.ts`) turns on strict token enforcement: requests must present a valid role token, and anonymous access is rejected. When unset (default), routes allow anonymous access — appropriate for a single-owner LAN/Tailnet deployment. Recipients open the Spatial Editor at `/editor?project=<id>` with their granted role; a `viewer` link is read-only and a `commenter` link reserves comment capability without edit rights.
+Places/projects carry role-scoped membership (`MemberRole`: `owner | editor | commenter | viewer | scanner`) and share slugs. The environment flag `WORLD_STRICT_AUTH=1` (`server/main.ts`) turns on strict token enforcement: requests must present a valid role token, and anonymous access is rejected. `SCAN_REQUIRE_AUTH=1` turns on the same strict world auth, and it also gates the session routes. Sign-in on enables strict world auth regardless of `WORLD_STRICT_AUTH` and `SCAN_REQUIRE_AUTH`. When none of these is set (default), routes allow anonymous access — appropriate for a single-owner LAN/Tailnet deployment. Recipients open the Spatial Editor at `/editor?project=<id>` with their granted role; a `viewer` link is read-only and a `commenter` link reserves comment capability without edit rights.
 
 ### World Job Types & Processing (`/worlds/:slug/jobs`)
 
@@ -385,12 +388,12 @@ The `/worlds/:slug/jobs` queue runs **asynchronous** world jobs (`WorldJobType`,
 | `panoptic-scan` | optional GPU panoptic segmenter (`PANOPTIC_PYTHON` / `PANOPTIC_DIR`) — see [`pipelines/panoptic-scan.md`](pipelines/panoptic-scan.md) | per-keyframe segments, split into `thingCount` objects and `stuffCount` room surfaces |
 | `panoptic-lift` | in-process lift of `panoptic-scan`'s 2D thing segments into world space, by casting each segment centroid against the scan's own point cloud (`server/panoptic/panoptic_lift.ts`; policy in `src/shared/panoptic_lift.ts`). Split from `panoptic-scan` because the two fail for unrelated reasons — segmentation needs a venv and a GPU, the lift needs a scan GLB with geometry | `*.panoptic.detections.json` + `*.panoptic-lift.manifest.json` |
 | `memory-push` | CI-Server `/v1/events` push (`server/memory_push.ts`) | a `capture.scan` memory event with the GLB attached |
-| `export-world` | world composition | combined GLB + semantic JSON |
+| `export-world` | `composeWorldExport` in `server/world_export.ts`, run by `_runExportWorldJob` in `server/main.ts`: reads each scan's GLB, places it under its `localToWorld`, and adds one node per Thing | `<slug>.world.glb` beside the world manifest, a `world-glb` artifact served at `/worlds/<slug>/export.glb`. The tags are node `extras`, not a separate JSON file |
 | `optimize-scan` | `server/pipeline.ts` (quantize / Draco / point-cloud LODs) | `*.opt.glb` + `*.lodN.glb` + `*.manifest.json` |
 
-Seven of these — `ingest`, `extract-layers`, `align-scan`, `merge-points`, `semantic-pass`, `depth-reconstruct`, `export-world` — have no dedicated runner and complete through the pump's shared placeholder path (ADR 0003 "Placeholder WorldJobTypes"). Of the thirteen that do, several emit a **plan/placeholder** artifact and report a "hint" when the real worker (Brush or Spirula, COLMAP, LingBot-Map Python, SenseNova, the panoptic segmenter, the 4d-capture host) is not wired via env vars — an absent optional tool is a *completed* job carrying a remediation, never a failure, so the queue works end-to-end in CI and on a box with no GPU.
+Six of these — `ingest`, `extract-layers`, `align-scan`, `merge-points`, `semantic-pass`, `depth-reconstruct` — have no dedicated runner and complete through the pump's shared placeholder path (ADR 0003 "Placeholder WorldJobTypes"). `export-world` has a runner: it writes one tagged file for the whole Place, `<slug>.world.glb`, built from each scan's GLB under its `localToWorld` (`server/world_export.ts`). Of the fourteen that do, several emit a **plan/placeholder** artifact and report a "hint" when the real worker (Brush or Spirula, COLMAP, LingBot-Map Python, SenseNova, the panoptic segmenter, the 4d-capture host) is not wired via env vars — an absent optional tool is a *completed* job carrying a remediation, never a failure, so the queue works end-to-end in CI and on a box with no GPU.
 
-The editor's Queue-Job dropdown exposes thirteen of them (`viewer.html` § `#job-type`); the Splat Toolbox additionally fires `splat-train` and `splat-detect` with its own payload. The other seven are reached differently: `optimize-scan` is queued automatically on every upload (never manually — and filtered out of the Processing Queue panel; see [`product/UX_FLOW.md`](product/UX_FLOW.md) § Phase 3), and `colmap-poses`, `splat-align`, `panoptic-scan`, `panoptic-lift`, `person-4d-reconstruct` and `memory-push` have no UI entry point at all, only the generic `POST /worlds/:slug/jobs` API.
+The editor's Queue-Job dropdown exposes thirteen of them (`viewer.html` § `#job-type`); the Splat Toolbox additionally fires `splat-train` and `splat-detect` with its own payload. The other seven are reached differently: `optimize-scan` is queued automatically on every upload (never manually — and filtered out of the Processing Queue panel; see [`product/UX_FLOW.md`](product/UX_FLOW.md) § Phase 3), `memory-push` is queued by the editor's Publish step together with `export-world` (`GUIDED_WORKFLOWS.publish` in `src/viewer/viewer.ts`), and `colmap-poses`, `splat-align`, `panoptic-scan`, `panoptic-lift` and `person-4d-reconstruct` have no UI entry point at all, only the generic `POST /worlds/:slug/jobs` API.
 
 ### Scan Optimization Pipeline (`server/pipeline.ts`, dispatched as a WorldJob)
 
@@ -494,8 +497,14 @@ graph TD
 
 ### Deployment Configuration & Environment Variables
 
-None of these are required — the server runs with sensible defaults, and `.env`
-is **not** auto-loaded. Values below come from `.env.example`:
+None of these are required — the server runs with sensible defaults. The server reads a
+`.env` file only when `npm run server`, `npm start` or `deno task dev|start` starts it
+(they pass `--env-file`); the systemd unit and the Docker image start it without that flag.
+Vite does not copy a `.env` file into `process.env`, so `vite.config.ts` never sees
+`TAILSCALE_HOSTNAME`, `VITE_HOSTNAME`, `VITE_PORT` or `API_TARGET` from one: export those in
+the shell. It does read the `VITE_` names in a `.env` file and hands them to the browser as
+`import.meta.env` (that is how `VITE_ENABLE_WEBRTC_LIVE` and `VITE_ENABLE_PLACE_COMPOSER`
+work from one), so keep secrets out of any `VITE_` name. Values below come from `.env.example`:
 
 - `PORT`: Hono's HTTP port (defaults to `8000`).
 - `TAILSCALE_HOSTNAME`: auto-detected from `tailscale status`; used to build the default CORS origin.
@@ -505,7 +514,8 @@ is **not** auto-loaded. Values below come from `.env.example`:
 - `OLLAMA_HOST`: address of the local Ollama daemon (defaults to `http://localhost:11434`).
 - `OLLAMA_MODEL`: vision model Ollama serves in `ollama` mode. **Defaults to `qwen3-vl:4b`.**
 - `INFER_MAX_IMAGE_BYTES`: reject inbound inference images larger than this (defaults to `12000000`).
-- `WORLD_STRICT_AUTH`: set to `1` to enforce role-token auth on world routes (default: anonymous access allowed).
+- `WORLD_STRICT_AUTH`: set to `1` to enforce role-token auth on world routes (default: anonymous access allowed). `SCAN_REQUIRE_AUTH=1` turns the same on and also gates the session routes.
+- `ALLOW_DEV_ORIGINS`: set to `1` to admit localhost and private-network origins to CORS and the WebSocket upgrade. Development only (default: off).
 - `LINGBOT_MAP_PYTHON` / `LINGBOT_MAP_MODEL_PATH`: wire the real LingBot-Map reconstruction worker.
 - `SPLAT_BACKEND`: which trainer `splat-train` spawns — `brush` (default) or `spirula`. Unrecognised values fall back to `brush` rather than failing the job.
 - `BRUSH_BIN` / `SPIRULA_BIN` / `COLMAP_BIN`: the three reconstruction binaries. All three are *overrides*, not requirements — each resolver falls back to a documented install path and reports `skipped` with a remediation when nothing is runnable.
@@ -681,10 +691,16 @@ the `npm run server` command).
 
 ### CORS matching
 
-Allowed origins match `ALLOWED_ORIGIN_PREFIX` (default `https://$TAILSCALE_HOSTNAME`,
-auto-detected from `tailscale status`), plus any origin containing `.ts.net` and
-Tailscale subnet IPs within the `100.64.0.0/10` CGNAT range. `projects.json` is
-written atomically to survive concurrent client writes.
+Allowed origins are the allowlist in `server/origin.ts`: `ALLOWED_ORIGIN_PREFIX`
+(default `https://$TAILSCALE_HOSTNAME`, auto-detected from `tailscale status`),
+`TAILSCALE_HOSTNAME` as an origin, `APP_BASE_URL`, and the origins of the three native
+shells: `capacitor://localhost` (iOS), `https://localhost` (Android), and the desktop
+app's `tauri://localhost`, `http://tauri.localhost` and `https://tauri.localhost`.
+Localhost, private networks and the `100.64.0.0/10` CGNAT range are admitted only with
+`ALLOW_DEV_ORIGINS=1`. Each entry matches whole, so `https://host` admits
+`https://host:8443` and never `https://host.example.com`, and each shell origin is
+accepted as it is, with no port or longer host. `projects.json` is written atomically to
+survive concurrent client writes.
 
 ### WebRTC data-channel wire format
 
@@ -734,7 +750,7 @@ The following matrix documents the architectural limitations of the current desi
 
 | Shortcoming | Impact | Near-Term Mitigation | Long-Term Mitigation |
 |---|---|---|---|
-| **CORS Origin Fragility** | Client uploads fail if accessed on local IP subnets or non-standard hostnames. | Replace starts-with matching with regex allowing localhost, local IPs, and `.ts.net` domains (Done). | Implement token-based authentication session handshakes. |
+| **CORS Origin Fragility** | A browser on a hostname that is not configured is refused. | Origins match the configured allowlist whole (`ALLOWED_ORIGIN_PREFIX`, `TAILSCALE_HOSTNAME`, `APP_BASE_URL`). Localhost and LAN addresses need `ALLOW_DEV_ORIGINS=1`. | Implement token-based authentication session handshakes. |
 | **Silent Backend Failures** | Uncaught route crashes return a generic response or drop connection without logging details. | Register Hono's `app.onError` to log full stack traces, and add handler-entry logs (Done). | Integrate central logger service (Winston / Deno log streams). |
 | **Newest Scan Race Condition** | `/process-scan` processes wrong file if uploads fail or occur out of order. | Implement `sessionId` matching in companion JSON files to lookup scans (Done). | Require explicit `scanId` parameter in API request payloads. |
 | **SLAM Coordinate Drift** | Detections lose alignment over long scanning durations (>10 mins). | Advise user via HUD to return to the origin/loop closure points. | Integrate visual-inertial loop closure (ORB-SLAM / WebXR anchor APIs). |

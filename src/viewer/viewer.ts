@@ -7,11 +7,12 @@
  */
 import * as THREE from 'three'
 import { matchesObjectFilter, parseObjectFilter } from './object-filter'
+import { displayLabel, filterCatalogue, labelOptions, type CatalogueFilter, type CatalogueItem } from './catalogue-filter'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js'
-import { SceneEditor, SEMANTIC_TAGS, type ViewMode } from './editor'
+import { SceneEditor, SEMANTIC_TAGS, PendingSaves, dragToleranceFor, isDragRelease, objectRenderable, type EditSaveState, type ViewMode } from './editor'
 import { MeasureTool } from './measure'
 import { collectDetections, hasLabelledAncestor } from './detections'
 import { GeoMap, type ProjectLocationEntry } from './geomap'
@@ -30,8 +31,11 @@ import {
   type ScanPanopticLayer,
 } from './panoptic-layer'
 import { buildTrainJobRequest, buildDetectJobRequest } from './splat-toolbox'
-import { buildThingObservationIndex, resolveThingTagsForScan } from '../shared/thing_tags'
+import { buildThingObservationIndex, resolveThingTagsForScan, type ResolvedThingTag } from '../shared/thing_tags'
+import { accessTokenHeaders, addAccessToken } from '../shared/access-token'
 import { PlacesPanel } from './places'
+import { PLACE_TYPE_LABELS } from '../project/new-place-type'
+import { mountRegisterProposals, type RegisterProposals } from './register-proposal'
 import {
   computeQualityTier,
   jobProcessingLabel,
@@ -41,9 +45,14 @@ import {
   type QualityTier,
 } from './quality-tier'
 import { fetchReconstructionQuality, formatReconstructionVerdict } from './reconstruction-quality'
+import { redrawScanMeta, scanMetaHtmlFor } from './scan-calibration-chip'
+import { createFrameReference } from './frame-banner'
+import { jobRowMarkup } from './job-row'
 import { distanceM, enuToGeo, hasGeoPose, matrixTranslation } from '../world/geo'
+import { compassNeedleRad } from '../world/enu'
 import { LAYER_LABELS, LAYER_ORDER, LAYERS_HIDDEN_BY_DEFAULT } from '../world/layers'
 import { buildAnchorMarker, buildAnchorPin } from '../world/anchor-marker'
+import { sessionAnchorPositions } from '../world/anchor-placement'
 import { registerPWA } from '../pwa'
 import { iconLabel } from '../ui/icons'
 import { qrCodeSvg } from '../ui/qr-code'
@@ -63,6 +72,8 @@ import type {
 } from '../world/types'
 import { apiCredentials, apiUrl, shellSessionToken, withSessionToken, wsUrl } from '../shared/api-base.ts'
 import { mountShellMenu } from './shell-menu'
+import { requestRevert } from './patch-revert'
+import { createStitchTools, type StitchTools } from './stitch-tools'
 
 // Place composition remains opt-in while its building/floor/room editing flow
 // is refined. The static HTML stays hidden unless this build-time flag is set.
@@ -101,11 +112,16 @@ interface Label3D {
 
 interface InventoryItem {
   id: string
+  /** The label the reconstruction produced. The row shows userLabel over it when there is one. */
   label: string
   scanId: string
   position: { x: number; y: number; z: number }
   confidence: number | null
   source: 'thing' | 'detection'
+  /** The user's relabel as the patches resolve for this scan, or null. */
+  userLabel: string | null
+  /** For a Thing, the observation's object id in this scan, the fallback target of a relabel. Null for a detection. */
+  originTargetId: string | null
 }
 
 interface LoadedScan {
@@ -154,15 +170,11 @@ const initialWorldSlug = query.get('world')
   || (activeProjectId ? `project-${activeProjectId}` : 'default')
 
 function withAccessToken(url: string): string {
-  const target = apiUrl(url)
-  if (!accessToken) return target
-  const parsed = new URL(target, location.origin)
-  parsed.searchParams.set('token', accessToken)
-  return target.startsWith('/') ? parsed.pathname + parsed.search + parsed.hash : parsed.href
+  return addAccessToken(url, accessToken)
 }
 
 function accessHeaders(extra: HeadersInit = {}): HeadersInit {
-  return accessToken ? { ...extra, Authorization: `Bearer ${accessToken}` } : extra
+  return accessTokenHeaders(accessToken, extra)
 }
 
 async function refreshAccountChip(): Promise<void> {
@@ -201,6 +213,19 @@ let liveFeed: LiveFeed | null = null
 const labelContainer = document.getElementById('viewport')!
 const loadedScans = new Map<string, LoadedScan>()
 const scanItems = new Map<string, HTMLElement>()
+/** Which reference each scan was made against: the chips, the banner and the Previous reference layer (frame-banner.ts). */
+const frameReference = createFrameReference({
+  scans: () => world?.scans ?? [],
+  place: () => currentProject,
+  scanItem: (scanId) => scanItems.get(scanId),
+  scanList: () => document.getElementById('scan-list'),
+  root: (scanId) => {
+    const loaded = loadedScans.get(scanId)
+    return loaded?.loaded ? loaded.root : undefined
+  },
+})
+/** The catalogue's search, label and scan filters. The Things list owns the controls; the Items tree reads them. */
+const catalogueFilter: CatalogueFilter = { query: '', label: '', scanId: '' }
 let timelineSessions: Array<{ key: string; time: number; label: string; scanIds: string[] }> = []
 let timelineStart = Number.NEGATIVE_INFINITY
 let timelineEnd = Number.POSITIVE_INFINITY
@@ -215,6 +240,9 @@ let currentProject: Project | null = null
 // behind the first (rather than racing it) guarantees the caller that fires
 // later also finishes later, so its status always wins.
 const scanLoadChains = new Map<string, Promise<void>>()
+// Patch saves from the Edit panel. A failed save stays pending and the next save retries it.
+// initWorldScene() clears it, because the edits belong to the scene being replaced.
+const editSaves = new PendingSaves(showEditSaveState)
 const globalLayerVisible = LAYER_ORDER.reduce((acc, type) => {
   acc[type] = !LAYERS_HIDDEN_BY_DEFAULT.has(type)
   return acc
@@ -224,6 +252,8 @@ let renderer: THREE.WebGLRenderer
 let camera: THREE.PerspectiveCamera
 let controls: OrbitControls
 let transformControls: TransformControls | null = null
+/** The pivot proxy, numeric nudges, compare tools and unsaved-move marker (stitch-tools.ts). Built at boot. */
+let stitch: StitchTools | null = null
 let viewportResizeObserver: ResizeObserver | null = null
 let scene: THREE.Scene | null = null
 let worldGroup: THREE.Group | null = null
@@ -236,6 +266,9 @@ let cloudVisible = true
 let detectionBoundsObjects: THREE.Object3D[] = []
 let detectionBoundsVisible = false
 let world: WorldProject | null = null
+// Bumped by every Place switch. A world load or refresh that resolves after a newer one
+// started checks this and returns, so it cannot write into the Place now on screen.
+let worldGen = 0
 let selectedTransformTarget: THREE.Object3D | null = null
 let selectedScanId: string | null = null
 let isTransformDragging = false
@@ -275,10 +308,14 @@ async function ensureSplat4DLayer(scanId: string, scan: ScanManifest) {
   const existing = scanSplat4DLayers.get(scanId)
   if (existing) return existing
 
+  const gen = worldGen
   const { createSplat4DLayer } = await import('./splat4d-layer')
   const layer = await createSplat4DLayer(scanId, scan.filename, {
     onFrame: (mesh) => {
       if (!mesh) return
+      // createSplat4DLayer shows its first frame before it returns, so this can run while the
+      // Place is already being left. That frame must not attach its root to the Place on screen.
+      if (gen !== worldGen) return
       // Attach under the scan root, exactly where the static splat goes, so the
       // transform gizmo and the scan's visibility apply to the sequence too.
       // ensureScanRootInWorld, not loadedScans.get(): a person capture is the
@@ -288,6 +325,11 @@ async function ensureSplat4DLayer(scanId: string, scan: ScanManifest) {
       if (root && mesh.mesh.parent !== root) root.add(mesh.mesh)
     },
   })
+  // A Place switch while the sequence loaded: it belongs to the Place that was left.
+  if (gen !== worldGen) {
+    layer?.dispose()
+    return null
+  }
   if (layer) scanSplat4DLayers.set(scanId, layer)
   return layer
 }
@@ -366,14 +408,32 @@ function initRenderer(): void {
 
   if (WEBRTC_LIVE_ENABLED) void initializeLiveFeed()
 
+  // Where the current press began. OrbitControls captures the pointer, so a drag that ends
+  // on the canvas still fires a click. isDragRelease() keeps that click from picking.
+  let canvasPress: { x: number; y: number; tolerancePx: number; onGizmo: boolean } | null = null
+  canvas.addEventListener('pointerdown', (event) => {
+    canvasPress = {
+      x: event.clientX,
+      y: event.clientY,
+      tolerancePx: dragToleranceFor(event.pointerType),
+      // TransformControls listens for pointerdown on this canvas too. It was added first, so
+      // `axis` is already set here when the press landed on a gizmo handle.
+      onGizmo: !!transformControls && transformControls.axis !== null,
+    }
+  })
   canvas.addEventListener('click', (event) => {
+    const press = canvasPress
+    canvasPress = null
     if (!scene || isTransformDragging) return
+    // A press that started on the gizmo is a gizmo gesture, even when the pointer did not move.
+    if (press?.onGizmo) return
+    if (isDragRelease(press, { x: event.clientX, y: event.clientY }, press?.tolerancePx)) return
     const rect = canvas.getBoundingClientRect()
     const ndx = ((event.clientX - rect.left) / rect.width) * 2 - 1
     const ndy = -((event.clientY - rect.top) / rect.height) * 2 + 1
     // Measure mode swallows clicks before selection
     if (measure.handleClick(ndx, ndy, camera)) return
-    const obj = editor.pick(ndx, ndy, camera)
+    const obj = editor.pick(ndx, ndy, camera, transformControls?.getHelper() ?? null)
     if (obj) {
       selectEditableObject(obj)
     } else {
@@ -433,14 +493,51 @@ function onResize(): void {
   camera.updateProjectionMatrix()
 }
 
+/** The idle line each per-scan overlay panel starts with (its "select a scan" text in viewer.html). */
+const scanPanelIdleText = new Map(
+  ['lingbot-map-status', 'panoptic-objects-status', 'splat-layer-status', 'splat-detect-status'].map(
+    (id) => [id, document.getElementById(id)?.textContent?.trim() ?? ''] as const,
+  ),
+)
+
+/** A Place switch puts those panels back to their idle line, so a load that was still in flight leaves no text behind. */
+function resetScanOverlayPanels(): void {
+  for (const [id, idle] of scanPanelIdleText) {
+    const el = document.getElementById(id)
+    if (el && idle) el.textContent = idle
+  }
+  // The detail lines under those statuses, and the splat tooltip, describe the Place that was left too.
+  for (const id of ['lingbot-map-stats', 'splat-layer-stats', 'panoptic-objects-reasons']) setText(id, '')
+  const splatStats = document.getElementById('splat-layer-stats')
+  if (splatStats) splatStats.title = ''
+}
+
 function initWorldScene(): void {
   clearLabels()
   loadedScans.clear()
   scanItems.clear()
+  // Loads queued for the Place being replaced must not run behind the new scene's loads.
+  scanLoadChains.clear()
+  // selectActiveProject() asks before a switch that would drop edits, so anything still
+  // unsaved here was dropped on purpose. The Edit panel says so until the next save.
+  if (editSaves.pendingCount > 0) droppedEdits = editSaves.pendingCount
+  editSaves.clear()
+  showEditSaveState('idle')
   for (const layer of scanSplatLayers.values()) disposeScanSplatLayer(layer)
   scanSplatLayers.clear()
   scanDetectLayers.clear()
   lingbotOverlays.clear()
+  // Overlay caches belong to the Place they were loaded for. A layer kept across the switch
+  // would never be attached to the new scene, and a stale one must not be reused.
+  for (const layer of scanSplat4DLayers.values()) layer.dispose()
+  scanSplat4DLayers.clear()
+  scanPanopticLayers.clear()
+  panopticProbed.clear()
+  for (const loaded of loadedSplats.values()) disposeSplat(loaded)
+  loadedSplats.clear()
+  renderSplatList()
+  clearShareLinks()
+  resetScanOverlayPanels()
   selectedTransformTarget = null
   selectedScanId = null
   hideInspectorOnly()
@@ -473,6 +570,8 @@ function initWorldScene(): void {
     scene.add(transformControls.getHelper())
     transformControls.detach()
   }
+  // The scans a pivot proxy and an unsaved-move record were holding belong to the scene that was just replaced.
+  stitch?.reset()
 
   editor.setScene(scene)
 }
@@ -676,17 +775,10 @@ function isLabelVisible(label: Label3D): boolean {
   return loaded ? scanRendered(loaded) : true
 }
 
-/** True when `obj` and every ancestor of it is visible. */
-function objectRenderable(obj: THREE.Object3D): boolean {
-  for (let node: THREE.Object3D | null = obj; node; node = node.parent) {
-    if (!node.visible) return false
-  }
-  return true
-}
-
 // ─── World loading ───────────────────────────────────────────────────────────
 
 async function loadWorldProject(): Promise<void> {
+  const gen = ++worldGen
   showLoading(true, 'Loading world...')
   initWorldScene()
 
@@ -696,6 +788,7 @@ async function loadWorldProject(): Promise<void> {
       fetchJson<ProjectLocationEntry[]>('/project-locations').catch(() => []),
       fetchJson<Project[]>('/projects').catch(() => []),
     ])
+    if (gen !== worldGen) return
     projectLocations = locations
     knownProjects = projects
     const scopedWorld = scopeWorldToActiveProject(loadedWorld)
@@ -707,6 +800,7 @@ async function loadWorldProject(): Promise<void> {
     document.getElementById('viewer-placeholder')!.style.display = scopedWorld.scans.length ? 'none' : 'flex'
 
     buildScanList(scopedWorld.scans)
+    stitch?.refresh()
     buildTimeline(scopedWorld.scans)
     renderWorldPanel()
     renderLayerPanel()
@@ -722,7 +816,8 @@ async function loadWorldProject(): Promise<void> {
       return
     }
 
-    const results = await Promise.allSettled(scopedWorld.scans.map(enqueueScanLoad))
+    const results = await Promise.allSettled(scopedWorld.scans.map(scan => enqueueScanLoad(scan, scene!)))
+    if (gen !== worldGen) return
     const loadedCount = results.filter(result => result.status === 'fulfilled').length
     if (loadedCount > 0 && worldGroup) {
       // Scans are laid out at their real ENU offsets, which run to hundreds of
@@ -746,13 +841,14 @@ async function loadWorldProject(): Promise<void> {
     updateHudInfo()
     renderLayerPanel()
   } catch (error) {
+    if (gen !== worldGen) return
     console.error('[viewer] World load error:', error)
     const placeholder = document.getElementById('viewer-placeholder')!
     placeholder.style.display = 'flex'
     const message = placeholder.querySelector('div:last-child')
     if (message) message.textContent = `Failed to load world: ${errorMessage(error)}`
   } finally {
-    showLoading(false)
+    if (gen === worldGen) showLoading(false)
   }
 }
 
@@ -786,6 +882,9 @@ function selectActiveProject(projectId: string): void {
     geoMap.close()
     return
   }
+  // A switch drops the edits that have not reached the server. Ask first; cancel keeps this Place.
+  const unsaved = editSaves.pendingCount
+  if (unsaved > 0 && !window.confirm(`${unsaved} ${unsaved === 1 ? 'change is' : 'changes are'} not saved. Switch Places anyway?`)) return
   activeProjectId = projectId
   selectedScanId = null
   selectedTransformTarget = null
@@ -871,13 +970,6 @@ function renderProjectSwitcher(): void {
 
   renderList(nearbyList, nearby, 'No other Places at this address or within 50 m.')
   renderList(otherList, other.map(project => ({ project })), 'No other Places are available.')
-}
-
-const PLACE_TYPE_LABELS: Record<NonNullable<Project['placeType']>, string> = {
-  building: 'Building',
-  floor: 'Floor',
-  room: 'Room',
-  other: 'Other',
 }
 
 function canUseProjectAsParent(candidateId: string, projectId: string): boolean {
@@ -1077,36 +1169,195 @@ function renderThingsPanel(): void {
   const summary = document.getElementById('things-panel-summary')
   if (!list || !summary || !world) return
 
-  const byLabel = new Map<string, { count: number; confidence: number | null; item: InventoryItem }>()
-  for (const scan of world.scans.filter(scanInTimeline)) {
+  const rows = catalogueRows()
+  syncCatalogueControls(rows)
+  const rowById = new Map<string, CatalogueRow>(rows.map(row => [row.item.id, row] as const))
+  const shown = filterCatalogue(rows.map(row => row.catalogue), catalogueFilter)
+    .map(catalogue => rowById.get(catalogue.id))
+    .filter((row): row is CatalogueRow => row !== undefined)
+    .sort((a, b) => displayLabel(a.catalogue).localeCompare(displayLabel(b.catalogue)))
+
+  summary.textContent = rows.length === 0
+    ? 'No Things are visible in the current scan range.'
+    : catalogueIsFiltered()
+      ? `${shown.length} of ${rows.length} identified thing${rows.length === 1 ? '' : 's'} match these filters.`
+      : `${rows.length} identified thing${rows.length === 1 ? '' : 's'} in the visible scan range.`
+  if (shown.length === 0 && rows.length > 0) {
+    const empty = document.createElement('div')
+    empty.className = 'catalogue-empty'
+    empty.textContent = 'Nothing matches these filters. Clear them to see every Thing.'
+    list.replaceChildren(empty)
+    return
+  }
+  list.replaceChildren(...shown.map(thingsListRow))
+}
+
+/** One catalogue row: a Thing, or an object no Thing claims, with the item focusItem() flies to. */
+interface CatalogueRow {
+  /** The item in the first scan it was seen in. focusItem() needs its position, not just its scan. */
+  item: InventoryItem
+  catalogue: CatalogueItem
+}
+
+/**
+ * The catalogue across the scans in the timeline: one row per Thing, however
+ * many scans it was seen in. An object no Thing claims is a row of its own.
+ */
+function catalogueRows(): CatalogueRow[] {
+  const rows = new Map<string, CatalogueRow>()
+  for (const scan of world?.scans.filter(scanInTimeline) ?? []) {
     for (const item of inventoryItems(scan.scanId)) {
-      const key = item.label.trim().toLocaleLowerCase()
-      const current = byLabel.get(key)
-      if (current) {
-        current.count += 1
-        current.confidence = Math.max(current.confidence ?? 0, item.confidence ?? 0) || null
+      const row = rows.get(item.id)
+      if (row) {
+        row.catalogue = {
+          ...row.catalogue,
+          scanIds: [...row.catalogue.scanIds, scan.scanId],
+          userLabel: row.catalogue.userLabel ?? item.userLabel,
+        }
       } else {
-        // The first observation is what the row goes to, so keep the whole item —
-        // focusItem() needs its position, not just the scan it was seen in.
-        byLabel.set(key, { count: 1, confidence: item.confidence, item })
+        rows.set(item.id, { item, catalogue: catalogueItemOf(item) })
       }
     }
   }
+  return [...rows.values()]
+}
 
-  const things = [...byLabel.entries()].sort(([a], [b]) => a.localeCompare(b))
-  summary.textContent = things.length
-    ? `${things.length} identified thing${things.length === 1 ? '' : 's'} in the visible scan range.`
-    : 'No Things are visible in the current scan range.'
-  list.replaceChildren()
-  for (const [label, thing] of things) {
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.className = 'things-list-item'
-    const confidence = thing.confidence == null ? '' : ` · ${Math.round(thing.confidence * 100)}%`
-    button.innerHTML = `<strong>${escHtml(label)}</strong><span>${thing.count} observation${thing.count === 1 ? '' : 's'}${confidence}</span>`
-    button.addEventListener('click', () => focusItem(thing.item))
-    list.appendChild(button)
+function catalogueItemOf(item: InventoryItem): CatalogueItem {
+  return { id: item.id, aiLabel: item.label, userLabel: item.userLabel, scanIds: [item.scanId] }
+}
+
+/** What an item is called on screen: its user label when it has one, its AI label otherwise. */
+function itemDisplayLabel(item: InventoryItem): string {
+  return displayLabel(catalogueItemOf(item))
+}
+
+function catalogueIsFiltered(filter: CatalogueFilter = catalogueFilter): boolean {
+  return Boolean(filter.query?.trim() || filter.label || filter.scanId)
+}
+
+/** The Items tree follows the filters only while the Things tab, where their controls are, is open. */
+function catalogueFilterForItems(): CatalogueFilter {
+  return document.getElementById('tab-things')?.classList.contains('active') ? catalogueFilter : {}
+}
+
+/** The items of one scan that the catalogue filters keep, in their original order. */
+function catalogueItemsForScan(scanId: string, filter: CatalogueFilter): InventoryItem[] {
+  const items = inventoryItems(scanId)
+  if (!catalogueIsFiltered(filter)) return items
+  const kept = new Set(
+    filterCatalogue(items.map(catalogueItemOf), { query: filter.query, label: filter.label }).map(item => item.id),
+  )
+  return items.filter(item => kept.has(item.id))
+}
+
+/** Redraw everything the catalogue filters touch: the Things list and the Items tree. */
+function renderCatalogue(): void {
+  renderThingsPanel()
+  renderItemsPanel()
+}
+
+/**
+ * Fill the label and scan selects and the relabel suggestions from the current
+ * rows. A selection that no longer exists is dropped, so a filter cannot hide
+ * every row for a reason its select does not show.
+ */
+function syncCatalogueControls(rows: CatalogueRow[]): void {
+  const labels = labelOptions(rows.map(row => row.catalogue))
+  if (catalogueFilter.label && !labels.includes(catalogueFilter.label)) catalogueFilter.label = ''
+
+  const labelSelect = document.getElementById('catalogue-label-filter') as HTMLSelectElement | null
+  labelSelect?.replaceChildren(new Option('All labels', ''), ...labels.map(label => new Option(label, label)))
+  if (labelSelect) labelSelect.value = catalogueFilter.label ?? ''
+
+  const scans = world?.scans.filter(scanInTimeline) ?? []
+  if (catalogueFilter.scanId && !scans.some(scan => scan.scanId === catalogueFilter.scanId)) catalogueFilter.scanId = ''
+  const scanSelect = document.getElementById('catalogue-scan-filter') as HTMLSelectElement | null
+  scanSelect?.replaceChildren(new Option('All scans', ''), ...scans.map(scan => new Option(scan.name, scan.scanId)))
+  if (scanSelect) scanSelect.value = catalogueFilter.scanId ?? ''
+
+  const suggestions = document.getElementById('catalogue-label-options')
+  suggestions?.replaceChildren(...labels.map((label) => {
+    const option = document.createElement('option')
+    option.value = label
+    return option
+  }))
+}
+
+/** One Things row: a button that focuses the item, with the relabel control under it. */
+function thingsListRow(row: CatalogueRow): HTMLElement {
+  const { item, catalogue } = row
+  const wrapper = document.createElement('div')
+  wrapper.className = 'things-list-row'
+
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.className = 'things-list-item'
+  const where = catalogue.scanIds.length > 1
+    ? `${catalogue.scanIds.length} scans`
+    : (world?.scans.find(scan => scan.scanId === item.scanId)?.name ?? item.scanId)
+  const meta = [
+    where,
+    item.confidence == null ? null : `${Math.round(item.confidence * 100)}%`,
+    catalogue.userLabel ? `AI label: ${catalogue.aiLabel}` : null,
+  ].filter(Boolean).join(' · ')
+  button.innerHTML = `<strong>${escHtml(displayLabel(catalogue))}</strong><span>${escHtml(meta)}</span>`
+  button.addEventListener('click', () => focusItem(item))
+  wrapper.append(button, catalogueRelabelForm(row))
+  return wrapper
+}
+
+/** The relabel control under a row: a label field with the known labels as suggestions, Save, and Clear. */
+function catalogueRelabelForm(row: CatalogueRow): HTMLFormElement {
+  const { catalogue } = row
+  const form = document.createElement('form')
+  form.className = 'catalogue-relabel'
+  form.innerHTML = `
+    <input class="ci-input catalogue-relabel-input" type="text" list="catalogue-label-options" placeholder="Relabel" autocomplete="off" aria-label="New label for ${escHtml(displayLabel(catalogue))}" />
+    <button type="submit" class="catalogue-relabel-save">Save</button>
+    <button type="button" class="catalogue-relabel-clear" title="Go back to the AI label"${catalogue.userLabel ? '' : ' disabled'}>Clear</button>
+    <span class="catalogue-relabel-status" role="status"></span>
+  `
+  form.addEventListener('submit', (event) => {
+    event.preventDefault()
+    const input = form.querySelector<HTMLInputElement>('.catalogue-relabel-input')
+    const label = input?.value.trim() ?? ''
+    if (label) void saveCatalogueLabel(row, label, form)
+    else setCatalogueStatus(form, 'Type a label, or use Clear to go back to the AI label.')
+  })
+  form.querySelector<HTMLButtonElement>('.catalogue-relabel-clear')?.addEventListener('click', () => {
+    void saveCatalogueLabel(row, null, form)
+  })
+  return form
+}
+
+function setCatalogueStatus(form: HTMLFormElement, text: string): void {
+  const status = form.querySelector<HTMLElement>('.catalogue-relabel-status')
+  if (status) status.textContent = text
+}
+
+/**
+ * Save a relabel, or a clear (label null), through postEditPatch(). A Thing is
+ * relabelled as a Thing, so the patch reaches every scan it was seen in. An
+ * object no Thing claims is relabelled as the object it is.
+ */
+async function saveCatalogueLabel(row: CatalogueRow, label: string | null, form: HTMLFormElement): Promise<void> {
+  const { item } = row
+  const controls = [...form.querySelectorAll<HTMLButtonElement | HTMLInputElement>('input, button')]
+  const wasDisabled = controls.map(control => control.disabled)
+  controls.forEach(control => { control.disabled = true })
+  setCatalogueStatus(form, label ? 'Saving…' : 'Clearing…')
+  const body = item.originTargetId
+    ? { scope: 'thing' as const, targetId: item.id, scanId: item.scanId, originTargetId: item.originTargetId, label }
+    : { scope: 'object' as const, targetId: item.id, scanId: item.scanId, label }
+  try {
+    await postEditPatch(body)
+  } catch (error) {
+    controls.forEach((control, index) => { control.disabled = wasDisabled[index] ?? false })
+    setCatalogueStatus(form, `Could not save: ${errorMessage(error)}`)
+    return
   }
+  // Outside the try: a failure while redrawing is a bug, not a save that did not happen.
+  renderCatalogue()
 }
 
 function activeWorldUrl(): string {
@@ -1126,6 +1377,8 @@ function buildScanList(scans: ScanManifest[]): void {
       <div id="scan-list-empty">
         No scans uploaded yet.<br>Open the scanner link and export a GLB into this world.
       </div>`
+    // A Place with no scans has no banner to show: the last Place's must not stay on the screen.
+    frameReference.sync()
     return
   }
 
@@ -1134,6 +1387,7 @@ function buildScanList(scans: ScanManifest[]): void {
     scanItems.set(scan.scanId, item)
     listEl.appendChild(item)
   }
+  frameReference.sync()
 }
 
 function buildTimeline(scans: ScanManifest[]): void {
@@ -1243,6 +1497,18 @@ function effectiveSessionTime(scan: ScanManifest): number {
   return timelineSessions.find(session => session.key === key)?.time ?? Number.NEGATIVE_INFINITY
 }
 
+/** Redraws every listed scan's meta lines: the Place's frame, which a calibrated scan is compared with, can change under an open editor. */
+function refreshScanMeta(): void {
+  redrawScanMeta(
+    world?.scans ?? [],
+    scanId => scanItems.get(scanId)?.querySelector('.scan-meta-block'),
+    currentProject?.spatialFrame?.method,
+    escHtml,
+  )
+  // The Place's frame can have been replaced too, which changes which scans are of a previous reference.
+  frameReference.sync()
+}
+
 function buildScanItem(scan: ScanManifest): HTMLElement {
   const item = document.createElement('div')
   item.className = 'scan-item'
@@ -1265,18 +1531,13 @@ function buildScanItem(scan: ScanManifest): HTMLElement {
   })
 
   const details = document.createElement('div')
-  const captured = scan.capturedAt ? new Date(scan.capturedAt) : null
-  const capturedLabel = captured && !Number.isNaN(captured.getTime())
-    ? captured.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-    : 'Unknown date'
-  const accuracy = scan.accuracyM != null ? `accuracy ${scan.accuracyM.toFixed(1)}m` : 'manual align'
   const quality = scan.qualitySummary
   const qualityLabel = quality
     ? `${quality.status.replace('-', ' ')} · ${Math.round(quality.coverageScore * 100)}% coverage`
     : scan.status.replace('-', ' ')
   details.innerHTML = `
     <div class="scan-name" title="${escHtml(scan.filename)}">${escHtml(scan.name || scan.filename.replace(/\\.glb$/, ''))}</div>
-    <div class="scan-meta">${capturedLabel} · ${accuracy}</div>
+    <div class="scan-meta-block">${scanMetaHtmlFor(scan, currentProject?.spatialFrame?.method, escHtml)}</div>
     <div class="scan-status" data-review-status="${escHtml(scan.status)}">${escHtml(qualityLabel)}</div>
   `
 
@@ -1301,39 +1562,60 @@ function buildScanItem(scan: ScanManifest): HTMLElement {
  * callers (initial world load, world refresh, job-completion reload) must go
  * through this instead of calling loadScanIntoWorld() directly.
  */
-function enqueueScanLoad(scan: ScanManifest): Promise<void> {
+function enqueueScanLoad(scan: ScanManifest, target: THREE.Scene): Promise<void> {
   const previous = scanLoadChains.get(scan.scanId) ?? Promise.resolve()
-  const chained = previous.catch(() => {}).then(() => loadScanIntoWorld(scan))
+  const chained = previous.catch(() => {}).then(() => loadScanIntoWorld(scan, target))
   scanLoadChains.set(scan.scanId, chained)
+  // The callers of enqueueScanLoad() handle `chained`. This branch is the copy finally() makes,
+  // which would be an unhandled rejection, so it logs the failure once instead.
   void chained.finally(() => {
     if (scanLoadChains.get(scan.scanId) === chained) scanLoadChains.delete(scan.scanId)
+  }).catch((error: unknown) => {
+    console.error('[viewer] scan load failed:', scan.scanId, error)
   })
   return chained
 }
 
-async function loadScanIntoWorld(scan: ScanManifest): Promise<void> {
+/**
+ * `target` is the scene this load was started for. A Place switch replaces `scene`, so
+ * each continuation checks it and drops the result instead of integrating a stale GLB
+ * into the Place now on screen. integrateScanRoot() uses the live worldGroup, which is
+ * always the current scene's group, so the check on `scene` covers it too.
+ */
+async function loadScanIntoWorld(scan: ScanManifest, target: THREE.Scene): Promise<void> {
   if (!worldGroup) throw new Error('World scene was not initialized')
+  const isStale = (): boolean => scene !== target
+  // A queued load can start after the Place it was queued for has been left. Its status line
+  // belongs to that Place, and the same scan may already be listed in the new one.
+  if (isStale()) return
   setScanStatus(scan.scanId, 'Loading GLB...')
 
   try {
     const optimization = await fetchOptimizationManifest(scan.filename)
+    if (isStale()) return
     const preview = optimization?.artifacts.lods[0]
     const optimized = optimization?.artifacts.optimized
 
     if (preview) {
       setScanStatus(scan.scanId, `Preview ${formatKB(preview.bytes)}...`)
-      integrateScanRoot(scan, await loadGlbRoot(`/scans/${encodeURIComponent(preview.filename)}`))
+      const previewRoot = await loadGlbRoot(`/scans/${encodeURIComponent(preview.filename)}`)
+      if (isStale()) { disposeDetachedRoot(previewRoot); return }
+      integrateScanRoot(scan, previewRoot)
       setScanStatus(scan.scanId, 'Preview shown - loading full quality...')
     }
 
     const fullUrl = optimized
       ? `/scans/${encodeURIComponent(optimized.filename)}`
       : scan.glbUrl
-    integrateScanRoot(scan, await loadGlbRoot(fullUrl))
+    const fullRoot = await loadGlbRoot(fullUrl)
+    if (isStale()) { disposeDetachedRoot(fullRoot); return }
+    integrateScanRoot(scan, fullRoot)
     setScanStatus(scan.scanId, optimized
       ? `Ready - optimized ${formatKB(optimized.bytes)}${optimized.draco ? ' - draco' : ''}`
       : 'Ready')
   } catch (error) {
+    // A failure from a Place that is no longer on screen is not this Place's to show.
+    if (isStale()) return
     const message = errorMessage(error)
     const previous = loadedScans.get(scan.scanId)
     if (previous && previous.loaded) {
@@ -1396,6 +1678,33 @@ function loadGlbRoot(url: string): Promise<THREE.Group> {
   }))
 }
 
+/** Frees a GLB root that was loaded but never attached, because its Place was left mid-load. */
+function disposeDetachedRoot(root: THREE.Object3D): void {
+  root.traverse((node) => {
+    const mesh = node as THREE.Mesh
+    mesh.geometry?.dispose()
+    for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+      if (!material) continue
+      // Material.dispose() leaves its textures alone. The maps a GLB brings (colour, normal and
+      // so on) are textures of their own, so they are freed here.
+      for (const value of Object.values(material)) {
+        if (value instanceof THREE.Texture) value.dispose()
+      }
+      material.dispose()
+    }
+  })
+}
+
+/**
+ * Frees the geometry of an overlay built for a Place that was left before it was attached. Only
+ * geometry: an overlay's materials are module-level and shared by every overlay of its kind.
+ */
+function disposeOverlayGeometry(group: THREE.Object3D): void {
+  group.traverse((node) => {
+    (node as THREE.Mesh).geometry?.dispose()
+  })
+}
+
 /**
  * Attach a freshly loaded scan root to the world, replacing any previously
  * loaded root for the same scan (LOD preview → full quality swap).
@@ -1447,6 +1756,8 @@ function integrateScanRoot(scan: ScanManifest, root: THREE.Group): void {
   upgradeSemanticMeshes(root, scan.scanId)
   assignStableObjectIds(root, scan.scanId)
   applyStoredPatches(root, scan)
+  // The matrix just applied is the one the server holds, unless the root this replaces had a move that was not saved.
+  stitch?.adopt(root, previous?.root ?? null)
 
   const layerNodes = collectLayerNodes(root)
   const points = collectPoints(root)
@@ -1581,9 +1892,11 @@ function applyStoredPatches(root: THREE.Object3D, scan: ScanManifest): void {
     const target = findObjectByTargetId(root, patch.targetId)
     if (!target) continue
 
-    if (patch.transform?.matrix) applyMatrix(target, patch.transform.matrix)
+    // A whole scan is placed by a scan patch, which the server checks as a placement (and the Edit panel's reset, undo and
+    // nudges all go through). An object patch that names the scan root moves it round that check, so it is not replayed.
+    if (patch.transform?.matrix && target !== root) applyMatrix(target, patch.transform.matrix)
     if (patch.category) target.userData['tag'] = patch.category
-    if (patch.label) target.userData['label'] = patch.label
+    if (patch.label !== undefined) setObjectLabel(target, patch.label)
     if (patch.notes) target.userData['notes'] = patch.notes
     if (typeof patch.visible === 'boolean') target.visible = patch.visible
   }
@@ -1595,6 +1908,18 @@ function applyStoredPatches(root: THREE.Object3D, scan: ScanManifest): void {
     if (tag.label) target.userData['label'] = tag.label
     if (tag.notes) target.userData['notes'] = tag.notes
   }
+}
+
+/**
+ * Show a relabel on a scene object. The label the GLB came with is kept under
+ * `aiLabel` the first time, so a clear (null) can put it back.
+ */
+function setObjectLabel(target: THREE.Object3D, label: string | null): void {
+  const data = target.userData as Record<string, unknown>
+  if (!('aiLabel' in data)) data['aiLabel'] = data['label']
+  if (label) data['label'] = label
+  else if (typeof data['aiLabel'] === 'string') data['label'] = data['aiLabel']
+  else delete data['label']
 }
 
 function collectLayerNodes(root: THREE.Object3D): Map<LayerType, Set<THREE.Object3D>> {
@@ -1782,10 +2107,26 @@ function createCameraFrustumMesh(size: number, depth: number): THREE.LineSegment
  * GPS-only-placed scan's local origin is just wherever AR tracking booted,
  * not a marked physical point, so rendering a decal there would mislead.
  *
- * The marker sits at local (0,0,0) — the invariant every calibration method
- * (old 3-point, new one-tap) shares, since the calibrated reference always
- * maps to project-space zero. Positioning comes for free from being a child
- * of the scan root, which already carries scan.localToWorld.
+ * The marker belongs on the calibration's reference point — the invariant every
+ * calibration method (retired 3-point, one-tap, two-point) shares, since the
+ * calibrated reference always maps to project-space zero. But it is a child of
+ * the scan root, so it is positioned in the root's own coordinates, and those
+ * are the AR *session* frame, not project space: the root carries
+ * scan.localToWorld, the session-to-project transform M. Root-local (0,0,0) is
+ * the session origin, which M sends to M's own translation, not to project
+ * zero, so a marker left there is drawn away from the landmark (by the
+ * landmark's distance from the session origin, for a rigid M). The point M does
+ * send to zero is inverse(M)·(0,0,0), the landmark as it was tapped, and
+ * sessionAnchorPositions() puts the marker there; once the root's matrix is
+ * applied it lands on project zero, where a two-point Place's stored landmark
+ * pin stands.
+ *
+ * That reads the calibration out of the scan's calibrated placement, the first
+ * one the world file stored (calibratedLocalToWorld), and not out of
+ * scan.localToWorld: saving a gizmo move overwrites localToWorld with the move
+ * (applyPatchToWorld on the server), and a marker placed from the moved matrix
+ * would stay on project zero instead of following the landmark. A scan from
+ * before that field existed falls back to localToWorld, as this always did.
  *
  * No bearing is passed here (unlike the live capture-side decal): the whole
  * root's own rotation may come from either calibration method or a
@@ -1799,23 +2140,36 @@ function addAnchorMarker(
   layers: Map<LayerType, Set<THREE.Object3D>>,
 ): void {
   if (scan.calibrationStatus !== 'verified' && scan.calibrationStatus !== 'provisional') return
+  // Only the two-point tier has a heading marker, so only it hands over a separation.
+  // The tier is what the server's manifest reports (asCalibrationMethod in
+  // server/calibration_fields.ts, which passes every tier a sidecar can carry
+  // through); one it does not pass through reads as undefined here, and that scan
+  // gets the decal without red pins.
+  const { landmark, headingMarker } = sessionAnchorPositions(
+    scan.calibratedLocalToWorld ?? scan.localToWorld,
+    scan.calibrationMethod === 'two-point-ground' ? scan.calibrationSeparationM : null,
+  )
+
   const marker = buildAnchorMarker()
+  marker.position.set(landmark.x, landmark.y, landmark.z)
   marker.userData['scanId'] = scan.scanId
   root.add(marker)
   addLayerNode(layers, 'anchor', marker)
 
-  // The pair this scan actually placed. Both points are expressed in the
-  // scan's own project frame, so they ride the root's localToWorld exactly as
-  // the marker above does: the landmark is project-space zero by construction,
-  // and the heading marker sits on +Z at the separation this session measured.
+  // The pair this scan actually placed: the landmark at project zero and the
+  // heading marker on +Z at the separation this session measured. Those are
+  // project-space points and these pins are children of the root, so each sits
+  // at the root-local point that localToWorld sends there — the same inverse as
+  // the marker above — and not at (0,0,0) and (0,0,separation), which are
+  // session coordinates and land somewhere else entirely.
   //
-  // Red against the stored frame's white: where a red pin sits away from its
-  // white counterpart, that gap is the residual, at room scale.
-  const separation = scan.calibrationSeparationM
-  if (scan.calibrationMethod !== 'two-point-ground' || !separation) return
-  for (const [name, z] of [['landmark', 0], ['heading marker', separation]] as const) {
+  // Red against the stored frame's white: both landmarks are project zero by
+  // construction, so they coincide, and where the red heading pin sits away
+  // from its white counterpart, that gap is the residual, at room scale.
+  if (!headingMarker) return
+  for (const [name, point] of [['landmark', landmark], ['heading marker', headingMarker]] as const) {
     const pin = buildAnchorPin(ANCHOR_ACTUAL_COLOR, `actual ${name} — ${scan.name || scan.scanId}`)
-    pin.position.set(0, 0, z)
+    pin.position.set(point.x, point.y, point.z)
     pin.userData['scanId'] = scan.scanId
     root.add(pin)
     addLayerNode(layers, 'anchor', pin)
@@ -1841,18 +2195,32 @@ const EXPECTED_PINS_NAME = 'expected calibration pins'
  * in isolation — that is precisely why ticket 0007 uses photos as the
  * re-acquisition aid — but they are not tautological *against a scan*, which is
  * the whole point of drawing both here.
+ *
+ * They are in the Calibration anchors layer all the same, and
+ * `globalLayerVisible.anchor` is their one switch — the red pins' as well. It is
+ * applied when the group is built and again by applyLayerVisibility(), which
+ * reaches the group by name. It is deliberately in no scan's `layerNodes`: that
+ * map is per scan and follows that scan's visibility, and the Place's pins are
+ * not any scan's. Unswitched, the layer's off-by-default state hid the red pins
+ * and left their white counterparts alone on screen.
  */
 function refreshExpectedAnchorPins(): void {
   if (!worldGroup) return
   for (const previous of worldGroup.children.filter((child) => child.name === EXPECTED_PINS_NAME)) {
     worldGroup.remove(previous)
+    // Every refresh of the Place redraws these, so the removed pins' buffers are freed, not left to accumulate.
+    disposeDetachedRoot(previous)
   }
 
   const frame = currentProject?.spatialFrame
   if (frame?.method !== 'two-point-ground') return
+  // A stored frame whose points are not three finite numbers each draws nothing. It must not throw: this runs
+  // inside the refresh that re-reads the Place, and a throw here would stop new scans from streaming in.
+  if (![frame.landmark, frame.headingMarker].every((p) => p && [p.x, p.y, p.z].every(Number.isFinite))) return
 
   const group = new THREE.Group()
   group.name = EXPECTED_PINS_NAME
+  group.visible = globalLayerVisible.anchor
   for (const [name, point] of [['landmark', frame.landmark], ['heading marker', frame.headingMarker]] as const) {
     const pin = buildAnchorPin(ANCHOR_EXPECTED_COLOR, `expected ${name}`)
     pin.position.set(point.x, point.y, point.z)
@@ -1951,7 +2319,7 @@ function selectScan(scanId: string, focus: boolean, openEdit = true): void {
     // handlers like "Hide Object" read it directly, and without this a whole-scan
     // selection made from the scan list (as opposed to a 3D-view pick) left it null.
     editor.selectObject(loaded.root)
-    transformControls?.attach(loaded.root)
+    attachTransformTarget(loaded.root)
     showInspector(loaded.root)
     syncEditPanel(loaded.root, openEdit)
     if (focus) fitCamera(loaded.root)
@@ -1962,7 +2330,7 @@ function selectScan(scanId: string, focus: boolean, openEdit = true): void {
     // leaving the inspector/gizmo pointed at it under the new scan's name.
     selectedTransformTarget = null
     editor.clearSelection()
-    transformControls?.detach()
+    detachTransformTarget()
     hideInspectorOnly()
     const noSelection = document.getElementById('edit-no-selection')
     const selectedInfo = document.getElementById('edit-selected-info')
@@ -2176,8 +2544,17 @@ async function refreshLingBotMapPanel(scanId: string): Promise<void> {
   let overlay = lingbotOverlays.get(scanId)
   if (!overlay) {
     status.textContent = 'Loading LingBot-Map artifacts…'
+    const gen = worldGen
     try {
       const fetched = await fetchLingBotMapArtifacts(scan, (url) => fetch(withAccessToken(url)))
+      // A Place switch while this loaded: the overlay belongs to the Place that was left.
+      if (gen !== worldGen) {
+        if (fetched) {
+          disposeOverlayGeometry(fetched.pointsGroup)
+          disposeOverlayGeometry(fetched.pathGroup)
+        }
+        return
+      }
       if (!fetched) {
         status.textContent = 'Nothing reconstructed for this scan yet — its dense points and camera path appear here once the keyframes it streamed have been processed.'
         stats.textContent = ''
@@ -2192,6 +2569,7 @@ async function refreshLingBotMapPanel(scanId: string): Promise<void> {
         overlay.pathGroup.visible = lingbotShowPath
       }
     } catch (e) {
+      if (gen !== worldGen) return
       console.error('[viewer] lingbot-map fetch failed:', e)
       status.textContent = `Failed to load LingBot-Map artifacts: ${e instanceof Error ? e.message : String(e)}`
       stats.textContent = ''
@@ -2304,6 +2682,9 @@ async function refreshSplatLayerPanel(scanId: string): Promise<void> {
   const stats = document.getElementById('splat-layer-stats')
   const toggle = document.getElementById('splat-layer-toggle') as HTMLInputElement | null
   if (!status || !stats) return
+  // Every await below is followed by a check against this: a Place switch while it was in
+  // flight makes the result belong to the Place that was left.
+  const gen = worldGen
   // One reset for every exit below. These elements are reused across scan
   // selections, so an alignment tooltip left over from the previous scan would
   // describe a splat that is no longer on screen; only the success branch
@@ -2329,6 +2710,11 @@ async function refreshSplatLayerPanel(scanId: string): Promise<void> {
     stats.textContent = ''
     try {
       const fetched = await fetchScanSplatLayer(scan, (url) => fetch(withAccessToken(url)))
+      if (gen !== worldGen) {
+        // Loaded for the Place that was left: free its mesh rather than leave it on the GPU.
+        if (fetched) disposeScanSplatLayer(fetched)
+        return
+      }
       if (!fetched) {
         status.textContent = 'No photoreal splat for this scan yet — use “Train splat” below to build one.'
         stats.textContent = ''
@@ -2343,6 +2729,7 @@ async function refreshSplatLayerPanel(scanId: string): Promise<void> {
         layer.loaded.mesh.visible = scanSplatVisible
       }
     } catch (e) {
+      if (gen !== worldGen) return
       console.error('[viewer] splat layer fetch failed:', e)
       status.textContent = `Failed to load trained splat: ${e instanceof Error ? e.message : String(e)}`
       stats.textContent = ''
@@ -2364,6 +2751,7 @@ async function refreshSplatLayerPanel(scanId: string): Promise<void> {
   // splat does this scan have?" — and a scan can carry both.
   try {
     const fourD = await ensureSplat4DLayer(scanId, scan)
+    if (gen !== worldGen) return
     if (fourD) {
       fourD.setVisible(scanSplatVisible)
       if (!fourD.playing) fourD.play()
@@ -2374,6 +2762,7 @@ async function refreshSplatLayerPanel(scanId: string): Promise<void> {
       return
     }
   } catch (e) {
+    if (gen !== worldGen) return
     console.error('[viewer] 4D layer failed:', e)
   }
 
@@ -2475,8 +2864,14 @@ async function refreshSplatDetectPanel(scanId: string): Promise<void> {
 
   let layer = scanDetectLayers.get(scanId)
   if (!layer) {
+    const gen = worldGen
     try {
       const fetched = await fetchScanDetectLayer(scan, (url) => fetch(withAccessToken(url)))
+      // A Place switch while this loaded: its boxes and captions belong to the Place that was left.
+      if (gen !== worldGen) {
+        if (fetched) disposeOverlayGeometry(fetched.boxesGroup)
+        return
+      }
       if (!fetched) {
         status.textContent = 'No detections yet. Run Detect objects to find furniture in the splat.'
         if (toggle) toggle.checked = false
@@ -2493,6 +2888,7 @@ async function refreshSplatDetectPanel(scanId: string): Promise<void> {
         }
       }
     } catch (e) {
+      if (gen !== worldGen) return
       console.error('[viewer] detect layer fetch failed:', e)
       status.textContent = `Failed to load detections: ${e instanceof Error ? e.message : String(e)}`
       return
@@ -2587,7 +2983,13 @@ async function ensureScanPanopticLayer(scanId: string): Promise<ScanPanopticLaye
   const scan = world?.scans.find(s => s.scanId === scanId)
   if (!scan) return null
 
+  const gen = worldGen
   const layer = await fetchScanPanopticLayer(scan, (url) => fetch(withAccessToken(url)))
+  // A Place switch while the probe was in flight: its answer is for the Place that was left.
+  if (gen !== worldGen) {
+    if (layer) disposeOverlayGeometry(layer.markerGroup)
+    return null
+  }
   // Record the probe before the null return: "asked and got nothing" is the
   // finding the Things list renders as "nothing has looked yet", and it is only
   // sound because we got here.
@@ -2637,17 +3039,19 @@ async function refreshPanopticPanel(scanId: string): Promise<void> {
   const toggle = document.getElementById('panoptic-objects-toggle') as HTMLInputElement | null
   if (!status) return
 
+  const gen = worldGen
   let layer: ScanPanopticLayer | null = null
   try {
     layer = await ensureScanPanopticLayer(scanId)
   } catch (e) {
+    if (gen !== worldGen) return
     console.error('[viewer] panoptic layer fetch failed:', e)
     status.textContent = `Could not read this scan's placed objects: ${errorMessage(e)}`
     if (reasons) reasons.textContent = ''
     return
   }
-  // A later selection may have superseded this async read.
-  if (selectedScanId !== scanId) return
+  // A later selection, or a Place switch, may have superseded this async read.
+  if (gen !== worldGen || selectedScanId !== scanId) return
 
   if (!layer) {
     // Same sentence the Things list shows for this scan — one wording for one
@@ -2753,13 +3157,20 @@ async function queueSenseNovaJob(): Promise<void> {
 async function addSplat(source: Parameters<typeof loadSplat>[0]): Promise<void> {
   const status = document.getElementById('splat-status')
   if (status) status.textContent = 'Loading splat…'
+  const gen = worldGen
   try {
     const loaded = await loadSplat(source)
+    // A Place switch while the splat loaded: it belongs to the scene that was replaced. Free it.
+    if (gen !== worldGen) {
+      disposeSplat(loaded)
+      return
+    }
     if (!scene) throw new Error('scene not ready')
     scene.add(loaded.mesh)
     loadedSplats.set(loaded.id, loaded)
     if (status) status.textContent = ''
   } catch (e) {
+    if (gen !== worldGen) return
     if (status) status.textContent = `Failed to load splat: ${e instanceof Error ? e.message : String(e)}`
     console.error('[viewer] splat load failed:', e)
   }
@@ -2817,7 +3228,7 @@ function selectEditableObject(obj: THREE.Object3D, openEdit = true): void {
   // keeps handlers that read editor.selectedObject directly (e.g. "Hide Object") working
   // right after a reattach instead of silently no-op-ing on a selection the UI still shows.
   editor.selectObject(obj)
-  transformControls?.attach(obj)
+  attachTransformTarget(obj)
   showInspector(obj)
   syncEditPanel(obj, openEdit)
   if (selectedScanId) {
@@ -2826,11 +3237,25 @@ function selectEditableObject(obj: THREE.Object3D, openEdit = true): void {
   }
 }
 
+/**
+ * Hand the gizmo to what was picked. A scan root gets the pivot proxy, so it turns about its landmark and
+ * not about where the AR session started; anything else gets the gizmo as it always had it (stitch-tools.ts).
+ */
+function attachTransformTarget(target: THREE.Object3D): void {
+  if (stitch) stitch.attach(target)
+  else transformControls?.attach(target)
+}
+
+function detachTransformTarget(): void {
+  if (stitch) stitch.detach()
+  else transformControls?.detach()
+}
+
 function clearSelection(): void {
   selectedTransformTarget = null
   selectedScanId = null
   editor.clearSelection()
-  transformControls?.detach()
+  detachTransformTarget()
   hideInspectorOnly()
   const noSelection = document.getElementById('edit-no-selection')!
   const selectedInfo = document.getElementById('edit-selected-info')!
@@ -2847,6 +3272,8 @@ function showInspector(obj: THREE.Object3D): void {
   const scan = scanForObject(obj)
   const transform = matrixTranslation(obj.matrixWorld.toArray())
   const confColor = (data.confidence ?? 0) >= 0.8 ? '#66bb6a' : (data.confidence ?? 0) >= 0.5 ? '#ffa726' : '#ef9a9a'
+  // The GLB exporter flags a box it could only place, not measure. GLTFLoader copies a node's extras into userData.
+  const sizeLabel = obj.userData['dimensionsEstimated'] === true ? 'Estimated size' : 'Size'
 
   title.textContent = data.name || obj.name || scan?.manifest.name || '(unnamed)'
   body.innerHTML = [
@@ -2862,7 +3289,7 @@ function showInspector(obj: THREE.Object3D): void {
     data.sourceScanIds?.length ? rowHtml('Source', escHtml(data.sourceScanIds.join(', '))) : '',
     data.captureIndex !== undefined ? rowHtml('Capture', `#${data.captureIndex}`) : '',
     rowHtml('World', `${transform.x.toFixed(2)}, ${transform.y.toFixed(2)}, ${transform.z.toFixed(2)}m`),
-    data.dimensions ? rowHtml('Size', `${data.dimensions.w} x ${data.dimensions.h} x ${data.dimensions.d}m`) : '',
+    data.dimensions ? rowHtml(sizeLabel, `${data.dimensions.w} x ${data.dimensions.h} x ${data.dimensions.d}m`) : '',
     data.roomName ? rowHtml('Room', escHtml(data.roomName)) : '',
     data.floorName ? rowHtml('Floor', escHtml(data.floorName)) : '',
     data.description ? `<div style="font-size:10.5px;color:rgba(255,255,255,0.45);line-height:1.5;margin-top:4px;padding-top:4px;border-top:1px solid rgba(255,255,255,0.06);">${escHtml(data.description)}</div>` : '',
@@ -2923,23 +3350,29 @@ function updateTransformReadout(): void {
   metaEl.innerHTML = base.join('<br>')
 }
 
-async function saveSelectedTransform(): Promise<void> {
-  if (!selectedTransformTarget || !world) return
-  selectedTransformTarget.updateMatrix()
+async function saveSelectedTransform(target: THREE.Object3D | null = selectedTransformTarget): Promise<void> {
+  if (!target) return
+  target.updateMatrix()
 
-  const scan = scanForObject(selectedTransformTarget)
-  const scope = selectedTransformTarget.userData['scope'] === 'scan-root' ? 'scan' : 'object'
+  const scan = scanForObject(target)
+  const scope = target.userData['scope'] === 'scan-root' ? 'scan' : 'object'
   const targetId = scope === 'scan'
-    ? (scan?.manifest.filename ?? String(selectedTransformTarget.userData['filename'] ?? selectedTransformTarget.name))
-    : stableObjectId(selectedTransformTarget)
+    ? (scan?.manifest.filename ?? String(target.userData['filename'] ?? target.name))
+    : stableObjectId(target)
 
+  const gen = worldGen
+  const transform = serializeTransform(target)
   await postEditPatch({
     scope,
     scanId: scan?.manifest.scanId,
     targetId,
-    transform: serializeTransform(selectedTransformTarget),
+    transform,
   })
+  // What the server holds is what was posted, not whatever the scan shows by now if it was moved again meanwhile.
+  stitch?.markSaved(target, transform?.matrix)
 
+  // The patch is saved either way. After a Place switch this panel is another Place's, so no flash.
+  if (gen !== worldGen) return
   flashButton('edit-save-transform', 'Saved')
 }
 
@@ -2957,10 +3390,10 @@ function firstLod(root: THREE.Object3D): THREE.LOD | null {
 // Test hook: selects a scan's first semantic LOD (by tree order — NOT necessarily the
 // same node a raycast would resolve to; see editor_pick.test.ts for that) and drives
 // the save-transform round trip through the real selectEditableObject()/
-// saveSelectedTransform() path, without a raycast. A real canvas click cannot reach a
-// semantic object in the seeded test-home corpus today — point-cloud hits and the
-// always-attached gizmo's own helper both intercept the ray first, a separate defect
-// recorded in docs/factory/03-readiness-hardening/README.md ("found but deferred").
+// saveSelectedTransform() path, without a raycast. SceneEditor.pick() skips point-cloud
+// and gizmo hits, so a canvas click should reach the object too. That browser path is
+// unverified: no browser test clicks the canvas to reach a semantic object. This hook
+// stays so the round trip does not depend on a raycast.
 // This hook lets 0004's round-trip regression test (tests/mock-editor-homes.spec.ts)
 // exercise the LOD save/reload fix without depending on that unrelated fix landing
 // first. Double-gated: import.meta.env.DEV is a Vite build-time constant, so `npm run
@@ -3021,7 +3454,7 @@ if (import.meta.env.DEV && query.get('mock') === 'editor') {
 }
 
 async function saveObjectSemanticPatch(obj: THREE.Object3D): Promise<void> {
-  if (!world) return
+  if (!world) throw new Error('Place not loaded yet')
   const data = editor.getInspectorData(obj)
   const scan = scanForObject(obj)
   const originTargetId = stableObjectId(obj)
@@ -3037,6 +3470,11 @@ async function saveObjectSemanticPatch(obj: THREE.Object3D): Promise<void> {
   })
 }
 
+/** Save an object's tag and notes through the Edit panel's save queue. */
+function saveSemanticEdit(obj: THREE.Object3D): Promise<boolean> {
+  return editSaves.save(`semantic:${obj.uuid}`, () => saveObjectSemanticPatch(obj))
+}
+
 function thingForTarget(targetId: string) {
   if (!world) return null
   const observation = (world.thingObservations ?? []).find(obs => obs.targetId === targetId)
@@ -3045,16 +3483,47 @@ function thingForTarget(targetId: string) {
 }
 
 async function postEditPatch(body: Partial<EditPatch> & { targetId: string; scope: EditPatch['scope'] }): Promise<void> {
-  if (!world) return
+  if (!world) throw new Error('Place not loaded yet')
+  const gen = worldGen
   const response = await fetch(withAccessToken(`/worlds/${encodeURIComponent(world.shareSlug)}/patches`), {
     method: 'POST',
     headers: accessHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body),
   })
-  if (!response.ok) throw new Error(await response.text())
+  if (!response.ok) throw await httpError(response)
   const payload = await response.json() as PatchResponse
-  world = payload.world
+  // The patch is saved either way. Only a Place still on screen takes the returned world.
+  if (gen !== worldGen) return
+  // The patch response carries every scan in the world. Scope it the way the
+  // loaders do, or a save would pull other places' scans into this view.
+  world = scopeWorldToActiveProject(payload.world)
   renderWorldPanel()
+  stitch?.refresh()
+}
+
+/**
+ * Take back the last saved move of a scan (the server's revert route) and keep the world it answers with.
+ * `patchId` is the move the person saw as the last one: the server refuses with a 409 if another came after.
+ * What is asked and what is done with the answer is in patch-revert.ts.
+ */
+async function postPatchRevert(scanId: string, patchId: string): Promise<void> {
+  if (!world) throw new Error('Place not loaded yet')
+  const gen = worldGen
+  const path = `/worlds/${encodeURIComponent(world.shareSlug)}/patches/revert`
+  await requestRevert({
+    post: (body) => fetch(withAccessToken(path), {
+      method: 'POST',
+      headers: accessHeaders({ 'Content-Type': 'application/json' }),
+      body,
+    }),
+    refused: httpError,
+    stillCurrent: () => gen === worldGen,
+    take: (answered) => {
+      world = scopeWorldToActiveProject(answered)
+      renderWorldPanel()
+      stitch?.refresh()
+    },
+  }, scanId, patchId)
 }
 
 function serializeTransform(obj: THREE.Object3D): EditPatch['transform'] {
@@ -3071,8 +3540,22 @@ function serializeTransform(obj: THREE.Object3D): EditPatch['transform'] {
 
 function inventoryItems(scanId: string | null = null): InventoryItem[] {
   if (!world) return []
+  const current = world
 
-  const observations = world.thingObservations ?? []
+  const observations = current.thingObservations ?? []
+  // A relabel is a patch, so an item's user label is whatever the patches resolve
+  // to in its scan: the same answer applyStoredPatches() gives the 3D view.
+  const observationIndex = buildThingObservationIndex(observations)
+  const tagsByScan = new Map<string, Map<string, ResolvedThingTag>>()
+  const userLabelIn = (targetScanId: string, targetId: string): string | null => {
+    let tags = tagsByScan.get(targetScanId)
+    if (!tags) {
+      tags = resolveThingTagsForScan(current.editPatches, current.things ?? [], observationIndex, targetScanId)
+      tagsByScan.set(targetScanId, tags)
+    }
+    return tags.get(targetId)?.label ?? null
+  }
+
   if (world.things.length > 0) {
     const preferredObservations = scanId
       ? observations.filter(observation => observation.scanId === scanId)
@@ -3098,6 +3581,8 @@ function inventoryItems(scanId: string | null = null): InventoryItem[] {
           position: observation?.worldPos ?? thing.position,
           confidence: observation?.confidence ?? null,
           source: 'thing',
+          userLabel: observation ? userLabelIn(observation.scanId, observation.targetId) : null,
+          originTargetId: observation?.targetId ?? null,
         }
       })
   }
@@ -3110,6 +3595,8 @@ function inventoryItems(scanId: string | null = null): InventoryItem[] {
     loaded.root.updateMatrixWorld(true)
     loaded.root.traverse((node) => {
       const data = node.userData as Record<string, unknown>
+      // `label` can already carry a relabel from applyStoredPatches(); `aiLabel`
+      // is what the GLB came with, so the row can show the AI label under a relabel.
       const label = typeof data['label'] === 'string' ? data['label'] : ''
       if (!label) return
       // The renderer can label an optimized proxy that no longer has a Mesh
@@ -3117,13 +3604,16 @@ function inventoryItems(scanId: string | null = null): InventoryItem[] {
       // one-label-per-ancestor rule used by createSemanticLabels().
       if (hasLabelledAncestor(node, loaded.root)) return
       const position = node.getWorldPosition(new THREE.Vector3())
+      const id = String(data['objectId'] ?? node.uuid)
       records.push({
-        id: String(data['objectId'] ?? node.uuid),
-        label,
+        id,
+        label: typeof data['aiLabel'] === 'string' ? data['aiLabel'] : label,
         scanId: loadedScanId,
         position: { x: position.x, y: position.y, z: position.z },
         confidence: typeof data['confidence'] === 'number' ? data['confidence'] : null,
         source: 'detection',
+        userLabel: userLabelIn(loadedScanId, id),
+        originTargetId: null,
       })
     })
   }
@@ -3220,7 +3710,7 @@ function appendPlacementNote(parent: HTMLElement, verdict: PlacementVerdict): vo
   parent.appendChild(note)
 }
 
-function appendOutlinerScan(parent: HTMLElement, scan: ScanManifest, items: InventoryItem[]): void {
+function appendOutlinerScan(parent: HTMLElement, scan: ScanManifest, items: InventoryItem[], filtered: boolean): void {
   const row = document.createElement('button')
   row.type = 'button'
   row.className = 'scene-tree-scan'
@@ -3234,6 +3724,9 @@ function appendOutlinerScan(parent: HTMLElement, scan: ScanManifest, items: Inve
   parent.appendChild(row)
 
   if (items.length === 0) {
+    // A filter that emptied this scan says nothing about whether it was located,
+    // so the placement verdict would explain the wrong thing.
+    if (filtered) return
     // An empty Things list under a good-looking reconstruction is the one place
     // a person goes looking for an explanation, and until now it had none — a
     // capture that structurally CANNOT locate objects and one whose placement
@@ -3246,12 +3739,12 @@ function appendOutlinerScan(parent: HTMLElement, scan: ScanManifest, items: Inve
     return
   }
   const things = createOutlinerGroup('things', 'Things', `${items.length} identified`, scan.scanId === selectedScanId)
-  for (const item of items.sort((a, b) => a.label.localeCompare(b.label))) {
+  for (const item of items.sort((a, b) => itemDisplayLabel(a).localeCompare(itemDisplayLabel(b)))) {
     const thing = document.createElement('button')
     thing.type = 'button'
     thing.className = 'scene-tree-thing'
     const confidence = item.confidence == null ? '' : ` · ${Math.round(item.confidence * 100)}%`
-    thing.innerHTML = `<span>${escHtml(item.label)}</span><small>${formatItemPosition(item.position)}${confidence}</small>`
+    thing.innerHTML = `<span>${escHtml(itemDisplayLabel(item))}</span><small>${formatItemPosition(item.position)}${confidence}</small>`
     thing.addEventListener('click', () => focusItem(item))
     things.appendChild(thing)
   }
@@ -3275,13 +3768,18 @@ function renderItemsPanel(): void {
   const selectedScan = selectedScanId
     ? world.scans.find(scan => scan.scanId === selectedScanId) ?? null
     : null
-  const visibleScans = world.scans.filter(scanInTimeline)
-  const itemsByScan = new Map(visibleScans.map(scan => [scan.scanId, inventoryItems(scan.scanId)]))
+  // The catalogue filters narrow this tree too, while the Things tab shows them.
+  const filter = catalogueFilterForItems()
+  const filtered = catalogueIsFiltered(filter)
+  const visibleScans = world.scans.filter(scanInTimeline).filter(scan => !filter.scanId || scan.scanId === filter.scanId)
+  const itemsByScan = new Map(visibleScans.map(scan => [scan.scanId, catalogueItemsForScan(scan.scanId, filter)]))
   list.innerHTML = ''
   renderReviewComments()
 
   if (visibleScans.length === 0) {
-    list.innerHTML = `<div class="inventory-empty">No scans are in this date range. Expand the range to show this Place.</div>`
+    list.innerHTML = filtered
+      ? `<div class="inventory-empty">Nothing matches these catalogue filters.</div>`
+      : `<div class="inventory-empty">No scans are in this date range. Expand the range to show this Place.</div>`
     return
   }
 
@@ -3316,7 +3814,7 @@ function renderItemsPanel(): void {
       for (const [roomName, room] of floor.rooms) {
         const roomNode = createOutlinerGroup('room', roomName, `${room.scans.length} scan${room.scans.length === 1 ? '' : 's'}`, Boolean(selectedScan && outlinerLocationForScan(selectedScan).building === buildingName && outlinerLocationForScan(selectedScan).floor === floorName && outlinerLocationForScan(selectedScan).room === roomName))
         for (const scan of room.scans.sort((a, b) => (a.capturedAt ?? '').localeCompare(b.capturedAt ?? ''))) {
-          appendOutlinerScan(roomNode, scan, itemsByScan.get(scan.scanId) ?? [])
+          appendOutlinerScan(roomNode, scan, itemsByScan.get(scan.scanId) ?? [], filtered)
         }
         floorNode.appendChild(roomNode)
       }
@@ -3415,8 +3913,25 @@ function renderWorldPanel(): void {
   setText('world-origin-label', hasGeoPose(world.originGeoPose) ? 'GPS' : 'Local')
   renderToolbarSummary(queueJobs)
   renderJobs(queueJobs)
+  registerProposals ??= mountRegisterProposals(registerProposalHost)
+  registerProposals.render()
   renderItemsPanel()
   if (selectedScanId) renderQualityProcessing(selectedScanId)
+}
+
+// The alignment checks the server proposes (the place-register job). The cards, the preview and the Apply rules live in
+// ./register-proposal; this hands them the editor's world, its patch writer and the loaded scans.
+let registerProposals: RegisterProposals | null = null
+const registerProposalHost = {
+  world: () => world,
+  postPatch: (body: Parameters<typeof postEditPatch>[0]) => postEditPatch(body),
+  worldGroup: () => worldGroup,
+  scanPoints: (scanId: string) => loadedScans.get(scanId)?.points ?? [],
+  moveScan: (scanId: string, matrix: number[]) => {
+    const loaded = loadedScans.get(scanId)
+    if (loaded) applyMatrix(loaded.root, matrix)
+    updateTransformReadout()
+  },
 }
 
 function renderLayerPanel(): void {
@@ -3484,13 +3999,12 @@ function renderJobs(jobs: WorldJob[]): void {
     const row = document.createElement('div')
     row.className = 'job-row'
     const scanName = job.scanId ? world?.scans.find(scan => scan.scanId === job.scanId)?.name : null
-    row.innerHTML = `
-      <div style="min-width:0;">
-        <div class="job-title">${escHtml(job.type)}</div>
-        <div class="job-meta">${escHtml(job.status)}${scanName ? ` · ${escHtml(scanName)}` : ''}</div>
-      </div>
-      <span class="job-meta">${new Date(job.updatedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}</span>
-    `
+    row.innerHTML = jobRowMarkup(
+      job,
+      scanName,
+      new Date(job.updatedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }),
+      escHtml,
+    )
     list.appendChild(row)
   }
 }
@@ -3521,6 +4035,14 @@ function closeShareQrCodes(): void {
   for (const close of shareQrClosers) close()
 }
 
+/** Empties the Share panel. A Place switch calls this, so the last Place's bearer-token links do not stay up. */
+function clearShareLinks(): void {
+  closeShareQrCodes()
+  shareQrClosers.length = 0
+  const target = document.getElementById('share-links')
+  if (target) target.innerHTML = '<div class="layer-meta">Loading share links...</div>'
+}
+
 /** Copy-to-clipboard wiring, shared by the scanner block and the role rows. */
 function bindCopyLink(button: HTMLButtonElement, url: string): void {
   button.addEventListener('click', () => {
@@ -3538,8 +4060,8 @@ function bindCopyLink(button: HTMLButtonElement, url: string): void {
  * A click-gated QR disclosure for one share link.
  *
  * These URLs carry a bearer token — `scripts/house-links.mjs` calls them
- * secrets and it is right: whoever holds one has that role until the member is
- * revoked. A QR is worse than a clipboard for a secret, because a screen share
+ * secrets and it is right: whoever holds one has that role, and nothing expires or
+ * revokes it yet. A QR is worse than a clipboard for a secret, because a screen share
  * re-encodes it perfectly and a photograph keeps it. So the symbol is never
  * painted on load or on hover, only on an explicit click; only one is open at a
  * time; and closing the Share menu collapses it again rather than leaving a
@@ -3579,7 +4101,7 @@ function buildQrDisclosure(url: string, roleLabel: string, showLabel: string, si
     try {
       panel.innerHTML = `
         <div class="qr-plate">${qrCodeSvg(url, { size, label: `${roleLabel} link` })}</div>
-        <div class="qr-caption">Anyone who scans this gets <b>${escHtml(roleLabel)}</b> access to this place until the link is revoked.</div>
+        <div class="qr-caption">Anyone who scans this gets <b>${escHtml(roleLabel)}</b> access to this place. Links do not expire and cannot be revoked.</div>
       `
     } catch (error) {
       panel.innerHTML = `<div class="layer-meta">QR unavailable: ${escHtml(errorMessage(error))}</div>`
@@ -3596,9 +4118,12 @@ async function loadShareLinks(): Promise<void> {
   if (!world) return
   const target = document.getElementById('share-links')
   if (!target) return
+  const gen = worldGen
 
   try {
     const payload = await fetchJson<ShareLinksResponse>(`/worlds/${encodeURIComponent(world.shareSlug)}/share`)
+    // Links for a Place that has since been switched away from do not fill this panel.
+    if (gen !== worldGen) return
     target.innerHTML = ''
     shareQrClosers.length = 0
 
@@ -3646,6 +4171,8 @@ async function loadShareLinks(): Promise<void> {
       target.append(row, qr.panel)
     }
   } catch (error) {
+    // A failed fetch for a Place that has since been switched away from does not write to this panel.
+    if (gen !== worldGen) return
     target.innerHTML = `<div class="layer-meta">Share links unavailable: ${escHtml(errorMessage(error))}</div>`
   }
 }
@@ -3675,7 +4202,7 @@ async function queueSelectedJob(): Promise<void> {
 }
 
 const GUIDED_WORKFLOWS: Record<string, WorldJobType[]> = {
-  prepare: ['ingest', 'extract-layers', 'align-scan'],
+  prepare: ['ingest', 'extract-layers'],
   understand: ['semantic-pass', 'thing-correspondence'],
   reconstruct: ['lingbot-map-reconstruct', 'splat-train'],
   publish: ['memory-push', 'export-world'],
@@ -3768,6 +4295,13 @@ function applyLayerVisibility(): void {
     }
   }
 
+  // The Place's stored (white) anchor pins hang off worldGroup, not off a scan
+  // root, so no scan's layerNodes holds them and the loop above never reaches
+  // them. They are half of the red/white pair, so they follow its one switch.
+  for (const child of worldGroup?.children ?? []) {
+    if (child.name === EXPECTED_PINS_NAME) child.visible = globalLayerVisible.anchor
+  }
+
   for (const obj of detectionBoundsObjects) {
     const scanId = String(obj.userData['scanId'] ?? '')
     obj.visible = detectionBoundsVisible
@@ -3797,6 +4331,10 @@ function applyLayerVisibility(): void {
     el.classList.toggle('active', on)
     el.setAttribute('aria-pressed', String(on))
   }
+
+  // A view mode or layer switch can put materials back; a tinted or see-through scan keeps its style.
+  stitch?.reapplyCompare()
+  frameReference.apply()
 
   setToggle('btn-toggle-cloud', cloudVisible && globalLayerVisible.points)
   setToggle('btn-toggle-labels', labelsVisible && globalLayerVisible.labels)
@@ -3987,9 +4525,9 @@ function updateWorldHud(): void {
 
   const direction = new THREE.Vector3()
   camera.getWorldDirection(direction)
-  const heading = Math.atan2(direction.x, direction.z)
+  // The needle points where the scene's own north axis lies on screen (the world declares which: see compassNeedleRad).
   const compassArrow = document.getElementById('compass-arrow')
-  if (compassArrow) compassArrow.style.transform = `translateX(-50%) rotate(${-heading}rad)`
+  if (compassArrow) compassArrow.style.transform = `translateX(-50%) rotate(${compassNeedleRad(direction, world?.localFrame?.axes?.z)}rad)`
 
   updateScaleWidget()
 
@@ -4275,7 +4813,11 @@ async function withTransientRetry<T>(op: () => Promise<T>, retries = 3): Promise
  */
 async function httpError(response: Response): Promise<Error> {
   const isHtml = response.headers.get('content-type')?.includes('text/html')
-  return new Error(isHtml ? `${response.status}: no Scan server answered` : `${response.status} ${await response.text()}`)
+  // No `status` on an HTML page: that is a host answering for an outage, not the Scan server
+  // refusing the request, and PendingSaves must keep retrying it (isPermanentEditError reads it).
+  if (isHtml) return new Error(`${response.status}: no Scan server answered`)
+  // `status` lets a caller tell a refused request from a transient failure (PendingSaves reads it).
+  return Object.assign(new Error(`${response.status} ${await response.text()}`), { status: response.status })
 }
 
 /** GET + parse JSON, riding out transient network drops during load. */
@@ -4292,17 +4834,67 @@ function setText(id: string, value: string): void {
   if (el) el.textContent = value
 }
 
-function flashButton(id: string, text: string): void {
+/** The restore timer of each button that is flashing, so a second flash can cancel the first. */
+const flashTimers = new WeakMap<HTMLElement, number>()
+
+function flashButton(id: string, text: string, tone: 'ok' | 'error' = 'ok'): void {
   const button = document.getElementById(id)
   if (!button) return
-  const original = button.textContent ?? ''
+  // The label before any flash, kept once. A second flash inside the window must not record
+  // the first flash's text as the original, or the restore would keep that text for good.
+  if (button.dataset['flashLabel'] === undefined) button.dataset['flashLabel'] = button.textContent ?? ''
+  clearTimeout(flashTimers.get(button))
   button.textContent = text
-  button.style.color = '#66bb6a'
-  setTimeout(() => {
-    button.textContent = original
+  button.style.color = tone === 'error' ? '#ef9a9a' : '#66bb6a'
+  flashTimers.set(button, window.setTimeout(() => {
+    button.textContent = button.dataset['flashLabel'] ?? ''
+    delete button.dataset['flashLabel']
     button.style.color = ''
-  }, 1500)
+    flashTimers.delete(button)
+  }, 1500))
 }
+
+/** Unsaved changes that a confirmed Place switch dropped. The Edit panel says so until the next save. */
+let droppedEdits = 0
+
+/** The copy when an unsaved edit can still be sent again. */
+const RETRY_COPY = 'Not saved. Save again to retry.'
+
+/**
+ * The copy when the server refused an unsaved edit. A refused edit is never sent again, so a retry
+ * is still promised while any edit can be sent. With only refusals left, a 401 or 403 means the
+ * world link cannot save, unless a server refusal (a 400, say) is among them: that one is named
+ * in place of the link. The Edit panel and Save Tags both use this copy, so they always agree.
+ */
+function refusalCopy(): string {
+  if (editSaves.pendingCount > editSaves.refusedCount) return RETRY_COPY
+  return editSaves.linkRefusedCount === editSaves.refusedCount
+    ? 'Not saved. This link cannot save changes.'
+    : 'Not saved. The server refused this change.'
+}
+
+/** Writes the Edit panel's save line. It stays empty until the first save. */
+function showEditSaveState(state: EditSaveState | 'idle'): void {
+  const line = document.getElementById('edit-save-status')
+  if (!line) return
+  if (state !== 'idle') droppedEdits = 0
+  if (droppedEdits > 0) {
+    line.textContent = `✕ ${droppedEdits} ${droppedEdits === 1 ? 'change was' : 'changes were'} not saved before you switched Places.`
+    line.style.color = '#ef9a9a'
+    return
+  }
+  const failed = editSaves.refusedCount > 0 ? refusalCopy() : RETRY_COPY
+  line.textContent = { saving: 'Saving…', saved: 'Saved', failed, idle: '' }[state]
+  line.style.color = state === 'failed' ? '#ef9a9a' : state === 'saved' ? '#66bb6a' : 'rgba(255,255,255,0.6)'
+}
+
+// Unsaved edits live only in memory, so a reload or a leave would lose them. Ask first while an
+// edit is pending or still posting. With nothing pending the page is left alone.
+window.addEventListener('beforeunload', (event) => {
+  if (editSaves.pendingCount === 0 && !editSaves.inFlight) return
+  event.preventDefault()
+  event.returnValue = ''
+})
 
 function switchSidebarTab(name: string): void {
   if (name === 'places' && !PLACE_COMPOSER_ENABLED) {
@@ -4364,6 +4956,19 @@ document.querySelectorAll('.sidebar-tab').forEach(button => {
   })
 })
 
+document.getElementById('catalogue-search')?.addEventListener('input', (event) => {
+  catalogueFilter.query = (event.target as HTMLInputElement).value
+  renderCatalogue()
+})
+document.getElementById('catalogue-label-filter')?.addEventListener('change', (event) => {
+  catalogueFilter.label = (event.target as HTMLSelectElement).value
+  renderCatalogue()
+})
+document.getElementById('catalogue-scan-filter')?.addEventListener('change', (event) => {
+  catalogueFilter.scanId = (event.target as HTMLSelectElement).value
+  renderCatalogue()
+})
+
 document.getElementById('project-place-type')?.addEventListener('change', () => {
   syncProjectHierarchyFields()
   updateProjectHierarchyPreview()
@@ -4386,7 +4991,9 @@ for (const tag of SEMANTIC_TAGS) {
     tagGrid.querySelectorAll('.tag-chip').forEach(candidate => candidate.classList.remove('active'))
     chip.classList.add('active')
     showInspector(obj)
-    void saveObjectSemanticPatch(obj).catch(error => console.error('[viewer] semantic patch failed:', error))
+    // Dimmed until the save settles, so a tag that has not reached the server does not look kept.
+    chip.classList.add('pending')
+    void saveSemanticEdit(obj).finally(() => chip.classList.remove('pending'))
   })
   tagGrid.appendChild(chip)
 }
@@ -4395,11 +5002,12 @@ document.getElementById('edit-save-notes')?.addEventListener('click', () => {
   const obj = selectedTransformTarget ?? editor.selectedObject
   if (!obj) return
   const notes = (document.getElementById('edit-notes') as HTMLTextAreaElement).value
-  const existing = editor.getTagInfo(obj)
-  if (existing) editor.tagObject(obj, existing.tag, { ...existing, notes })
-  else editor.tagObject(obj, 'unknown', { notes })
-  void saveObjectSemanticPatch(obj).then(() => flashButton('edit-save-notes', 'Saved'))
-    .catch(error => console.error('[viewer] notes patch failed:', error))
+  // A note on an untagged object is stored without a tag, so it claims no category.
+  editor.setNotes(obj, notes)
+  const gen = worldGen
+  void saveSemanticEdit(obj).then((saved) => {
+    if (saved && gen === worldGen) flashButton('edit-save-notes', 'Saved')
+  })
 })
 
 const viewModeSelect = document.getElementById('view-mode-select') as HTMLSelectElement | null
@@ -4439,14 +5047,21 @@ document.getElementById('btn-toggle-bounds')!.addEventListener('click', () => {
 
 document.getElementById('btn-flush-tags')!.addEventListener('click', () => {
   editor.flushTags()
-  const obj = selectedTransformTarget ?? editor.selectedObject
-  const save = obj ? saveObjectSemanticPatch(obj) : Promise.resolve()
-  void save.then(() => flashButton('btn-flush-tags', 'Saved'))
-    .catch(error => console.error('[viewer] flush patch failed:', error))
+  // Each tag and note is posted when it changes. This posts every one that has not
+  // reached the server yet, not only the selected object's.
+  const gen = worldGen
+  void editSaves.save(null).then((saved) => {
+    if (gen !== worldGen) return
+    // Same copy as the Edit panel. A refused edit is not sent again, so only a pending one can be retried.
+    const notSaved = editSaves.refusedCount > 0 ? refusalCopy() : RETRY_COPY
+    flashButton('btn-flush-tags', saved ? 'Saved' : notSaved, saved ? 'ok' : 'error')
+  })
 })
 
 document.getElementById('edit-save-transform')?.addEventListener('click', () => {
-  void saveSelectedTransform().catch(error => console.error('[viewer] transform patch failed:', error))
+  const target = selectedTransformTarget
+  if (!target) return
+  void editSaves.save(`transform:${target.uuid}`, () => saveSelectedTransform(target))
 })
 
 document.getElementById('transform-translate')?.addEventListener('click', () => setTransformMode('translate'))
@@ -4631,18 +5246,22 @@ document.getElementById('edit-hide-object')?.addEventListener('click', () => {
   const obj = editor.selectedObject
   if (!obj) return
   obj.visible = false
-  const scan = scanForObject(obj)
-  void postEditPatch({
+  const body = {
     targetId: stableObjectId(obj),
-    scope: 'object',
-    scanId: scan?.manifest.scanId,
+    scope: 'object' as const,
+    scanId: scanForObject(obj)?.manifest.scanId,
     visible: false,
-  }).then(() => flashButton('edit-hide-object', 'Hidden'))
-    .catch((error) => console.error('[viewer] hide patch failed:', error))
+  }
+  const gen = worldGen
+  void editSaves.save(`hide:${obj.uuid}`, () => postEditPatch(body)).then((saved) => {
+    if (saved && gen === worldGen) flashButton('edit-hide-object', 'Hidden')
+  })
   clearSelection()
 })
 
 function setTransformMode(mode: 'translate' | 'rotate' | 'scale'): void {
+  // A scan's size is locked: its gizmo has no Scale. "Fix size" in the Edit panel is the one way to change it.
+  if (mode === 'scale' && stitch?.blocksScale()) return
   transformControls?.setMode(mode)
   const ids: Record<'translate' | 'rotate' | 'scale', string> = {
     translate: 'transform-translate',
@@ -4729,19 +5348,29 @@ function scheduleWorldRefresh(): void {
 /** Re-fetch the world and stream in any scans that appeared since page load. */
 async function refreshWorldScans(): Promise<void> {
   if (!world) return
+  const gen = worldGen
   try {
     const [updated, projects] = await Promise.all([
       fetchJson<WorldProject>(activeWorldUrl()),
       fetchJson<Project[]>('/projects').catch(() => []),
     ])
+    // A response for a Place that was switched away from must not replace this Place's world.
+    if (gen !== worldGen) return
     world = scopeWorldToActiveProject(updated)
     knownProjects = projects
     currentProject = projects.find(project => project.projectId === activeProjectId) ?? currentProject
+    // The stored frame is part of the Place that was just re-read, and the white pins are drawn from it, so they are
+    // redrawn from it here. A phone that calibrates this Place while the editor is open stores the frame on the
+    // server with no event of its own, so an open editor learns of it only when it next refreshes. This comes
+    // before the early return below so that a refresh that brings no new scan redraws them too.
+    refreshExpectedAnchorPins()
+    refreshScanMeta()
     buildTimeline(world.scans)
     renderWorldPanel()
     if (PLACE_COMPOSER_ENABLED) renderPlacesPanel()
     renderProjectHierarchyEditor()
     renderThingsPanel()
+    stitch?.refresh()
     const fresh = world.scans.filter((scan) => !scanItems.has(scan.scanId))
     if (fresh.length === 0) return
 
@@ -4752,8 +5381,9 @@ async function refreshWorldScans(): Promise<void> {
       const item = buildScanItem(scan)
       scanItems.set(scan.scanId, item)
       listEl.prepend(item)
-      void enqueueScanLoad(scan).catch(() => { /* status chip shows the error */ })
+      void enqueueScanLoad(scan, scene!).catch(() => { /* status chip shows the error */ })
     }
+    frameReference.sync()
     updateHudInfo()
   } catch (error) {
     console.warn('[viewer] world refresh failed:', error)
@@ -4772,14 +5402,48 @@ function handleJobUpdate(job: LegacyJobUpdateJob): void {
     setScanStatus(scan.scanId, `Optimized - ${job.note ?? 'artifacts ready'}`)
     // Re-load to swap in the optimized artifact (preview → quantized/draco)
     if (loadedScans.get(scan.scanId)?.loaded) {
-      void enqueueScanLoad(scan).catch(() => { /* status chip shows the error */ })
+      void enqueueScanLoad(scan, scene!).catch(() => { /* status chip shows the error */ })
     }
   }
+}
+
+// ─── Stitching tools ─────────────────────────────────────────────────────────
+
+/** Hand the stitching tools what this file owns. Read when used, so a Place switch needs no re-wiring. */
+function initStitchTools(): void {
+  const controls = transformControls
+  if (!controls) return
+  stitch = createStitchTools({
+    gizmo: {
+      get object() { return controls.object },
+      get mode() { return controls.mode },
+      attach: (object) => controls.attach(object),
+      detach: () => controls.detach(),
+      setRotationSnap: (radians) => controls.setRotationSnap(radians),
+      addEventListener: (type, listener) => controls.addEventListener(type, (event) => listener(event as unknown as { value?: boolean })),
+    },
+    scene: () => scene,
+    world: () => world,
+    loadedScan: (scanId) => loadedScans.get(scanId),
+    loadedScanIds: () => [...loadedScans.keys()],
+    scanIdOf: (object) => scanForObject(object)?.manifest.scanId ?? null,
+    applyMatrix,
+    save: (key, edit) => editSaves.save(key, edit),
+    postPlacement: postEditPatch,
+    revert: postPatchRevert,
+    changed: () => {
+      updateTransformReadout()
+      updateWorldHud()
+    },
+    styled: () => frameReference.apply(),
+    setTransformMode,
+  })
 }
 
 // ─── Boot ────────────────────────────────────────────────────────────────────
 
 initRenderer()
+initStitchTools()
 startRenderLoop()
 void loadWorldProject()
 connectServerEvents()

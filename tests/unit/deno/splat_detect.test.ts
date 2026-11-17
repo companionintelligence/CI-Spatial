@@ -280,3 +280,81 @@ Deno.test('runSplatDetect errors when the analyzer produced no interactions.json
   assertStringIncludes(result.manifest.error ?? '', 'no interactions.json')
   await Deno.remove(tmp, { recursive: true })
 })
+
+/** A session with a LingBot cloud and a manifest carrying the given quality verdict. */
+async function lingBotSession(tmp: string, quality: Record<string, unknown> | null): Promise<string> {
+  const sessionDir = `${tmp}/sess-detect-verdict`
+  await Deno.mkdir(sessionDir, { recursive: true })
+  await Deno.writeTextFile(
+    `${sessionDir}/lingbot-map.point-cloud.ply`,
+    'ply\nformat binary_little_endian 1.0\nelement vertex 0\nend_header\n',
+  )
+  await Deno.writeTextFile(
+    `${sessionDir}/lingbot-map.manifest.json`,
+    JSON.stringify({ schemaVersion: 1, tool: 'lingbot-map', status: quality?.degenerate ? 'error' : 'ok', quality }),
+  )
+  return sessionDir
+}
+
+Deno.test('runSplatDetect skips, and does not convert, a LingBot cloud judged degenerate', async () => {
+  // Without the verdict check this run would convert the cloud and detect on it.
+  const tmp = await Deno.makeTempDir({ prefix: 'splat-detect-test-' })
+  const detectDir = `${tmp}/analyzer`
+  await Deno.mkdir(detectDir, { recursive: true })
+  await Deno.writeTextFile(`${detectDir}/run_local.py`, '# stub')
+  const sessionDir = await lingBotSession(tmp, { degenerate: true, status: 'needs-rescan', reasons: ['collapsed-extent'] })
+
+  let spawns = 0
+  const result = await runSplatDetect({
+    sessionDir,
+    outputInteractionsPath: `${tmp}/scan.interactions.json`,
+    python: Deno.execPath(),
+    detectDir,
+    _spawn: async () => {
+      spawns++
+      return { code: 0, stderr: '' }
+    },
+  })
+
+  assertEquals(spawns, 0, 'no converter or analyzer run for a degenerate cloud')
+  assertEquals(result.status, 'skipped')
+  assertEquals(result.exitCode, 0)
+  assertStringIncludes(result.manifest.skippedReason ?? '', 'lingbot-map verdict')
+  assertStringIncludes(result.manifest.skippedReason ?? '', 'degenerate')
+  assert(typeof result.manifest.remediation === 'string' && result.manifest.remediation.length > 0)
+  assertEquals(result.interactionsPath, undefined)
+  const written = JSON.parse(await Deno.readTextFile(`${tmp}/scan.splat-detect.manifest.json`))
+  assertEquals(written.status, 'skipped')
+  await Deno.remove(tmp, { recursive: true })
+})
+
+Deno.test('runSplatDetect still converts a LingBot cloud whose verdict is not degenerate', async () => {
+  const tmp = await Deno.makeTempDir({ prefix: 'splat-detect-test-' })
+  const detectDir = `${tmp}/analyzer`
+  await Deno.mkdir(detectDir, { recursive: true })
+  await Deno.writeTextFile(`${detectDir}/run_local.py`, '# stub')
+  const sessionDir = await lingBotSession(tmp, { degenerate: false, status: 'ready', reasons: [] })
+
+  let sawConvert = false
+  const result = await runSplatDetect({
+    sessionDir,
+    outputInteractionsPath: `${tmp}/scan.interactions.json`,
+    python: Deno.execPath(),
+    detectDir,
+    _spawn: async (_bin, args) => {
+      if (args[0].endsWith('pointcloud_to_gs.py')) {
+        sawConvert = true
+        await Deno.writeTextFile(args[2], 'ply\nformat binary_little_endian 1.0\nelement vertex 0\nend_header\n')
+        return { code: 0, stderr: '' }
+      }
+      const jobDir = args[args.indexOf('--job_dir') + 1]
+      await Deno.writeTextFile(`${jobDir}/interactions.json`, JSON.stringify([{ label: 'table' }]))
+      return { code: 0, stderr: '' }
+    },
+  })
+
+  assert(sawConvert, 'a healthy LingBot cloud is still converted')
+  assertEquals(result.status, 'ok')
+  assertEquals(result.objectCount, 1)
+  await Deno.remove(tmp, { recursive: true })
+})

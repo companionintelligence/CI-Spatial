@@ -22,6 +22,10 @@ const config: CapacitorConfig = {
   },
   // Scan night-space background (--background in index.html, the theme colour).
   backgroundColor: '#041620',
+  // Added to the WebView's own User-Agent, on iOS and Android. A tile host that wants to know
+  // which app it is serving (OpenStreetMap's tile policy asks apps for a distinct, stable
+  // User-Agent) reads this. No version, which changes with releases and would make it unstable.
+  appendUserAgent: 'CompanionScan',
   ios: {
     // Pinch-zoom stays on (WCAG 1.4.4). Capacitor defaults this to false.
     zoomEnabled: true,

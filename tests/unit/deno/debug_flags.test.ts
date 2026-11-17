@@ -54,3 +54,17 @@ Deno.test('parseDebugFlags: normalises to lower-case non-empty tokens', () => {
 Deno.test('parseDebugFlags: preserves other params without confusing them for flags', () => {
   assertEquals(parseDebugFlags('?world=default&debug=pose&ar=webxr'), ['pose'])
 })
+
+Deno.test('hasDebugFlag: probe arms alone and beside remote, and arms nothing else', () => {
+  // `?debug=remote,probe` is how a device run sends the [probe] lines off the phone (src/capture/probe-log.ts):
+  // probe is the flag that makes the lines, remote is the relay that carries them, and neither implies the other.
+  assertEquals(hasDebugFlag('probe', '?debug=probe'), true)
+  for (const search of ['?debug=remote,probe', '?debug=probe,remote', '?debug=pose,remote,probe']) {
+    assertEquals(hasDebugFlag('probe', search), true, search)
+    assertEquals(hasDebugFlag('remote', search), true, search)
+  }
+  assertEquals(hasDebugFlag('remote', '?debug=probe'), false, 'probe alone does not send anything off the phone')
+  assertEquals(hasDebugFlag('probe', '?debug=remote'), false)
+  assertEquals(hasDebugFlag('probe', '?debug=pose'), false)
+  assertEquals(hasDebugFlag('probe', '?debug=probing'), false, 'a prefix is not the flag')
+})

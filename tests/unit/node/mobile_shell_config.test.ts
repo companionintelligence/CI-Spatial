@@ -28,6 +28,17 @@ test('pinch-zoom stays on in both shells (WCAG 1.4.4)', () => {
   assert.equal(config.android?.zoomEnabled, true)
 })
 
+test('both shells name the app to a tile host: one distinct, stable token in the User-Agent, with no version', () => {
+  // OpenStreetMap's tile policy asks apps for a distinct, stable User-Agent that names the app. The top-level
+  // option reaches iOS and Android, and a platform's own option would override it, so neither sets one.
+  assert.equal(config.appendUserAgent, 'CompanionScan')
+  assert.doesNotMatch(config.appendUserAgent ?? '', /\d|Mozilla|Safari|Chrome|AppleWebKit/, 'no version that changes with releases, and no browser it could be mistaken for')
+  assert.equal(config.ios?.appendUserAgent, undefined)
+  assert.equal(config.android?.appendUserAgent, undefined)
+  assert.equal(config.ios?.overrideUserAgent, undefined, 'an override would make appendUserAgent disregarded')
+  assert.equal(config.android?.overrideUserAgent, undefined)
+})
+
 test('the bundle is the one scripts build into mobile/www', () => {
   assert.equal(config.webDir, 'www')
 })

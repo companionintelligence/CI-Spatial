@@ -33,6 +33,7 @@
  * See docs/factory/10-4d-person-capture/0005-frame-set-contract-and-job.md.
  */
 import type { Person4DManifest } from '../../src/world/manifests.ts'
+import { budgetFromEnv, describeBudget } from '../run_with_deadline.ts'
 
 export interface Person4DClip {
   clientId: string | null
@@ -52,6 +53,8 @@ export interface Person4DParams {
   pollIntervalMs: number
   /** Hard stop on polling, so a wedged subsystem cannot hold the pump forever. */
   maxWaitMs: number
+  /** Per-request budget for every call to the subsystem, so one hung request ends. */
+  requestTimeoutMs: number
 }
 
 export interface Person4DOptions {
@@ -66,6 +69,7 @@ export interface Person4DOptions {
   timestepFps?: number
   pollIntervalMs?: number
   maxWaitMs?: number
+  requestTimeoutMs?: number
   syncResidualMs?: number
   provenance?: { sessionId?: string; scanId?: string }
   /** Progress callback. Throttled by the caller, not here. */
@@ -88,6 +92,11 @@ const DEFAULT_TIMESTEP_FPS = 5
 const DEFAULT_POLL_MS = 15_000
 /** 45 min: comfortably past the slowest documented single-clip run. */
 const DEFAULT_MAX_WAIT_MS = 45 * 60 * 1000
+/**
+ * 2 min per request. Covers one frame download on a tailnet, and a hung call
+ * still ends well inside the 45-minute wait above. Untuned.
+ */
+const DEFAULT_REQUEST_TIMEOUT_MS = 2 * 60 * 1000
 
 /** Resolve every knob in one place, `opts ?? env ?? default`. */
 export function resolveParams(opts: Person4DOptions): Person4DParams {
@@ -96,16 +105,23 @@ export function resolveParams(opts: Person4DOptions): Person4DParams {
     token: opts.token ?? Deno.env.get('FDANYONE_TOKEN') ?? null,
     viewsPerLayer: opts.viewsPerLayer ?? intFromEnv('FDANYONE_VIEWS_PER_LAYER', DEFAULT_VIEWS_PER_LAYER),
     timestepFps: opts.timestepFps ?? intFromEnv('FDANYONE_TIMESTEP_FPS', DEFAULT_TIMESTEP_FPS),
-    pollIntervalMs: opts.pollIntervalMs ?? intFromEnv('FDANYONE_POLL_MS', DEFAULT_POLL_MS),
+    // The poll sleep is a setTimeout, so it takes the same budget rule as the request
+    // timeout below: capped at the longest timer, and never zero.
+    pollIntervalMs: opts.pollIntervalMs ?? budgetFromEnv('FDANYONE_POLL_MS', DEFAULT_POLL_MS),
     maxWaitMs: opts.maxWaitMs ?? intFromEnv('FDANYONE_MAX_WAIT_MS', DEFAULT_MAX_WAIT_MS),
+    // budgetFromEnv caps the value at the longest timer. AbortSignal.timeout is
+    // a timer, and an oversized one fires at once, which would abort every request.
+    requestTimeoutMs: opts.requestTimeoutMs ?? budgetFromEnv('FDANYONE_REQUEST_TIMEOUT_MS', DEFAULT_REQUEST_TIMEOUT_MS),
   }
 }
 
 function intFromEnv(name: string, fallback: number): number {
   const raw = Deno.env.get(name)
   if (!raw) return fallback
-  const n = Number(raw)
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback
+  // Floor first, then accept only a whole number of at least 1. Testing before
+  // flooring let 0.5 through, and flooring that gave 0.
+  const whole = Math.floor(Number(raw))
+  return Number.isFinite(whole) && whole >= 1 ? whole : fallback
 }
 
 /**
@@ -210,6 +226,7 @@ export async function runPerson4D(opts: Person4DOptions): Promise<Person4DResult
       method: 'POST',
       headers,
       body: JSON.stringify(buildSubmitRequest(opts, params)),
+      signal: AbortSignal.timeout(params.requestTimeoutMs),
     })
     if (!res.ok) {
       manifest.status = 'error'
@@ -237,7 +254,10 @@ export async function runPerson4D(opts: Person4DOptions): Promise<Person4DResult
     await sleep(params.pollIntervalMs)
     let status: Record<string, unknown>
     try {
-      const res = await doFetch(`${params.host}/takes/${encodeURIComponent(opts.takeId)}`, { headers })
+      const res = await doFetch(`${params.host}/takes/${encodeURIComponent(opts.takeId)}`, {
+        headers,
+        signal: AbortSignal.timeout(params.requestTimeoutMs),
+      })
       if (!res.ok) {
         manifest.status = 'error'
         manifest.error = `subsystem status check failed (HTTP ${res.status})`
@@ -325,7 +345,10 @@ async function fetchSequence(
   doFetch: typeof fetch,
   headers: Record<string, string>,
 ): Promise<number> {
-  const res = await doFetch(`${params.host}/takes/${encodeURIComponent(opts.takeId)}/sequence`, { headers })
+  const res = await doFetch(`${params.host}/takes/${encodeURIComponent(opts.takeId)}/sequence`, {
+    headers,
+    signal: AbortSignal.timeout(params.requestTimeoutMs),
+  })
   if (!res.ok) throw new Error(`sequence listing failed (HTTP ${res.status})`)
   const body = await res.json() as { frames?: unknown }
   const frames = Array.isArray(body.frames) ? body.frames.filter((f): f is string => typeof f === 'string') : []
@@ -336,16 +359,39 @@ async function fetchSequence(
   for (const frame of frames) {
     // The names come from another machine, so they are validated rather than
     // trusted — this path is written to disk.
-    if (!/^frame-\d{5}\.(sog|ply)$/.test(frame)) continue
+    if (!/^frame-\d{5}\.(sog|ply)$/.test(frame)) {
+      console.warn(`[person-4d] skipped frame ${JSON.stringify(frame)}: not a frame name`)
+      continue
+    }
     try {
-      const fr = await doFetch(`${params.host}/takes/${encodeURIComponent(opts.takeId)}/frames/${frame}`, { headers })
-      if (!fr.ok) continue
+      const fr = await doFetch(`${params.host}/takes/${encodeURIComponent(opts.takeId)}/frames/${frame}`, {
+        headers,
+        signal: AbortSignal.timeout(params.requestTimeoutMs),
+      })
+      if (!fr.ok) {
+        console.warn(`[person-4d] skipped ${frame}: subsystem returned HTTP ${fr.status}`)
+        continue
+      }
       await Deno.writeFile(`${opts.sequenceDir}/${frame}`, new Uint8Array(await fr.arrayBuffer()))
       landed++
-    } catch { /* skip this frame; the shortfall is reported */ }
+    } catch (err) {
+      // Skipped, not fatal: the shortfall is counted in the manifest and the result log.
+      console.warn(`[person-4d] skipped ${frame}: ${frameFailureReason(err, params.requestTimeoutMs)}`)
+    }
   }
   if (landed === 0) throw new Error('no frames could be transferred')
   return landed
+}
+
+/**
+ * Why one frame transfer failed, in words. The request timeout covers the body
+ * read too, so a frame that stalls mid-download is named as a timeout here.
+ */
+function frameFailureReason(err: unknown, requestTimeoutMs: number): string {
+  if (err instanceof DOMException && err.name === 'TimeoutError') {
+    return `timed out after ${describeBudget(requestTimeoutMs)}`
+  }
+  return err instanceof Error ? err.message : String(err)
 }
 
 function numberOr(v: unknown): number | undefined {

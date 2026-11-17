@@ -105,6 +105,10 @@
           xrScript.async = true
           xrScript.src = '/xr.js'
           xrScript.dataset.preloadChunks = 'slam'
+          // main.ts reads this to tell a download still in flight from one that failed.
+          xrScript.dataset.state = 'loading'
+          xrScript.addEventListener('load', () => { xrScript.dataset.state = 'loaded' })
+          xrScript.addEventListener('error', () => { xrScript.dataset.state = 'error' })
           document.head.appendChild(xrScript)
         }
 
@@ -409,6 +413,51 @@
         display: none;
       }
       #auto-capture-btn.active #auto-capture-count { display: flex; }
+
+      /* ── Person capture button (4D clip) ── Placed by #scanner-action-rail, so only
+         its look is set here. It matches the Stream and Auto circles beside it. */
+      #person-capture-btn {
+        pointer-events: all;
+        width: 48px;
+        height: 48px;
+        border-radius: 50%;
+        border: 1px solid var(--ci-line);
+        background: linear-gradient(180deg, rgba(16, 44, 57, 0.9), rgba(5, 22, 31, 0.94));
+        color: var(--ci-text);
+        font-size: 16px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        backdrop-filter: blur(12px);
+        box-shadow: var(--ci-shadow);
+        transition: border-color 0.2s ease-out, background 0.2s ease-out, transform 0.15s ease-out, box-shadow 0.2s ease-out;
+      }
+      #person-capture-btn:hover { border-color: rgba(114, 221, 212, 0.38); box-shadow: var(--ci-shadow), 0 0 0 5px rgba(114, 221, 212, 0.06); }
+      #person-capture-btn:active { background: rgba(255, 255, 255, 0.12); transform: scale(0.94); }
+      /* While recording: the same red as the capture button's record ring */
+      #person-capture-btn.active {
+        background: rgba(239, 112, 112, 0.25);
+        border-color: #ef7070;
+        color: #ef7070;
+      }
+      #person-capture-count {
+        position: absolute;
+        top: -4px;
+        right: -4px;
+        min-width: 17px;
+        height: 17px;
+        border-radius: 9px;
+        background: #ef7070;
+        color: #000;
+        font-size: 10px;
+        font-weight: 800;
+        align-items: center;
+        justify-content: center;
+        padding: 0 3px;
+        display: none;
+      }
+      #person-capture-btn.active #person-capture-count { display: flex; }
 
       /* ── Desktop viewer link ── */
       #viewer-link {
@@ -734,6 +783,8 @@
         z-index: 12;
         box-shadow: 0 12px 42px rgba(0,0,0,0.38);
       }
+      /* The HUD passes taps through to the scanner; its two links opt back in. */
+      #export-view-link, #export-download-link { pointer-events: auto; }
 
       /* 1 — Status row */
       #status-bar {
@@ -972,7 +1023,7 @@
         display: flex;
         flex-direction: column;
         align-items: flex-end;
-        gap: 10px;
+        gap: 14px;
         z-index: 16;
       }
 
@@ -996,7 +1047,26 @@
         gap: 0;
       }
 
-      /* ── Menu Button style ── */
+      /* One visible word under each rail control, so usage does not depend on a
+         tooltip. It is placed absolutely inside its 48px control: the rail's width
+         does not change, and the control keeps its own hit area. The rail gap
+         above leaves room for it. */
+      #scanner-action-rail .rail-caption {
+        position: absolute;
+        top: calc(100% + 1px);
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 0 4px;
+        border-radius: 4px;
+        background: rgba(5, 22, 31, 0.72);
+        color: var(--ci-text);
+        font-size: 10px;
+        font-weight: 700;
+        line-height: 11px;
+        white-space: nowrap;
+      }
+
+      /* ── Details button style (the bottom button, formerly Menu) ── */
       .finish-btn {
         pointer-events: all;
         position: absolute;
@@ -1008,7 +1078,7 @@
         bottom: calc(38px + 39px + env(safe-area-inset-bottom));
         right: calc(max(14px, env(safe-area-inset-right)) + 60px);
         transform: translateY(50%);
-        padding: 8px 16px;
+        padding: 8px 12px;
         min-height: 44px;
         font-size: 13px;
         font-weight: 700;
@@ -1022,6 +1092,8 @@
         transition: transform 0.15s, opacity 0.15s;
         z-index: 15;
         display: flex;
+        flex-direction: column;
+        gap: 2px;
         align-items: center;
         justify-content: center;
       }
@@ -1033,10 +1105,14 @@
       /* Narrow phones: the 78px capture button and the 48px action rail leave
          only ~80px of clear width between them at 360px, which a 16px-padded
          pill overruns. Tighten the padding rather than lift the button off the
-         capture button's centre line. */
+         capture button's centre line. Below 380px the word goes too: the layers
+         icon stays, and its aria-label keeps the button's name. */
       @media (max-width: 380px) {
         .finish-btn {
-          padding: 8px 10px;
+          padding: 8px 8px;
+        }
+        .finish-btn > span {
+          display: none;
         }
       }
 
@@ -1068,19 +1144,20 @@
       }
 
       /* ── Short viewports: the footer yields, it does not eat the panel ──────
-         #panel-footer carries ten controls and stands ~490 px tall. #panel-content
+         #panel-footer carries ten controls and stands ~590 px tall (~490 px before
+         the Camera frames row src/ui/keyframe-consent-ui.ts adds, ~100 px). #panel-content
          is `flex: 1`, i.e. a zero basis that only claims what is left over, so on
          a 640 px phone it was handed 84 px — a scroll box short enough to slice
          its own empty state through the middle of "No objects yet." and a
          detection card through its description row.
 
-         Below roughly 700 px there is no arrangement in which the 63 px header,
-         a fixed 490 px footer and one 120 px detection card all fit, so the
+         Below roughly 780 px there is no arrangement in which the 63 px header,
+         a fixed 590 px footer and one 120 px detection card all fit, so the
          footer becomes the thing that scrolls and the object list keeps a floor.
          `min-height: 0` is load-bearing rather than tidy: a flex item defaults to
          `min-height: auto`, which refuses to shrink below its content height, and
-         that default is exactly what pinned the footer at its full 490 px. */
-      @media (max-height: 700px) {
+         that default is exactly what pinned the footer at its full height. */
+      @media (max-height: 780px) {
         #panel-content {
           min-height: 40vh;
         }
@@ -1362,6 +1439,13 @@
         background: rgba(5,22,31,0.92);
         backdrop-filter: blur(16px);
         box-shadow: 0 16px 45px rgba(0,0,0,0.42);
+        /* The most it may cover, so that its title is never cut off by the top of the screen: a card with the check point's
+           readout in it can be taller than a small phone. What does not fit scrolls inside it. The fallback line is for a
+           browser without dynamic viewport units, which sizes it to the large viewport. */
+        max-height: calc(100vh - 36px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+        max-height: calc(100dvh - 36px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+        overflow-y: auto;
+        overscroll-behavior: contain;
       }
       .project-calibration-eyebrow {
         color: #72ddd4;
@@ -1407,6 +1491,9 @@
       }
       .project-calibration-steps li[data-state='active'] { border-top-color: #72ddd4; color: #72ddd4; }
       .project-calibration-steps li[data-state='done'] { border-top-color: rgba(114,221,212,0.7); color: #eff0f0; }
+      /* The check point's step, once the placing is over without one: not "to do", which would promise a step that is not
+         coming, and not "done", which it is not. */
+      .project-calibration-steps li[data-state='skipped'] { border-top-style: dashed; opacity: 0.6; text-decoration: line-through; }
       /* Live landmark→marker distance. Colour carries the MIN_POINT_SEPARATION_M
          verdict so the accuracy tradeoff is visible while walking, not at commit. */
       .project-calibration-separation {
@@ -1422,6 +1509,57 @@
         background: rgba(255,107,107,0.12);
         color: #ff9b9b;
       }
+      /* The hold-still ring (src/ar/calibration-taps.ts): fills while a tap is read from a burst of hits, and
+         takes the warning colour when the hits so far scatter more than the limit. The fill is the gradient the
+         script sets; this only cuts the middle out of it and says which colour. */
+      .project-calibration-hold {
+        width: 30px;
+        height: 30px;
+        margin-top: 8px;
+        border-radius: 50%;
+        --hold-ring: #72ddd4;
+        -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3px));
+        mask: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3px));
+      }
+      .project-calibration-hold[hidden] { display: none; }
+      .project-calibration-hold[data-state='unsteady'] { --hold-ring: #ff9b9b; }
+      /* How this visit's points sit against the stored ones (src/ar/constellation-copy.ts). The copy puts each sentence on a
+         line of its own, and the line that names what a comparison of taps cannot see (the same physical spots) must stay a
+         line of its own: pre-line keeps those breaks, which a plain block runs into one paragraph. The colour is the verdict's
+         state, as the separation line's is its own: teal inside the limits and verifiable, amber inside them but not
+         verifiable, red outside them. The most it may grow to is a safety for a verdict with a long list of reasons. */
+      .project-calibration-fit {
+        margin-top: 8px;
+        padding: 7px 10px;
+        border-radius: 9px;
+        background: rgba(114,221,212,0.10);
+        color: #72ddd4;
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 1.4;
+        white-space: pre-line;
+        overflow-wrap: anywhere;
+        max-height: 15em;
+        overflow-y: auto;
+      }
+      .project-calibration-fit[data-state='warn'] {
+        background: rgba(255,200,87,0.12);
+        color: #ffc857;
+      }
+      .project-calibration-fit[data-state='mismatch'] {
+        background: rgba(255,107,107,0.12);
+        color: #ff9b9b;
+      }
+      /* The distance chip of a return visit (WP-07) is the same pill as the line above it. A pass is the base teal, and a
+         fail is the red of a pair that is too short: the stored distance was missed, which is what the mismatch screen
+         says if the person commits now. */
+      .project-calibration-separation[data-state='fail'] {
+        background: rgba(255,107,107,0.12);
+        color: #ff9b9b;
+      }
+      /* Two lines of about the same length, where the browser can: "Allowed: ±15" and a lone "cm." on a second line read as two
+         different figures. */
+      #project-calibration-chip { text-wrap: balance; }
       /* Reference photo of the marker being placed, from the last calibration
          (ticket 0007). Shown *before* the tap, because a photo needs no
          transform to be recognisable — the stored points themselves cannot be
@@ -1516,6 +1654,31 @@
         font-size: 9px;
         line-height: 1.4;
       }
+      /* Both stored photos side by side while a return visit's pair is checked (WP-07): the reference panel's box, picture
+         and crosshair, in two slots. Same corner, and never on screen with the single-photo panel above. */
+      .project-calibration-compare-row { display: flex; gap: 6px; margin-top: 5px; }
+      .project-calibration-compare-slot { flex: 1 1 0; min-width: 0; }
+      .project-calibration-compare-slot .project-calibration-reference-figure { margin: 0; }
+      /* On a short screen the calibration card, which is anchored to the bottom, reaches up to this panel, so the script
+         measures the room above the card and holds each picture to it with a max-height (return-visit-aids.ts). A picture
+         held to less than the slot's width keeps its proportions and sits in the middle of the slot, and the crosshair is
+         placed from where the picture is. Where there is room it fills the slot, as the single-photo panel's does. */
+      .project-calibration-compare-slot .project-calibration-reference-figure img { width: auto; max-width: 100%; margin: 0 auto; }
+      /* The caption is the point's name and the person's own label for it: up to three lines, because a label cut to a
+         few letters ("north door f...") is no help in telling two stretches of floor apart. */
+      .project-calibration-compare-caption {
+        display: -webkit-box;
+        margin: 3px 0 0;
+        overflow: hidden;
+        color: #72ddd4;
+        font-size: 9px;
+        font-weight: 700;
+        line-height: 1.3;
+        overflow-wrap: anywhere;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 3;
+      }
+      .project-calibration-compare-label { color: var(--ci-muted); font-weight: 600; }
       /* pointLabels capture. Optional by design — a label must never be a gate
          on finishing an alignment. */
       .project-calibration-label-field { display: block; margin-top: 10px; }
@@ -1549,6 +1712,21 @@
         color: #72ddd4;
         text-decoration: none;
         padding: 10px 14px;
+      }
+      /* A short phone. The card is what stands between a thumb and the floor it is tapping, and the check point's step and the
+         readout made it taller: it gives up its air before it gives up the camera view. 700px is the height the page already
+         calls short for its panel, adopted and not measured (ADR 0005 rule 5); the phones the strip of camera view above the
+         card is held to are in tests/mock-two-point-calibration.spec.ts. */
+      @media (max-height: 700px) {
+        .project-calibration-card { bottom: max(10px, env(safe-area-inset-bottom)); padding: 12px 14px; }
+        .project-calibration-eyebrow { display: none; }
+        .project-calibration-card h2 { margin: 2px 0 5px; font-size: 20px; }
+        .project-calibration-card p { margin: 0 0 8px; font-size: 12px; line-height: 1.35; }
+        .project-calibration-steps { margin-top: 0; }
+        .project-calibration-separation,
+        .project-calibration-fit { margin-top: 6px; padding: 5px 8px; }
+        .project-calibration-label-field { margin-top: 6px; }
+        .project-calibration-actions { gap: 6px 10px; margin-top: 10px; }
       }
 
       #start-brand {
@@ -2007,7 +2185,7 @@
       .tripod-wide-btn {
         display: block;
         width: 100%;
-        min-height: 40px;
+        min-height: 44px;
         margin: 0 0 10px;
         border: 1px solid rgba(114, 221, 212, 0.55);
         border-radius: 7px;
@@ -2029,7 +2207,7 @@
       .tripod-plain-btn {
         display: block;
         width: 100%;
-        min-height: 36px;
+        min-height: 44px;
         margin: 0 0 10px;
         border: 1px solid rgba(255, 255, 255, 0.14);
         border-radius: 7px;
@@ -2616,8 +2794,9 @@
       /* Leaflet dark-mode overrides */
       .leaflet-container { background: #0a222e !important; font-family: inherit; }
       .leaflet-control-zoom a { background: rgba(20,22,32,0.9) !important; color: #fff !important; border-color: rgba(255,255,255,0.1) !important; }
-      .leaflet-control-attribution { background: rgba(0,0,0,0.5) !important; color: rgba(255,255,255,0.6) !important; font-size: 9px !important; }
-      .leaflet-control-attribution a { color: rgba(255,255,255,0.6) !important; }
+      /* The tile credit must read over any basemap the Scan server names, a pale one included. */
+      .leaflet-control-attribution { background: rgba(0,0,0,0.72) !important; color: rgba(255,255,255,0.92) !important; font-size: 11px !important; }
+      .leaflet-control-attribution a { color: #fff !important; text-decoration: underline !important; }
       .leaflet-control-zoom { display: none; } /* hide zoom in small map */
 
       @keyframes rtc-live-pulse {
@@ -2647,7 +2826,7 @@
         font-size: 20px; font-weight: 700; color: var(--ci-text);
         font-family: var(--ci-font-display);
       }
-      .onboard-desc { font-size: 14px; line-height: 1.6; color: var(--ci-muted); }
+      .onboard-desc { font-size: 14px; line-height: 1.6; color: var(--ci-muted); white-space: pre-line; }
       /* First-run status rows (src/ui/ftue-status.ts). Label and text are block-level,
          so innerText breaks a line between them and the word count matches the screen. */
       .ftue-status {
@@ -2743,12 +2922,16 @@
       <div class="onboard-step active" data-step="0">
         <div class="onboard-icon"><svg width="44px" height="44px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 8.5A1.5 1.5 0 0 1 4.5 7h2.7l1.2-2h6.2l1.2 2h2.7A1.5 1.5 0 0 1 20 8.5v9A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5z"/><circle cx="11.75" cy="13" r="3.4"/></svg></div>
         <div class="onboard-title">Allow camera &amp; motion</div>
-        <div class="onboard-desc">We use the camera to see the room, and motion sensors to know where you are standing. Your phone asks when you start.</div>
+        <div class="onboard-desc">• Camera sees the room
+• Motion tracks where you stand
+• Your phone asks when you start</div>
       </div>
       <div class="onboard-step" data-step="1">
         <div class="onboard-icon"><svg width="44px" height="44px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20.4 4.2v4.2h-4.2"/><circle cx="12" cy="12" r="1.6"/></svg></div>
         <div class="onboard-title">Walk slowly</div>
-        <div class="onboard-desc">Move steadily and keep the camera up. Moving fast loses tracking. Coverage fills in as you go.</div>
+        <div class="onboard-desc">• Move steadily, camera up
+• Moving fast loses tracking
+• Coverage fills in as you go</div>
         <!-- Filled by renderFtueStatus() (src/ui/ftue-status.ts) from three read-only
              endpoints. Its words are not in this markup, so the startup word budget
              counts them from that module instead. -->
@@ -2807,7 +2990,7 @@
           <span class="start-path-icon" aria-hidden="true"><svg width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="2.2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 16.2a6 6 0 0 0 0-8.4"/><path d="M4.8 4.8a10.2 10.2 0 0 0 0 14.4M19.2 19.2a10.2 10.2 0 0 0 0-14.4"/></svg></span>
           <span class="start-path-copy">
             <span class="start-path-title">Walk the room</span>
-            <span class="start-path-sub">Hold your phone up and walk slowly round the room. A 3D map at true size, with things placed as you go.</span>
+            <span class="start-path-sub">Walk slowly with the phone up · 3D map at true size</span>
             <span class="start-path-status" aria-live="polite">Preparing…</span>
           </span>
         </button>
@@ -2836,7 +3019,7 @@
           <span class="start-path-icon" aria-hidden="true"><svg width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="5" width="18" height="14" rx="1.8"/><path d="M8 5v14M16 5v14M3 9.7h5M3 14.3h5M16 9.7h5M16 14.3h5"/></svg></span>
           <span class="start-path-copy">
             <span id="upload-video-btn" class="start-path-title">Film a walkthrough</span>
-            <span class="start-path-sub">Film as you walk round the room, then hand it over. The room in 3D — nothing catalogued, size is not measured.</span>
+            <span class="start-path-sub">Film as you walk · 3D room, size not measured</span>
           </span>
         </button>
         <input id="upload-video-input" type="file" accept="video/*,image/jpeg,image/png,image/webp" multiple style="display:none;" />
@@ -2861,7 +3044,7 @@
           <span class="start-path-icon" aria-hidden="true"><svg width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="7.6" y="3.4" width="8.8" height="5" rx="1.3"/><path d="M12 8.4v2.9M12 11.3 6.6 20.6M12 11.3l5.4 9.3M12 11.3v9.3M8.9 17.4h6.2"/></svg></span>
           <span class="start-path-copy">
             <span class="start-path-title">Sweep from a tripod</span>
-            <span class="start-path-sub">Sweep, move the tripod, sweep again — 3 to 5 spots. The room rebuilt from every side. Size is not measured.</span>
+            <span class="start-path-sub">Sweep 3 to 5 spots · room rebuilt from every side</span>
           </span>
         </button>
 
@@ -2889,7 +3072,7 @@
           <svg class="start-alt-caret" width="14px" height="14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m5 9 7 7 7-7"/></svg>
         </button>
 
-        <a id="start-editor-card" class="start-path" href="/editor" aria-label="Place Scan Editor. Explore and edit existing places.">
+        <a id="start-editor-card" class="start-path" href="/viewer.html" aria-label="Place Scan Editor. Explore and edit existing places.">
           <span class="start-path-icon" aria-hidden="true"><svg width="24px" height="24px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 5.5h16v13H4z"/><path d="M8 3.5v4M16 3.5v4M8 16.5h8M8 12.5h5"/></svg></span>
           <span class="start-path-copy">
             <span class="start-path-title">Place Scan Editor</span>
@@ -2905,7 +3088,7 @@
       <!-- Upload progress / result line, driven by wireVideoUpload() -->
       <div id="upload-video-progress" aria-live="polite"
         style="max-width:380px;width:100%;text-align:center;font-size:12px;color:var(--ci-muted);line-height:1.55;"></div>
-      <a id="upload-video-open" href="/editor" hidden
+      <a id="upload-video-open" href="/viewer.html" hidden
         style="color:#72ddd4;font-size:12px;font-weight:700;text-decoration:none;">
         Processing started — open the 3D editor →
       </a>
@@ -2943,7 +3126,7 @@
             </div>
             <div id="status-copy">
               <div id="status-row">
-                <span id="status-text" aria-live="polite">Initialising…</span>
+                <span id="status-text" aria-live="polite" style="white-space: pre-line">Initialising…</span>
                 <span id="verdict-chip" class="verdict-scanning" style="display:inline-block; font-size:10px; font-weight:700; padding:1.5px 5px; border-radius:4px; margin-left:6px; background:rgba(255,255,255,0.08); color:rgba(255,255,255,0.6); text-transform:uppercase; letter-spacing:0.04em;">Scanning</span>
                 <a id="export-view-link" href="/viewer.html?world=default" style="display:none; color:#72ddd4; font-weight:700; text-decoration:none; margin-left:8px;">View in 3D →</a>
                 <!-- Download the server's copy, not a blob. `exportToGLB`'s
@@ -2960,7 +3143,7 @@
                    750ms scanner tick, and writing it into the status line
                    erased every transient message within one tick. -->
               <div id="verdict-hint" aria-live="polite"
-                style="display:none; font-size:11px; line-height:1.4; color:#ffb74d; margin-top:2px; max-width:34ch;"></div>
+                style="display:none; font-size:11px; line-height:1.4; color:#ffb74d; margin-top:2px; max-width:34ch; white-space:pre-line;"></div>
               <!-- Camera pose + drift-from-session-start. Diagnostic only:
                    stays display:none unless ?debug=pose is set. Not aria-live —
                    it changes every scanner tick and would flood a screen
@@ -3023,27 +3206,30 @@
 
       </div>
 
-      <button id="finish-scan-btn" class="finish-btn">Menu</button>
+      <button id="finish-scan-btn" class="finish-btn" aria-label="Scan details"><svg width="16px" height="16px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 3.4 8.4 4.3-8.4 4.3-8.4-4.3z"/><path d="m4.4 12 7.6 3.9 7.6-3.9"/><path d="m4.4 16.2 7.6 3.9 7.6-3.9"/></svg><span>Details</span></button>
       <button id="capture-btn" aria-label="Capture"></button>
       <div id="scanner-action-rail" role="group" aria-label="Scanner actions">
-        <a href="/webxr.html" id="xr-mode-link" aria-label="Switch AR runtime" title="Switch to WebXR scanner (HelloXR on iOS)"><svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3.4 9.6A1.7 1.7 0 0 1 5.1 8h13.8a1.7 1.7 0 0 1 1.7 1.6v4.3a1.7 1.7 0 0 1-1.7 1.7h-3.2l-1.9-2.2h-3.6l-1.9 2.2H5.1a1.7 1.7 0 0 1-1.7-1.7z"/></svg></a>
-        <a href="/viewer.html" id="viewer-link" aria-label="Open 3D Viewer" title="Desktop 3D Viewer"><svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="4.5" width="18" height="12" rx="1.6"/><path d="M9 20h6M12 16.5V20"/></svg></a>
-        <a href="http://localhost:8787/" id="gimbal-link" hidden target="_blank" rel="noopener noreferrer" aria-label="Open Gimbal Control" title="Gimbal Control (Osmo Mobile 6 — subsystems/osmo-ble)"><svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4.2"/><path d="M12 3.4v2.4M12 18.2v2.4M3.4 12h2.4M18.2 12h2.4M6.2 6.2l1.7 1.7M16.1 16.1l1.7 1.7M6.2 17.8l1.7-1.7M16.1 7.9l1.7-1.7"/></svg></a>
+        <a href="/webxr.html" id="xr-mode-link" aria-label="Switch AR runtime" title="Switch to WebXR scanner (HelloXR on iOS)"><svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3.4 9.6A1.7 1.7 0 0 1 5.1 8h13.8a1.7 1.7 0 0 1 1.7 1.6v4.3a1.7 1.7 0 0 1-1.7 1.7h-3.2l-1.9-2.2h-3.6l-1.9 2.2H5.1a1.7 1.7 0 0 1-1.7-1.7z"/></svg><span class="rail-caption" aria-hidden="true">Switch</span></a>
+        <a href="/viewer.html" id="viewer-link" aria-label="Open 3D Viewer" title="Desktop 3D Viewer"><svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="4.5" width="18" height="12" rx="1.6"/><path d="M9 20h6M12 16.5V20"/></svg><span class="rail-caption" aria-hidden="true">3D</span></a>
+        <a href="http://localhost:8787/" id="gimbal-link" hidden target="_blank" rel="noopener noreferrer" aria-label="Open Gimbal Control" title="Gimbal Control (Osmo Mobile 6 — subsystems/osmo-ble)"><svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4.2"/><path d="M12 3.4v2.4M12 18.2v2.4M3.4 12h2.4M18.2 12h2.4M6.2 6.2l1.7 1.7M16.1 16.1l1.7 1.7M6.2 17.8l1.7-1.7M16.1 7.9l1.7-1.7"/></svg><span class="rail-caption" aria-hidden="true">Gimbal</span></a>
         <div class="scanner-rail-divider" style="width:20px; height:1px; background:rgba(255,255,255,0.15); margin:4px 0; align-self:center; flex-shrink:0;"></div>
-        <button id="panel-toggle" aria-label="Detections" data-count=""><svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 3.4 8.4 4.3-8.4 4.3-8.4-4.3z"/><path d="m4.4 12 7.6 3.9 7.6-3.9"/><path d="m4.4 16.2 7.6 3.9 7.6-3.9"/></svg></button>
-        <button id="stream-btn" aria-label="Stream keyframes" title="Stream keyframes to server">
+        <button id="panel-toggle" aria-label="Objects: detections" data-count=""><svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 3.4 8.4 4.3-8.4 4.3-8.4-4.3z"/><path d="m4.4 12 7.6 3.9 7.6-3.9"/><path d="m4.4 16.2 7.6 3.9 7.6-3.9"/></svg><span class="rail-caption" aria-hidden="true">Objects</span></button>
+        <button id="stream-btn" aria-label="Stream: keyframes to server" title="Stream keyframes to server">
           <svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M7 18.5a4 4 0 0 1-.3-8A5.2 5.2 0 0 1 17 10.9a3.8 3.8 0 0 1 .3 7.6"/><path d="M12 21v-7.4M9.4 15.8 12 13.2l2.6 2.6"/></svg>
           <span id="stream-count"></span>
+          <span class="rail-caption" aria-hidden="true">Stream</span>
         </button>
-        <button id="auto-capture-btn" aria-label="Auto-capture" title="Enable auto-capture">
+        <button id="auto-capture-btn" aria-label="Auto: auto-capture" title="Enable auto-capture">
           <svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 8.5A1.5 1.5 0 0 1 4.5 7h2.7l1.2-2h6.2l1.2 2h2.7A1.5 1.5 0 0 1 20 8.5v9A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5z"/><circle cx="11.75" cy="13" r="3.4"/></svg>
           <span id="auto-capture-count"></span>
+          <span class="rail-caption" aria-hidden="true">Auto</span>
         </button>
-        <button id="person-capture-btn" aria-label="Record a person" title="Record a person (4D capture)">
+        <button id="person-capture-btn" aria-label="Person: record a person" title="Record a person (4D capture)">
           <svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="7.6" r="3.2"/><path d="M5.6 20.4a6.4 6.4 0 0 1 12.8 0"/></svg>
           <span id="person-capture-count"></span>
+          <span class="rail-caption" aria-hidden="true">Person</span>
         </button>
-        <button id="history-btn" aria-label="Session history"><svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.4"/><path d="M12 7.2V12l3.2 2"/></svg></button>
+        <button id="history-btn" aria-label="History: session history"><svg width="22px" height="22px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.4"/><path d="M12 7.2V12l3.2 2"/></svg><span class="rail-caption" aria-hidden="true">History</span></button>
       </div>
 
       <div id="side-panel">
@@ -3075,10 +3261,14 @@
     <script>
       // The start button ships "Preparing…" until the app module boots. If the
       // bundle never loads, say so instead of leaving "Preparing…" up for good.
+      // Only while that first line is still showing: a boot failure inside the
+      // 10 s writes its own reason to the same line (main.ts setStartButtonState),
+      // and that reason must not be replaced by "Still loading".
       setTimeout(function () {
         var button = document.getElementById('start-ar-btn')
         var line = button && button.querySelector('.start-path-status')
-        if (button && button.disabled && line) line.textContent = 'Still loading. Reload to try again.'
+        var preparing = !!line && line.textContent.trim() === 'Preparing…'
+        if (button && button.disabled && preparing) line.textContent = 'Still loading. Reload to try again.'
       }, 10000)
     </script>
     <script type="module" src="/src/main.ts"></script>

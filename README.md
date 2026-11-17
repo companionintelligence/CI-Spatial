@@ -36,7 +36,10 @@ npm start          # Deno API server (:8000) + Vite dev server (:5173, self-sign
 
 Then open `https://localhost:5173` (accept the self-signed cert warning, or run
 `tailscale cert <your-machine>.<tailnet>.ts.net` first and restart — see `vite.config.ts` for how
-it picks that up automatically). Point a phone at the same URL over Tailscale to scan for real;
+it picks that up automatically). The server admits a page on `localhost` only when it runs with
+`ALLOW_DEV_ORIGINS=1` (`server/origin.ts`); without it the editor's live-update socket (`/events`)
+is refused there, so use `ALLOW_DEV_ORIGINS=1 npm start` on a dev machine. A page on your tailnet
+address needs no flag. Point a phone at the same URL over Tailscale to scan for real;
 `npm run qr` prints a scannable link.
 
 **Plus the gimbal-driven capture subsystem** ([`subsystems/osmo-ble/`](subsystems/osmo-ble/),
@@ -294,7 +297,7 @@ graph TD
 - **3D object pins** — detected objects are placed at their SLAM-resolved world positions as live 3D labels tracking the scene.
 - **Onboarding Overlay** — 2-step interactive overlay guiding users through permission prompts and walking speed. Its second step lists this install's setup status (see [First-run setup status and settings](#first-run-setup-status-and-settings)). Bypasses automatically on CI/mocks and replays on help button click.
 - **HUD Quality Verdict** — Real-time rendering of `qualityMonitor.summary()` status directly on the phone HUD as a colorized verdict chip (`✓ Ready`, `⚠ Review`, `❌ Sparse`) next to the status row.
-- **HUD Menu button** — Primary affordance to the right of the capture button, on its centre line, to quickly open the Side Panel and scroll to the export and synchronization settings.
+- **Details button** — Primary affordance to the right of the capture button, on its centre line, to quickly open the Side Panel and scroll to the export and synchronization settings.
 - **Accidental Leave Guards** — Intercepts navigation buttons and window unload requests if active point cloud data or poses are in memory to prevent accidental scan losses.
 - **Quality-gated export** — Gating manual exports behind a confirmation prompt when scan quality is poor (`needs-rescan`). Displays a "View in 3D →" quick redirect link in the HUD status line on successful export.
 - **Grouped Action Rail** — Vertically stacks and groups navigation links separate from live scanning tools with a visual divider line, while keeping direct DOM hierarchy for E2E testing compliance.
@@ -472,7 +475,7 @@ A row reads "Status unavailable." when its endpoint does not answer. When none o
 
 #### The Scan server in the Android, iOS and desktop apps
 
-The apps have no server of their own. They talk to the person's own Scan server, such as the one on their Companion Hub, and its address is set on the device. In the Android and iOS apps a Server row comes first on the second step: "None set" with an Add server control, the server's host with a Change control, or the host followed by "did not answer". The control opens a form that tests the address (`GET /health`) and saves it. The editor has the same form under Navigate, Scan server, and asks for an address when none is set. The phone apps also end the list with Legal notices (and the editor's Navigate menu has it too), which shows Companion Scan's licence, the Niantic Spatial XR Engine notice in the apps that bundle the engine, and the open-source licences (`src/ui/legal-notices.ts`). The desktop app opens the editor and never shows the first-run screen, so its Navigate menu holds all of this: Scan server, Legal notices, and the account control that signs in. Either way the address is kept in the app's storage (`companion-scan-server`, `src/shared/api-base.ts`), and saving a different server drops the session token, which belongs to the old one. A build can name a default server with `VITE_API_BASE`; an address saved on the device wins over it. The hosted web app never reads the saved address, so the public site behaves as it always has.
+The apps have no server of their own. They talk to the person's own Scan server, such as the one on their Companion Hub, and its address is set on the device. In the Android and iOS apps a Server row comes first on the second step: "None set" with an Add server control, the server's host with a Change control, or the host followed by "did not answer". The control opens a form that tests the address (`GET /health`) and saves it. The editor has the same form under Navigate, Scan server, and asks for an address when none is set. The phone apps also end the list with Legal notices (and the editor's Navigate menu has it too), which shows Companion Scan's licence, the Niantic Spatial XR Engine notice in the apps that bundle the engine, Google's ARCore notice in the Android app, and the licences of the other third-party software in the app (`src/ui/legal-notices.ts`). The desktop app opens the editor and never shows the first-run screen, so its Navigate menu holds all of this: Scan server, Legal notices, and the account control that signs in. Either way the address is kept in the app's storage (`companion-scan-server`, `src/shared/api-base.ts`), and saving a different server drops the session token, which belongs to the old one. A build can name a default server with `VITE_API_BASE`; an address saved on the device wins over it. The hosted web app never reads the saved address, so the public site behaves as it always has.
 
 Only `https://` addresses are accepted, and an address is an origin: no path, query or user name. Plain `http` is refused rather than allowed, because no documented setup needs it. A Companion Hub serves its apps over HTTPS, a self-hosted server on a tailnet uses a `tailscale cert` certificate ([docs/operations/DEPLOY.md](docs/operations/DEPLOY.md)), and the phone browser already needs HTTPS for the camera. The Android app refuses cleartext and mixed content (`mobile/capacitor.config.ts`), the desktop app's content security policy allows only `https:` and `wss:` to remote hosts, and the session token must not cross a network in clear text. A server that only answers plain `http` on a LAN needs TLS in front of it before the apps can use it.
 
@@ -619,7 +622,7 @@ In WebXR mode the point cloud accumulates from per-frame hit-test samples (WebXR
 ├── scripts/                   # ~30 Node/shell/Python dev scripts — see Development Scripts below
 │
 ├── tests/
-│   ├── *.spec.ts               # 37 Playwright specs (AR flow, API/CV-mock, house-readiness,
+│   ├── *.spec.ts               # Playwright specs (AR flow, API/CV-mock, house-readiness,
 │   │                           #   test-homes, video-ingest, e2e-suite, editor/lingbot/splat
 │   │                           #   mocks, webxr-emulated, xr8-scan, project, server) + fixtures/, support/
 │   └── unit/
@@ -721,7 +724,7 @@ The full, canonical route table lives in [docs/architecture.md](docs/architectur
 | `GET` | `/memory/status` | Returns `{ enabled, baseUrl, sourceSystem, reachable? }`. Never returns the token. |
 | `GET` | `/authenticate/status` | Returns `{ enabled }`: whether "Sign in with Companion Account" is on. Boolean only. |
 | `GET` | `/authenticate/oidc` | Starts Companion Account sign-in when it is on. The callback, `/authenticate/whoami` and `POST /authenticate/logout` complete the flow. |
-| `POST` | `/authenticate/shell/exchange` | A native shell trades the one-time code from its sign-in, with its PKCE verifier, for a session token (`{ token, email, name }`). Single use, 60 seconds. |
+| `POST` | `/authenticate/shell/exchange` | A native shell trades the one-time code from its sign-in, with its PKCE verifier, for a session token (`{ token, email, name }`). Single use, 60 seconds. The body is at most 4 KiB (`413`). A request that names no live code is limited to 60 a minute per connection address (`429`, `Retry-After: 60`); a request that names a live code is never refused for that budget. Behind a proxy the address is the proxy's. |
 | `POST` | `/infer` | Multipart `image` → `RawDetection[]` |
 | `POST` | `/process-scan` | Sync scan analysis: `object-count`, `scene-description`, `floor-plan` |
 | `POST` | `/upload-scan` | Multipart `file` (.glb) + optional `metadata` (JSON) → saves to `scans/` |

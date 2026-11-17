@@ -27,6 +27,14 @@ import {
 } from '../../../src/world/geo.ts'
 import { buildAnchorMarker, ANCHOR_RADIUS_M } from '../../../src/world/anchor-marker.ts'
 import type { ProjectSpatialFrame, ScanCalibration, Vec3 } from '../../../src/world/types.ts'
+import { angDiff, bearingOfSessionYaw, norm360, perfectCompassBearing, trueSessionZBearing } from './physical_oracle.ts'
+import {
+  assessTwoPoint,
+  buildTwoPointCommit,
+  resolveCommitOptions,
+  type TwoPointFrame,
+} from '../../../src/ar/calibration-commit.ts'
+import { fitRigid2D, twoPointToleranceM } from '../../../src/world/frame-fit.ts'
 
 /**
  * Apply a column-major 4x4 (the layout `composeYUpTransform` returns and
@@ -517,6 +525,15 @@ Deno.test('residual: a re-measured pair is within tolerance; a different pair is
 // is given. Everything below establishes what bearing that has to be, because
 // the raw compass heading — which is what every call site used to pass — is
 // the heading of the *device*, not of the frame.
+//
+// "Truth" comes from ./physical_oracle.ts: a right-handed session, a camera that
+// looks down its own -Z, a perfect compass, and no code shared with the app.
+// These tests used to read the expected bearing back out of `composeYUpTransform`,
+// which assumes the same direction of yaw as the function under test, so
+// `sessionFrameBearingDeg` could subtract the camera's yaw where it has to add it
+// and every one of them still passed (audit F53). The full grids over start
+// headings, turns and tilts are in world_registration.test.ts; these are the
+// cases a reader can check by hand.
 
 /** Quaternion for a rotation of `deg` about the Y axis. */
 function yawQuat(deg: number) {
@@ -525,24 +542,6 @@ function yawQuat(deg: number) {
 }
 
 const IDENTITY_ROT = { x: 0, y: 0, z: 0, w: 1 }
-
-/**
- * The compass bearing `composeYUpTransform(_, b)` actually sends a session
- * direction to, read back out of the matrix it produces.
- *
- * Deriving this from the matrix rather than asserting angles directly is what
- * makes these tests about the real contract: if the yaw convention in
- * `composeYUpTransform` ever changes sign, every case here fails.
- */
-function bearingOfSessionDirection(frameBearingDeg: number, sessionYawDeg: number): number {
-  const m = composeYUpTransform({ x: 0, y: 0, z: 0 }, frameBearingDeg, 1)
-  const yaw = (sessionYawDeg * Math.PI) / 180
-  const dir = { x: Math.sin(yaw), z: Math.cos(yaw) }
-  // Column-major: east = row 0, north = row 2.
-  const east = m[0]! * dir.x + m[8]! * dir.z
-  const north = m[2]! * dir.x + m[10]! * dir.z
-  return normaliseBearingDeg((Math.atan2(east, north) * 180) / Math.PI)
-}
 
 Deno.test('cameraYawInSessionDeg: an identity camera faces session -Z, i.e. yaw 180', () => {
   // Not a quirk to correct for — this is the measurement that makes the
@@ -563,32 +562,54 @@ Deno.test('sessionFrameBearingDeg: the camera direction agrees in both frames', 
   // The defining property. The camera's forward is one physical direction
   // described twice — as a session yaw and as a compass bearing — so a correct
   // frame bearing makes the two descriptions agree.
+  //
+  // A session that started facing `deviceBearing + turn` and has since turned
+  // LEFT by `turn` reads `deviceBearing` on a perfect compass: a left turn
+  // lowers a compass bearing. The oracle says so, not `composeYUpTransform`.
   for (const deviceBearing of [0, 37, 90, 180, 275, 359]) {
     for (const cameraTurn of [0, 45, 90, 180, -120]) {
+      const startHeading = deviceBearing + cameraTurn
       const rotation = yawQuat(cameraTurn)
+      assertAlmostEquals(
+        angDiff(perfectCompassBearing(startHeading, rotation), deviceBearing),
+        0,
+        1e-6,
+        `oracle: device ${deviceBearing}°, camera turned ${cameraTurn}°`,
+      )
       const frameBearing = sessionFrameBearingDeg(deviceBearing, rotation)!
       const cameraSessionYaw = cameraYawInSessionDeg(rotation)
+      // The frame bearing is the true bearing of session +Z...
       assertAlmostEquals(
-        bearingOfSessionDirection(frameBearing, cameraSessionYaw),
-        normaliseBearingDeg(deviceBearing),
+        angDiff(frameBearing, trueSessionZBearing(startHeading)),
+        0,
         1e-6,
         `device ${deviceBearing}°, camera turned ${cameraTurn}°`,
+      )
+      // ...and the session direction the camera faces really is at the bearing the compass read.
+      assertAlmostEquals(
+        angDiff(bearingOfSessionYaw(startHeading, cameraSessionYaw), deviceBearing),
+        0,
+        1e-6,
+        `device ${deviceBearing}°, camera turned ${cameraTurn}°: session yaw ${cameraSessionYaw}`,
       )
     }
   }
 })
 
 Deno.test('sessionFrameBearingDeg: the raw compass heading is 180 degrees wrong at session start', () => {
-  // The bug this ticket exists for, stated as a test. With the camera at the
+  // The bug ticket 0009 exists for, stated as a test. With the camera at the
   // session's starting orientation, passing the device heading straight to
   // composeYUpTransform — which is what every call site did — points the scan
   // exactly backwards.
-  const deviceBearing = 90 // facing east
+  const startHeading = 90 // the session started facing east
+  const deviceBearing = perfectCompassBearing(startHeading, IDENTITY_ROT)
+  assertAlmostEquals(deviceBearing, 90, 1e-9)
   const corrected = sessionFrameBearingDeg(deviceBearing, IDENTITY_ROT)!
 
   assertAlmostEquals(corrected, 270, 1e-6, 'session +Z is behind the initial view')
+  assertAlmostEquals(corrected, trueSessionZBearing(startHeading), 1e-6)
   assertAlmostEquals(
-    Math.abs(normaliseBearingDeg(corrected - deviceBearing)),
+    Math.abs(angDiff(corrected, deviceBearing)),
     180,
     1e-6,
     'the uncorrected value is exactly reversed',
@@ -596,27 +617,29 @@ Deno.test('sessionFrameBearingDeg: the raw compass heading is 180 degrees wrong 
 
   // And the reversal is real, not a bookkeeping artefact: the camera is looking
   // east, so the direction it faces had better read as east.
-  assertAlmostEquals(
-    bearingOfSessionDirection(corrected, cameraYawInSessionDeg(IDENTITY_ROT)),
-    90,
-    1e-6,
-  )
-  assertAlmostEquals(
-    bearingOfSessionDirection(deviceBearing, cameraYawInSessionDeg(IDENTITY_ROT)),
-    270,
-    1e-6,
-    'uncorrected, the camera would be reported facing west while looking east',
-  )
+  const cameraYaw = cameraYawInSessionDeg(IDENTITY_ROT)
+  assertAlmostEquals(angDiff(bearingOfSessionYaw(startHeading, cameraYaw), 90), 0, 1e-6)
+  // A session direction at yaw `y` has bearing `frameBearing - y`. Taking the raw
+  // heading as the frame's bearing, the camera would read as facing west.
+  assertAlmostEquals(norm360(deviceBearing - cameraYaw), 270, 1e-6, 'uncorrected, the camera would be reported facing west while looking east')
 })
 
 Deno.test('sessionFrameBearingDeg: mid-session turning does not leak into the frame', () => {
   // The second, larger error behind the flip. The frame is fixed at session
-  // start; the heading is sampled whenever the user taps. Turning 60° between
-  // those two moments changes the device heading by 60° and the frame by
-  // nothing, so the corrected value must be identical.
-  const atStart = sessionFrameBearingDeg(10, yawQuat(0))!
-  const afterTurning = sessionFrameBearingDeg(70, yawQuat(60))!
+  // start; the heading is sampled whenever the user taps. Turning LEFT 60° between
+  // those two moments lowers the device heading by 60° (10° -> 310°) and moves the
+  // frame by nothing, so the corrected value must be identical.
+  const atStart = sessionFrameBearingDeg(perfectCompassBearing(10, yawQuat(0)), yawQuat(0))!
+  const afterTurning = sessionFrameBearingDeg(perfectCompassBearing(10, yawQuat(60)), yawQuat(60))!
+  assertAlmostEquals(perfectCompassBearing(10, yawQuat(60)), 310, 1e-6)
   assertAlmostEquals(afterTurning, atStart, 1e-6)
+  assertAlmostEquals(atStart, trueSessionZBearing(10), 1e-6)
+
+  // This test used to pair a +60° rotation about Y with a compass that rose from
+  // 10° to 70°. A +Y rotation is a LEFT turn, and a left turn lowers a compass, so
+  // that pair is not a turn anyone can make; it passed only because the old rule
+  // made the same mistake about which way the yaw runs.
+  assert(Math.abs(angDiff(sessionFrameBearingDeg(70, yawQuat(60))!, atStart)) > 1)
 })
 
 Deno.test('sessionFrameBearingDeg: no compass fix stays null rather than becoming 0', () => {
@@ -631,4 +654,153 @@ Deno.test('normaliseBearingDeg: folds into [0, 360)', () => {
   assertEquals(normaliseBearingDeg(-90), 270)
   assertEquals(normaliseBearingDeg(450), 90)
   assertEquals(normaliseBearingDeg(-450), 270)
+})
+
+
+// ── Three points: the constellation fit, through the commit (WP-04b) ───────────────────────────────
+//
+// A return visit that taps the landmark, the heading marker and the stored check point is fitted to the stored points by least
+// squares, and the fit's matrix is its sessionToProject. The claims below are made against the geometry, not against another run of
+// the same arithmetic: a visit is a rigid motion of the Place frame (a turn about Y and a shift, which is what two sessions of one
+// room differ by), and the fit has to carry each tap back onto its stored point.
+
+const COMMIT_OPTIONS = resolveCommitOptions({ hitTest: () => Promise.resolve(null) })
+
+/** The Place's three points in its own frame: the landmark at the origin, the marker 3.5 m along +Z, a check point 2.6 m aside and 1 m along. */
+const PLACE_POINTS: Vec3[] = [{ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 3.5 }, { x: -2.6, y: 0.02, z: 1 }]
+
+const STORED_WITH_CHECK: TwoPointFrame = {
+  version: 1,
+  createdAt: '2026-11-01T00:00:00.000Z',
+  method: 'two-point-ground',
+  landmark: PLACE_POINTS[0]!,
+  headingMarker: PLACE_POINTS[1]!,
+  separationM: 3.5,
+  toleranceM: twoPointToleranceM(0.03),
+  anchorBearingDeg: null,
+  checkPoints: [PLACE_POINTS[2]!],
+}
+
+/** A later session: the Place frame turned `degrees` about Y, then shifted, with the floor at `floorY`. */
+const sessionOf = (point: Vec3, degrees: number, shift: { x: number; z: number }, floorY: number): Vec3 => {
+  const turned = yawPoint(point, degrees)
+  return { x: turned.x + shift.x, y: floorY + point.y, z: turned.z + shift.z }
+}
+
+const visit = (points: Vec3[], degrees = 37, shift = { x: 2, z: -3 }, floorY = -1.2) =>
+  points.map((p) => sessionOf(p, degrees, shift, floorY))
+
+const assessThree = (taps: Vec3[], stored: TwoPointFrame | null = STORED_WITH_CHECK, override = false) =>
+  assessTwoPoint({ landmark: taps[0]!, headingMarker: taps[1]!, checkPoint: taps[2] ?? null, stored, override }, COMMIT_OPTIONS)
+
+Deno.test('three points: the fit carries every tap back onto its stored point, and its matrix is the visit\'s sessionToProject', () => {
+  for (const degrees of [0, 37, 90, 180, 271]) {
+    const taps = visit(PLACE_POINTS, degrees)
+    const verdict = assessThree(taps)
+    assert(verdict.kind === 'accepted', `turn ${degrees}`)
+    assertEquals(verdict.status, 'verified')
+    const m = verdict.sessionToProject
+    taps.forEach((tap, i) => {
+      const placed = applyMatrix(m, tap)
+      assertAlmostEquals(placed.x, PLACE_POINTS[i]!.x, 1e-9, `turn ${degrees}, point ${i} x`)
+      assertAlmostEquals(placed.y, PLACE_POINTS[i]!.y, 1e-9, `turn ${degrees}, point ${i} y`)
+      assertAlmostEquals(placed.z, PLACE_POINTS[i]!.z, 1e-9, `turn ${degrees}, point ${i} z`)
+    })
+    // Rigid: the same lengths between any two points, and a proper rotation.
+    assertAlmostEquals(distance(applyMatrix(m, taps[0]!), applyMatrix(m, taps[2]!)), distance(taps[0]!, taps[2]!), 1e-9)
+    const fit = fitRigid2D(taps, PLACE_POINTS)
+    assert(fit.ok)
+    assertEquals(verdict.sessionToProject, fit.fit.matrix)
+  }
+})
+
+Deno.test('three points: noise leaves each tap off its stored point by exactly the residual the record keeps', () => {
+  const taps = visit(PLACE_POINTS, 123).map((p, i) => ({ x: p.x + [0.02, -0.015, 0.01][i]!, y: p.y, z: p.z + [-0.01, 0.02, 0.025][i]! }))
+  const verdict = assessThree(taps)
+  assert(verdict.kind === 'accepted')
+  const { calibration } = buildTwoPointCommit(verdict, {
+    landmark: taps[0]!, headingMarker: taps[1]!, frameBearingDeg: null, bearingConvention: 2, pointLabels: undefined, calibratedAt: '2026-11-17T00:00:00.000Z',
+  })
+  assert(calibration.method === 'two-point-ground' && calibration.fit && calibration.checkedBy === 'constellation')
+  taps.forEach((tap, i) => {
+    const placed = applyMatrix(calibration.sessionToProject, tap)
+    assertAlmostEquals(Math.hypot(placed.x - PLACE_POINTS[i]!.x, placed.z - PLACE_POINTS[i]!.z), calibration.fit!.perPoint[i]!.residualM, 1e-9)
+  })
+})
+
+Deno.test('mirrored: a check point on the wrong side of the line is a mismatch, and the pair alone could not say which side it is on', () => {
+  const taps = visit([PLACE_POINTS[0]!, PLACE_POINTS[1]!, { ...PLACE_POINTS[2]!, x: -PLACE_POINTS[2]!.x }])
+  const verdict = assessThree(taps)
+  assertEquals(verdict.kind, 'mismatch')
+  // The two-point comparison of the same visit passes: the distance between the pair is exactly what was stored.
+  const pairOnly = assessThree(taps.slice(0, 2))
+  assert(pairOnly.kind === 'accepted' && pairOnly.status === 'provisional')
+})
+
+Deno.test('swapped: the first two points tapped the wrong way round are a mismatch that says so, and the distance check passes them', () => {
+  const taps = visit([PLACE_POINTS[1]!, PLACE_POINTS[0]!, PLACE_POINTS[2]!])
+  const verdict = assessThree(taps)
+  assert(verdict.kind === 'mismatch')
+  assert(verdict.comparison.verdict.reasons.some((reason) => /swapped|another order/.test(reason)), verdict.comparison.verdict.reasons.join(' | '))
+  const pairOnly = assessThree(taps.slice(0, 2))
+  assert(pairOnly.kind === 'accepted', 'the distance is the same either way round, which is what reversed-pair meant')
+})
+
+Deno.test('a pair turned about the landmark at the same spacing passes the distance check and fails the fit', () => {
+  const turned = [PLACE_POINTS[0]!, { x: 3.5 * Math.sin(0.35), y: 0, z: 3.5 * Math.cos(0.35) }, PLACE_POINTS[2]!]
+  const taps = visit(turned)
+  assert(assessThree(taps.slice(0, 2)).kind === 'accepted', 'same spacing')
+  assertEquals(assessThree(taps).kind, 'mismatch')
+})
+
+Deno.test('a rigid shift of all three points is not seen by the fit: the known limit, which the verdict says in words', () => {
+  const taps = visit(PLACE_POINTS.map((p) => ({ x: p.x + 0.5, y: p.y, z: p.z + 0.5 })))
+  const verdict = assessThree(taps)
+  assert(verdict.kind === 'accepted' && verdict.status === 'verified')
+  assert(verdict.comparison?.verdict.reasons.includes('Not checked: that these are the same physical spots. Compare with the photos.'))
+})
+
+Deno.test('a first calibration with a check point stores it in the Place frame, and a later visit to that frame is fitted to it', () => {
+  const taps = visit(PLACE_POINTS, 211, { x: -4, z: 1 })
+  const first = assessThree(taps, null)
+  assert(first.kind === 'accepted' && first.frameChanged && first.checkPoint)
+  const { spatialFrame } = buildTwoPointCommit(first, {
+    landmark: taps[0]!, headingMarker: taps[1]!, frameBearingDeg: null, bearingConvention: 2, pointLabels: undefined, calibratedAt: '2026-11-17T00:00:00.000Z',
+  })
+  assert(spatialFrame?.checkPoints?.length === 1)
+  // The frame the first visit defines is the Place frame (landmark at the origin, marker on +Z), so the check point is where the Place
+  // fixture has it, to the digit the arithmetic allows: a second visit in another session is verified against it.
+  assertAlmostEquals(spatialFrame!.checkPoints![0]!.x, PLACE_POINTS[2]!.x, 1e-9)
+  assertAlmostEquals(spatialFrame!.checkPoints![0]!.z, PLACE_POINTS[2]!.z, 1e-9)
+  const second = assessThree(visit(PLACE_POINTS, 15, { x: 1, z: 9 }), spatialFrame)
+  assert(second.kind === 'accepted' && second.status === 'verified')
+})
+
+Deno.test('golden: a Place frame written before check points existed is still a two-point frame: compared by distance, provisional, the frame kept', () => {
+  // The frozen records of the build before the schema step (tests/fixtures/place-frame/records-before-s0.json, never regenerated).
+  const fixture = JSON.parse(Deno.readTextFileSync(new URL('../../fixtures/place-frame/records-before-s0.json', import.meta.url))) as Record<string, {
+    storedFrame?: TwoPointFrame
+    calibration?: { separationM?: number; status?: string; toleranceM?: number }
+    visitBaselineM?: number
+  }>
+  let compared = 0
+  for (const [name, record] of Object.entries(fixture)) {
+    const stored = record.storedFrame
+    if (!stored || stored.method !== 'two-point-ground') continue
+    assert(!('checkPoints' in stored), `${name}: written before check points existed`)
+    // The visit re-taps the pair at the distance the old record measured: inside the spacing tolerance, or the gap that was kept anyway.
+    const apart = record.visitBaselineM ?? record.calibration!.separationM!
+    const taps = visit([PLACE_POINTS[0]!, { x: 0, y: 0, z: apart }])
+    const verdict = assessThree(taps, stored)
+    if (Math.abs(apart - stored.separationM) > twoPointToleranceM(0.03)) {
+      assertEquals(verdict.kind, 'mismatch', `${name}: ${apart} against ${stored.separationM}`)
+    } else {
+      assert(verdict.kind === 'accepted', name)
+      assertEquals(verdict.status, 'provisional', `${name}: a distance check is never verified`)
+      assertEquals(verdict.frameChanged, false, name)
+      assertEquals(verdict.comparison?.checkedBy, 'separation', name)
+    }
+    compared += 1
+  }
+  assert(compared >= 3, `the fixture holds ${compared} stored frames`)
 })

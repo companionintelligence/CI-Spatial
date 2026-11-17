@@ -377,10 +377,10 @@ export class PhoneTelemetrySender {
    *   - `webkitCompassHeading` (iOS/WebKit) is a real compass bearing from CoreLocation, in
    *     degrees clockwise, and it comes with `webkitCompassAccuracy`. A NEGATIVE accuracy is
    *     iOS's documented way of saying the heading is invalid (uncalibrated magnetometer,
-   *     typically). We honour that and report null — `src/geo/geo-tracker.ts` takes this value
-   *     without checking the accuracy, and this is a deliberate, narrow divergence from it, not
-   *     an oversight: this frame has a `headingAccuracyDeg` field, so the accuracy has to be read
-   *     anyway, and once read, ignoring "invalid" would be a choice to publish a known-bad number.
+   *     typically). We honour that and report null, as `src/geo/geo-tracker.ts` does too
+   *     (`compassBearingFromEvent`): this frame has a `headingAccuracyDeg` field, so the accuracy
+   *     has to be read anyway, and once read, ignoring "invalid" would be a choice to publish a
+   *     known-bad number.
    *   - `alpha` is only earth-referenced when the event says so. On many Android builds a plain
    *     `deviceorientation` event's alpha is measured from an ARBITRARY origin fixed at page load
    *     — it looks exactly like a compass bearing, changes exactly like one when you turn, and is
@@ -389,13 +389,16 @@ export class PhoneTelemetrySender {
    *     relative alpha is discarded and `heading` reports null with `headingSource: 'none'`.
    *
    * **What "true north" means here, honestly.** The pinned contract documents `heading` as degrees
-   * from TRUE north. The web platform cannot actually guarantee that: iOS applies magnetic
-   * declination when CoreLocation has a position fix (and falls back to magnetic north when it
-   * doesn't), and Android's absolute orientation is generally magnetic-north referenced with no
-   * declination applied — and neither exposes a flag saying which you got. So the value sent is
-   * the platform's best compass bearing, which is true north where the platform managed it and
-   * magnetic north otherwise; the difference is the local declination, a few degrees in most
-   * populated places. This is not measurable from here, and no correction is applied for it.
+   * from TRUE north. What the phone has is MAGNETIC north, on both platforms, and no declination is
+   * applied anywhere on the way: Apple documents `webkitCompassHeading` as a direction relative to
+   * magnetic north
+   * (https://developer.apple.com/documentation/webkitjs/deviceorientationevent/1804777-webkitcompassheading),
+   * and an absolute `alpha` is measured in a frame whose Y axis points towards magnetic north
+   * (https://developer.android.com/reference/android/hardware/SensorEvent, the rotation vector). So
+   * the value sent differs from the true bearing by the local declination, which varies with the place
+   * and can exceed ten degrees, and nothing on the phone says by how much. It is not corrected here:
+   * a reader who needs true north adds the declination for the phone's position. (`GeoTracker`
+   * records the same fact as `northReference: 'magnetic'` on every reading, ../geo/compass-heading.ts.)
    *
    * No screen-rotation compensation is applied either. The reported bearing is the platform's,
    * for the top edge of the device; whether a given browser has already accounted for
@@ -435,8 +438,15 @@ export class PhoneTelemetrySender {
 
     const alpha = finiteOrNull(e.alpha)
     if (absolute && alpha !== null) {
-      // Same conversion src/geo/geo-tracker.ts uses for this path: alpha counts counter-clockwise
-      // from the reference direction, a compass bearing counts clockwise.
+      // The bearing of the TOP EDGE of the phone for one that is not turned over: alpha counts
+      // counter-clockwise from the reference direction, a compass bearing counts clockwise.
+      // src/geo/geo-tracker.ts used this conversion too, until it moved to the direction the back
+      // camera points (../geo/compass-heading.ts). The two agree whenever the phone is not rolled
+      // (gamma 0 and beta between 0 and 180: upright or tipped back, at any tilt) and whenever the
+      // camera points more than 60 degrees up or down, where GeoTracker falls back to the top edge
+      // as well; a phone rolled into landscape or leaning over reads apart (by the roll itself, when it is
+      // upright). This sender keeps the top edge, as the paragraph above says: the pinned contract has no
+      // field for which axis a heading follows.
       this._heading = normalizeDeg(360 - alpha)
       // No accuracy channel exists on this path at all. Null means unknown, per the contract —
       // it does not mean "accurate".

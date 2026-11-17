@@ -54,9 +54,15 @@ function detection(label: string, x: number, captureIndex?: number): WorldDetect
   } as WorldDetection
 }
 
-/** Only `sessionId` and `detections` are read by the exporter. */
+/**
+ * Only `serverSessionOfThisRun` (the session id the AR run opened) and the detections of the AR run
+ * (`currentRunDetections`) are read by the exporter. The stand-in's run has opened `sessionId`: the id when it is
+ * a server one, and null when it is a local one, as the real store answers.
+ */
 function storeStub(detections: Array<[string, WorldDetection]>, sessionId = SESSION_ID): DetectionStore {
-  return { sessionId, detections: new Map(detections) } as unknown as DetectionStore
+  const live = new Map(detections)
+  const serverSessionOfThisRun = sessionId.startsWith('sess-') ? sessionId : null
+  return { sessionId, serverSessionOfThisRun, detections: live, currentRunDetections: () => live } as unknown as DetectionStore
 }
 
 /**
@@ -73,11 +79,16 @@ function driftingSessionStoreStub(
   after: string,
 ): { store: DetectionStore; fireDrift: () => void } {
   let drifted = false
+  const live = new Map(detections)
   const store = {
     get sessionId() {
       return drifted ? after : before
     },
-    detections: new Map(detections),
+    get serverSessionOfThisRun() {
+      return drifted ? after : before
+    },
+    detections: live,
+    currentRunDetections: () => live,
   } as unknown as DetectionStore
   return { store, fireDrift: () => { drifted = true } }
 }

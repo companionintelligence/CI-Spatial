@@ -74,9 +74,10 @@ class FakeStorage {
 function setGpuSupported(supported: boolean): void {
   // Node >=21 ships its own read-only `navigator` global (Node's
   // NavigatorConcurrentHardware, unrelated to a browser's), so a plain
-  // assignment throws — redefine the property instead.
+  // assignment throws — redefine the property instead. A supporting browser
+  // hands out an adapter from requestAdapter(), which is what the probe asks.
   Object.defineProperty(globalThis, 'navigator', {
-    value: supported ? { gpu: {} } : {},
+    value: supported ? { gpu: { requestAdapter: async () => ({ limits: {} }) } } : {},
     configurable: true,
     writable: true,
   })
@@ -99,12 +100,17 @@ async function flushMicrotasks(turns = 5): Promise<void> {
 
 // ─── Capability check ───────────────────────────────────────────────────────
 
-test('hasWebGPU: a pure navigator.gpu check, not a build flag', () => {
-  const router = new InferenceRouter()
+test('hasWebGPU: an adapter check after probeWebGPU(), not a build flag', async () => {
   setGpuSupported(true)
+  const router = new InferenceRouter()
+  assert.equal(router.hasWebGPU, false, 'nothing is claimed before the probe has run')
+  assert.equal(await router.probeWebGPU(), true)
   assert.equal(router.hasWebGPU, true)
+
   setGpuSupported(false)
-  assert.equal(router.hasWebGPU, false)
+  const withoutGpu = new InferenceRouter()
+  assert.equal(await withoutGpu.probeWebGPU(), false)
+  assert.equal(withoutGpu.hasWebGPU, false)
 })
 
 // ─── Un-gating: the stored preference wave 04 preserved is honoured ────────
@@ -136,6 +142,7 @@ test('infer: a stuck on-device request rejects instead of silently falling back 
   ;(globalThis as unknown as { localStorage: unknown }).localStorage = new FakeStorage()
 
   const router = new InferenceRouter()
+  await router.probeWebGPU()
   router.setMode('webgpu')
   assert.equal(router.path, 'webgpu')
 
@@ -171,6 +178,7 @@ test('infer: a worker-reported error rejects with a typed, distinguishable code'
   ;(globalThis as unknown as { localStorage: unknown }).localStorage = new FakeStorage()
 
   const router = new InferenceRouter()
+  await router.probeWebGPU()
   router.setMode('webgpu')
   const worker = FakeWorker.instances.at(-1)!
 
@@ -189,12 +197,13 @@ test('infer: a worker-reported error rejects with a typed, distinguishable code'
   })
 })
 
-test('setMode: persists the preference and restores its original (pre-gate) meaning', () => {
+test('setMode: persists the preference and restores its original (pre-gate) meaning', async () => {
   setGpuSupported(true)
   ;(globalThis as unknown as { localStorage: unknown }).localStorage = new FakeStorage()
   const storage = globalThis.localStorage as unknown as FakeStorage
 
   const router = new InferenceRouter()
+  await router.probeWebGPU()
   router.setMode('webgpu')
   assert.equal(storage.getItem('infer-mode'), 'webgpu')
   router.setMode('server')

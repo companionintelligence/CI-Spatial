@@ -4,10 +4,25 @@
  *
  * Duplicate points are suppressed with a voxel grid (default 5 cm).
  * The underlying buffer doubles in size as needed (amortised O(1) add).
+ *
+ * Every point also carries the FRAME EPOCH it was recorded in (src/ar/frame-epoch.ts), in
+ * a Uint16Array that runs alongside the positions. Points of different epochs are not in
+ * one coordinate frame, so the cloud never lets them vouch for each other: the voxel grid
+ * does not merge them, and the ground-plane fit looks at the current epoch's points only
+ * (see `groundEstimate()`). A caller that has no epoch to give passes none, and every
+ * point is epoch 0, which behaves exactly as the cloud did before epochs existed.
  */
 
 const DEFAULT_VOXEL_M = 0.05 // 5 cm
 const MAX_POINTS = 250_000 // hard memory cap — decimate instead of growing past this
+/**
+ * The largest epoch the per-point array can hold (Uint16). An epoch past it is stored as
+ * this, not wrapped round to a small one: wrapping would file a late frame's points under
+ * an early frame's number, which is the mixing epochs exist to prevent. Past 65 535
+ * discontinuities in one scan the scan is long since flagged, and the points of the last
+ * epochs share a label.
+ */
+const MAX_STORED_EPOCH = 0xffff
 
 // ── Ground-plane estimate (wave 09 ticket 0003) ─────────────────────────────
 // Every threshold here is a starting value, expected to be retuned against the
@@ -86,7 +101,7 @@ const FLOOR_BAND_M = 0.05
 const FLOOR_MIN_BAND_SHARE = 0.04
 
 /**
- * The session's current floor estimate.
+ * A floor estimate: the session's current one, or the last one an earlier epoch had.
  *
  * Note the optional diagnostic fields describe the most recent **candidate**
  * fit. Once `locked` is true, `y` is the mean of the window that earned the
@@ -97,6 +112,19 @@ const FLOOR_MIN_BAND_SHARE = 0.04
 export interface GroundEstimate {
   /** Floor height in the AR session's local frame, metres. */
   y: number
+  /**
+   * The frame epoch this floor was fitted in, and so the frame `y` is a height in. Two
+   * floors with different epochs are in different frames and are not comparable.
+   */
+  epoch: number
+  /**
+   * The floor's normal, in the same frame. ASSUMED level, not fitted: this module fits a
+   * horizontal band because the session frame is gravity-aligned, so the normal is
+   * straight up by construction. A floor that is not level in the frame (a bad gravity
+   * estimate) shows in `residualM`, and no fit here corrects it. The field is here so the
+   * record the sidecar carries has the shape a fitted plane will have.
+   */
+  normal: { x: 0; y: 1; z: 0 }
   /** True once consecutive estimates have agreed; the readiness gate's signal. */
   locked: boolean
   /** Points accumulated at the last recompute — for diagnostics/HUD. */
@@ -135,7 +163,19 @@ interface FloorFit {
 
 export class PointCloud {
   private _data: Float32Array = new Float32Array(3000) // 1 000 pts × 3 floats
+  /** The epoch of each point, index for index with `_data` (one entry per point, not per float). */
+  private _epochs: Uint16Array = new Uint16Array(1000)
   private _count = 0
+  /** The newest epoch any point has been added in. The ground fit is of this epoch's points. */
+  private _currentEpoch = 0
+  /** How many points each epoch holds. Kept in step with `_data` by add() and decimation. */
+  private _epochCounts = new Map<number, number>()
+  /**
+   * The last floor fitted in every epoch the scan has had, so an earlier frame's floor is
+   * still on record after a later one has replaced it as the live estimate. The current
+   * epoch's entry is refreshed on every recompute; the others are left as they were.
+   */
+  private _groundByEpoch = new Map<number, GroundEstimate>()
   private _voxelSize: number
   private _occupied = new Set<string>()
   private _decimations = 0
@@ -168,11 +208,20 @@ export class PointCloud {
   /**
    * Add an array of world-space points.  Returns the points actually inserted
    * (i.e. not suppressed as duplicates) so callers can stream deltas.
+   *
+   * `epoch` is the frame epoch the points were recorded in (src/ar/frame-epoch.ts). A
+   * point is a duplicate only of one in the same epoch: two frames' coordinates landing
+   * in one voxel are different places. The first point of a newer epoch than any before
+   * it starts that epoch's floor fit afresh; the floor of the epoch before stays on
+   * record (`groundObjects()`). A point added with an older epoch than the current one is
+   * kept under its own epoch and does not touch the live floor.
    */
-  add(points: ReadonlyArray<{ x: number; y: number; z: number }>): Array<{ x: number; y: number; z: number }> {
+  add(points: ReadonlyArray<{ x: number; y: number; z: number }>, epoch = 0): Array<{ x: number; y: number; z: number }> {
+    const e = storedEpoch(epoch)
+    if (e > this._currentEpoch) this._beginEpoch(e)
     const inserted: Array<{ x: number; y: number; z: number }> = []
     for (const p of points) {
-      const key = voxelKey(p.x, p.y, p.z, this._voxelSize)
+      const key = voxelKey(p.x, p.y, p.z, this._voxelSize, e)
       if (this._occupied.has(key)) continue
       this._occupied.add(key)
       this._grow()
@@ -180,12 +229,15 @@ export class PointCloud {
       this._data[base]     = p.x
       this._data[base + 1] = p.y
       this._data[base + 2] = p.z
+      this._epochs[this._count] = e
+      this._epochCounts.set(e, (this._epochCounts.get(e) ?? 0) + 1)
       this._count++
       inserted.push({ x: p.x, y: p.y, z: p.z })
     }
-    // Only worth recomputing when the cloud actually changed — a tick that
-    // inserted nothing cannot have moved the floor estimate.
-    if (inserted.length > 0) this._maybeRecomputeGround()
+    // Only worth recomputing when the live epoch's points actually changed — a tick
+    // that inserted nothing, or only points of an older epoch, cannot have moved the
+    // floor estimate.
+    if (inserted.length > 0 && e === this._currentEpoch) this._maybeRecomputeGround()
     return inserted
   }
 
@@ -194,9 +246,30 @@ export class PointCloud {
     return this._data.slice(0, this._count * 3)
   }
 
+  /** The epoch of each point, in the same order as `toFloat32Array()`: one entry per point. */
+  toEpochArray(): Uint16Array {
+    return this._epochs.slice(0, this._count)
+  }
+
+  /** The newest epoch any point has been added in; 0 for an empty cloud. */
+  get currentEpoch(): number {
+    return this._currentEpoch
+  }
+
+  /** How many points each epoch holds, lowest epoch first. An epoch with none is left out. */
+  epochCounts(): Array<{ epoch: number; count: number }> {
+    return [...this._epochCounts.entries()]
+      .filter(([, count]) => count > 0)
+      .map(([epoch, count]) => ({ epoch, count }))
+      .sort((a, b) => a.epoch - b.epoch)
+  }
+
   /** Clear all accumulated points. */
   clear(): void {
     this._count = 0
+    this._currentEpoch = 0
+    this._epochCounts.clear()
+    this._groundByEpoch.clear()
     this._occupied.clear()
     this._groundHistory = []
     this._groundLocked = false
@@ -221,6 +294,8 @@ export class PointCloud {
     const fit = this._groundFit
     return {
       y: this._lastGroundY,
+      epoch: this._currentEpoch,
+      normal: { x: 0, y: 1, z: 0 },
       locked: this._groundLocked,
       sampleCount: this._groundSampleCount,
       ...(fit
@@ -229,16 +304,61 @@ export class PointCloud {
     }
   }
 
+  /**
+   * The ground object of the whole scan: the last floor fitted in every epoch the scan
+   * has had, lowest epoch first. The live epoch's entry is `groundEstimate()`; the others
+   * are the floors of frames that have since been left, kept so the sidecar can say where
+   * each frame's floor was. An epoch that never gathered enough points to fit one has no
+   * entry.
+   *
+   * Nothing here converts one epoch's height into another's: there is no known transform
+   * between them, which is the whole reason for the epochs.
+   */
+  groundObjects(): GroundEstimate[] {
+    // The live epoch's entry is refreshed at every recompute, the only time the live floor
+    // changes, so it is the live estimate. Copies, so a caller cannot change what is kept.
+    return [...this._groundByEpoch.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, kept]) => ({ ...kept, normal: { x: 0 as const, y: 1 as const, z: 0 as const } }))
+  }
+
+  /**
+   * A newer epoch has begun. Its points are in a different frame from every point so far,
+   * so what was learned about the floor cannot carry over: the lock, the candidates that
+   * earned it and the throttle are dropped, and the fit starts from this epoch's own
+   * points. This is what lets a floor that appears higher after a frame shift be followed.
+   * Without it the old floor stayed the lowest band, stayed locked, and a shift upward of
+   * 0.10 m or 0.30 m (a shift down of 0.10 m is inside the unlock tolerance) was never
+   * seen. The old epoch's last floor stays in `_groundByEpoch`.
+   */
+  private _beginEpoch(epoch: number): void {
+    this._currentEpoch = epoch
+    this._groundHistory = []
+    this._groundLocked = false
+    this._groundFit = null
+    this._lastGroundY = null
+    this._lastGroundSampleAt = Number.NEGATIVE_INFINITY
+    this._groundSampleCount = 0
+  }
+
   private _maybeRecomputeGround(): void {
     const now = this._now()
     if (now - this._lastGroundSampleAt < GROUND_RECOMPUTE_INTERVAL_MS) return
     this._lastGroundSampleAt = now
-    if (this._count < MIN_POINTS_FOR_GROUND_ESTIMATE) return
+    const inEpoch = this._epochCounts.get(this._currentEpoch) ?? 0
+    if (inEpoch < MIN_POINTS_FOR_GROUND_ESTIMATE) return
 
-    const fit = this._fitFloor()
+    this._refitGround(inEpoch)
+    const estimate = this.groundEstimate()
+    if (estimate) this._groundByEpoch.set(this._currentEpoch, estimate)
+  }
+
+  /** One ground recompute over the live epoch's `inEpoch` points: the lock, unlock and window logic. */
+  private _refitGround(inEpoch: number): void {
+    const fit = this._fitFloor(this._currentEpoch)
     const candidate = fit.y
     this._groundFit = fit
-    this._groundSampleCount = this._count
+    this._groundSampleCount = inEpoch
 
     if (this._groundLocked) {
       // Hold the locked value steady against noise, but abandon it outright on
@@ -304,32 +424,44 @@ export class PointCloud {
    * out-vote a sparsely-seen floor, and "lowest well-supported horizontal
    * layer" is a description of a floor where "densest" is not.
    */
-  estimateFloorY(): number {
-    return this._fitFloor().y
+  estimateFloorY(epoch?: number): number {
+    return this._fitFloor(epoch).y
   }
 
-  /** {@link estimateFloorY} plus how well the data supported it. */
-  private _fitFloor(): FloorFit {
-    if (this._count === 0) return { y: 0, inlierCount: 0, residualM: 0, fallback: true }
-
+  /**
+   * {@link estimateFloorY} plus how well the data supported it.
+   *
+   * With an `epoch`, only that epoch's points are fitted: the share a band must hold is
+   * a share of that epoch's points, and an epoch with none has no floor. Without one,
+   * every point is fitted whatever its epoch, which is what this has always done.
+   */
+  private _fitFloor(epoch?: number): FloorFit {
+    const all = epoch === undefined
+    const data = this._data
+    const epochs = this._epochs
+    let eligible = 0
     let minY = Infinity
     let maxY = -Infinity
     for (let i = 0; i < this._count; i++) {
-      const y = this._data[i * 3 + 1]
+      if (!all && epochs[i] !== epoch) continue
+      eligible++
+      const y = data[i * 3 + 1]
       if (y < minY) minY = y
       if (y > maxY) maxY = y
     }
+    if (eligible === 0) return { y: 0, inlierCount: 0, residualM: 0, fallback: true }
 
     const bandCount = Math.max(1, Math.ceil((maxY - minY) / FLOOR_BAND_M) + 1)
     const counts = new Uint32Array(bandCount)
     for (let i = 0; i < this._count; i++) {
-      const band = Math.floor((this._data[i * 3 + 1] - minY) / FLOOR_BAND_M)
+      if (!all && epochs[i] !== epoch) continue
+      const band = Math.floor((data[i * 3 + 1] - minY) / FLOOR_BAND_M)
       counts[band < 0 ? 0 : band >= bandCount ? bandCount - 1 : band]++
     }
 
     // A share of the whole cloud, never of the best band — see
     // FLOOR_MIN_BAND_SHARE for why that distinction is the fix.
-    const required = this._count * FLOOR_MIN_BAND_SHARE
+    const required = eligible * FLOOR_MIN_BAND_SHARE
     let chosen = -1
     for (let b = 0; b < bandCount; b++) {
       if (counts[b] >= required) { chosen = b; break }
@@ -338,7 +470,7 @@ export class PointCloud {
       // No horizontal structure at all. Rather than invent a floor, fall back
       // to the old behaviour and say so: a cloud this sparse is what
       // MIN_POINTS_FOR_GROUND_ESTIMATE and `locked` already exist to report.
-      return { y: this._legacyPercentileFloorY(), inlierCount: 0, residualM: 0, fallback: true }
+      return { y: this._legacyPercentileFloorY(epoch), inlierCount: 0, residualM: 0, fallback: true }
     }
 
     // The band is a search grid, not the answer. Returning its centre would
@@ -348,7 +480,8 @@ export class PointCloud {
     let sum = 0
     let inliers = 0
     for (let i = 0; i < this._count; i++) {
-      const y = this._data[i * 3 + 1]
+      if (!all && epochs[i] !== epoch) continue
+      const y = data[i * 3 + 1]
       if (Math.abs(y - centre) <= FLOOR_BAND_M) { sum += y; inliers++ }
     }
     if (inliers === 0) return { y: centre, inlierCount: 0, residualM: 0, fallback: false }
@@ -356,7 +489,8 @@ export class PointCloud {
 
     let squared = 0
     for (let i = 0; i < this._count; i++) {
-      const py = this._data[i * 3 + 1]
+      if (!all && epochs[i] !== epoch) continue
+      const py = data[i * 3 + 1]
       if (Math.abs(py - centre) <= FLOOR_BAND_M) squared += (py - y) * (py - y)
     }
     return { y, inlierCount: inliers, residualM: Math.sqrt(squared / inliers), fallback: false }
@@ -367,9 +501,12 @@ export class PointCloud {
    * Not a second opinion — it is what this ticket replaced, and it is reached
    * only where there is nothing to fit.
    */
-  private _legacyPercentileFloorY(): number {
+  private _legacyPercentileFloorY(epoch?: number): number {
     const ys: number[] = []
-    for (let i = 0; i < this._count; i++) ys.push(this._data[i * 3 + 1])
+    for (let i = 0; i < this._count; i++) {
+      if (epoch !== undefined && this._epochs[i] !== epoch) continue
+      ys.push(this._data[i * 3 + 1])
+    }
     ys.sort((a, b) => a - b)
     return ys[Math.floor(ys.length * 0.08)] ?? ys[0] ?? 0
   }
@@ -407,6 +544,9 @@ export class PointCloud {
     const next = new Float32Array(this._data.length * 2)
     next.set(this._data)
     this._data = next
+    const nextEpochs = new Uint16Array(next.length / 3)
+    nextEpochs.set(this._epochs)
+    this._epochs = nextEpochs
   }
 
   private _decimate(): void {
@@ -417,12 +557,29 @@ export class PointCloud {
       this._data[dst]     = this._data[src]
       this._data[dst + 1] = this._data[src + 1]
       this._data[dst + 2] = this._data[src + 2]
+      // The epochs go through the same thinning, point for point: a surviving point keeps
+      // its own epoch, never the epoch of the point that used to sit at its new index.
+      this._epochs[i] = this._epochs[i * 2]
     }
     this._count = half
     this._decimations++
+    this._epochCounts.clear()
+    for (let i = 0; i < this._count; i++) {
+      this._epochCounts.set(this._epochs[i], (this._epochCounts.get(this._epochs[i]) ?? 0) + 1)
+    }
   }
 }
 
-function voxelKey(x: number, y: number, z: number, v: number): string {
-  return `${Math.round(x / v)},${Math.round(y / v)},${Math.round(z / v)}`
+/** An epoch as the per-point array holds it: a whole number, 0 for anything that is not one, capped. */
+function storedEpoch(epoch: number): number {
+  return Number.isFinite(epoch) && epoch > 0 ? Math.min(Math.floor(epoch), MAX_STORED_EPOCH) : 0
+}
+
+/**
+ * The voxel a point falls in. Epoch 0 keys are the plain `x,y,z` they have always been; a
+ * later epoch's are prefixed with it, so the same voxel in another frame is not a duplicate.
+ */
+function voxelKey(x: number, y: number, z: number, v: number, epoch: number): string {
+  const cell = `${Math.round(x / v)},${Math.round(y / v)},${Math.round(z / v)}`
+  return epoch === 0 ? cell : `${epoch}:${cell}`
 }

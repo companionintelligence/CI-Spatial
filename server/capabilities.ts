@@ -54,6 +54,7 @@
  * would ignore is worse than having none.
  */
 import { isRunnable, whichPath, type ExecPlatform } from './exec_probe.ts'
+import { runWithDeadline } from './run_with_deadline.ts'
 
 /** How a tool is looked for: an executable, a checkout dir, or a data file. */
 export type ToolKind = 'binary' | 'python' | 'dir' | 'file'
@@ -82,6 +83,8 @@ export interface TorchReport {
   cudaAvailable?: boolean
   /** `torch.backends.mps.is_available()`, absent on non-Apple builds. */
   mpsAvailable?: boolean
+  /** `torch.xpu.is_available()` — Intel GPUs. False on every non-Intel wheel. */
+  xpuAvailable?: boolean
   /** What this interpreter would actually compute on. */
   accelerator?: Accelerator
   /** Interpreter version, when the probe ran at all. */
@@ -90,7 +93,7 @@ export interface TorchReport {
   error?: string
 }
 
-export type Accelerator = 'cuda' | 'rocm' | 'mps' | 'cpu'
+export type Accelerator = 'cuda' | 'rocm' | 'mps' | 'xpu' | 'cpu'
 
 export interface ToolCapability {
   id: string
@@ -515,6 +518,10 @@ export const TORCH_PROBE_SOURCE = [
   '    d["cudaAvailable"] = bool(torch.cuda.is_available())',
   '    b = getattr(torch.backends, "mps", None)',
   '    d["mpsAvailable"] = bool(b and b.is_available())',
+  '    try:',
+  '        d["xpuAvailable"] = bool(torch.xpu.is_available())',
+  '    except Exception:',
+  '        d["xpuAvailable"] = False',
   'except Exception as e:',
   '    d["error"] = "%s: %s" % (type(e).__name__, e)',
   'print(json.dumps(d))',
@@ -533,10 +540,14 @@ export function deriveAccelerator(t: {
   cudaAvailable?: boolean
   hipBuild?: string | null
   mpsAvailable?: boolean
+  xpuAvailable?: boolean
 }): Accelerator {
   if (t.cudaAvailable && t.hipBuild) return 'rocm'
   if (t.cudaAvailable) return 'cuda'
   if (t.mpsAvailable) return 'mps'
+  // Intel GPUs under torch.xpu. Checked after CUDA and MPS, the same order
+  // scripts/_torch_device.py uses, so the two never disagree about a box.
+  if (t.xpuAvailable) return 'xpu'
   return 'cpu'
 }
 
@@ -563,6 +574,7 @@ export function parseTorchProbe(stdout: string): TorchReport {
     hipBuild: (raw.hipBuild ?? null) as string | null,
     cudaAvailable: raw.cudaAvailable === true,
     mpsAvailable: raw.mpsAvailable === true,
+    xpuAvailable: raw.xpuAvailable === true,
     ...(python ? { python } : {}),
   }
   report.accelerator = deriveAccelerator(report)
@@ -1125,33 +1137,18 @@ export function formatCapabilityReport(report: CapabilityReport): string {
  * otherwise hang the request forever.
  */
 export async function runCapture(bin: string, args: string[], timeoutMs: number): Promise<RunResult | null> {
-  let child: Deno.ChildProcess
+  // The timer and the SIGKILL live in run_with_deadline.ts, shared with the
+  // WorldJob runners (ADR 0001) rather than copied here.
   try {
-    child = new Deno.Command(bin, { args, stdout: 'piped', stderr: 'piped' }).spawn()
-  } catch {
-    return null
-  }
-  let timedOut = false
-  const timer = setTimeout(() => {
-    timedOut = true
-    try {
-      child.kill('SIGKILL')
-    } catch {
-      // Already exited between the timer firing and this line.
-    }
-  }, timeoutMs)
-  try {
-    const out = await child.output()
+    const out = await runWithDeadline(bin, { args, stdout: 'piped', stderr: 'piped' }, timeoutMs)
     const dec = new TextDecoder()
     return {
       code: out.code,
       stdout: dec.decode(out.stdout),
-      stderr: timedOut ? `timed out after ${timeoutMs}ms` : dec.decode(out.stderr),
+      stderr: out.timeoutReason ?? dec.decode(out.stderr),
     }
   } catch {
     return null
-  } finally {
-    clearTimeout(timer)
   }
 }
 

@@ -28,6 +28,12 @@ export type DebugFlag =
    * evict everything else from the 50-entry buffer.
    */
   | 'verbose'
+  /**
+   * One `[probe]` JSON line per tap after calibration (src/capture/probe-log.ts).
+   * The line travels over the `?debug=remote` relay, so a run that wants it off the
+   * phone arms both: `?debug=remote,probe`.
+   */
+  | 'probe'
 
 /**
  * True when `flag` appears in the current page's `?debug=` token list.

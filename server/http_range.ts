@@ -35,11 +35,19 @@ export type RangeParse =
   | { kind: 'unsatisfiable' }
 
 /**
+ * The most one 206 response carries. A player that asks for more (`bytes=0-` on a
+ * long clip) gets this much, with a `Content-Range` that says so, and asks again
+ * for the rest. Without the cap, one open-ended request allocated the whole file.
+ */
+export const MAX_RANGE_BYTES = 8 * 1024 * 1024
+
+/**
  * Parse a `Range` header against a known content size.
  *
  * A malformed or non-`bytes` header is `'none'`, not an error: the spec says an
  * unparseable Range must be ignored and the full representation served. Only a
- * *well-formed but unsatisfiable* range earns a 416.
+ * *well-formed but unsatisfiable* range earns a 416. A satisfiable span is capped
+ * at MAX_RANGE_BYTES, and the returned range is the capped one.
  */
 export function parseRange(header: string | null | undefined, size: number): RangeParse {
   if (!header || typeof header !== 'string') return { kind: 'none' }
@@ -68,21 +76,22 @@ export function parseRange(header: string | null | undefined, size: number): Ran
     if (!Number.isInteger(n) || n < 0) return { kind: 'none' }
     if (n === 0) return { kind: 'unsatisfiable' }
     // A suffix longer than the file is satisfied by the whole file, not refused.
-    const start = Math.max(0, size - n)
-    return { kind: 'ok', range: { start, end: size - 1 } }
+    // The tail kept is capped like every other span.
+    const span = Math.min(n, size, MAX_RANGE_BYTES)
+    return { kind: 'ok', range: { start: size - span, end: size - 1 } }
   }
 
   const start = Number(rawStart)
   if (!Number.isInteger(start) || start < 0) return { kind: 'none' }
   if (start >= size) return { kind: 'unsatisfiable' }
 
-  if (rawEnd === '') return { kind: 'ok', range: { start, end: size - 1 } }
+  if (rawEnd === '') return { kind: 'ok', range: { start, end: Math.min(size - 1, start + MAX_RANGE_BYTES - 1) } }
 
   const end = Number(rawEnd)
   if (!Number.isInteger(end) || end < 0) return { kind: 'none' }
   if (end < start) return { kind: 'unsatisfiable' }
   // An end past the file is clamped, per spec — not an error.
-  return { kind: 'ok', range: { start, end: Math.min(end, size - 1) } }
+  return { kind: 'ok', range: { start, end: Math.min(end, size - 1, start + MAX_RANGE_BYTES - 1) } }
 }
 
 /** Bytes covered by a parsed range. */

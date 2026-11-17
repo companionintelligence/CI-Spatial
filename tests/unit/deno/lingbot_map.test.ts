@@ -137,6 +137,15 @@ Deno.test('buildWorkerArgs forwards mps, which the old union could not express',
   assertEquals(args.slice(-2), ['--device', 'mps'])
 })
 
+Deno.test('buildWorkerArgs forwards xpu for Intel GPUs', () => {
+  const args = buildWorkerArgs({
+    scriptPath: '/srv/lingbot_map_worker.py',
+    sessionDir: '/srv/scans/sessions/sess-1-abc',
+    device: 'xpu',
+  })
+  assertEquals(args.slice(-2), ['--device', 'xpu'])
+})
+
 Deno.test('an unrecognised LINGBOT_MAP_DEVICE fails before spawning', async () => {
   // The worker's argparse `choices` would reject it too, but as an exit-2 with
   // no manifest, which surfaces as "worker exited 2 without writing a manifest"

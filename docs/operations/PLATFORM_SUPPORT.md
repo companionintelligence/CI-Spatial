@@ -57,7 +57,7 @@ GPU (driver presence only)
 
 Note what the last two tool rows say together: `/usr/bin/python3` exists and has **no torch**,
 while `~/.venvs/panoptic/bin/python` on the same machine has torch 2.13.0+cu130. torch is a
-per-interpreter fact, not a per-machine one, and `server/lingbot-map/lingbot_map.ts:115`
+per-interpreter fact, not a per-machine one, and `server/lingbot-map/lingbot_map.ts:446`
 defaults to the bare `python3`. Any table that reported "torch: yes" for this host would be
 lying about the process that actually needs it.
 
@@ -86,8 +86,8 @@ where that measurement lives.
    (`tests/unit/deno/capabilities.test.ts`, `tests/unit/deno/exec_probe.test.ts`).
    **UNVERIFIED on real Windows** — the tests prove the logic, not the host.
 2. Every runner builds its fallback install path from `HOME` alone
-   (`Deno.env.get('HOME') ?? '~'` — colmap_poses.ts:96, splat_train.ts:97,
-   spirula_train.ts:128, panoptic_scan.ts:38-39, splat_detect.ts:39-40). Windows normally sets
+   (`Deno.env.get('HOME') ?? '~'` — colmap_poses.ts:271, splat_train.ts:163,
+   spirula_train.ts:164-165, panoptic_scan.ts:57-58, splat_detect.ts:43-44). Windows normally sets
    `USERPROFILE`, not `HOME`, so on Windows those fallbacks degrade to the literal string
    `~/...` and resolve to nothing. `server/capabilities.ts` reads `USERPROFILE` as a second
    choice (`resolveHome`), so the **report** is right on Windows even where the **runners**
@@ -99,14 +99,20 @@ where that measurement lives.
 
 ## Accelerators
 
-| | NVIDIA / CUDA | AMD / ROCm | Apple Silicon / Metal + MPS | CPU only |
-| --- | --- | --- | --- | --- |
-| Driver detected by the report | **VERIFIED** (nvidia-smi) | UNVERIFIED (`rocminfo` / `rocm-smi` probe never exercised on AMD hardware) | UNVERIFIED (derived from `Deno.build`, no hardware) | n/a |
-| torch reports the device | **VERIFIED** — `2.13.0+cu130`, `cuda_available=True`, `version.hip=None` | UNVERIFIED | UNVERIFIED | **VERIFIED** — a torch-less `python3` is reported as such |
-| ffmpeg ingest | **VERIFIED** | UNVERIFIED | UNVERIFIED | works — ffmpeg here is CPU |
-| COLMAP poses | **VERIFIED** | UNVERIFIED | UNVERIFIED | works by design — `USE_GPU = '0'` in colmap_poses.ts, CPU feature extraction is the portable default |
-| Brush / Spirula training | UNVERIFIED (present, not run in this pass) | UNVERIFIED | UNVERIFIED | **Known not to work** — both need a Vulkan/Metal device |
-| 4D person capture (4DAnyone) | **Known not to work on this host** — needs ~44 GiB on one CUDA device; this GPU has 12282 MiB. Runs off-box only (ADR 0006) | UNVERIFIED | UNVERIFIED | Known not to work |
+| | NVIDIA / CUDA | AMD / ROCm | Apple Silicon / Metal + MPS | Intel / XPU | CPU only |
+| --- | --- | --- | --- | --- | --- |
+| Driver detected by the report | **VERIFIED** (nvidia-smi, on an RTX 4080 Laptop in the 2026-08-30 probe and an RTX 3070 on 2026-11-12) | UNVERIFIED (`rocminfo` / `rocm-smi` probe never exercised on AMD hardware) | UNVERIFIED (derived from `Deno.build`, no hardware) | UNVERIFIED — the report does not probe Intel GPU hardware; the torch check below is the only signal |
+| torch reports the device | **VERIFIED** — `2.13.0+cu130` (2026-08-30) and `2.11.0+cu128` on an RTX 3070 (2026-11-12): `cuda_available=True`, `version.hip=None` | UNVERIFIED | UNVERIFIED | UNVERIFIED — `torch.xpu.is_available()` is probed; a CUDA wheel answers `False` | **VERIFIED** — a torch-less `python3` is reported as such |
+| Worker device resolution (`scripts/_torch_device.py`) | **VERIFIED** on real torch 2.11.0+cu128, RTX 3070, 2026-11-12: auto → `cuda (NVIDIA CUDA, fp16)`; an fp16 autocast forward ran on the GPU; an explicit `xpu` request downgraded to CPU with a reason | UNVERIFIED — fake-torch unit tests only | UNVERIFIED — fake-torch unit tests only; workers set `PYTORCH_ENABLE_MPS_FALLBACK` | UNVERIFIED — fake-torch unit tests only; fp32 by policy | VERIFIED — the resolver's CPU path |
+| Panoptic segmentation (Mask2Former) | **VERIFIED** end to end on 2026-11-12, RTX 3070: two real phone frames → 10 segments, device `cuda (NVIDIA CUDA, fp16)` | UNVERIFIED | UNVERIFIED | UNVERIFIED | Unmeasured here |
+| ffmpeg ingest | **VERIFIED** | UNVERIFIED | UNVERIFIED | UNVERIFIED | works — ffmpeg here is CPU |
+| COLMAP poses | **VERIFIED** | UNVERIFIED | UNVERIFIED | UNVERIFIED | works by design — `USE_GPU = '0'` in colmap_poses.ts, CPU feature extraction is the portable default |
+| Brush / Spirula training | UNVERIFIED (present, not run in this pass) | UNVERIFIED (Vulkan) | UNVERIFIED (Brush needs Metal; Spirula has no macOS build here) | UNVERIFIED (Vulkan) | **Known not to work** — both need a Vulkan/Metal device |
+| 4D person capture (4DAnyone) | **Known not to work on this host** — needs ~44 GiB on one CUDA device; this GPU has 8192 MiB (RTX 4080 host: 12282 MiB). Runs off-box only (ADR 0006) | Not supported (NVIDIA-only) | Not supported | Not supported | Known not to work |
+| SenseNova Recon3D | Not run in this pass (needs CUDA 12.x and FlashAttention; `scripts/setup-sensenova-wsl.sh`) | Not supported | Not supported | Not supported | Not supported |
+
+Per-vendor setup, the stage-by-backend matrix and the environment variables are in
+[GPU_BACKENDS.md](GPU_BACKENDS.md).
 
 ### ROCm is not a separate branch, and must not become one
 
@@ -117,7 +123,7 @@ discriminator; `deriveAccelerator()` in `server/capabilities.ts` checks it first
 this reason, and the report prints `→ rocm` where a naive reading would print `→ cuda`.
 
 `server/splat/splat_detect.ts` is the one place already wired for AMD: it pins
-`HIP_VISIBLE_DEVICES` for the analyzer subprocess, defaulting to `"1"` (splat_detect.ts:94).
+`HIP_VISIBLE_DEVICES` for the analyzer subprocess, defaulting to `"1"` (splat_detect.ts:102).
 That default selects the *second* device, which is a deliberate pin for the multi-GPU host it
 was written on and will select a nonexistent device on a single-GPU AMD box. Set
 `HIP_VISIBLE_DEVICES=0` there. **UNVERIFIED** — no AMD hardware was available.
@@ -129,12 +135,12 @@ No Apple hardware was available, so everything in this section is UNVERIFIED by 
 - The report detects Apple Silicon from `Deno.build.os === 'darwin' && arch === 'aarch64'`.
   There is no `apple-smi` to ask, and every arm64 Mac has an integrated GPU, so the platform
   fact *is* the measurement. An Intel Mac correctly reports not-detected.
-- Python worker device selection (MPS included) now goes through `scripts/_torch_device.py`,
-  landing in a parallel change. Before it, `scripts/panoptic_worker.py` and
-  `scripts/lingbot_map_worker.py` each resolved `cuda` or `cpu` and never consulted
-  `torch.backends.mps`, so a Mac ran on CPU silently. Check that file for the current
-  behaviour rather than trusting this paragraph.
-- Brush's remediation string names Metal as supported (splat_train.ts:186-189). Untested here.
+- Python worker device selection (MPS included) goes through `scripts/_torch_device.py`,
+  which both `scripts/panoptic_worker.py` and `scripts/lingbot_map_worker.py` import. Before
+  it, they each resolved `cuda` or `cpu` and never consulted `torch.backends.mps`, so a Mac
+  ran on CPU silently. Check that file for the current behaviour rather than trusting this
+  paragraph.
+- Brush's remediation string names Metal as supported (splat_train.ts:257). Untested here.
 - Spirula publishes `ubuntu-vulkan-x86_64` releases; no macOS build is referenced anywhere in
   this repo, which is why the OS table calls it known-not-to-work rather than untested.
 
@@ -174,19 +180,15 @@ Deno server — it resolves ffmpeg from the `PATH` it started with, not the one 
 | 4D person capture on this fleet | `person-4d-reconstruct` needs ~44 GiB on one CUDA device. It delegates off-box by design and reports `skipped` with a hint when unconfigured — ADR 0006, `docs/pipelines/4d-person.md`. |
 | ffprobe missing while ffmpeg is present | `scripts/ingest-video.mjs` guards on ffmpeg and then calls ffprobe, so a single-binary install passes the guard and fails after it. The report gives them separate rows for this reason. |
 
-## Not yet wired into the product
+## The same report over HTTP
 
-The report is a module and a CLI. `GET /health` still reports only the inference model, so
-nothing in the running server surfaces any of this yet. Wiring it is one route in
-`server/main.ts`:
-
-```ts
-app.get('/capabilities', async (c) => c.json(await probeCapabilities()))
-```
-
-with `import { probeCapabilities } from './capabilities.ts'`. Pass `{ versions: false }` if it
-is ever called on a hot path — that makes it pure `stat` calls with no subprocesses, at the
-cost of the version strings and the torch blocks.
+`GET /capabilities` serves this report (`app.get('/capabilities', …)` in `server/main.ts`), and
+`?format=text` returns the table the CLI prints. The answer is cached for 30 seconds
+(`CAPABILITY_TTL_MS`), and concurrent misses share one probe. `?versions=0` is the cheap mode:
+pure `stat` calls with no subprocesses, at the cost of the version strings and the torch
+blocks. `?fresh=1` skips the cache, for the "I just installed it" case. With sign-in on, or
+`SCAN_REQUIRE_AUTH=1`, the route needs a Companion session like the other data routes
+(`SESSION_GUARDED_PATHS`). `GET /health` is separate and reports the inference engine.
 
 ## Related
 

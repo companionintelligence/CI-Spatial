@@ -10,10 +10,11 @@
  *         Node  "camera-path"               ← capture trajectory (THREE.Line)
  *         Node  "floor-plane"               ← estimated horizontal quad
  *         Group "detections"
- *           Node  "<safe-label>_NNN"        ← semantic object box
+ *           Node  "<safe-label>_NNN"              ← detection box; size NOT measured
  *                 extras: { objectType, class, roomName, floorName,
- *                           confidence, dimensions, sourceScanIds,
- *                           captureIndex, … }
+ *                           confidence, dimensionsEstimated: true,
+ *                           dimensionsBasis: "placeholder", placeholder: true,
+ *                           sourceScanIds, captureIndex, … }
  *
  * All metadata lives in node.userData which GLTFExporter writes to `extras`.
  *
@@ -30,16 +31,17 @@
  */
 import * as THREE from 'three'
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js'
-import type { DetectionStore } from '../scene/store'
+import type { DetectionStore, StoredDetection } from '../scene/store'
 import type { PointCloud } from '../scene/pointcloud'
 import type { Pose } from '../ar/provider'
 import { isQueuedOffline } from '../shared/offline-queue.ts'
-import { isServerSessionId } from '../shared/session-id.ts'
 import type { ScanProvenance } from '../shared/provenance'
 import type { ScanEntry } from '../project/project-store'
 import type { GeoFix } from '../geo/geo-tracker'
 import type { ScanQualitySummary } from '../world/types'
+import type { FrameEpochsSidecar } from '../ar/frame-epoch'
 import { apiUrl } from '../shared/api-base.ts'
+import { calibrationFrameIdOf } from '../world/frame-replacement.ts'
 
 // Per-category colour palette (used for detection boxes and semantic view)
 const LABEL_COLORS: Record<string, number> = {
@@ -83,6 +85,18 @@ function inferClass(label: string): string {
   return 'object'
 }
 
+/**
+ * Whether a detection gets a box in the GLB and an entry in the upload. The server numbers only
+ * the entries that survive detectionsFromMeta (server/main.ts), which drops an empty label and a
+ * position that is not a finite number (JSON writes NaN as null). This check drops the same
+ * entries, so both sides number the same boxes. Neither side trims the label, so a whitespace-only
+ * label is kept on both sides.
+ */
+function isBoxDetection(det: StoredDetection): boolean {
+  const { x, y, z } = det.worldPos
+  return det.label !== '' && Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)
+}
+
 export interface ExportData {
   store: DetectionStore
   pointCloud: PointCloud
@@ -90,6 +104,13 @@ export interface ExportData {
   scanEntry?: ScanEntry   // project/floor/room assignment (optional)
   geoFix?: GeoFix         // GPS/bearing/address at time of export (optional)
   qualitySummary?: ScanQualitySummary
+  /**
+   * Which stretches of tracking the scan was recorded in, and the discontinuities between
+   * them (`ScanFrameEpochLog.snapshot()`, src/ar/frame-epoch.ts). Written into the sidecar
+   * and the GLB extras as `frameEpochs`. Absent from a caller that does not track them,
+   * and then written as `null`, which says "not recorded", never "no shifts".
+   */
+  frameEpochs?: FrameEpochsSidecar
 }
 
 export interface ExportOptions {
@@ -132,7 +153,7 @@ export interface ExportResult {
 }
 
 export async function exportToGLB(data: ExportData, options: ExportOptions = {}): Promise<ExportResult> {
-  const { store, pointCloud, poseHistory, scanEntry, geoFix, qualitySummary } = data
+  const { store, pointCloud, poseHistory, scanEntry, geoFix, qualitySummary, frameEpochs } = data
   const {
     download = true,
     upload = true,
@@ -143,7 +164,16 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
   scene.name = 'room-scan'
 
   const bb = pointCloud.count > 0 ? pointCloud.boundingBox() : null
-  const floorY = pointCloud.count > 0 ? pointCloud.estimateFloorY() : 0
+  // The floor of the epoch the scan's earliest points are in, from the ground object kept for
+  // that epoch while scanning when there is one, else fitted afresh over that epoch's points.
+  // A cloud that spans a frame shift has a floor in each frame, and the lowest of all of them
+  // is not the floor of either. With no `frameEpochs` (a caller that does not track them) the
+  // fit is over every point, as it always was.
+  const floorEpoch = frameEpochs?.floorEpoch ?? undefined
+  const keptFloor = floorEpoch === undefined
+    ? undefined
+    : frameEpochs?.epochs.find((entry) => entry.epoch === floorEpoch)?.ground
+  const floorY = pointCloud.count > 0 ? (keptFloor?.y ?? pointCloud.estimateFloorY(floorEpoch)) : 0
   const floorName  = scanEntry?.floorId  ? `Floor_${scanEntry.floorId.slice(-4)}`  : 'Floor_Ground'
   const roomName   = scanEntry?.roomId   ? `Room_${scanEntry.roomId.slice(-4)}`    : 'Room_Unknown'
   const scanName   = scanEntry?.name     ?? `scan-${store.sessionId.slice(-6)}`
@@ -152,7 +182,11 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
   // when keyframe streaming never started, and a local id names no directory —
   // writing it here is what made every scan claim keyframes it did not have.
   // null is the honest value, and ScanManifest.sessionId already allows it.
-  const serverSessionId = isServerSessionId(store.sessionId) ? store.sessionId : null
+  //
+  // Only a session this page's AR run opened. A resumed record keeps the server id an earlier
+  // run streamed under, and those keyframes are in that run's frame: named here, they would
+  // tie this run's GLB and calibration to another run's frames (DetectionStore.serverSessionOfThisRun).
+  const serverSessionId = store.serverSessionOfThisRun
 
   // One timestamp for the whole export. The scene extras, every node stamp and
   // the upload metadata must agree; four separate `new Date()` calls could
@@ -167,6 +201,17 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
    */
   const nodeProvenance: ScanProvenance = { sessionId: serverSessionId, capturedAt }
 
+  // One snapshot of the detections for the whole export, taken before anything is built. The
+  // GLB's boxes and the upload's sidecar both read this list. GLTFExporter yields to the event
+  // loop, so reading the live store again after it could let a label edit or an erase split the
+  // file from its sidecar.
+  //
+  // Only the detections this page's AR run placed. The cloud, the poses and the calibration written below
+  // are all in this run's frame, and a detection an earlier run saved (a reload, a loaded session) has its
+  // position in another one: filed here it would be exported under a calibration it was never measured
+  // against. Those stay in the record and out of the file. See DetectionStore.currentRunDetections.
+  const boxes = [...store.currentRunDetections().values()].filter(isBoxDetection)
+
   scene.userData = {
     generator:       'ci-spatial',
     version:         '2.0',
@@ -179,9 +224,10 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
     areaId:          scanEntry?.areaId ?? null,
     autoSaved,
     pointCount:      pointCloud.count,
-    detectionCount:  store.detections.size,
+    detectionCount:  boxes.length,
     poseCount:       poseHistory.length,
     qualitySummary:  qualitySummary ?? null,
+    frameEpochs:     frameEpochs ?? null,
     calibration:     scanEntry?.calibration ?? null,
     boundingBox:     bb,
     floorY,
@@ -280,13 +326,13 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
   }
 
   // ── 4. Detected objects as labelled, metadata-rich boxes ─────────────────────
-  if (store.detections.size > 0) {
+  if (boxes.length > 0) {
     const detectionsGroup = new THREE.Group()
     detectionsGroup.name = 'detections'
     detectionsGroup.userData = { type: 'detections', roomName, floorName, ...nodeProvenance }
 
     let objIndex = 0
-    for (const [, det] of store.detections) {
+    for (const det of boxes) {
       objIndex++
       const [x1, y1, x2, y2] = det.bbox
       const bw = Math.max((x2 - x1) * 3.5, 0.25)
@@ -305,13 +351,22 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
       mesh.quaternion.set(det.worldRot.x, det.worldRot.y, det.worldRot.z, det.worldRot.w)
 
       const safeName = det.label.replace(/[^a-zA-Z0-9]/g, '_').replace(/^_+/, '') || 'Object'
-      mesh.name = `${safeName}_${String(objIndex).padStart(3, '0')}`
+      // The node name and objectId are the safe label, an underscore and the index. The index is
+      // the box's place among the boxes in this export, so it depends on isBoxDetection(): a
+      // detection the server drops (empty label, position not finite) gets no box and takes no
+      // number, and the boxes after it keep the numbers the server gives them. The viewer builds
+      // each LOD id from the scan id and the node name. The server builds the same id from the
+      // label and its place among the entries that survive detectionsFromMeta (server/main.ts),
+      // which uses the raw label, untrimmed. Renaming either side, or changing which boxes are
+      // numbered, orphans saved edits, hides and focus.
+      const objectId = `${safeName}_${String(objIndex).padStart(3, '0')}`
+      mesh.name = objectId
 
       mesh.add(new THREE.Mesh(boxGeo.clone(),
         new THREE.MeshBasicMaterial({ color: labelColor(det.label), wireframe: true, transparent: true, opacity: 0.8 })))
 
       mesh.userData = {
-        objectId:           mesh.name,
+        objectId:           objectId,
         objectType:         'detection',
         class:              inferClass(det.label),
         label:              det.label,
@@ -325,7 +380,16 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
         worldPos:           det.worldPos,
         worldRot:           det.worldRot,
         bbox:               det.bbox,
-        dimensions:         { w: bw, h: bh, d: bd },
+        // No `dimensions`. They were image fractions times fixed constants, written
+        // in metres with nothing to say they were guesses, and this file outlives
+        // the session. The box is still drawn at those sizes, as a placeholder.
+        // Leaving the field out hides nothing: the inspector measures the box itself
+        // and prints a Size row for every object. dimensionsEstimated is the flag the
+        // inspector reads: it labels that row "Estimated size" (viewer.ts).
+        dimensionsEstimated: true,
+        dimensionsBasis:    'placeholder',
+        // The placeholder marker. The node name carries none.
+        placeholder:        true,
         ...nodeProvenance,
         // Which capture produced this detection. It exists on WorldDetection,
         // is persisted to IndexedDB, and is the summary's "Scan #" column — the
@@ -372,13 +436,13 @@ export async function exportToGLB(data: ExportData, options: ExportOptions = {})
   const savedLocally = download ? triggerDownload(buffer, filename) : false
   console.log(
     `[export] GLB: ${(buffer.byteLength / 1024).toFixed(0)} KB,`,
-    `${pointCloud.count} pts, ${poseHistory.length} poses, ${store.detections.size} objects`,
+    `${pointCloud.count} pts, ${poseHistory.length} poses, ${boxes.length} objects`,
   )
 
   let uploadedFilename: string | undefined
   let uploadOutcome: UploadOutcome = 'skipped'
   if (upload) {
-    const result = await uploadToServer(buffer, filename, data, autoSaved, capturedAt, serverSessionId)
+    const result = await uploadToServer(buffer, filename, data, boxes, autoSaved, capturedAt, serverSessionId)
     uploadedFilename = result.filename
     uploadOutcome = result.outcome
   }
@@ -394,6 +458,11 @@ async function uploadToServer(
   buffer: ArrayBuffer,
   filename: string,
   data: ExportData,
+  /**
+   * The boxes the GLB was built from (see exportToGLB). Passed in rather than read from the store:
+   * this runs after GLTFExporter has yielded, and the live store may have changed since.
+   */
+  boxes: StoredDetection[],
   autoSaved: boolean,
   /** The export's single timestamp — same value the scene extras carry. */
   capturedAt: string,
@@ -406,16 +475,18 @@ async function uploadToServer(
    */
   serverSessionId: string | null,
 ): Promise<{ filename?: string; outcome: UploadOutcome }> {
-  const { store, pointCloud, poseHistory, scanEntry, geoFix, qualitySummary } = data
+  const { pointCloud, poseHistory, scanEntry, geoFix, qualitySummary, frameEpochs } = data
+  // The generation of the Place's reference the scan was measured against (WP-08), when its calibration names one.
+  const calibrationFrameId = calibrationFrameIdOf(scanEntry?.calibration)
   try {
     const metadata = JSON.stringify({
-      detectionCount: store.detections.size,
-      labels: [...store.detections.values()].map(d => d.label),
+      detectionCount: boxes.length,
+      labels: boxes.map(d => d.label),
       // `labels` above stays a plain string[] for process-scan's text summary
       // reader; this carries each detection's real world position/confidence
       // alongside its label so server-side thing-correspondence can match on
       // actual geometry instead of fabricating a position from array index.
-      detections: [...store.detections.values()].map(d => ({
+      detections: boxes.map(d => ({
         label: d.label,
         confidence: d.confidence,
         worldPos: d.worldPos,
@@ -434,6 +505,13 @@ async function uploadToServer(
       projectTransform: scanEntry?.calibration?.sessionToProject ?? null,
       calibrationMethod: scanEntry?.calibration?.method ?? null,
       calibrationStatus: scanEntry?.calibration?.status ?? 'uncalibrated',
+      // The unit the AR session ran in (src/world/scale-mode.ts), flat beside the tier as the two above
+      // are. The whole record below carries both as well.
+      scaleMode: scanEntry?.calibration?.scaleMode ?? null,
+      scaleKind: scanEntry?.calibration?.scaleKind ?? null,
+      // Flat as well as in the record below: a later job replaces that record, and the generation has to outlive it.
+      // Left off when the calibration names none, so a sidecar for an unknown generation is what it always was.
+      ...(calibrationFrameId === null ? {} : { calibrationFrameId }),
       calibration: scanEntry?.calibration ?? null,
       autoSaved,
       pointCount: pointCloud.count,
@@ -446,6 +524,9 @@ async function uploadToServer(
       qualityReflectiveWarnings: qualitySummary?.reflectiveWarnings ?? null,
       qualityRecommendations: qualitySummary?.recommendations ?? [],
       qualitySummary: qualitySummary ?? null,
+      // Which stretches of tracking the scan was recorded in. null when the caller did not
+      // track them, which an old sidecar also lacks; the server reads neither as "no shifts".
+      frameEpochs: frameEpochs ?? null,
       // Geo fields — written flat so the server can index them for /scan-locations
       geoLat:     geoFix?.lat          ?? null,
       geoLng:     geoFix?.lng          ?? null,

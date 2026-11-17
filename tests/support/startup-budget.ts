@@ -22,22 +22,26 @@
  *
  * That buys the thing a single browser sample cannot: the count for EVERY
  * subject x device, not just the one combination the mock happens to render.
- * It matters here — the mock renders 140 words, and the worst real case is 151
- * (a room or a building on a phone that advertises WebXR without having proven
- * it, which is the XREAL Beam Pro this capture ladder was built for, and which
- * adds an eleven-word hedge on top of three cards).
+ * It matters here. The mock renders 119 words. The worst screen before the boot
+ * line is 130: a room or a building on a phone that advertises WebXR without
+ * having proven it, which is the XREAL Beam Pro this capture ladder was built
+ * for, and which adds a twelve-word hedge on top of its recommendation. With
+ * that phone's boot line (bootHelpWords()) it is 142, the ceiling itself.
  *
- * ## What this does NOT count
+ * ## The boot-written help line
  *
- * `#ar-help` — the one or two sentences main.ts writes when no live path
- * exists at all ("To capture live, open this page in Safari, or install
- * HelloXR", 11 words). Its text is built inline in `showArHelp()` from the user
- * agent, not from a pure module, and mirroring those strings here would let
- * them drift silently. Excluding it is safe for the ceiling: the devices that
- * show it are the ones with no live rung, which top out at 123 words here, so
- * even with the sentence added they land ~17 short of the 151 that sets the
- * budget. If a live-capable device ever grows an `#ar-help`, that assumption is
- * void and this needs revisiting.
+ * `#ar-help` is written at boot, and it is counted here rather than left out.
+ * The screen's own words are `total`, the boot line is `bootHelp`, and the
+ * ceiling is held to `withBootHelp`, their sum. `total` keeps measuring the
+ * screen as drawn, so the pinned counts keep their meaning.
+ *
+ * `bootHelpWords()` takes the longest text probeVerdict() can write for a device
+ * class, and the longest line of main.ts's `showArHelp()` for the classes that
+ * reach it. The insecure line is charged though the boot never writes it: main.ts
+ * returns before the probe on an insecure page. `showArHelp()` is inline in main.ts
+ * and imports nothing pure, so its lines are mirrored, and
+ * `showArHelpLinesMissingFrom()` holds each one to
+ * main.ts's source: an edit there fails a test instead of drifting past this.
  *
  * The Playwright spec is what proves this model matches the DOM: it renders the
  * page and asserts the browser's own count equals `wordsBeforeCamera()` for the
@@ -53,14 +57,17 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import {
   SUBJECT_CHOICES,
+  deviceFromProbe,
   resolveCapture,
   type CaptureControlId,
   type CaptureSubject,
   type DeviceCapture,
   type MethodPlan,
 } from '../../src/capture/capture-intent.ts'
+import { probeVerdict, type ProbeEnv } from '../../src/ar/preflight.ts'
 import {
   SIGN_IN_FAILED,
+  SIGNED_OUT,
   ftueRowText,
   ftueRows,
   type EngineStatus,
@@ -106,6 +113,16 @@ import {
  * same seven words of slack went on top. That is a deliberate spend for the
  * rows the first-run screen now shows (Companion Memory, the model, sign-in),
  * not drift.
+ *
+ * Copy went to bullets on 2026-11-10: the worst screen dropped 135 -> 130.
+ * The ceiling stays 142, so the slack grows by five words.
+ *
+ * The boot-written `#ar-help` line is counted too, as `withBootHelp` (see
+ * bootHelpWords()). With it the worst screen is 142, on the native-advertised
+ * page whose caveat is twelve words, so that screen has no slack left. The no-AR
+ * screens for a place or a person reach 142 too, with their 14-word no-AR line.
+ * A longer caveat has to come out of the copy; it cannot be paid for with this
+ * ceiling.
  */
 export const WORDS_BEFORE_CAMERA_MAX = 142
 
@@ -185,8 +202,14 @@ function attr(attrs: string, name: string): string | null {
  * Playwright spec has to survive: subtrees carrying the `hidden` attribute
  * (the runtime slots — `#capture-note`, `#ar-help`, `#upload-video-open` — and
  * the two method cards that ship hidden), subtrees named in `skipIds` (the
- * method cards, whose every word including the `.start-path-status` line is
- * rewritten by `renderCaptureChoice()`), and `<svg>`/`<style>`/`<script>`.
+ * method cards, whose title, action and result renderCaptureChoice() writes, and
+ * which wordsBeforeCamera() counts from the same table), and `<svg>`/`<style>`/`<script>`.
+ *
+ * Not counted: the `.start-path-status` line in the AR card. renderCaptureChoice()
+ * never writes it. setStartButtonState() does, and CSS shows it only while the
+ * start button is disabled. Its text is the label setStartButtonState() was given
+ * (or "Not available on this device"), the "Preparing…" default from index.html,
+ * or the "Still loading" line the inline script writes at 10 s.
  *
  * A tag-stack walk rather than a regex per element: `hidden` has to hide a
  * subtree, not a tag, and getting that wrong under-counts, which is the one
@@ -339,8 +362,10 @@ export function readStaticCopy(html: string = indexHtml()): StaticCopy {
  * against it, is the default.
  */
 export function ftueStatusWordsMax(shell = false): number {
-  const memory: Array<MemoryStatus | null> = [
+  const memory: Array<MemoryStatus | typeof SIGNED_OUT | null> = [
     null,
+    // Companion Memory's 401: the signed-out copy, which is shown while sign-in is on.
+    SIGNED_OUT,
     { enabled: false },
     { enabled: true, reachable: false },
     { enabled: true, reachable: true },
@@ -374,6 +399,7 @@ export interface ScreenWords {
    * the chrome, the recommendation, the note, and the disclosure's own label.
    * The methods behind the disclosure are NOT in here — they are not on screen
    * until someone asks for them, which is the whole point of the control.
+   * The boot-written #ar-help line is not in here either; it is `bootHelp`.
    */
   total: number
   /** The same screen with the disclosure open. What #223 shipped as `total`. */
@@ -398,6 +424,14 @@ export interface ScreenWords {
    * to this ceiling, not to equality, because the answers depend on the server.
    */
   status: number
+  /**
+   * The boot-written `#ar-help` line for this device class, worst case (see
+   * bootHelpWords()). Not in `total`: the pinned counts measure the screen as it
+   * is drawn, and this is added on top of that.
+   */
+  bootHelp: number
+  /** `total` plus `bootHelp`: the number WORDS_BEFORE_CAMERA_MAX is held to. */
+  withBootHelp: number
 }
 
 /**
@@ -437,9 +471,12 @@ export function wordsBeforeCamera(
   const total = fixed + (cards[0]?.words ?? 0)
   const totalExpanded = fixed + cards.reduce((a, c) => a + c.words, 0)
 
+  const bootHelp = bootHelpWords(device)
+
   return {
     total, totalExpanded, onboarding: copy.onboarding, chrome: copy.chrome,
     disclosure, cards, alternatives, note, status: copy.status,
+    bootHelp, withBootHelp: total + bootHelp,
   }
 }
 
@@ -485,4 +522,132 @@ export function allCases(copy: StaticCopy = readStaticCopy()): Case[] {
 export const MOCK_CASE = {
   subject: 'room' as CaptureSubject,
   device: { secureContext: true, nativeAr: 'no', browserAr: 'yes' } as DeviceCapture,
+}
+
+// ── The boot-written help line ──────────────────────────────────────────────
+
+/**
+ * Every probe state the boot can hand to probeVerdict(): the four flags, all
+ * sixteen combinations. Enumerated rather than listed, so a flag or a branch
+ * added to the probe is swept without anyone adding a row here.
+ */
+export function allProbeEnvs(): ProbeEnv[] {
+  const out: ProbeEnv[] = []
+  for (const secureContext of [true, false]) {
+    for (const xr8Loaded of [true, false]) {
+      for (const webxrApi of [true, false]) {
+        for (const immersiveArAdvertised of [true, false]) {
+          out.push({ secureContext, xr8Loaded, webxrApi, immersiveArAdvertised })
+        }
+      }
+    }
+  }
+  return out
+}
+
+function deviceKey(device: DeviceCapture): string {
+  return String(device.secureContext) + '/' + device.nativeAr + '/' + device.browserAr
+}
+
+/** A readable name for a device class, for failure messages. */
+function describeDevice(device: DeviceCapture): string {
+  const page = device.secureContext ? 'secure page' : 'insecure page'
+  const native = device.nativeAr === 'unknown'
+    ? 'native advertised'
+    : device.nativeAr === 'yes' ? 'native proven' : 'no native AR'
+  const browser = device.browserAr === 'yes' ? 'in-browser engine loaded' : 'no in-browser engine'
+  return page + ', ' + native + ', ' + browser
+}
+
+/** The device classes the probe can produce, each once. */
+export function probeDevices(): DeviceCapture[] {
+  const seen = new Map<string, DeviceCapture>()
+  for (const env of allProbeEnvs()) {
+    const device = deviceFromProbe(env)
+    seen.set(deviceKey(device), device)
+  }
+  return [...seen.values()]
+}
+
+/**
+ * The lines main.ts's showArHelp() can put in #ar-help on the no-runtime path.
+ *
+ * Mirrored, not imported: showArHelp() is inline in main.ts and imports nothing
+ * pure. Each entry carries an anchor, a literal that must still appear in main.ts,
+ * and showArHelpLinesMissingFrom() checks them. The desktop line's origin is a
+ * placeholder: it is one whitespace-free token whatever the real origin is, so
+ * the count does not depend on it.
+ */
+export const SHOW_AR_HELP_LINES: ReadonlyArray<{ line: string, anchor: string }> = [
+  // Written when the reason has no next step of its own: one line per platform.
+  { line: 'To capture live in Safari, use the main scanner, or install HelloXR.', anchor: 'To capture live in Safari, use the main scanner, or install HelloXR.' },
+  { line: 'Live capture needs Chrome with Play Services for AR.', anchor: 'Live capture needs Chrome with Play Services for AR.' },
+  { line: 'To capture live, open this on a phone: https://scanner.invalid', anchor: 'To capture live, open this on a phone:' },
+  { line: 'The desktop app cannot capture. Scan on a phone.', anchor: 'The desktop app cannot capture. Scan on a phone.' },
+  // The reasons that carry a next step: the step replaces the platform line.
+  { line: 'Reload the page to try again', anchor: 'Reload the page to try again' },
+  { line: 'Reload the page. If it keeps failing, the server may be down', anchor: 'Reload the page. If it keeps failing, the server may be down' },
+]
+
+function mainSource(): string {
+  return readFileSync(REPO_ROOT + 'src/main.ts', 'utf8')
+}
+
+/** The lines whose anchor main.ts no longer carries. Empty while the mirror is current. */
+export function showArHelpLinesMissingFrom(source: string = mainSource()): string[] {
+  return SHOW_AR_HELP_LINES.filter((entry) => !source.includes(entry.anchor)).map((entry) => entry.line)
+}
+
+/** The most words showArHelp() can write into #ar-help. */
+export function showArHelpWordsMax(): number {
+  return Math.max(...SHOW_AR_HELP_LINES.map((entry) => countWords(entry.line)))
+}
+
+/**
+ * The most words the boot can write into #ar-help for this device class.
+ *
+ * Two writers reach #ar-help at boot. They never both run in one boot, so the
+ * answer is the longer of their texts, not a sum:
+ *
+ *   - applyPreflightToStartScreen() writes probeVerdict()'s detail when the
+ *     verdict's caveat is set. Every probe state that maps onto this class is
+ *     counted, not only the ones main.ts reaches today: createWebXRProvider() and
+ *     isImmersiveARSupported() each ask the browser, and when their answers
+ *     disagree the boot reaches the no-AR details, so the budget does not depend
+ *     on which states happen to be reachable. The insecure page is the one class
+ *     charged for a line the boot never writes: main.ts returns before the probe.
+ *   - showArHelp() writes its line on the no-runtime path. That path needs the
+ *     in-browser engine to have failed (browserAr 'no') on a secure page, because
+ *     the insecure branch returns before it. It is counted for every such class,
+ *     native-advertised ones included.
+ */
+export function bootHelpWords(device: DeviceCapture): number {
+  let worst = 0
+  for (const env of allProbeEnvs()) {
+    if (deviceKey(deviceFromProbe(env)) !== deviceKey(device)) continue
+    const verdict = probeVerdict(env)
+    if (verdict.caveat) worst = Math.max(worst, countWords(verdict.detail))
+  }
+  if (device.secureContext && device.browserAr === 'no') {
+    worst = Math.max(worst, showArHelpWordsMax())
+  }
+  return worst
+}
+
+/**
+ * Every screen the boot can draw: each subject on each device class the probe
+ * can produce, with the boot-written help line counted. Worst first, by the
+ * number WORDS_BEFORE_CAMERA_MAX is held to.
+ */
+export function bootCases(copy: StaticCopy = readStaticCopy()): Case[] {
+  const out: Case[] = []
+  for (const subject of SUBJECTS) {
+    for (const device of probeDevices()) {
+      out.push({
+        subject, deviceName: describeDevice(device), device,
+        words: wordsBeforeCamera(subject, device, copy),
+      })
+    }
+  }
+  return out.sort((a, b) => b.words.withBootHelp - a.words.withBootHelp)
 }

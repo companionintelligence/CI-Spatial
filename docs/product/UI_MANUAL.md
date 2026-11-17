@@ -351,11 +351,11 @@ re-scanning. Implemented in `src/ui/history.ts`; map in `src/main.ts:884-947`.
 | Element | Behaviour | Source |
 |---|---|---|
 | **✕ / backdrop / Escape** | Three ways to close. | `history.ts:26-36` |
-| **Geo map** | Lazy-initialised Leaflet map on first open — dark CARTO tiles, mint dot = current GPS fix, red dots = every server-side scan location (`/scan-locations`), with address popups. Placeholder "Acquiring location…" until then. | `src/main.ts:1359-1437`, markup `index.html:1225-1232` |
+| **Geo map** | Lazy-initialised Leaflet map on first open — a basemap only when the Scan server names one (`MAP_TILE_SOURCE`; none by default, so the pins sit on a blank canvas under a "No basemap configured" line), mint dot = current GPS fix, red dots = every server-side scan location (`/scan-locations`), with address popups. Placeholder "Acquiring location…" until then. | `src/main.ts:1359-1437`, markup `index.html:1225-1232` |
 | **Session card** | "Today 07:54 AM · 4 objects · \<id suffix\>"; header click expands an inline detection list (animated max-height). | `history.ts:78-179` |
-| **↩ load** | Loads that session's detections into the live store and closes the drawer — pins reappear in AR. | `history.ts:117-126` |
+| **↩ load** | Makes that session the open one and closes the drawer. Only objects the current AR run placed are drawn as pins, counted in the panel and exported; the ones an earlier run saved are in another frame, so they are not (they stay listed here). | `history.ts:117-126` |
 | **✕ delete** (red-tinted) | Fades the card out and deletes the session from IndexedDB. **No confirmation.** | `history.ts:128-141` |
-| Detection rows (expanded) | Colour dot, label, coords, confidence; for the **active** session only: ☑/☐ select toggle and ✏ edit popover (save/cancel). Non-active sessions are read-only. | `history.ts:233-331` |
+| Detection rows (expanded) | Colour dot, label, coords, confidence; "previous run, different frame" on an object an earlier AR run saved. For the **active** session only: ☑/☐ select toggle (not on an earlier run's object) and ✏ edit popover (save/cancel). Non-active sessions are read-only. | `history.ts:233-331` |
 
 ### Design intent
 

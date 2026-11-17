@@ -12,7 +12,7 @@ import {
   PAIRING_TRIGGER_BYTES,
   DJI_MANUFACTURER_PREFIX,
 } from '../protocol/constants.mjs';
-import { MsgIdSequence, buildSetPairingPin } from '../protocol/commands.mjs';
+import { MsgIdSequence, buildSetPairingPin, buildGimbalSpeedControl } from '../protocol/commands.mjs';
 import { decodeQuaternion } from '../protocol/telemetry.mjs';
 import { deriveLinkState, describeLink, isLinked, isStreaming, isStaleHandleError, isTransientLinkError } from '../protocol/link_state.mjs';
 
@@ -24,6 +24,24 @@ const STALE_HANDLE_DROP_MS = 2000;
 const STALE_HANDLE_SETTLE_MS = 250;
 /** Cap on peripheral.disconnectAsync(), which never resolves for a handle that is already gone. */
 const DISCONNECT_TIMEOUT_MS = 2000;
+/**
+ * Cap on the zero-speed write disconnect() sends first. A write to a link that has silently gone
+ * can hang, and a hung stop must not hold the disconnect open.
+ */
+const STOP_WRITE_TIMEOUT_MS = 2000;
+/**
+ * Cap on one GATT write in sendRaw(). A write to a link that has silently gone never answers, and an
+ * external motion holds the gimbal interlock for as long as its write is pending. Generous for a healthy
+ * link (a write with response takes tens of milliseconds), so it fires only on a link that is gone.
+ */
+const WRITE_TIMEOUT_MS = 2000;
+/**
+ * Cap on the pairing trigger's write. That write is the one that makes the OS show its confirmation dialog,
+ * and it may hold until someone answers that dialog, so the 2 s motion cap could cut it short. Still finite:
+ * a link that has gone must fail the request, not hold it open. Hardware checking of when the write returns
+ * is pending, see the README.
+ */
+export const PAIRING_TRIGGER_TIMEOUT_MS = 60000;
 /**
  * How many times connect() re-tries a link that failed in a way a retry can fix.
  *
@@ -74,6 +92,10 @@ export class OsmoBleTransport extends EventEmitter {
     this._nobleModule = null;
     this._peripheral = null;
     this._connecting = false;
+    /** Bumped on every link reset. A write that spans a reset must not latch the characteristic it used. */
+    this._linkGeneration = 0;
+    /** The disconnect still stopping the gimbal, if one is running. connect() waits for it. */
+    this._disconnecting = null;
     this._writeChar = null; // latched Characteristic once we know which one the device accepts
     this._notifyChars = [];
     this._writeCandidates = [];
@@ -206,6 +228,9 @@ export class OsmoBleTransport extends EventEmitter {
    *      Errors a retry cannot fix (wrong device, wedged gimbal) still fail on the first attempt.
    */
   async connect(peripheralId, { attempts = CONNECT_ATTEMPTS } = {}) {
+    // A disconnect that is still stopping the gimbal owns the current link until it finishes.
+    // Connecting now would let that disconnect tear the new link down, so wait for it first.
+    if (this._disconnecting) await this._disconnecting.catch(() => {});
     const noble = await this._noble();
     await noble.waitForPoweredOnAsync(10000);
     let lastError;
@@ -418,10 +443,13 @@ export class OsmoBleTransport extends EventEmitter {
    * Osmo model, but on real hardware tested here its GATT properties are notify-only (no
    * write/writeWithoutResponse at all), so a hardcoded fff4 write always fails with a GATT-level
    * "Write Not Permitted" before ever reaching the device.
+   *
+   * Capped at PAIRING_TRIGGER_TIMEOUT_MS rather than the 2 s motion cap, because the OS confirmation
+   * dialog this write may hold open waits on a person.
    */
   async triggerPairing() {
     if (!this._peripheral) throw new Error('triggerPairing(): not connected');
-    await this.sendRaw(PAIRING_TRIGGER_BYTES);
+    await this.sendRaw(PAIRING_TRIGGER_BYTES, { timeoutMs: PAIRING_TRIGGER_TIMEOUT_MS });
   }
 
   /**
@@ -431,6 +459,8 @@ export class OsmoBleTransport extends EventEmitter {
    */
   async pair(pin, { identifier, timeoutMs = 4000 } = {}) {
     if (!this._peripheral) throw new Error('pair(): not connected');
+    // The link this pairing started on, checked before `_paired` is latched (the same check sendRaw uses).
+    const generation = this._linkGeneration;
 
     await this.triggerPairing();
     await sleep(1000);
@@ -443,33 +473,66 @@ export class OsmoBleTransport extends EventEmitter {
       throw new Error('pair(): no response to SetPairingPIN on either fff5 or fff3 — device may use a different characteristic mapping than researched, or may not be in range/pairing mode');
     }
     const status = response.payload.length >= 2 ? response.payload[1] : response.payload[0];
-    this._paired = true; // latch write channel regardless; treat any response as forward progress
+    // Latch only if the link is still the one this pairing started on. A teardown during the wait has
+    // already cleared the pairing, and a response that arrives after it must not latch it again.
+    if (generation === this._linkGeneration) this._paired = true;
     return { alreadyPaired: status === 0x01, pairingRequired: status === 0x02, raw: response };
   }
 
   /**
    * Write a pre-built DUML frame using the latched write characteristic, probing candidates
-   * on the first call if none is latched yet.
+   * on the first call if none is latched yet. `timeoutMs` caps each write; the default is the motion cap.
    */
-  async sendRaw(frameBytes) {
+  async sendRaw(frameBytes, { timeoutMs = WRITE_TIMEOUT_MS } = {}) {
     if (this._writeChar) {
-      await this._writeChar.characteristic.writeAsync(Buffer.from(frameBytes), !this._writeChar.withResponse);
+      await this._writeCapped(this._writeChar, frameBytes, timeoutMs);
       return;
     }
+    const generation = this._linkGeneration;
     for (const candidate of this._writeCandidates) {
       try {
-        await candidate.characteristic.writeAsync(Buffer.from(frameBytes), candidate.withResponse === false);
-        this._writeChar = candidate;
+        await this._writeCapped(candidate, frameBytes, timeoutMs);
+        // Latch only if the link is still the one this write started on. A teardown during the write
+        // has already cleared the link, and a stale latch would send every later frame to a dead handle.
+        if (generation === this._linkGeneration) this._writeChar = candidate;
         return;
-      } catch {
-        // try next candidate
+      } catch (err) {
+        // A write that never answered means the link is gone, not that this characteristic is the wrong
+        // one, so the frame is not sent again on the next candidate.
+        if (err.timedOut) throw err;
+        // otherwise try next candidate
       }
     }
     throw new Error('sendRaw(): failed to write on any known characteristic (fff5, fff3)');
   }
 
+  /**
+   * One GATT write, rejected with `timedOut` set if it has not answered within `timeoutMs`.
+   * Without the cap, a write that never returns holds its caller forever, and an external motion
+   * holds the gimbal interlock for as long as its write is pending.
+   */
+  async _writeCapped(candidate, frameBytes, timeoutMs = WRITE_TIMEOUT_MS) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        const err = new Error(`sendRaw(): no answer to a write on ${candidate.uuid} within ${timeoutMs} ms — the link is probably gone.`);
+        err.timedOut = true;
+        reject(err);
+      }, timeoutMs);
+    });
+    try {
+      await Promise.race([
+        candidate.characteristic.writeAsync(Buffer.from(frameBytes), candidate.withResponse === false),
+        timeout,
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   /** Internal: write + wait for a matching response frame, trying each write candidate in order. */
   async _writeAndAwaitResponse(frameBytes, { cmdSet, cmdId, timeoutMs }) {
+    const generation = this._linkGeneration;
     for (const candidate of this._writeCandidates) {
       const waiter = this._waitForFrame((f) => f.cmdSet === cmdSet && f.cmdId === cmdId && (f.flags & 0x80) !== 0, timeoutMs);
       try {
@@ -479,7 +542,7 @@ export class OsmoBleTransport extends EventEmitter {
       }
       const response = await waiter;
       if (response) {
-        this._writeChar = candidate;
+        if (generation === this._linkGeneration) this._writeChar = candidate;
         return response;
       }
     }
@@ -519,6 +582,7 @@ export class OsmoBleTransport extends EventEmitter {
    * a state getter lie.
    */
   _resetLinkState() {
+    this._linkGeneration += 1;
     for (const { characteristic, handler } of this._notifySubs) characteristic.removeListener('data', handler);
     this._notifySubs = [];
     if (this._disconnectSub) {
@@ -559,7 +623,33 @@ export class OsmoBleTransport extends EventEmitter {
     this.emit('disconnect');
   }
 
+  /**
+   * Drop the link, stopping the motors first.
+   *
+   * The gimbal's speed command is a latch: a link torn down while a speed is outstanding leaves the
+   * gimbal driving, and nothing can reach it once the link is gone. So the zero-speed frame goes out
+   * before _teardown() clears the write characteristic. It is gated on `linked`, not `connected`,
+   * for the reason stopMotors() in backend.mjs gives: a link that has stopped reporting is the one
+   * most likely to be latched. Every caller is covered this way: POST /api/disconnect, the macOS
+   * unpair, and any caller added later.
+   */
   async disconnect() {
+    // Published as pending, so a connect() that starts during the stop window waits for this teardown
+    // instead of being torn down by it. The stop write awaits, and the link must not change under it.
+    const run = this._stopAndTeardown();
+    this._disconnecting = run;
+    try {
+      await run;
+    } finally {
+      if (this._disconnecting === run) this._disconnecting = null;
+    }
+  }
+
+  /** The stop and the teardown of the link that was up when disconnect() was called. */
+  async _stopAndTeardown() {
+    if (this.linked) {
+      await withTimeout(this.sendRaw(buildGimbalSpeedControl(this.nextMsgId(), {})), STOP_WRITE_TIMEOUT_MS);
+    }
     await this._teardown();
   }
 }

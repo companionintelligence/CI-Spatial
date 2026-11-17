@@ -1,7 +1,7 @@
 /**
  * Where the Scan server is, as seen from the page (src/shared/api-base.ts): the URL
- * helpers, and the server address a native shell keeps on the device. Storage, the
- * shell globals and `location` are stand-ins, so this runs in Node.
+ * helpers, which native shell the page is in, and the server address a shell keeps on
+ * the device. Storage, the shell globals and `location` are stand-ins, so this runs in Node.
  *
  * Run: npm run test:api-base
  */
@@ -15,6 +15,8 @@ import {
   apiCredentials,
   apiUrl,
   editorPath,
+  isAndroidShell,
+  isCapacitorShell,
   isDesktopShell,
   isNativeShell,
   parseServerAddress,
@@ -68,7 +70,12 @@ test('credentials: cookies stay first-party without a base, and cross to a confi
 
 // ── The Scan server address a native shell keeps on the device ─────────────────────────────
 
-type Shell = 'browser' | 'capacitor' | 'tauri'
+/**
+ * 'capacitor' is a Capacitor shell that does not say which platform it is (it answers isNativePlatform() only).
+ * 'android' and 'ios' are what the bridge Capacitor injects into each app really answers: isNativePlatform() true,
+ * and getPlatform() naming the platform.
+ */
+type Shell = 'browser' | 'capacitor' | 'android' | 'ios' | 'tauri'
 
 /** Runs `body` as a page in `shell`, with an in-memory localStorage. Puts every global back afterwards. */
 function asPage(shell: Shell, body: (storage: Map<string, string>, events: string[]) => void): void {
@@ -87,6 +94,7 @@ function asPage(shell: Shell, body: (storage: Map<string, string>, events: strin
   put('dispatchEvent', (event: Event) => { events.push(event.type); return true })
   put('location', { protocol: 'https:', host: 'localhost', origin: 'https://localhost' })
   if (shell === 'capacitor') put('Capacitor', { isNativePlatform: () => true })
+  else if (shell === 'android' || shell === 'ios') put('Capacitor', { isNativePlatform: () => true, getPlatform: () => shell })
   else delete g['Capacitor']
   if (shell === 'tauri') put('__TAURI_INTERNALS__', {})
   else delete g['__TAURI_INTERNALS__']
@@ -196,5 +204,42 @@ test('saving into blocked storage reports false and changes nothing', () => {
     })
     assert.equal(saveServerAddress('https://scan.example.ts.net'), false)
     assert.equal(apiBase(), '')
+  })
+})
+
+// ── Which Capacitor shell: ARCore runs in the Android app alone ────────────────────────────
+
+test('isAndroidShell: the Android app and nothing else, though iOS is a Capacitor shell too', () => {
+  const expected: Record<Shell, boolean> = { browser: false, capacitor: false, android: true, ios: false, tauri: false }
+  for (const [shell, isAndroid] of Object.entries(expected) as Array<[Shell, boolean]>) {
+    asPage(shell, () => assert.equal(isAndroidShell(), isAndroid, shell))
+  }
+  // Why the predicate is its own: the bridge of the iOS app reports a native platform just as Android's does.
+  asPage('ios', () => {
+    assert.equal(isCapacitorShell(), true)
+    assert.equal(isNativeShell(), true)
+  })
+  asPage('android', () => {
+    assert.equal(isCapacitorShell(), true)
+    assert.equal(isDesktopShell(), false)
+  })
+})
+
+test('isAndroidShell: a Capacitor object that does not name Android is not Android', () => {
+  asPage('browser', () => {
+    const answers: Array<[string, unknown]> = [
+      ['no object', undefined],
+      ['null', null],
+      ['an empty object', {}],
+      ['a bridge that says it is native and not which platform', { isNativePlatform: () => true }],
+      ['the web platform', { isNativePlatform: () => false, getPlatform: () => 'web' }],
+      ['a platform that names nothing', { isNativePlatform: () => true, getPlatform: () => undefined }],
+      // The shells nest: the Android app is a Capacitor shell, and a Capacitor shell is a native one.
+      ['a bridge that names Android and says it is not native', { isNativePlatform: () => false, getPlatform: () => 'android' }],
+    ]
+    for (const [name, capacitor] of answers) {
+      Object.defineProperty(globalThis, 'Capacitor', { value: capacitor, configurable: true, writable: true })
+      assert.equal(isAndroidShell(), false, name)
+    }
   })
 })

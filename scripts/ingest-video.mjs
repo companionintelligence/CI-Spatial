@@ -34,6 +34,7 @@
  * stdout as the LAST line (the /ingest-video server route parses exactly that).
  */
 import { execFileSync, spawnSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { mkdir, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { filterBlurryFrames } from './ingest-quality.mjs'
@@ -143,12 +144,13 @@ function resolveFps(explicitFps, durationSeconds) {
 }
 
 async function defaultSessionId() {
-  // sess-video-<yyyymmdd-hhmmss> derived from the video's mtime so re-ingesting
-  // the same file is stable-ish; callers wanting uniqueness pass --session-id.
+  // Used only when no --session-id is given; the server always passes one. The stamp is the
+  // video's mtime to the second, so two uploads in the same second would share it. The random
+  // tail is what keeps each default id unique.
   const info = await stat(VIDEO)
   const iso = new Date(info.mtimeMs).toISOString() // 2026-07-04T12:34:56.789Z
   const stamp = iso.slice(0, 19).replace(/[T:]/g, '').replace(/-/g, '')
-  return `sess-video-${stamp.slice(0, 8)}-${stamp.slice(8, 14)}`
+  return `sess-video-${stamp.slice(0, 8)}-${stamp.slice(8, 14)}-${randomUUID().slice(0, 8)}`
 }
 
 async function main() {
@@ -160,7 +162,18 @@ async function main() {
     process.exit(2)
   }
   const sessionDir = path.join(SESSIONS_DIR, sessionId)
-  await mkdir(sessionDir, { recursive: true })
+  // The directory must be new. Reusing one would mix this clip's frames with an earlier run's
+  // leftovers, and the caller would see success either way.
+  await mkdir(SESSIONS_DIR, { recursive: true })
+  try {
+    await mkdir(sessionDir)
+  } catch (err) {
+    if (err?.code === 'EEXIST') {
+      console.error(`error: session ${sessionId} already exists; pass a new --session-id`)
+      process.exit(2)
+    }
+    throw err
+  }
 
   const durationSeconds = probeDurationSeconds(VIDEO)
   const FPS = resolveFps(args.fps, durationSeconds)

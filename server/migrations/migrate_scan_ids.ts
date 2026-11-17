@@ -39,9 +39,17 @@
  * Usage:
  *   deno run --allow-read --allow-write --allow-env migrate_scan_ids.ts
  *   deno task migrate-scan-ids
+ *   deno task migrate-scan-ids -- --force-clear   (only when a run must clear more than
+ *                                                  SESSION_CLEAR_LIMIT session links)
+ *
+ * Before the first write, every world file is copied to
+ * `<WORLDS_DIR>/.pre-migrate-<timestamp>/`. A run refuses, and writes nothing,
+ * when the sessions directory is missing while a world still holds session links,
+ * or when it would clear more than SESSION_CLEAR_LIMIT links without --force-clear.
  *
  * Env (same names/defaults as main.ts's own knobs):
- *   WORLDS_DIR  default ./worlds  — where <slug>.json world files live
+ *   WORLDS_DIR    default ./worlds  — where <slug>.json world files live
+ *   SESSIONS_DIR  default ${SCANS_DIR}/sessions — where capture sessions live
  */
 import type { ScanManifest, WorldProject } from '../../src/world/types.ts'
 import { withWorldLock } from '../world/world_lock.ts'
@@ -89,8 +97,21 @@ export interface MigrateScanIdsOptions {
    * (ticket 0002). Omit to migrate scan ids only.
    */
   sessionsDir?: string
+  /**
+   * Allow more than {@link SESSION_CLEAR_LIMIT} session links to be cleared in
+   * one run. Off by default: a run that clears many links is more often a wrong
+   * SESSIONS_DIR than a real sweep of phantom ids, so the operator must say so.
+   */
+  forceClear?: boolean
   log?: (line: string) => void
 }
+
+/**
+ * How many session links one run may clear without `forceClear`. A sweep of
+ * genuine phantom ids is a handful per world; a run clearing more than this
+ * is more likely reading the wrong sessions directory. UNTUNED.
+ */
+export const SESSION_CLEAR_LIMIT = 10
 
 export interface MigrationSummary {
   worlds: WorldMigrationResult[]
@@ -98,7 +119,7 @@ export interface MigrationSummary {
 }
 
 /**
- * Upload recency within a collided group. `createScanFileExclusive` prefixes
+ * Upload recency within a collided group. `storeUploadedScan` prefixes
  * every upload with `${Date.now()}_`, so the prefix is both the most precise
  * and the most available signal; `capturedAt` is the fallback for a filename
  * that has no prefix (a `registerSessionScan` synthetic name, say). Both are
@@ -281,6 +302,45 @@ export function migrateWorldScanIds(
   return result
 }
 
+/** One world file as the dry pass saw it, before any write. */
+interface PlannedWorld {
+  name: string
+  path: string
+  /** Scans that carried a sessionId before the migration touched them. */
+  links: number
+  result: WorldMigrationResult
+}
+
+/**
+ * Parse one world file and check it has the shape a migration can work on.
+ * Throws rather than skipping a file it cannot read: a world that cannot be
+ * read still has patches and jobs naming split ids, and "nothing to migrate"
+ * would tell an operator the opposite. Same stance as migrate_jobs.ts takes on
+ * a malformed jobs.json.
+ */
+async function readWorldFile(path: string): Promise<WorldProject> {
+  const raw = await Deno.readTextFile(path)
+  let world: WorldProject
+  try {
+    world = JSON.parse(raw) as WorldProject
+  } catch (err) {
+    throw new Error(
+      `[migrate-scan-ids] ${path} exists but is not valid JSON, so its scan ids cannot be ` +
+        `migrated. Refusing to skip it silently — fix or move the file, then re-run. ` +
+        `Parse error: ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+  if (!Array.isArray(world.scans)) {
+    throw new Error(
+      `[migrate-scan-ids] ${path} has no 'scans' array — it does not look like a world file. ` +
+        `Refusing to skip it silently; fix or move the file, then re-run.`,
+    )
+  }
+  world.editPatches ??= []
+  world.jobs ??= []
+  return world
+}
+
 /**
  * Apply {@link migrateWorldScanIds} to every `<slug>.json` in `worldsDir`,
  * each inside that slug's world lock, persisting only the ones that changed.
@@ -320,6 +380,7 @@ export async function migrateScanIds(opts: MigrateScanIdsOptions): Promise<Migra
   // critical section. A directory created while the migration runs would be
   // missed — which is exactly why the script demands the server be stopped.
   let sessionExists: ((sessionId: string) => boolean) | undefined
+  let sessionsMissing = false
   if (opts.sessionsDir) {
     const present = new Set<string>()
     try {
@@ -328,9 +389,52 @@ export async function migrateScanIds(opts: MigrateScanIdsOptions): Promise<Migra
       }
     } catch (err) {
       if (!(err instanceof Deno.errors.NotFound)) throw err
-      log(`[migrate-scan-ids] no sessions directory at ${opts.sessionsDir} — every session id reads as absent.`)
+      sessionsMissing = true
     }
     sessionExists = (sessionId: string) => present.has(sessionId)
+  }
+
+  // Dry pass: run the migration in memory over every world, writing nothing.
+  // The guards below must refuse before the first byte is written, so they judge
+  // what the real pass would do, not what it might find.
+  const planned: PlannedWorld[] = []
+  for (const name of names) {
+    const path = `${worldsDir}/${name}`
+    const world = await readWorldFile(path)
+    const links = world.scans.filter((s) => !!s.sessionId).length
+    const result = migrateWorldScanIds(world, () => {}, { sessionExists })
+    planned.push({ name, path, links, result })
+  }
+  const totalLinks = planned.reduce((n, p) => n + p.links, 0)
+  const totalCleared = planned.reduce((n, p) => n + p.result.sessionsCleared.length, 0)
+  // A missing sessions directory reads every session id as absent. Without
+  // this guard that clears every link in every world and writes the result.
+  if (sessionsMissing && totalLinks > 0) {
+    throw new Error(
+      `[migrate-scan-ids] the sessions directory ${opts.sessionsDir} does not exist, so all ` +
+        `${totalLinks} session link(s) would be cleared. Nothing was written. Set SESSIONS_DIR to the ` +
+        'directory the server uses, then re-run.',
+    )
+  }
+  if (sessionsMissing) {
+    log(`[migrate-scan-ids] no sessions directory at ${opts.sessionsDir}, and no world holds a session link.`)
+  }
+  if (totalCleared > SESSION_CLEAR_LIMIT && !opts.forceClear) {
+    throw new Error(
+      `[migrate-scan-ids] this run would clear ${totalCleared} session link(s), more than the ` +
+        `${SESSION_CLEAR_LIMIT} allowed without --force-clear. Nothing was written. Check SESSIONS_DIR ` +
+        `(${opts.sessionsDir}); if those links really name no session, re-run with --force-clear.`,
+    )
+  }
+
+  // Back up every world file before the first write, so a bad run can be undone
+  // by copying the files back. The backup is a directory, not a `.json` file in
+  // WORLDS_DIR, because main.ts reads every `*.json` there as a world.
+  if (planned.some((p) => p.result.changed)) {
+    const backupDir = `${worldsDir}/.pre-migrate-${new Date().toISOString().replace(/[:.]/g, '-')}`
+    await Deno.mkdir(backupDir)
+    for (const p of planned) await Deno.copyFile(p.path, `${backupDir}/${p.name}`)
+    log(`[migrate-scan-ids] backed up ${planned.length} world file(s) to ${backupDir} before writing.`)
   }
 
   for (const name of names) {
@@ -338,30 +442,7 @@ export async function migrateScanIds(opts: MigrateScanIdsOptions): Promise<Migra
     const slug = safeSlug(name.replace(/\.json$/, ''))
 
     const result = await withWorldLock(slug, async () => {
-      const raw = await Deno.readTextFile(path)
-      let world: WorldProject
-      try {
-        world = JSON.parse(raw) as WorldProject
-      } catch (err) {
-        // Never a silent skip: a world file that cannot be read is a world
-        // whose patches and jobs still name split ids, and reporting "nothing
-        // to migrate" would tell an operator the opposite. Same stance as
-        // migrate_jobs.ts takes on a malformed jobs.json.
-        throw new Error(
-          `[migrate-scan-ids] ${path} exists but is not valid JSON, so its scan ids cannot be ` +
-            `migrated. Refusing to skip it silently — fix or move the file, then re-run. ` +
-            `Parse error: ${err instanceof Error ? err.message : String(err)}`,
-        )
-      }
-      if (!Array.isArray(world.scans)) {
-        throw new Error(
-          `[migrate-scan-ids] ${path} has no 'scans' array — it does not look like a world file. ` +
-            `Refusing to skip it silently; fix or move the file, then re-run.`,
-        )
-      }
-      world.editPatches ??= []
-      world.jobs ??= []
-
+      const world = await readWorldFile(path)
       const outcome = migrateWorldScanIds(world, log, { sessionExists })
       if (outcome.changed) {
         world.updatedAt = new Date().toISOString()
@@ -393,12 +474,14 @@ if (import.meta.main) {
   const worldsDir = Deno.env.get('WORLDS_DIR') ?? './worlds'
   const scansDir = Deno.env.get('SCANS_DIR') ?? './scans'
   const sessionsDir = Deno.env.get('SESSIONS_DIR') ?? `${scansDir}/sessions`
+  const forceClear = Deno.args.includes('--force-clear')
   console.warn(
     `[migrate-scan-ids] Run this with the server STOPPED. The per-slug world lock is in-process ` +
       `only (ADR 0004), so it cannot exclude a running server writing ${worldsDir}.`,
   )
+  console.warn(`[migrate-scan-ids] Sessions are checked against ${sessionsDir} (set SESSIONS_DIR to change it).`)
   try {
-    const summary = await migrateScanIds({ worldsDir, sessionsDir })
+    const summary = await migrateScanIds({ worldsDir, sessionsDir, forceClear })
     const ambiguous = summary.worlds.reduce((n, w) => n + w.ambiguous.length, 0)
     const reided = summary.worlds.reduce((n, w) => n + w.scansReided.length, 0)
     const patches = summary.worlds.reduce((n, w) => n + w.patchesRepointed, 0)

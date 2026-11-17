@@ -323,7 +323,7 @@ Deno.test('a non-auto device reaches the worker, indexed CUDA included', async (
   // cuda:1 is not in COMPUTE_DEVICES but panoptic_worker.py's --device is
   // free-form and _torch_device.resolve_torch_device honours an index verbatim,
   // so rejecting it here would be the driver refusing what its worker accepts.
-  for (const device of ['cpu', 'cuda', 'mps', 'cuda:1'] as const) {
+  for (const device of ['cpu', 'cuda', 'mps', 'xpu', 'cuda:1'] as const) {
     const dir = await Deno.makeTempDir()
     try {
       await Deno.writeTextFile(`${dir}/panoptic_worker.py`, '')

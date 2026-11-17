@@ -42,6 +42,8 @@ import {
   type PanopticScanManifest,
 } from '../../src/world/manifests.ts'
 import { isRunnable } from '../exec_probe.ts'
+import { sampleEvenly } from '../sample_even.ts'
+import { budgetFromEnv, runWithDeadline } from '../run_with_deadline.ts'
 import {
   formatSegmentSummary,
   MIN_SEGMENT_PIXELS,
@@ -90,7 +92,11 @@ export interface PanopticScanRunOptions {
   panopticDir?: string
   /** HF model id. Falls back to env PANOPTIC_MODEL, then the ADE20K default. */
   model?: string
-  /** Cap on keyframes segmented. Falls back to env PANOPTIC_MAX_FRAMES. */
+  /**
+   * Cap on keyframes segmented: a whole number of at least one. Falls back to env
+   * PANOPTIC_MAX_FRAMES, then the default. Fractions are floored, and anything below
+   * one takes the default.
+   */
   maxFrames?: number
   /**
    * Torch backend to ask the worker for. Falls back to env PANOPTIC_DEVICE,
@@ -119,7 +125,11 @@ export interface PanopticScanRunOptions {
   sessionId?: string
   scanId?: string
   /** Test seam — same shape as splat_detect's, so the tests read alike. */
-  _spawn?: (bin: string, args: string[], env: Record<string, string>) => Promise<{ code: number; stderr: string }>
+  _spawn?: (
+    bin: string,
+    args: string[],
+    env: Record<string, string>,
+  ) => Promise<{ code: number; stderr: string; timeoutReason?: string | null }>
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -131,28 +141,62 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-/** Keyframe images the streamer wrote, in capture order. */
-async function sessionKeyframes(sessionDir: string, limit: number): Promise<string[]> {
+/** The streamer's keyframe file names: the rule scripts/panoptic_worker.py applies to --frame. */
+const KEYFRAME_NAME = /^kf-\d+\.(jpe?g|png)$/i
+
+/** Whether a path is a regular file once any symlink in it is followed. A broken link is not. */
+async function isFileFollowingLinks(path: string): Promise<boolean> {
+  try {
+    return (await Deno.stat(path)).isFile
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The keyframe images the streamer wrote, in capture order, spread evenly over the
+ * whole session when there are more than `limit`. Taking the first N stopped the
+ * selection at the start of the walk.
+ *
+ * Only names in the streamer's keyframe form are listed, the same rule the worker
+ * applies to --frame. Any other image in the folder would make the worker refuse the
+ * whole run. A symlink to a file is listed too, because the worker follows links when it
+ * lists a folder. A broken link, or a link to a folder, is not. runPanopticScan passes
+ * these names with --frame, so the model segments this spread and not the worker's own
+ * first N.
+ */
+export async function sessionKeyframes(sessionDir: string, limit: number): Promise<string[]> {
   const names: string[] = []
   try {
     for await (const entry of Deno.readDir(sessionDir)) {
-      if (entry.isFile && /\.(jpe?g|png)$/i.test(entry.name)) names.push(entry.name)
+      if (!KEYFRAME_NAME.test(entry.name)) continue
+      // readDir reports a link as a link, not as the file behind it, so follow it.
+      const isFile = entry.isFile ||
+        (entry.isSymlink && (await isFileFollowingLinks(sessionDir + '/' + entry.name)))
+      if (isFile) names.push(entry.name)
     }
   } catch {
     return []
   }
   // Lexicographic order is capture order: the streamer names them kf-00000.jpg.
   names.sort((a, b) => a.localeCompare(b))
-  return names.slice(0, limit)
+  return sampleEvenly(names, limit)
 }
+
+/** Covers one segmentation pass over up to PANOPTIC_MAX_FRAMES keyframes. Untuned. */
+const DEFAULT_PANOPTIC_TIMEOUT_MS = 60 * 60 * 1000
 
 async function defaultSpawn(
   bin: string,
   args: string[],
   env: Record<string, string>,
-): Promise<{ code: number; stderr: string }> {
-  const out = await new Deno.Command(bin, { args, env, stdout: 'piped', stderr: 'piped' }).output()
-  return { code: out.code, stderr: new TextDecoder().decode(out.stderr) }
+): Promise<{ code: number; stderr: string; timeoutReason: string | null }> {
+  const out = await runWithDeadline(
+    bin,
+    { args, env, stdout: 'piped', stderr: 'piped' },
+    budgetFromEnv('PANOPTIC_TIMEOUT_MS', DEFAULT_PANOPTIC_TIMEOUT_MS),
+  )
+  return { code: out.code, stderr: new TextDecoder().decode(out.stderr), timeoutReason: out.timeoutReason }
 }
 
 async function finish(
@@ -170,12 +214,29 @@ async function finish(
   return full
 }
 
+/**
+ * A whole number of at least one, or the fallback. The value is floored first and then
+ * tested, the rule person_4d.ts's intFromEnv applies: testing before flooring let 0.5
+ * through, and flooring that gave 0. The worker reads --max-frames as an int, so a
+ * fraction made it fail argument parsing, and a value under one skipped the run with the
+ * wrong remediation.
+ */
+function wholeAtLeastOne(value: number, fallback: number): number {
+  const whole = Math.floor(value)
+  return Number.isFinite(whole) && whole >= 1 ? whole : fallback
+}
+
 export function resolveParams(opts: PanopticScanRunOptions): PanopticScanManifest['params'] {
   return {
     python: opts.python ?? Deno.env.get('PANOPTIC_PYTHON') ?? DEFAULT_PANOPTIC_PYTHON,
     panopticDir: opts.panopticDir ?? Deno.env.get('PANOPTIC_DIR') ?? DEFAULT_PANOPTIC_DIR,
     model: opts.model ?? Deno.env.get('PANOPTIC_MODEL') ?? DEFAULT_PANOPTIC_MODEL,
-    maxFrames: opts.maxFrames ?? Number(Deno.env.get('PANOPTIC_MAX_FRAMES') ?? DEFAULT_MAX_FRAMES),
+    // The explicit option takes the same rule as the env var, because the job payload's
+    // maxFrames reaches here unchecked.
+    maxFrames: wholeAtLeastOne(
+      opts.maxFrames ?? Number(Deno.env.get('PANOPTIC_MAX_FRAMES') ?? DEFAULT_MAX_FRAMES),
+      DEFAULT_MAX_FRAMES,
+    ),
     minSegmentPixels: opts.minSegmentPixels ?? MIN_SEGMENT_PIXELS,
     // Kept verbatim, unvalidated: runPanopticScan turns an unrecognised value
     // into a skip, and that skip is only actionable if the manifest still shows
@@ -352,8 +413,12 @@ export async function runPanopticScan(opts: PanopticScanRunOptions): Promise<Pan
     // torch verbatim. Omitting keeps the default run byte-identical to what it
     // was before this option existed.
     ...(params.device === 'auto' ? [] : ['--device', params.device]),
+    // The frames picked above, by name and in capture order. The worker segments
+    // exactly these when they are given, so the model sees the spread. --max-frames
+    // is still sent, but the worker ignores it when a list is given.
+    ...frames.flatMap((name) => ['--frame', name]),
   ]
-  let result: { code: number; stderr: string }
+  let result: { code: number; stderr: string; timeoutReason?: string | null }
   try {
     result = opts._spawn
       ? await opts._spawn(params.python, args, {})
@@ -377,7 +442,9 @@ export async function runPanopticScan(opts: PanopticScanRunOptions): Promise<Pan
       ...base,
       status: 'error',
       ...reported,
-      error: `panoptic worker exited ${result.code}${tail ? `: ${tail}` : ''}`,
+      error: result.timeoutReason
+        ? `panoptic worker ${result.timeoutReason} and was stopped${tail ? `: ${tail}` : ''}`
+        : `panoptic worker exited ${result.code}${tail ? `: ${tail}` : ''}`,
     }, Date.now() - started)
   }
 

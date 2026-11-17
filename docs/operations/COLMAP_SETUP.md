@@ -75,6 +75,15 @@ Every option spelling the code passes was checked against this build's own
 | `exhaustive_matcher` | `--FeatureMatching.type`, `--FeatureMatching.use_gpu` |
 | `mapper` | `--Mapper.init_min_num_inliers`, `--Mapper.abs_pose_min_num_inliers`, `--Mapper.min_num_matches`, `--Mapper.init_min_tri_angle`, `--Mapper.tri_min_angle` |
 
+A solve over several sessions (`runColmapJointPoses`, see
+[`place-register.md`](../pipelines/place-register.md)) passes the same options, except that
+`feature_extractor` is called once per session with `--image_list_path`,
+`--ImageReader.single_camera_per_folder` and `--ImageReader.camera_params` in place of
+`--ImageReader.single_camera`, and that it matches with `matches_importer` (`--match_list_path`,
+`--match_type pairs`, `--FeatureMatching.type`, `--FeatureMatching.use_gpu`) unless every pair is
+wanted. All of those are in this build's `-h` output, and the `COLMAP_E2E=1` toy test runs them
+against 3.13.0 (checked 2026-11-17: exit 0, three sessions on three cameras).
+
 The 3.12 option-namespace move (`max_image_size` stayed under `SiftExtraction`
 while `type`/`use_gpu` moved to `FeatureExtraction`) is the one that bites, and
 it is already handled — `colmap_poses.ts:247` records what the wrong spelling

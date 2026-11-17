@@ -27,6 +27,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { DetectionStore, MAX_CAPTURE_ITEMS } from '../../../src/scene/store.ts'
+import { newArRunId } from '../../../src/shared/ar-run-id.ts'
 import type { WorldDetection } from '../../../src/spatial/resolver.ts'
 import type { CaptureResult } from '../../../src/capture/capture.ts'
 import { isServerSessionId } from '../../../src/shared/session-id.ts'
@@ -327,4 +328,472 @@ test('adoptServerSession: re-adopting the same id is a no-op', async () => {
   await store.adoptServerSession(id)
 
   assert.equal(store.sessionId, id)
+})
+
+// ── AR runs (WP-02) ──────────────────────────────────────────────────────────
+//
+// A position is only meaningful inside the SLAM frame that produced it, and every page load starts a new
+// frame. The store stamps each detection and capture with the run that placed it, and `currentRunDetections()`
+// is what the pins, the panel, the exports and the counts read. These tests run in memory, as the thumbnail
+// tests above do. The round trip through IndexedDB, with a reload in the middle, is in
+// tests/unit/node/wp-ar-run-reload.test.ts, and the readers of the store are in wp-ar-run-consumers.test.ts.
+
+/** What a capture of one object yields to upsert(): the label, a position, and the key main.ts files it under. */
+function placed(label: string, x: number, z = 0): [string, WorldDetection] {
+  return [`${label}:${x.toFixed(1)},0.0,${z.toFixed(1)}`, detection(label, x)]
+}
+
+function labels(map: Map<string, unknown>): string[] {
+  return [...map.keys()].sort()
+}
+
+test('newArRunId: uses randomUUID where the page has it, and is a fresh id each time', () => {
+  const id = newArRunId()
+  assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+  assert.notEqual(newArRunId(), id)
+  const given = newArRunId({ randomUUID: () => 'from-the-page-0000-0000-0000-000000000000' })
+  assert.equal(given, 'from-the-page-0000-0000-0000-000000000000', 'the page\'s own generator is the one used')
+})
+
+test('newArRunId: an old webview with no randomUUID gets the time and random bytes, which is still distinct and dot-free', () => {
+  const oldWebview = { getRandomValues: <T extends ArrayBufferView | null>(array: T): T => {
+    const bytes = new Uint8Array((array as unknown as Uint8Array).buffer)
+    for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 37 + 11) & 0xff
+    return array
+  } }
+  const id = newArRunId(oldWebview)
+  assert.match(id, /^[0-9a-z]+-[0-9a-f]{16}$/, `the fallback shape, got ${id}`)
+  assert.equal(id.includes('.'), false, 'a dot is reserved for a later epoch suffix')
+  // No crypto at all: Math.random stands in, and the ids are still different from one another.
+  const bare = new Set(Array.from({ length: 50 }, () => newArRunId({})))
+  assert.equal(bare.size, 50)
+  for (const each of bare) assert.match(each, /^[0-9a-z]+-[0-9a-f]{16}$/)
+})
+
+test('newArRunId: the fallback id is made of the page\'s random bytes, or of Math.random where there are none', () => {
+  // A page with getRandomValues but no randomUUID: the id carries exactly the bytes it was handed.
+  const filled = { getRandomValues: <T extends ArrayBufferView | null>(array: T): T => {
+    new Uint8Array((array as unknown as Uint8Array).buffer).fill(0xab)
+    return array
+  } }
+  assert.match(newArRunId(filled), /^[0-9a-z]+-abababababababab$/, 'eight bytes, all of them the page\'s')
+
+  // A page with neither: Math.random is the source, and a different stream gives a different id.
+  const realRandom = Math.random
+  try {
+    Math.random = () => 0.5                     // floor(0.5 * 256) = 128 = 0x80
+    assert.match(newArRunId({}), /^[0-9a-z]+-8080808080808080$/)
+    Math.random = () => 0.999                   // floor(0.999 * 256) = 255 = 0xff
+    assert.match(newArRunId({}), /^[0-9a-z]+-ffffffffffffffff$/)
+    // With getRandomValues present, Math.random is not consulted at all.
+    Math.random = () => { throw new Error('Math.random was used although the page has getRandomValues') }
+    assert.match(newArRunId(filled), /^[0-9a-z]+-abababababababab$/)
+  } finally {
+    Math.random = realRandom
+  }
+})
+
+test('before the AR runtime starts no detection is in the frame, whatever the record holds', async () => {
+  const store = new DetectionStore()
+  const [k, d] = placed('sofa', 0)
+  await store.upsert(new Map([[k, d]]), new Map())
+
+  assert.equal(store.arRunId, null)
+  assert.equal(store.detections.size, 1, 'the record holds it')
+  assert.equal(store.currentRunDetections().size, 0, 'and there is no frame for it to be in yet')
+  assert.equal(store.previousRunCount(), 1)
+  assert.equal(store.detections.get(k)?.arRunId, undefined, 'with no run to say, nothing is stamped')
+})
+
+test('startArRun: names the run, stamps what upsert writes from then on, and returns the id', async () => {
+  const store = new DetectionStore()
+  const id = store.startArRun()
+  assert.equal(store.arRunId, id)
+  assert.match(id, /^[0-9a-f-]{36}$/)
+
+  const [k, d] = placed('sofa', 0)
+  await store.upsert(new Map([[k, d]]), new Map())
+  assert.equal(store.detections.get(k)?.arRunId, id)
+  assert.deepEqual(labels(store.currentRunDetections()), [k])
+  assert.equal(store.previousRunCount(), 0)
+
+  assert.equal(store.startArRun('run-given'), 'run-given', 'a caller may name the run')
+  assert.equal(store.arRunId, 'run-given')
+  const fresh = store.startArRun('')
+  assert.equal(fresh, store.arRunId, 'an empty id is not a name: a fresh one is made instead')
+  assert.notEqual(fresh, 'run-given')
+  assert.notEqual(fresh, '', 'the run has a name; an empty string would read as no run to a caller that tests for one')
+  assert.match(fresh, /^[0-9a-f-]{36}$/)
+  assert.notEqual(store.startArRun(''), fresh, 'each empty id is a new run, not the previous fresh one again')
+})
+
+test('a second run in the same page turns the first run\'s detections into previous-run ones', async () => {
+  const store = new DetectionStore()
+  store.startArRun('run-a')
+  const [ka, a] = placed('sofa', 0)
+  await store.upsert(new Map([[ka, a]]), new Map())
+  assert.deepEqual(labels(store.currentRunDetections()), [ka])
+
+  store.startArRun('run-b')
+  assert.equal(store.currentRunDetections().size, 0, 'run A\'s frame is gone, and so is its place in the view')
+  assert.equal(store.detections.get(ka)?.arRunId, 'run-a', 'but it is still in the record, still stamped with its own run')
+  assert.equal(store.previousRunCount(), 1)
+  assert.equal(store.isCurrentRun({ arRunId: 'run-a' }), false)
+  assert.equal(store.isCurrentRun({ arRunId: 'run-b' }), true)
+  assert.equal(store.isCurrentRun({}), false, 'no id reads as an earlier run, never as this one')
+})
+
+test('startArRun tells the listeners, once, so the pins and the panel drop what is no longer in the frame', async () => {
+  const store = new DetectionStore()
+  let told = 0
+  store.subscribe(() => { told++ })
+  store.startArRun('run-a')
+  assert.equal(told, 1)
+  store.startArRun('run-a')
+  assert.equal(told, 1, 'the same run again is not news')
+  store.startArRun('run-b')
+  assert.equal(told, 2)
+})
+
+test('startArRun survives a listener that throws: the AR start it was told about must not fail', () => {
+  const store = new DetectionStore()
+  store.subscribe(() => { throw new Error('listener failed') })
+  const originalWarn = console.warn
+  const warnings: unknown[][] = []
+  console.warn = (...args: unknown[]) => { warnings.push(args) }
+  try {
+    assert.doesNotThrow(() => store.startArRun('run-a'))
+  } finally {
+    console.warn = originalWarn
+  }
+  assert.equal(store.arRunId, 'run-a', 'the run began')
+  assert.equal(warnings.length, 1, 'and the failure was reported, not swallowed')
+})
+
+test('a read-only store may start a run: it writes nothing, so there is nothing to refuse', async () => {
+  const readOnly = new DetectionStore({ readOnly: true })
+  assert.equal(readOnly.startArRun('run-a'), 'run-a')
+  const [k, d] = placed('sofa', 0)
+  assert.equal(await readOnly.upsert(new Map([[k, d]]), new Map()), false)
+  assert.equal(readOnly.detections.size, 0)
+})
+
+test('upsert: merging into the current run leaves an earlier run\'s detections exactly as they were', async () => {
+  const store = new DetectionStore()
+  store.startArRun('run-a')
+  const [ka, a] = placed('sofa', 0)
+  await store.upsert(new Map([[ka, a]]), new Map([[ka, 'thumb-a']]))
+  const earlier = store.detections.get(ka)!
+
+  store.startArRun('run-b')
+  const [kb, b] = placed('lamp', 3)
+  await store.upsert(new Map([[kb, b]]), new Map())
+
+  assert.equal(store.detections.get(ka), earlier, 'the very same stored object: nothing was rewritten')
+  assert.equal(store.detections.get(ka)?.arRunId, 'run-a')
+  assert.equal(store.detections.get(ka)?.thumbnailDataUrl, 'thumb-a')
+  assert.deepEqual(labels(store.currentRunDetections()), [kb])
+  assert.equal(store.detections.get(kb)?.arRunId, 'run-b')
+})
+
+test('upsert: an object found again by the next run does not overwrite the earlier run\'s record of it', async () => {
+  // Every run starts at its own origin, so the same chair in the same room is under the same key in both.
+  const store = new DetectionStore()
+  store.startArRun('run-a')
+  const key = 'chair:1.0,0.0,2.0'
+  await store.upsert(new Map([[key, { ...detection('chair', 1), description: 'the chair, run A' } as WorldDetection]]), new Map())
+  const earlier = store.detections.get(key)!
+
+  store.startArRun('run-bbbbbbbb-cccc')
+  await store.upsert(
+    new Map([[key, { ...detection('chair', 1), description: 'the chair, run B' } as WorldDetection]]),
+    new Map([[key, 'thumb-b']]),
+  )
+
+  assert.equal(store.detections.size, 2, 'both are kept')
+  assert.equal(store.detections.get(key), earlier, 'the earlier run\'s detection keeps its key and every field')
+  assert.equal(store.detections.get(key)?.description, 'the chair, run A')
+  const now = store.currentRunDetections()
+  assert.deepEqual(labels(now), ['chair:1.0,0.0,2.0@run-bbbb'], 'this run\'s is under the same key with its tag after it')
+  const ours = now.get('chair:1.0,0.0,2.0@run-bbbb')!
+  assert.equal(ours.description, 'the chair, run B')
+  assert.equal(ours.thumbnailDataUrl, 'thumb-b', 'the new image is this object\'s, and the earlier run\'s image is not borrowed')
+  assert.equal(ours.arRunId, 'run-bbbbbbbb-cccc')
+})
+
+test('upsert: a re-capture inside the run updates its own detection in place, collision or not', async () => {
+  const store = new DetectionStore()
+  store.startArRun('run-a')
+  const key = 'chair:1.0,0.0,2.0'
+  await store.upsert(new Map([[key, detection('chair', 1)]]), new Map())
+  store.startArRun('run-b')
+  await store.upsert(new Map([[key, detection('chair', 1)]]), new Map())
+  const [taggedKey] = [...store.currentRunDetections().keys()]
+  assert.ok(taggedKey && taggedKey !== key)
+
+  // main.ts merges into currentRunDetections(), so the next capture of that chair arrives under the tagged key.
+  const updated = { ...store.currentRunDetections().get(taggedKey!)!, confidence: 0.42 }
+  await store.upsert(new Map([[taggedKey!, updated]]), new Map())
+
+  assert.equal(store.detections.size, 2, 'still one detection per run: no second copy, no key with two tags')
+  assert.equal(store.detections.get(taggedKey!)?.confidence, 0.42)
+  assert.equal(store.detections.get(key)?.arRunId, 'run-a')
+})
+
+test('upsert: a tagged key that an earlier run holds is stepped over, never overwritten', async () => {
+  const store = new DetectionStore()
+  const key = 'chair:1.0,0.0,2.0'
+  store.startArRun('run-aaaaaaaa')
+  await store.upsert(new Map([[key, detection('chair', 1)]]), new Map())
+  // A second earlier run whose own tag is the same eight characters as the third run's.
+  store.startArRun('run-bbbbbbbb-first')
+  await store.upsert(new Map([[key, detection('chair', 1)]]), new Map())
+  store.startArRun('run-bbbbbbbb-second')
+  await store.upsert(new Map([[key, detection('chair', 1)]]), new Map())
+
+  assert.equal(store.detections.size, 3, 'three runs, three detections, nothing lost')
+  assert.deepEqual(labels(store.currentRunDetections()), ['chair:1.0,0.0,2.0@run-bbbb-2'])
+  assert.equal(store.previousRunCount(), 2)
+})
+
+test('putCapture: a capture is stamped with the run whose frame its pose is in', async () => {
+  const store = new DetectionStore()
+  const before = await store.putCapture({ captureIndex: 1, timestamp: Date.now(), pose: pose(), blob: frame() })
+  assert.equal('arRunId' in before, false, 'no run yet, so no field at all (a record from before this looks the same)')
+
+  store.startArRun('run-a')
+  const during = await store.putCapture({ captureIndex: 2, timestamp: Date.now(), pose: pose(), blob: frame() })
+  assert.equal(during.arRunId, 'run-a')
+  assert.equal(store.getCapture(during.captureId)?.arRunId, 'run-a')
+
+  await store.attachDetections(during.captureId, ['sofa:0,0,0'])
+  assert.equal(store.getCapture(during.captureId)?.arRunId, 'run-a', 'attaching its detections keeps the stamp')
+  await store.adoptServerSession('sess-22222222-3333-4444-5555-666666666666')
+  assert.equal(store.getCapture(during.captureId)?.arRunId, 'run-a', 'so does the rename to a server session')
+})
+
+test('clear() empties both runs\' detections: Clear erases the scan\'s record, not only the run in view', async () => {
+  const store = new DetectionStore()
+  store.startArRun('run-a')
+  await store.upsert(new Map([placed('sofa', 0)]), new Map())
+  store.startArRun('run-b')
+  await store.upsert(new Map([placed('lamp', 3)]), new Map())
+  assert.equal(store.detections.size, 2)
+
+  await store.clear()
+  assert.equal(store.detections.size, 0)
+  assert.equal(store.currentRunDetections().size, 0)
+  assert.equal(store.previousRunCount(), 0)
+})
+
+// ── AR runs, second pass (review of WP-02) ───────────────────────────────────
+
+test('upsert: a later run that re-finds an object with no new picture does not inherit the earlier run\'s', async () => {
+  const store = new DetectionStore()
+  const key = 'chair:1.0,0.0,2.0'
+  store.startArRun('run-a')
+  await store.upsert(new Map([[key, detection('chair', 1)]]), new Map([[key, 'thumb-of-run-a']]))
+
+  store.startArRun('run-bbbbbbbb')
+  await store.upsert(new Map([[key, detection('chair', 1)]]), new Map())           // this capture made no picture
+
+  const [mine] = [...store.currentRunDetections().values()]
+  assert.ok(mine, 'run B has its own detection of the chair')
+  assert.equal(mine.thumbnailDataUrl, undefined, 'a picture of run A\'s frame is not this run\'s object')
+  assert.equal(store.detections.get(key)?.thumbnailDataUrl, 'thumb-of-run-a', 'and run A keeps its own')
+})
+
+test('upsert: a later run\'s own picture is kept across its later captures, under the tagged key', async () => {
+  const store = new DetectionStore()
+  const key = 'chair:1.0,0.0,2.0'
+  store.startArRun('run-a')
+  await store.upsert(new Map([[key, detection('chair', 1)]]), new Map([[key, 'thumb-of-run-a']]))
+  store.startArRun('run-bbbbbbbb')
+  await store.upsert(new Map([[key, detection('chair', 1)]]), new Map([[key, 'thumb-of-run-b']]))
+  const [taggedKey] = [...store.currentRunDetections().keys()]
+  assert.equal(taggedKey, `${key}@run-bbbb`)
+  assert.equal(store.detections.get(taggedKey!)?.thumbnailDataUrl, 'thumb-of-run-b', 'the picture is looked up by the key it arrived under, then stored under the tagged one')
+
+  // main.ts merges the next capture into the run's detections, so it arrives under the tagged key with no picture of its own.
+  await store.upsert(new Map([[taggedKey!, detection('chair', 1)]]), new Map())
+  assert.equal(store.detections.get(taggedKey!)?.thumbnailDataUrl, 'thumb-of-run-b')
+})
+
+test('Clear ends the scan, not the run: the next capture is still this run\'s', async () => {
+  const store = new DetectionStore()
+  const run = store.startArRun('run-a')
+  await store.upsert(new Map([['chair:1.0,0.0,2.0', detection('chair', 1)]]), new Map())
+
+  await store.clear()
+  assert.equal(store.arRunId, run, 'the camera\'s frame is the same one after a Clear')
+  const afterClear = await store.putCapture({ captureIndex: 5, timestamp: Date.now(), pose: pose(), blob: frame() })
+  assert.ok(afterClear)
+  await store.upsert(new Map([['lamp:3.0,0.0,2.0', detection('lamp', 3)]]), new Map())
+  assert.deepEqual(labels(store.currentRunDetections()), ['lamp:3.0,0.0,2.0'], 'the lamp found after Clear is in view')
+  assert.equal(store.getCapture(afterClear.captureId)?.arRunId, run, 'and its capture row carries the run')
+  assert.equal(store.captureCounts('run').total, 1)
+})
+
+test('upsert: a detection already stamped by another run keeps that stamp, is not claimed for this run, and is reported', async () => {
+  const store = new DetectionStore()
+  store.startArRun('run-a')
+  const [ka, a] = placed('sofa', 0)
+  await store.upsert(new Map([[ka, a]]), new Map())
+  store.startArRun('run-b')
+
+  // A caller that merged into the whole record hands run A's sofa back, edited.
+  const earlier = { ...store.detections.get(ka)!, confidence: 0.33 }
+  const warnings: string[] = []
+  const originalWarn = console.warn
+  console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')) }
+  try {
+    await store.upsert(new Map([[ka, earlier as WorldDetection]]), new Map())
+  } finally {
+    console.warn = originalWarn
+  }
+
+  assert.equal(store.detections.get(ka)?.arRunId, 'run-a', 'still run A\'s: re-stamping it would put its position under run B\'s calibration')
+  assert.equal(store.detections.get(ka)?.confidence, 0.33, 'the edit itself is kept')
+  assert.equal(store.detections.size, 1, 'written back in its own slot, not duplicated')
+  assert.equal(store.currentRunDetections().size, 0, 'and it is not in this run\'s view')
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0]!, /stamped by another AR run/)
+})
+
+test('upsert: a detection stamped by this run is not reported, and one handed over with no run at all carries no stamp field', async () => {
+  const store = new DetectionStore()
+  const originalWarn = console.warn
+  let warned = 0
+  console.warn = () => { warned++ }
+  try {
+    const [k, d] = placed('sofa', 0)
+    await store.upsert(new Map([[k, d]]), new Map())
+    assert.equal('arRunId' in store.detections.get(k)!, false, 'no run, so not even an undefined field in the record')
+
+    store.startArRun('run-a')
+    const [k2, d2] = placed('lamp', 3)
+    await store.upsert(new Map([[k2, d2]]), new Map())
+    const mine = store.detections.get(k2)!
+    await store.upsert(new Map([[k2, { ...mine, confidence: 0.5 } as WorldDetection]]), new Map())
+    assert.equal(store.detections.get(k2)?.arRunId, 'run-a')
+  } finally {
+    console.warn = originalWarn
+  }
+  assert.equal(warned, 0)
+})
+
+test('attachDetections: a capture names the detection of its own run, also when an earlier run holds the plain key', async () => {
+  const store = new DetectionStore()
+  const key = 'chair:1.0,0.0,2.0'
+  store.startArRun('run-aaaaaaaa')
+  const capA = await store.putCapture({ captureIndex: 1, timestamp: 1, pose: pose(), blob: frame() })
+  assert.ok(capA)
+  await store.upsert(new Map([[key, detection('chair', 1)]]), new Map())
+  await store.attachDetections(capA.captureId, [key])
+
+  store.startArRun('run-bbbbbbbb')
+  const capB = await store.putCapture({ captureIndex: 2, timestamp: 2, pose: pose(), blob: frame() })
+  assert.ok(capB)
+  await store.upsert(new Map([[key, detection('chair', 1)]]), new Map())   // collides: stored under the tagged key
+  await store.attachDetections(capB.captureId, [key, 'lamp:9.0,0.0,9.0'])
+
+  const owner = (captureId: string) => store.getCapture(captureId)!.detectionKeys.map((k) => store.detections.get(k)?.arRunId)
+  assert.deepEqual(store.getCapture(capA.captureId)!.detectionKeys, [key], 'run A\'s capture names its own detection')
+  assert.deepEqual(store.getCapture(capB.captureId)!.detectionKeys, [`${key}@run-bbbb`, 'lamp:9.0,0.0,9.0'], 'run B\'s names run B\'s, and a key B stored nothing under is left as it was')
+  assert.deepEqual(owner(capA.captureId), ['run-aaaaaaaa'])
+  assert.deepEqual(owner(capB.captureId), ['run-bbbbbbbb', undefined])
+})
+
+test('attachDetections: past a numbered key it still finds the run\'s own, and a capture with no run names its keys as given', async () => {
+  const store = new DetectionStore()
+  const key = 'chair:1.0,0.0,2.0'
+  store.startArRun('run-aaaaaaaa')
+  await store.upsert(new Map([[key, detection('chair', 1)]]), new Map())
+  store.startArRun('run-bbbbbbbb-first')
+  await store.upsert(new Map([[key, detection('chair', 1)]]), new Map())
+  store.startArRun('run-bbbbbbbb-second')
+  const cap = await store.putCapture({ captureIndex: 3, timestamp: 3, pose: pose(), blob: frame() })
+  assert.ok(cap)
+  await store.upsert(new Map([[key, detection('chair', 1)]]), new Map())
+  await store.attachDetections(cap.captureId, [key])
+  assert.deepEqual(store.getCapture(cap.captureId)!.detectionKeys, [`${key}@run-bbbb-2`])
+
+  // A capture stored before any run was started has no run to follow: its keys are as it was given them.
+  const early = new DetectionStore()
+  const unstamped = await early.putCapture({ captureIndex: 1, timestamp: 1, pose: pose(), blob: frame() })
+  assert.ok(unstamped)
+  await early.attachDetections(unstamped.captureId, [key, `${key}@run-xxxx`])
+  assert.deepEqual(early.getCapture(unstamped.captureId)!.detectionKeys, [key, `${key}@run-xxxx`])
+})
+
+test('attachDetections: a key another run holds, with nothing of this run\'s under it or its tagged form, is named as it was given', async () => {
+  const store = new DetectionStore()
+  const key = 'chair:1.0,0.0,2.0'
+  store.startArRun('run-aaaaaaaa')
+  await store.upsert(new Map([[key, detection('chair', 1)]]), new Map())
+  store.startArRun('run-bbbbbbbb')
+  const cap = await store.putCapture({ captureIndex: 2, timestamp: Date.now(), pose: pose(), blob: frame() })
+  assert.ok(cap)
+  // The new sighting was merged into a neighbouring detection of this run under some other key, so run B has
+  // nothing stored under this key. The capture does not name run A's detection for it, nor a key that does not exist.
+  await store.attachDetections(cap.captureId, [key])
+  assert.deepEqual(store.getCapture(cap.captureId)!.detectionKeys, [key])
+  assert.equal(store.detections.has(`${key}@run-bbbb`), false)
+})
+
+test('captureCounts: "run" counts the captures this page\'s run took, and the default still counts the session', async () => {
+  const store = new DetectionStore()
+  // A capture from before runs were stamped: no run on it.
+  const now = Date.now()
+  const legacy = await store.putCapture({ captureIndex: 1, timestamp: now, pose: pose(), blob: frame() })
+  assert.ok(legacy)
+  assert.deepEqual(store.captureCounts('run'), { total: 0, pending: 0, inferred: 0, failed: 0, unusable: 0, retained: 0 }, 'before a run there is nothing of its own')
+
+  store.startArRun('run-a')
+  const failedInA = await store.putCapture({ captureIndex: 2, timestamp: now, pose: pose(), blob: frame() })
+  assert.ok(failedInA)
+  await store.markCaptureFailed(failedInA.captureId, 'engine error')
+
+  store.startArRun('run-b')
+  const inB = await store.putCapture({ captureIndex: 3, timestamp: now, pose: pose(), blob: frame() })
+  assert.ok(inB)
+  await store.attachDetections(inB.captureId, [])
+
+  assert.equal(store.captureCounts().total, 3, 'the session holds all three, as before')
+  assert.equal(store.captureCounts('session').failed, 1)
+  assert.deepEqual(
+    store.captureCounts('run'),
+    { total: 1, pending: 0, inferred: 1, failed: 0, unusable: 0, retained: 1 },
+    'this run took one, which found nothing and did not fail',
+  )
+})
+
+test('serverSessionOfThisRun: only a server session this run opened, never a local id or an earlier run\'s', async () => {
+  const store = new DetectionStore()
+  assert.equal(store.serverSessionOfThisRun, null, 'a fresh store has a local id')
+
+  // Adopted before AR starts (nothing does this in the app): there is no run for it to belong to.
+  const early = 'sess-00000000-0000-4000-8000-000000000001'
+  assert.equal(await store.adoptServerSession(early), true)
+  assert.equal(store.sessionId, early)
+  assert.equal(store.serverSessionOfThisRun, null, 'no run yet')
+  store.startArRun('run-a')
+  assert.equal(store.serverSessionOfThisRun, null, 'and one opened before the run began is not the run\'s')
+  assert.equal(await store.adoptServerSession(early), true, 'naming the id that is already live is a no-op')
+  assert.equal(store.serverSessionOfThisRun, null, 'and does not make it this run\'s')
+
+  const opened = 'sess-00000000-0000-4000-8000-000000000002'
+  assert.equal(await store.adoptServerSession(opened), true)
+  assert.equal(store.serverSessionOfThisRun, opened, 'streamed in this run')
+  assert.equal(store.sessionId, opened)
+
+  store.startArRun('run-b')
+  assert.equal(store.sessionId, opened, 'the record is still keyed by it')
+  assert.equal(store.serverSessionOfThisRun, null, 'a new run in the page is a new frame, so the keyframes of the old one are not its own')
+
+  const again = 'sess-00000000-0000-4000-8000-000000000003'
+  await store.adoptServerSession(again)
+  assert.equal(store.serverSessionOfThisRun, again)
+  assert.equal(await store.adoptServerSession('local-not-a-server-id'), false)
+  assert.equal(store.serverSessionOfThisRun, again, 'a refused id changes nothing')
 })

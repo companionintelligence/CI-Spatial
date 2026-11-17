@@ -55,6 +55,11 @@ COPY src/shared/ ./src/shared/
 # server/inference.ts imports ../src/inference/lfm-driver.ts; omitting this broke
 # `deno cache` (Module not found) in the 2026-09-06 publish run.
 COPY src/inference/ ./src/inference/
+# server/main.ts imports ../src/geo/tile-source.ts (the map tile setting, which the browser reads
+# too). One file, not src/geo/: the rest of that folder is browser code the image has no use for.
+# tests/unit/node/wp-docker-server-imports.test.ts fails when a file the server imports from
+# src/ is not copied by a line here, so this list cannot fall behind unseen again.
+COPY src/geo/tile-source.ts ./src/geo/tile-source.ts
 
 # Runtime worker scripts. The Python workers (lingbot-map, splat-detect) and
 # the Brush trainer need GPU-capable hosts — install them on the host and point

@@ -618,9 +618,9 @@
           <summary>Orientation toggle (not lock/follow/fpv)</summary>
           <div class="details-body">
             <div class="row">
-              <button data-mode="lock" disabled>Byte 0</button>
-              <button data-mode="follow" disabled>Byte 1 (landscape)</button>
-              <button data-mode="fpv" disabled>Byte 2</button>
+              <button data-mode="lock" disabled>Orientation 0</button>
+              <button data-mode="follow" disabled>Orientation 1 (landscape)</button>
+              <button data-mode="fpv" disabled>Orientation 2</button>
             </div>
           </div>
         </details>
@@ -646,6 +646,7 @@
               <input type="text" id="raw-payload" placeholder="e.g. 0000000000" />
               <button id="btn-raw-send" disabled>Send</button>
             </div>
+            <p class="reset-tip">⚠ A raw frame goes to the gimbal exactly as typed. Send only a frame you have checked.</p>
           </div>
         </details>
 
@@ -678,7 +679,7 @@
             <div class="step-label">2 · Connect</div>
             <div class="row">
               <button id="be-btn-connect" disabled>Connect</button>
-              <button id="be-btn-disconnect" class="btn-ghost" disabled>Disconnect</button>
+              <button id="be-btn-disconnect" disabled>Disconnect</button>
             </div>
 
             <div class="step-label">3 · Pair (first time only)</div>
@@ -713,9 +714,9 @@
           <summary>Orientation toggle (not lock/follow/fpv)</summary>
           <div class="details-body">
             <div class="row">
-              <button data-be-mode="lock" disabled>Byte 0</button>
-              <button data-be-mode="follow" disabled>Byte 1 (landscape)</button>
-              <button data-be-mode="fpv" disabled>Byte 2</button>
+              <button data-be-mode="lock" disabled>Orientation 0</button>
+              <button data-be-mode="follow" disabled>Orientation 1 (landscape)</button>
+              <button data-be-mode="fpv" disabled>Orientation 2</button>
             </div>
           </div>
         </details>
@@ -741,6 +742,7 @@
               <input type="text" id="be-raw-payload" placeholder="e.g. 0000000000" />
               <button id="be-btn-raw-send" disabled>Send</button>
             </div>
+            <p class="reset-tip">⚠ A raw frame goes to the gimbal exactly as typed. Send only a frame you have checked.</p>
           </div>
         </details>
 

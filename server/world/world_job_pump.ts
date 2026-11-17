@@ -21,10 +21,41 @@
  * engine load, `Deno.serve`), which no existing test in this repo does.
  */
 import type { WorldJob, WorldJobType } from '../../src/world/types.ts'
+import { budgetFromEnv, describeBudget, within } from '../run_with_deadline.ts'
 
 // ── Single-flight pump (ADR 0003 "Single-flight execution") ──────────────────
 
-export type PumpDispatch = (slug: string, jobId: string) => Promise<void>
+/**
+ * Runs one job to a terminal state. `signal` aborts when the pump's deadline
+ * passes. The abort is inert until the signal is forwarded: main.ts's dispatch
+ * drops it, so no runner receives it yet. Until then an overrunning dispatch is
+ * only waited for, up to the grace period.
+ */
+export type PumpDispatch = (slug: string, jobId: string, signal?: AbortSignal) => Promise<void>
+
+export interface WorldJobPumpOptions {
+  /** Wall-clock ceiling for one dispatch. Default: WORLD_JOB_DEADLINE_MS, then 12 h. */
+  deadlineMs?: number
+  /** How long a timed-out dispatch gets to settle before the queue moves on. Default 60 s. */
+  graceMs?: number
+  /**
+   * Told when a dispatch is still running one grace period after its deadline,
+   * so the caller can mark the job failed. Not told when the dispatch settles
+   * inside the grace period: its own outcome stands, and a second write from
+   * here would race it. Awaited before the queue moves on, and bounded by the
+   * grace period too, so a callback that never settles cannot stall the queue.
+   * A rejection is logged, never thrown into the pump.
+   */
+  onDeadline?: (slug: string, jobId: string) => void | Promise<void>
+}
+
+/**
+ * Longer than any one stage's own budget (see run_with_deadline.ts). The pump
+ * deadline is the backstop for a job that stalls outside a child process, not
+ * the first line of defence against a hung stage.
+ */
+const DEFAULT_JOB_DEADLINE_MS = 12 * 60 * 60 * 1000
+const DEFAULT_GRACE_MS = 60_000
 
 /**
  * Global (not per-world) single-flight queue: one pending array, one
@@ -36,7 +67,10 @@ export class WorldJobPump {
   private _pending: Array<{ slug: string; jobId: string }> = []
   private _working = false
 
-  constructor(private readonly dispatch: PumpDispatch) {}
+  constructor(
+    private readonly dispatch: PumpDispatch,
+    private readonly options: WorldJobPumpOptions = {},
+  ) {}
 
   /** Push a job onto the queue and kick the pump if it isn't already running. */
   enqueue(slug: string, jobId: string): void {
@@ -60,10 +94,13 @@ export class WorldJobPump {
         const next = this._pending.shift()
         if (!next) break
         try {
-          // Awaited fully before the loop dequeues the next entry — this is
-          // the single-flight guarantee: at most one WorldJob is
-          // `processing`, globally, at a time.
-          await this.dispatch(next.slug, next.jobId)
+          // Awaited before the loop dequeues the next entry, so at most one
+          // WorldJob is `processing` at a time. The exception is a dispatch still
+          // running after its grace period (see _runWithDeadline): the loop starts
+          // the next job while that one winds down. The pump never kills a child.
+          // It only aborts the signal, which no runner receives yet (see PumpDispatch above).
+          // A timed-out child is killed by its runner's own deadline (run_with_deadline.ts).
+          await this._runWithDeadline(next.slug, next.jobId)
         } catch (err) {
           console.error(`[world-jobs] pump dispatch failed for ${next.jobId}:`, err)
         }
@@ -71,6 +108,55 @@ export class WorldJobPump {
     } finally {
       this._working = false
     }
+  }
+
+  /**
+   * One dispatch under the pump's deadline (F29, F36).
+   *
+   * Past the deadline the dispatch's signal aborts. The abort is inert until the
+   * signal is forwarded: main.ts's dispatch drops it, so no runner receives it and
+   * none stops its child on it. The queue waits up to the grace period for the
+   * dispatch to settle, and then moves on whether or not it has.
+   *
+   * `onDeadline` is told only when the dispatch is still running after the grace
+   * period. That is a deliberate choice. Told at the deadline, the caller would
+   * mark the job failed while a cooperating runner was still winding down, and
+   * the two writes would race. A dispatch that settles inside the grace period
+   * keeps its own outcome. A dispatch still running after the grace period is
+   * left alone and the queue moves on, so one stuck job does not hold every job
+   * behind it. That case is logged, because the single-flight guarantee no longer
+   * holds for it.
+   */
+  private async _runWithDeadline(slug: string, jobId: string): Promise<void> {
+    const deadlineMs = this.options.deadlineMs ?? budgetFromEnv('WORLD_JOB_DEADLINE_MS', DEFAULT_JOB_DEADLINE_MS)
+    const graceMs = this.options.graceMs ?? DEFAULT_GRACE_MS
+    const controller = new AbortController()
+    const run = this.dispatch(slug, jobId, controller.signal)
+    if (await within(run.then(() => true), deadlineMs, false)) return
+
+    console.error(`[world-jobs] ${jobId} ran past its ${describeBudget(deadlineMs)} deadline; aborting it`)
+    controller.abort(new Error(`WorldJob ${jobId} exceeded its ${describeBudget(deadlineMs)} deadline`))
+    const settled = await within(
+      run.then(() => true, (err) => {
+        console.error(`[world-jobs] pump dispatch failed for ${jobId} after its deadline:`, err)
+        return true
+      }),
+      graceMs,
+      false,
+    )
+    if (settled) return
+
+    console.error(
+      `[world-jobs] ${jobId} is still running ${describeBudget(graceMs)} after its deadline; ` +
+        'telling the caller and starting the next job anyway',
+    )
+    // Awaited, and bounded by the grace period, so a callback that never settles
+    // cannot hold the queue. A sync throw becomes a rejection here. Every rejection
+    // is logged in the chain, including one that arrives after the bound has passed.
+    const told = Promise.resolve()
+      .then(() => this.options.onDeadline?.(slug, jobId))
+      .catch((err: unknown) => console.error(`[world-jobs] onDeadline failed for ${jobId}:`, err))
+    await within(told, graceMs, undefined)
   }
 }
 

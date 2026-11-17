@@ -31,6 +31,15 @@ jobs:
         run: npm ci
       - name: Install Android shell dependencies
         run: npm ci --prefix mobile
+      # Both need only the packages installed above. test:android-lockfile checks that
+      # app/gradle.lockfile pins every library app/build.gradle declares, and that every library it
+      # pins has a licence entry. It goes first: the first failure ends the step, and this one
+      # names the library and the fix. test:notices runs the mobile notices generation, which
+      # gives every library in the lock its licence text.
+      - name: Check the Android dependency lock and the third-party notices
+        run: |
+          npm run test:android-lockfile
+          npm run test:notices
       - name: Check shell config, app versions and the XR Engine files
         run: |
           npm run test:native --prefix mobile
@@ -46,6 +55,20 @@ jobs:
           java-version: '21'
       - name: Android SDK packages (the runner's own SDK)
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-36" "build-tools;35.0.0" > /dev/null
+      # The debug build below is not locked, but the release build is (app/build.gradle), so only
+      # a Gradle run can show that app/gradle.lockfile is right. --write-locks has Gradle resolve
+      # the release classpath afresh and rewrite the file: any change it makes is drift.
+      - name: Check the release dependency lock against Gradle
+        working-directory: mobile/android
+        run: |
+          # Paths here are relative to mobile/android. One that matched nothing would let the
+          # git diff below pass whatever Gradle wrote.
+          git ls-files --error-unmatch app/gradle.lockfile > /dev/null
+          ./gradlew :app:dependencies --configuration releaseRuntimeClasspath --write-locks --no-daemon
+          if ! git diff --exit-code -- app/gradle.lockfile; then
+            echo "::error::mobile/android/app/gradle.lockfile is out of date: Native Release builds with it and fails when it is wrong. The diff above is what Gradle changed. Run npm run build in mobile/ (the web build, then cap sync), then ./gradlew :app:dependencies --configuration releaseRuntimeClasspath --write-locks in mobile/android, and commit app/gradle.lockfile. A library it adds also needs an entry in ANDROID_LICENCES in scripts/native/third-party-notices.mjs."
+            exit 1
+          fi
       - name: Build debug APK
         working-directory: mobile/android
         run: ./gradlew assembleDebug --no-daemon

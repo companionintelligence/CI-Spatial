@@ -12,14 +12,25 @@
  */
 import { createEighthWallProvider } from './ar/eighthwall'
 import { createWebXRProvider, WebXRProvider, isImmersiveARSupported } from './ar/webxr'
+import { ScanFrameEpochLog } from './ar/frame-epoch'
+import { ReanchorFlow, autosplitRequested } from './ar/reanchor-flow'
+import { createReanchorView } from './ar/reanchor-banner'
+import { carryCalibration, createScanHost } from './ar/reanchor-host'
+import { driftTapReader } from './ar/drift-tap'
+import { CAPTURE_HELD_TEXT, displayedStatus } from './ar/reanchor-copy'
 import type { ARProvider, Pose } from './ar/provider'
 import { trackingIsUsable } from './ar/tracking-quality'
 import { RoomScanner } from './ar/scanner'
-import { runProjectCalibration } from './ar/project-calibration'
+import { runProjectCalibration } from './ar/calibration-run'
+import { openPlacePickerAndWait } from './ar/calibration-exits'
+import { calibrationTapSampler, probeTapReader } from './ar/calibration-taps'
+import { stampScale } from './ar/engine-config'
+import { alignmentStatusText } from './ar/alignment-status'
 import { PointCloud } from './scene/pointcloud'
 import { CaptureModule } from './capture/capture'
 import { AutoCapture } from './capture/auto-capture'
 import { KeyframeStreamer } from './capture/keyframes'
+import { mountKeyframeFrames } from './ui/keyframe-consent-ui'
 import { createScreenWakeLock } from './capture/wake-lock'
 
 /**
@@ -31,12 +42,14 @@ const screenWakeLock = createScreenWakeLock()
 import { ScanQualityMonitor, isFrameUnusable, motionHintText } from './capture/quality-monitor'
 import type { FrameQuality } from './capture/quality-monitor'
 import { probeVerdict, startFailureVerdict, type PreflightVerdict } from './ar/preflight'
+import { engineExpected, type XR8Load } from './ar/engine-state'
 import { InferenceRouter, WebGpuInferenceError } from './inference/router'
 import { InferServerError } from './inference/server'
 import { getProvisioningStatus, provisionModel, removeProvisionedModel, estimateModelCacheBytes } from './inference/model-provisioning'
 import { bucket, resolveDetections, mergeDetections } from './spatial/resolver'
 import {
   DetectionStore,
+  type CaptureRecord,
   clearTripodCapture,
   deleteTripodSpot,
   loadTripodCapture,
@@ -44,27 +57,47 @@ import {
 } from './scene/store'
 import {
   ProjectStore,
-  referencePhotoKey,
   type Project,
   type ScanCalibration,
   type ScanEntry,
 } from './project/project-store'
-import type { PendingReferencePhoto } from './ar/reference-photo'
-import type { CalibrationReferencePhoto } from './world/types'
-import { isQueuedOffline } from './shared/offline-queue'
+import {
+  AREA_NEEDS_CONNECTION,
+  FRAME_CONFLICT_TEXT,
+  FRAME_NOT_SYNCED_TEXT,
+  PLACE_NEEDS_CONNECTION,
+  adoptFrameOutcome,
+  fetchPlaceList,
+  noQueueHeaders,
+  onFrameSettled,
+  persistProjectSpatialFrame,
+  readCreatedPlace,
+  resolveInitialPlace,
+  retryPendingFrames,
+  showFrameSyncNote,
+  unsyncedPlaceIds,
+  whenFramesSettled,
+  withPendingFrame,
+  type FrameSyncOutcome,
+} from './project/frame-sync.ts'
+import { newPlaceTypeOptionsHtml } from './project/new-place-type.ts'
 import type { AreaKind, PlaceArea, PlaceType } from './world/types'
 import { AROverlay } from './ui/overlay'
 import { writeStatus, type StatusPriority } from './ui/status-line'
 import { SidePanel, type ExportOutcome } from './ui/panel'
 import { SessionHistory } from './ui/history'
+import { previousRunNotice } from './ui/previous-run'
 import { hideWithoutServer, renderFtueStatus, SIGN_IN_FAILED } from './ui/ftue-status'
 import { initShellSignIn } from './shared/shell-sign-in'
 import { apiUrl, editorPath, isDesktopShell, isNativeShell, SCAN_SERVER_CHANGE_EVENT, shellSessionToken, withSessionToken } from './shared/api-base.ts'
 import { exportToGLB } from './export/gltf'
 import { isServerSessionId } from './shared/session-id.ts'
+import { acquireScannerRole } from './shared/scanner-lock.ts'
+import { captureCountFor, highestCaptureIndex, isSameCapture, isSameRecord } from './shared/capture-index.ts'
 import { exportSessionSummary } from './export/summary'
 import { GeoTracker, type GeoFix } from './geo/geo-tracker'
-import { distanceM } from './world/geo'
+import { compassRuleFromSearch } from './geo/compass-heading'
+import { bearingConventionFromSearch, compassSpinTerms, distanceM, formatCompassSpin } from './world/geo'
 import type { RtcBroadcaster } from './rtc/broadcaster'
 import { WEBRTC_LIVE_ENABLED } from './rtc/feature'
 import { registerPWA } from './pwa'
@@ -74,6 +107,7 @@ import { installKeyboardAvoidance } from './ui/keyboard'
 import { ONBOARDING_KEY, PLACE_SELECTION_SESSION_KEY } from './shared/storage-keys'
 import { hasDebugFlag } from './shared/debug-flags'
 import { formatPoseDelta, poseDelta } from './capture/pose-delta'
+import { installProbeLog } from './capture/probe-log'
 import {
   UPLOAD_RESULT_NOTE,
   uploadExpectation,
@@ -140,10 +174,16 @@ import * as THREE from 'three'
 
 const CAPTURE_FRAME_TIMEOUT_MS = 8000
 const TRACKING_WAIT_MS = 2500
+/**
+ * What a capture says when tracking never started: the photo is saved and nothing is
+ * placed. Inference is skipped for such a frame, because its labels could only be
+ * shown, never put anywhere, so no labels appear. The line says what to do next.
+ */
+const UNPLACED_STATUS = '⚠ Tracking not ready. Photo saved, not placed. Move slowly, then capture again.'
 /** See `lightSampleTick` — one luminance sample every fourth 750 ms scanner tick. */
 const LIGHT_SAMPLE_EVERY_TICKS = 4
 let requestPlaceSelection:
-  | ((afterSelection?: () => void, purpose?: PlaceSelectionPurpose) => void)
+  | ((afterSelection?: () => void, purpose?: PlaceSelectionPurpose, onDismiss?: () => void) => void)
   | null = null
 // Upload selection is wired before IndexedDB and Place data finish loading, so
 // retain its current target in module state for the upload handler.
@@ -280,6 +320,12 @@ let lastVerdictKey: string | null = null
 let lastMotionHint: string | null = null
 
 async function main() {
+  // Which page may write the scan store is settled first, before anything is wired (MAIN10-1; see
+  // src/shared/scanner-lock.ts). The lock decision needs no store, so it runs here. Each write path
+  // below is wired after it, and a read-only page wires its path to refuse (see wireContentUpload()
+  // and mountTripodCapture()).
+  const scannerRole = await acquireScannerRole(navigator)
+  const readOnlyScanner = scannerRole === 'readOnly'
   const searchParams = new URLSearchParams(location.search)
   // Onboarding is skipped under mocks (so scan-flow tests don't stall on it) and
   // when explicitly disabled with ?onboarding=0. ?onboarding=1 forces it on even
@@ -306,12 +352,12 @@ async function main() {
 
   // Walkthrough-video upload — a server-side path that needs no AR runtime or
   // secure context, so wire it before the isSecureContext bail-out below.
-  wireContentUpload()
+  wireContentUpload(readOnlyScanner)
   // Tripod Scan, for the same reason: no AR runtime is involved in it at all,
   // and the phones this path exists for are the ones where the boot below
   // gives up. It borrows the input wireContentUpload() just wired, so it
   // follows it.
-  mountTripodCapture()
+  mountTripodCapture(readOnlyScanner)
   // The question that decides which of the three above is put in front of the
   // person. Wired here for the same reason they are: it has to work on the
   // devices where the boot below returns early, which is precisely where
@@ -323,12 +369,12 @@ async function main() {
   if (!window.isSecureContext) {
     console.warn(`[main] Secure context (HTTPS) required. To test locally: tailscale cert ${location.hostname}`)
     const statusEl = document.getElementById('status-text')
-    if (statusEl) statusEl.textContent = `This page must be opened over a secure HTTPS link — ask for the correct link`
+    if (statusEl) statusEl.textContent = `✕ Needs a secure link\n• Ask for the https:// link`
     setStartButtonState('unavailable', 'Needs a secure (HTTPS) link')
     return
   }
 
-  registerPWA()
+  registerPWA({ flushQueue: !readOnlyScanner })
 
   const canvas = document.getElementById('camerafeed') as HTMLCanvasElement
   const overlay = setupStatusOverlay()
@@ -376,7 +422,7 @@ async function main() {
     // AR session that cannot happen. The banner lives inside #ar-overlay, not
     // #start-screen, so it survives whichever of the two is torn down first.
     if (arRuntimeError) {
-      showPermissionBanner(arRuntimeError)
+      showPermissionBanner(arRuntimeError, 'AR did not start')
       overlay.setStatus(arRuntimeError)
       return
     }
@@ -418,13 +464,13 @@ async function main() {
     startBtn?.addEventListener('click', () => {
       if (startPressed) return
       if (!projectSelectionReady) {
-        overlay.setStatus('Preparing project selection...')
+        overlay.setStatus('Preparing projects…')
         return
       }
       // Every new capture starts by confirming its place, even when a project
       // was used previously. The selection defines this scan's shared frame.
       requestPlaceSelection?.(() => { void beginArSession() }, 'scan')
-      overlay.setStatus('Choose or create a project before calibrating the scan.')
+      overlay.setStatus('⚠ No project selected\n• Choose or create one to calibrate')
     })
   })
   // The button ships `disabled aria-busy="true"` with a "Preparing…" line in
@@ -436,7 +482,40 @@ async function main() {
   setStartButtonState('ready')
 
   // ── 1. Store + scan accumulators ────────────────────────────────────────────
-  const store = new DetectionStore()
+  // The role was settled at the top of main(), before anything was wired (MAIN9-1, MAIN10-1). A
+  // read-only page opens the same store with readOnly, and starts no scan, stream, upload, export or
+  // capture (see READ_ONLY_NOTICE below).
+  const store = readOnlyScanner ? new DetectionStore({ readOnly: true }) : new DetectionStore()
+  // Another tab has taken this scan over, so nothing this page writes is saved. Said in the
+  // status line when the store reports it (see DetectionStore.onSuperseded), and kept there.
+  const SUPERSEDED_NOTICE = 'This scan is open in another tab. Changes here are not saved. Reload this page to continue.'
+  const showSuperseded = () => overlay.setStatus(SUPERSEDED_NOTICE, 'sticky')
+  store.onSuperseded(showSuperseded)
+  // The status line holds a sticky write for STATUS_HOLD_MS only, and any later write (a scanner
+  // tick, a capture result) replaces the notice. So while the store stays superseded, the notice
+  // is put back after every write to the node. The observer runs before the browser paints, so
+  // the replaced text is never shown.
+  const statusNode = document.getElementById('status-text')
+  const keepSupersededNotice = () => {
+    if (store.isSuperseded && statusNode?.textContent !== SUPERSEDED_NOTICE) showSuperseded()
+  }
+  if (statusNode) new MutationObserver(keepSupersededNotice).observe(statusNode, { childList: true, characterData: true, subtree: true })
+  // Another scanner page on this origin holds the writer lock, so this page writes nothing. Capture,
+  // stream and person are disabled with this notice as their reason. The place picker is not opened,
+  // because scan, upload and tripod all start there, and a manual export is not run, because it uploads.
+  const READ_ONLY_NOTICE = 'Scanner is open in another tab. Close it, or reload this page, to capture here.'
+  const showReadOnlyNotice = () => overlay.setStatus(READ_ONLY_NOTICE, 'sticky')
+  if (readOnlyScanner) {
+    // Put back after every write to the node, as the superseded notice is. Later boot writes (the AR
+    // engine load, for one) would otherwise replace a notice that is held for STATUS_HOLD_MS only.
+    // It yields to the superseded notice when both apply.
+    const keepReadOnlyNotice = () => {
+      if (!store.isSuperseded && statusNode?.textContent !== READ_ONLY_NOTICE) showReadOnlyNotice()
+    }
+    if (statusNode) new MutationObserver(keepReadOnlyNotice).observe(statusNode, { childList: true, characterData: true, subtree: true })
+    showReadOnlyNotice()
+    disableCaptureControls(READ_ONLY_NOTICE)
+  }
   await store.open()
   // Continue the last scan rather than silently starting empty. Without this a
   // reload lost every pin — the restore method existed but nothing called it,
@@ -445,7 +524,8 @@ async function main() {
   // session" in the panel is the way to start over.
   const resumed = await store.resumeLatestSession()
   if (resumed > 0) {
-    overlay.setStatus(`Resumed last scan — ${resumed} object${resumed === 1 ? '' : 's'}`)
+    // The record is back, the objects in it are not in this page's frame. See DetectionStore.currentRunDetections.
+    overlay.setStatus(previousRunNotice(store.previousRunCount()))
   }
   void checkStorageQuota(store, overlay)
   const projectStore = new ProjectStore()
@@ -454,7 +534,33 @@ async function main() {
   projectSelectionReady = true
   let sessionScanEntry: ScanEntry | null = null
   let sessionCalibration: ScanCalibration | undefined
+  // A frame a calibration made and the server does not hold yet is sent again when the page loads, when the
+  // connection comes back and when the Place picker opens. A read-only page sends nothing. What the server
+  // answers reaches the Place this page works with, whoever asked: a later calibration then names the revision
+  // the server holds, and a frame that lost to another device's is not stamped on the scans that follow.
+  if (!readOnlyScanner) {
+    void retryPendingFrames(projectStore, undefined, 'load')
+    globalThis.addEventListener('online', () => void retryPendingFrames(projectStore, undefined, 'online'))
+    onFrameSettled(({ projectId, outcome }) => {
+      if (selectedProject?.projectId !== projectId) return
+      adoptFrameOutcome(selectedProject, outcome)
+      if (outcome.status !== 'conflict' || !sessionCalibration) return
+      // Exports take the calibration from the session's scan entry once there is one, so it goes from there too.
+      sessionCalibration = undefined
+      if (sessionScanEntry) {
+        sessionScanEntry.calibration = undefined
+        void projectStore.updateScan(sessionScanEntry).catch(() => {})
+      }
+      overlay.setStatus(FRAME_CONFLICT_TEXT, 'sticky')
+    })
+  }
   const qualityMonitor = new ScanQualityMonitor()
+  /**
+   * What this scan has seen of the provider's frame epochs (src/ar/frame-epoch.ts): how many
+   * times tracking was interrupted or the runtime's origin moved since the scan began, and the
+   * record the upload sidecar carries. Attached to the provider before AR starts.
+   */
+  const scanFrameEpochs = new ScanFrameEpochLog()
   /**
    * Scanner ticks since the last luminance sample. Sampling every tick would
    * mean a 64x64 drawImage + getImageData off the camera video every 750 ms for
@@ -463,7 +569,7 @@ async function main() {
    * has walked anywhere, and cheap enough not to compete with SLAM.
    */
   let lightSampleTick = 0
-  const geoTracker = new GeoTracker()
+  const geoTracker = new GeoTracker({ compassRule: compassRuleFromSearch(location.search) })
   const placePicker = mountPlacePicker(projectStore, geoTracker, selectedProject, (project, areaId) => {
     selectedProject = project
     selectedAreaId = areaId
@@ -475,7 +581,7 @@ async function main() {
   /**
    * Point every "open the editor / viewer" link at the Place being scanned.
    *
-   * Without this they go to a bare `/editor`, which loads the `default` world — and that
+   * Without this they open a bare `/viewer.html`, which loads the `default` world — and that
    * world admits only scans with no projectId, so a scan captured into a Place is invisible
    * there by construction. The user finishes a scan, taps through, and sees an empty editor
    * with their work apparently gone. It is not gone; it is in `project-<id>`.
@@ -496,7 +602,8 @@ async function main() {
   globalThis.addEventListener(SCAN_SERVER_CHANGE_EVENT, () => {
     void hideWithoutServer(document.getElementById('start-editor-card'))
   })
-  requestPlaceSelection = placePicker.open
+  // A read-only page opens no place picker. Scan, upload and tripod sweep all start there, and each one writes.
+  requestPlaceSelection = readOnlyScanner ? showReadOnlyNotice : placePicker.open
   const pointCloud = new PointCloud(0.05)   // 5 cm voxel deduplication grid
   const poseHistory: Pose[] = []
   const scanner = new RoomScanner()
@@ -505,12 +612,24 @@ async function main() {
   // benchmark's "walk back to the tape" step measures against.
   const poseReadoutArmed = hasDebugFlag('pose')
   let poseReference: Pose | null = null
-  let captureCount = 0    // total captures this session, inferred or not
+  // The numbering counter for this session's captures, inferred or not. It starts at the highest
+  // index the resumed session already stores, so the next capture is numbered above it and cannot
+  // replace a stored record. It numbers captures and nothing else: a Clear keeps it, so it is not a
+  // count of what the store holds (the summary reads store.captureCounts()).
+  let captureCount = highestCaptureIndex(store.captures.values(), store.sessionId)
+  // The session captureCount counts for. A Clear keeps it; a load, a delete or an adoption moves the store on.
+  let captureCountSession = store.sessionId
+  // The count each session this page has moved on from was at. A session loaded back resumes from it.
+  const leftCaptureCount = new Map<string, number>()
   let autoSaveTimer: ReturnType<typeof setTimeout> | null = null
   let autoSaveInFlight = false
   let autoSaveQueued = false
   let captureInFlight = false
   let latestKeyframeCount = 0
+  // Set by a scan reset, which closes the keyframe stream whose count this is. Its
+  // late status (uploads still draining) must not write the count back; an open
+  // stream clears it again.
+  let keyframeCountClosed = false
 
   // Start geo tracker early (GPS needs time to acquire a fix)
   // Wire geo indicator chip immediately when first fix arrives
@@ -545,6 +664,110 @@ async function main() {
   // the fresh filename in hand locally — only for the two paths that don't.
   let currentSessionGlbFilename: string | undefined
 
+  // One scan, one frame (src/ar/reanchor-flow.ts). The scan half of the flow's host: how this page saves a scan and begins
+  // the next one (src/ar/reanchor-host.ts), on the export, the store and the reset it already has.
+  const scanHost = createScanHost({
+    store,
+    exclusive: withoutAutosave,
+    hasContent: () => pointCloud.count > 0 || store.currentRunDetections().size > 0 || poseHistory.length > 0,
+    exportScan: async () => exportToGLB(
+      { store, pointCloud, poseHistory, scanEntry: await ensureSessionScanEntry(), geoFix: geoTracker.snapshot() ?? undefined, qualitySummary: currentQualitySummary(), frameEpochs: scanFrameEpochs.snapshot(pointCloud) },
+      { download: false, upload: true, filenamePrefix: 'room-scan', autoSaved: false },
+    ),
+    recordUploaded: async (filename) => {
+      await updateSessionScanFilename(filename)
+      lastUploadedFilename = filename
+      currentSessionGlbFilename = filename
+      revealDownloadLink(filename)
+      setAutosaveStatus(`Scan saved ✓ ${shortName(filename)}`)
+    },
+    resetScan: resetScanner,
+    clearCalibration: () => {
+      sessionCalibration = undefined
+      scanFrameEpochs.forgetCalibration()
+    },
+    get keyframes() { return keyframes },
+    calibrate: calibrateScan,
+    ensureEntry: ensureSessionScanEntry,
+    capturing: () => captureInFlight,
+  })
+  // When the runtime's frame may have moved under a calibrated scan the person chooses to re-anchor (this scan is saved
+  // and the next one begins, calibrated again) or to keep going; Check drift taps the landmark again to measure it.
+  const reanchor = new ReanchorFlow({
+    view: createReanchorView({ canvas }),
+    epochs: scanFrameEpochs,
+    arRunId: () => store.arRunId,
+    autosplit: autosplitRequested(location.search),
+    host: {
+      ...scanHost,
+      storedFrame: () => selectedProject?.spatialFrame ?? null,
+      calibration: () => sessionCalibration,
+      poses: () => poseHistory,
+      readTap: (x, y) => driftTapReader({
+        provider,
+        hitTest: async (hx, hy) => (asyncHitTest ? await asyncHitTest(hx, hy) : provider.hitTest(hx, hy)),
+        ground: () => pointCloud.groundEstimate(),
+      })(x, y),
+      say: (text) => overlay.setStatus(text, 'sticky'),
+    },
+  })
+
+  /**
+   * Point the capture counter at the live session. The counter belongs to the session it
+   * was last counted for, and captureCountFor works out its value for the session now live.
+   * A Clear keeps the session, so the count only rises. Any other change of session moves
+   * the count to that session's own history.
+   */
+  function followCaptureSession(): void {
+    const live = store.sessionId
+    if (live !== captureCountSession) leftCaptureCount.set(captureCountSession, captureCount)
+    captureCount = captureCountFor(live, captureCountSession, captureCount, store.captures.values(), leftCaptureCount)
+    captureCountSession = live
+  }
+
+  /**
+   * Empty the live scan: the point cloud, the pose trail, the Place entry it was
+   * going into, and its keyframe session. Run after Clear, after deleting the
+   * session being scanned, and after loading another one, so the next Export or
+   * autosave cannot upload geometry from a session that is no longer shown. The capture
+   * count follows the session now live (see followCaptureSession), so the next capture
+   * cannot reuse an index that a capture still holds.
+   *
+   * `detectionCount` is the detections the scan being left had. The caller reads it
+   * before it changes the store, since a load or delete has already replaced them by
+   * the time this runs. The point count and pose trail are read here, before the clear.
+   */
+  function resetScanner(detectionCount: number): void {
+    if (keyframes?.active) {
+      // The stream was feeding the scan being left, so it ends with it. A rotation
+      // would open a new session at once, and the store adopts that id for whatever
+      // session is open now, which for a load is the one just loaded.
+      void keyframes.stop({
+        glbFilename: currentSessionGlbFilename,
+        pointCount: pointCloud.count,
+        detectionCount,
+        poseCount: poseHistory.length,
+        qualitySummary: currentQualitySummary(detectionCount),
+      })
+    }
+    pointCloud.clear()
+    poseHistory.length = 0
+    sessionScanEntry = null
+    latestKeyframeCount = 0
+    keyframeCountClosed = true
+    currentSessionGlbFilename = undefined
+    qualityMonitor.reset()
+    scanFrameEpochs.reset()
+    reanchor.noteScanReset()
+    // A Clear keeps the live session, so the count only rises. A load or a delete may have
+    // moved the store to another session, or to none, and that one counts from its own history.
+    followCaptureSession()
+  }
+
+  // The On-device toggle and its model row read hasWebGPU when the panel is built,
+  // so the adapter probe runs first. It is bounded (2 s), and router.init() below
+  // reuses its answer rather than asking the browser again.
+  await router.probeWebGPU()
   const panel = new SidePanel(
     store,
     async () => {
@@ -559,14 +782,16 @@ async function main() {
         void keyframes.rotate({
           glbFilename: uploadedFilename,
           pointCount: pointCloud.count,
-          detectionCount: store.detections.size,
+          detectionCount: store.currentRunDetections().size,
           poseCount: poseHistory.length,
           qualitySummary: currentQualitySummary(),
         })
       }
       return outcome
     },
-    () => exportSessionSummary({ store, pointCloud, poseHistory, captureCount, geoFix: geoTracker.snapshot() ?? undefined }),
+    // The Captures figure is what the store holds for this session, so a Clear is reflected in it.
+    // captureCount is only the numbering counter, and a Clear leaves it where it was.
+    () => exportSessionSummary({ store, pointCloud, poseHistory, captureCount: store.captureCounts('run').total, geoFix: geoTracker.snapshot() ?? undefined }),
     (action) => requestServerProcessing(action, store, lastUploadedFilename),
     (mode) => {
       router.setMode(mode)
@@ -589,8 +814,10 @@ async function main() {
     // without WebGPU gets told specifically why it's disabled instead of
     // just failing on use (this ticket's Acceptance Criteria).
     router.hasWebGPU ? null : 'This browser has no WebGPU support',
+    resetScanner,
   )
   panel.mount()
+  if (readOnlyScanner) panel.setReadOnly()
   // WebRTC live view is an experimental feature and must not appear in normal
   // scanning until its device connection path is reliable.
   if (!WEBRTC_LIVE_ENABLED) panel.streamButton?.remove()
@@ -601,7 +828,8 @@ async function main() {
     void getProvisioningStatus({ probe: true }).then((status) => panel.setModelStatus(status))
   }
 
-  const history = new SessionHistory(store)
+  const history = new SessionHistory(store, resetScanner)
+  if (readOnlyScanner) history.setReadOnly()
   history.mount()
 
   // Deliberately no saveSnapshot() here. Persisting at boot wrote an empty
@@ -622,6 +850,9 @@ async function main() {
     },
   )
   overlay.setStatus(`AI: ${router.path === 'server' ? 'Server' : 'WebGPU'}`)
+  // SidePanel was built before init, when the router had not read its saved mode
+  // yet, and init() never calls onModeChange for it. Without this the panel says Server.
+  panel.updateInferMode(router.path)
 
   // ── 3. AR runtime detection ────────────────────────────────────────────────
   let provider: ARProvider
@@ -642,22 +873,21 @@ async function main() {
   // XR8 global is set by xr.js (the 8th Wall / Niantic Spatial XR Engine
   // binary in public/xr.js — free and key-less, but proprietary; see the
   // licence note at the top of src/ar/eighthwall.ts).
-  // If it's not present after a grace timeout we fall back to WebXR.
-  // index.html skips loading xr.js entirely when ?ar=webxr is set.
-  // 3000 ms here was a silent dead-end on a real phone, and it is worth naming why
-  // because the number looks generous and is not. xr.js does NOT assign
-  // `window.XR8` or fire `xrloaded` when the small loader lands — it first awaits
-  // `Promise.all(preloadChunks.map(loadChunk))`, and index.html asks for the
-  // `slam` chunk, which is public/xr-slam.js: 5.5 MB plus WASM init. Over a phone
-  // link that routinely takes longer than 3 s, so `xr8Available` came back false
-  // while the engine was still loading perfectly well and would be ready a moment
-  // later. The fallback then called createWebXRProvider(), which throws on any
-  // Android Chrome without ARCore, and main() returned with the user's tap still
-  // sitting behind the Place picker — a button that did nothing, with no error.
+  // If the engine never arrives we fall back to WebXR. index.html skips loading
+  // xr.js entirely when ?ar=webxr is set. The wait follows xr.js's own state, not
+  // a short timer: the page preloads a 5.5 MB `slam` chunk (data-preload-chunks), and
+  // a slow phone link can outlast any short timer (see waitForXR8).
   // The desktop app never loads the engine (index.html skips it there, and the desktop
-  // bundle leaves it out), so waiting the full timeout for it would only delay the
-  // start screen's upload path by 20 s.
-  const xr8Available = forcedMode === 'webxr' || isDesktopShell() ? false : await waitForXR8(XR8_LOAD_TIMEOUT_MS)
+  // bundle leaves it out), so waiting for it would only delay the start screen's upload path.
+  // A page that never loads the engine starts, and stays, 'absent'. It is not 'failed': the
+  // reason below blames the download for 'failed' and 'timeout' only, and no reload can add
+  // an engine the page never requested (see engineExpected).
+  let xr8Load: XR8Load = 'absent'
+  if (engineExpected(forcedMode, isDesktopShell())) {
+    overlay.setStatus('Loading AR engine…')
+    xr8Load = await waitForXR8(XR8_LOAD_TIMEOUT_MS)
+  }
+  const xr8Available = xr8Load === 'ready'
 
   if (xr8Available) {
     try {
@@ -671,13 +901,24 @@ async function main() {
   } else {
     try {
       provider = await createWebXRProvider()
-      overlay.setStatus(forcedMode === 'webxr' ? 'WebXR ready (native AR session)' : 'WebXR ready')
+      overlay.setStatus(forcedMode === 'webxr' ? '✓ WebXR ready\n• Native AR session' : '✓ WebXR ready')
     } catch (e) {
+      // A load that failed or stalled is not a device that cannot do AR, so it gets
+      // its own line with the reload hint. Only "not available" means the device. A page
+      // that never loads the engine ('absent': the desktop app, a page forced into WebXR)
+      // has no download to blame, so it falls to the WebXR line or the device line, and
+      // never to a reload hint.
       const reason = forcedMode === 'webxr'
-        ? 'WebXR not available — on iOS open this page in HelloXR'
-        : 'AR not available on this device'
+        ? 'WebXR is not available here'
+        : xr8Load === 'timeout'
+          ? 'The AR engine did not load in time\n• Reload the page to try again'
+          : xr8Load === 'failed'
+            ? 'The AR engine did not load\n• Reload the page. If it keeps failing, the server may be down'
+            : 'AR not available on this device'
       overlay.setStatus(reason)
-      showArHelp()
+      // The reason goes on the start screen too, where the reader is looking. The
+      // overlay above sits under it. See showArHelp().
+      showArHelp(reason)
       // Arms the section-0 gate to report this instead of dead-ending — see
       // arRuntimeError. Must be set BEFORE the return, because the tap that
       // needs it may still be sitting behind the open Place picker.
@@ -719,39 +960,75 @@ async function main() {
   setCaptureDevice(deviceFromProbe(probeEnv))
 
   // ── 4. AR Overlay & Capture setup ──────────────────────────────────────────
-  keyframes = new KeyframeStreamer(provider)
+  keyframes = new KeyframeStreamer(provider, { hold: () => reanchor.recordingHeld, runId: () => store.arRunId })
   const arOverlay = new AROverlay(store, use8thWall, provider)
   const capture = new CaptureModule(provider)
   const asyncHitTest = !use8thWall && provider instanceof WebXRProvider
     ? (x: number, y: number) => (provider as WebXRProvider).hitTestAsync(x, y)
     : undefined
+  // How a floor tap is read, by the calibration and by the probe taps after it: a burst of hits read as one measurement
+  // (src/ar/calibration-taps.ts). `?tap=single` is the one-hit arm DX2 compares it with.
+  const tapSampler = calibrationTapSampler({
+    provider,
+    singleHit: asyncHitTest,
+    ground: () => pointCloud.groundEstimate(),
+    search: location.search,
+  })
 
   // Shared capture handler used by both the manual button and auto-capture
   async function doCapture() {
     if (captureInFlight) {
-      overlay.setStatus('Capture already processing...', 'sticky')
+      overlay.setStatus('Still processing last capture', 'sticky')
+      return
+    }
+    // Nothing is added to a scan while the choice about its frame is open (src/ar/reanchor-flow.ts).
+    if (reanchor.recordingHeld) {
+      overlay.setStatus(CAPTURE_HELD_TEXT, 'sticky')
       return
     }
 
     captureInFlight = true
     setCaptureBusy(true)
 
-    if (!provider.isTracking()) {
-      overlay.setStatus('Tracking warming up...', 'sticky')
-      const trackingReady = await waitForTracking(provider, TRACKING_WAIT_MS)
-      if (!trackingReady) {
-        overlay.setStatus('Capturing without stable tracking...', 'sticky')
-      }
+    // Read before the frame is requested. Until tracking has started, the pose a
+    // frame carries is the identity default, not a position.
+    let poseValid = provider.isTracking()
+    if (!poseValid) {
+      overlay.setStatus('Tracking starting…', 'sticky')
+      poseValid = await waitForTracking(provider, TRACKING_WAIT_MS)
     }
-    overlay.setStatus('Capturing next frame...', 'sticky')
+    // Neutral until the capture has run. "Saved, not placed" is only true once the frame
+    // is stored, so it is set below, after the capture succeeds.
+    overlay.setStatus('Capturing…', 'sticky')
     // Named before the try so the catch can reach them: the frame is stored by
     // then, and the failure path's job is to mark that record and decide whether
     // its image is worth holding — not to mourn it.
     let pendingCaptureId: string | null = null
     let frameQuality: Promise<FrameQuality> | null = null
+    // The record the frame was stored as. A write made after an analysis await goes ahead
+    // only while its id still holds this same record (see isSameRecord). The live session is
+    // not checked here: a load of another session leaves this record in the store, and its
+    // analysis still has to settle it.
+    let storedCapture: CaptureRecord | undefined
+    const stillThisCapture = (captureId: string) => isSameRecord(store.getCapture(captureId), storedCapture)
     try {
       const { blob, pose, timestamp, frameWidth, frameHeight } = await capture.capture(CAPTURE_FRAME_TIMEOUT_MS)
       console.log(`[main] Captured blob: ${blob.size} bytes, type=${blob.type}, pose=`, pose)
+
+      // The frustum the photo was taken through. Built here, before inference, from the
+      // pose the frame was captured at. The phone keeps moving while the model answers
+      // (3–7 s), so a camera built after the answer projects the boxes through the wrong
+      // viewpoint, and the markers land off the object they describe.
+      let captureCamera: THREE.PerspectiveCamera | undefined
+      if (provider.isTracking()) {
+        captureCamera = new THREE.PerspectiveCamera(
+          provider.getCameraFovY(), provider.getCameraAspect(), 0.01, 1000,
+        )
+        captureCamera.position.set(pose.position.x, pose.position.y, pose.position.z)
+        captureCamera.quaternion.set(pose.rotation.x, pose.rotation.y, pose.rotation.z, pose.rotation.w)
+        captureCamera.updateMatrixWorld(true)
+      }
+      const captureViewport = { width: window.innerWidth, height: window.innerHeight }
 
       // Store the frame BEFORE anything is asked of it. The photograph is the
       // unrepeatable half of a capture — the user had to be standing there — and
@@ -761,9 +1038,12 @@ async function main() {
       //
       // captureCount advances here rather than after a successful inference, so a
       // capture whose detection fails still owns its index and the next capture
-      // cannot collide with it.
+      // cannot collide with it. The count is first brought onto the live session, since
+      // an erase leaves none and the capture below starts a new one.
+      followCaptureSession()
       const captureIndex = ++captureCount
       pendingCaptureId = store.captureIdFor(captureIndex)
+      captureCountSession = store.sessionId
       // Not awaited: the write stays off the shutter's critical path, which
       // already has no flash, haptic or sound to cover latency
       // (../docs/product/UI_MANUAL.md:169-176). It is reconciled before the detections land.
@@ -772,6 +1052,18 @@ async function main() {
       // after router.infer() resolves so a captured-but-failed-on-device
       // record still says "webgpu" (what was attempted), not "server".
       const capturePersisted = store.putCapture({ captureIndex, timestamp, pose, blob, engine: router.path })
+      // putCapture stores the record before its first await, so it is already held here.
+      storedCapture = store.getCapture(pendingCaptureId)
+
+      // No live pose, so nothing can be placed. The photo is kept and recorded as
+      // not placed, and inference is skipped: its labels could only be shown, never
+      // put anywhere. The record says why it has no detections.
+      if (!poseValid) {
+        await capturePersisted
+        if (stillThisCapture(pendingCaptureId)) await store.markCaptureFailed(pendingCaptureId, 'Tracking was not ready, so the photo was not placed')
+        overlay.setStatus(UNPLACED_STATUS, 'sticky')
+        return
+      }
 
       overlay.setStatus('Analysing…', 'sticky')
 
@@ -788,11 +1080,11 @@ async function main() {
       const quality = await frameQuality
       updateQualityOverlay(qualityMonitor.tick(provider, pointCloud))
       if (quality.uniformFrame) {
-        overlay.setStatus('Camera feed unavailable — close Chrome, reopen the app, then retry', 'sticky')
+        overlay.setStatus('✕ Camera unavailable\n• Reopen the app, then retry', 'sticky')
         throw new Error('Camera frame is uniform; the live camera feed is not available')
       }
-      if (quality.lowLight)   overlay.setStatus('⚠ Low light — add more lighting', 'sticky')
-      if (quality.reflective) overlay.setStatus('⚠ Reflective surface detected', 'sticky')
+      if (quality.lowLight)   overlay.setStatus('⚠ Low light\n• Add lighting', 'sticky')
+      if (quality.reflective) overlay.setStatus('⚠ Reflective surface\n• Shift the angle', 'sticky')
 
       const rawDets = await router.infer(blob)
 
@@ -800,20 +1092,7 @@ async function main() {
       if (progFill) progFill.classList.remove('analyzing')
       if (progWrap) progWrap.classList.remove('visible')
 
-      overlay.setStatus(`${rawDets.length} object${rawDets.length === 1 ? '' : 's'} detected`, 'sticky')
-
-      // Snapshot a Three.js camera from the current SLAM pose for frustum raycasting.
-      // This gives the resolver a proper projection matrix at the moment of capture.
-      let captureCamera: THREE.PerspectiveCamera | undefined
-      if (provider.isTracking()) {
-        const p = provider.getPose()
-        captureCamera = new THREE.PerspectiveCamera(
-          provider.getCameraFovY(), provider.getCameraAspect(), 0.01, 1000,
-        )
-        captureCamera.position.set(p.position.x, p.position.y, p.position.z)
-        captureCamera.quaternion.set(p.rotation.x, p.rotation.y, p.rotation.z, p.rotation.w)
-        captureCamera.updateMatrixWorld(true)
-      }
+      overlay.setStatus(`✓ ${rawDets.length} object${rawDets.length === 1 ? '' : 's'} detected`, 'sticky')
 
       const worldDets = await resolveDetections(rawDets, timestamp, {
         provider,
@@ -821,7 +1100,7 @@ async function main() {
         cameraPose: pose,
         captureCamera,
         imageSize: { width: frameWidth, height: frameHeight },
-        viewportSize: { width: window.innerWidth, height: window.innerHeight },
+        viewportSize: captureViewport,
         pointCloud,
         sessionId: store.sessionId,
       })
@@ -843,21 +1122,30 @@ async function main() {
         thumbMap.set(key, await capture.captureDetectionThumbnail(blob, wd.bbox))
       }
 
-      const merged = mergeDetections(store.detections, worldDets)
-      await store.upsert(merged, thumbMap)
+      // A capture erased while it was being analysed has no record left in the store,
+      // and its detections belong to the scan that was erased. A capture from another
+      // session (a load happened meanwhile) is not this scan's either. A record that only
+      // took its id, since a Clear dropped this one, is not this capture. Do not write any
+      // of them into whichever scan is live now.
+      const pendingRecord = store.getCapture(pendingCaptureId)
+      if (isSameCapture(pendingRecord, storedCapture, store.sessionId)) {
+        const merged = mergeDetections(store.currentRunDetections(), worldDets)
+        await store.upsert(merged, thumbMap)
+      }
 
       showInferDialog(worldDets)
 
       // Attach the detections to the record that already holds the frame, so the
       // success path ends with exactly one record per capture rather than two.
       await capturePersisted
-      await store.attachDetections(pendingCaptureId, [...captureKeys])
+      if (stillThisCapture(pendingCaptureId)) await store.attachDetections(pendingCaptureId, [...captureKeys])
 
       await store.saveSnapshot()
       void checkStorageQuota(store, overlay)
       queueAutoSave()
+      const liveCount = store.currentRunDetections().size
       overlay.setStatus(
-        `${store.detections.size} object${store.detections.size === 1 ? '' : 's'} · ${pointCloud.count} pts`,
+        `${liveCount} object${liveCount === 1 ? '' : 's'} · ${pointCloud.count} pts`,
         'sticky',
       )
     } catch (e) {
@@ -869,7 +1157,7 @@ async function main() {
       // record is correct before the HUD copy below runs.
       if (pendingCaptureId) {
         const id = pendingCaptureId
-        void store.markCaptureFailed(id, e instanceof Error ? e.message : String(e))
+        if (stillThisCapture(id)) void store.markCaptureFailed(id, e instanceof Error ? e.message : String(e))
         // Retaining the frame is only worth it when the frame is the good half of
         // the capture. A server or engine error leaves a perfectly readable
         // photograph that re-inference can still use; a frame the quality monitor
@@ -879,7 +1167,7 @@ async function main() {
         // trade: an unreadable frame is not worth 140 KB of a user's quota.
         if (frameQuality) {
           void frameQuality
-            .then((q) => (isFrameUnusable(q) ? store.discardFrame(id, 'quality') : undefined))
+            .then((q) => (isFrameUnusable(q) && stillThisCapture(id) ? store.discardFrame(id, 'quality') : undefined))
             .catch(() => { /* frame could not be analysed — doubt keeps the photograph */ })
         }
       }
@@ -888,20 +1176,20 @@ async function main() {
         // actionable HUD guidance instead of a generic "failed" message.
         switch (e.code) {
           case 'timeout':
-            overlay.setStatus('Server took too long — try again or move closer', 'sticky')
+            overlay.setStatus('✕ Server timed out\n• Try again, or move closer', 'sticky')
             break
           case 'network':
-            overlay.setStatus(navigator.onLine ? 'Server unreachable — is Tailscale connected?' : 'You are offline', 'sticky')
+            overlay.setStatus(navigator.onLine ? '✕ Server unreachable\n• Check Tailscale is on' : '✕ You are offline\n• Reconnect to continue', 'sticky')
             break
           case 'model-loading':
-            overlay.setStatus('Model warming up — retry in a few seconds', 'sticky')
+            overlay.setStatus('⚠ Model warming up\n• Retry in a few seconds', 'sticky')
             break
           case 'model-failed':
           case 'unavailable':
-            overlay.setStatus(`Server inference unavailable${router.hasWebGPU ? ' — try WebGPU in the panel' : ''}`, 'sticky')
+            overlay.setStatus(`✕ Inference unavailable${router.hasWebGPU ? '\n• Try WebGPU in the panel' : ''}`, 'sticky')
             break
           default:
-            overlay.setStatus('Capture failed — try again', 'sticky')
+            overlay.setStatus('✕ Capture failed\n• Try again', 'sticky')
         }
       } else if (e instanceof WebGpuInferenceError) {
         // On-device failed. The image was never sent anywhere — see
@@ -912,24 +1200,24 @@ async function main() {
         // left the device.
         switch (e.code) {
           case 'timeout':
-            overlay.setStatus('On-device inference timed out — nothing was sent. Try again, or switch to Server.', 'sticky')
+            overlay.setStatus('✕ On-device timed out\n• Try again, or switch to Server', 'sticky')
             break
           case 'not-provisioned':
-            overlay.setStatus('On-device model not downloaded yet — open the panel to download it, or switch to Server.', 'sticky')
+            overlay.setStatus('✕ Model not downloaded\n• Download it in the panel, or use Server', 'sticky')
             break
           default:
-            overlay.setStatus('On-device inference failed — nothing was sent. Try again, or switch to Server.', 'sticky')
+            overlay.setStatus('✕ On-device failed\n• Try again, or switch to Server', 'sticky')
         }
       } else {
         const message = e instanceof Error ? e.message : String(e)
         const name = e instanceof Error ? e.name : ''
 
         if (name === 'NotAllowedError' || message.includes('NotAllowedError')) {
-          overlay.setStatus('Camera access denied — check browser settings', 'sticky')
+          overlay.setStatus('✕ Camera access denied\n• Allow it in browser settings', 'sticky')
         } else if (message.includes('Camera frame is uniform')) {
           // Keep the recovery instruction from the frame-validity guard visible;
           // this is a camera lifecycle problem, not an inference failure.
-          overlay.setStatus('Camera feed unavailable — close Chrome, reopen the app, then retry', 'sticky')
+          overlay.setStatus('✕ Camera unavailable\n• Reopen the app, then retry', 'sticky')
         } else if (message.includes('Camera stream stalled')) {
           // WebXRProvider detected the companion getUserMedia stream had frozen
           // (see docs/factory/04-capture-path-truthfulness/0005) and refused to
@@ -937,7 +1225,11 @@ async function main() {
           // A background re-acquire may already have fixed it by the time this
           // renders — if so the next capture just works — but this message
           // must stay honest for the case where it didn't.
-          overlay.setStatus('Camera feed frozen — restart the scan to continue', 'sticky')
+          overlay.setStatus('✕ Camera frozen\n• Restart the scan', 'sticky')
+        } else if (message.includes('Tracking lost')) {
+          // The provider refused a frame whose pose was too old to say where the camera was
+          // (MAX_CAPTURE_POSE_AGE_MS in src/ar/frame-epoch.ts). Nothing was stored.
+          overlay.setStatus('✕ Tracking lost\n• Hold still, then tap again', 'sticky')
         } else if (message.includes('Timed out')) {
           // Check if the timeout is actually due to denied camera permission
           let denied = false
@@ -948,12 +1240,12 @@ async function main() {
             }
           } catch { /* permissions API may not support camera query */ }
           overlay.setStatus(denied
-            ? 'Camera access denied — check browser settings'
+            ? '✕ Camera access denied\n• Allow it in browser settings'
             : 'Camera frame timed out — tap once more', 'sticky')
         } else if (name === 'TypeError' || message.includes('NetworkError') || message.includes('Failed to fetch') || message.includes('network')) {
-          overlay.setStatus('Inference requires network — switch to WebGPU in settings for offline use', 'sticky')
+          overlay.setStatus('✕ Needs network\n• Switch to WebGPU in settings', 'sticky')
         } else {
-          overlay.setStatus('Capture failed — try again', 'sticky')
+          overlay.setStatus('✕ Capture failed\n• Try again', 'sticky')
         }
       }
       console.error('[capture]', e)
@@ -975,22 +1267,28 @@ async function main() {
    * branch was unreachable code.
    */
   async function exportManualScan(): Promise<{ outcome: ExportOutcome; uploadedFilename?: string }> {
+    // A read-only page does not export: the export uploads the scan and records it against its Place,
+    // and the writer tab owns both.
+    if (readOnlyScanner) {
+      showReadOnlyNotice()
+      return { outcome: 'cancelled' }
+    }
     const summary = currentQualitySummary()
     if (summary.status === 'needs-rescan') {
       const ok = confirm('Scan quality is low. Review recommendations before exporting. Export anyway?')
       if (!ok) {
-        overlay.setStatus('Export cancelled', 'sticky')
+        overlay.setStatus('⚠ Export cancelled', 'sticky')
         setAutosaveStatus('Export cancelled')
         return { outcome: 'cancelled' }
       }
     }
 
-    setAutosaveStatus('Exporting scan...')
-    overlay.setStatus('Exporting scan...')
+    setAutosaveStatus('Exporting scan…')
+    overlay.setStatus('Exporting scan…')
     try {
       const scanEntry = await ensureSessionScanEntry()
       const result = await exportToGLB(
-        { store, pointCloud, poseHistory, scanEntry, geoFix: geoTracker.snapshot() ?? undefined, qualitySummary: currentQualitySummary() },
+        { store, pointCloud, poseHistory, scanEntry, geoFix: geoTracker.snapshot() ?? undefined, qualitySummary: currentQualitySummary(), frameEpochs: scanFrameEpochs.snapshot(pointCloud) },
         { download: true, upload: true, filenamePrefix: 'room-scan', autoSaved: false },
       )
       if (result.upload === 'uploaded' && result.uploadedFilename) {
@@ -1002,13 +1300,18 @@ async function main() {
           // reports 'failed' and callers skip keyframes.rotate() for it.
           console.error('[export] updateSessionScanFilename failed (non-fatal)', error)
         }
-        overlay.setStatus('Scan exported & synced ✓', 'sticky')
+        overlay.setStatus('✓ Scan exported and synced', 'sticky')
         setAutosaveStatus(`Scan exported & synced ✓ ${shortName(result.uploadedFilename)}`)
 
         // Reveal the "View in 3D" link next to status — only now is there
         // something on the server for that link to open.
-        const link = document.getElementById('export-view-link')
+        // A Place scan lives in its Place's world. The default world admits only
+        // scans with no projectId, so a link to it would show the work as missing.
+        const link = document.getElementById('export-view-link') as HTMLAnchorElement | null
         if (link) {
+          link.href = scanEntry.projectId
+            ? `/viewer.html?project=${encodeURIComponent(scanEntry.projectId)}`
+            : '/viewer.html?world=default'
           link.style.display = 'inline-block'
         }
         revealDownloadLink(result.uploadedFilename)
@@ -1019,7 +1322,7 @@ async function main() {
         // Not a failure: the service worker holds it and replays on reconnect.
         // Calling this "server sync failed" sent people hunting for a problem
         // that did not exist.
-        overlay.setStatus('Scan saved — will sync when back online', 'sticky')
+        overlay.setStatus('⚠ Saved on this phone\n• Syncs when you are back online', 'sticky')
         setAutosaveStatus('Scan saved — will sync when back online')
         return { outcome: 'queued' }
       }
@@ -1035,7 +1338,7 @@ async function main() {
       setAutosaveStatus(msg)
       return { outcome: 'local-only' }
     } catch (error) {
-      overlay.setStatus('Export failed — try again', 'sticky')
+      overlay.setStatus('✕ Export failed\n• Try again', 'sticky')
       setAutosaveStatus('Export failed — try again')
       console.error('[export]', error)
       return { outcome: 'failed' }
@@ -1050,7 +1353,30 @@ async function main() {
     }, 1200)
   }
 
+  /**
+   * Runs `fn` while no autosave runs and none starts, then lets one that was asked for meanwhile go. A re-anchor ends the
+   * scan through the autosave's own export (src/ar/reanchor-host.ts), and a timer that fired in the middle of it would
+   * export the same scan twice, or the next one half-begun.
+   */
+  async function withoutAutosave<T>(fn: () => Promise<T>): Promise<T> {
+    if (autoSaveTimer) clearTimeout(autoSaveTimer)
+    autoSaveQueued = false
+    while (autoSaveInFlight) await new Promise((resolve) => setTimeout(resolve, 100))
+    autoSaveInFlight = true
+    try {
+      return await fn()
+    } finally {
+      autoSaveInFlight = false
+      if (autoSaveQueued) queueAutoSave()
+    }
+  }
+
   async function runAutoSave(): Promise<void> {
+    // A scan whose calibration is still running is not saved yet: it would go up with none (src/ar/reanchor-flow.ts).
+    if (reanchor.phase === 'calibrating') {
+      queueAutoSave()
+      return
+    }
     if (autoSaveInFlight) {
       autoSaveQueued = true
       return
@@ -1061,12 +1387,12 @@ async function main() {
     try {
       await store.saveSnapshot()
       void checkStorageQuota(store, overlay)
-      if (pointCloud.count === 0 && store.detections.size === 0 && poseHistory.length === 0) {
+      if (pointCloud.count === 0 && store.currentRunDetections().size === 0 && poseHistory.length === 0) {
         setAutosaveStatus('Autosaved locally')
         return
       }
       const result = await exportToGLB(
-        { store, pointCloud, poseHistory, scanEntry: await ensureSessionScanEntry(), geoFix: geoTracker.snapshot() ?? undefined, qualitySummary: currentQualitySummary() },
+        { store, pointCloud, poseHistory, scanEntry: await ensureSessionScanEntry(), geoFix: geoTracker.snapshot() ?? undefined, qualitySummary: currentQualitySummary(), frameEpochs: scanFrameEpochs.snapshot(pointCloud) },
         { download: false, upload: true, filenamePrefix: 'autosave-room-scan', autoSaved: true },
       )
       const time = new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
@@ -1095,7 +1421,7 @@ async function main() {
           await keyframes.rotate({
             glbFilename: result.uploadedFilename,
             pointCount: pointCloud.count,
-            detectionCount: store.detections.size,
+            detectionCount: store.currentRunDetections().size,
             poseCount: poseHistory.length,
             qualitySummary: currentQualitySummary(),
           })
@@ -1113,7 +1439,7 @@ async function main() {
   arOverlay.mount(doCapture)
 
   // ── Auto-capture ───────────────────────────────────────────────────────────
-  const autoCapture = new AutoCapture(provider, doCapture)
+  const autoCapture = new AutoCapture(provider, doCapture, { hold: () => reanchor.recordingHeld })
   autoCapture.onStatusChange = (status) => {
     const btn = document.getElementById('auto-capture-btn') as HTMLButtonElement | null
     if (!btn) return
@@ -1132,9 +1458,9 @@ async function main() {
   autoCaptureBtn?.addEventListener('click', () => {
     autoCapture.toggle()
     if (autoCapture.enabled) {
-      overlay.setStatus('Auto-capture ON — move camera to scan')
+      overlay.setStatus('Auto-capture on\n• Move the camera to scan')
     } else {
-      overlay.setStatus(`Auto-capture OFF · ${autoCapture.captureCount} auto captures`)
+      overlay.setStatus(`Auto-capture off\n• ${autoCapture.captureCount} auto captures`)
     }
   })
 
@@ -1165,7 +1491,7 @@ async function main() {
     const clip = await recorder.stop()
     setPersonCaptureUI(false, '')
     if (!clip) {
-      overlay.setStatus('That recording came out empty. Try again.')
+      overlay.setStatus('✕ Recording was empty\n• Try again')
       return
     }
 
@@ -1200,40 +1526,80 @@ async function main() {
         (advisory ? ` · ${advisory.message}` : ''),
       )
     } catch (err) {
-      overlay.setStatus(`Clip upload failed: ${err instanceof Error ? err.message : String(err)}`)
+      overlay.setStatus(`✕ Clip upload failed\n• ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
+  // True from the first tap until the camera has opened or failed to. A tap in
+  // that window asks for a stop, honoured once it opens. It must not start a
+  // second recorder, which is what the null check alone allowed.
+  let clipStarting = false
+  let clipStopAsked = false
   document.getElementById('person-capture-btn')?.addEventListener('click', () => {
+    if (clipStarting) {
+      clipStopAsked = true
+      return
+    }
     if (clipRecorder) {
       void stopPersonCapture()
       return
     }
+    clipStarting = true
+    clipStopAsked = false
     void (async () => {
-      const { ClipRecorder } = await import('./capture/clip-recorder')
-      const recorder = new ClipRecorder(provider)
-      recorder.onStatus = (status) => {
-        if (status.state === 'recording') {
-          setPersonCaptureUI(true, `${Math.round((status.elapsedMs ?? 0) / 1000)}s`)
-        } else if (status.state === 'error') {
-          setPersonCaptureUI(false, '')
-          overlay.setStatus(status.message)
+      let started = false
+      try {
+        const { ClipRecorder } = await import('./capture/clip-recorder')
+        const recorder = new ClipRecorder(provider)
+        recorder.onStatus = (status) => {
+          if (status.state === 'starting') {
+            overlay.setStatus(status.message)
+          } else if (status.state === 'recording') {
+            setPersonCaptureUI(true, `${Math.round((status.elapsedMs ?? 0) / 1000)}s`)
+          } else if (status.state === 'error') {
+            setPersonCaptureUI(false, '')
+            overlay.setStatus(status.message)
+          }
         }
+        // Assigned before the await, so a stop tap can reach it.
+        clipRecorder = recorder
+        started = await recorder.start()
+      } catch (err) {
+        console.error('[clip] start failed', err)
+      } finally {
+        if (!started) clipRecorder = null
+        clipStarting = false
       }
-      const started = await recorder.start()
-      if (!started) {
-        clipRecorder = null
+      if (!started) return
+      if (clipStopAsked) {
+        await stopPersonCapture()
         return
       }
-      clipRecorder = recorder
-      overlay.setStatus('Recording a person — keep the phone upright and move gently')
+      overlay.setStatus('Recording a person\n• Keep the phone upright, move gently')
     })()
   })
 
   // ── Keyframe streaming — pose-tagged frames to the server during the scan ──
   const kfStreamer = keyframes
+  // Sending camera frames needs this device's yes, and nothing else in the scanner does (src/capture/keyframe-consent.ts).
+  // A scan in a Place streams by default only once it has been given. It also owns the panel's "Camera frames" row.
+  const cameraFrames = mountKeyframeFrames({
+    streamer: kfStreamer,
+    footer: document.getElementById('panel-footer'),
+    readOnly: readOnlyScanner,
+    finalizePayload: () => ({
+      glbFilename: currentSessionGlbFilename,
+      pointCount: pointCloud.count,
+      detectionCount: store.currentRunDetections().size,
+      poseCount: poseHistory.length,
+      qualitySummary: currentQualitySummary(),
+    }),
+    canStreamNow: () => !document.getElementById('start-screen'),
+  })
   kfStreamer.onStatus = (s) => {
-    latestKeyframeCount = s.sent
+    cameraFrames.onStatus(s)
+    if (s.active) keyframeCountClosed = false
+    if (!keyframeCountClosed) latestKeyframeCount = s.sent
     const btn = document.getElementById('stream-btn') as HTMLButtonElement | null
     if (!btn) return
     btn.classList.toggle('active', s.active)
@@ -1254,7 +1620,19 @@ async function main() {
   // KeyframeStreamer.onSessionId.
   kfStreamer.onSessionId = (sessionId) => {
     if (sessionId) {
-      void store.adoptServerSession(sessionId)
+      cameraFrames.noteSession(sessionId)
+      void store.adoptServerSession(sessionId).then((adopted) => {
+        // A refused adoption leaves the store on its old id, so the count and the session stay as they were.
+        if (!adopted) return
+        // The scan so far now belongs to this session. The count only rises here, to what
+        // the session holds, so it never drops below the captures already taken.
+        captureCount = Math.max(captureCount, highestCaptureIndex(store.captures.values(), store.sessionId))
+        captureCountSession = store.sessionId
+      }, (err: unknown) => {
+        // The store has already taken the server id, so the scan carries on under it. The
+        // failure is logged, and nothing else waits on the adoption.
+        console.error('[main] could not finish adopting the server session; the scan carries on under it:', err)
+      })
       // A fresh session has produced no GLB of its own yet. Clearing this
       // here — rather than leaving the previous session's value in place —
       // is what stops a later stream-toggle-off or pagehide on THIS session
@@ -1263,23 +1641,46 @@ async function main() {
     }
   }
 
+  // A tap during a start or stop is ignored until that settles. `active` reads false while
+  // a stop is still closing the session, so on its own it let a tap open a second session.
+  // The busy flag covers this toggle's own transitions. isTransitioning covers the ones
+  // started elsewhere (export rotate, scan reset) too. The button's disabled state is not
+  // touched here: disableCaptureControls() owns it when AR fails.
+  let streamToggleBusy = false
+  const settleStreamToggle = () => {
+    streamToggleBusy = false
+  }
   document.getElementById('stream-btn')?.addEventListener('click', () => {
-    if (kfStreamer.active) {
-      void kfStreamer.stop({
-        glbFilename: currentSessionGlbFilename,
-        pointCount: pointCloud.count,
-        detectionCount: store.detections.size,
-        poseCount: poseHistory.length,
-        qualitySummary: currentQualitySummary(),
-      })
-      overlay.setStatus('Keyframe streaming OFF')
-    } else {
-      kfStreamer.start()
-        .then(() => overlay.setStatus('Streaming keyframes — walk the room'))
-        .catch((e) => {
-          overlay.setStatus('Keyframe session failed — server offline?')
-          console.warn('[keyframes]', e)
-        })
+    if (streamToggleBusy || kfStreamer.isTransitioning) return
+    streamToggleBusy = true
+    // settleStreamToggle() clears the flag once a transition is running. Until one is,
+    // nothing else does, so a throw on the way in (from currentQualitySummary(), say)
+    // must clear it here, or every later tap is ignored.
+    let transitionStarted = false
+    try {
+      if (kfStreamer.active) {
+        void kfStreamer.stop({
+          glbFilename: currentSessionGlbFilename,
+          pointCount: pointCloud.count,
+          detectionCount: store.currentRunDetections().size,
+          poseCount: poseHistory.length,
+          qualitySummary: currentQualitySummary(),
+        }).finally(settleStreamToggle)
+        transitionStarted = true
+        overlay.setStatus('Streaming off')
+      } else {
+        // A tap that would start sending asks first when this device has not agreed. A tap that stops never does.
+        cameraFrames.requestStart(() => kfStreamer.start())
+          .then((started) => { if (started) overlay.setStatus('✓ Streaming on\n• Walk the room') })
+          .catch((e) => {
+            overlay.setStatus('✕ Streaming failed\n• Is the server up?')
+            console.warn('[keyframes]', e)
+          })
+          .finally(settleStreamToggle)
+        transitionStarted = true
+      }
+    } finally {
+      if (!transitionStarted) settleStreamToggle()
     }
   })
 
@@ -1353,7 +1754,7 @@ async function main() {
     })
   }
 
-  // Menu button opens side panel and scrolls to export section
+  // Details button opens side panel and scrolls to export section
   const finishScanBtn = document.getElementById('finish-scan-btn')
   if (finishScanBtn) {
     finishScanBtn.addEventListener('click', () => {
@@ -1386,7 +1787,7 @@ async function main() {
         void kfStreamer.stop({
           glbFilename: currentSessionGlbFilename,
           pointCount: pointCloud.count,
-          detectionCount: store.detections.size,
+          detectionCount: store.currentRunDetections().size,
           poseCount: poseHistory.length,
           qualitySummary: currentQualitySummary(),
         })
@@ -1396,7 +1797,7 @@ async function main() {
 
   // Confirmation guards when navigating away from an active scan session
   function hasUnsavedData(): boolean {
-    return pointCloud.count > 0 || store.detections.size > 0 || poseHistory.length > 0
+    return pointCloud.count > 0 || store.currentRunDetections().size > 0 || poseHistory.length > 0
   }
 
   window.addEventListener('beforeunload', (e) => {
@@ -1447,6 +1848,9 @@ async function main() {
   // signal (a WebXR runtime with no backing AR service rejects requestSession()
   // instead, which the catch below classifies).
   provider.onPreflightVerdict?.((verdict) => applyPreflightVerdict(verdict, overlay))
+  // Also before start(): the log must hear every discontinuity from the first frame on.
+  scanFrameEpochs.attach(provider)
+  reanchor.attach(provider)
   try {
     await provider.start(canvas)
   } catch (e) {
@@ -1501,6 +1905,9 @@ async function main() {
     overlay.setStatus(verdict.headline)
     return
   }
+  // This page's SLAM frame begins here. Everything the store saves from now on carries this run's id, and
+  // what it held before (a resumed session, a loaded one) is another run's: stored, not shown, not exported.
+  store.startArRun()
   // Only now is the start screen no longer the user's way out: AR is running,
   // so the live camera behind it is the thing to look at. A spec asserts this
   // (tests/mock-ftue.spec.ts expects #start-screen gone once scanning begins).
@@ -1533,10 +1940,14 @@ async function main() {
     // inherits a scale that is wrong by an order of magnitude.
     //
     // `provider.isTracking()` cannot express this (it latches on first pose);
-    // `trackingStatus()` is the runtime's own live signal. Fails open, so
-    // WebXR — which reports UNKNOWN — is unaffected.
+    // `trackingStatus()` is the runtime's own live signal. Fails open, so a
+    // runtime that reports UNKNOWN (WebXR does, until its first frame) is unaffected.
     const trackingUsable = trackingIsUsable(provider.trackingStatus())
-    const inserted = trackingUsable ? pointCloud.add(frame.points) : []
+    // Each point goes in under the epoch it was read in, so a point from before a frame
+    // shift and one from after it are never taken for one frame's geometry.
+    // Nothing is recorded while the choice about the scan's frame is open (src/ar/reanchor-flow.ts).
+    const held = reanchor.recordingHeld
+    const inserted = trackingUsable && !held ? pointCloud.add(frame.points, frame.epoch) : []
     const added = inserted.length
     // A console warning is invisible to someone walking their kitchen. The only
     // on-screen tell that recording had stopped was the #scan-stats counter no
@@ -1549,7 +1960,7 @@ async function main() {
         ? `[scan] tracking degraded (${provider.trackingStatus()}) — not recording points until it recovers`
         : '[scan] tracking recovered — recording points again')
     }
-    if (provider.isTracking() && poseIsFinite(frame.pose)) poseHistory.push(frame.pose)
+    if (provider.isTracking() && poseIsFinite(frame.pose) && !held) poseHistory.push(frame.pose)
 
     // Live geometry is available only when the experimental flag is enabled.
     rtc?.sendPoints(inserted)
@@ -1575,7 +1986,7 @@ async function main() {
     // One-time notice when the voxel grid starts dropping points to cap memory
     if (!decimationNoticeShown && pointCloud.decimations > 0) {
       decimationNoticeShown = true
-      overlay.setStatus('Point cloud thinned to save memory')
+      overlay.setStatus('⚠ Point cloud thinned\n• To save memory')
     }
     updatePoseReadout(frame.pose, provider.isTracking())
 
@@ -1605,15 +2016,29 @@ async function main() {
 
   overlay.setStatus('Calibrate the project frame…')
 
-  if (selectedProject) {
+  // The Place calibration: for this scan now, and for the one a re-anchor begins after a frame shift
+  // (src/ar/reanchor-flow.ts). Resolves true when it made a calibration.
+  async function calibrateScan(): Promise<boolean> {
+    if (!selectedProject) return false
+    // Read before the calibration flow, so the unit stamped on it can say whether a point was measured
+    // before the scale was ready (see engine-config.ts). Read for each flow, not once.
+    const calibrationStartedAt = performance.now()
+    // A frame this phone saved offline is being sent as the page starts: the Place is calibrated against what the server holds.
+    await whenFramesSettled(projectStore)
+    // The frame the Place is calibrated in is the one the provider is in as the flow begins,
+    // so a shift while it runs counts against it. A Clear keeps the calibration, and the log
+    // keeps this epoch with it (ScanFrameEpochLog.noteCalibrated).
+    const calibrationEpoch = scanFrameEpochs.currentEpoch
     const calibration = await runProjectCalibration({
       provider,
-      project: selectedProject,
       canvas,
       hitTest: async (x, y) => asyncHitTest
         ? await asyncHitTest(x, y)
         : provider.hitTest(x, y),
-      bearing: () => geoTracker.snapshot()?.bearing ?? null,
+      sampleTap: tapSampler,
+      // The compass alone: reading it through snapshot() lost it whenever the GPS fix was missing. Paired with the
+      // camera's pose: the bearing the camera faces (see GeoTracker.pairedCompass), or null when there is none to give.
+      bearing: () => geoTracker.pairedCompass(provider.getPose().rotation)?.bearingDeg ?? null,
       // Read fresh each poll — the scanner is accumulating points concurrently,
       // so this is exactly the value that changes while the modal is open.
       // Passed through whole, not narrowed to { y, locked }: 0008 added
@@ -1644,13 +2069,23 @@ async function main() {
         const local = await projectStore.getReferencePhoto(photo.localKey).catch(() => null)
         if (local?.blob) return URL.createObjectURL(local.blob)
         if (!photo.url) return null
-        const res = await fetch(photo.url).catch(() => null)
+        const res = await fetch(apiUrl(photo.url)).catch(() => null)
         if (!res?.ok) return null
         return URL.createObjectURL(await res.blob())
       },
+      // The Place's reference (WP-08): which Place is selected now, how to open the picker for "Wrong Place? Choose
+      // another", and what to wait for before the modal runs again. See ./ar/calibration-run.
+      exits: {
+        selected: () => selectedProject,
+        choosePlace: () => openPlacePickerAndWait(requestPlaceSelection),
+        settle: () => whenFramesSettled(projectStore),
+      },
     })
     if (calibration) {
-      sessionCalibration = calibration.calibration
+      // The unit this session ran in is written onto the calibration here, once, so the scan record, the
+      // upload sidecar and the manifest all carry it. See engine-config.ts.
+      sessionCalibration = stampScale(calibration.calibration, provider, calibrationStartedAt)
+      scanFrameEpochs.noteCalibrated(calibrationEpoch)
       // `spatialFrame` means "the Place's durable frame CHANGED and must be
       // persisted" — a first calibration, an upgrade from the one-point tier,
       // or a deliberate override after a mismatch. Ticket 0004 widened this
@@ -1661,43 +2096,55 @@ async function main() {
       // *verified*: that frame is the reference the measurement was taken
       // against, and rewriting it every visit would let it drift session by
       // session — the exact failure the separation check exists to catch.
+      let frameSync: FrameSyncOutcome | null = null
       if (calibration.spatialFrame) {
-        selectedProject.spatialFrame = calibration.spatialFrame
-        // Photos accompany a *changed* frame only, and are attached before the
-        // record is written so the URLs travel with it through the existing
-        // Place write path rather than needing a second sync.
-        if (calibration.referencePhotos?.length) {
-          const stored = await storeReferencePhotos(
-            projectStore,
-            selectedProject.projectId,
-            calibration.referencePhotos,
-          )
-          if (stored && calibration.spatialFrame.method === 'two-point-ground') {
-            calibration.spatialFrame.referencePhotos = stored
-          }
-        }
-        await projectStore.updateProject(selectedProject)
-        await persistProjectSpatialFrame(selectedProject)
+        // The frame is written down first and then sent, and no step stops the ones after it
+        // (src/project/frame-sync.ts). Photos accompany a *changed* frame only: their records are on the
+        // frame as it is sent, and the photos themselves are uploaded once the server holds it.
+        frameSync = await persistProjectSpatialFrame(projectStore, selectedProject, calibration.spatialFrame, {
+          photos: calibration.referencePhotos,
+          // A frame that replaces one the Place holds says which, and why (WP-08).
+          replaces: calibration.replaces,
+        })
       }
-      // Status is a measurement again on the two-point tier, so the copy can
-      // finally report something that was actually checked rather than
-      // asserting an alignment nothing verified.
-      const committed = calibration.calibration
-      if (committed.method === 'two-point-ground') {
-        overlay.setStatus(
-          committed.status === 'verified'
-            ? `Alignment verified — ${Math.abs(committed.residualM * 100).toFixed(0)} cm from this Place's stored pair.`
-            : 'Project frame set from two points. Start scanning.',
-        )
-      } else {
-        overlay.setStatus('Single-point anchor — scans align only if it is the same physical spot.')
-      }
+      // The outcome is what the person needs once the modal closes, and the
+      // tracking prompt below is written in this same synchronous run. At the
+      // default priority that write replaced this one before it was painted, so
+      // the outcome is 'sticky': it holds the line for STATUS_HOLD_MS and the
+      // prompt is dropped inside that window. What each outcome says, and why the
+      // two-point one reports a distance and not an alignment, is in
+      // ./ar/alignment-status.ts.
+      overlay.setStatus(alignmentStatusText(sessionCalibration), 'sticky')
+      showFrameSyncNote(statusNode, frameSync)
     } else {
-      overlay.setStatus('Scanning without project alignment')
+      // Continued without a frame: the same reason to hold it.
+      overlay.setStatus(alignmentStatusText(null), 'sticky')
     }
+    return !!calibration
   }
+  await calibrateScan()
+  reanchor.arm()
 
-  overlay.setStatus('Move camera to initialise tracking…')
+  // ?debug=probe: one '[probe]' line per tap from here on, over the ?debug=remote relay. Armed after the calibration
+  // step, so a tap logged here is a point the frame was not built from. Inert without the flag (./capture/probe-log).
+  installProbeLog({
+    canvas,
+    provider,
+    runtime: use8thWall ? '8thwall' : 'webxr',
+    hitTest: async (x, y) => asyncHitTest ? await asyncHitTest(x, y) : provider.hitTest(x, y),
+    calibration: () => sessionCalibration,
+    bearing: () => geoTracker.pairedCompass(provider.getPose().rotation)?.bearingDeg ?? null,
+    compassSample: () => geoTracker.lastCompassSample,
+    firstPose: () => poseHistory[0],
+    // Read the way the calibration's taps were, so a probe is judged by the tap that built the frame (and says how it was read),
+    // with the two limits lifted: the line keeps a tap beyond them and says what they would have said.
+    sample: probeTapReader(tapSampler),
+  })
+
+  overlay.setStatus('Move the camera to start tracking…')
+
+  // A scan in a Place streams camera frames by default (D15), but only on a device that has agreed to it.
+  cameraFrames.autoStart(selectedProject !== null)
 
   // ── WebRTC live-feed broadcaster (experimental, opt-in) ──────────────────
   // The live-feed room is a rendezvous key, and both halves have to name it
@@ -1720,7 +2167,7 @@ async function main() {
         // Only show the badge while actively streaming
         btn.style.display = state === 'streaming' ? 'flex' : 'none'
       }
-      if (state === 'error') overlay.setStatus(`RTC: ${message}`)
+      if (state === 'error') overlay.setStatus(`✕ Live sharing error\n• ${message}`)
     }
     const streamBtn = document.getElementById('rtc-stream-btn') as HTMLButtonElement | null
     streamBtn?.addEventListener('click', () => {
@@ -1749,7 +2196,7 @@ async function main() {
         detSyncTimer = null
         broadcaster.sendJson({
           t: 'dets',
-          items: [...store.detections.values()].map((d) => ({
+          items: [...store.currentRunDetections().values()].map((d) => ({
             label: d.label,
             confidence: d.confidence,
             pos: [d.worldPos.x, d.worldPos.y, d.worldPos.z],
@@ -1789,19 +2236,43 @@ async function main() {
     el.style.display = 'block'
     el.textContent =
       `pos ${x.toFixed(2)} ${y.toFixed(2)} ${z.toFixed(2)}\n${formatPoseDelta(delta)}`
+    // The compass spin test: turn on the spot and read which of B+yaw and B-yaw holds still. The compass is the
+    // bearing the calibration is given, and `via` says how it was paired with this pose.
+    const paired = geoTracker.pairedCompass(pose.rotation)
+    const via = paired?.via ?? (geoTracker.compassReading ? 'withheld' : null)
+    el.textContent +=
+      `\n${formatCompassSpin(compassSpinTerms(paired?.bearingDeg ?? null, pose.rotation), bearingConventionFromSearch(location.search), via)}`
   }
 
-  function currentQualitySummary() {
+  /**
+   * `detectionCount` defaults to the live store. A scan reset passes the count it read
+   * before the store was emptied, because by then the store no longer holds that scan.
+   */
+  function currentQualitySummary(detectionCount: number = store.currentRunDetections().size) {
     return qualityMonitor.summary({
       pointCount: pointCloud.count,
-      detectionCount: store.detections.size,
+      detectionCount,
       poseCount: poseHistory.length,
       keyframeCount: latestKeyframeCount,
+      // Said only while frames are going out. A scan on a phone that is not sending them is not a poorer scan.
+      keyframesOn: keyframes?.active === true,
+      // Less the interruptions after which nothing was recorded: a scan ended at one holds no geometry from after it.
+      frameShifts: scanFrameEpochs.frameShifts - reanchor.heldShifts,
+      limitedMs: scanFrameEpochs.limitedMs,
+      closureExceeded: scanFrameEpochs.closureExceeded,
     })
   }
 
   async function ensureSessionScanEntry(): Promise<ScanEntry> {
-    if (sessionScanEntry) return sessionScanEntry
+    if (sessionScanEntry) {
+      // An entry made before the calibration finished (an export under its card) takes the calibration now (src/ar/reanchor-host.ts).
+      if (carryCalibration(sessionScanEntry, sessionCalibration)) {
+        await projectStore.updateScan(sessionScanEntry).catch((error: unknown) => {
+          console.warn('[scan] the Place entry could not be saved with the calibration (the export still carries it):', error)
+        })
+      }
+      return sessionScanEntry
+    }
     sessionScanEntry = await projectStore.addScan({
       projectId: selectedProject?.projectId ?? null,
       areaId: selectedAreaId,
@@ -1835,16 +2306,19 @@ async function main() {
   }
 
   function updateVerdictUI(): void {
-    const summary = currentQualitySummary()
+    // A scan whose recording is held (src/ar/reanchor-flow.ts) is not ready whatever it holds so far, and the hint says why.
+    const heldHint = reanchor.heldHint
+    const base = currentQualitySummary()
+    const summary = { ...base, status: displayedStatus(base.status, heldHint !== null) }
     // Suppressed recording outranks any quality recommendation: the
     // recommendations advise on a scan that is still being captured, and this
     // says it is not being captured at all. Named in what the person can act on
     // — not the tracking enum, which means nothing to someone in their kitchen.
-    const hintText = recordingPaused
-      ? '⚠ Not recording — move slowly and point at something with more detail'
+    const hintText = heldHint ?? (recordingPaused
+      ? '⚠ Not recording\n• Move slowly, aim at detail'
       : summary.status !== 'ready' && summary.recommendations.length > 0
         ? `⚠ ${summary.recommendations[0]}`
-        : ''
+        : '')
 
     // Runs on every 750 ms scanner tick, and both targets are announced to
     // screen readers — rewriting them unchanged re-announces the same sentence
@@ -1944,31 +2418,13 @@ function revealDownloadLink(uploadedFilename: string): void {
 }
 
 async function resolveInitialProject(projectStore: ProjectStore): Promise<Project | null> {
-  const queryProject = new URLSearchParams(location.search).get('project')
-  const projects = await fetchProjects().catch(() => [])
-  const fromQuery = queryProject ? projects.find(project => project.projectId === queryProject) : null
-  if (fromQuery) {
-    sessionStorage.setItem(PLACE_SELECTION_SESSION_KEY, JSON.stringify({ projectId: fromQuery.projectId }))
-    return fromQuery
-  }
-
-  const stored = sessionStorage.getItem(PLACE_SELECTION_SESSION_KEY) || localStorage.getItem(PLACE_SELECTION_SESSION_KEY)
-  if (stored) {
-    try {
-      const projectId = (JSON.parse(stored) as { projectId?: string | null }).projectId
-      if (projectId === null) return null
-      const match = projects.find(project => project.projectId === projectId)
-      if (match) return match
-      if (projectId) {
-        const mirrored = await projectStore.getProject(projectId)
-        if (mirrored) return mirrored
-      }
-    } catch { /* bad prior value */ }
-  }
-
-  // A place must never be inferred from the first project in the registry.
-  // The user explicitly chooses a saved place or creates a new one.
-  return null
+  return resolveInitialPlace({
+    store: projectStore,
+    list: await fetchPlaceList(),
+    queryProject: new URLSearchParams(location.search).get('project'),
+    storedSelection: sessionStorage.getItem(PLACE_SELECTION_SESSION_KEY) || localStorage.getItem(PLACE_SELECTION_SESSION_KEY),
+    onQueryChoice: (projectId) => sessionStorage.setItem(PLACE_SELECTION_SESSION_KEY, JSON.stringify({ projectId })),
+  })
 }
 
 /**
@@ -2015,12 +2471,14 @@ function mountPlacePicker(
   geoTracker: GeoTracker,
   selected: Project | null,
   onSelect: (project: Project | null, areaId: string | null) => void,
-): { open: (afterSelection?: () => void, purpose?: PlaceSelectionPurpose) => void } {
+): { open: (afterSelection?: () => void, purpose?: PlaceSelectionPurpose, onDismiss?: () => void) => void } {
   const startScreen = document.getElementById('start-screen')
   if (!startScreen) return { open: () => {} }
   let currentSelected = selected
   let currentAreaId: string | null = null
   let pendingSelectionAction: (() => void) | null = null
+  // Run when the sheet is left without a choice (Back, or a tap outside it): whoever opened it is waiting (WP-08).
+  let pendingDismissAction: (() => void) | null = null
   // Survives render()'s full innerHTML rebuild, which every selection triggers.
   let areaSectionOpen = false
   // Set by open(); defaults to 'scan' so a caller that forgets still gets the
@@ -2032,13 +2490,24 @@ function mountPlacePicker(
   sheet.className = 'place-sheet'
   sheet.hidden = true
   document.body.appendChild(sheet)
+  const dismissSheet = (): void => {
+    pendingSelectionAction = null
+    sheet.hidden = true
+    const dismissed = pendingDismissAction
+    pendingDismissAction = null
+    dismissed?.()
+  }
 
   const render = async () => {
     let listFailed = false
-    const projects = await fetchProjects().catch(() => {
+    const listed = await fetchProjects().catch(() => {
       listFailed = true
       return []
     })
+    // A frame this phone calibrated and the server does not hold yet stands for the Place's frame, and its row says so.
+    const waiting = await projectStore.listPendingFrames().catch(() => [])
+    const unsynced = unsyncedPlaceIds(waiting)
+    const projects = listed.map(project => withPendingFrame(project, waiting))
     const fix = geoTracker.snapshot()
     const distanced = projects.map(project => ({
       project,
@@ -2098,7 +2567,7 @@ function mountPlacePicker(
           <span class="place-selected-label">Selected project</span>
           <span class="place-selected-value${currentSelected ? '' : ' is-empty'}">${
             currentSelected
-              ? `${escapeHtml(currentSelected.name)}<small>${copy.verb} ${selectedAreaName ? escapeHtml(selectedAreaName) : 'the whole place'}</small>`
+              ? `${escapeHtml(currentSelected.name)}<small>${copy.verb} ${selectedAreaName ? escapeHtml(selectedAreaName) : 'the whole place'}${unsynced.has(currentSelected.projectId) ? ` · ${FRAME_NOT_SYNCED_TEXT}` : ''}</small>`
               : 'None yet — choose one below'
           }</span>
         </div>
@@ -2125,7 +2594,7 @@ function mountPlacePicker(
             <span class="place-nav-icon" aria-hidden="true">${PLACE_ICON_AREA}</span>
             <span class="place-nav-label">
               <b>Add New Area to Selected Place</b>
-              <span>${areaHint}</span>
+              <span>${escapeHtml(areaHint)}</span>
             </span>
             <span class="place-areas-chevron" aria-hidden="true">&rsaquo;</span>
           </summary>
@@ -2178,13 +2647,10 @@ function mountPlacePicker(
               </div>
               <label>Project type
                 <select id="place-new-type" class="ci-select">
-                  <option value="building">Building</option>
-                  <option value="floor">Floor</option>
-                  <option value="room" selected>Room</option>
-                  <option value="other">Other</option>
+                  ${newPlaceTypeOptionsHtml()}
                 </select>
               </label>
-              <label>Project name<input id="place-new-name" type="text" maxlength="80" placeholder="e.g. Living room" /></label>
+              <label>Project name<input id="place-new-name" type="text" maxlength="80" placeholder="e.g. Our house" /></label>
               <div id="place-new-name-preview" class="place-new-name-preview"></div>
             </div>
             <div class="place-new-footer">
@@ -2240,7 +2706,8 @@ function mountPlacePicker(
       const btn = document.createElement('button')
       btn.type = 'button'
       btn.className = `place-option${currentSelected?.projectId === project.projectId ? ' place-option-selected' : ''}`
-      btn.innerHTML = `<strong>${escapeHtml(project.name)}</strong><span>${escapeHtml(detail)}</span>`
+      const note = unsynced.has(project.projectId) ? ` · ${FRAME_NOT_SYNCED_TEXT}` : ''
+      btn.innerHTML = `<strong>${escapeHtml(project.name)}</strong><span>${escapeHtml(detail + note)}</span>`
       btn.addEventListener('click', () => chooseProject(project))
       target.appendChild(btn)
     }
@@ -2337,13 +2804,11 @@ function mountPlacePicker(
       // start or the upload card) as a dead click.
       const action = pendingSelectionAction
       pendingSelectionAction = null
+      pendingDismissAction = null
       action?.()
     })
     // Back closes the sheet without a Place and without resuming the action that opened it.
-    sheet.querySelector<HTMLButtonElement>('#place-back-btn')?.addEventListener('click', () => {
-      pendingSelectionAction = null
-      sheet.hidden = true
-    })
+    sheet.querySelector<HTMLButtonElement>('#place-back-btn')?.addEventListener('click', dismissSheet)
 
     async function createPlace(): Promise<void> {
       const projectName = newName.value.trim()
@@ -2357,16 +2822,18 @@ function mountPlacePicker(
         return
       }
       const geoPose = { ...fixToGeoPose(fix), lat: latitude, lng: longitude, address: address || fix?.address || null, displayAddress: address || fix?.displayAddress || null }
+      // Creating a Place is never queued for later: a queued request would make the Place after the person was told it was not made.
       const response = await fetch(apiUrl('/projects'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...noQueueHeaders() },
         body: JSON.stringify({ name, placeType, address, geoPose }),
-      })
-      if (!response.ok) {
-        setFormStatus('Could not save this place. Try again.')
+      }).catch(() => null)
+      const created = response ? await readCreatedPlace(response) : { ok: false as const, reason: 'needs-connection' as const }
+      if (!created.ok) {
+        setFormStatus(created.reason === 'needs-connection' ? PLACE_NEEDS_CONNECTION : 'Could not save this place. Try again.')
         return
       }
-      const project = await response.json() as Project
+      const project = created.place
       await projectStore.updateProject(project).catch(() => {})
       newPopup.hidden = true
       chooseProject(project)
@@ -2426,13 +2893,14 @@ function mountPlacePicker(
       }
       const update = { ...currentSelected, areas: [...(currentSelected.areas ?? []), area] }
       const response = await fetch(apiUrl(`/projects/${encodeURIComponent(currentSelected.projectId)}`), {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(update),
-      })
-      if (!response.ok) {
-        setStatusMessage('Could not save the Area. Try again.')
+        method: 'PUT', headers: { 'Content-Type': 'application/json', ...noQueueHeaders() }, body: JSON.stringify(update),
+      }).catch(() => null)
+      const saved = response ? await readCreatedPlace(response) : { ok: false as const, reason: 'needs-connection' as const }
+      if (!saved.ok) {
+        setStatusMessage(saved.reason === 'needs-connection' ? AREA_NEEDS_CONNECTION : 'Could not save the Area. Try again.')
         return
       }
-      currentSelected = await response.json() as Project
+      currentSelected = saved.place
       currentAreaId = area.areaId
       void projectStore.updateProject(currentSelected).catch(() => {})
       void render()
@@ -2446,21 +2914,23 @@ function mountPlacePicker(
       void projectStore.updateProject(currentSelected).catch(() => {})
       const action = pendingSelectionAction
       pendingSelectionAction = null
+      pendingDismissAction = null
       action?.()
     }
   }
 
-  const open = (afterSelection?: () => void, purpose: PlaceSelectionPurpose = 'scan') => {
+  const open = (afterSelection?: () => void, purpose: PlaceSelectionPurpose = 'scan', onDismiss?: () => void) => {
     pendingSelectionAction = afterSelection ?? null
+    pendingDismissAction = onDismiss ?? null
     currentPurpose = purpose
     sheet.hidden = false
     void render()
+    void retryPendingFrames(projectStore, undefined, 'picker').then(({ changed }) => {
+      if (changed && !sheet.hidden) void render()
+    })
   }
   sheet.addEventListener('click', (event) => {
-    if (event.target === sheet) {
-      pendingSelectionAction = null
-      sheet.hidden = true
-    }
+    if (event.target === sheet) dismissSheet()
   })
   return { open }
 }
@@ -2496,115 +2966,6 @@ async function fetchProjects(): Promise<Project[]> {
   const response = await fetch(apiUrl('/projects'))
   if (!response.ok) return []
   return await response.json() as Project[]
-}
-
-/**
- * Store both reference photos locally, upload them, and return the records to
- * hang on the Place's frame (wave 09 ticket 0007).
- *
- * Local first, and unconditionally: IndexedDB is what makes the aid work
- * offline and instantly on the device that took it, and it must survive an
- * upload that never lands. The server copy is what makes it work on a
- * *different* device, which is the whole reason `spatialFrame` is synced at
- * all - a Place calibrated on one phone and re-scanned on another is a real
- * scenario for this app's fleet.
- *
- * Returns `null` unless **both** photos are available. The schema pairs them
- * deliberately: a frame is defined by two points, and a panel that could show
- * a photo for A but never for B would let the user confirm half a reference
- * and believe they had confirmed all of it - which is precisely the
- * reversed-pair failure the photos exist to catch. The orphaned local blob is
- * harmless; its key is deterministic, so the next calibration overwrites it.
- *
- * Never throws. A failure here degrades re-acquisition on the next visit; it
- * must not cost the user the calibration they just completed.
- */
-async function storeReferencePhotos(
-  projectStore: ProjectStore,
-  projectId: string,
-  photos: PendingReferencePhoto[],
-): Promise<{ landmark: CalibrationReferencePhoto; headingMarker: CalibrationReferencePhoto } | null> {
-  const records: Partial<Record<PendingReferencePhoto['role'], CalibrationReferencePhoto>> = {}
-
-  for (const photo of photos) {
-    const localKey = referencePhotoKey(projectId, photo.role)
-    try {
-      await projectStore.putReferencePhoto({
-        localKey,
-        projectId,
-        role: photo.role,
-        blob: photo.blob,
-        thumbDataUrl: photo.thumbDataUrl,
-        capturedAt: photo.capturedAt,
-      })
-    } catch (error) {
-      console.warn('[calibration] Reference photo could not be stored locally:', error)
-      continue
-    }
-    records[photo.role] = {
-      url: await uploadReferencePhoto(projectId, photo),
-      localKey,
-      tapPoint: photo.tapPoint,
-      pose: photo.pose,
-      capturedAt: photo.capturedAt,
-    }
-  }
-
-  const { landmark, headingMarker } = records
-  if (!landmark || !headingMarker) {
-    console.warn('[calibration] Only one reference photo survived capture - the frame keeps none.')
-    return null
-  }
-  return { landmark, headingMarker }
-}
-
-/**
- * Uploads one photo, returning its server URL or `null` for "pending".
- *
- * `null` covers both being offline and the upload failing outright. Offline is
- * not a loss: `/projects` is a queueable prefix in `public/sw.js`, so the
- * service worker durably queues the POST and replays it later - but it answers
- * 202 with no server-assigned URL, and reading that 2xx as delivered is the
- * exact mistake `isQueuedOffline` exists to prevent. Recording it as pending is
- * the honest state, and the panel says so on the next device rather than
- * showing an empty box.
- */
-async function uploadReferencePhoto(projectId: string, photo: PendingReferencePhoto): Promise<string | null> {
-  try {
-    const form = new FormData()
-    form.append('image', photo.blob, `ref-${photo.role}.jpg`)
-    form.append('meta', JSON.stringify({
-      role: photo.role,
-      tapPoint: photo.tapPoint,
-      pose: photo.pose,
-      capturedAt: photo.capturedAt,
-      ...(photo.label ? { label: photo.label } : {}),
-    }))
-    const res = await fetch(apiUrl(`/projects/${encodeURIComponent(projectId)}/reference-photos`), {
-      method: 'POST',
-      body: form,
-    })
-    if (!res.ok || isQueuedOffline(res)) return null
-    const body = await res.json() as { url?: string }
-    return body.url ?? null
-  } catch (error) {
-    console.warn('[calibration] Reference photo upload failed; keeping the local copy:', error)
-    return null
-  }
-}
-
-/** Mirror the locally-created project frame so other devices use the same references. */
-async function persistProjectSpatialFrame(project: Project): Promise<void> {
-  try {
-    const response = await fetch(apiUrl(`/projects/${encodeURIComponent(project.projectId)}`), {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(project),
-    })
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  } catch (error) {
-    console.warn('[calibration] Project frame saved locally but could not sync:', error)
-  }
 }
 
 /**
@@ -2693,21 +3054,31 @@ function setStartButtonState(state: 'ready' | 'unavailable', label?: string): vo
  * (tests/mock-scanner-startup-budget.spec.ts); it was the second one arguing
  * with the first.
  *
- * What is left is the only thing this line still knows that the resolver does
- * not: this is remediation, not a route — a trip to Safari or an app store,
- * which on some phones ends with a phone that still cannot do it (the Beam Pro
- * has no AR service to install). So it is short, and it is not the primary
- * thing on the screen.
+ * What is left is the device advice: this is remediation, not a route — a trip
+ * to Safari or an app store, which on some phones ends with a phone that still
+ * cannot do it (the Beam Pro has no AR service to install). So it is short, and
+ * it is not the primary thing on the screen.
+ *
+ * The boot path's reason says more than that. Its headline is the Start button's
+ * label, as the verdict path does it. When it has a next step (an engine that did
+ * not load: reload the page), the step replaces the device advice, because "open
+ * this in Safari" is the wrong remedy there.
  */
-function showArHelp(): void {
-  setStartButtonState('unavailable')
+function showArHelp(reason: string): void {
+  const [headline, ...steps] = reason.split('\n')
+  setStartButtonState('unavailable', headline)
+  const nextStep = steps.map((line) => line.replace(/^•\s*/, '')).join(' ')
   const ua = navigator.userAgent
   const isIOS = /iPhone|iPad|iPod/i.test(ua)
-  const plain = isIOS
-    ? 'To capture live, open this page in Safari, or install HelloXR.'
-    : /Android/i.test(ua)
-      ? 'Live capture needs Chrome with Play Services for AR.'
-      : `To capture live, open this on a phone: ${location.origin}`
+  // The desktop app is the editor and viewer and never captures. Its origin (tauri://localhost) is no address a phone
+  // can open, so it must not be offered as one: the browser line below is for a page someone reached by URL.
+  const plain = isDesktopShell()
+    ? 'The desktop app cannot capture. Scan on a phone.'
+    : isIOS
+      ? 'To capture live in Safari, use the main scanner, or install HelloXR.'
+      : /Android/i.test(ua)
+        ? 'Live capture needs Chrome with Play Services for AR.'
+        : `To capture live, open this on a phone: ${location.origin}`
 
   const el = document.getElementById('ar-help')
   if (!el) {
@@ -2716,12 +3087,14 @@ function showArHelp(): void {
     // happen before AR runtime detection has failed. Fall back to the
     // permission banner, a sibling of the start screen that survives it, so
     // "no AR runtime" can never end as a blank screen with no explanation.
-    showPermissionBanner(`AR is not available on this device. ${plain}`, 'AR is not available')
+    showPermissionBanner(nextStep || plain, headline)
     return
   }
 
-  if (isIOS) {
-    el.innerHTML = 'To capture live, open this page in Safari, or install '
+  if (nextStep) {
+    el.textContent = nextStep
+  } else if (isIOS) {
+    el.innerHTML = 'To capture live in Safari, use the main scanner, or install '
       + '<a href="https://apps.apple.com/us/app/helloxr/id6757726359" style="color:var(--ci-accent);">HelloXR</a>.'
   } else {
     el.textContent = plain
@@ -2734,8 +3107,11 @@ function showArHelp(): void {
  * walkthrough; one or more images become a photo-ingest session.
  * Deliberately isolated from the AR start flow: it neither removes the start
  * screen nor touches the onboarding/insecure-context paths.
+ *
+ * A read-only page (MAIN10-1) opens no picker, not even while it boots, and has no change handler
+ * on the input, so a file handed to the input is not sent.
  */
-function wireContentUpload(): void {
+function wireContentUpload(readOnly: boolean): void {
   const input = document.getElementById('upload-video-input') as HTMLInputElement | null
   const progress = document.getElementById('upload-video-progress')
   const openLink = document.getElementById('upload-video-open') as HTMLAnchorElement | null
@@ -2759,6 +3135,8 @@ function wireContentUpload(): void {
       requestPlaceSelection(() => input.click(), 'upload')
       return
     }
+    // A read-only page opens no picker, not even while it boots (MAIN10-1).
+    if (readOnly) return
     // No sheet on this path — it is the insecure-context / still-booting
     // fallback — so the picker opens over a start screen that has said only
     // the card's one-line version. Put the full version in the status line
@@ -2768,6 +3146,8 @@ function wireContentUpload(): void {
     input.click()
   })
 
+  // A read-only page sends nothing, so the input gets no change handler (MAIN10-1).
+  if (readOnly) return
   input.addEventListener('change', () => {
     const files = [...(input.files ?? [])]
     if (files.length === 0) return
@@ -2786,7 +3166,7 @@ function wireContentUpload(): void {
     const allPhotos = files.every(file => file.type.startsWith('image/'))
     const oneVideo = files.length === 1 && files[0]!.type.startsWith('video/')
     if (!allPhotos && !oneVideo) {
-      if (progress) progress.textContent = 'Choose one video or one or more photos from the same Place.'
+      if (progress) progress.textContent = '• Choose one video, or several photos from one Place'
       input.value = ''
       return
     }
@@ -2839,9 +3219,10 @@ function wireContentUpload(): void {
         if (progress) progress.textContent = line
         extras?.settle(true, line)
         if (openLink) {
+          // A free upload (no Place) is in the default world, so the link says so.
           openLink.href = editorPath(uploadPlaceTarget.projectId
             ? `?project=${encodeURIComponent(uploadPlaceTarget.projectId)}`
-            : '')
+            : '?world=default')
           openLink.hidden = false
         }
       } else {
@@ -3075,8 +3456,12 @@ function mountCaptureIntent(): void {
  * the finished set goes out through the existing upload handler by dispatching
  * a `change` on that same input — so the tripod path adds no second uploader,
  * no second Place target, and no second progress line.
+ *
+ * On a read-only page (MAIN10-2) nothing here writes. The sheet cannot be opened, because the card
+ * only shows the read-only notice. restore() reads and renders the capture another tab left behind,
+ * but clears nothing: that record may be the writer's, and clearTripodCapture() has no gate of its own.
  */
-function mountTripodCapture(): void {
+function mountTripodCapture(readOnly: boolean): void {
   const card = document.getElementById('start-tripod-card')
   const input = document.getElementById('upload-video-input') as HTMLInputElement | null
   if (!card || !input) return
@@ -3157,7 +3542,7 @@ function mountTripodCapture(): void {
   sheet.hidden = true
   sheet.innerHTML = `
     <div class="place-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="tripod-headline">
-      <div class="place-sheet-title">Tripod Scan · <span id="tripod-step"></span></div>
+      <div class="place-sheet-title" tabindex="-1">Tripod Scan · <span id="tripod-step"></span></div>
       <!-- What came back after the app was closed or the tab was thrown away.
            Above everything, because it is the first thing that has to be true
            before any other number on this screen means anything. -->
@@ -3482,6 +3867,8 @@ function mountTripodCapture(): void {
    * save O(1) instead of rewriting every spot's photos each time.
    */
   const persist = (spot?: { id: string, files: File[] }) => {
+    // Nothing is written on a read-only page (MAIN10-2).
+    if (readOnly) return
     const meta = tripodMetaOf(state, spotKeys, Date.now())
     void saveTripodCapture(meta, spot).then(ok => {
       // Only ever downgrades within a capture: one failed write means the
@@ -3520,7 +3907,7 @@ function mountTripodCapture(): void {
     metresInput.value = ''
     cmInput.value = ''
     notice = null
-    void clearTripodCapture()
+    if (!readOnly) void clearTripodCapture()
   }
 
   /**
@@ -3542,11 +3929,11 @@ function mountTripodCapture(): void {
     spotKeys = spotKeys.filter((_, i) => i !== index)
     confirmDrop = null
     notice = null
-    if (key) void deleteTripodSpot(key)
+    if (key && !readOnly) void deleteTripodSpot(key)
     if (state.spots.length === 0) {
       // Nothing left to store, and an empty meta record would be recovered as
       // a capture on the next open.
-      void clearTripodCapture()
+      if (!readOnly) void clearTripodCapture()
       persisted = null
     } else {
       persist()
@@ -3569,8 +3956,9 @@ function mountTripodCapture(): void {
     const back = restoreTripodCapture(stored.meta, stored.banks)
     if (!back) {
       // Meta with no usable photos behind it. Nothing to offer, and leaving it
-      // there would make every future open try again.
-      void clearTripodCapture()
+      // there would make every future open try again. A read-only page leaves it
+      // alone: the record may be the writer's capture, and this page only reads (MAIN10-2).
+      if (!readOnly) void clearTripodCapture()
       return
     }
     // A capture in progress in THIS tab outranks anything on disk: the operator
@@ -3856,7 +4244,7 @@ function mountTripodCapture(): void {
         // The capture has landed, so the copy on this phone is no longer the
         // only one — and keeping it would mean every sent capture's photos
         // stayed on the device forever. A failed send keeps everything.
-        if (ok) void clearTripodCapture()
+        if (ok && !readOnly) void clearTripodCapture()
         // A refused or failed upload registered nothing, so nothing may look
         // as though it did: the capture stays exactly where it was, with the
         // same Send button and the same photos still in hand.
@@ -3877,6 +4265,8 @@ function mountTripodCapture(): void {
 
   closeBtn.addEventListener('click', () => {
     sheet.hidden = true
+    // Focus goes back to the card that opened the sheet, not to the page top.
+    card.focus()
     // The sheet is gone, so nothing is showing what the camera sees — leaving
     // it open would be a phone quietly filming a room with its preview closed,
     // and it is also what makes the next open fail.
@@ -3904,14 +4294,16 @@ function mountTripodCapture(): void {
     notice = null
     render()
     sheet.hidden = false
+    // Into the dialog, so a screen reader announces it. Close returns focus to the card.
+    sheet.querySelector<HTMLElement>('.place-sheet-title')?.focus()
   }
 
   card.addEventListener('click', () => {
-    // Same fallback as the upload card: the picker is only wired deep inside
-    // main(), after the secure-context check, so an early tap (or an insecure
-    // page) must still reach the loop rather than dying silently.
+    // The picker is only wired deep inside main(), after the secure-context check, so an early
+    // tap (or an insecure page) must still reach the loop rather than dying silently. A read-only
+    // page is the exception: it opens no sweep, not even then (MAIN10-1, MAIN10-2).
     if (requestPlaceSelection) requestPlaceSelection(open, 'tripod')
-    else open()
+    else if (!readOnly) open()
   })
 
   render()
@@ -4012,6 +4404,13 @@ function applyPreflightToStartScreen(verdict: PreflightVerdict): void {
 }
 
 /**
+ * The headline of the pending verdict for a camera prompt nobody has answered
+ * (cameraPendingVerdict() in src/ar/eighthwall.ts). PreflightVerdict has no field
+ * that names the wait, so it is matched by headline. Keep the two in step.
+ */
+const CAMERA_WAIT_HEADLINE = 'Waiting for camera permission'
+
+/**
  * Act on a verdict from the runtime's own first-frame watchdog.
  *
  * Capture controls are NOT disabled here, even on `'unavailable'`. The start()
@@ -4025,7 +4424,15 @@ function applyPreflightVerdict(
   verdict: PreflightVerdict,
   overlay: { setStatus(text: string, priority?: StatusPriority): void },
 ): void {
-  if (verdict.outcome === 'ready' || verdict.outcome === 'warming-up') {
+  // The camera prompt may still be open, so an earlier refusal on the overlay is
+  // stale: say what is awaited. The first-frame wait has a different headline and
+  // leaves the overlay alone.
+  if (verdict.outcome === 'warming-up' && verdict.headline === CAMERA_WAIT_HEADLINE) {
+    overlay.setStatus(CAMERA_WAIT_HEADLINE, 'sticky')
+  }
+  // A pending verdict says nothing either way, so the banner stays as it is.
+  if (verdict.outcome === 'warming-up') return
+  if (verdict.outcome === 'ready') {
     // Only take back a banner this function put up. The healthy path emits
     // 'ready' at the 5 s mark on every good session, and #permission-error-banner
     // is shared — beginArSession() writes the motion/orientation denial notice
@@ -4108,48 +4515,90 @@ function updateQualityOverlay(snap: import('./capture/quality-monitor').QualityS
 }
 
 /**
- * How long to wait for the 8th Wall engine before falling back.
+ * How long the 8th Wall engine gets to set `window.XR8` once xr.js has arrived.
  *
- * Sized against what is actually being fetched, not picked for feel: the
- * `slam` preload chunk (public/xr-slam.js) is ~5.5 MB and must download,
- * parse, and initialise WASM before xr.js assigns `window.XR8`. 20 s covers a
- * cold load on a phone over a slow link with room to spare; the cost of
+ * Generous on purpose. The `slam` chunk the page preloads (public/xr-slam.js) is
+ * ~5.5 MB, and a slow phone link can take far longer than a short timer allows
+ * to fetch it and for the engine to set XR8. The cost of
  * waiting too long is a slower fallback on a device that genuinely lacks the
- * engine, while the cost of waiting too little is the far worse failure this
- * replaced — a scanner that silently refuses to start.
+ * engine; the cost of waiting too little is a scanner that refuses to start.
  */
-const XR8_LOAD_TIMEOUT_MS = 20_000
+const XR8_LOAD_TIMEOUT_MS = 90_000
 
-function waitForXR8(timeoutMs: number): Promise<boolean> {
+/**
+ * Ceiling on the whole 8th Wall wait, download included, on the page's own clock.
+ * performance.now() starts with the page, and index.html requests xr.js during that
+ * page load, so this is counted from the request to within the HTML parse. The
+ * XR8_LOAD_TIMEOUT_MS window only starts once xr.js has arrived, so a request that
+ * stalls without an error would otherwise never settle and the scanner would sit on
+ * "Loading AR engine…". 150 s: about a minute for the 5.5 MB download on a slow link,
+ * then the engine window. A stalled request settles as 'timeout' by then, which shows
+ * the reload message.
+ */
+const XR8_OVERALL_TIMEOUT_MS = 150_000
+
+/**
+ * Wait for the 8th Wall engine, driven by xr.js's own state rather than a timer
+ * started at the request. index.html marks the script `dataset.state`: 'loading',
+ * then 'loaded' or 'error'. So:
+ *  - while xr.js is still downloading, only the overall ceiling can end the wait;
+ *  - an xr.js that fails to load is a real error, and falls back at once;
+ *  - once it has arrived, the engine gets `timeoutMs` to set XR8;
+ *  - and nothing waits past XR8_OVERALL_TIMEOUT_MS on the page clock.
+ * It ends 'ready', 'failed' or 'timeout', never 'absent' (see XR8Load): that state is for a
+ * page that does not wait at all.
+ */
+function waitForXR8(timeoutMs: number): Promise<XR8Load> {
   return new Promise((resolve) => {
-    if (typeof (window as unknown as Record<string, unknown>)['XR8'] !== 'undefined') {
-      resolve(true)
+    const engineReady = () => typeof (window as unknown as Record<string, unknown>)['XR8'] !== 'undefined'
+    if (engineReady()) {
+      resolve('ready')
       return
     }
+    const script = document.querySelector<HTMLScriptElement>('script[src="/xr.js"]')
+    // Armed when xr.js stops loading. A page with no xr.js script (the mock) has
+    // nothing to wait for, so its ceiling starts now.
+    let armedAt: number | null = script?.dataset['state'] === 'loading' ? null : Date.now()
     // Poll as well as listen. `xrloaded` is a one-shot event, so a listener
     // attached after it fired never hears it — and the engine's own bootstrap
     // is async, which makes that race real rather than theoretical. The poll
     // makes arrival detectable however it happened.
-    const started = Date.now()
     const poll = setInterval(() => {
-      if (typeof (window as unknown as Record<string, unknown>)['XR8'] !== 'undefined') {
-        settle(true)
-      } else if (Date.now() - started >= timeoutMs) {
+      if (engineReady()) {
+        settle('ready')
+        return
+      }
+      const state = script?.dataset['state']
+      if (state === 'error') {
+        console.warn('[main] xr.js failed to load — falling back')
+        settle('failed')
+        return
+      }
+      // The overall ceiling. It covers a download that is still 'loading' as well as an
+      // engine that arrived and never set XR8, so a stalled request cannot hold the scanner.
+      if (performance.now() >= XR8_OVERALL_TIMEOUT_MS) {
         console.warn(
-          `[main] 8th Wall engine did not load within ${timeoutMs} ms — falling back. ` +
-          'The slam preload chunk is ~5.5 MB; a slow link can exceed this.',
+          `[main] 8th Wall engine not ready ${XR8_OVERALL_TIMEOUT_MS} ms after page load — falling back.`,
         )
-        settle(false)
+        settle('timeout')
+        return
+      }
+      if (armedAt === null && state !== 'loading') armedAt = Date.now()
+      if (armedAt !== null && Date.now() - armedAt >= timeoutMs) {
+        console.warn(
+          `[main] 8th Wall engine did not set XR8 within ${timeoutMs} ms of xr.js arriving — falling back.`,
+        )
+        settle('timeout')
       }
     }, 250)
 
-    function settle(result: boolean) {
+    function settle(result: XR8Load) {
       clearInterval(poll)
       window.removeEventListener('xrloaded', onLoaded)
       resolve(result)
     }
     function onLoaded() {
-      settle(true)
+      settle('ready')
     }
     window.addEventListener('xrloaded', onLoaded, { once: true })
   })
@@ -4293,11 +4742,11 @@ async function requestServerProcessing(action: string, store: DetectionStore, fi
     })
     if (!resp.ok) throw new Error(`/process-scan returned ${resp.status}`)
     const result = await resp.json() as { action: string; result: string }
-    overlay.setStatus(`Done: ${result.action}`)
+    overlay.setStatus(`✓ Done\n• ${result.action}`)
     console.log('[process]', result)
     showProcessingResult(result)
   } catch (err) {
-    overlay.setStatus('Processing failed')
+    overlay.setStatus('✕ Processing failed')
     console.error('[process]', err)
   }
 }
@@ -4309,7 +4758,11 @@ function showProcessingResult(result: { action: string; result: string }): void 
   if (!dialog || !body || !title) return
 
   title.textContent = `Server: ${result.action}`
-  body.innerHTML = `<div style="color:rgba(255,255,255,0.8);font-size:13px;line-height:1.6;white-space:pre-wrap;">${result.result}</div>`
+  // textContent: the text is built from scan labels, which are model output and may carry markup.
+  const text = document.createElement('div')
+  text.style.cssText = 'color:rgba(255,255,255,0.8);font-size:13px;line-height:1.6;white-space:pre-wrap;'
+  text.textContent = result.result
+  body.replaceChildren(text)
   dialog.classList.add('visible')
   if (_inferDialogTimer) clearTimeout(_inferDialogTimer)
   _inferDialogTimer = setTimeout(() => hideInferDialog(), 15_000)
@@ -4386,14 +4839,13 @@ async function initDrawerGeoMap(fix: GeoFix | null): Promise<void> {
     const center: [number, number] = fix ? [fix.lat, fix.lng] : [51.505, -0.09]
     const zoom = fix ? 16 : 3
 
-    // Use a dark tile layer from CartoDB
+    // The tiles are whatever the Scan server names, and none by default: pins on a blank canvas,
+    // with a line saying so (src/geo/tile-source.ts, src/geo/basemap-layer.ts).
     const map = L.map(container, { zoomControl: false, attributionControl: true })
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-      attribution: '© <a href="https://www.openstreetmap.org/copyright">OSM</a> © <a href="https://carto.com/">CARTO</a>',
-      subdomains: 'abcd',
-      maxZoom: 20,
-    }).addTo(map)
     map.setView(center, zoom)
+    void import('./geo/basemap-layer')
+      .then(({ attachBasemap }) => attachBasemap({ L, map }))
+      .catch((e: unknown) => console.error('[geo-map] basemap load failed:', e))
 
     // Current location marker — custom pulsing dot
     if (fix) {
@@ -4423,7 +4875,10 @@ async function initDrawerGeoMap(fix: GeoFix | null): Promise<void> {
           iconAnchor: [4, 4],
         })
         const marker = L.marker([loc.lat, loc.lng], { icon: scanIcon })
-        marker.bindPopup(`<b>${loc.address ?? loc.filename}</b>`, { maxWidth: 200 })
+        // A text node, not markup: the address is whatever a scan was labelled with.
+        const popupText = document.createElement('b')
+        popupText.textContent = loc.address ?? loc.filename
+        marker.bindPopup(popupText, { maxWidth: 200 })
         marker.addTo(map)
       }
     }).catch(() => {/* server may be off */})
@@ -4444,13 +4899,21 @@ async function initDrawerGeoMap(fix: GeoFix | null): Promise<void> {
  *   no frame was being told "Permission Access Required". That sends someone to
  *   Settings to fix something that is not broken: `Camera status: hasStream`
  *   succeeded on every one of those runs.
+ *
+ *   A runtime failure passes its own title (beginArSession: "AR did not start").
+ *   Each line of `message` is shown on its own line, and a leading bullet marker
+ *   is dropped: this banner is plain text, and a raw bullet in it reads as a typo.
  */
 function showPermissionBanner(message: string, title = 'Permission Access Required'): void {
   const banner = document.getElementById('permission-error-banner')
   const msgEl = document.getElementById('permission-error-msg')
   const titleEl = document.getElementById('permission-error-title')
   if (banner && msgEl) {
-    msgEl.textContent = message
+    msgEl.textContent = ''
+    message.split('\n').forEach((line, i) => {
+      if (i > 0) msgEl.append(document.createElement('br'))
+      msgEl.append(line.replace(/^•\s*/, ''))
+    })
     if (titleEl) titleEl.textContent = title
     banner.style.display = 'block'
   }
@@ -4466,7 +4929,7 @@ function showPermissionBanner(message: string, title = 'Permission Access Requir
  * including scripted ones, on a disabled <button>.
  *
  * Navigation-only controls (viewer-link, gimbal-link, panel-toggle,
- * finish-scan-btn/"Menu") are deliberately left alone — they don't imply a
+ * finish-scan-btn/"Details") are deliberately left alone — they don't imply a
  * running session and Export/History stay useful for whatever was captured
  * before the failure, if anything was.
  */

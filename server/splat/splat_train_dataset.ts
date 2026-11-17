@@ -313,6 +313,9 @@ export async function buildBrushDataset(opts: BuildDatasetOptions): Promise<Buil
   // versa) would seed the splat in a different world frame than the cameras.
   let seedPlyPath: string | undefined
   for (const cloud of SEED_CLOUDS) {
+    // A LingBot cloud its own run judged collapsed is not a seed (F33). The
+    // file is still on disk, so the verdict has to be honoured here.
+    if (cloud === 'lingbot-map.point-cloud.ply' && (await lingBotCloudCollapsed(sessionDir))) continue
     try {
       const plyBytes = await Deno.readFile(`${sessionDir}/${cloud}`)
       seedPlyPath = `${datasetDir}/sparse_pc.ply`
@@ -486,6 +489,22 @@ export const POSE_SOURCES = ['colmap.poses.json', 'lingbot-map.poses.json'] as c
 
 /** Seed point clouds, ordered to match POSE_SOURCES so frames agree. */
 export const SEED_CLOUDS = ['colmap.point-cloud.ply', 'lingbot-map.point-cloud.ply'] as const
+
+/**
+ * True when the LingBot run that wrote its cloud judged that cloud degenerate.
+ * Only an explicit `quality.degenerate: true` counts: a manifest from before the
+ * verdict existed, or one that cannot be read, is not rejected on that account.
+ */
+export async function lingBotCloudCollapsed(sessionDir: string): Promise<boolean> {
+  try {
+    const manifest = JSON.parse(await Deno.readTextFile(`${sessionDir}/lingbot-map.manifest.json`)) as {
+      quality?: { degenerate?: unknown }
+    }
+    return manifest.quality?.degenerate === true
+  } catch {
+    return false
+  }
+}
 
 /**
  * Read the first available pose file and return a map of keyframe file →

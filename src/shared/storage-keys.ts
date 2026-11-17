@@ -66,6 +66,16 @@ export const ONBOARDING_KEY = 'companion-scan-onboarded'
 export const SCAN_SERVER_KEY = 'companion-scan-server'
 
 /**
+ * localStorage key: this device's answer to "show map tiles from <host>?", as JSON
+ * `{ "host": string, "allowed": boolean }`. Read/written by src/geo/basemap-layer.ts, once
+ * per device and shared by the scanner drawer and the editor map, which are one origin. The
+ * answer belongs to the host it named: a server that later names another tile host asks again.
+ * Brand new, so nothing depends on the old name yet; treat it as frozen from here on, because
+ * renaming it would ask every device again, and a declined answer would be forgotten.
+ */
+export const BASEMAP_CONSENT_KEY = 'companion-scan-basemap-consent'
+
+/**
  * sessionStorage key: caches the most recent GeoTracker fix so a page
  * reload mid-session doesn't lose GPS/compass state. Read/written by
  * src/geo/geo-tracker.ts (there as `SESSION_KEY`). Do not rename — breaks
@@ -133,3 +143,45 @@ export const SW_SYNC_TAG = 'companion-scan-flush'
  * database, forcing a silent, unannounced re-download.
  */
 export const MODEL_CACHE_DB_NAME = 'companion-scan-model-cache'
+
+/**
+ * localStorage key: the persistent-anchor handles (UUID strings) that this
+ * browser gave back when asked to keep a runtime anchor across sessions, and
+ * which Place and landmark each one marks. Read/written by src/ar/anchors.ts,
+ * and used only on a runtime that can persist anchors (Quest Browser; Chrome
+ * Android cannot). Brand new, so nothing depends on the old name yet, but treat
+ * it as frozen from here on: renaming it orphans every saved handle, and the
+ * browser then holds anchors that nothing on this device can name, which still
+ * count against its limit on persistent anchors (documented by Meta as 8; whether
+ * that is per site or shared by the whole browser is not settled).
+ *
+ * The handles are device-local on purpose. They mean something only to the
+ * browser profile that issued them, so this key is never uploaded, never put in
+ * a Place record and never synced. Meta documents that clearing the site's
+ * history deletes the anchors; that this list is cleared at the same moment is
+ * not documented (UNVERIFIED), and the browser's own list of what it holds
+ * (XRSession.persistentAnchors) is reported blank or empty on some Quest builds.
+ * So src/ar/anchors.ts asks the browser for every entry, and drops one only
+ * after the browser has refused it in several separate sessions.
+ */
+export const RUNTIME_ANCHOR_STORE_KEY = 'companion-scan-runtime-anchors'
+
+/**
+ * localStorage key: whether this device has agreed to send camera frames (keyframes) to its Scan server, and
+ * when, and which version of the consent words it agreed to. Read/written by src/capture/keyframe-consent.ts.
+ * Brand new, so nothing depends on the old name yet, but treat it as frozen from here on: renaming it makes every
+ * device that has agreed look as if it had not, so default-on streaming (D15) stops until each person agrees
+ * again, and a device that withdrew would look as if it had never been asked.
+ *
+ * Per device and per browser profile, never uploaded and never put in a Place or a scan: what a person agreed to
+ * on one phone says nothing about another.
+ */
+export const KEYFRAME_CONSENT_KEY = 'companion-scan-keyframe-consent'
+
+/**
+ * localStorage key: the ids of the capture sessions this device streamed camera frames to, newest last, so that
+ * "Delete frames this phone sent" can name them to the server. Read/written by src/capture/keyframe-consent.ts.
+ * Brand new, frozen from here on for the same reason as KEYFRAME_CONSENT_KEY: renaming it leaves the frames
+ * already sent with no way to be named from this phone. The ids are random and say nothing about a room.
+ */
+export const KEYFRAME_SESSIONS_KEY = 'companion-scan-keyframe-sessions'

@@ -44,6 +44,8 @@
  */
 import type { Context, Hono } from 'hono'
 import { createRemoteJWKSet, jwtVerify } from 'jose'
+import { readTextCapped } from './wp-a-body.ts'
+import { HitLimiter, remoteAddressOf } from './wp-a-client-logs.ts'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -408,6 +410,15 @@ export function shellReturnFor(shell: string | undefined): string | null {
 }
 /** How long the one-time code from a shell sign-in waits to be exchanged. */
 const SHELL_CODE_TTL_MS = 60_000
+/**
+ * What POST /authenticate/shell/exchange accepts. The route is open before sign-in, so a stranger can
+ * call it. A real body is a code and a verifier, about 110 bytes, and a sign-in makes one request.
+ * The budget is per connection address, as for POST /client-logs, and is never charged to a request
+ * that names a live code: see the handler.
+ */
+const SHELL_EXCHANGE_MAX_BODY_BYTES = 4096
+const SHELL_EXCHANGE_MAX_PER_WINDOW = 60
+const SHELL_EXCHANGE_WINDOW_MS = 60_000
 /** A PKCE verifier or challenge: 32 random bytes, base64url, 43 characters. */
 const PKCE_SHAPE = /^[A-Za-z0-9_-]{43}$/
 
@@ -617,14 +628,39 @@ export function registerPortalAuth(app: Hono, cfg: PortalAuthConfig, deps: Porta
   })
 
   // 2b. Shell exchange: the one-time code, plus the verifier only the shell holds, for the session token.
+  // Open before sign-in, so it is bounded in two ways.
+  //  - Memory: the body is counted as it arrives and cut off at the cap, never buffered whole. That comes
+  //    first and is the same for every caller, because the body has to be read to see which code it names.
+  //  - Junk: a budget per connection address (HitLimiter, as for POST /client-logs) answers 429. It is
+  //    charged to every request except one that names a live code, because that request is the sign-in.
+  //    The address is the connection's own, never X-Forwarded-For, which the client sets. Behind a reverse
+  //    proxy (`vite preview` on a phone install, see PROXIED_ROUTES in vite.config.ts, or whatever serves
+  //    a Hub app at its public APP_BASE_URL) that is the proxy's address for every caller, so the budget
+  //    is one bucket for all of them, and a stranger who spends it with 60 junk requests a minute must
+  //    not be able to turn real sign-ins away. A stranger cannot name a live code (32 random bytes), so
+  //    the exemption is no lever for them.
+  const shellExchangeLimiter = new HitLimiter(SHELL_EXCHANGE_MAX_PER_WINDOW, SHELL_EXCHANGE_WINDOW_MS)
   app.post('/authenticate/shell/exchange', async (c) => {
-    const body = await c.req.json().catch(() => null) as { code?: unknown; verifier?: unknown } | null
+    // Refused before it is read when it declares more than the cap, and cut off at the cap when it declares
+    // nothing. A body that cannot be read at all counts as an empty one, as it did under c.req.json().catch.
+    const raw = await readTextCapped(c.req.raw, SHELL_EXCHANGE_MAX_BODY_BYTES).catch(() => '')
+    if (raw === null) return c.json({ error: 'Sign-in request too large.' }, 413)
+    let body: { code?: unknown; verifier?: unknown } | null = null
+    try {
+      body = JSON.parse(raw)
+    } catch { /* not JSON: refused below, like any body that names no code */ }
     const code = typeof body?.code === 'string' ? body.code : ''
     const verifier = typeof body?.verifier === 'string' ? body.verifier : ''
+    // Swept first, so a code past its minute is dead for the budget as well as for the exchange below.
+    // Nothing awaits between here and the delete below, so a code that is live for the budget is the one taken.
+    sweepShellCodes()
+    if (!shellCodes.has(code) && !shellExchangeLimiter.allow(remoteAddressOf(c.env), Date.now())) {
+      c.header('Retry-After', String(SHELL_EXCHANGE_WINDOW_MS / 1000))
+      return c.json({ error: 'Too many sign-in attempts. Wait a minute and start again.' }, 429)
+    }
     if (!code || !PKCE_SHAPE.test(verifier)) {
       return c.json({ error: 'Sign-in could not be confirmed. Start again.' }, 400)
     }
-    sweepShellCodes()
     const entry = shellCodes.get(code)
     shellCodes.delete(code) // single use, whatever the verifier turns out to be
     if (!entry) return c.json({ error: 'Sign-in expired. Start again.' }, 400)

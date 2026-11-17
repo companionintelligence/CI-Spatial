@@ -74,6 +74,8 @@
  * timing, and neither needs a camera.
  */
 
+import { isNativeShell } from '../shared/api-base.ts'
+
 /**
  * The shortest gap allowed between two banked photos.
  *
@@ -546,6 +548,10 @@ export function cameraRefusal(cause: 'unsupported' | 'denied' | 'busy' | 'failed
     case 'unsupported':
       return `This browser will not give the page a camera. ${fallback}`
     case 'denied':
+      // A Capacitor shell has no per-site camera setting. Its permission lives in the OS settings for the app.
+      if (isNativeShell()) {
+        return `Camera access was refused, so the sweep cannot photograph anything. Turn on Camera in this app's permissions in Settings, then come back and press ${CAMERA_ON_LABEL}. ${fallback}`
+      }
       return `Camera access was refused, so the sweep cannot photograph anything. `
         + `Allow the camera for this site, then press ${CAMERA_ON_LABEL}. ${fallback}`
     case 'busy':

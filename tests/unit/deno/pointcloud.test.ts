@@ -368,3 +368,350 @@ Deno.test('groundEstimate: diagnostics are absent before any fit and present aft
   assert(estimate.residualM !== undefined, 'residualM should be reported once a fit has run')
   assertEquals(estimate.fallback, false)
 })
+
+// ── Frame epochs (WP-09, src/ar/frame-epoch.ts) ─────────────────────────────
+//
+// A point is recorded in one stretch of tracking, an epoch, and points of different epochs
+// are not in one coordinate frame. The cloud keeps each point's epoch, never lets two
+// epochs' points vouch for each other, and fits the live floor from the current epoch's
+// points only. The case that motivated it: a locked floor never followed a floor that
+// appeared higher after a frame shift, because the old points stayed the lowest band.
+
+/** {@link feed} for a given epoch. */
+function feedAt(
+  cloud: PointCloud,
+  clock: ReturnType<typeof fakeClock>,
+  pts: Array<{ x: number; y: number; z: number }>,
+  epoch: number,
+) {
+  cloud.add(pts, epoch)
+  clock.advance(600) // > GROUND_RECOMPUTE_INTERVAL_MS
+}
+
+/** A cloud with a locked floor at y = 0 in epoch 0. */
+function lockedAtZero() {
+  const clock = fakeClock()
+  const cloud = new PointCloud(0.05, clock.now)
+  for (let i = 0; i < 8; i++) feedAt(cloud, clock, floorPoints(60, 0, 4, 700 + i, 0.004), 0)
+  assert(cloud.groundEstimate()!.locked, 'precondition: the floor is locked')
+  assertAlmostEquals(cloud.groundEstimate()!.y, 0, 0.01)
+  return { clock, cloud }
+}
+
+Deno.test('epochs: every point keeps the epoch it was added in, in the same order as its position', () => {
+  const clock = fakeClock()
+  const cloud = new PointCloud(0.05, clock.now)
+  cloud.add([{ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }], 0)
+  cloud.add([{ x: 2, y: 0, z: 0 }], 1)
+  cloud.add([{ x: 3, y: 0, z: 0 }, { x: 4, y: 0, z: 0 }], 2)
+  const positions = cloud.toFloat32Array()
+  const epochs = cloud.toEpochArray()
+  assertEquals(epochs.length, cloud.count)
+  assertEquals([...epochs], [0, 0, 1, 2, 2])
+  assertEquals([...positions].filter((_, i) => i % 3 === 0), [0, 1, 2, 3, 4])
+  assertEquals(cloud.currentEpoch, 2)
+  assertEquals(cloud.epochCounts(), [{ epoch: 0, count: 2 }, { epoch: 1, count: 1 }, { epoch: 2, count: 2 }])
+})
+
+Deno.test('epochs: with no epoch given every point is epoch 0, and the cloud behaves as it did', () => {
+  const clock = fakeClock()
+  const cloud = new PointCloud(0.05, clock.now)
+  feed(cloud, clock, floorPoints(200, 0))
+  assertEquals(cloud.currentEpoch, 0)
+  assertEquals(cloud.epochCounts(), [{ epoch: 0, count: cloud.count }])
+  assertEquals(cloud.groundEstimate()!.epoch, 0)
+  assertEquals(cloud.groundObjects().length, 1)
+})
+
+Deno.test('epochs: the same voxel in two epochs is two points, in one epoch it is one', () => {
+  const clock = fakeClock()
+  const cloud = new PointCloud(0.05, clock.now)
+  const p = [{ x: 1, y: 0.5, z: 1 }]
+  assertEquals(cloud.add(p, 0).length, 1)
+  assertEquals(cloud.add(p, 0).length, 0, 'a duplicate in the same epoch')
+  assertEquals(cloud.add(p, 1).length, 1, 'the same coordinates in another frame are another place')
+  assertEquals(cloud.add(p, 1).length, 0)
+  assertEquals(cloud.count, 2)
+})
+
+Deno.test('epochs: a floor that appears 0.10 m higher in a new epoch is followed, and locks there', () => {
+  const { clock, cloud } = lockedAtZero()
+  feedAt(cloud, clock, floorPoints(60, 0.10, 4, 800, 0.004), 1)
+  const first = cloud.groundEstimate()!
+  assertEquals(first.epoch, 1)
+  assertAlmostEquals(first.y, 0.10, 0.02, `the live floor stayed at the old frame's: ${first.y}`)
+  assertEquals(first.locked, false, 'one fit in a new frame is not a lock')
+  for (let i = 1; i < 8; i++) feedAt(cloud, clock, floorPoints(60, 0.10, 4, 800 + i, 0.004), 1)
+  const after = cloud.groundEstimate()!
+  assertEquals(after.locked, true)
+  assertAlmostEquals(after.y, 0.10, 0.01)
+})
+
+Deno.test('epochs: a floor that appears 0.30 m higher in a new epoch is followed', () => {
+  const { clock, cloud } = lockedAtZero()
+  for (let i = 0; i < 8; i++) feedAt(cloud, clock, floorPoints(60, 0.30, 4, 900 + i, 0.004), 1)
+  const after = cloud.groundEstimate()!
+  assertEquals(after.epoch, 1)
+  assertAlmostEquals(after.y, 0.30, 0.01, `got ${after.y}`)
+  assertEquals(after.locked, true)
+})
+
+Deno.test('epochs: a floor that appears 0.10 m lower is followed too (inside the old unlock tolerance)', () => {
+  const { clock, cloud } = lockedAtZero()
+  for (let i = 0; i < 8; i++) feedAt(cloud, clock, floorPoints(60, -0.10, 4, 1000 + i, 0.004), 1)
+  assertAlmostEquals(cloud.groundEstimate()!.y, -0.10, 0.01)
+})
+
+Deno.test('epochs: inside one epoch a floor that appears higher is still not followed: only an epoch says the frame moved', () => {
+  // The control. Points are never removed, so with nothing to say the frame moved, the old
+  // floor is still the lowest band. This is the behaviour the epochs exist to override.
+  const { clock, cloud } = lockedAtZero()
+  for (let i = 0; i < 12; i++) feedAt(cloud, clock, floorPoints(60, 0.30, 4, 1100 + i, 0.004), 0)
+  assertAlmostEquals(cloud.groundEstimate()!.y, 0, 0.01)
+  assertEquals(cloud.groundEstimate()!.epoch, 0)
+})
+
+Deno.test('epochs: the new epoch starts with no estimate until it has enough points of its own', () => {
+  const { clock, cloud } = lockedAtZero()
+  feedAt(cloud, clock, floorPoints(30, 0.2, 4, 1200, 0.004), 1)
+  assertEquals(cloud.groundEstimate(), null, '30 points of a new frame are not enough to claim a floor, and the old frame\'s floor is not it')
+  feedAt(cloud, clock, floorPoints(30, 0.2, 4, 1201, 0.004), 1)
+  assert(cloud.groundEstimate(), 'sixty are')
+})
+
+Deno.test('epochs: a mixed-epoch cloud is fitted per epoch, not as one cloud', () => {
+  const clock = fakeClock()
+  const cloud = new PointCloud(0.05, clock.now)
+  feedAt(cloud, clock, floorPoints(300, 0.0, 4, 31, 0.004), 0)
+  feedAt(cloud, clock, floorPoints(300, 0.30, 4, 32, 0.004), 1)
+  // Every point together: the lowest supported band, which is epoch 0's floor.
+  assertAlmostEquals(cloud.estimateFloorY(), 0, 0.02)
+  assertAlmostEquals(cloud.estimateFloorY(0), 0, 0.02)
+  assertAlmostEquals(cloud.estimateFloorY(1), 0.30, 0.02)
+  // The live floor is the current epoch's.
+  assertAlmostEquals(cloud.groundEstimate()!.y, 0.30, 0.02)
+  // And the floor of the epoch left behind is kept.
+  const objects = cloud.groundObjects()
+  assertEquals(objects.map((o) => o.epoch), [0, 1])
+  assertAlmostEquals(objects[0].y, 0, 0.02)
+  assertAlmostEquals(objects[1].y, 0.30, 0.02)
+})
+
+Deno.test('epochs: the floor of an epoch that has been left stays on record, locked as it was', () => {
+  const { clock, cloud } = lockedAtZero()
+  feedAt(cloud, clock, floorPoints(80, 0.5, 4, 1300, 0.004), 1)
+  const [old, live] = cloud.groundObjects()
+  assertEquals(old.epoch, 0)
+  assertEquals(old.locked, true)
+  assertAlmostEquals(old.y, 0, 0.01)
+  assertEquals(live.epoch, 1)
+  assertEquals(live.locked, false)
+})
+
+Deno.test('epochs: an epoch with too few points to fit has no ground object', () => {
+  const clock = fakeClock()
+  const cloud = new PointCloud(0.05, clock.now)
+  feedAt(cloud, clock, floorPoints(200, 0, 4, 41, 0.004), 0)
+  feedAt(cloud, clock, floorPoints(10, 0.3, 4, 42, 0.004), 1)
+  assertEquals(cloud.groundObjects().map((o) => o.epoch), [0])
+  assertEquals(cloud.epochCounts().map((c) => c.epoch), [0, 1])
+})
+
+Deno.test('epochs: the ground object says it is level, and what frame it is in', () => {
+  const clock = fakeClock()
+  const cloud = new PointCloud(0.05, clock.now)
+  feedAt(cloud, clock, floorPoints(200, -0.04, 4, 51, 0.004), 3)
+  const ground = cloud.groundEstimate()!
+  assertEquals(ground.normal, { x: 0, y: 1, z: 0 })
+  assertEquals(ground.epoch, 3, 'a scan that begins in a later epoch fits its floor there')
+  assertAlmostEquals(ground.y, -0.04, 0.01)
+  // It is a copy: changing it does not change what the cloud reports next.
+  ground.normal.y = 0 as never
+  assertEquals(cloud.groundEstimate()!.normal, { x: 0, y: 1, z: 0 })
+})
+
+Deno.test('epochs: a late point of an earlier epoch is kept under its own epoch and does not move the live floor', () => {
+  const { clock, cloud } = lockedAtZero()
+  for (let i = 0; i < 8; i++) feedAt(cloud, clock, floorPoints(60, 0.2, 4, 1400 + i, 0.004), 1)
+  const live = cloud.groundEstimate()!
+  const countBefore = cloud.count
+  // A straggler harvested in epoch 0, delivered after epoch 1 began.
+  cloud.add(floorPoints(40, -3, 4, 1500), 0)
+  clock.advance(600)
+  assertEquals(cloud.currentEpoch, 1)
+  assertEquals(cloud.count, countBefore + 40)
+  assertEquals(cloud.epochCounts().find((c) => c.epoch === 0)!.count > 0, true)
+  assertEquals(cloud.groundEstimate()!.y, live.y)
+  assertEquals(cloud.groundEstimate()!.epoch, 1)
+})
+
+Deno.test('epochs: an epoch past what the per-point array holds is stored as its largest, never wrapped to a small one', () => {
+  const clock = fakeClock()
+  const cloud = new PointCloud(0.05, clock.now)
+  cloud.add([{ x: 0, y: 0, z: 0 }], 65_535)
+  cloud.add([{ x: 1, y: 0, z: 0 }], 65_536)
+  cloud.add([{ x: 2, y: 0, z: 0 }], 70_000)
+  assertEquals([...cloud.toEpochArray()], [65_535, 65_535, 65_535], 'wrapping would have filed these under epoch 0, 1 and 4464')
+  assertEquals(cloud.currentEpoch, 65_535)
+})
+
+Deno.test('epochs: an epoch that is not a whole number counts as 0, or its integer part', () => {
+  const clock = fakeClock()
+  const cloud = new PointCloud(0.05, clock.now)
+  cloud.add([{ x: 0, y: 0, z: 0 }], Number.NaN)
+  cloud.add([{ x: 1, y: 0, z: 0 }], -2)
+  cloud.add([{ x: 2, y: 0, z: 0 }], Number.POSITIVE_INFINITY)
+  cloud.add([{ x: 3, y: 0, z: 0 }], 2.9)
+  assertEquals([...cloud.toEpochArray()], [0, 0, 0, 2])
+})
+
+Deno.test('epochs: thinning the cloud to stay under its cap keeps every surviving point\'s own epoch', () => {
+  const clock = fakeClock()
+  const cloud = new PointCloud(0.05, clock.now)
+  // Each point's x says which epoch it was added in (x = 0.1 * i, epoch = i % 3), so after the
+  // thinning a survivor's epoch can be checked against its own position, not against its index.
+  const batch: Array<{ x: number; y: number; z: number; }> = []
+  const epochOfIndex = (i: number) => i % 3
+  for (let i = 0; cloud.decimations === 0 && i < 140_000; i++) {
+    batch.push({ x: i * 0.1, y: 0, z: 0 })
+    if (batch.length === 500) {
+      // One epoch per batch would not mix them; add each point under its own epoch.
+      for (const p of batch) cloud.add([p], epochOfIndex(Math.round(p.x / 0.1)))
+      batch.length = 0
+    }
+  }
+  for (const p of batch) cloud.add([p], epochOfIndex(Math.round(p.x / 0.1)))
+  assert(cloud.decimations >= 1, 'the cloud was never thinned, so this proves nothing')
+  const positions = cloud.toFloat32Array()
+  const epochs = cloud.toEpochArray()
+  assertEquals(epochs.length, cloud.count)
+  let wrong = 0
+  for (let k = 0; k < cloud.count; k++) {
+    if (epochs[k] !== epochOfIndex(Math.round(positions[k * 3] / 0.1))) wrong++
+  }
+  assertEquals(wrong, 0, `${wrong} of ${cloud.count} points carry another point's epoch`)
+  assertEquals(cloud.epochCounts().reduce((n, c) => n + c.count, 0), cloud.count, 'the per-epoch counts still add up')
+})
+
+Deno.test('epochs: clear() forgets the epochs and the floors with the points', () => {
+  const { clock, cloud } = lockedAtZero()
+  feedAt(cloud, clock, floorPoints(80, 0.5, 4, 1600, 0.004), 1)
+  cloud.clear()
+  assertEquals(cloud.currentEpoch, 0)
+  assertEquals(cloud.epochCounts(), [])
+  assertEquals(cloud.groundObjects(), [])
+  assertEquals(cloud.groundEstimate(), null)
+  assertEquals(cloud.toEpochArray().length, 0)
+  // And the next scan, in epoch 0 again, starts clean.
+  feedAt(cloud, clock, floorPoints(80, 0.2, 4, 1700, 0.004), 0)
+  assertEquals(cloud.groundEstimate()!.epoch, 0)
+})
+
+Deno.test('epochs: a floor in an epoch with no points is 0 with fallback, not another epoch\'s', () => {
+  const clock = fakeClock()
+  const cloud = new PointCloud(0.05, clock.now)
+  feedAt(cloud, clock, floorPoints(200, 0.7, 4, 61, 0.004), 0)
+  assertEquals(cloud.estimateFloorY(5), 0)
+})
+
+// ── What each epoch's fit may and may not look at ───────────────────────────
+//
+// The fit reads the cloud four times (the height range, the band counts, the mean of the points
+// round the chosen band, their spread) and once more for the fallback percentile. Each read has
+// to leave the other epochs' points out, and a mixed cloud in which only one of them would show is
+// a different cloud for each: these are those clouds.
+
+/** `n` points up a wall, evenly spread in height from `from` to `to`, so no 5 cm band holds a share of them. */
+function wallPoints(n: number, from: number, to: number) {
+  return Array.from({ length: n }, (_, i) => ({ x: (i % 30) * 0.1, y: from + (i / (n - 1)) * (to - from), z: -2 }))
+}
+
+Deno.test('epochs: a large epoch does not raise the bar for a small one: a band must hold a share of its own epoch\'s points', () => {
+  const clock = fakeClock()
+  const cloud = new PointCloud(0.05, clock.now)
+  feedAt(cloud, clock, floorPoints(3_000, 0, 4, 71, 0.004), 0)
+  // 300 points: 90 on a floor at 0.30 (30 percent of them) and the rest up a wall.
+  feedAt(cloud, clock, [...floorPoints(90, 0.30, 4, 72, 0.004), ...wallPoints(210, 0.6, 2.6)], 1)
+  const live = cloud.groundEstimate()!
+  assertEquals(live.epoch, 1)
+  assertEquals(live.fallback, false, 'the share was measured against all 3 300 points: 132, and the floor holds 90')
+  assertAlmostEquals(live.y, 0.30, 0.01)
+  assert((live.inlierCount ?? 0) >= 85)
+})
+
+Deno.test('epochs: another epoch\'s dense layer below this epoch\'s stray points is not this epoch\'s floor', () => {
+  const clock = fakeClock()
+  const cloud = new PointCloud(0.05, clock.now)
+  feedAt(cloud, clock, floorPoints(300, -0.5, 4, 73, 0.004), 0)
+  // Epoch 1: a floor at 0 and four stray points at -0.5 (1.3 percent: not a surface).
+  const strays = [0.1, 0.9, 1.7, 2.5].map((x) => ({ x, y: -0.5, z: 1 }))
+  feedAt(cloud, clock, [...floorPoints(300, 0, 4, 74, 0.004), ...strays], 1)
+  assertAlmostEquals(cloud.estimateFloorY(1), 0, 0.02, 'epoch 0\'s floor sat in the same band as the strays and made it one')
+  assertAlmostEquals(cloud.groundEstimate()!.y, 0, 0.02)
+})
+
+Deno.test('epochs: a floor a few centimetres from the last epoch\'s is its own height, and its own spread, not their average', () => {
+  const clock = fakeClock()
+  const cloud = new PointCloud(0.05, clock.now)
+  feedAt(cloud, clock, floorPoints(300, 0.02, 4, 75, 0.004), 0)
+  feedAt(cloud, clock, floorPoints(300, 0.045, 4, 76, 0.004), 1)
+  assertAlmostEquals(cloud.estimateFloorY(1), 0.045, 0.005, 'the old frame\'s points within 5 cm were averaged in')
+  const live = cloud.groundEstimate()!
+  assert((live.inlierCount ?? 0) <= 300, `${live.inlierCount} inliers from an epoch of 300 points`)
+  assert((live.residualM ?? 1) < 0.01, `the spread was ${live.residualM}: the old frame's points were counted in it`)
+})
+
+Deno.test('epochs: with no structure to fit, the fallback is the percentile of the epoch\'s own points', () => {
+  const clock = fakeClock()
+  const cloud = new PointCloud(0.05, clock.now)
+  feedAt(cloud, clock, floorPoints(300, 0, 4, 77, 0.004), 0)
+  // 300 points at every height from 0.2 to 3.2 m: 60 bands of five, nothing near 4 percent.
+  feedAt(cloud, clock, Array.from({ length: 300 }, (_, i) => ({ x: (i % 30) * 0.1, y: 0.2 + (i / 299) * 3.0, z: -1 })), 1)
+  const live = cloud.groundEstimate()!
+  assertEquals(live.fallback, true)
+  assertAlmostEquals(cloud.estimateFloorY(1), 0.2 + 0.08 * 3.0, 0.1, 'the percentile of all 600 points is epoch 0\'s floor')
+})
+
+Deno.test('epochs: a new epoch\'s floor is judged on its own candidates: one 2 cm higher is not locked on the old frame\'s, and locks at its own height', () => {
+  const { clock, cloud } = lockedAtZero()
+  feedAt(cloud, clock, floorPoints(60, 0.02, 4, 1800, 0.002), 1)
+  assertEquals(cloud.groundEstimate()!.locked, false, 'one candidate of its own, on top of the old frame\'s five, is not a lock')
+  for (let i = 1; i < 5; i++) feedAt(cloud, clock, floorPoints(60, 0.02, 4, 1800 + i, 0.002), 1)
+  assertEquals(cloud.groundEstimate()!.locked, false, 'five are not six')
+  feedAt(cloud, clock, floorPoints(60, 0.02, 4, 1806, 0.002), 1)
+  const locked = cloud.groundEstimate()!
+  assertEquals(locked.locked, true)
+  assertAlmostEquals(locked.y, 0.02, 0.004, `the old frame's candidates were averaged into the lock: ${locked.y}`)
+})
+
+Deno.test('epochs: the sample count is the live epoch\'s points, not the cloud\'s', () => {
+  const { clock, cloud } = lockedAtZero()
+  feedAt(cloud, clock, floorPoints(80, 0.4, 4, 1810, 0.002), 1)
+  const inEpoch = cloud.epochCounts().find((c) => c.epoch === 1)!.count
+  assert(cloud.count > inEpoch, 'precondition: the cloud holds more than the epoch does')
+  assertEquals(cloud.groundEstimate()!.sampleCount, inEpoch)
+})
+
+Deno.test('epochs: stragglers of an earlier epoch are not new evidence for the live floor, however often they arrive', () => {
+  const { clock, cloud } = lockedAtZero()
+  feedAt(cloud, clock, floorPoints(60, 0.3, 4, 1900, 0.004), 1)
+  const first = cloud.groundEstimate()!
+  assertEquals(first.locked, false)
+  // Ten ticks of points from the epoch before, delivered late. Each used to be a recompute of the live floor,
+  // which agrees with itself, and six agreeing estimates is a lock.
+  for (let i = 0; i < 10; i++) feedAt(cloud, clock, floorPoints(30, -3 + i * 0.05, 4, 2000 + i), 0)
+  const after = cloud.groundEstimate()!
+  assertEquals(after.locked, false)
+  assertEquals(after.sampleCount, first.sampleCount)
+})
+
+Deno.test('epochs: the ground objects handed out are copies, so a caller cannot change what the cloud keeps', () => {
+  const { clock, cloud } = lockedAtZero()
+  feedAt(cloud, clock, floorPoints(80, 0.5, 4, 1950, 0.004), 1)
+  const [old] = cloud.groundObjects()
+  old.y = 99
+  old.normal.y = 0 as never
+  const again = cloud.groundObjects()
+  assertAlmostEquals(again[0].y, 0, 0.01)
+  assertEquals(again[0].normal, { x: 0, y: 1, z: 0 })
+})

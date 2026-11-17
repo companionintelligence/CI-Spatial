@@ -44,9 +44,12 @@ export interface SignInStatus {
   problem?: string
 }
 
-/** A null field means that endpoint did not answer usefully. Its row says so. All three null is one Server row instead. */
+/**
+ * A null field means that endpoint did not answer usefully. Its row says so. All three null is one Server row instead.
+ * `memory` is SIGNED_OUT when Companion Memory answered 401 and sign-in is on: the server is there and wants a sign-in first. With sign-in off, that 401 is no answer.
+ */
 export interface FtueSnapshot {
-  memory: MemoryStatus | null
+  memory: MemoryStatus | typeof SIGNED_OUT | null
   engine: EngineStatus | null
   signIn: SignInStatus | null
 }
@@ -77,6 +80,8 @@ export const SIGN_IN_HREF = '/authenticate/oidc?redirect=%2F'
 export const SIGN_IN_FAILED = 'Sign-in failed. Try again.'
 
 const UNAVAILABLE = 'Status unavailable.'
+/** An endpoint's answer to a request without its session (a 401). The server is there, so this is not a failure. */
+export const SIGNED_OUT = 'signed-out' as const
 const NO_SERVER = 'None answered. Sign-in, saved projects and object labels need one.'
 /** A shell with no Scan server address yet. */
 export const SERVER_NONE_SET = 'None set. Sign-in, saved projects and object labels need one.'
@@ -112,8 +117,9 @@ function serverRows(s: FtueSnapshot, shell: ShellServer): FtueRow[] {
   return [{ label: 'Server', text: host, control: change }, memoryRow(s.memory), modelRow(s.engine), signInRow(s.signIn)]
 }
 
-function memoryRow(m: MemoryStatus | null): FtueRow {
+function memoryRow(m: MemoryStatus | typeof SIGNED_OUT | null): FtueRow {
   const label = 'Companion Memory'
+  if (m === SIGNED_OUT) return { label, text: 'Sign in to check Companion Memory.' }
   if (!m) return { label, text: UNAVAILABLE }
   if (!m.enabled) return { label, text: 'Not connected. Connect Companion Memory in Companion Hub.' }
   if (m.reachable === false) return { label, text: 'Set up, but not reachable.' }
@@ -148,9 +154,10 @@ interface MemoryReply { enabled?: unknown, reachable?: unknown }
 interface HealthReply { model?: unknown, engineLoadState?: unknown }
 interface SignInReply { enabled?: unknown }
 
-async function getJson<T extends object>(fetchFn: typeof fetch, path: string): Promise<T | null> {
+async function getJson<T extends object>(fetchFn: typeof fetch, path: string): Promise<T | typeof SIGNED_OUT | null> {
   try {
     const res = await fetchFn(path, { credentials: 'same-origin', signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
+    if (res.status === 401) return SIGNED_OUT
     if (!res.ok) return null
     const body: unknown = await res.json()
     return typeof body === 'object' && body !== null ? body as T : null
@@ -180,6 +187,8 @@ export async function hideWithoutServer(el: Pick<HTMLElement, 'hidden'> | null, 
  * Asks the three endpoints in parallel. A failure, a timeout, or a reply with the
  * wrong shape becomes null for that field. Each field is rebuilt from the named
  * keys only. A shell also checks the session it stored, once sign-in is on.
+ * Only Companion Memory is session-guarded, so only its 401 can be SIGNED_OUT rather than null,
+ * and only while sign-in is on: the sign-in reply decides.
  */
 export async function fetchFtueSnapshot(fetchFn: typeof fetch = fetch): Promise<FtueSnapshot> {
   const [memory, health, signIn] = await Promise.all([
@@ -187,10 +196,15 @@ export async function fetchFtueSnapshot(fetchFn: typeof fetch = fetch): Promise<
     getJson<HealthReply>(fetchFn, apiUrl('/health')),
     getJson<SignInReply>(fetchFn, apiUrl('/authenticate/status')),
   ])
+  // The other two are not session-guarded, so a 401 from them is no answer, as any failure is.
+  const healthBody = health === SIGNED_OUT ? null : health
+  const signInBody = signIn === SIGNED_OUT ? null : signIn
+  // A 401 from Companion Memory asks for a sign-in only where sign-in is on. Where it is off, the 401 is no answer.
+  const memoryNeedsSignIn = memory === SIGNED_OUT && signInBody?.enabled === true
   return {
-    memory: toMemory(memory),
-    engine: toEngine(health),
-    signIn: typeof signIn?.enabled === 'boolean' ? await toSignIn(signIn.enabled, fetchFn) : null,
+    memory: memoryNeedsSignIn ? SIGNED_OUT : toMemory(memory === SIGNED_OUT ? null : memory),
+    engine: toEngine(healthBody),
+    signIn: typeof signInBody?.enabled === 'boolean' ? await toSignIn(signInBody.enabled, fetchFn) : null,
   }
 }
 
@@ -307,6 +321,7 @@ function wireShellSignIn(list: HTMLElement): void {
   if (!isNativeShell()) return
   list.querySelector<HTMLAnchorElement>('a.ftue-signin')?.addEventListener('click', (event) => {
     event.preventDefault()
-    void beginShellSignIn().catch(() => { /* the sheet did not open: the control stays as it is */ })
+    // The sheet did not open. The control says so and stays ready for another try.
+    void beginShellSignIn().catch(() => renderFtueStatus(list, fetch, SIGN_IN_FAILED))
   })
 }

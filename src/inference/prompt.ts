@@ -127,25 +127,51 @@ function tryParseArray(text: string): unknown[] | null {
   return null
 }
 
-/** Normalize bboxes that are in pixel-space (any value > 1) to 0–1. */
+/**
+ * Boxes already on the 0–1 scale pass through. Only boxes still in pixel-space (a value
+ * above 1) are divided, by the largest pixel value in the reply, which approximates the
+ * frame size. Dividing every box by one reply-wide maximum let a single grid value
+ * squash the fraction boxes beside it into slivers.
+ */
 function normalizeAllBboxes(dets: RawDetection[]): RawDetection[] {
-  if (dets.every((d) => d.bbox.every((v) => v <= 1.001))) {
-    return dets.map((d) => ({ ...d, bbox: clampBbox(d.bbox) }))
-  }
-  const maxVal = dets.reduce((m, d) => Math.max(m, ...d.bbox), 0)
-  if (maxVal <= 1) return dets.map((d) => ({ ...d, bbox: clampBbox(d.bbox) }))
-  return dets.map((d) => ({
-    ...d,
-    bbox: clampBbox(d.bbox.map((v) => v / maxVal) as [number, number, number, number]),
-  }))
+  const pixelMax = dets.reduce(
+    (m, d) => (d.bbox.some((v) => v > 1.001) ? Math.max(m, ...d.bbox) : m),
+    0,
+  )
+  return dets.map((d) => {
+    if (d.bbox.every((v) => v <= 1.001) || pixelMax <= 1) return { ...d, bbox: clampBbox(d.bbox) }
+    return { ...d, bbox: clampBbox(d.bbox.map((v) => v / pixelMax) as [number, number, number, number]) }
+  })
+}
+
+/**
+ * One box in whichever form the model used. The prompt asks for "bbox" as 0–1 fractions,
+ * but Qwen-VL models often answer in their grounding format: "bbox_2d" or "box_2d", on a
+ * 0–1000 grid. A box whose largest value is above 1.5 is read as that grid and divided by
+ * 1000. Values above 1000 stay in pixels for normalizeAllBboxes. A sliver under 1% of the
+ * frame is a misread, so it is dropped.
+ */
+function coerceBox(d: Record<string, unknown>): [number, number, number, number] | null {
+  const raw = Array.isArray(d['bbox']) ? d['bbox']
+    : Array.isArray(d['bbox_2d']) ? d['bbox_2d']
+    : Array.isArray(d['box_2d']) ? d['box_2d']
+    : null
+  if (!raw || raw.length !== 4) return null
+  const box = raw.map((v) => Number(v))
+  if (box.some((v) => !Number.isFinite(v))) return null
+  const largest = Math.max(...box)
+  const s = largest > 1.5 && largest <= 1000 ? 1000 : 1
+  const [x1, y1, x2, y2] = box.map((v) => v / s) as [number, number, number, number]
+  if (Math.abs(x2 - x1) < 0.01 || Math.abs(y2 - y1) < 0.01) return null
+  return [x1, y1, x2, y2]
 }
 
 function coerceDetection(item: unknown): RawDetection | null {
   if (typeof item !== 'object' || item === null) return null
   const d = item as Record<string, unknown>
   const label = typeof d['label'] === 'string' ? canonicalizeLabel(d['label'].trim().toLowerCase()) : ''
-  const bbox = Array.isArray(d['bbox']) ? d['bbox'].map((v) => Number(v)) : []
-  if (!label || bbox.length !== 4 || bbox.some((v) => !Number.isFinite(v))) return null
+  const bbox = coerceBox(d)
+  if (!label || !bbox) return null
 
   const parsedConfidence = Number(d['confidence'])
   let confidence = Number.isFinite(parsedConfidence) ? parsedConfidence : 0.8

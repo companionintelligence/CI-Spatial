@@ -89,6 +89,9 @@ class WebBleClient {
     this.device = null;
     this.server = null;
     this.writeChar = null; // latched { characteristic, withResponse }
+    /** Bumped on every link reset. A write that spans one must not latch the characteristic it used. */
+    this.linkGeneration = 0;
+    this._disconnecting = null; // the drop still stopping the gimbal, if one is running
     this.writeCandidates = [];
     this.reassemblers = new Map(); // char uuid -> FrameReassembler
     this.msgIds = new MsgIdSequence();
@@ -131,9 +134,13 @@ class WebBleClient {
   }
 
   async connectToDevice(device) {
+    // A drop that is still stopping the gimbal owns the current link until it finishes. Connecting now
+    // would let that drop take the new device down, so wait for it first (F12).
+    if (this._disconnecting) await this._disconnecting.catch(() => {});
     this.device = device;
     this.device.addEventListener('gattserverdisconnected', () => {
       log('Device disconnected.', 'warn');
+      this._forgetLink();
       setStatus('Disconnected');
       setControlsEnabled(false);
     });
@@ -153,6 +160,7 @@ class WebBleClient {
       }
     }
 
+    this._forgetLink(); // a new link: whatever was latched belonged to the old one
     this.writeCandidates = [];
     for (const { uuid, withResponse } of WRITE_CHAR_CANDIDATES_FULL) {
       const characteristic = allChars.find((c) => c.uuid === uuid);
@@ -163,7 +171,40 @@ class WebBleClient {
   }
 
   async disconnect() {
-    this.device?.gatt?.disconnect();
+    // Published as pending, so a connectToDevice() that starts during the stop window waits for this
+    // drop instead of being taken down by it (F12).
+    const run = this._stopAndDrop();
+    this._disconnecting = run;
+    try {
+      await run;
+    } finally {
+      if (this._disconnecting === run) this._disconnecting = null;
+    }
+  }
+
+  async _stopAndDrop() {
+    // The device is read before the stop write awaits, so the link dropped is the one that was up.
+    const device = this.device;
+    // A speed command is a latch, so the motors are stopped while the link still exists. Capped,
+    // so a write that never returns cannot hold the disconnect open (see ble-transport.mjs).
+    if (this.connected) {
+      const stop = this.sendRaw(buildGimbalSpeedControl(this.msgIds.next(), {})).catch(() => {
+        /* best-effort: the link is being torn down either way */
+      });
+      await Promise.race([stop, new Promise((resolve) => setTimeout(resolve, 2000))]);
+    }
+    this._forgetLink();
+    device?.gatt?.disconnect();
+  }
+
+  /**
+   * The link is gone or replaced: forget the characteristic it latched, and bump the generation so a
+   * write still in flight cannot latch its own, now stale, characteristic afterwards. Mirrors
+   * _resetLinkState() in server/ble-transport.mjs.
+   */
+  _forgetLink() {
+    this.linkGeneration += 1;
+    this.writeChar = null;
   }
 
   get connected() {
@@ -232,11 +273,17 @@ class WebBleClient {
       log(`TX [${this.writeChar.uuid}] ${hex(frameBytes)}`, 'tx');
       return;
     }
+    // A write that spans a link reset must not latch the characteristic it used (see _forgetLink).
+    const generation = this.linkGeneration;
     for (const candidate of this.writeCandidates) {
       try {
         await this._writeTo(candidate.characteristic, frameBytes, candidate.withResponse === false);
-        this.writeChar = candidate;
-        log(`TX [${candidate.uuid}] ${hex(frameBytes)} (latched as write channel)`, 'tx');
+        if (generation === this.linkGeneration) {
+          this.writeChar = candidate;
+          log(`TX [${candidate.uuid}] ${hex(frameBytes)} (latched as write channel)`, 'tx');
+        } else {
+          log(`TX [${candidate.uuid}] ${hex(frameBytes)} (link reset during the write, not latched)`, 'tx');
+        }
         return;
       } catch (err) {
         log(`write to ${candidate.uuid} failed: ${err.message}`, 'warn');
@@ -250,6 +297,8 @@ class WebBleClient {
     // (sendRaw), not a hardcoded fff4: fff4 is notify-only on real hardware tested here (no
     // write/writeWithoutResponse property at all), so a hardcoded fff4 write always fails with
     // a GATT-level "Write Not Permitted" before ever reaching the device.
+    // The link this pairing started on; a candidate is latched only if it is still that link.
+    const generation = this.linkGeneration;
     await this.sendRaw(PAIRING_TRIGGER_BYTES);
     await new Promise((r) => setTimeout(r, 1000));
 
@@ -267,7 +316,7 @@ class WebBleClient {
       }
       const response = await waiter;
       if (response) {
-        this.writeChar = candidate;
+        if (generation === this.linkGeneration) this.writeChar = candidate;
         const status = response.payload.length >= 2 ? response.payload[1] : response.payload[0];
         return { alreadyPaired: status === 0x01, pairingRequired: status === 0x02 };
       }
@@ -388,15 +437,37 @@ els.stickToggle.addEventListener('click', async () => {
 
 // Joystick: click-drag, touch-drag, or focus + arrow keys. Continuously streams a speed
 // vector while active, auto-stops (zero speed) on release.
+// speedLatched: a non-zero speed has gone out and no stop has followed it yet.
+let speedLatched = false;
 attachJoystick(els.joystickPad, {
   onMove: (vector) => {
+    speedLatched = true;
     client.sendRaw(buildGimbalSpeedControl(client.msgIds.next(), vector)).catch((err) => log(`Joystick move failed: ${err.message}`, 'warn'));
   },
   onStop: () => {
+    speedLatched = false;
     client.sendRaw(buildGimbalSpeedControl(client.msgIds.next(), {})).catch(() => {
       /* best-effort stop */
     });
   },
+});
+
+// Leaving mid-drag (tab closed or hidden) would leave the last speed latched on the gimbal, because
+// nothing sends the stop once the page is gone. Sent only while a speed is latched, so hiding the
+// tab with the joystick at rest sends nothing. Capped like disconnect(): a write that never returns
+// cannot hold the page open.
+function stopOnPageExit() {
+  if (!speedLatched) return;
+  speedLatched = false;
+  if (!client.connected) return;
+  const stop = client.sendRaw(buildGimbalSpeedControl(client.msgIds.next(), {})).catch(() => {
+    /* best-effort: the page is going away either way */
+  });
+  void Promise.race([stop, new Promise((resolve) => setTimeout(resolve, 2000))]);
+}
+window.addEventListener('pagehide', stopOnPageExit);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') stopOnPageExit();
 });
 
 els.rawSend.addEventListener('click', async () => {
@@ -405,6 +476,8 @@ els.rawSend.addEventListener('click', async () => {
     const cmdId = Number(els.rawCmdId.value);
     const payloadHex = els.rawPayload.value.trim().replace(/\s+/g, '');
     const frame = buildRawCommand(client.msgIds.next(), { cmdSet, cmdId, payloadHex });
+    // Nothing checks a raw frame before it leaves this page, so confirm it first.
+    if (!confirm('Send this raw frame to the gimbal?\n\n• It goes out exactly as typed.\n• Nothing checks it first.')) return;
     await client.sendRaw(frame);
     logAndTrackTx(frame, { label: 'Raw (manual probe)' });
   } catch (err) {

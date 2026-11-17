@@ -1,5 +1,5 @@
 /**
- * Shared calibration-anchor decal — a ring + crosshair (+ true-north tick,
+ * Shared calibration-anchor decal — a ring + crosshair (+ north tick,
  * when a compass bearing is known) marking where a project's calibration
  * anchor sits. Built once, used by both the live AR capture view
  * (src/ar/eighthwall.ts, src/ar/webxr.ts) and the World Editor
@@ -17,11 +17,30 @@ const anchorCrosshairMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, t
 const anchorNorthMaterial = new THREE.LineBasicMaterial({ color: 0xff6b6b, transparent: true, opacity: 0.95 })
 
 /**
+ * The segments of a flat ring in the XZ plane (Y = 0) centred on the origin, as x, y, z triples with two points to a
+ * segment: the ring the anchor decal draws, and the one the calibration flow draws at a stored point's distance
+ * (src/ar/calibration-guides.ts). A ring of any radius is this and a material, so the two do not each carry their own
+ * copy of the arithmetic.
+ */
+export function ringVertices(radiusM: number, segments: number = ANCHOR_RING_SEGMENTS): number[] {
+  const verts: number[] = []
+  for (let i = 0; i < segments; i++) {
+    const a0 = (i / segments) * Math.PI * 2
+    const a1 = ((i + 1) / segments) * Math.PI * 2
+    verts.push(
+      Math.cos(a0) * radiusM, 0, Math.sin(a0) * radiusM,
+      Math.cos(a1) * radiusM, 0, Math.sin(a1) * radiusM,
+    )
+  }
+  return verts
+}
+
+/**
  * Built flat in the XZ plane directly (Y=0), so no separate lie-flat
  * rotation is needed — it's already lying on the ground by construction.
  *
  * `northYawDeg` is the yaw, **in whatever frame this marker is added to**, at
- * which true north lies. The group is yawed by it so the tick points north:
+ * which north (the compass's) lies. The group is yawed by it so the tick points north:
  * Three.js's Y-axis rotation maps local +Z to (sin θ, 0, cos θ), matching the
  * `atan2(x, z)` convention used by `composeYUpTransform` and
  * `twoPointHeadingDeg`. `null` (or omitted) renders a dimmed "no compass fix"
@@ -34,23 +53,17 @@ const anchorNorthMaterial = new THREE.LineBasicMaterial({ color: 0xff6b6b, trans
  * happened to be facing. Passing a raw bearing to a marker living in session
  * space aims the tick at whatever the compass read rather than at north; with
  * the camera at its starting orientation that is exactly backwards. The
- * session-space caller converts with `-sessionFrameBearingDeg(...)`.
+ * session-space caller converts with `northYawInSessionDeg(...)` in ./geo.ts:
+ * the session frame's bearing itself, `+sessionFrameBearingDeg(...)`. North is
+ * bearing 0 and a session direction at yaw `y` has bearing `B_Z - y`, so north
+ * lies at session yaw `B_Z`.
  */
 export function buildAnchorMarker(northYawDeg: number | null = null): THREE.Group {
   const group = new THREE.Group()
   group.name = 'calibration anchor'
 
-  const ringVerts: number[] = []
-  for (let i = 0; i < ANCHOR_RING_SEGMENTS; i++) {
-    const a0 = (i / ANCHOR_RING_SEGMENTS) * Math.PI * 2
-    const a1 = ((i + 1) / ANCHOR_RING_SEGMENTS) * Math.PI * 2
-    ringVerts.push(
-      Math.cos(a0) * ANCHOR_RADIUS_M, 0, Math.sin(a0) * ANCHOR_RADIUS_M,
-      Math.cos(a1) * ANCHOR_RADIUS_M, 0, Math.sin(a1) * ANCHOR_RADIUS_M,
-    )
-  }
   const ringGeometry = new THREE.BufferGeometry()
-  ringGeometry.setAttribute('position', new THREE.Float32BufferAttribute(ringVerts, 3))
+  ringGeometry.setAttribute('position', new THREE.Float32BufferAttribute(ringVertices(ANCHOR_RADIUS_M), 3))
   const ring = new THREE.LineSegments(ringGeometry, (northYawDeg == null ? anchorDimRingMaterial : anchorRingMaterial).clone())
   ring.name = 'anchor ring'
   group.add(ring)

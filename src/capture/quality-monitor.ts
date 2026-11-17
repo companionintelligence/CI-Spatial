@@ -3,7 +3,12 @@
  *
  * Tracks four signals:
  *   coverage         — point‑cloud density vs. estimated room floor area
- *   driftRisk        — camera movement speed; exceeding 0.8 m/s risks SLAM drift
+ *   driftRisk        — camera movement speed; exceeding 0.8 m/s risks SLAM drift. This is
+ *                      a RISK, from speed alone: no accumulated error is measured, and the
+ *                      count of fast moves is `fastMotionEvents`. What the runtime itself
+ *                      says about tracking (a loss, a shift of its origin) comes from the
+ *                      provider, as `trackingLost` and as the `frameShifts` the caller
+ *                      passes to `summary()`
  *   lighting         — mean frame luminance, in two tiers: 'dim' (advisory) and
  *                      'too-dark' (SLAM has nothing to track at all)
  *   reflectiveSurface— high luminance variance suggests reflective material
@@ -17,6 +22,7 @@
  */
 
 import type { ARProvider } from '../ar/provider'
+import { trackingIsUsable } from '../ar/tracking-quality.ts'
 import type { PointCloud } from '../scene/pointcloud'
 import type { ScanQualitySummary } from '../world/types'
 
@@ -57,8 +63,25 @@ export interface QualitySnapshot {
   missingAreas: number
   /** Points added per second over the last tick interval */
   pointsPerSecond: number
-  /** True when SLAM tracking is lost */
+  /**
+   * True while tracking is not usable right now: no pose yet, or the runtime's own live
+   * status says it is degraded (LIMITED, INITIALIZING, NOT_AVAILABLE). This used to be
+   * `!provider.isTracking()`, which latches on the first pose and so was true only before it.
+   * It follows the status tick by tick, for the on-screen hint; the verdict that is saved
+   * with a scan waits for it to last (`trackingLostSustained`).
+   */
   trackingLost: boolean
+  /** How long tracking has not been usable, up to this tick, in milliseconds. 0 while it is. */
+  trackingLostForMs: number
+  /**
+   * Whether the loss is the kind a saved verdict should say: no pose has arrived yet, or
+   * tracking has been unusable for TRACKING_LOST_HOLD_MS. One LIMITED tick, which a quick
+   * turn or a blank wall causes, is a blink; the cloud is not recorded while it lasts and
+   * nothing already in it is changed.
+   */
+  trackingLostSustained: boolean
+  /** True when the loss is that no pose has ever arrived, rather than one that began after. */
+  trackingNotStarted: boolean
 }
 
 export interface FrameQuality {
@@ -135,7 +158,13 @@ export function motionHintText(input: {
 
 export interface QualityCounts {
   lowLightFrames: number
-  driftEvents: number
+  /**
+   * How many scanner ticks the camera moved at 2 m/s or more. A count of fast moves, which
+   * is a risk to tracking and not a measure of drift; named for what it counts. The summary
+   * still writes it under its old name too (`driftEvents`), because stored summaries and the
+   * server read that.
+   */
+  fastMotionEvents: number
   reflectiveWarnings: number
   totalFrames: number
 }
@@ -163,6 +192,18 @@ const LUMI_LOW   = 0.22   // mean luminance below this = too dark
 const LUMI_DARK  = 0.10
 const LUMI_REFL  = 0.17   // luminance stddev above this (with mean > 0.30) = reflective
 const LUMI_UNIFORM = 0.012 // solid canvas/camera placeholder, not a usable room view
+/**
+ * How long tracking has to be unusable, in milliseconds, before the verdict saved with a
+ * scan says it is lost. Autosave and export read the verdict at one instant, and a blink
+ * (one 750 ms tick of LIMITED) at that instant would stamp 'needs-rescan' on a scan that
+ * is fine, permanently, with no advice attached. A loss that has lasted this long is one
+ * the person is standing in, and the advice is to wait for it to end. The on-screen hint is
+ * not held: it clears itself on the next tick.
+ *
+ * Adopted, not measured (ADR 0005 rule 5): about four scanner ticks.
+ */
+export const TRACKING_LOST_HOLD_MS = 3_000
+
 const DRIFT_MED  = 0.8    // m/s — triggers 'medium' drift warning
 const DRIFT_HIGH = 2.0    // m/s — triggers 'high' drift warning
 const TARGET_PTS_M2 = 600 // SLAM points per m² for a "full" scan
@@ -186,17 +227,39 @@ export class ScanQualityMonitor {
   private _tooDarkSeen = 0
   private _lastReflective = false
   private _lastSnapshot: QualitySnapshot | null = null
+  /** When tracking last became unusable and has stayed so, on the tick clock. Null while it is usable. */
+  private _unusableSinceMs: number | null = null
 
   // Cumulative quality counters (for session summary)
   private _counts: QualityCounts = {
     lowLightFrames: 0,
-    driftEvents: 0,
+    fastMotionEvents: 0,
     reflectiveWarnings: 0,
     totalFrames: 0,
   }
 
   get counts(): Readonly<QualityCounts> {
     return this._counts
+  }
+
+  /**
+   * Forget everything measured for the scan in progress. Called when the live
+   * point cloud is emptied, so the next summary does not carry the previous
+   * scan's counts, and a pose from before the reset cannot read as motion.
+   */
+  reset(): void {
+    this._prevCount = 0
+    this._prevTickMs = 0
+    this._ptsPerSec = 0
+    this._poseWindow = []
+    this._coverageScore = 0
+    this._lastLighting = 'ok'
+    this._lastLowLight = false
+    this._tooDarkSeen = 0
+    this._lastReflective = false
+    this._lastSnapshot = null
+    this._unusableSinceMs = null
+    this._counts = { lowLightFrames: 0, fastMotionEvents: 0, reflectiveWarnings: 0, totalFrames: 0 }
   }
 
   /**
@@ -245,14 +308,24 @@ export class ScanQualityMonitor {
         const speed = Math.sqrt(dx*dx + dy*dy + dz*dz) / dt
         if (speed >= DRIFT_HIGH) {
           driftRisk = 'high'
-          this._counts.driftEvents++
+          this._counts.fastMotionEvents++
         } else if (speed >= DRIFT_MED) {
           driftRisk = 'medium'
         }
       }
     }
 
-    const snapshot = {
+    // The runtime's live status, not the first-pose latch: a session that has fallen to
+    // LIMITED or lost its pose is lost now, and says so on the HUD. A saved verdict waits
+    // for the loss to last (TRACKING_LOST_HOLD_MS), except before the first pose, which is
+    // not a blink.
+    const notStarted = !provider.isTracking()
+    const unusable = notStarted || !trackingIsUsable(provider.trackingStatus())
+    if (!unusable) this._unusableSinceMs = null
+    else if (this._unusableSinceMs === null) this._unusableSinceMs = now
+    const lostForMs = this._unusableSinceMs === null ? 0 : now - this._unusableSinceMs
+
+    const snapshot: QualitySnapshot = {
       coverageScore:    this._coverageScore,
       coverageText:     coverageLabel(this._coverageScore),
       lowLight:         this._lastLowLight,
@@ -261,7 +334,10 @@ export class ScanQualityMonitor {
       reflectiveSurface: this._lastReflective,
       missingAreas,
       pointsPerSecond:  this._ptsPerSec,
-      trackingLost:     !provider.isTracking(),
+      trackingLost:     unusable,
+      trackingLostForMs: lostForMs,
+      trackingLostSustained: notStarted || lostForMs >= TRACKING_LOST_HOLD_MS,
+      trackingNotStarted: notStarted,
     }
     this._lastSnapshot = snapshot
     return snapshot
@@ -277,32 +353,76 @@ export class ScanQualityMonitor {
     detectionCount: number
     poseCount: number
     keyframeCount?: number
+    /**
+     * Whether camera frames are being sent right now. The advice about a stream that has sent nothing is given only then: a
+     * scan with no frames is the ordinary case for a person who has not agreed to send them, and it is not a poor scan. Sending
+     * frames is the person's choice, and nothing here counts against a scan for not making it (docs/operations/PRIVACY.md).
+     * Absent counts as not sending.
+     */
+    keyframesOn?: boolean
+    /**
+     * How many times the runtime's frame was interrupted or reported moved since this scan
+     * began (`ScanFrameEpochLog.frameShifts`, src/ar/frame-epoch.ts). Any at all means
+     * the scan may hold geometry from more than one frame, so the verdict cannot be 'ready'.
+     * Absent counts as none: a caller that does not track them has nothing to report.
+     */
+    frameShifts?: number
+    /** Time spent with degraded tracking since this scan began, in milliseconds. */
+    limitedMs?: number
+    /**
+     * Whether a drift check of this scan (src/ar/closure.ts, `ScanFrameEpochLog.closureExceeded`) found a gap past its
+     * limits. The check measured where a re-tap landed against where the calibration put the spot: whether the frame
+     * moved depends on the person having tapped the same spot, so the line says "may", as the frame-shift one does.
+     * Like a frame shift it keeps the scan from 'ready'.
+     */
+    closureExceeded?: boolean
   }): ScanQualitySummary {
     const snap = this._lastSnapshot
     const coverageScore = snap?.coverageScore ?? this._coverageScore
     const missingAreas = snap?.missingAreas ?? 0
-    const trackingLost = snap?.trackingLost ?? false
+    const trackingLost = snap?.trackingLostSustained ?? false
+    const frameShifts = Number.isFinite(input.frameShifts) ? Math.max(0, Math.floor(input.frameShifts as number)) : 0
+    const limitedMs = Number.isFinite(input.limitedMs) ? Math.max(0, Math.round(input.limitedMs as number)) : undefined
     const recommendations: string[] = []
 
-    if (input.pointCount < 150) recommendations.push('Collect more tracking points before export.')
-    if (coverageScore < 0.55) recommendations.push('Sweep the room more slowly to improve surface coverage.')
-    if (missingAreas >= 4) recommendations.push('Rescan sparse floor-grid areas from another angle.')
+    // Each line says what to do. Wave 1 shortened these; the two that had lost
+    // their action (before export, review) are restored here.
+    //
+    // First, because it is the one that says the rest of the numbers may not be about one
+    // frame. What the code knows is that the runtime lost tracking and got it back, or
+    // reported or showed a shift of its origin; whether anything actually moved it does not
+    // know (see the top of src/ar/frame-epoch.ts), so the line says "may".
+    if (frameShifts > 0) recommendations.push('Tracking was interrupted: parts may be shifted')
+    if (input.closureExceeded === true) recommendations.push('A drift check found a gap: parts may be shifted')
+    // The verdict below is 'needs-rescan' for this, so it says what to do about it.
+    if (trackingLost) {
+      recommendations.push(snap?.trackingNotStarted
+        ? 'Tracking has not started: wait for it, then scan'
+        : 'Tracking is lost: hold still until it returns')
+    }
+    if (input.pointCount < 150) recommendations.push('Collect more tracking points before export')
+    if (coverageScore < 0.55) recommendations.push('Sweep the room more slowly')
+    if (missingAreas >= 4) recommendations.push('Rescan sparse floor areas from another angle')
     if (this._tooDarkSeen > 0) {
       // A different sentence, because it is a different problem: at this tier
       // the frames carried no trackable signal, so "revisit dark surfaces"
       // would understate it.
-      recommendations.push('The room was too dark to track — turn on a light and rescan.')
+      recommendations.push('Too dark to track: turn on a light and rescan')
     } else if (this._counts.lowLightFrames > 0) {
-      recommendations.push('Add light or revisit dark surfaces.')
+      recommendations.push('Add light, or check the dark surfaces')
     }
-    if (this._counts.driftEvents > 0) recommendations.push('Move slower to reduce SLAM drift.')
-    if (this._counts.reflectiveWarnings > 0) recommendations.push('Review reflective surfaces for false geometry.')
-    if (input.keyframeCount === 0) recommendations.push('Stream RGB keyframes for reconstruction and splat processing.')
+    if (this._counts.fastMotionEvents > 0) recommendations.push('Move slower to reduce drift')
+    if (this._counts.reflectiveWarnings > 0) recommendations.push('Review reflective surfaces for false geometry')
+    // Said only while frames are being sent and none has reached the server: that is something the code has seen and the
+    // person can act on. Not sending at all is not a defect of the scan, so it says nothing and does not move the verdict.
+    if (input.keyframesOn === true && input.keyframeCount === 0) recommendations.push('No camera frame has reached your server yet')
 
     let status: ScanQualitySummary['status'] = 'ready'
     if (input.pointCount < 75 || coverageScore < 0.25 || trackingLost) {
       status = 'needs-rescan'
     } else if (recommendations.length > 0 || coverageScore < 0.8) {
+      // Any frame shift pushed its line above, so it lands here: a scan is not 'ready' while
+      // parts of it may be in another frame.
       status = 'needs-review'
     }
 
@@ -314,7 +434,12 @@ export class ScanQualityMonitor {
       poseCount: input.poseCount,
       keyframeCount: input.keyframeCount ?? 0,
       lowLightFrames: this._counts.lowLightFrames,
-      driftEvents: this._counts.driftEvents,
+      // The same number twice: `fastMotionEvents` is its honest name, `driftEvents` the one
+      // stored summaries, the upload sidecar and the server already use.
+      driftEvents: this._counts.fastMotionEvents,
+      fastMotionEvents: this._counts.fastMotionEvents,
+      frameShifts,
+      ...(limitedMs !== undefined ? { limitedMs } : {}),
       reflectiveWarnings: this._counts.reflectiveWarnings,
       missingAreas,
       trackingLost,

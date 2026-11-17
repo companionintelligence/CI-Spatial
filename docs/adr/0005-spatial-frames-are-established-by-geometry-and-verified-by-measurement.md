@@ -106,11 +106,12 @@ feature that depends on it can land.
 
 **What this does not solve.** `separationM` proves two markers were the right distance apart,
 not that they were the *same* two features — two door frames 2 m apart elsewhere in the room
-pass. Genuine identity needs image targets or VPS relocalization (8th Wall's Wayspot Anchors
-ship unused inside `public/xr.js`/`public/xr-slam.js`; WebXR's native anchors API is likewise
-uncalled). Both are deferred in wave 09 and remain the obvious next tier above this one — which
-is why the two-point pattern this borrows from is described by its own vendors as the method to
-use *when image targets are unavailable*.
+pass. Genuine identity needs image targets, VPS relocalization or a runtime anchor. VPS is
+closed on the web path: 8th Wall lists it as not supported by the self-hosted binary
+(https://8thwall.org/docs/migration/self-hosted), so this app has no VPS to call. Image targets
+and WebXR's native anchors API (likewise uncalled) are deferred in wave 09 and remain the
+candidates for a tier above this one — which is why the two-point pattern this borrows from is
+described by its own vendors as the method to use *when image targets are unavailable*.
 
 **Applicability beyond calibration.** Rules 3 and 5 are not spatial-specific. Any field that
 reports a quality, confidence, or verification verdict — `ScanQualitySummary.status`,

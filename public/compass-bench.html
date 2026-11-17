@@ -20,6 +20,12 @@
   compass-vs-geometry choice rests on numbers instead of assertions. Hold the tablet still and
   in one orientation for a run; use <b>Mark</b> to snapshot a spot before moving to the next.
 </p>
+<p class="hint">
+  Bearings are from <b>magnetic</b> north, not true north: the phone's compass has no declination
+  applied. On Android the bearing is where the back camera points (the top edge when the camera points
+  steeply up or down), so hold the phone the way you hold it to look through the camera. The line under
+  the bearing says which it is.
+</p>
 
 <div class="block">
   <div><span class="k">bearing now</span></div>
@@ -50,7 +56,7 @@
   var sawAbsolute = false
   var sawIos = false
   var eventNames = {}
-  /** Last source that actually produced a true-north bearing, for a stable readout. */
+  /** Last source that actually produced a bearing, for a stable readout. */
   var usableSource = null
   var marks = []
 
@@ -107,36 +113,98 @@
       '\n--- last ~100 samples ---\n' + fmt(recent)
   }
 
+  // <compass-adapter>
+  // Which bearing the app takes from one orientation event. src/geo/compass-heading.ts is the app's own
+  // code; this page is not bundled and cannot import it, so this is a second copy of it, and
+  // tests/unit/node/compass_bench.test.ts runs both over the same events and fails if they differ.
+  // Every bearing here is from MAGNETIC north: Apple documents webkitCompassHeading that way, and an
+  // absolute alpha is measured in a frame whose Y axis points towards magnetic north (Android sensor docs).
+  // Both are copied from src/geo/compass-heading.ts, where they are named and explained.
+  // Adopted, not measured (ADR 0005 rule 5): 0.5 is a camera within 60 degrees of the horizon; the guard keeps a
+  // camera pitched exactly 60 degrees (the posture of a tap on the floor) on the camera's side whatever the last
+  // bit of the arithmetic does.
+  var MIN_AXIS_HORIZONTAL = 0.5
+  var ROUNDING_GUARD = 1e-9
+
+  function fold(deg) { return ((deg % 360) + 360) % 360 }
+
+  /**
+   * The bearing of the back camera for a phone at attitude alpha, beta, gamma degrees (the W3C angles, a
+   * rotation Rz(alpha) Rx(beta) Ry(gamma)): the horizontal part of the device -Z axis. When the camera points
+   * more than 60 degrees up or down, the top edge's bearing instead. null when an angle is not finite.
+   */
+  function headingFromAttitude(alpha, beta, gamma) {
+    if (!isFinite(alpha) || !isFinite(beta) || !isFinite(gamma)) return null
+    var a = alpha * Math.PI / 180, b = beta * Math.PI / 180, g = gamma * Math.PI / 180
+    var cA = Math.cos(a), sA = Math.sin(a), cB = Math.cos(b), sB = Math.sin(b), cG = Math.cos(g), sG = Math.sin(g)
+    var east = -cA * sG - sA * sB * cG
+    var north = -sA * sG + cA * sB * cG
+    if (Math.sqrt(east * east + north * north) >= MIN_AXIS_HORIZONTAL - ROUNDING_GUARD) {
+      return { bearing: fold(Math.atan2(east, north) * 180 / Math.PI), axis: 'camera' }
+    }
+    if (Math.abs(cB) >= MIN_AXIS_HORIZONTAL - ROUNDING_GUARD) {
+      return { bearing: fold(cB > 0 ? -alpha : 180 - alpha), axis: 'top' }
+    }
+    return null
+  }
+
+  /** What one event gives: { bearing, axis, how, source }. bearing is null when it gives none. */
+  function readEvent(e) {
+    var tilt = function (v) { return typeof v === 'number' ? v : 0 }
+    if (typeof e.webkitCompassHeading === 'number') {
+      var heading = e.webkitCompassHeading
+      if (!isFinite(heading) || heading < 0 || (typeof e.webkitCompassAccuracy === 'number' && e.webkitCompassAccuracy < 0)) {
+        return { bearing: null, axis: null, source: 'ios', how: 'webkitCompassHeading flagged invalid by iOS, ignored' }
+      }
+      return {
+        bearing: heading >= 360 ? heading % 360 : heading,
+        axis: 'unknown',
+        source: 'ios',
+        how: 'webkitCompassHeading (iOS, magnetic north, axis not known)'
+      }
+    }
+    if (e.absolute && typeof e.alpha === 'number') {
+      var attitude = headingFromAttitude(e.alpha, tilt(e.beta), tilt(e.gamma))
+      if (attitude === null) {
+        return { bearing: null, axis: null, source: 'android', how: 'alpha, beta or gamma is not a number, ignored' }
+      }
+      return {
+        bearing: attitude.bearing,
+        axis: attitude.axis,
+        source: 'android',
+        how: 'alpha, beta and gamma with absolute=true (Android, magnetic north, ' +
+          (attitude.axis === 'camera' ? 'where the camera points' : 'where the top edge points') + ')'
+      }
+    }
+    if (typeof e.alpha === 'number') {
+      return { bearing: null, axis: null, source: null, how: 'alpha but absolute=' + e.absolute + ' — not a compass, ignored' }
+    }
+    return { bearing: null, axis: null, source: null, how: '' }
+  }
+  // </compass-adapter>
+
   function onOrientation(e) {
     lastEvent = e
     eventNames[e.type] = (eventNames[e.type] || 0) + 1
-    var bearing = null
-    var how = ''
-    if (typeof e.webkitCompassHeading === 'number') {
-      bearing = e.webkitCompassHeading
-      how = 'webkitCompassHeading (iOS, true north)'
-      sawIos = true
-    } else if (e.absolute && typeof e.alpha === 'number') {
-      bearing = (360 - e.alpha) % 360
-      how = 'alpha with absolute=true (Android, true north)'
-      sawAbsolute = true
-    } else if (typeof e.alpha === 'number') {
-      how = 'alpha but absolute=' + e.absolute + ' — NOT true north, ignored'
-    }
+    var read = readEvent(e)
+    var bearing = read.bearing
+    var how = read.how
+    if (read.source === 'ios') sawIos = true
+    if (read.source === 'android') sawAbsolute = true
 
-    // Mirror geo-tracker.ts exactly: it only accepts the two forms above, so a
-    // relative-only device yields bearing null and the frame falls back to the
-    // AR session's arbitrary startup yaw.
+    // Mirror geo-tracker.ts: it takes the two forms above, so a relative-only
+    // device yields bearing null and the frame falls back to the AR session's
+    // arbitrary startup yaw.
     //
     // Report a STABLE summary, not the last event's classification. Android
     // emits both a relative `deviceorientation` stream and an absolute
     // `deviceorientationabsolute` stream at similar rates, so overwriting this
     // line per event made it flicker — and a reader who caught it mid-flicker
-    // would conclude "NOT true north, ignored" while absolute samples were in
+    // would conclude "not a compass, ignored" while absolute samples were in
     // fact being collected the whole time.
     if (bearing !== null) usableSource = how
     srcEl.textContent =
-      (usableSource ? 'using: ' + usableSource : 'no true-north source yet — ' + how) +
+      (usableSource ? 'using: ' + usableSource : 'no compass source yet — ' + how) +
       '   [' + Object.keys(eventNames).map(function (k) {
         return k + ':' + eventNames[k]
       }).join(' ') + ']'

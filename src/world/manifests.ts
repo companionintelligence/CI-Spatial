@@ -56,12 +56,13 @@ export interface PipelineManifestBase {
  * and `torch.version.hip` is what tells them apart, which only the worker can
  * see. 'mps' is here because Apple Silicon was otherwise unreachable: the
  * workers' resolution used to be a cuda-or-cpu binary, so a Mac silently ran
- * on CPU.
+ * on CPU. 'xpu' is here for the same reason on Intel GPUs, which torch reaches
+ * through `torch.xpu` and not through 'cuda'.
  *
  * This list mirrors `scripts/_torch_device.py`'s `CHOICES`, which is also what
  * `lingbot_map_worker.py` pins its argparse `choices` to. Keep them in step.
  */
-export const COMPUTE_DEVICES = ['auto', 'cpu', 'cuda', 'mps'] as const
+export const COMPUTE_DEVICES = ['auto', 'cpu', 'cuda', 'mps', 'xpu'] as const
 export type ComputeDevice = (typeof COMPUTE_DEVICES)[number]
 
 /** Narrow an operator-supplied string (an env var, typically) to the union. */

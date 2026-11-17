@@ -1,155 +1,155 @@
 /**
- * Server-side storage layout and validation for a Place's calibration
- * reference photos (wave 09 ticket 0007).
- *
- * This module exists separately from `main.ts` for the same reason
- * `session_id.ts` does: `main.ts` cannot be imported by a test without running
- * its unconditional top-level side effects (hostname resolution, VLM engine
- * load, `Deno.serve`). The path-safety and body-validation logic is the part
- * that must be provable, so it lives where a test can reach it.
- *
- * Layout mirrors `sessionDir()`'s: one directory per Place, named by an id
- * that has been shape-checked first. The filename is **derived from the
- * marker's role**, never taken from the request — so a Place holds exactly two
- * photos, re-calibration replaces them rather than appending (ticket 0007:
- * "two photos per Place, replaced on re-calibration"), and the `GET :file`
- * parameter reduces to an allowlist rather than a sanitiser.
+ * The file operations of a Place's photo storage (ADR 0009): storing a frame's photo, copying the photos a frame keeps from
+ * one Place's folder to another's. The layout, the roles, the paths and the validation are `./project_media_meta.ts`
+ * (pure, and re-exported here so this module is still the one place the server imports them from).
  */
+import {
+  FRAME_PHOTO_ROLES,
+  type FramePhotoMeta,
+  framePhotoDirPath,
+  framePhotoFileName,
+  projectMediaDirPath,
+} from './project_media_meta.ts'
+import type { CalibrationReferencePhoto, ProjectSpatialFrame } from '../src/world/types.ts'
 
-/**
- * Every Place id this server has ever minted is `proj-default` or
- * `proj-<epoch-ms>` (`main.ts`'s `POST /projects`, and `ProjectStore`'s own
- * `createProject`). The character class is deliberately wider than that and
- * still excludes `.` and `/` entirely, so no accepted id can escape its parent
- * directory — the same shape-then-use contract `sessionDirPath` follows.
- */
-export const PROJECT_ID_RE = /^proj-[A-Za-z0-9_-]{1,64}$/
+export * from './project_media_meta.ts'
 
-/** The two markers a two-point frame is built from. Order is +Z's definition. */
-export const REFERENCE_PHOTO_ROLES = ['landmark', 'headingMarker'] as const
-export type ReferencePhotoRole = typeof REFERENCE_PHOTO_ROLES[number]
-
-/** Camera pose at capture, so the vantage point stays recoverable later. */
-export interface ReferencePhotoPose {
-  position: { x: number; y: number; z: number }
-  rotation: { x: number; y: number; z: number; w: number }
-}
-
-export interface ReferencePhotoMeta {
-  role: ReferencePhotoRole
-  /** Normalised 0-1 screen coords of the tap within this frame. */
-  tapPoint: { x: number; y: number }
-  pose: ReferencePhotoPose
-  capturedAt: string
-  /** The typed description of the physical feature, when the user gave one. */
-  label?: string
-}
-
-export function isReferencePhotoRole(value: unknown): value is ReferencePhotoRole {
-  return typeof value === 'string' && (REFERENCE_PHOTO_ROLES as readonly string[]).includes(value)
-}
-
-/**
- * The directory `id` would name under `root`, or `null` when `id` is not a
- * well-formed Place id. Says nothing about whether it exists — the caller
- * creates or stats it, exactly as the keyframe routes do.
- */
-export function projectMediaDirPath(root: string, id: string | null | undefined): string | null {
-  if (typeof id !== 'string' || !PROJECT_ID_RE.test(id)) return null
-  return `${root}/${id}`
-}
-
-/** The one filename a given role is ever stored under. */
-export function referencePhotoFileName(role: ReferencePhotoRole): string {
-  return `ref-${role}.jpg`
-}
-
-/**
- * The role a served filename refers to, or `null`.
- *
- * An allowlist rather than a sanitiser: only the two names
- * {@link referencePhotoFileName} produces resolve at all, so `../../etc/passwd`
- * and every other traversal spelling fails by not being on the list rather
- * than by being caught.
- */
-export function roleForReferencePhotoFile(file: string | null | undefined): ReferencePhotoRole | null {
-  if (typeof file !== 'string') return null
-  return REFERENCE_PHOTO_ROLES.find((role) => referencePhotoFileName(role) === file) ?? null
-}
-
-/** The client-facing URL a stored photo is served from. */
-export function referencePhotoUrl(projectId: string, role: ReferencePhotoRole): string {
-  return `/projects/${encodeURIComponent(projectId)}/reference-photos/${referencePhotoFileName(role)}`
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value)
-}
-
-function isNormalised(value: unknown): value is number {
-  return isFiniteNumber(value) && value >= 0 && value <= 1
-}
-
-/**
- * Validates a `meta` body, mirroring the keyframe handler's shape: parse, then
- * reject anything that is not exactly what the route promised.
- *
- * `tapPoint` is range-checked, not merely typed. It is the whole reason the
- * photo is useful — a crosshair drawn from an out-of-range coordinate lands
- * off the image and points at nothing, which is worse than no crosshair,
- * because the user would still believe it.
- *
- * Returns the parsed meta, or a message naming what was wrong.
- */
-export function parseReferencePhotoMeta(raw: unknown): { meta: ReferencePhotoMeta } | { error: string } {
-  if (typeof raw !== 'string') return { error: 'Missing meta field' }
-
-  let parsed: Record<string, unknown>
+/** `<dir>/reference-photos.json`: the record of what was uploaded into a photo folder, beside the photos. */
+async function readPhotoIndex(dir: string): Promise<Record<string, unknown>> {
   try {
-    parsed = JSON.parse(raw) as Record<string, unknown>
+    return JSON.parse(await Deno.readTextFile(`${dir}/reference-photos.json`)) as Record<string, unknown>
   } catch {
-    return { error: 'meta is not valid JSON' }
+    return {}
   }
-  if (!parsed || typeof parsed !== 'object') return { error: 'meta is not an object' }
+}
 
-  const role = parsed['role']
-  if (!isReferencePhotoRole(role)) {
-    return { error: `role must be one of ${REFERENCE_PHOTO_ROLES.join(', ')}` }
+/**
+ * Stores one photo of a frame, in that frame's folder. The same role uploaded again (a retry whose reply was
+ * lost) replaces its own file, and nothing outside the folder: another frame's photo is never touched. The
+ * folder keeps the index of what it was sent, as the Place's folder does.
+ */
+export async function storeFramePhoto(dir: string, meta: FramePhotoMeta, bytes: Uint8Array): Promise<void> {
+  await Deno.mkdir(dir, { recursive: true })
+  const name = framePhotoFileName(meta.role)
+  await Deno.writeFile(`${dir}/${name}`, bytes)
+  await Deno.writeTextFile(
+    `${dir}/reference-photos.json`,
+    JSON.stringify({ ...(await readPhotoIndex(dir)), [meta.role]: { ...meta, file: name, bytes: bytes.byteLength, receivedAt: Date.now() } }, null, 2),
+  )
+}
+
+/**
+ * The photo records of a frame, each with the slot it sits in, in the order a frame holds them: the landmark's
+ * and the heading marker's, then each check point's. A record is changed in place by whoever holds the frame.
+ */
+function photoRecordsOf(frame: ProjectSpatialFrame): CalibrationReferencePhoto[] {
+  if (frame.method !== 'two-point-ground') return []
+  const candidates: unknown[] = []
+  if (frame.referencePhotos) candidates.push(frame.referencePhotos.landmark, frame.referencePhotos.headingMarker)
+  for (const point of Array.isArray(frame.checkPoints) ? frame.checkPoints : []) candidates.push(point?.photo)
+  // A frame an older build stored may hold less than the type says: only a record with a path, or with null, is one.
+  return candidates.filter((candidate): candidate is CalibrationReferencePhoto =>
+    typeof candidate === 'object' && candidate !== null
+    && (typeof (candidate as { url?: unknown }).url === 'string' || (candidate as { url?: unknown }).url === null))
+}
+
+/** `decodeURIComponent`, or null for text that is not a valid encoding. */
+function safeDecode(text: string): string | null {
+  try {
+    return decodeURIComponent(text)
+  } catch {
+    return null
   }
+}
 
-  const tapPoint = parsed['tapPoint'] as Record<string, unknown> | undefined
-  if (!tapPoint || !isNormalised(tapPoint['x']) || !isNormalised(tapPoint['y'])) {
-    return { error: 'tapPoint must be { x, y } with both in 0..1' }
+/** Whether two files hold the same bytes. Throws NotFound when either is missing. */
+async function sameBytes(a: string, b: string): Promise<boolean> {
+  const [first, second] = await Promise.all([Deno.readFile(a), Deno.readFile(b)])
+  return first.length === second.length && first.every((byte, i) => byte === second[i])
+}
+
+const SCOPED_PHOTO_URL = /^\/projects\/([^/]+)\/frames\/([A-Za-z0-9_-]{1,64})\/(ref-[A-Za-z0-9]+\.jpg)$/
+const LEGACY_PHOTO_URL = /^\/projects\/([^/]+)\/reference-photos\/(ref-[A-Za-z0-9]+\.jpg)$/
+
+/**
+ * A copy of `frame` that belongs to the Place `toProjectId`, for a Place that takes over the frame of another
+ * (a merge, or a scan moved into a Place that has none): each photo the frame has on the server is copied into the
+ * Place's own folder, in the same shape of path, and the record names the copy. A photo that is not on the server
+ * (its upload never landed), that names another Place than `fromProjectId`, or whose copy fails, is left with a
+ * null `url`: the record is still the frame's own (the pose, the tap point, the device's copy), and it says it
+ * has no picture on the server instead of naming one that is not there. A file already at the copy's path is
+ * kept, never written over. `frame` is not changed.
+ */
+export async function copyFramePhotos(
+  root: string,
+  fromProjectId: string,
+  toProjectId: string,
+  frame: ProjectSpatialFrame,
+): Promise<ProjectSpatialFrame> {
+  const copy = structuredClone(frame)
+  const fromDir = projectMediaDirPath(root, fromProjectId)
+  const toDir = projectMediaDirPath(root, toProjectId)
+  for (const record of photoRecordsOf(copy)) {
+    const url = record.url
+    if (url === null) continue
+    record.url = null
+    const scoped = SCOPED_PHOTO_URL.exec(url)
+    const legacy = scoped ? null : LEGACY_PHOTO_URL.exec(url)
+    const owner = scoped?.[1] ?? legacy?.[1]
+    if (!fromDir || !toDir || owner === undefined || safeDecode(owner) !== fromProjectId) continue
+    const frameId = scoped?.[2]
+    const file = (scoped?.[3] ?? legacy?.[2])!
+    const folder = frameId ? `frames/${frameId}/` : ''
+    try {
+      await Deno.mkdir(`${toDir}/${folder}`, { recursive: true })
+      const source = `${fromDir}/${folder}${file}`
+      const target = `${toDir}/${folder}${file}`
+      try {
+        // A file that is already there is the copy of an earlier try, or it is another picture: only the same
+        // bytes may be named by this record.
+        if (!(await sameBytes(source, target))) continue
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error
+        await Deno.copyFile(source, target)
+      }
+      record.url = frameId
+        ? `/projects/${encodeURIComponent(toProjectId)}/frames/${frameId}/${file}`
+        : `/projects/${encodeURIComponent(toProjectId)}/reference-photos/${file}`
+    } catch {
+      record.url = null
+    }
   }
+  return copy
+}
 
-  const pose = parsed['pose'] as Record<string, unknown> | undefined
-  const position = pose?.['position'] as Record<string, unknown> | undefined
-  const rotation = pose?.['rotation'] as Record<string, unknown> | undefined
-  if (
-    !position || !isFiniteNumber(position['x']) || !isFiniteNumber(position['y']) || !isFiniteNumber(position['z'])
-    || !rotation || !isFiniteNumber(rotation['x']) || !isFiniteNumber(rotation['y'])
-    || !isFiniteNumber(rotation['z']) || !isFiniteNumber(rotation['w'])
-  ) {
-    return { error: 'pose must be { position: {x,y,z}, rotation: {x,y,z,w} }' }
+/**
+ * Copies the photos a Place's folder holds for one of its frames into another Place's folder, for a Place that has
+ * taken in scans of that frame and describes it in its history (a merge, a scan moved in with the flag), so the Place
+ * the scans are in now can serve the photos of the frame they were measured against. Only the photos a frame can
+ * have (`FRAME_PHOTO_ROLES`) are copied, each under its own name; a photo that is not there is not made up, and one
+ * already at the other end is kept, never written over by another picture. Answers how many files were copied.
+ * Nothing in the source folder is changed or removed.
+ */
+export async function copyFrameFolder(
+  root: string,
+  fromProjectId: string,
+  toProjectId: string,
+  frameId: string,
+): Promise<number> {
+  const from = framePhotoDirPath(root, fromProjectId, frameId)
+  const to = framePhotoDirPath(root, toProjectId, frameId)
+  if (from === null || to === null || from === to) return 0
+  const exists = (path: string) => Deno.stat(path).then(() => true, () => false)
+  let copied = 0
+  for (const role of FRAME_PHOTO_ROLES) {
+    const name = framePhotoFileName(role)
+    // A photo that is not there is not copied, and one already at the other end is that Place's own: it stays.
+    if (!(await exists(`${from}/${name}`)) || (await exists(`${to}/${name}`))) continue
+    try {
+      await Deno.mkdir(to, { recursive: true })
+      await Deno.copyFile(`${from}/${name}`, `${to}/${name}`)
+      copied += 1
+    } catch { /* this one could not be copied: the others still are */ }
   }
-
-  const capturedAt = typeof parsed['capturedAt'] === 'string' && parsed['capturedAt']
-    ? parsed['capturedAt'] as string
-    : new Date().toISOString()
-
-  const rawLabel = parsed['label']
-  const label = typeof rawLabel === 'string' && rawLabel.trim() ? rawLabel.trim().slice(0, 120) : undefined
-
-  return {
-    meta: {
-      role,
-      tapPoint: { x: tapPoint['x'], y: tapPoint['y'] },
-      pose: {
-        position: { x: position['x'], y: position['y'], z: position['z'] },
-        rotation: { x: rotation['x'], y: rotation['y'], z: rotation['z'], w: rotation['w'] },
-      },
-      capturedAt,
-      ...(label ? { label } : {}),
-    },
-  }
+  return copied
 }

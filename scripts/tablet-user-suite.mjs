@@ -313,11 +313,11 @@ async function main() {
       ['video upload', /Upload a video/i],
       ['live AR start', /Start AR|Scan a room with live AR/i],
       ['capture', /Capture/i],
-      ['menu', /Menu/i],
+      ['details', /Details/i],
       ['viewer link', /Open 3D Viewer/i],
-      ['stream keyframes', /Stream keyframes/i],
+      ['stream keyframes', /Stream:? keyframes/i],
       ['auto capture', /Auto-capture/i],
-      ['history', /Session history|Scan Memory/i],
+      ['history', /History:? session history|Scan Memory/i],
       ['PWA install affordance', /Install/i],
     ]) {
       expectMatch(state, pattern, label)
@@ -329,7 +329,7 @@ async function main() {
     await tapResource('start-ar-btn', 'Start AR')
     const state = await waitForScreen(/Capture|SCANNING|\d+ pts|tracking/i, 30_000)
     expectMatch(state, /Capture/i, 'capture button')
-    expectMatch(state, /Menu/i, 'scan menu')
+    expectMatch(state, /Details/i, 'scan details')
     return 'mock XR8 scan started'
   })
 
@@ -343,7 +343,7 @@ async function main() {
   })
 
   await step('Open review/export panel', async () => {
-    await tapResource('finish-scan-btn', 'Menu')
+    await tapResource('finish-scan-btn', 'Details')
     const state = await waitForScreen(/Export GLB|Export Summary|Generate Floor Plan|Object Report|Start Live Stream/i, 15_000)
     for (const [label, pattern] of [
       ['GLB export', /Export GLB/i],
@@ -358,7 +358,7 @@ async function main() {
   })
 
   await step('Open session history', async () => {
-    await tapResource('history-btn', 'Session history')
+    await tapResource('history-btn', 'History: session history')
     const state = await waitForScreen(/Scan Memory/i, 10_000)
     expectMatch(state, /Scan Memory/i, 'history drawer')
     return 'history drawer visible'

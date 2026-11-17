@@ -101,7 +101,50 @@ def _float_or_none(v: Any) -> float | None:
         return None
 
 
+# The keys a degenerate verdict owns. server/lingbot-map/lingbot_map.ts writes them
+# after it judges a cloud, and the Deno side reads them back to refuse or skip that
+# cloud (splat_train_dataset.ts, splat_detect.ts, server/wp-a-cloud-verdict.ts).
+VERDICT_KEYS = ("quality", "remediation")
+
+
+def _degenerate_verdict(session_dir: Path) -> dict[str, Any]:
+    """The verdict an earlier run left, when that run judged its cloud degenerate.
+
+    Empty when there is none, or when the manifest cannot be read.
+    """
+    try:
+        prior = json.loads((session_dir / "lingbot-map.manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(prior, dict):
+        return {}
+    quality = prior.get("quality")
+    if not isinstance(quality, dict) or quality.get("degenerate") is not True:
+        return {}
+    return {key: prior[key] for key in VERDICT_KEYS if key in prior}
+
+
 def _write_manifest(session_dir: Path, payload: dict[str, Any]) -> None:
+    """Write the manifest. A skip or an error keeps an earlier degenerate verdict.
+
+    The Deno side refuses or skips a cloud on the strength of its verdict. An ok run
+    drops the verdict, because its own cloud replaces the earlier one. A skip or an
+    error keeps it, because a run that stops before writing leaves the earlier cloud
+    on disk.
+
+    That holds only until the ok path writes. It writes the poses and the point cloud
+    before it writes the ok manifest, so an error after those writes, or a partial
+    write, replaces the earlier cloud too, and the manifest still keeps the earlier
+    verdict. The skip or error keeps its own status and reason. Only when a degenerate
+    verdict exists is the payload's remediation dropped, and the verdict's keys merged
+    in: quality, and remediation when the verdict has one. With no verdict, the payload
+    keeps its remediation, which for a skip is the install hint.
+    """
+    if payload.get("status") != "ok":
+        verdict = _degenerate_verdict(session_dir)
+        if verdict:
+            payload = {key: value for key, value in payload.items() if key != "remediation"}
+            payload.update(verdict)
     (session_dir / "lingbot-map.manifest.json").write_text(
         json.dumps(payload, indent=2), encoding="utf-8"
     )
@@ -405,11 +448,16 @@ def run(args: argparse.Namespace) -> int:
 
         print(f"[lingbot-map] streaming inference over {len(paths)} frames", file=sys.stderr)
         with torch.no_grad():
-            if dev.fp16_ok:
+            if dev.use_autocast_fp16():
                 # halves activation memory; norm layers stay fp32 automatically
                 with torch.autocast(device_type=device.split(":")[0], dtype=torch.float16):
                     output = model(images)  # type: ignore[operator]
             else:
+                if dev.fp16_ok:
+                    print(
+                        f"[lingbot-map] fp16 autocast is wired for cuda and xpu only; running fp32 on {device}",
+                        file=sys.stderr,
+                    )
                 output = model(images)  # type: ignore[operator]
 
         # ── Extract poses + point cloud from the model output ──────────────
@@ -577,6 +625,9 @@ def _norm_rgb(v: Any) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Unsupported ops fall back to CPU on Apple MPS instead of aborting the run.
+    # Set before torch is imported; a no-op on CUDA, ROCm, XPU and CPU.
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     p = argparse.ArgumentParser(description="LingBot-Map reconstruction worker for Companion Scan sessions")
     p.add_argument("--session-dir", required=True, help="Path to scans/sessions/<id>/")
     p.add_argument(
@@ -586,8 +637,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     # "mps" is new here: auto already picks it on Apple Silicon, but an operator
     # debugging a Mac needs to be able to ask for it (and to be told when it is
-    # unavailable) rather than have argparse reject the word.
-    p.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
+    # unavailable) rather than have argparse reject the word. "xpu" is the same
+    # for Intel GPUs under torch.xpu.
+    p.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps", "xpu"])
     p.add_argument("--keyframe-interval", type=int, default=1)
     p.add_argument("--max-frames", type=int, default=512)
     p.add_argument("--image-size", type=int, default=DEFAULT_IMAGE_SIZE)

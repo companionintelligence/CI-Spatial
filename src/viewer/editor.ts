@@ -182,15 +182,40 @@ export class SceneEditor {
   /** Perform a raycast pick at normalised device coordinates.
    *  @param ndx  -1…1 horizontal
    *  @param ndy  -1…1 vertical (top = +1)
+   *  @param excluded  a subtree the pick ignores, the transform gizmo's helper
    */
-  pick(ndx: number, ndy: number, camera: THREE.Camera): THREE.Object3D | null {
+  pick(ndx: number, ndy: number, camera: THREE.Camera, excluded: THREE.Object3D | null = null): THREE.Object3D | null {
     if (!this._scene) return null
     this._raycaster.setFromCamera(new THREE.Vector2(ndx, ndy), camera)
     const hits = this._raycaster.intersectObjects(this._scene.children, true)
       .filter(h => h.object instanceof THREE.Mesh || h.object instanceof THREE.Points)
-    if (hits.length === 0) { this._clearSelection(); return null }
 
-    let obj: THREE.Object3D | null = hits[0].object
+    // Hits arrive nearest first. A point cloud or the gizmo in front must not hide the object
+    // behind it, so an unlabelled point is passed through, and so is anything under `excluded`
+    // (the gizmo helper). The first hit that resolves to an edit target wins. Any other
+    // unlabelled mesh is solid and still stops the pick, as it always has, so a wall never
+    // selects an object behind it. The selection clears when nothing resolves. The raycaster
+    // ignores `visible`, so a hidden object (or anything under a hidden node) is skipped here:
+    // it is not drawn, so it neither resolves nor blocks what is behind it.
+    let picked: THREE.Object3D | null = null
+    for (const hit of hits) {
+      if (!objectRenderable(hit.object)) continue
+      if (excluded && isWithin(hit.object, excluded)) continue
+      picked = this._editTargetFor(hit.object)
+      if (picked) break
+      if (!(hit.object instanceof THREE.Points)) break
+    }
+    if (!picked) { this._clearSelection(); return null }
+    this._selectObject(picked)
+    return picked
+  }
+
+  /**
+   * The node an edit is written against for one raycast hit. Null when the walk up from
+   * the hit reaches the scene without finding a labelled node or an LOD.
+   */
+  private _editTargetFor(hit: THREE.Object3D): THREE.Object3D | null {
+    let obj: THREE.Object3D | null = hit
     // Walk up the parent chain to the node an edit should be written against: the
     // THREE.LOD for a semantic object, or the nearest labelled node otherwise.
     //
@@ -208,7 +233,7 @@ export class SceneEditor {
     // This comment used to cite splat-detect boxes as that case. It is not one:
     // buildDetectBoxes() (src/viewer/splat-detect-layer.ts) makes each box a
     // THREE.LineSegments, and the filter above admits only Mesh and Points, so a
-    // detect box is never `hits[0].object` and never reachable by the walk. The
+    // detect box is never a raycast hit and never reachable by the walk. The
     // splat-detect overlay is display-only in the editor today — it cannot be
     // picked, inspected, or moved by the gizmo.
     while (obj && obj !== this._scene) {
@@ -222,9 +247,7 @@ export class SceneEditor {
       obj = obj.parent
     }
 
-    if (!obj || obj === this._scene) { this._clearSelection(); return null }
-    this._selectObject(obj)
-    return obj
+    return obj && obj !== this._scene ? obj : null
   }
 
   /**
@@ -247,17 +270,18 @@ export class SceneEditor {
   /** Assign a semantic tag to an object */
   tagObject(obj: THREE.Object3D, tag: SemanticTag, opts: Partial<Omit<TagInfo, 'tag'>> = {}): void {
     const existing = this._tags.get(obj.uuid)
+    const ud = obj.userData as Record<string, unknown>
     const info: TagInfo = {
       tag,
       name: opts.name ?? existing?.name ?? obj.name,
-      notes: opts.notes ?? existing?.notes ?? '',
+      // A note saved before the object had a tag lives on userData alone (see setNotes).
+      notes: opts.notes ?? existing?.notes ?? (ud['notes'] as string | undefined) ?? '',
       roomName: opts.roomName ?? existing?.roomName ?? '',
       floorName: opts.floorName ?? existing?.floorName ?? '',
       manualOverride: true,
     }
     this._tags.set(obj.uuid, info)
     // Update userData so it gets persisted in the next GLB export
-    const ud = obj.userData as Record<string, unknown>
     ud['tag'] = tag
     ud['label'] = info.name
     ud['notes'] = info.notes
@@ -269,6 +293,16 @@ export class SceneEditor {
     if (this._mode === 'semantic' && obj instanceof THREE.Mesh) {
       this._applySemanticMaterial(obj)
     }
+  }
+
+  /**
+   * Save a note. An object without a tag keeps no tag entry, so a note alone never
+   * writes a category or marks a manual override.
+   */
+  setNotes(obj: THREE.Object3D, notes: string): void {
+    const existing = this._tags.get(obj.uuid)
+    if (existing) this.tagObject(obj, existing.tag, { ...existing, notes })
+    else (obj.userData as Record<string, unknown>)['notes'] = notes
   }
 
   getTagInfo(obj: THREE.Object3D): TagInfo | undefined {
@@ -393,4 +427,225 @@ export class SceneEditor {
     this._saveOriginalMaterial(obj)
     obj.material = mat
   }
+}
+
+/** What a save run reports to the Edit panel. */
+export type EditSaveState = 'saving' | 'saved' | 'failed'
+
+/**
+ * True when the server refused an edit for good: a 4xx other than 408 or 429. Sending the
+ * same edit again cannot change that. The error carries the HTTP status (httpError() in
+ * viewer.ts sets it).
+ */
+export function isPermanentEditError(error: unknown): boolean {
+  const status = (error as { status?: unknown } | null)?.status
+  return typeof status === 'number' && status >= 400 && status < 500 && status !== 408 && status !== 429
+}
+
+/**
+ * True when the world link refused an edit: a 401 or 403 from the patches route. Those come from
+ * the link's own checks (no editor token, an invalid or expired world token, or a role below
+ * editor), not from a Companion sign-in. The retry treatment is still isPermanentEditError's.
+ * This only picks the copy the Edit panel and Save Tags show.
+ */
+export function isLinkRefusalError(error: unknown): boolean {
+  const status = (error as { status?: unknown } | null)?.status
+  return status === 401 || status === 403
+}
+
+interface PendingEdit {
+  readonly edit: () => Promise<void>
+  /** The server refused this edit for good. Later saves leave it alone until its own key is saved again. */
+  refused: boolean
+  /** The world link refused this edit (401, 403). Only meaningful once refused is true. */
+  linkRefused: boolean
+}
+
+/** A save's own edit and the key it was queued under. */
+interface OwnEdit {
+  readonly key: string
+  readonly entry: PendingEdit
+}
+
+/**
+ * What one run answers: the save's result, or 'superseded' when a newer save for the same key
+ * replaced the edit before this run reached it. The newer save then decides the answer.
+ */
+type RunResult = boolean | 'superseded'
+
+/**
+ * Patch saves for in-memory edits. An edit that fails stays pending, and every later
+ * save tries the pending edits again, oldest first, so it reaches the server once a
+ * save succeeds. An edit the server refuses for good stays pending too, so it still
+ * counts as unsaved, but later saves do not post it again. Runs are serialized, so two
+ * saves never post at the same time. A newer save for the same key replaces the older
+ * closure, which already reads the latest in-memory state.
+ */
+export class PendingSaves {
+  private readonly _notify: (state: EditSaveState) => void
+  private readonly _pending = new Map<string, PendingEdit>()
+  /** The run of the newest save for each key. A save that a newer one replaced answers with that run. */
+  private readonly _newestRun = new Map<string, Promise<RunResult>>()
+  private _chain: Promise<void> = Promise.resolve()
+  private _queued = 0
+  private _epoch = 0
+
+  constructor(notify: (state: EditSaveState) => void) {
+    this._notify = notify
+  }
+
+  /** Edits still waiting for the server, including any the server refused. */
+  get pendingCount(): number {
+    return this._pending.size
+  }
+
+  /** Edits the server refused for good. Save Tags does not send these again. */
+  get refusedCount(): number {
+    let count = 0
+    for (const entry of this._pending.values()) {
+      if (entry.refused) count++
+    }
+    return count
+  }
+
+  /** Refused edits the world link turned down (401, 403). Only these are named as a link refusal. */
+  get linkRefusedCount(): number {
+    let count = 0
+    for (const entry of this._pending.values()) {
+      if (entry.refused && entry.linkRefused) count++
+    }
+    return count
+  }
+
+  /** True while a save is queued or posting, so an edit may still be on its way to the server. */
+  get inFlight(): boolean {
+    return this._queued > 0
+  }
+
+  /**
+   * Queue a save. `key` names the edit and `edit` posts its current state. Pass no `edit`
+   * to retry only what is pending (Save Tags). Resolves true when the edit this save
+   * queued reached the server, in this run or an earlier one. It resolves false when that
+   * edit failed, was refused, or was dropped by a Place switch. A newer save for the same
+   * key that replaces it first decides the answer. With no edit, it resolves true when
+   * every edit the run attempted reached the server and nothing is still pending.
+   */
+  save(key: string | null, edit?: () => Promise<void>): Promise<boolean> {
+    // Taken now, not when the run starts: a Place switch between the two makes this run stale.
+    const epoch = this._epoch
+    const own: OwnEdit | null = key !== null && edit ? { key, entry: { edit, refused: false, linkRefused: false } } : null
+    if (own) this._pending.set(own.key, own.entry)
+    this._queued++
+    const run = this._chain.then(() => this._run(epoch, own))
+    this._chain = run.then(() => undefined, () => undefined)
+    if (own) this._newestRun.set(own.key, run)
+    return this._answer(run, own?.key ?? null)
+  }
+
+  /** Forget every pending edit. Called when the scene they were made in is replaced. */
+  clear(): void {
+    this._epoch++
+    this._pending.clear()
+    this._newestRun.clear()
+  }
+
+  /** A save that a newer save replaced answers with the newer save's run: its edit is the one that posts. */
+  private _answer(run: Promise<RunResult>, key: string | null): Promise<boolean> {
+    return run.then((result): boolean | Promise<boolean> => {
+      if (result !== 'superseded') return result
+      const newest = key === null ? undefined : this._newestRun.get(key)
+      return newest ? this._answer(newest, key) : false
+    })
+  }
+
+  private async _run(epoch: number, own: OwnEdit | null): Promise<RunResult> {
+    // A run queued before a Place switch belongs to the scene that was left. It posts
+    // nothing and reports nothing.
+    const current = (): boolean => epoch === this._epoch
+    // Set when this run reaches the save's own edit: true if the server accepted it.
+    let ownPosted: boolean | undefined
+    let anyFailed = false
+    if (current()) {
+      this._notify('saving')
+      for (const [key, entry] of [...this._pending]) {
+        // Skip an edit that was cleared or replaced since this run began. A newer save for
+        // it is queued and runs on its own.
+        if (this._pending.get(key) !== entry) continue
+        // A refused edit is not posted again. It waits for a save of its own key, which replaces it
+        // with a fresh entry. A save whose own edit is already refused answers false.
+        if (entry.refused) {
+          if (entry === own?.entry) ownPosted = false
+          continue
+        }
+        try {
+          await entry.edit()
+          if (this._pending.get(key) === entry) this._pending.delete(key)
+          if (entry === own?.entry) ownPosted = true
+        } catch (error) {
+          console.error('[viewer] edit not saved:', error)
+          anyFailed = true
+          if (entry === own?.entry) ownPosted = false
+          if (isPermanentEditError(error)) {
+            entry.refused = true
+            entry.linkRefused = isLinkRefusalError(error)
+          }
+        }
+      }
+    }
+    this._queued--
+    // Report once the queue drains, and only if no Place switch overtook this run. The panel
+    // says "Not saved" while any edit is still pending, including one the server refused.
+    if (current() && this._queued === 0) this._notify(this._pending.size > 0 ? 'failed' : 'saved')
+    if (own === null) return current() && !anyFailed && this._pending.size === 0
+    if (ownPosted !== undefined) return ownPosted
+    // This run did not reach the save's edit. A Place switch dropped it. Otherwise an earlier
+    // run already posted it (it has left the queue), or a newer save for the key replaced it.
+    if (!current()) return false
+    return this._pending.has(own.key) ? 'superseded' : true
+  }
+}
+
+/** Pixels a press may travel before its release counts as a drag. */
+export const DRAG_TOLERANCE_PX = 4
+
+/**
+ * Pixels a touch or pen press may travel before its release counts as a drag. A finger
+ * lands wider and drifts more than a mouse pointer, so a tap with a little movement must
+ * still count as a click.
+ */
+export const TOUCH_DRAG_TOLERANCE_PX = 12
+
+/** The drag tolerance for a press made with this pointer type (PointerEvent.pointerType). */
+export function dragToleranceFor(pointerType: string): number {
+  return pointerType === 'touch' || pointerType === 'pen' ? TOUCH_DRAG_TOLERANCE_PX : DRAG_TOLERANCE_PX
+}
+
+/**
+ * True when the pointer moved farther than the tolerance between press and release, so
+ * the gesture was a drag (an orbit, or a gizmo move). The click that follows a drag must
+ * not pick, measure or clear the selection. With no recorded press it counts as a click.
+ */
+export function isDragRelease(
+  press: { x: number; y: number } | null,
+  release: { x: number; y: number },
+  tolerancePx: number = DRAG_TOLERANCE_PX,
+): boolean {
+  if (!press) return false
+  return Math.hypot(release.x - press.x, release.y - press.y) > tolerancePx
+}
+
+/** True when `obj` and every ancestor of it is visible. A hidden object, or one under a hidden node, is not drawn. */
+export function objectRenderable(obj: THREE.Object3D): boolean {
+  for (let node: THREE.Object3D | null = obj; node; node = node.parent) {
+    if (!node.visible) return false
+  }
+  return true
+}
+
+/** True when `obj` is `root` or sits beneath it. */
+function isWithin(obj: THREE.Object3D, root: THREE.Object3D): boolean {
+  for (let node: THREE.Object3D | null = obj; node; node = node.parent) {
+    if (node === root) return true
+  }
+  return false
 }

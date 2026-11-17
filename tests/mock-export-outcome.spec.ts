@@ -98,7 +98,7 @@ test.describe('export outcome reporting', () => {
 
     const label = await exportAndReadLabel(page)
     expect(label).toContain('will sync')
-    await expect(page.locator('#status-text')).toContainText('will sync when back online')
+    await expect(page.locator('#status-text')).toContainText('Syncs when you are back online')
     await expect(page.locator('#status-text')).not.toContainText('failed')
   })
 

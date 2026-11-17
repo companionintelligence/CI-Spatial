@@ -263,6 +263,37 @@ string with `role: 'landmark' | 'headingMarker'`, `tapPoint`, `pose`), mirroring
       is the calibration panel
 - [x] `npx tsc --noEmit`, `deno task check`, `deno task test` pass
 
+> **Changed after this ticket shipped (WP-03, the Place frame record).** Two of the lines above
+> no longer describe what the code does. The frame is not synced through `PUT /projects/:id`:
+> it goes to `PUT /projects/:id/spatial-frame` with the revision the phone last read, and the
+> photos are uploaded only after the server holds it, so a calibration that lost to another
+> device cannot replace the winner's photos. The URL a frame records for a photo is the path it
+> will be served from (`/projects/:id/reference-photos/ref-<role>.jpg`) from the moment the frame
+> is saved, not `null` while the upload is pending: it answers 404 until the photo has landed,
+> and `null` remains only on frames saved before this change. See `src/project/frame-sync.ts`.
+
+> **Changed after this ticket shipped (WP-07, the return-visit aids).** Three sentences below no longer describe what the
+> code does. A photo's crosshair is no longer always the tap that placed the marker, because the photo is taken later
+> and the phone has usually moved: while it has not moved since the tap (2 cm and 2 degrees, the resolver's rule) the
+> tap is still the crosshair, and once it has the crosshair is the marker's own position projected through the pose the
+> photo was taken at. A photo whose picture does not show the marker is not kept as one that does. A landmark that is
+> moved after Confirm is photographed again, where it used to lose its photo, take no other, and be saved with no
+> photos at all (a frame keeps both or neither). And "a marker re-placed after its photo was taken drops that photo"
+> is the first half of it: the landmark's replacement is taken at once, and the heading marker's is taken at its own tap on a visit that writes
+> the frame (WP-04b), and at Commit, for a marker that has none, on a visit to a stored pair that keeps its points. A commit that cannot get a photo of each point says which and waits for one more press, naming the button
+> the person pressed. Review and the mismatch screen also show both stored photos, when the screen has room for them above
+> the card: they shrink to fit it and are left out under a size worth looking at. See `src/ar/reference-photo-flow.ts` and
+> `src/ar/return-visit-aids.ts`.
+>
+> The same package gave a return visit the rest of what finds the same two spots again: the card asks for Point A and Point
+> B again by name, with the distance Point B was from A (`src/ar/return-visit-copy.ts`); a white ring on the floor round
+> Point A marks that distance, and one ring for each check point a frame carries (`src/ar/calibration-guides.ts`); a chip in
+> review says whether the two markers are that far apart, by the commit's own rule, and that direction is not checked; the
+> floor grid stays for the scan after a commit, fainter (owner R10); and the mismatch screen has a "Wrong Place? Choose
+> another" button where the host supplies `onWrongPlace` (WP-08 builds what it does). `?returnaids=off` turns the copy, the
+> ring, the chip and the photo panel off, for the with-and-without comparison in `docs/testing/DEVICE_TESTING.md`
+> (Procedure 5). A photo is still taken the same way with the aids off: it is a record, not an aid.
+
 ## Tests
 
 - [x] Deno (server): `POST /projects/:id/reference-photos` accepts a valid multipart body and

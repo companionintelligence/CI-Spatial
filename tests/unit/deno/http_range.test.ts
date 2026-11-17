@@ -1,8 +1,8 @@
 /**
  * Deno unit tests for HTTP range parsing.
  *
- * Nothing in this repo served ranges before, so every one of these cases is a
- * first. The subtle ones are the inclusive end, the suffix form (`bytes=-N`
+ * These cases cover the parser and response builder in server/http_range.ts. The subtle ones
+ * are the inclusive end, the suffix form (`bytes=-N`
  * means the LAST N bytes), and the difference between a header that must be
  * ignored (malformed ⇒ 200 full body) and one that must be refused
  * (well-formed but unsatisfiable ⇒ 416).

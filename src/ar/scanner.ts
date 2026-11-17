@@ -8,19 +8,26 @@
  * Usage:
  *   const scanner = new RoomScanner()
  *   scanner.start(provider, (frame) => {
- *     pointCloud.add(frame.points)
+ *     pointCloud.add(frame.points, frame.epoch)
  *     poseHistory.push(frame.pose)
  *   })
  *   // …later…
  *   scanner.stop()
  */
 import type { ARProvider, Pose } from './provider'
+import { epochOf } from './frame-epoch.ts'
 
 export interface ScanFrame {
   /** 3D world positions returned from hit-tests at this interval tick */
   points: ReadonlyArray<{ x: number; y: number; z: number }>
   /** Camera pose at the time of the scan */
   pose: Pose
+  /**
+   * The frame epoch the points and the pose were read in (src/ar/frame-epoch.ts). Read in
+   * the same synchronous tick as the points, so it is the epoch they belong to: a provider
+   * drops the points it had not yet handed over when an epoch begins.
+   */
+  epoch: number
   /** performance.now() timestamp */
   timestampMs: number
 }
@@ -56,7 +63,7 @@ export class RoomScanner {
       try {
         const points = provider.featurePoints(gridSize)
         const pose   = provider.getPose()
-        onFrame({ points, pose, timestampMs: performance.now() })
+        onFrame({ points, pose, epoch: epochOf(provider), timestampMs: performance.now() })
       } catch (e) {
         console.warn('[scanner] tick error (SLAM not ready?):', e)
       }

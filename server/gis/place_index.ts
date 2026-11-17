@@ -129,8 +129,9 @@ export const MAX_ACCURACY_SLACK_M = 50
  * Divisor converting a reported accuracy radius to a 1σ standard deviation.
  *
  * The W3C Geolocation API specifies `GeolocationCoordinates.accuracy` as a
- * **95 % confidence** radius, and `src/geo/geo-tracker.ts:139` copies that field
- * straight through into `GeoPose.accuracyM`. What it does not pin down is
+ * **95 % confidence** radius, and `_applyPosition` in `src/geo/geo-tracker.ts` copies that field
+ * straight through into `GeoFix.accuracy`, and `fixToGeoPose` in `src/main.ts` copies it into
+ * `GeoPose.accuracyM`. What it does not pin down is
  * *which* 95 %: read radially, a 2-D circular normal's 95 % radius is ≈ 2.45σ
  * (Rayleigh); read per-axis it is ≈ 1.96σ. **Which one a given platform means
  * has not been verified here.** 1.96 is used because it is the conservative

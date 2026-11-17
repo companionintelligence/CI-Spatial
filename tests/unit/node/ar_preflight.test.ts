@@ -58,7 +58,7 @@ test('a loaded 8th Wall engine is only ever "warming-up", never "ready"', () => 
   assert.equal(v.routeToUpload, false)
 })
 
-test('an advertised immersive-ar session is warming-up, and the detail says why that is weak', () => {
+test('an advertised immersive-ar session is warming-up, and the detail says it is unproven', () => {
   const v = probeVerdict({
     secureContext: true, xr8Loaded: false, webxrApi: true, immersiveArAdvertised: true,
   })
@@ -66,7 +66,7 @@ test('an advertised immersive-ar session is warming-up, and the detail says why 
   assert.equal(v.canScan, true)
   // isSessionSupported() reports whether the API exists, not whether anything
   // backs it. A verdict that presented this as a green light would be the bug.
-  assert.match(v.detail, /API is present/i)
+  assert.equal(v.detail, 'AR is unproven. If it fails, other capture options need no AR.')
 })
 
 test('the negative answer IS trustworthy — no immersive-ar means unavailable', () => {
@@ -85,6 +85,19 @@ test('no engine and no WebXR API at all is unavailable and routes to Upload', ()
   })
   assert.equal(v.outcome, 'unavailable')
   assert.equal(v.routeToUpload, true)
+})
+
+test('the boot no-AR line keeps the upload caveat, and says what to do instead', () => {
+  // Written into #ar-help at boot, so it is budgeted (14 words; see
+  // wp-pre7-boot-help-budget.test.ts). The upload's caveat stays on this line
+  // because, for a room, the cards that carry it sit behind "Other ways".
+  const v = probeVerdict({
+    secureContext: true, xr8Loaded: false, webxrApi: false, immersiveArAdvertised: false,
+  })
+  assert.equal(v.detail, 'No live scan. Try a tripod sweep, or video or photos, which catalogues nothing.')
+  assert.match(v.detail, /catalogues nothing/)
+  assert.match(v.detail, TRIPOD_PATH)
+  assert.match(v.detail, UPLOAD_PATH)
 })
 
 // ── startFailureVerdict — classifying a provider.start() rejection ───────────

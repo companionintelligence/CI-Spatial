@@ -47,8 +47,8 @@ export function safeSlug(raw: string | undefined, fallback = 'default'): string 
  * reported "1 scan loaded". See
  * docs/factory/07-scan-identity/0001-unique-scan-id-per-upload.md.
  *
- * The filename is unique by construction: `createScanFileExclusive`
- * (`main.ts`) creates it exclusively as `${ts}_${stem}${suffix}.glb`, with a
+ * The filename is unique by construction: `storeUploadedScan`
+ * (`world/scan_store.ts`) claims it exclusively as `${ts}_${stem}${suffix}.glb`, with a
  * random suffix appended only on a genuine same-millisecond collision. So
  * `scanId` is *derived* rather than random — unlike `jobId` and `patchId`,
  * which use `crypto.randomUUID()` — which is what lets the same upload always

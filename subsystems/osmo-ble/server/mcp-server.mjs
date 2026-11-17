@@ -51,7 +51,8 @@ async function backendFetch(path, { method = 'GET', body } = {}) {
     throw new Error(`Can't reach the backend at ${BACKEND_URL} — start it with "npm run backend" in a real terminal (${err.message})`);
   }
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(json.error || `Backend returned HTTP ${res.status}`);
+  // The remediation says what to do about a refusal (a scan owns the gimbal, a test route is off).
+  if (!res.ok) throw new Error([json.error || `Backend returned HTTP ${res.status}`, json.remediation].filter(Boolean).join(' — '));
   return json;
 }
 
