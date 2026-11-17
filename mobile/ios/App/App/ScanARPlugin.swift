@@ -336,6 +336,14 @@ public class ScanARPlugin: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
                 do {
                     let data = try NSKeyedArchiver.archivedData(withRootObject: map, requiringSecureCoding: true)
                     let url = try ScanARPlugin.worldMapURL(named: name)
+                    // Keep one previous generation, so a map a bad session wrote over can be recovered from the copy.
+                    let previous = url.appendingPathExtension("previous")
+                    if FileManager.default.fileExists(atPath: url.path) {
+                        if FileManager.default.fileExists(atPath: previous.path) {
+                            try FileManager.default.removeItem(at: previous)
+                        }
+                        try FileManager.default.copyItem(at: url, to: previous)
+                    }
                     try data.write(to: url, options: .atomic)
                     DispatchQueue.main.async {
                         completion(nil, data.count)
