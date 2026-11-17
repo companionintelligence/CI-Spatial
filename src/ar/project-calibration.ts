@@ -24,6 +24,7 @@ import {
   MIN_POINT_SEPARATION_M,
   DEFAULT_SEPARATION_TOLERANCE_M,
   originDecalPlan,
+  originHeadingBearingDeg,
 } from '../world/geo'
 import { buildAnchorMarker, ANCHOR_RADIUS_M } from '../world/anchor-marker'
 import { buildOriginDecal } from '../world/origin-decal'
@@ -72,6 +73,15 @@ export interface CalibrationResult {
    * would imply one.
    */
   referencePhotos?: PendingReferencePhoto[]
+  /**
+   * True-north bearing of the committed origin's heading arrow, for the HUD's
+   * frame-heading needle (wave 12, ticket 0001). Present only when this visit
+   * committed a two-point origin with a compass fix. A return-visit commit carries
+   * it too, since that commit draws its own origin with a tick; the stored origin
+   * drawn beside it has no tick. Absent on the one-point tier, which draws no
+   * arrow, and when there is no compass fix.
+   */
+  originBearingDeg?: number
 }
 
 interface CalibrationOptions {
@@ -559,11 +569,17 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
    *
    * The tick takes the session yaw at which north lies, not the compass bearing,
    * because the decal lives in session space. See `northYawInSession()`.
+   *
+   * Returns the arrow's true-north bearing for the HUD (`originHeadingBearingDeg`),
+   * or null when there is no arrow or no compass fix.
    */
-  function dropCommittedOrigin(landmark: Vec3, headingPoint: Vec3 | null): void {
-    if (!ensureScene()) return
-    keepFloorPlane()
-    replacePersistent(buildOriginDecal(originDecalPlan(landmark, headingPoint, northYawInSession()), 'committed'))
+  function dropCommittedOrigin(landmark: Vec3, headingPoint: Vec3 | null): number | null {
+    const plan = originDecalPlan(landmark, headingPoint, northYawInSession())
+    if (ensureScene()) {
+      keepFloorPlane()
+      replacePersistent(buildOriginDecal(plan, 'committed'))
+    }
+    return originHeadingBearingDeg(plan)
   }
 
   /**
@@ -1182,7 +1198,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
 
       // One origin decal: the crosshair on the landmark, the arrow to the heading
       // point, and the north tick. The heading point stays visible as the arrowhead.
-      dropCommittedOrigin(landmark, headingMarker)
+      const originBearingDeg = dropCommittedOrigin(landmark, headingMarker)
 
       // Step 4 of the return-visit flow. Reachable only here, because only a
       // committed frame makes the stored points renderable at all.
@@ -1190,7 +1206,12 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
         drawStoredPair(landmark, headingMarker, storedTwoPoint.separationM)
       }
 
-      close({ calibration, spatialFrame, ...(frameChanged ? { referencePhotos } : {}) })
+      close({
+        calibration,
+        spatialFrame,
+        ...(frameChanged ? { referencePhotos } : {}),
+        ...(originBearingDeg !== null ? { originBearingDeg } : {}),
+      })
     }
 
     /** #141's single-tap tier, kept for rooms where a second point is impractical. */

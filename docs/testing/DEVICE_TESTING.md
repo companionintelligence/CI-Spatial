@@ -68,6 +68,7 @@ a phone shows whether it lands on the floor.
 | O10 | Tap a point on a tabletop (~75 cm up) as the landmark | The existing "cm above the floor" gate rejects it. It still accepts a same-height retry |
 | O11 | Tap **Continue uncalibrated** on a Place | Status reads "Heading unverified — scanning without project alignment. This scan does not set the Place frame." The Place's stored frame is unchanged on the next visit |
 | O12 | Tap **Place anchor without floor check**, then commit | Status reads "Floor check bypassed — provisional…". On a return visit the commit is not `verified`, and a first visit leaves the Place with no frame. Use "Use one point instead (lower accuracy)" to check that the one-point button is labelled and explicit |
+| O13 | Commit an origin with a compass fix, then turn to face along the origin's arrow | The amber **frame heading** needle sits under the teal device needle, and its label shows the same bearing, within the compass error you see. Note how far apart they sit. It also appears after a return-visit commit. It stays hidden after a one-point commit and after **Continue uncalibrated** |
 
 The same checks apply on Android WebXR (Checklist B2). The decal is the same code path on both
 runtimes.

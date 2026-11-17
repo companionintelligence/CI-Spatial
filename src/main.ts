@@ -1632,6 +1632,7 @@ async function main() {
     })
     if (calibration) {
       sessionCalibration = calibration.calibration
+      setFrameHeadingNeedle(calibration.originBearingDeg ?? null)
       // `spatialFrame` means "the Place's durable frame CHANGED and must be
       // persisted" — a first calibration, an upgrade from the one-point tier,
       // or a deliberate override after a mismatch. Ticket 0004 widened this
@@ -4333,6 +4334,30 @@ function updateGeoIndicator(fix: GeoFix): void {
 
   if (needle && fix.bearing !== null) {
     needle.style.transform = `rotate(${fix.bearing}deg)`
+  }
+}
+
+/**
+ * The origin's heading as a true-north bearing (wave 12, ticket 0001): a second,
+ * hollow needle beside the device's, so the two readings can be told apart. It
+ * shows only after this scan commits an origin with a compass fix, and is hidden
+ * otherwise. The device needle in `updateGeoIndicator` is untouched.
+ */
+function setFrameHeadingNeedle(bearingDeg: number | null): void {
+  const needle = document.getElementById('compass-frame-needle') as SVGGElement | null
+  const label = document.getElementById('geo-frame')
+  if (bearingDeg === null) {
+    if (needle) needle.style.display = 'none'
+    if (label) label.style.display = 'none'
+    return
+  }
+  if (needle) {
+    needle.style.display = ''
+    needle.style.transform = `rotate(${bearingDeg}deg)`
+  }
+  if (label) {
+    label.style.display = ''
+    label.textContent = `frame heading ${Math.round(bearingDeg)}°`
   }
 }
 

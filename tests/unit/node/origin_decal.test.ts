@@ -16,6 +16,7 @@ import * as THREE from 'three'
 
 import {
   originDecalPlan,
+  originHeadingBearingDeg,
   readCalibrationGroundY,
   twoPointHeadingDeg,
   twoPointSeparationM,
@@ -232,4 +233,39 @@ test('buildOriginDecal: each call gets its own materials, so dimming one cannot 
 test('buildOriginDecal: a bare plan draws only the ring and crosshair', () => {
   const plan: OriginDecalPlan = { origin: { x: 0, y: 0, z: 0 }, headingDeg: null, arrowLengthM: 0, northYawDeg: null }
   assert.equal(buildOriginDecal(plan, 'committed').children.length, 2)
+})
+
+// ── originHeadingBearingDeg ────────────────────────────────────────────────
+
+/** The smaller angle between two bearings in degrees, so 359 and 1 are 2 apart. */
+function circularGapDeg(a: number, b: number): number {
+  return Math.abs((((a - b) % 360) + 540) % 360 - 180)
+}
+
+test('originHeadingBearingDeg: the arrow bearing is its clockwise angle from the north tick, in world space', () => {
+  const origin = { x: 1, y: 0, z: -2 }
+  const heading = { x: 4, y: 0, z: 2 }
+  for (const northYawDeg of [0, 37, 180, 290]) {
+    const plan = originDecalPlan(origin, heading, northYawDeg)
+    const decal = buildOriginDecal(plan, 'committed')
+    const base = toWorld(decal, new THREE.Vector3())
+    const arrowTip = toWorld(requireChild(decal, 'origin heading'), new THREE.Vector3(0, 0, plan.arrowLengthM))
+    const northTip = toWorld(requireChild(decal, 'origin north'), new THREE.Vector3(0, 0, ANCHOR_RADIUS_M * 1.35))
+    const yawOf = (p: THREE.Vector3): number => THREE.MathUtils.radToDeg(Math.atan2(p.x - base.x, p.z - base.z))
+    const clockwiseFromNorth = yawOf(arrowTip) - yawOf(northTip)
+    const bearing = originHeadingBearingDeg(plan)
+    assert.ok(bearing !== null, `north ${northYawDeg}: a compass fix gives a bearing`)
+    assert.ok(
+      circularGapDeg(bearing, clockwiseFromNorth) < 1e-6,
+      `north ${northYawDeg}: bearing ${bearing} vs world angle ${clockwiseFromNorth}`,
+    )
+  }
+})
+
+test('originHeadingBearingDeg: null without an arrow or a compass fix, and folded into [0, 360)', () => {
+  const origin = { x: 0, y: 0, z: 0 }
+  const ahead = { x: 0, y: 0, z: 2 }
+  assert.equal(originHeadingBearingDeg(originDecalPlan(origin, null, 30)), null, 'no heading point, so no arrow')
+  assert.equal(originHeadingBearingDeg(originDecalPlan(origin, ahead, null)), null, 'no compass fix, so no bearing')
+  assert.equal(originHeadingBearingDeg(originDecalPlan(origin, ahead, 90)), 270, 'heading 0 minus north 90 folds to 270')
 })

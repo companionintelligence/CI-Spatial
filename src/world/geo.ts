@@ -342,6 +342,21 @@ export function originDecalPlan(
 }
 
 /**
+ * True-north bearing of the origin's heading arrow, in degrees clockwise from
+ * north: what the HUD's frame-heading needle shows.
+ *
+ * The arrow's yaw is in session space and north lies at `northYawDeg` there, so
+ * the arrow's bearing is its yaw measured from north. It comes from the same
+ * single compass fix as the north tick, so it is only as good as that tick:
+ * indoor compass readings can be well off. Null when there is no arrow or no
+ * compass fix, since then there is no bearing to show.
+ */
+export function originHeadingBearingDeg(plan: OriginDecalPlan): number | null {
+  if (plan.headingDeg === null || plan.northYawDeg === null) return null
+  return normaliseBearingDeg(plan.headingDeg - plan.northYawDeg)
+}
+
+/**
  * The floor height, in session metres, that a scan's origin sat on: the
  * `groundY` a `ScanCalibration` record carries.
  *
