@@ -111,11 +111,6 @@ export interface NativeOriginAnchor {
   rotation: number[]
   /** The heading the caller gave with the origin, or null. The native layer stores it unchanged. */
   heading: number | null
-  /**
-   * True when the running AR session placed this origin, so `position` is in the frame it tracks.
-   * False when an earlier session saved it: that frame is gone, so the position is only a record.
-   */
-  current: boolean
 }
 
 /** The ScanAR plugin's methods and events, as Capacitor exposes them to the web app. */
@@ -132,7 +127,10 @@ export interface ScanARPlugin {
    * it, and the iOS plugin does not yet, so a caller checks for it before use.
    */
   setOriginAnchor?(options: { x: number; y: number; heading?: number }): Promise<{ anchor: NativeOriginAnchor }>
-  /** The origin saved on the device, or `anchor: null` when none was saved. Optional, as setOriginAnchor is. */
+  /**
+   * The origin this AR session placed, or `anchor: null` when this session has placed none. An origin saved by an
+   * earlier session is not returned: v1 does not restore an origin across sessions. Optional, as setOriginAnchor is.
+   */
   getOriginAnchor?(): Promise<{ anchor: NativeOriginAnchor | null }>
   addListener(event: 'pose', listener: (e: NativePoseEvent) => void): Promise<NativeListenerHandle>
   addListener(event: 'points', listener: (e: NativePointsEvent) => void): Promise<NativeListenerHandle>

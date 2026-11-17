@@ -12,12 +12,14 @@ import java.util.List;
 
 /**
  * The origin anchor's record, kept as one small JSON file in the app's files directory. The ScanAR
- * plugin writes it when the origin is set and reads it back for getOriginAnchor(). The file has no
- * Android types in it, so the round trip is unit-tested on the JVM (OriginAnchorStoreTest).
+ * plugin writes it when the origin is set. v1 does not restore an origin across sessions, so nothing
+ * reads the file back to place an anchor, and the origin is set again each session. The read is kept
+ * for the restore that is not wired yet. The file has no Android types in it, so the round trip is
+ * unit-tested on the JVM (OriginAnchorStoreTest).
  *
  * The position and rotation are the pose the origin was set at, in the frame of the ARCore session
- * that set it. A later session starts a new frame, so a record read back there is only a record. The
- * plugin reports that with `current: false`.
+ * that set it. A later session starts a new frame, so a record read back there must not be placed
+ * without a check.
  *
  * Format, version 1:
  *   {"version":1,"position":[x,y,z],"rotation":[x,y,z,w],"heading":null}
