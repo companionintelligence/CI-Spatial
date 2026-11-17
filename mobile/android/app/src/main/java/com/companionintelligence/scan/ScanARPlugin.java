@@ -28,6 +28,13 @@ import com.google.ar.core.Config;
 import com.google.ar.core.Session;
 import com.google.ar.core.exceptions.UnavailableException;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.File;
+import java.io.IOException;
+import java.util.Arrays;
+
 /**
  * The ScanAR plugin on Android: ARCore, the native half of the web app's NativeARProvider
  * (src/ar/native.ts). The web side is the contract, so keep the method and event names in step
@@ -38,7 +45,9 @@ import com.google.ar.core.exceptions.UnavailableException;
  * ("contain"), the same rect the web overlay covers. Frames, hits and depth are answered from the
  * GL thread, which is the only thread that may call session.update().
  *
- * Not yet run on a device. The Gradle build compiles it; a real ARCore phone has not exercised it.
+ * Capacitor calls handleOnPause(), handleOnResume() and handleOnDestroy() with the activity, and the
+ * AR session follows them. Not yet run on a device. The Gradle build compiles it; a real ARCore phone
+ * has not exercised it.
  */
 @CapacitorPlugin(
     name = "ScanAR",
@@ -56,6 +65,52 @@ public class ScanARPlugin extends Plugin {
     private boolean depthEnabled;
     private WebView savedWebView;
     private Drawable savedWebBackground;
+    /** Whether the activity is in front. Starts false, and the first handleOnResume() sets it. */
+    private boolean activityResumed;
+    /** The origin this AR session placed, or null. Set on the GL thread, and cleared when the session is released. */
+    private volatile OriginAnchorStore.Record sessionOrigin;
+
+    // ── Lifecycle ────────────────────────────────────────────────────────────
+
+    /** The activity is leaving the front: stop the GL loop, release the camera, and say so to the web layer. */
+    @Override
+    protected void handleOnPause() {
+        pauseAR();
+    }
+
+    /** The activity is back in front: the GL loop runs again, and the next frame resumes the session. */
+    @Override
+    protected void handleOnResume() {
+        resumeAR();
+    }
+
+    /** The activity is being destroyed: the AR session is released for good. */
+    @Override
+    protected void handleOnDestroy() {
+        releaseAR();
+    }
+
+    /** Parks the GL loop and pauses the session, so the camera is released. Runs on the UI thread. */
+    private void pauseAR() {
+        activityResumed = false;
+        ScanARRenderer current = renderer;
+        GLSurfaceView view = glView;
+        if (current == null || view == null) {
+            return;
+        }
+        // Returns once the GL thread is parked, so no frame is inside session.update() while the session pauses.
+        view.onPause();
+        current.pauseSession();
+    }
+
+    /** Lets the GL loop run again. The next frame resumes the session. Runs on the UI thread. */
+    private void resumeAR() {
+        activityResumed = true;
+        GLSurfaceView view = glView;
+        if (view != null) {
+            view.onResume();
+        }
+    }
 
     // ── Capabilities ─────────────────────────────────────────────────────────
 
@@ -165,7 +220,12 @@ public class ScanARPlugin extends Plugin {
                 view.setY(fitted[1]);
                 ViewGroup parent = (ViewGroup) web.getParent();
                 parent.addView(view, 0, new ViewGroup.LayoutParams(fitted[2], fitted[3]));
-                view.onResume();
+                // The GL loop runs only while the activity is in front. resumeAR() and pauseAR() keep it so.
+                if (activityResumed) {
+                    view.onResume();
+                } else {
+                    view.onPause();
+                }
 
                 // Let the camera show through the WebView while AR runs.
                 savedWebView = web;
@@ -207,45 +267,38 @@ public class ScanARPlugin extends Plugin {
 
     @PluginMethod
     public void stop(PluginCall call) {
-        teardown();
-        call.resolve();
-    }
-
-    private void teardown() {
         getActivity().runOnUiThread(() -> {
-            GLSurfaceView view = glView;
-            Session current = session;
-            glView = null;
-            renderer = null;
-            session = null;
-            if (view != null) {
-                view.onPause();
-                ViewGroup parent = (ViewGroup) view.getParent();
-                if (parent != null) {
-                    parent.removeView(view);
-                }
-            }
-            if (current != null) {
-                current.pause();
-                current.close();
-            }
-            if (savedWebView != null) {
-                savedWebView.setBackground(savedWebBackground);
-                savedWebView = null;
-                savedWebBackground = null;
-            }
+            releaseAR();
+            call.resolve();
         });
     }
 
-    /**
-     * Capacitor calls this when the activity resumes, and the GL view resumes with it. Capacitor
-     * offers no pause hook to plugins, so backgrounding the app is not handled here yet: the next
-     * frame reports a camera error, and the web app starts the session again.
-     */
-    @Override
-    protected void handleOnResume() {
-        if (glView != null) {
-            glView.onResume();
+    /** Stops the AR session and gives the WebView its background back. Runs on the UI thread. */
+    private void releaseAR() {
+        GLSurfaceView view = glView;
+        ScanARRenderer current = renderer;
+        Session currentSession = session;
+        glView = null;
+        renderer = null;
+        session = null;
+        sessionOrigin = null;
+        if (view != null) {
+            view.onPause();   // parks the GL thread before the session is paused
+            ViewGroup parent = (ViewGroup) view.getParent();
+            if (parent != null) {
+                parent.removeView(view);
+            }
+        }
+        if (current != null) {
+            current.pauseSession();
+        }
+        if (currentSession != null) {
+            currentSession.close();
+        }
+        if (savedWebView != null) {
+            savedWebView.setBackground(savedWebBackground);
+            savedWebView = null;
+            savedWebBackground = null;
         }
     }
 
@@ -285,6 +338,100 @@ public class ScanARPlugin extends Plugin {
         JSObject miss = new JSObject();
         miss.put("hit", false);
         return miss;
+    }
+
+    // ── Origin anchor ────────────────────────────────────────────────────────
+
+    /**
+     * Places the origin on the first feature point or plane under (x, y), a point of the overlay rect
+     * in 0..1, and saves the record on the device. Resolves { anchor }, the origin this session has
+     * just placed. Rejects when no surface is under the point.
+     */
+    @PluginMethod
+    public void setOriginAnchor(PluginCall call) {
+        ScanARRenderer current = renderer;
+        if (current == null) {
+            call.reject("AR is not running yet. Call start() and wait for tracking.");
+            return;
+        }
+        Double x = call.getDouble("x");
+        Double y = call.getDouble("y");
+        if (x == null || y == null) {
+            call.reject("setOriginAnchor needs x and y, each from 0 to 1 across the camera rect.");
+            return;
+        }
+        Double heading = call.getDouble("heading");
+        current.placeOrigin(x, y, (position, rotation, error) -> {
+            if (error != null) {
+                call.reject(error);
+                return;
+            }
+            OriginAnchorStore.Record record;
+            try {
+                record = new OriginAnchorStore.Record(position, rotation, heading);
+                OriginAnchorStore.write(originFile(), record);
+            } catch (IOException | RuntimeException e) {
+                call.reject("The origin could not be saved: " + e.getMessage());
+                return;
+            }
+            sessionOrigin = record;
+            call.resolve(anchorReply(anchorJson(record, null)));
+        });
+    }
+
+    /**
+     * The origin this AR session placed, as { anchor }, or { anchor: null } when this session has placed
+     * none. Its position is the anchor's pose as ARCore last refined it. A record saved by an earlier
+     * session is not returned: v1 does not restore an origin across sessions.
+     */
+    @PluginMethod
+    public void getOriginAnchor(PluginCall call) {
+        OriginAnchorStore.Record placed = sessionOrigin;
+        if (placed == null) {
+            call.resolve(anchorReply(null));
+            return;
+        }
+        ScanARRenderer current = renderer;
+        double[] live = current != null ? current.liveOriginPose() : null;
+        call.resolve(anchorReply(anchorJson(placed, live)));
+    }
+
+    private File originFile() {
+        return new File(getContext().getFilesDir(), OriginAnchorStore.FILE_NAME);
+    }
+
+    /** The record as the web layer reads it. When `live` is given, its pose replaces the saved one. */
+    private static JSObject anchorJson(OriginAnchorStore.Record record, double[] live) {
+        JSObject anchor = new JSObject();
+        if (live != null) {
+            anchor.put("position", numbers(Arrays.copyOfRange(live, 0, 3)));
+            anchor.put("rotation", numbers(Arrays.copyOfRange(live, 3, 7)));
+        } else {
+            anchor.put("position", numbers(record.position));
+            anchor.put("rotation", numbers(record.rotation));
+        }
+        anchor.put("heading", record.heading != null ? record.heading : JSONObject.NULL);
+        return anchor;
+    }
+
+    /** { anchor } as the web layer reads it, where anchor is null when there is none. */
+    private static JSObject anchorReply(JSObject anchor) {
+        JSObject reply = new JSObject();
+        reply.put("anchor", anchor != null ? anchor : JSONObject.NULL);
+        return reply;
+    }
+
+    private static JSONArray numbers(double[] values) {
+        JSONArray array = new JSONArray();
+        try {
+            for (double value : values) {
+                array.put(value);
+            }
+        } catch (org.json.JSONException e) {
+            // Unreachable: the record holds only finite numbers.
+            throw new IllegalStateException("an origin holds a number JSON cannot carry", e);
+        }
+        return array;
     }
 
     // ── Events (called from the GL thread, delivered on the main thread) ─────

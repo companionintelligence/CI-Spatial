@@ -122,6 +122,16 @@ export interface NativeErrorEvent {
   message: string
 }
 
+/** An origin anchor, as the native layer returns it from setOriginAnchor() and getOriginAnchor(). */
+export interface NativeOriginAnchor {
+  /** Metres, x, y, z, in the frame of the AR session that placed the origin. */
+  position: number[]
+  /** Quaternion, x, y, z, w. */
+  rotation: number[]
+  /** The heading the caller gave with the origin, or null. The native layer stores it unchanged. */
+  heading: number | null
+}
+
 /** The ScanAR plugin's methods and events, as Capacitor exposes them to the web app. */
 export interface ScanARPlugin {
   capabilities(): Promise<NativeARCapabilities>
@@ -135,6 +145,17 @@ export interface ScanARPlugin {
    * method, so it is optional here and the provider checks for it.
    */
   saveWorldMap?(options: { name: string }): Promise<NativeWorldMapSaved>
+  /**
+   * Places the origin on the first feature point or plane under (x, y), normalised 0..1 over the camera rect,
+   * and saves it on the device. Rejects when no surface is under the point. Optional: the Android plugin has
+   * it, and the iOS plugin does not yet, so a caller checks for it before use.
+   */
+  setOriginAnchor?(options: { x: number; y: number; heading?: number }): Promise<{ anchor: NativeOriginAnchor }>
+  /**
+   * The origin this AR session placed, or `anchor: null` when this session has placed none. An origin saved by an
+   * earlier session is not returned: v1 does not restore an origin across sessions. Optional, as setOriginAnchor is.
+   */
+  getOriginAnchor?(): Promise<{ anchor: NativeOriginAnchor | null }>
   addListener(event: 'pose', listener: (e: NativePoseEvent) => void): Promise<NativeListenerHandle>
   addListener(event: 'points', listener: (e: NativePointsEvent) => void): Promise<NativeListenerHandle>
   addListener(event: 'hits', listener: (e: NativeHitsEvent) => void): Promise<NativeListenerHandle>

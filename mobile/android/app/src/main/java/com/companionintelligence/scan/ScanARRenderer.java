@@ -16,6 +16,7 @@ import android.util.Base64;
 import android.view.Surface;
 
 import com.getcapacitor.JSObject;
+import com.google.ar.core.Anchor;
 import com.google.ar.core.Camera;
 import com.google.ar.core.Coordinates2d;
 import com.google.ar.core.Frame;
@@ -37,6 +38,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
+import java.util.Arrays;
 import java.util.List;
 
 import javax.microedition.khronos.egl.EGLConfig;
@@ -52,6 +54,11 @@ class ScanARRenderer implements GLSurfaceView.Renderer {
 
     interface Callback {
         void done(JSObject result, String error);
+    }
+
+    /** A placed origin: its position (x, y, z) and rotation (x, y, z, w), or an error. */
+    interface OriginCallback {
+        void done(double[] position, double[] rotation, String error);
     }
 
     private static final float NEAR_M = 0.01f;
@@ -106,6 +113,12 @@ class ScanARRenderer implements GLSurfaceView.Renderer {
     private long lastPoseMs;
     private long lastPointsMs;
     private long lastHitsMs;
+    /** The origin anchor. Touched on the GL thread only, and detached when a new origin replaces it. */
+    private Anchor origin;
+    /** The origin's pose as ARCore last refined it, as x, y, z, qx, qy, qz, qw. Read from other threads. */
+    private volatile double[] originPose;
+    /** True while a camera failure is being reported, so it is reported once rather than on every frame. */
+    private boolean cameraFailureReported;
 
     ScanARRenderer(ScanARPlugin plugin, GLSurfaceView view, Session session, boolean depthEnabled, int hitGrid,
                    int sensorOrientation, int viewWidth, int viewHeight) {
@@ -155,8 +168,9 @@ class ScanARRenderer implements GLSurfaceView.Renderer {
             try {
                 session.resume();
                 sessionResumed = true;
+                cameraFailureReported = false;
             } catch (CameraNotAvailableException e) {
-                plugin.fail("The camera is not available to AR: " + e.getMessage());
+                reportCameraFailure("The camera is not available to AR: " + e.getMessage());
                 return;
             }
         }
@@ -164,9 +178,10 @@ class ScanARRenderer implements GLSurfaceView.Renderer {
         try {
             frame = session.update();
         } catch (CameraNotAvailableException e) {
-            plugin.fail("The camera was lost: " + e.getMessage());
+            reportCameraFailure("The camera was lost: " + e.getMessage());
             return;
         }
+        cameraFailureReported = false;
         lastFrame = frame;
         drawBackground(frame);
 
@@ -182,6 +197,10 @@ class ScanARRenderer implements GLSurfaceView.Renderer {
             JSObject tracking = new JSObject();
             tracking.put("state", name);
             plugin.emit("tracking", tracking);
+        }
+
+        if (origin != null && origin.getTrackingState() == TrackingState.TRACKING) {
+            originPose = poseVector(origin.getPose());
         }
 
         long now = SystemClock.uptimeMillis();
@@ -204,12 +223,41 @@ class ScanARRenderer implements GLSurfaceView.Renderer {
 
     // ── Lifecycle ────────────────────────────────────────────────────────────
 
-    /** Called when the activity pauses. The session is paused now and resumed on the next frame. */
+    /**
+     * Pauses the ARCore session, which releases the camera, and reports tracking as notAvailable. The
+     * caller has already parked the GL loop, so no frame is inside update(). The next resumed frame
+     * reports the tracking state again.
+     */
     void pauseSession() {
         if (sessionResumed) {
             session.pause();
             sessionResumed = false;
         }
+        lastFrame = null;
+        lastTrackingState = TrackingState.STOPPED;
+        lastTrackingName = "notAvailable";
+        JSObject tracking = new JSObject();
+        tracking.put("state", "notAvailable");
+        plugin.emit("tracking", tracking);
+    }
+
+    /** The origin's pose as ARCore last refined it, as x, y, z, qx, qy, qz, qw, or null when no origin is set. */
+    double[] liveOriginPose() {
+        return originPose;
+    }
+
+    /** Reports a camera failure once, and again only after a frame gets through. */
+    private void reportCameraFailure(String message) {
+        if (cameraFailureReported) {
+            return;
+        }
+        cameraFailureReported = true;
+        plugin.fail(message);
+    }
+
+    /** A pose as x, y, z, qx, qy, qz, qw. */
+    private static double[] poseVector(Pose pose) {
+        return new double[] { pose.tx(), pose.ty(), pose.tz(), pose.qx(), pose.qy(), pose.qz(), pose.qw() };
     }
 
     // ── Captures and hits (queued onto the GL thread) ────────────────────────
@@ -239,6 +287,41 @@ class ScanARRenderer implements GLSurfaceView.Renderer {
                 return;
             }
             callback.done(sample(frame, (float) (x * viewWidth), (float) (y * viewHeight)), null);
+        });
+    }
+
+    /**
+     * Places the origin on the first feature point or plane under the point (x, y) of the overlay rect,
+     * with x and y from 0 to 1. Queued onto the GL thread like the captures, so it sees the frame the
+     * loop last produced. The previous origin, if there is one, is detached.
+     */
+    void placeOrigin(double x, double y, OriginCallback callback) {
+        view.queueEvent(() -> {
+            Frame frame = lastFrame;
+            if (frame == null) {
+                callback.done(null, null, "AR has no frame yet. Wait for tracking and try again.");
+                return;
+            }
+            HitResult hit = surfaceHit(frame, (float) (x * viewWidth), (float) (y * viewHeight));
+            if (hit == null) {
+                callback.done(null, null, "No feature point or plane is under that point. Aim at a surface and try again.");
+                return;
+            }
+            Anchor anchor;
+            try {
+                anchor = hit.createAnchor();
+            } catch (Exception e) {
+                callback.done(null, null, "ARCore could not anchor that point: " + e.getMessage());
+                return;
+            }
+            Anchor previous = origin;
+            origin = anchor;
+            if (previous != null) {
+                previous.detach();
+            }
+            double[] pose = poseVector(anchor.getPose());
+            originPose = pose;
+            callback.done(Arrays.copyOfRange(pose, 0, 3), Arrays.copyOfRange(pose, 3, 7), null);
         });
     }
 
@@ -378,34 +461,42 @@ class ScanARRenderer implements GLSurfaceView.Renderer {
 
     /** One hit sample at view pixels (x, y): the nearest feature point or plane, or a miss. */
     private JSObject sample(Frame frame, float x, float y) {
-        JSObject miss = new JSObject();
-        miss.put("hit", false);
-        if (viewWidth <= 0 || viewHeight <= 0) {
+        HitResult hit = surfaceHit(frame, x, y);
+        if (hit == null) {
+            JSObject miss = new JSObject();
+            miss.put("hit", false);
             return miss;
+        }
+        Pose pose = hit.getHitPose();
+        JSObject sample = new JSObject();
+        sample.put("hit", true);
+        JSONArray position = new JSONArray();
+        putNumber(position, pose.tx());
+        putNumber(position, pose.ty());
+        putNumber(position, pose.tz());
+        JSONArray rotation = new JSONArray();
+        putNumber(rotation, pose.qx());
+        putNumber(rotation, pose.qy());
+        putNumber(rotation, pose.qz());
+        putNumber(rotation, pose.qw());
+        sample.put("position", position);
+        sample.put("rotation", rotation);
+        sample.put("distance", hit.getDistance());
+        return sample;
+    }
+
+    /** The first feature point or plane hit at view pixels (x, y), or null when there is none. */
+    private HitResult surfaceHit(Frame frame, float x, float y) {
+        if (viewWidth <= 0 || viewHeight <= 0) {
+            return null;
         }
         List<HitResult> hits = frame.hitTest(x, y);
         for (HitResult hit : hits) {
-            if (!(hit.getTrackable() instanceof Point) && !(hit.getTrackable() instanceof Plane)) {
-                continue;
+            if (hit.getTrackable() instanceof Point || hit.getTrackable() instanceof Plane) {
+                return hit;
             }
-            Pose pose = hit.getHitPose();
-            JSObject sample = new JSObject();
-            sample.put("hit", true);
-            JSONArray position = new JSONArray();
-            putNumber(position, pose.tx());
-            putNumber(position, pose.ty());
-            putNumber(position, pose.tz());
-            JSONArray rotation = new JSONArray();
-            putNumber(rotation, pose.qx());
-            putNumber(rotation, pose.qy());
-            putNumber(rotation, pose.qz());
-            putNumber(rotation, pose.qw());
-            sample.put("position", position);
-            sample.put("rotation", rotation);
-            sample.put("distance", hit.getDistance());
-            return sample;
         }
-        return miss;
+        return null;
     }
 
     // ── Background ───────────────────────────────────────────────────────────
