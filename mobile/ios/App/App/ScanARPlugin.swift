@@ -1,5 +1,6 @@
 import ARKit
 import Capacitor
+import Foundation
 import SceneKit
 import UIKit
 import simd
@@ -17,12 +18,16 @@ import simd
 ///     answers captureFrame() with a JPEG of the full frame in portrait orientation.
 ///   - Returns LiDAR depth in metres with captureFrame({ depth: true }) on a device that has it,
 ///     aligned to the same portrait orientation as the JPEG.
+///   - Reports an ARKit interruption (the app in the background, or another app using the camera) as tracking
+///     "notAvailable" straight away, so the web side never keeps a stale tracking state.
+///   - Saves the world map under a name, and starts a session from the saved map of that name, so scans of one
+///     room share coordinates. Maps stay in Application Support and are excluded from backup.
 ///
 /// ARKit world space is in metres, gravity-aligned and Y-up. Its yaw is arbitrary, so heading still
 /// comes from the editor's calibration.
 ///
-/// Not compiled or run in the Linux environment this repo is developed in. Verify on a device before
-/// relying on it: the Android half is compiled by Gradle; this file is not compiled anywhere yet.
+/// The iOS simulator job in CI compiles this file. ARKit behaviour (tracking, interruptions, relocalization,
+/// depth) runs only on a device, so verify it there before relying on it.
 @objc(ScanARPlugin)
 public class ScanARPlugin: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
     public let identifier = "ScanARPlugin"
@@ -33,6 +38,7 @@ public class ScanARPlugin: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
         CAPPluginMethod(name: "stop", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "captureFrame", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "hitTest", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "saveWorldMap", returnType: CAPPluginReturnPromise),
     ]
 
     /// Event cadence, in seconds. Pose is what the overlay needs each frame; the rest is coarser.
@@ -51,6 +57,8 @@ public class ScanARPlugin: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
     private var cameraRect: CGRect = .zero
     private var hitGridSize = 20
     private var depthRequested = false
+    /// "loaded" or "missing" when the last start() was given a world map name. Nil when none was.
+    private var worldMapState: String?
     private var lastPoseAt: TimeInterval = 0
     private var lastPointsAt: TimeInterval = 0
     private var lastHitsAt: TimeInterval = 0
@@ -67,6 +75,7 @@ public class ScanARPlugin: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
             "engine": supported ? "arkit" : "none",
             "supported": supported,
             "depth": ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth),
+            "worldMap": supported,
         ]
         if !supported {
             result["reason"] = "ARKit world tracking is not available on this device."
@@ -87,6 +96,11 @@ public class ScanARPlugin: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
             return
         }
         let hitGrid = call.getInt("hitGrid") ?? 20
+        let worldName = call.getString("worldMap")
+        if let worldName = worldName, !ScanARPlugin.isValidWorldName(worldName) {
+            call.reject("A world map name may only use letters, digits, dashes and underscores.")
+            return
+        }
 
         DispatchQueue.main.async {
             guard let webView = self.bridge?.webView, let container = webView.superview else {
@@ -102,6 +116,16 @@ public class ScanARPlugin: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
             configuration.planeDetection = [.horizontal, .vertical]
             if wantDepth {
                 configuration.frameSemantics.insert(.sceneDepth)
+            }
+            // A saved map starts the session in that room's coordinates, so this scan lines up with the earlier one.
+            self.worldMapState = nil
+            if let worldName = worldName {
+                if let map = self.loadWorldMap(named: worldName) {
+                    configuration.initialWorldMap = map
+                    self.worldMapState = "loaded"
+                } else {
+                    self.worldMapState = "missing"
+                }
             }
             let aspect = self.portraitAspect(of: configuration.videoFormat.imageResolution)
             let webBounds = CGRect(origin: .zero, size: webView.bounds.size)
@@ -142,7 +166,7 @@ public class ScanARPlugin: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
 
     private func startResult() -> [String: Any] {
         let aspect = cameraRect.height > 0 ? cameraRect.width / cameraRect.height : 1
-        return [
+        var result: [String: Any] = [
             "rect": [
                 "x": Double(cameraRect.minX),
                 "y": Double(cameraRect.minY),
@@ -151,6 +175,10 @@ public class ScanARPlugin: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
             ],
             "cameraAspect": Double(aspect),
         ]
+        if let worldMapState = worldMapState {
+            result["worldMap"] = worldMapState
+        }
+        return result
     }
 
     private func tearDown() {
@@ -208,6 +236,67 @@ public class ScanARPlugin: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
         }
     }
 
+    // MARK: - World maps
+
+    /// Saves the running session's world map under `name`, the web app's world id. A later start() with the
+    /// same name relocalizes into these coordinates, so scans of one room share a frame.
+    @objc func saveWorldMap(_ call: CAPPluginCall) {
+        guard let name = call.getString("name"), ScanARPlugin.isValidWorldName(name) else {
+            call.reject("A world map name may only use letters, digits, dashes and underscores.")
+            return
+        }
+        DispatchQueue.main.async {
+            guard let session = self.arView?.session else {
+                call.reject("AR is not running, so there is no world map to save.")
+                return
+            }
+            session.getCurrentWorldMap { map, error in
+                DispatchQueue.main.async {
+                    guard let map = map else {
+                        let reason = error?.localizedDescription ?? "ARKit has not mapped enough of the room yet"
+                        call.reject("No world map to save: \(reason)")
+                        return
+                    }
+                    do {
+                        let data = try NSKeyedArchiver.archivedData(withRootObject: map, requiringSecureCoding: true)
+                        let url = try ScanARPlugin.worldMapURL(named: name)
+                        try data.write(to: url, options: .atomic)
+                        call.resolve(["name": name, "bytes": data.count])
+                    } catch {
+                        call.reject("Could not save the world map: \(error.localizedDescription)")
+                    }
+                }
+            }
+        }
+    }
+
+    private func loadWorldMap(named name: String) -> ARWorldMap? {
+        guard let url = try? ScanARPlugin.worldMapURL(named: name),
+              let data = try? Data(contentsOf: url) else {
+            return nil
+        }
+        return try? NSKeyedUnarchiver.unarchivedObject(ofClass: ARWorldMap.self, from: data)
+    }
+
+    /// Letters, digits, dashes and underscores only, because the name becomes a file name.
+    private static func isValidWorldName(_ name: String) -> Bool {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+        return !name.isEmpty && name.count <= 64 && name.unicodeScalars.allSatisfy { allowed.contains($0) }
+    }
+
+    /// The file for a world map, in Application Support. The folder is excluded from iCloud and device backups:
+    /// a map describes the room, so it stays on this phone.
+    private static func worldMapURL(named name: String) throws -> URL {
+        let support = try FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        var directory = support.appendingPathComponent("ScanWorldMaps", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try directory.setResourceValues(values)
+        return directory.appendingPathComponent(name + ".worldmap")
+    }
+
     // MARK: - ARSessionDelegate
 
     public func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {
@@ -216,6 +305,13 @@ public class ScanARPlugin: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
 
     public func session(_ session: ARSession, didFailWithError error: Error) {
         notifyListeners("error", data: ["message": error.localizedDescription])
+    }
+
+    /// ARKit stops delivering frames while the app is in the background or another app has the camera. No pose
+    /// events arrive until frames resume, so say so now: the web side must not keep the last tracking state.
+    /// Once frames resume, each pose event carries the current tracking state.
+    public func sessionWasInterrupted(_ session: ARSession) {
+        notifyListeners("tracking", data: ["state": "notAvailable"])
     }
 
     public func session(_ session: ARSession, didUpdate frame: ARFrame) {
@@ -340,7 +436,7 @@ public class ScanARPlugin: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
         return [
             "hit": true,
             "position": [Double(position.x), Double(position.y), Double(position.z)],
-            "rotation": [0.0, 0.0, 0.0, 1.0],
+            "rotation": ScanARPlugin.quaternion(of: hit.worldTransform),
             "distance": Double(distance),
         ]
     }
@@ -358,6 +454,42 @@ public class ScanARPlugin: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
             }
         }
         return ["timestamp": timestamp, "cols": cols, "rows": rows, "samples": samples]
+    }
+
+    /// The rotation of a world transform as x, y, z, w. For a hit, the Y axis is the surface normal, so an item
+    /// placed on a surface can turn to face it. Shepperd's method, from the upper 3x3 block (column-major).
+    private static func quaternion(of m: simd_float4x4) -> [Double] {
+        let r00 = m.columns.0.x, r10 = m.columns.0.y, r20 = m.columns.0.z
+        let r01 = m.columns.1.x, r11 = m.columns.1.y, r21 = m.columns.1.z
+        let r02 = m.columns.2.x, r12 = m.columns.2.y, r22 = m.columns.2.z
+        let trace = r00 + r11 + r22
+        let x: Float, y: Float, z: Float, w: Float
+        if trace > 0 {
+            let s = (trace + 1).squareRoot() * 2
+            w = 0.25 * s
+            x = (r21 - r12) / s
+            y = (r02 - r20) / s
+            z = (r10 - r01) / s
+        } else if r00 > r11 && r00 > r22 {
+            let s = (1 + r00 - r11 - r22).squareRoot() * 2
+            w = (r21 - r12) / s
+            x = 0.25 * s
+            y = (r01 + r10) / s
+            z = (r02 + r20) / s
+        } else if r11 > r22 {
+            let s = (1 + r11 - r00 - r22).squareRoot() * 2
+            w = (r02 - r20) / s
+            x = (r01 + r10) / s
+            y = 0.25 * s
+            z = (r12 + r21) / s
+        } else {
+            let s = (1 + r22 - r00 - r11).squareRoot() * 2
+            w = (r10 - r01) / s
+            x = (r02 + r20) / s
+            y = (r12 + r21) / s
+            z = 0.25 * s
+        }
+        return [Double(x), Double(y), Double(z), Double(w)]
     }
 
     private static func describe(_ state: ARCamera.TrackingState) -> String {
