@@ -48,6 +48,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { statusIsHeld, writeStatus, type StatusNode } from '../../../src/ui/status-line.ts'
 import { NOT_CHECKED_METRES, NOT_CHECKED_SPOTS, twoPointToleranceM } from '../../../src/world/frame-fit.ts'
+import { BEARING_CONVENTION } from '../../../src/world/geo.ts'
 import type { ScanCalibration } from '../../../src/world/types.ts'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
@@ -79,6 +80,8 @@ const twoPoint = (
   residualM,
   toleranceM,
   anchorBearingDeg,
+  // The sign rule the bearing was written under, which the flow always records beside it.
+  bearingConvention: BEARING_CONVENTION,
 })
 
 /** A committed single-point calibration, in the shape `commitSinglePoint` returns. */
@@ -575,12 +578,16 @@ test('the north tick is said to be session-local where a compass reading drew it
   for (const [name, calibration] of OUTCOMES) {
     if (calibration === null || calibration.method !== 'two-point-ground') continue
     assert.ok(!copy(calibration).includes('session-local'), `${name}: no compass reading, so no tick was drawn and none is mentioned`)
-    const withCompass = { ...calibration, anchorBearingDeg: 125 }
+    // A record as the flow writes it: the bearing, and the sign rule it was written under.
+    const withCompass = { ...calibration, anchorBearingDeg: 125, bearingConvention: BEARING_CONVENTION }
     assert.equal(copy(withCompass), copy(calibration) + note, `${name}: the same line, and then the note`)
   }
   // The fit's verdict and the spacing's keep their own words, and the note comes after them.
-  assert.equal(copy({ ...fitted('verified', 0.032), anchorBearingDeg: 317 }), `${copy(fitted('verified', 0.032))}${note}`)
-  assert.equal(copy({ ...bySpacing(0.03), anchorBearingDeg: 317 }), `${copy(bySpacing(0.03))}${note}`)
-  assert.ok(!copy({ ...twoPoint('provisional', 0), anchorBearingDeg: Number.NaN }).includes('session-local'), 'a bearing that is not a number drew no tick')
+  assert.equal(copy({ ...fitted('verified', 0.032), anchorBearingDeg: 317, bearingConvention: BEARING_CONVENTION }), `${copy(fitted('verified', 0.032))}${note}`)
+  assert.equal(copy({ ...bySpacing(0.03), anchorBearingDeg: 317, bearingConvention: BEARING_CONVENTION }), `${copy(bySpacing(0.03))}${note}`)
+  assert.ok(!copy({ ...twoPoint('provisional', 0), anchorBearingDeg: Number.NaN, bearingConvention: BEARING_CONVENTION }).includes('session-local'), 'a bearing that is not a number drew no tick')
+  // A bearing is read through the one helper that knows whether it may be: one written under the old sign rule (no convention, or ?bearing=1's) is not read.
+  assert.ok(!copy({ ...twoPoint('provisional', 0), anchorBearingDeg: 125, bearingConvention: undefined }).includes('session-local'), 'a bearing with no convention on the record is unreadable, so no tick is claimed')
+  assert.ok(!copy({ ...twoPoint('provisional', 0), anchorBearingDeg: 125, bearingConvention: 1 }).includes('session-local'), 'nor one written under the old rule')
   assert.ok(!copy(SINGLE_POINT).includes('session-local'), 'the one-point tier draws a tick but has its own warning, which says it aligns only at the same spot')
 })

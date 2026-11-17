@@ -80,6 +80,7 @@
  * was ever painted.
  */
 import { NOT_CHECKED_SPOTS, formatCm, keptUnfittedPoints, residualsPastGates, unitsLimit } from '../world/frame-fit.ts'
+import { readableAnchorBearingDeg } from '../world/geo.ts'
 import type { ScanCalibration } from '../world/types'
 
 /** Whole centimetres, unsigned, as the mismatch screen reports them. Null for a number that does not exist. */
@@ -149,7 +150,9 @@ export function alignmentStatusText(calibration: ScanCalibration | null | undefi
   }
 
   const text = twoPointStatusText(calibration)
-  const tickDrawn = typeof calibration.anchorBearingDeg === 'number' && Number.isFinite(calibration.anchorBearingDeg)
+  // The tick is drawn where the compass was read at this commit, and the bearing is on the record only when it was. It is read through
+  // `readableAnchorBearingDeg` (../world/geo.ts) like every stored bearing: a value written under the old sign rule is not read.
+  const tickDrawn = readableAnchorBearingDeg(calibration) !== null
   return tickDrawn ? `${text}\n• ${NORTH_TICK_NOTE}` : text
 }
 
