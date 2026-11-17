@@ -101,6 +101,7 @@ The shell runs AR natively, with ARKit on iOS and ARCore on Android, through the
 - `stop()` ends the session and gives the WebView back its background.
 - `captureFrame({ depth })` returns the full camera frame as a JPEG in portrait, the camera-to-world transform, the projection, and optionally depth in metres.
 - `hitTest({ x, y })` returns an exact hit at normalised coordinates of the rect.
+- `setOriginAnchor({ x, y, heading })` and `getOriginAnchor()` are Android only and optional in the TypeScript contract. See *The origin anchor* below.
 - Events: `pose` (about 30 per second), `points` (about 5 per second, capped at 1500 each), `hits` (a grid of samples, about twice a second), `tracking` on change, and `error`.
 
 **Choices that matter.**
@@ -108,16 +109,17 @@ The shell runs AR natively, with ARKit on iOS and ARCore on Android, through the
 - The camera is fitted whole inside the WebView ("contain"), the same as the 8th Wall provider. A keyframe is then the full frame, and its lens matches the overlay (see the `CameraFit` note in `src/ar/eighthwall.ts`).
 - The overlay renders the scanner's Three.js scene from the native pose and projection every frame. The page is transparent while a session runs, and `<html>` carries the `native-ar` class.
 - Depth is optional and sent only when asked for: LiDAR on iOS, the ARCore depth API on Android.
+- **Backgrounding (Android).** The plugin listens to its activity through Activity lifecycle callbacks, registered in `load()`. When the activity pauses, the GL loop stops and the ARCore session pauses, which releases the camera, and `tracking` reports `notAvailable`. When the activity resumes, the next frame resumes the session, and the pose events carry the tracking state again.
+- **The origin anchor (Android).** `setOriginAnchor` places an ARCore anchor on the first feature point or plane under a point of the rect, and saves its pose and the caller's heading to `scan-origin-anchor.json` in the app's files directory. That directory is left out of backup and device-to-device transfer, like the rest of the app's data. The anchor is an ARCore one, so it follows ARCore's refinements while the session runs. `getOriginAnchor` returns the origin as `{ anchor }`, with `current: true` when this session placed it. A saved origin is in the frame of the session that placed it, so a later session reads it with `current: false`, and the saved position is then only a record. No cloud anchors are used.
 
 **Verification status.**
 
-- Android: the debug build compiles (`./gradlew assembleDebug`, JDK 21 and SDK 36). It has **not run on a device**.
+- Android: the debug build compiles (`./gradlew assembleDebug`, JDK 21 and SDK 36), and `./gradlew testDebugUnitTest` passes the origin file's round trip (`OriginAnchorStoreTest`). It has **not run on a device**, so the pause and resume, and the origin anchor, are unverified there.
 - iOS: **not compiled.** The build host has no Xcode. The Swift is written against the Capacitor and ARKit APIs and needs a Mac build before anyone relies on it.
 - Web: `npm run test:native-ar` covers the codec, the provider against a fake plugin (including the fallback), and the runtime choice. `tests/mock-native-ar.spec.ts` runs the scanner in Chromium on a stand-in plugin, and checks the handover to the 8th Wall mock.
 
 **Known gaps.**
 
-- Android: Capacitor offers no pause hook to plugins, so backgrounding the app is not handled. The next frame reports a camera error, and the web app starts the session again.
 - iOS: ARKit stops the session when the app is backgrounded. The plugin does not report that yet.
 - The keyframe upload does not send the depth map yet (`FrameObservation.depthUrl` in `src/world/types.ts` is the slot for it).
 
@@ -160,4 +162,5 @@ The bundle is `app/build/outputs/bundle/release/app-release.aab`.
 - A 1024 px vector master for the app icon (see *Icons and launch screens*).
 - `ScanAR` on a device. An ARKit iPhone (the Swift has never been compiled), and an ARCore Android phone (the build passes; no session has run).
 - Depth in the keyframe upload (`FrameObservation.depthUrl`), and a UI entry point for the depth capture.
-- Pause and resume handling in the plugin on both platforms (see *Native AR capture*).
+- Pause and resume on iOS: ARKit's interruptions are not reported yet (see *Native AR capture*).
+- Placing a saved origin again in a later session. ARCore's frame does not carry over from one session to the next, and no cloud anchor is used.

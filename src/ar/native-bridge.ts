@@ -103,6 +103,21 @@ export interface NativeErrorEvent {
   message: string
 }
 
+/** An origin anchor, as the native layer returns it from setOriginAnchor() and getOriginAnchor(). */
+export interface NativeOriginAnchor {
+  /** Metres, x, y, z, in the frame of the AR session that placed the origin. */
+  position: number[]
+  /** Quaternion, x, y, z, w. */
+  rotation: number[]
+  /** The heading the caller gave with the origin, or null. The native layer stores it unchanged. */
+  heading: number | null
+  /**
+   * True when the running AR session placed this origin, so `position` is in the frame it tracks.
+   * False when an earlier session saved it: that frame is gone, so the position is only a record.
+   */
+  current: boolean
+}
+
 /** The ScanAR plugin's methods and events, as Capacitor exposes them to the web app. */
 export interface ScanARPlugin {
   capabilities(): Promise<NativeARCapabilities>
@@ -111,6 +126,14 @@ export interface ScanARPlugin {
   captureFrame(options: { depth: boolean }): Promise<NativeFrame>
   /** A single hit test at normalised (0..1) coordinates of the overlay rect. */
   hitTest(options: { x: number; y: number }): Promise<NativeHitSample>
+  /**
+   * Places the origin on the first feature point or plane under (x, y), normalised 0..1 over the camera rect,
+   * and saves it on the device. Rejects when no surface is under the point. Optional: the Android plugin has
+   * it, and the iOS plugin does not yet, so a caller checks for it before use.
+   */
+  setOriginAnchor?(options: { x: number; y: number; heading?: number }): Promise<{ anchor: NativeOriginAnchor }>
+  /** The origin saved on the device, or `anchor: null` when none was saved. Optional, as setOriginAnchor is. */
+  getOriginAnchor?(): Promise<{ anchor: NativeOriginAnchor | null }>
   addListener(event: 'pose', listener: (e: NativePoseEvent) => void): Promise<NativeListenerHandle>
   addListener(event: 'points', listener: (e: NativePointsEvent) => void): Promise<NativeListenerHandle>
   addListener(event: 'hits', listener: (e: NativeHitsEvent) => void): Promise<NativeListenerHandle>
