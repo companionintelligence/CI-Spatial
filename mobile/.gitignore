@@ -7,7 +7,6 @@ www/
 # Written by `cap sync` into each native project. Regenerated on every sync.
 ios/App/App/public/
 ios/App/App/capacitor.config.json
-ios/App/CapApp-SPM/
 ios/App/App/config.xml
 ios/capacitor-cordova-ios-plugins/
 android/app/src/main/assets/public/

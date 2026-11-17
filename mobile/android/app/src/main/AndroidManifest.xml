@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- AR is optional: a phone without ARCore still runs the app, on the web runtimes. -->
+    <uses-feature android:name="android.hardware.camera.ar" android:required="false" />
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
@@ -9,12 +12,16 @@
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
 
+        <!-- ARCore is optional, so the app installs on phones without it. The ScanAR plugin asks at run time. -->
+        <meta-data android:name="com.google.ar.core" android:value="optional" />
+
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"
             android:name=".MainActivity"
             android:label="@string/title_activity_main"
             android:theme="@style/AppTheme.NoActionBarLaunch"
             android:launchMode="singleTask"
+            android:screenOrientation="portrait"
             android:exported="true">
 
             <intent-filter>
