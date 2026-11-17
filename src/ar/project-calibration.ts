@@ -23,8 +23,10 @@ import {
   twoPointSeparationM,
   MIN_POINT_SEPARATION_M,
   DEFAULT_SEPARATION_TOLERANCE_M,
+  originDecalPlan,
 } from '../world/geo'
 import { buildAnchorMarker, ANCHOR_RADIUS_M } from '../world/anchor-marker'
+import { buildOriginDecal } from '../world/origin-decal'
 import { isSameHeightRetry, isTapOnGround, tapHeightAboveGroundCm } from './ground-gate'
 
 const TRACKING_TIMEOUT_MS = 10_000
@@ -139,6 +141,13 @@ const MARKER_IDS: MarkerId[] = ['landmark', 'heading']
  * assumes.
  */
 const MARKER_HEIGHT_DISAGREEMENT_M = 0.15
+
+/**
+ * Opacity of the floor grid once the origin is committed and it stays up for
+ * the scan. Well under the flow's 0.4 "settled" value: during calibration the
+ * grid is the thing being judged, and during a scan it is a reference only.
+ */
+const SCAN_FLOOR_OPACITY = 0.12
 
 /**
  * Floor-plane overlay extent, in metres, and its subdivision count.
@@ -483,45 +492,70 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
   }
 
   /**
-   * Adds a marker to the scene **directly**, so it outlives the flow.
+   * Adds an object to the scene **directly**, so it outlives the flow.
    *
    * Everything under `placement` is torn down by `clearPlacement()` on every
    * exit path; anything added here is not. That difference is the whole reason
    * this helper is separate.
+   *
+   * An object already in the scene under the same name is replaced, not
+   * stacked. Without that, a second commit in one session would draw a second
+   * origin on the same spot, and the two would drift apart as soon as either
+   * was re-placed.
    */
-  function dropPersistentMarker(position: Vec3, northYawDeg: number | null, name: string): THREE.Group | null {
+  function replacePersistent(object: THREE.Object3D): void {
     const target = ensureScene()
-    if (!target) return null
-    const marker = buildAnchorMarker(northYawDeg)
-    marker.name = name
-    marker.position.set(position.x, position.y, position.z)
-    target.add(marker)
-    return marker
+    if (!target) return
+    const previous = target.getObjectByName(object.name)
+    if (previous) {
+      target.remove(previous)
+      disposeObject(previous)
+    }
+    target.add(object)
   }
 
   /**
-   * Keeps **both** committed markers in the scene for the rest of the session.
+   * Keeps the floor grid for the rest of the scan, at the committed height.
    *
-   * Ticket 0004 as shipped kept only the landmark: `clearPlacement()` tore the
-   * heading marker's decal down at commit, so point B vanished the moment the
-   * user committed — leaving the one thing that fixes the frame's rotation
-   * invisible for the entire scan that followed. Ticket 0007 requires both,
-   * because the pair *is* the reference: a user who cannot see where B went
-   * cannot notice they placed it on the wrong feature.
-   *
-   * Only the landmark carries the north tick — the bearing describes one
-   * orientation for the frame, not a property of each marker, and drawing it
-   * twice would read as two independent compass fixes.
+   * The grid was the only drawing of the ground the flow made, and it lived in
+   * `placement`, so `clearPlacement()` removed it the moment the origin was
+   * committed. The origin was left floating with no floor under it, and the
+   * ground plane the scan depends on disappeared with the flow. It is moved out
+   * of `placement` here and dimmed: a reference to glance at, not a surface to
+   * read.
    */
-  function dropCommittedPair(landmark: Vec3, headingMarker: Vec3 | null): void {
-    // The marker lives in session space, so its tick takes the session yaw at
-    // which north lies — not the compass bearing. See buildAnchorMarker.
-    dropPersistentMarker(landmark, northYawInSession(), 'calibration anchor landmark')
-    if (headingMarker) dropPersistentMarker(headingMarker, null, 'calibration anchor heading')
+  function keepFloorPlane(): void {
+    if (!floorGrid || !ensureScene()) return
+    placement.remove(floorGrid)
+    floorGrid.name = 'calibration floor plane'
+    ;(floorGrid.material as THREE.Material).opacity = SCAN_FLOOR_OPACITY
+    replacePersistent(floorGrid)
+    floorGrid = null
+    floorGridY = null
   }
 
   /**
-   * Draws the Place's **stored** pair into the live scene — step 4 of ticket
+   * Draws the committed origin as **one** decal on the ground: a crosshair at
+   * the landmark, an arrow along the heading, and the north tick.
+   *
+   * This replaces the two separate rings the flow used to leave behind, which
+   * showed where each point was but not which way the frame faced. The heading
+   * point is no longer a decal of its own. The arrow's tip lands on it, so the
+   * arrow is the baseline the user defined and the point they placed stays
+   * visible as the arrowhead, and the north tick is the one compass fix on the
+   * decal, so the bearing reads once rather than twice.
+   *
+   * The tick takes the session yaw at which north lies, not the compass bearing,
+   * because the decal lives in session space. See `northYawInSession()`.
+   */
+  function dropCommittedOrigin(landmark: Vec3, headingPoint: Vec3 | null): void {
+    if (!ensureScene()) return
+    keepFloorPlane()
+    replacePersistent(buildOriginDecal(originDecalPlan(landmark, headingPoint, northYawInSession()), 'committed'))
+  }
+
+  /**
+   * Draws the Place's **stored** origin into the live scene — step 4 of ticket
    * 0007's return-visit flow, and the only moment at which it is possible.
    *
    * Stored points are project-space and tautological (`landmark` is the origin,
@@ -541,16 +575,17 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
     const dz = headingMarker.z - landmark.z
     const measured = Math.hypot(dx, dz)
     if (!Number.isFinite(measured) || measured <= 0) return
-    dropPersistentMarker(landmark, null, 'calibration stored reference')
-    dropPersistentMarker(
-      {
-        x: landmark.x + (dx / measured) * storedSeparationM,
-        y: landmark.y,
-        z: landmark.z + (dz / measured) * storedSeparationM,
-      },
-      null,
-      'calibration stored reference',
-    )
+    if (!ensureScene()) return
+    // The stored heading point: the stored distance along the baseline the user
+    // just defined. Any gap between it and the point they placed is the residual.
+    const storedHeading: Vec3 = {
+      x: landmark.x + (dx / measured) * storedSeparationM,
+      y: landmark.y,
+      z: landmark.z + (dz / measured) * storedSeparationM,
+    }
+    // No north tick on the stored decal. The committed origin carries the
+    // frame's one compass fix, and a second tick would read as a second reading.
+    replacePersistent(buildOriginDecal(originDecalPlan(landmark, storedHeading, null), 'stored'))
   }
 
   // ── Geometry helpers ────────────────────────────────────────────────────
@@ -1097,6 +1132,9 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
         // 'verified' is a measurement here, not a label: it requires a stored
         // reference that this session's re-measured separation actually matched.
         status: storedTwoPoint && !override ? 'verified' : 'provisional',
+        // The floor the origin sits on, in session metres: the landmark's own
+        // measured height, which is already snapped onto the established plane.
+        groundY: landmark.y,
       }
 
       const spatialFrame: ProjectSpatialFrame | undefined = frameChanged
@@ -1120,9 +1158,9 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
           }
         : undefined
 
-      // Both markers, not just the landmark: the pair is the reference, and a
-      // heading marker the user cannot see is one they cannot check.
-      dropCommittedPair(landmark, headingMarker)
+      // One origin decal: the crosshair on the landmark, the arrow to the heading
+      // point, and the north tick. The heading point stays visible as the arrowhead.
+      dropCommittedOrigin(landmark, headingMarker)
 
       // Step 4 of the return-visit flow. Reachable only here, because only a
       // committed frame makes the stored points renderable at all.
@@ -1149,6 +1187,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
         // A single anchor is project-space (0,0,0) by construction, so it always
         // agrees with itself — there is nothing here to verify against.
         status: 'provisional',
+        groundY: landmark.y,
       }
       // Never downgrade a stored frame to this tier: a Place that already has a
       // reference keeps it, and this session simply aligns provisionally.
@@ -1163,7 +1202,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
       // No reference photos on this tier (ticket 0007's non-goals): it has no
       // cross-session verification story, and a re-acquisition aid would imply
       // one. There is also no second marker to draw.
-      dropCommittedPair(landmark, null)
+      dropCommittedOrigin(landmark, null)
       close({ calibration, spatialFrame })
     }
 

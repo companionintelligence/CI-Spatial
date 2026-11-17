@@ -397,6 +397,21 @@ export type ScanCalibration = {
   sessionToProject: number[]
   calibratedAt: string
   status: 'verified' | 'provisional' | 'uncalibrated'
+  /**
+   * The session-space floor height, in metres, the origin sat on when this scan
+   * was committed: the landmark's own measured `y`.
+   *
+   * Recorded with the scan rather than left inside `sessionToProject`'s
+   * translation, so the origin's ground height can be read back without
+   * decomposing a matrix. Project-space floor is `y = 0` by construction, so
+   * the Place-level `ProjectSpatialFrame` needs no field of its own.
+   *
+   * Optional and nullable so existing records stay valid: a record written
+   * before this field simply does not say where its floor was. Read it with
+   * `readCalibrationGroundY()` in `./geo.ts`, which turns absence and
+   * non-finite values into `null`.
+   */
+  groundY?: number | null
 } & (
   | {
       method: 'two-point-ground'
@@ -640,6 +655,13 @@ export interface ScanManifest {
    * ticket 0006 measures.
    */
   calibrationSeparationM?: number | null
+  /**
+   * The session-space floor height, in metres, this scan's origin sat on — the
+   * `groundY` of its `ScanCalibration`, surfaced alongside the separation so a
+   * consumer can place the origin decal without reading the sidecar. Null for
+   * scans that predate the field or carry no calibration.
+   */
+  calibrationGroundY?: number | null
   capturedAt: string | null
   pointCount: number | null
   detectionCount: number | null

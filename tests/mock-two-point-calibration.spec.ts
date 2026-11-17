@@ -375,19 +375,22 @@ test.describe('two-point calibration', () => {
    * 180°, reporting 'verified'. The photos and `pointLabels` asserted here are
    * the only mitigation; the residual cannot see the failure at all.
    */
-  test('commits a reference photo and label for each marker, and keeps both markers in the scene', async ({ page, request }) => {
+  test('commits a reference photo and label for each marker, and keeps one origin decal in the scene', async ({ page, request }) => {
     const place = await createPlace(request, 'photos')
     try {
       await startArWithPlace(page, place.name)
       await reachLandmarkStage(page)
       await placeBothMarkers(page, { a: 'north door frame', b: 'radiator corner' })
 
-      // Both markers persist. Before this ticket `clearPlacement()` tore the
-      // heading marker down at commit, so the one thing that fixes the frame's
-      // rotation was invisible for the whole scan that followed.
+      // One origin decal, not two rings: the crosshair sits on the landmark and
+      // the arrow runs to the heading point, so the arrow is the baseline the user
+      // drew. The floor it stands on is kept for the rest of the scan. The flow used
+      // to take the grid down at commit and leave the origin floating.
       const names = await sceneObjectNames(page)
-      expect(names).toContain('calibration anchor landmark')
-      expect(names).toContain('calibration anchor heading')
+      expect(names).toContain('calibration origin')
+      expect(names).toContain('origin crosshair')
+      expect(names).toContain('origin heading arrow')
+      expect(names).toContain('calibration floor plane')
 
       await expect(async () => {
         const frame = twoPointFrame(await readPlace(request, place.id))
@@ -423,7 +426,7 @@ test.describe('two-point calibration', () => {
     }
   })
 
-  test('a return visit shows each stage its own photo, and draws the stored pair once the separation matches', async ({ page, request }) => {
+  test('a return visit shows each stage its own photo, and draws the stored origin once the separation matches', async ({ page, request }) => {
     const place = await createPlace(request, 'return')
     try {
       // Visit 1 — establishes the frame and both photos.
@@ -466,9 +469,9 @@ test.describe('two-point calibration', () => {
       // the stored points are project-space and tautological, so drawing them
       // needs the very transform calibration had not produced until now.
       const names = await sceneObjectNames(page)
-      expect(names).toContain('calibration stored reference')
-      expect(names).toContain('calibration anchor landmark')
-      expect(names).toContain('calibration anchor heading')
+      expect(names).toContain('calibration stored origin')
+      expect(names).toContain('calibration origin')
+      expect(names).toContain('origin heading arrow')
     } finally {
       await deletePlace(request, place.id)
     }
@@ -542,7 +545,7 @@ test.describe('two-point calibration', () => {
 
       // And the photo is never a gate: this still commits.
       await placeBothMarkers(page)
-      expect(await sceneObjectNames(page)).toContain('calibration anchor landmark')
+      expect(await sceneObjectNames(page)).toContain('calibration origin')
     } finally {
       await deletePlace(request, place.id)
     }
@@ -567,8 +570,8 @@ test.describe('two-point calibration', () => {
       await placeBothMarkers(page, { a: 'north door frame', b: 'radiator corner' })
 
       // The photo is an aid, never a gate — the calibration itself completed.
-      expect(await sceneObjectNames(page)).toContain('calibration anchor landmark')
-      expect(await sceneObjectNames(page)).toContain('calibration anchor heading')
+      expect(await sceneObjectNames(page)).toContain('calibration origin')
+      expect(await sceneObjectNames(page)).toContain('origin heading arrow')
 
       // The server is unreachable, so local storage is the only place the truth
       // can be checked — which is the point: this device keeps working.
@@ -644,8 +647,8 @@ test.describe('two-point calibration', () => {
       await reachLandmarkStage(page)
       await placeBothMarkers(page)
       const names = await sceneObjectNames(page)
-      expect(names).toContain('calibration anchor landmark')
-      expect(names).toContain('calibration anchor heading')
+      expect(names).toContain('calibration origin')
+      expect(names).toContain('origin heading arrow')
     } finally {
       await deletePlace(request, place.id)
     }
