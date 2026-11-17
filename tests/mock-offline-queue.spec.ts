@@ -371,7 +371,7 @@ test.describe('a calibration made offline', () => {
       }).toBeGreaterThanOrEqual(2)
       expect(posts).not.toContain(`/projects/${place.id}/reference-photos`)
       // The page's copy of the intent goes once the server holds the frame and its photos. A server with no route for a frame's
-      // photos (one built before ADR 0009) holds the frame, and the page keeps the row for the photos alone, to send them when it has.
+      // photos (one built before ADR 0011) holds the frame, and the page keeps the row for the photos alone, to send them when it has.
       await expect.poll(async () => (await waitingFrames(page)).every((row) => row.syncState === 'photos'), { timeout: 45_000 }).toBe(true)
     } finally {
       await context.setOffline(false)

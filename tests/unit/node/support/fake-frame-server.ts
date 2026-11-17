@@ -1,5 +1,5 @@
 /**
- * A stand-in for the server's routes about a Place's reference, as ADR 0009 states them ("Interface for the client slice"), for the
+ * A stand-in for the server's routes about a Place's reference, as ADR 0011 states them ("Interface for the client slice"), for the
  * tests that run the phone's frame code for real (src/project/frame-sync.ts, src/project/frame-status.ts) against the rules the
  * server will hold it to, and not against a reply a test scripted to please it.
  *
@@ -174,7 +174,7 @@ export class FakeFrameServer {
   scans: ScanFacts[]
   /** False: every request fails as a network that is down does. */
   online = true
-  /** False: the server is older than ADR 0009 and has no route for a frame's photos. */
+  /** False: the server is older than ADR 0011 and has no route for a frame's photos. */
   framePhotoRoute = true
   /** A status every photo upload is answered with instead of being taken, with the server's own `error` sentence. */
   failPhotosWith: number | null = null
@@ -222,7 +222,7 @@ export class FakeFrameServer {
     return ids
   }
 
-  /** The body `GET /projects/:id/frame-status` answers: ADR 0009's `FrameStatus`. */
+  /** The body `GET /projects/:id/frame-status` answers: ADR 0011's `FrameStatus`. */
   statusBody(): Record<string, unknown> {
     const byFrame = new Map<string, number>()
     let unrecordedScans = 0

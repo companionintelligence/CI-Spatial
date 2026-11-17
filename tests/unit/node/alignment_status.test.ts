@@ -207,14 +207,15 @@ test('two-point verified: the text cannot depend on direction, because direction
   const south = copy(twoPoint('verified', 0.02, 180))
   const unknown = copy(twoPoint('verified', 0.02, null))
   assert.equal(north, south)
-  assert.equal(north, unknown)
+  // What a compass reading adds is the note that the tick it drew is session-local, whichever way it read: no figure of it is in the text.
+  assert.equal(north, `${unknown}\n• North tick is session-local`)
 })
 
 test('a kept mismatch cannot depend on direction either: the check that failed was a distance', async () => {
   const copy = await alignmentStatusText()
   const north = copy(twoPoint('provisional', 0.4, 0))
   assert.equal(north, copy(twoPoint('provisional', 0.4, 180)))
-  assert.equal(north, copy(twoPoint('provisional', 0.4, null)))
+  assert.equal(north, `${copy(twoPoint('provisional', 0.4, null))}\n• North tick is session-local`)
 })
 
 test('two-point provisional keeps the meaning of the old text: the frame was set, start scanning', async () => {
@@ -338,8 +339,8 @@ test('single point keeps its warning', async () => {
 
 test('no calibration keeps its warning, for null and undefined alike', async () => {
   const copy = await alignmentStatusText()
-  assert.equal(copy(null), '⚠ No project alignment')
-  assert.equal(copy(undefined), '⚠ No project alignment')
+  assert.equal(copy(null), '⚠ No project alignment\n• Scanning without it. This scan does not set the Place frame')
+  assert.equal(copy(undefined), '⚠ No project alignment\n• Scanning without it. This scan does not set the Place frame')
 })
 
 test('the five outcomes are five different messages', async () => {
@@ -416,9 +417,12 @@ const TOLERANCE_M = twoPointToleranceM(0.03)
 
 type TwoPointCalibration = Extract<ScanCalibration, { method: 'two-point-ground' }>
 
-/** A two-point calibration that a fit of `pointsUsed` points checked: what `buildTwoPointCommit` records. */
+/**
+ * A two-point calibration that a fit of `pointsUsed` points checked: what `buildTwoPointCommit` records. These two fixtures read no
+ * compass, so no north tick was drawn and the text is the verdict's alone; the note about the tick has its own test, at the end.
+ */
 const fitted = (status: ScanCalibration['status'], rmsM: number, maxM = rmsM, pointsUsed = 3): TwoPointCalibration => ({
-  ...(twoPoint(status, 0.012, 317, TOLERANCE_M) as TwoPointCalibration),
+  ...(twoPoint(status, 0.012, null, TOLERANCE_M) as TwoPointCalibration),
   checkedBy: 'constellation',
   fit: {
     fitMethod: 'rigid',
@@ -433,7 +437,7 @@ const fitted = (status: ScanCalibration['status'], rmsM: number, maxM = rmsM, po
 
 /** A two-point calibration that compared only the spacing of the pair with the stored one. */
 const bySpacing = (residualM: number): TwoPointCalibration => ({
-  ...(twoPoint('provisional', residualM, 317, TOLERANCE_M) as TwoPointCalibration),
+  ...(twoPoint('provisional', residualM, null, TOLERANCE_M) as TwoPointCalibration),
   checkedBy: 'separation',
 })
 
@@ -544,4 +548,39 @@ test('every outcome the flow can now produce is worded, and the words differ whe
     ['points that did not fit, kept', copy({ ...(twoPoint('provisional', 0) as TwoPointCalibration), checkedBy: 'constellation' })],
   ])
   assert.equal(new Set(texts.values()).size, texts.size, [...texts].map(([name, text]) => `${name}: ${text}`).join('\n'))
+})
+
+// ── What the origin decal's wave (#269) said that the copy module must still say ────────────────────────────────────
+
+test('a bypassed floor check is said first, on either tier and whatever the separation was: provisional, and no Place frame is set', async () => {
+  const copy = await alignmentStatusText()
+  const expected = 'Floor check bypassed — provisional, and this scan does not set the Place frame.'
+  assert.equal(copy({ ...twoPoint('provisional', 0), floorCheckBypassed: true }), expected)
+  assert.equal(copy({ ...twoPoint('provisional', 0.4), floorCheckBypassed: true }), expected, 'a gap that would have said "kept as you chose" says this first')
+  assert.equal(copy({ ...twoPoint('provisional', 0, 125), floorCheckBypassed: true }), expected, 'and no tick note on it: the line is about the frame')
+  assert.equal(copy({ ...SINGLE_POINT, floorCheckBypassed: true }), expected, 'the one-point tier too')
+  assert.notEqual(copy({ ...twoPoint('provisional', 0), floorCheckBypassed: false }), expected, 'a floor-checked commit does not say it')
+  assert.notEqual(copy({ ...SINGLE_POINT, floorCheckBypassed: false }), expected)
+})
+
+test('a scan continued without a calibration says it does not set the Place frame', async () => {
+  const copy = await alignmentStatusText()
+  assert.match(copy(null), /This scan does not set the Place frame/)
+  assert.match(copy(null), /^⚠ No project alignment\n/, 'under the headline it always had')
+})
+
+test('the north tick is said to be session-local where a compass reading drew it, and only there', async () => {
+  const copy = await alignmentStatusText()
+  const note = '\n• North tick is session-local'
+  for (const [name, calibration] of OUTCOMES) {
+    if (calibration === null || calibration.method !== 'two-point-ground') continue
+    assert.ok(!copy(calibration).includes('session-local'), `${name}: no compass reading, so no tick was drawn and none is mentioned`)
+    const withCompass = { ...calibration, anchorBearingDeg: 125 }
+    assert.equal(copy(withCompass), copy(calibration) + note, `${name}: the same line, and then the note`)
+  }
+  // The fit's verdict and the spacing's keep their own words, and the note comes after them.
+  assert.equal(copy({ ...fitted('verified', 0.032), anchorBearingDeg: 317 }), `${copy(fitted('verified', 0.032))}${note}`)
+  assert.equal(copy({ ...bySpacing(0.03), anchorBearingDeg: 317 }), `${copy(bySpacing(0.03))}${note}`)
+  assert.ok(!copy({ ...twoPoint('provisional', 0), anchorBearingDeg: Number.NaN }).includes('session-local'), 'a bearing that is not a number drew no tick')
+  assert.ok(!copy(SINGLE_POINT).includes('session-local'), 'the one-point tier draws a tick but has its own warning, which says it aligns only at the same spot')
 })

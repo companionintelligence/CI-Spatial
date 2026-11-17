@@ -68,7 +68,8 @@ test('it is the epoch the flow began in, not the one at the commit: a shift whil
 test('a provider with no epoch signal gives no field, so the result is exactly what it always was', async () => {
   const result = resultOf(await runScenario(runModal, scenario('no epoch', TWO_POINT)))
   assert.equal('calibrationEpoch' in result, false)
-  assert.deepEqual(Object.keys(result).sort(), ['calibration', 'referencePhotos', 'spatialFrame'].filter((key) => key in result).sort())
+  // The origin's compass bearing is a field of the result since the origin decal (wave 12); the epoch is what must be absent.
+  assert.deepEqual(Object.keys(result).sort(), ['calibration', 'originBearingDeg', 'referencePhotos', 'spatialFrame'].filter((key) => key in result).sort())
 })
 
 test('an epoch that is not a usable number is read as epoch 0, as the epoch log reads it, and is still said', async () => {

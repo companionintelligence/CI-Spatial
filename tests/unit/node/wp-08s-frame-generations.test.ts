@@ -1,5 +1,5 @@
 /**
- * Frame generations (ADR 0009), the halves the browser and an older phone meet: the shared rules module that
+ * Frame generations (ADR 0011), the halves the browser and an older phone meet: the shared rules module that
  * both the server and the capture client import, how the phone's existing frame code reads the server's new
  * answers, and the New Place form's default type (D7).
  *

@@ -7,7 +7,7 @@
  * the server answers is read in one place and read cautiously: a status the phone cannot understand is "could not check",
  * never "no scans".
  *
- * The status body is the one ADR 0009 gives (`FrameStatus`), and the tests read bodies a stand-in for that server builds from
+ * The status body is the one ADR 0011 gives (`FrameStatus`), and the tests read bodies a stand-in for that server builds from
  * scans (./support/fake-frame-server.ts), so the reader is held to the real field names and not to the ones its author
  * assumed.
  *

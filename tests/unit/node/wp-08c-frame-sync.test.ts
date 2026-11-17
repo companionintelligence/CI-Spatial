@@ -5,7 +5,7 @@
  *
  * Both modules run for real, over the in-memory IndexedDB of ./support/fake-indexeddb.ts and either a scripted `fetch` (as
  * wp-place-frame-sync.test.ts runs them) or the stand-in for the server's routes of ./support/fake-frame-server.ts, which holds the
- * phone to ADR 0009's rules: a replacement has to name the frame the SERVER holds, a photo of a frame goes to that frame's own
+ * phone to ADR 0011's rules: a replacement has to name the frame the SERVER holds, a photo of a frame goes to that frame's own
  * route, and the Place's own photo route is closed once the frame has an id. What this adds to that file's claims:
  *
  *  - a frame that replaces another is sent with `replaces`, on the first try, on a retry made later from the waiting row, and

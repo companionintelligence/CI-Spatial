@@ -1,4 +1,4 @@
-# 0009. A Place's frame is replaced by a new generation, never edited
+# 0011. A Place's frame is replaced by a new generation, never edited
 
 - **Status:** Proposed
 - **Date:** 2026-11-17

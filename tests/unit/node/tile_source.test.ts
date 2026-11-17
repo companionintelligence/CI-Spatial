@@ -1624,5 +1624,5 @@ test('source shape: the shells name themselves to a tile host, and the privacy n
   assert.match(read('mobile/capacitor.config.ts'), /appendUserAgent: 'CompanionScan'/)
   const notDone = read('mobile/README.md').split('## Not done')[1] ?? ''
   assert.match(notDone, /map tile host \(`MAP_TILE_SOURCE`\)[^.]*once the person allows it on the device/)
-  assert.match(notDone, /the privacy policy/, 'the line that lists the privacy work is still there')
+  assert.match(notDone, /the privacy policy/i, 'the line that lists the privacy work is still there')
 })

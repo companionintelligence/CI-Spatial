@@ -39,6 +39,20 @@
  *    (one at a time); a check point placed and then taken away has cost its frame (the count of frames asked for is one more).
  *  - The driver's `release` answers the frames the modal asks for next as well, as a host that answers every request does.
  *
+ * The merge of main (#264 to #269, the origin decal and the ground gate) moved these, on purpose, and nothing else:
+ *
+ *  - The committed origin is one decal, `calibration origin` (src/world/origin-decal.ts), where the flow left a marker on the landmark and
+ *    another on the heading point. The arrow's tip stands for the heading point, so the scene lists no marker for it. A check point
+ *    keeps its own marker. On a return visit the stored origin is drawn beside the committed one, `calibration stored origin`, after the
+ *    ghosts of the stored points.
+ *  - Every calibration record carries `groundY`, the floor the origin sat on, and `floorCheckBypassed` (src/ar/ground-gate.ts). In the
+ *    scenario whose check point is tapped on a table the second is `true`: the off-floor tap was accepted by a second tap at the same
+ *    height, so the record stays provisional and writes no Place frame, which is what it did before.
+ *  - A two-point result made with a compass reading carries `originBearingDeg`, the arrow's true-north bearing, for the HUD.
+ *  - The scene entry of a decal also records `arrowTip`, where its arrow ends, in scene coordinates (./calibration-flow-driver.ts). The arrow's
+ *    geometry is single precision, so the tip is the heading point to about 1e-7 m, and the contract holds it to 1e-6.
+ *  Nothing else moved: no card, label, photo, record number or count of calls to the host differs.
+ *
  * Each entry is the outcome ./calibration-flow-driver.ts reports: whether the modal resolved, the records it
  * returned (a photo's bytes reduced to their length), what its card said at the moments a scenario looked, what it
  * left in the scene, and how often it asked the host for a hit, the compass, the pose and a camera frame.
@@ -70,6 +84,8 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 288.13010235415595,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'provisional',
       },
@@ -112,6 +128,7 @@ export const GOLDEN: Record<string, Outcome> = {
           label: 'radiator corner',
         },
       ],
+      originBearingDeg: 71.86989764584405,
     },
     looks: {
       'ready to commit': {
@@ -129,8 +146,11 @@ export const GOLDEN: Record<string, Outcome> = {
       },
     },
     scene: [
-      { name: 'calibration anchor landmark', position: [1.5, -1.2, -2] },
-      { name: 'calibration anchor heading', position: [3.3, -1.2, 0.4] },
+      {
+        name: 'calibration origin',
+        position: [1.5, -1.2, -2],
+        arrowTip: [3.3, -1.2, 0.40000000000000036],
+      },
     ],
     counts: { hitTests: 2, compass: 2, pose: 2, captures: 2 },
   },
@@ -151,6 +171,8 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: null,
         projectBearingDeg: null,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'provisional',
       },
@@ -170,8 +192,11 @@ export const GOLDEN: Record<string, Outcome> = {
     },
     looks: {},
     scene: [
-      { name: 'calibration anchor landmark', position: [1.5, -1.2, -2] },
-      { name: 'calibration anchor heading', position: [3.3, -1.2, 0.4] },
+      {
+        name: 'calibration origin',
+        position: [1.5, -1.2, -2],
+        arrowTip: [3.3, -1.2, 0.40000000000000036],
+      },
     ],
     counts: { hitTests: 2, compass: 2, pose: 2, captures: 0 },
   },
@@ -192,6 +217,8 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 235,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'provisional',
       },
@@ -208,11 +235,15 @@ export const GOLDEN: Record<string, Outcome> = {
         bearingConvention: 2,
       },
       referencePhotos: [],
+      originBearingDeg: 125,
     },
     looks: {},
     scene: [
-      { name: 'calibration anchor landmark', position: [1, -1.2, 2] },
-      { name: 'calibration anchor heading', position: [2, -1.2, 2] },
+      {
+        name: 'calibration origin',
+        position: [1, -1.2, 2],
+        arrowTip: [2, -1.2, 2],
+      },
     ],
     counts: { hitTests: 2, compass: 2, pose: 2, captures: 0 },
   },
@@ -288,6 +319,8 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 235,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'provisional',
       },
@@ -329,11 +362,15 @@ export const GOLDEN: Record<string, Outcome> = {
           label: null,
         },
       ],
+      originBearingDeg: 125,
     },
     looks: {},
     scene: [
-      { name: 'calibration anchor landmark', position: [1, -1.2, 2] },
-      { name: 'calibration anchor heading', position: [4, -1.2, 2] },
+      {
+        name: 'calibration origin',
+        position: [1, -1.2, 2],
+        arrowTip: [4, -1.2, 2.000000000000001],
+      },
     ],
     counts: { hitTests: 2, compass: 2, pose: 2, captures: 2 },
   },
@@ -354,18 +391,35 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 235,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'provisional',
         checkedBy: 'separation',
       },
       spatialFrame: undefined,
+      originBearingDeg: 125,
     },
     looks: {},
     scene: [
-      { name: 'calibration anchor landmark', position: [1, -1.2, 2] },
-      { name: 'calibration anchor heading', position: [4, -1.2, 2] },
-      { name: 'calibration stored reference', position: [1, -1.2, 2] },
-      { name: 'calibration stored reference', position: [4, -1.2, 2] },
+      {
+        name: 'calibration origin',
+        position: [1, -1.2, 2],
+        arrowTip: [4, -1.2, 2.000000000000001],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [1, -1.2, 2],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [4, -1.2, 2],
+      },
+      {
+        name: 'calibration stored origin',
+        position: [1, -1.2, 2],
+        arrowTip: [4, -1.2, 2.000000000000001],
+      },
     ],
     counts: { hitTests: 2, compass: 2, pose: 2, captures: 1 },
   },
@@ -386,18 +440,35 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 235,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'provisional',
         checkedBy: 'separation',
       },
       spatialFrame: undefined,
+      originBearingDeg: 125,
     },
     looks: {},
     scene: [
-      { name: 'calibration anchor landmark', position: [1, -1.2, 2] },
-      { name: 'calibration anchor heading', position: [4.1, -1.2, 2] },
-      { name: 'calibration stored reference', position: [1, -1.2, 2] },
-      { name: 'calibration stored reference', position: [4, -1.2, 2] },
+      {
+        name: 'calibration origin',
+        position: [1, -1.2, 2],
+        arrowTip: [4.099999904632568, -1.2, 2.000000000000001],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [1, -1.2, 2],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [4, -1.2, 2],
+      },
+      {
+        name: 'calibration stored origin',
+        position: [1, -1.2, 2],
+        arrowTip: [4, -1.2, 2.000000000000001],
+      },
     ],
     counts: { hitTests: 2, compass: 2, pose: 2, captures: 1 },
   },
@@ -418,18 +489,35 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 235,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'provisional',
         checkedBy: 'separation',
       },
       spatialFrame: undefined,
+      originBearingDeg: 125,
     },
     looks: {},
     scene: [
-      { name: 'calibration anchor landmark', position: [1, -1.2, 2] },
-      { name: 'calibration anchor heading', position: [3.88, -1.2, 2] },
-      { name: 'calibration stored reference', position: [1, -1.2, 2] },
-      { name: 'calibration stored reference', position: [4, -1.2, 2] },
+      {
+        name: 'calibration origin',
+        position: [1, -1.2, 2],
+        arrowTip: [3.880000114440918, -1.2, 2.0000000000000004],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [1, -1.2, 2],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [4, -1.2, 2],
+      },
+      {
+        name: 'calibration stored origin',
+        position: [1, -1.2, 2],
+        arrowTip: [4, -1.2, 2.000000000000001],
+      },
     ],
     counts: { hitTests: 2, compass: 2, pose: 2, captures: 1 },
   },
@@ -492,18 +580,35 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 235,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'provisional',
         checkedBy: 'separation',
       },
       spatialFrame: undefined,
+      originBearingDeg: 125,
     },
     looks: {},
     scene: [
-      { name: 'calibration anchor landmark', position: [1, -1.2, 2] },
-      { name: 'calibration anchor heading', position: [3.165, -1.2, 2] },
-      { name: 'calibration stored reference', position: [1, -1.2, 2] },
-      { name: 'calibration stored reference', position: [3, -1.2, 2] },
+      {
+        name: 'calibration origin',
+        position: [1, -1.2, 2],
+        arrowTip: [3.1649999618530273, -1.2, 2.0000000000000004],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [1, -1.2, 2],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [3, -1.2, 2],
+      },
+      {
+        name: 'calibration stored origin',
+        position: [1, -1.2, 2],
+        arrowTip: [3, -1.2, 2.0000000000000004],
+      },
     ],
     counts: { hitTests: 2, compass: 2, pose: 2, captures: 1 },
   },
@@ -587,6 +692,8 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 235,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'provisional',
         checkedBy: 'separation',
@@ -629,11 +736,15 @@ export const GOLDEN: Record<string, Outcome> = {
           label: null,
         },
       ],
+      originBearingDeg: 125,
     },
     looks: {},
     scene: [
-      { name: 'calibration anchor landmark', position: [1, -1.2, 2] },
-      { name: 'calibration anchor heading', position: [4.4, -1.2, 2] },
+      {
+        name: 'calibration origin',
+        position: [1, -1.2, 2],
+        arrowTip: [4.400000095367432, -1.2, 2.000000000000001],
+      },
     ],
     counts: { hitTests: 2, compass: 2, pose: 2, captures: 2 },
   },
@@ -643,7 +754,7 @@ export const GOLDEN: Record<string, Outcome> = {
     looks: {
       'after re-place': {
         title: 'Align this scan to the project',
-        copy: 'Step 1 of 2 — tap Point A again, the same spot as last time. Point A is the project\'s origin.',
+        copy: "Step 1 of 2 — tap Point A again, the same spot as last time. Point A is the project's origin.",
         status: 'Tap the ground to place the landmark.',
         separation: {
           hidden: true,
@@ -675,18 +786,35 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 235,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'provisional',
         checkedBy: 'separation',
       },
       spatialFrame: undefined,
+      originBearingDeg: 125,
     },
     looks: {},
     scene: [
-      { name: 'calibration anchor landmark', position: [1, -1.2, 2] },
-      { name: 'calibration anchor heading', position: [4.0600000000000005, -1.2, 2] },
-      { name: 'calibration stored reference', position: [1, -1.2, 2] },
-      { name: 'calibration stored reference', position: [4, -1.2, 2] },
+      {
+        name: 'calibration origin',
+        position: [1, -1.2, 2],
+        arrowTip: [4.059999942779541, -1.2, 2.000000000000001],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [1, -1.2, 2],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [4, -1.2, 2],
+      },
+      {
+        name: 'calibration stored origin',
+        position: [1, -1.2, 2],
+        arrowTip: [4, -1.2, 2.000000000000001],
+      },
     ],
     counts: { hitTests: 2, compass: 2, pose: 2, captures: 1 },
   },
@@ -728,18 +856,35 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 235,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'provisional',
         checkedBy: 'separation',
       },
       spatialFrame: undefined,
+      originBearingDeg: 125,
     },
     looks: {},
     scene: [
-      { name: 'calibration anchor landmark', position: [1, -1.2, 2] },
-      { name: 'calibration anchor heading', position: [4.140000000000001, -1.2, 2] },
-      { name: 'calibration stored reference', position: [1, -1.2, 2] },
-      { name: 'calibration stored reference', position: [4, -1.2, 2] },
+      {
+        name: 'calibration origin',
+        position: [1, -1.2, 2],
+        arrowTip: [4.140000104904175, -1.2, 2.000000000000001],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [1, -1.2, 2],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [4, -1.2, 2],
+      },
+      {
+        name: 'calibration stored origin',
+        position: [1, -1.2, 2],
+        arrowTip: [4, -1.2, 2.000000000000001],
+      },
     ],
     counts: { hitTests: 2, compass: 2, pose: 2, captures: 1 },
   },
@@ -760,18 +905,35 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 235,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'provisional',
         checkedBy: 'separation',
       },
       spatialFrame: undefined,
+      originBearingDeg: 125,
     },
     looks: {},
     scene: [
-      { name: 'calibration anchor landmark', position: [1, -1.2, 2] },
-      { name: 'calibration anchor heading', position: [4.16, -1.2, 2] },
-      { name: 'calibration stored reference', position: [1, -1.2, 2] },
-      { name: 'calibration stored reference', position: [4, -1.2, 2] },
+      {
+        name: 'calibration origin',
+        position: [1, -1.2, 2],
+        arrowTip: [4.1600000858306885, -1.2, 2.000000000000001],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [1, -1.2, 2],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [4, -1.2, 2],
+      },
+      {
+        name: 'calibration stored origin',
+        position: [1, -1.2, 2],
+        arrowTip: [4, -1.2, 2.000000000000001],
+      },
     ],
     counts: { hitTests: 2, compass: 2, pose: 2, captures: 1 },
   },
@@ -787,23 +949,39 @@ export const GOLDEN: Record<string, Outcome> = {
           2, 1.2, -1.0000000000000002, 1,
         ],
         separationM: 3.4000000000000004,
-        residualM: Number.NaN,
+        residualM: NaN,
         toleranceM: 0.16799999999999998,
         anchorBearingDeg: 325,
         projectBearingDeg: 235,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'provisional',
         checkedBy: 'separation',
       },
       spatialFrame: undefined,
+      originBearingDeg: 125,
     },
     looks: {},
     scene: [
-      { name: 'calibration anchor landmark', position: [1, -1.2, 2] },
-      { name: 'calibration anchor heading', position: [4.4, -1.2, 2] },
-      { name: 'calibration stored reference', position: [1, -1.2, 2] },
-      { name: 'calibration stored reference', position: [4, -1.2, 2] },
+      {
+        name: 'calibration origin',
+        position: [1, -1.2, 2],
+        arrowTip: [4.400000095367432, -1.2, 2.000000000000001],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [1, -1.2, 2],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [4, -1.2, 2],
+      },
+      {
+        name: 'calibration stored origin',
+        position: [1, -1.2, 2],
+      },
     ],
     counts: { hitTests: 2, compass: 2, pose: 2, captures: 1 },
   },
@@ -824,6 +1002,8 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 235,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'provisional',
         checkedBy: 'separation',
@@ -866,11 +1046,15 @@ export const GOLDEN: Record<string, Outcome> = {
           label: null,
         },
       ],
+      originBearingDeg: 125,
     },
     looks: {},
     scene: [
-      { name: 'calibration anchor landmark', position: [1, -1.2, 2] },
-      { name: 'calibration anchor heading', position: [4.05, -1.2, 2] },
+      {
+        name: 'calibration origin',
+        position: [1, -1.2, 2],
+        arrowTip: [4.049999952316284, -1.2, 2.000000000000001],
+      },
     ],
     counts: { hitTests: 2, compass: 2, pose: 2, captures: 2 },
   },
@@ -889,6 +1073,8 @@ export const GOLDEN: Record<string, Outcome> = {
         bearingConvention: 2,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'provisional',
+        groundY: -1.2,
+        floorCheckBypassed: false,
       },
       spatialFrame: {
         version: 1,
@@ -899,7 +1085,12 @@ export const GOLDEN: Record<string, Outcome> = {
       },
     },
     looks: {},
-    scene: [{ name: 'calibration anchor landmark', position: [1.5, -1.2, -2] }],
+    scene: [
+      {
+        name: 'calibration origin',
+        position: [1.5, -1.2, -2],
+      },
+    ],
     counts: { hitTests: 1, compass: 2, pose: 2, captures: 0 },
   },
   'one point, no compass reading': {
@@ -907,8 +1098,8 @@ export const GOLDEN: Record<string, Outcome> = {
     result: undefined,
     looks: {
       refused: {
-        title: 'Set this project\'s world frame',
-        copy: 'Step 1 of 3 — tap the ground at a permanent feature you will recognise next visit, such as a door frame or a wall corner. This becomes the project\'s origin.',
+        title: "Set this project's world frame",
+        copy: "Step 1 of 3 — tap the ground at a permanent feature you will recognise next visit, such as a door frame or a wall corner. This becomes the project's origin.",
         status: 'No usable compass bearing, so one point cannot set the heading. Point the camera ahead, not down, and try again, or use two points.',
         separation: { hidden: true, state: undefined, text: '' },
         label: { hidden: false, caption: 'Name point A (optional)', value: '' },
@@ -943,11 +1134,18 @@ export const GOLDEN: Record<string, Outcome> = {
         bearingConvention: 2,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'provisional',
+        groundY: -1.2,
+        floorCheckBypassed: false,
       },
       spatialFrame: undefined,
     },
     looks: {},
-    scene: [{ name: 'calibration anchor landmark', position: [1.5, -1.2, -2] }],
+    scene: [
+      {
+        name: 'calibration origin',
+        position: [1.5, -1.2, -2],
+      },
+    ],
     counts: { hitTests: 1, compass: 2, pose: 2, captures: 0 },
   },
   'one point on a Place with a two-point frame': {
@@ -956,7 +1154,7 @@ export const GOLDEN: Record<string, Outcome> = {
     looks: {
       'landmark placed': {
         title: 'Align this scan to the project',
-        copy: 'Step 1 of 2 — tap Point A again, the same spot as last time. Point A is the project\'s origin.',
+        copy: "Step 1 of 2 — tap Point A again, the same spot as last time. Point A is the project's origin.",
         status: 'Landmark placed. Tap it to move it, or confirm to place the heading marker.',
         separation: { hidden: true, state: undefined, text: '' },
         label: { hidden: false, caption: 'Name point A (optional)', value: '' },
@@ -984,6 +1182,8 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 288.13010235415595,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:00.400Z',
         status: 'provisional',
       },
@@ -1000,11 +1200,12 @@ export const GOLDEN: Record<string, Outcome> = {
         bearingConvention: 2,
       },
       referencePhotos: [],
+      originBearingDeg: 71.86989764584405,
     },
     looks: {
       'no surface': {
-        title: 'Set this project\'s world frame',
-        copy: 'Step 1 of 3 — tap the ground at a permanent feature you will recognise next visit, such as a door frame or a wall corner. This becomes the project\'s origin.',
+        title: "Set this project's world frame",
+        copy: "Step 1 of 3 — tap the ground at a permanent feature you will recognise next visit, such as a door frame or a wall corner. This becomes the project's origin.",
         status: 'No stable surface there. Aim at a textured floor and tap again.',
         separation: { hidden: true, state: undefined, text: '' },
         label: { hidden: false, caption: 'Name point A (optional)', value: '' },
@@ -1012,8 +1213,8 @@ export const GOLDEN: Record<string, Outcome> = {
         disabled: ['commit'],
       },
       'after the poll': {
-        title: 'Set this project\'s world frame',
-        copy: 'Step 1 of 3 — tap the ground at a permanent feature you will recognise next visit, such as a door frame or a wall corner. This becomes the project\'s origin.',
+        title: "Set this project's world frame",
+        copy: "Step 1 of 3 — tap the ground at a permanent feature you will recognise next visit, such as a door frame or a wall corner. This becomes the project's origin.",
         status: 'No stable surface there. Aim at a textured floor and tap again.',
         separation: { hidden: true, state: undefined, text: '' },
         label: { hidden: false, caption: 'Name point A (optional)', value: '' },
@@ -1021,8 +1222,8 @@ export const GOLDEN: Record<string, Outcome> = {
         disabled: ['commit'],
       },
       'landmark placed': {
-        title: 'Set this project\'s world frame',
-        copy: 'Step 1 of 3 — tap the ground at a permanent feature you will recognise next visit, such as a door frame or a wall corner. This becomes the project\'s origin.',
+        title: "Set this project's world frame",
+        copy: "Step 1 of 3 — tap the ground at a permanent feature you will recognise next visit, such as a door frame or a wall corner. This becomes the project's origin.",
         status: 'Landmark placed. Tap it to move it, or confirm to place the heading marker.',
         separation: { hidden: true, state: undefined, text: '' },
         label: { hidden: false, caption: 'Name point A (optional)', value: '' },
@@ -1031,8 +1232,11 @@ export const GOLDEN: Record<string, Outcome> = {
       },
     },
     scene: [
-      { name: 'calibration anchor landmark', position: [1.5, -1.2, -2] },
-      { name: 'calibration anchor heading', position: [3.3, -1.2, 0.4] },
+      {
+        name: 'calibration origin',
+        position: [1.5, -1.2, -2],
+        arrowTip: [3.3, -1.2, 0.40000000000000036],
+      },
     ],
     counts: { hitTests: 3, compass: 2, pose: 2, captures: 0 },
   },
@@ -1053,6 +1257,8 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 288.13010235415595,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:00.400Z',
         status: 'provisional',
       },
@@ -1069,11 +1275,12 @@ export const GOLDEN: Record<string, Outcome> = {
         bearingConvention: 2,
       },
       referencePhotos: [],
+      originBearingDeg: 71.86989764584405,
     },
     looks: {
       'no surface': {
-        title: 'Set this project\'s world frame',
-        copy: 'Step 1 of 3 — tap the ground at a permanent feature you will recognise next visit, such as a door frame or a wall corner. This becomes the project\'s origin.',
+        title: "Set this project's world frame",
+        copy: "Step 1 of 3 — tap the ground at a permanent feature you will recognise next visit, such as a door frame or a wall corner. This becomes the project's origin.",
         status: 'No stable surface there. Aim at a textured floor and tap again.',
         separation: { hidden: true, state: undefined, text: '' },
         label: { hidden: false, caption: 'Name point A (optional)', value: '' },
@@ -1081,8 +1288,8 @@ export const GOLDEN: Record<string, Outcome> = {
         disabled: ['commit'],
       },
       'after the poll': {
-        title: 'Set this project\'s world frame',
-        copy: 'Step 1 of 3 — tap the ground at a permanent feature you will recognise next visit, such as a door frame or a wall corner. This becomes the project\'s origin.',
+        title: "Set this project's world frame",
+        copy: "Step 1 of 3 — tap the ground at a permanent feature you will recognise next visit, such as a door frame or a wall corner. This becomes the project's origin.",
         status: 'No stable surface there. Aim at a textured floor and tap again.',
         separation: { hidden: true, state: undefined, text: '' },
         label: { hidden: false, caption: 'Name point A (optional)', value: '' },
@@ -1090,8 +1297,8 @@ export const GOLDEN: Record<string, Outcome> = {
         disabled: ['commit'],
       },
       'landmark placed': {
-        title: 'Set this project\'s world frame',
-        copy: 'Step 1 of 3 — tap the ground at a permanent feature you will recognise next visit, such as a door frame or a wall corner. This becomes the project\'s origin.',
+        title: "Set this project's world frame",
+        copy: "Step 1 of 3 — tap the ground at a permanent feature you will recognise next visit, such as a door frame or a wall corner. This becomes the project's origin.",
         status: 'Landmark placed. Tap it to move it, or confirm to place the heading marker.',
         separation: { hidden: true, state: undefined, text: '' },
         label: { hidden: false, caption: 'Name point A (optional)', value: '' },
@@ -1100,8 +1307,11 @@ export const GOLDEN: Record<string, Outcome> = {
       },
     },
     scene: [
-      { name: 'calibration anchor landmark', position: [1.5, -1.2, -2] },
-      { name: 'calibration anchor heading', position: [3.3, -1.2, 0.4] },
+      {
+        name: 'calibration origin',
+        position: [1.5, -1.2, -2],
+        arrowTip: [3.3, -1.2, 0.40000000000000036],
+      },
     ],
     counts: { hitTests: 3, compass: 2, pose: 2, captures: 0 },
   },
@@ -1122,6 +1332,8 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 288.13010235415595,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'provisional',
       },
@@ -1163,6 +1375,7 @@ export const GOLDEN: Record<string, Outcome> = {
           label: null,
         },
       ],
+      originBearingDeg: 71.86989764584405,
     },
     looks: {
       waiting: {
@@ -1180,8 +1393,11 @@ export const GOLDEN: Record<string, Outcome> = {
       },
     },
     scene: [
-      { name: 'calibration anchor landmark', position: [1.5, -1.2, -2] },
-      { name: 'calibration anchor heading', position: [3.3, -1.2, 0.4] },
+      {
+        name: 'calibration origin',
+        position: [1.5, -1.2, -2],
+        arrowTip: [3.3, -1.2, 0.40000000000000036],
+      },
     ],
     counts: { hitTests: 2, compass: 2, pose: 2, captures: 2 },
   },
@@ -1202,6 +1418,8 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 65,
         projectBearingDeg: 28.13010235415595,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:05.000Z',
         status: 'provisional',
       },
@@ -1244,11 +1462,15 @@ export const GOLDEN: Record<string, Outcome> = {
           label: 'typed during the wait',
         },
       ],
+      originBearingDeg: 331.86989764584405,
     },
     looks: {},
     scene: [
-      { name: 'calibration anchor landmark', position: [1.5, -1.2, -2] },
-      { name: 'calibration anchor heading', position: [3.3, -1.2, 0.4] },
+      {
+        name: 'calibration origin',
+        position: [1.5, -1.2, -2],
+        arrowTip: [3.3, -1.2, 0.40000000000000036],
+      },
     ],
     counts: { hitTests: 2, compass: 2, pose: 2, captures: 2 },
   },
@@ -1269,6 +1491,8 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 235,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'provisional',
       },
@@ -1326,6 +1550,7 @@ export const GOLDEN: Record<string, Outcome> = {
           label: 'by the radiator',
         },
       ],
+      originBearingDeg: 125,
     },
     looks: {
       'check step': {
@@ -1356,9 +1581,15 @@ export const GOLDEN: Record<string, Outcome> = {
       },
     },
     scene: [
-      { name: 'calibration anchor landmark', position: [1, -1.2, 2] },
-      { name: 'calibration anchor heading', position: [4.5, -1.2, 2] },
-      { name: 'calibration anchor check', position: [2, -1.2, 4.6] },
+      {
+        name: 'calibration origin',
+        position: [1, -1.2, 2],
+        arrowTip: [4.5, -1.2, 2.000000000000001],
+      },
+      {
+        name: 'calibration anchor check',
+        position: [2, -1.2, 4.6],
+      },
     ],
     counts: { hitTests: 3, compass: 2, pose: 2, captures: 3 },
   },
@@ -1379,6 +1610,8 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 235,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'provisional',
       },
@@ -1420,6 +1653,7 @@ export const GOLDEN: Record<string, Outcome> = {
           label: null,
         },
       ],
+      originBearingDeg: 125,
     },
     looks: {
       'after removing': {
@@ -1437,8 +1671,11 @@ export const GOLDEN: Record<string, Outcome> = {
       },
     },
     scene: [
-      { name: 'calibration anchor landmark', position: [1, -1.2, 2] },
-      { name: 'calibration anchor heading', position: [4.5, -1.2, 2] },
+      {
+        name: 'calibration origin',
+        position: [1, -1.2, 2],
+        arrowTip: [4.5, -1.2, 2.000000000000001],
+      },
     ],
     counts: { hitTests: 3, compass: 2, pose: 2, captures: 3 },
   },
@@ -1459,6 +1696,8 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 235,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'provisional',
       },
@@ -1473,9 +1712,12 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 235,
         bearingConvention: 2,
-        checkPoints: [{ x: -2.5999999999999996, y: 0, z: 1.0000000000000002 }],
+        checkPoints: [
+          { x: -2.5999999999999996, y: 0, z: 1.0000000000000002 },
+        ],
       },
       referencePhotos: [],
+      originBearingDeg: 125,
     },
     looks: {
       skipped: {
@@ -1506,9 +1748,15 @@ export const GOLDEN: Record<string, Outcome> = {
       },
     },
     scene: [
-      { name: 'calibration anchor landmark', position: [1, -1.2, 2] },
-      { name: 'calibration anchor heading', position: [4.5, -1.2, 2] },
-      { name: 'calibration anchor check', position: [2, -1.2, 4.6] },
+      {
+        name: 'calibration origin',
+        position: [1, -1.2, 2],
+        arrowTip: [4.5, -1.2, 2.000000000000001],
+      },
+      {
+        name: 'calibration anchor check',
+        position: [2, -1.2, 4.6],
+      },
     ],
     counts: { hitTests: 3, compass: 2, pose: 2, captures: 0 },
   },
@@ -1563,6 +1811,8 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 235,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'verified',
         fit: {
@@ -1581,6 +1831,7 @@ export const GOLDEN: Record<string, Outcome> = {
         checkedBy: 'constellation',
       },
       spatialFrame: undefined,
+      originBearingDeg: 125,
     },
     looks: {
       'check step': {
@@ -1615,12 +1866,32 @@ export const GOLDEN: Record<string, Outcome> = {
       },
     },
     scene: [
-      { name: 'calibration anchor landmark', position: [4, -1.2, 1] },
-      { name: 'calibration anchor heading', position: [7.5, -1.2, 1] },
-      { name: 'calibration anchor check', position: [5, -1.2, 3.6] },
-      { name: 'calibration stored reference', position: [4, -1.2, 0.9999999999999996] },
-      { name: 'calibration stored reference', position: [7.5, -1.2, 0.9999999999999998] },
-      { name: 'calibration stored reference', position: [5, -1.2, 3.5999999999999996] },
+      {
+        name: 'calibration origin',
+        position: [4, -1.2, 1],
+        arrowTip: [7.5, -1.2, 1.0000000000000009],
+      },
+      {
+        name: 'calibration anchor check',
+        position: [5, -1.2, 3.6],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [4, -1.2, 0.9999999999999996],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [7.5, -1.2, 0.9999999999999998],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [5, -1.2, 3.5999999999999996],
+      },
+      {
+        name: 'calibration stored origin',
+        position: [4, -1.2, 1],
+        arrowTip: [7.5, -1.2, 1.0000000000000009],
+      },
     ],
     counts: { hitTests: 3, compass: 2, pose: 2, captures: 0 },
   },
@@ -1641,6 +1912,8 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 235,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'verified',
         fit: {
@@ -1659,6 +1932,7 @@ export const GOLDEN: Record<string, Outcome> = {
         checkedBy: 'constellation',
       },
       spatialFrame: undefined,
+      originBearingDeg: 125,
     },
     looks: {
       'review, off': {
@@ -1731,12 +2005,32 @@ export const GOLDEN: Record<string, Outcome> = {
       },
     },
     scene: [
-      { name: 'calibration anchor landmark', position: [4, -1.2, 1] },
-      { name: 'calibration anchor heading', position: [7.5, -1.2, 1] },
-      { name: 'calibration anchor check', position: [5, -1.2, 3.6] },
-      { name: 'calibration stored reference', position: [4, -1.2, 0.9999999999999996] },
-      { name: 'calibration stored reference', position: [7.5, -1.2, 0.9999999999999998] },
-      { name: 'calibration stored reference', position: [5, -1.2, 3.5999999999999996] },
+      {
+        name: 'calibration origin',
+        position: [4, -1.2, 1],
+        arrowTip: [7.5, -1.2, 1.0000000000000009],
+      },
+      {
+        name: 'calibration anchor check',
+        position: [5, -1.2, 3.6],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [4, -1.2, 0.9999999999999996],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [7.5, -1.2, 0.9999999999999998],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [5, -1.2, 3.5999999999999996],
+      },
+      {
+        name: 'calibration stored origin',
+        position: [4, -1.2, 1],
+        arrowTip: [7.5, -1.2, 1.0000000000000009],
+      },
     ],
     counts: { hitTests: 5, compass: 2, pose: 2, captures: 0 },
   },
@@ -1779,11 +2073,14 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 235,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'provisional',
         checkedBy: 'separation',
       },
       spatialFrame: undefined,
+      originBearingDeg: 125,
     },
     looks: {
       skipped: {
@@ -1801,10 +2098,24 @@ export const GOLDEN: Record<string, Outcome> = {
       },
     },
     scene: [
-      { name: 'calibration anchor landmark', position: [4, -1.2, 1] },
-      { name: 'calibration anchor heading', position: [7.5, -1.2, 1] },
-      { name: 'calibration stored reference', position: [4, -1.2, 1] },
-      { name: 'calibration stored reference', position: [7.5, -1.2, 1.0000000000000002] },
+      {
+        name: 'calibration origin',
+        position: [4, -1.2, 1],
+        arrowTip: [7.5, -1.2, 1.0000000000000009],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [4, -1.2, 1],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [7.5, -1.2, 1.0000000000000002],
+      },
+      {
+        name: 'calibration stored origin',
+        position: [4, -1.2, 1],
+        arrowTip: [7.5, -1.2, 1.0000000000000009],
+      },
     ],
     counts: { hitTests: 2, compass: 2, pose: 2, captures: 0 },
   },
@@ -1825,6 +2136,8 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 235,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'provisional',
         fit: {
@@ -1868,7 +2181,9 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 235,
         bearingConvention: 2,
-        checkPoints: [{ x: -2.5999999999999996, y: 0, z: 2, label: 'by the radiator' }],
+        checkPoints: [
+          { x: -2.5999999999999996, y: 0, z: 2, label: 'by the radiator' },
+        ],
       },
       referencePhotos: [
         {
@@ -1908,12 +2223,19 @@ export const GOLDEN: Record<string, Outcome> = {
           label: 'by the radiator',
         },
       ],
+      originBearingDeg: 125,
     },
     looks: {},
     scene: [
-      { name: 'calibration anchor landmark', position: [4, -1.2, 1] },
-      { name: 'calibration anchor heading', position: [7.5, -1.2, 1] },
-      { name: 'calibration anchor check', position: [6, -1.2, 3.6] },
+      {
+        name: 'calibration origin',
+        position: [4, -1.2, 1],
+        arrowTip: [7.5, -1.2, 1.0000000000000009],
+      },
+      {
+        name: 'calibration anchor check',
+        position: [6, -1.2, 3.6],
+      },
     ],
     counts: { hitTests: 3, compass: 2, pose: 2, captures: 3 },
   },
@@ -1934,6 +2256,8 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 235,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: true,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'provisional',
         fit: {
@@ -1967,6 +2291,7 @@ export const GOLDEN: Record<string, Outcome> = {
         checkedBy: 'constellation',
       },
       spatialFrame: undefined,
+      originBearingDeg: 125,
     },
     looks: {
       review: {
@@ -1988,12 +2313,32 @@ export const GOLDEN: Record<string, Outcome> = {
       },
     },
     scene: [
-      { name: 'calibration anchor landmark', position: [4, -1.2, 1] },
-      { name: 'calibration anchor heading', position: [7.5, -1.2, 1] },
-      { name: 'calibration anchor check', position: [5, -1.2, 3.6] },
-      { name: 'calibration stored reference', position: [4, -1.2, 0.9999999999999996] },
-      { name: 'calibration stored reference', position: [7.5, -1.2, 0.9999999999999998] },
-      { name: 'calibration stored reference', position: [5, -1.2, 3.5999999999999996] },
+      {
+        name: 'calibration origin',
+        position: [4, -1.2, 1],
+        arrowTip: [7.5, -1.2, 1.0000000000000009],
+      },
+      {
+        name: 'calibration anchor check',
+        position: [5, -1.2, 3.6],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [4, -1.2, 0.9999999999999996],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [7.5, -1.2, 0.9999999999999998],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [5, -1.2, 3.5999999999999996],
+      },
+      {
+        name: 'calibration stored origin',
+        position: [4, -1.2, 1],
+        arrowTip: [7.5, -1.2, 1.0000000000000009],
+      },
     ],
     counts: { hitTests: 4, compass: 2, pose: 2, captures: 0 },
   },
@@ -2014,11 +2359,14 @@ export const GOLDEN: Record<string, Outcome> = {
         anchorBearingDeg: 325,
         projectBearingDeg: 235,
         bearingConvention: 2,
+        groundY: -1.2,
+        floorCheckBypassed: false,
         calibratedAt: '2026-11-16T09:30:00.000Z',
         status: 'provisional',
         checkedBy: 'separation',
       },
       spatialFrame: undefined,
+      originBearingDeg: 125,
     },
     looks: {
       review: {
@@ -2040,11 +2388,28 @@ export const GOLDEN: Record<string, Outcome> = {
       },
     },
     scene: [
-      { name: 'calibration anchor landmark', position: [4, -1.2, 1] },
-      { name: 'calibration anchor heading', position: [7.5, -1.2, 1] },
-      { name: 'calibration anchor check', position: [5, -1.2, 3] },
-      { name: 'calibration stored reference', position: [4, -1.2, 1] },
-      { name: 'calibration stored reference', position: [7.5, -1.2, 1.0000000000000002] },
+      {
+        name: 'calibration origin',
+        position: [4, -1.2, 1],
+        arrowTip: [7.5, -1.2, 1.0000000000000009],
+      },
+      {
+        name: 'calibration anchor check',
+        position: [5, -1.2, 3],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [4, -1.2, 1],
+      },
+      {
+        name: 'calibration stored reference',
+        position: [7.5, -1.2, 1.0000000000000002],
+      },
+      {
+        name: 'calibration stored origin',
+        position: [4, -1.2, 1],
+        arrowTip: [7.5, -1.2, 1.0000000000000009],
+      },
     ],
     counts: { hitTests: 3, compass: 2, pose: 2, captures: 0 },
   },

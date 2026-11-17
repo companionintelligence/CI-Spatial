@@ -72,6 +72,7 @@ import type { TapEvidence } from '../world/calibration-evidence.ts'
 import { summariseFit, twoPointToleranceM, type UnitsMode } from '../world/frame-fit.ts'
 import type { BearingConvention, ProjectSpatialFrame, ScanCalibration, Vec3 } from '../world/types.ts'
 import { compareVisit, newReference, type VisitComparison } from './constellation-flow.ts'
+import { committedStatus, mayWritePlaceFrame } from './ground-gate.ts'
 
 export type TwoPointFrame = Extract<ProjectSpatialFrame, { method: 'two-point-ground' }>
 export type OnePointFrame = Extract<ProjectSpatialFrame, { method: 'ground-tap-compass' }>
@@ -164,6 +165,12 @@ export interface TwoPointInput {
   override: boolean
   /** What the phone's session units are, when the provider says: a verdict then names what sizes do not prove about metres. */
   unitsMode?: UnitsMode
+  /**
+   * This visit bypassed a floor check ("Place anchor without floor check", or an off-floor tap accepted by a same-height
+   * retry). Such a commit is always `'provisional'` and never writes the Place's frame, first creation included
+   * (`mayWritePlaceFrame`, ./ground-gate.ts: the Place frame's floor is authored by a floor-checked calibration only).
+   */
+  floorCheckBypassed?: boolean
 }
 
 /** A visit that may be committed, and what committing it means. */
@@ -243,7 +250,8 @@ export function assessTwoPoint(input: TwoPointInput, options: ResolvedCommitOpti
     return { kind: 'mismatch', separationM, residualM: comparison.residualM, toleranceM, comparison }
   }
 
-  const frameChanged = !stored || override
+  const bypassed = input.floorCheckBypassed === true
+  const frameChanged = mayWritePlaceFrame({ floorCheckBypassed: bypassed, hasStoredFrame: !!stored, override })
   let reference: ReturnType<typeof newReference> | null = null
   if (frameChanged) {
     reference = newReference(landmark, headingMarker, checkPoint)
@@ -257,7 +265,11 @@ export function assessTwoPoint(input: TwoPointInput, options: ResolvedCommitOpti
     residualM: comparison ? comparison.residualM : 0,
     toleranceM,
     frameChanged,
-    status: comparison && !override && comparison.verdict.status === 'verified' ? 'verified' : 'provisional',
+    // 'verified' takes two things. The commit may be called verified at all (it was compared with a stored frame, was not kept over a
+    // mismatch and did not bypass the floor check: `committedStatus`, ./ground-gate.ts), and the match was measured, which is the fit's
+    // verdict and never a distance (ADR 0005 rule 3).
+    status: committedStatus({ hasStoredFrame: !!stored, override, floorCheckBypassed: bypassed }) === 'verified'
+      && comparison?.verdict.status === 'verified' ? 'verified' : 'provisional',
     sessionToProject: comparison && !override
       ? comparison.sessionToProject
       : twoPointToProjectTransform(landmark, headingMarker),
@@ -299,6 +311,8 @@ export interface TwoPointBuildInput {
    * Kept on the calibration as given and read by nothing here: it is evidence, not an input to the frame.
    */
   tap?: TapEvidence
+  /** The same flag the verdict was assessed with: written on the calibration, so the record says the floor was not checked. */
+  floorCheckBypassed?: boolean
 }
 
 export interface TwoPointCommit {
@@ -329,6 +343,10 @@ export function buildTwoPointCommit(verdict: AcceptedTwoPoint, input: TwoPointBu
     ...(verdict.frameYawDeg === undefined
       ? twoPointBearingFields(frameBearingDeg, landmark, headingMarker, bearingConvention)
       : { projectBearingDeg: projectBearingDeg(frameBearingDeg, verdict.frameYawDeg), bearingConvention }),
+    // The floor the origin sits on, in session metres: the landmark's own measured height, already snapped onto the
+    // established plane (wave 12). Recorded with the scan so it can be read back without decomposing the matrix.
+    groundY: landmark.y,
+    floorCheckBypassed: input.floorCheckBypassed === true,
     ...(input.tap ? { tap: input.tap } : {}),
     calibratedAt,
     status: verdict.status,
@@ -384,6 +402,8 @@ export interface OnePointInput {
   /** The Place's stored frame, of whatever method, or none. */
   existingFrame: ProjectSpatialFrame | null | undefined
   calibratedAt: string
+  /** This visit bypassed a floor check: the record says so, and it writes no Place frame (`mayWritePlaceFrame`). */
+  floorCheckBypassed?: boolean
 }
 
 export type OnePointOutcome =
@@ -411,10 +431,13 @@ export function buildOnePointCommit(input: OnePointInput, options: ResolvedCommi
     // A single anchor is project-space (0,0,0) by construction, so it always agrees with itself: there is
     // nothing here to verify against.
     status: 'provisional',
+    groundY: landmark.y,
+    floorCheckBypassed: input.floorCheckBypassed === true,
   }
   // Never downgrade a stored frame to this tier: a Place that already has a reference keeps it, and this
   // session simply aligns provisionally.
-  const spatialFrame: OnePointFrame | undefined = existingFrame
+  // A bypassed floor check never writes the Place frame either.
+  const spatialFrame: OnePointFrame | undefined = existingFrame || input.floorCheckBypassed === true
     ? undefined
     : {
         version: 1,

@@ -156,18 +156,20 @@ test('every library the release APK holds is locked, transitive ones included, a
   assert.equal(cordova.notice, 'cordova-android-NOTICE.txt', "Cordova's NOTICE goes with it (Apache-2.0 section 4(d))")
 })
 
-type AndroidLicence = { match: RegExp; licence: string; source: string; notice?: string; text?: string }
+/** A supplied licence text as the notices read it: line ends as LF, no blank lines at either end. */
+const suppliedOnFile = (file: string) => readFileSync(join(TEXTS_DIR, file), 'utf8').replace(/\r\n/g, '\n').trim()
+type AndroidLicence = { match: RegExp; licence: string; source: string; notice?: string; text?: string; disclosure?: string }
 const androidLicence = (library: string) => ANDROID_LICENCES.filter((entry: AndroidLicence) => entry.match.test(library)) as AndroidLicence[]
 
-test("ARCore is listed under Google's proprietary terms, with a notice of its own and no Apache License text", () => {
+test("ARCore is listed under Google's proprietary terms, with the disclosure Google asks for, then the terms' text, and no Apache License text", () => {
   const entries = androidLicence('com.google.ar:core')
   assert.equal(entries.length, 1, 'one entry names ARCore')
   const [arcore] = entries
-  assert.equal(arcore!.licence, 'ARCore Additional Terms of Service (proprietary, Google)')
+  assert.equal(arcore!.licence, 'ARCore Additional Terms of Service')
   assert.equal(arcore!.source, 'https://developers.google.com/ar/develop/terms')
   const texts = androidLicenceTexts(arcore) as string[]
-  assert.equal(texts.length, 1, "its own notice: not the Apache License, and no NOTICE file of another project's")
-  const [notice] = texts
+  assert.equal(texts.length, 2, "the disclosure and the terms' text: not the Apache License, and no NOTICE file of another project's")
+  const [notice, terms] = texts
   assert.ok(notice!.includes('This application runs on Google Play Services for AR (ARCore), which is provided by Google and governed by the Google Privacy Policy.'),
     'the disclosure Google asks an app that uses ARCore to make')
   assert.ok(notice!.includes('Google Play Services for AR: https://play.google.com/store/apps/details?id=com.google.ar.core'), 'with the link to Google Play Services for AR')
@@ -175,7 +177,11 @@ test("ARCore is listed under Google's proprietary terms, with a notice of its ow
   assert.match(notice!, /licensed under the ARCore Additional Terms of Service, https:\/\/developers\.google\.com\/ar\/develop\/terms, not under the licence of this app/,
     'the terms it is under, linked, and not the app licence')
   assert.doesNotMatch(notice!, /Apache/, 'ARCore is not under the Apache License')
-  assert.ok(notice!.length < 1000, 'a notice that links the terms: the proprietary agreement itself is not reproduced')
+  assert.ok(notice!.length < 1000, 'the notice stays short: the proprietary agreement comes after it, as a text of its own')
+  assert.match(notice!, /their text follows this notice/, 'and says the terms follow')
+  assert.ok(terms!.startsWith('ARCore Additional Terms of Service\n'), "the text after it is the terms' own, from licence-texts/arcore-additional-terms.txt")
+  assert.equal(terms, suppliedOnFile('arcore-additional-terms.txt'), 'copied as it is on file')
+  assert.doesNotMatch(terms!, /Apache/, 'ARCore is not under the Apache License')
 })
 
 test('a library gets the Apache License 2.0 exactly when its entry says it is under it, and Cordova its NOTICE after that', () => {
@@ -206,7 +212,7 @@ type Generated = {
 }
 const generate = bundleNotices as unknown as (options: { shell: 'mobile' | 'desktop'; bundledModules: string[] }) => Generated
 
-test('the notices generated for the Android app give each library the text its entry names, ARCore its own notice and not the Apache License', {
+test('the notices generated for the Android app give each library the text its entry names, ARCore its disclosure and its terms and not the Apache License', {
   skip: notInstalled.length ? `not installed: ${notInstalled.join(', ')} (run npm ci in the repo root and in mobile/)` : false,
 }, () => {
   const notices = generate({ shell: 'mobile', bundledModules: [] })
@@ -228,10 +234,13 @@ test('the notices generated for the Android app give each library the text its e
     assert.deepEqual(texts, androidLicenceTexts(entry), `${library}: the texts its entry names`)
     if (entry!.licence === 'Apache-2.0') assert.match(texts[0]!, /^Apache License\b/, `${library} is under the Apache License 2.0, and its first text is that licence`)
   }
-  // ARCore carries its own notice, alone, and not the Apache License.
+  // ARCore carries the disclosure and then its terms' text, and not the Apache License.
   const [arcore] = listed('com.google.ar:core')
   assert.ok(arcore, 'ARCore is in the lockfile, so it is in the notices')
-  assert.deepEqual(textsOf(arcore), [androidLicence('com.google.ar:core')[0]!.text])
+  const arcoreEntry = androidLicence('com.google.ar:core')[0]!
+  assert.equal(textsOf(arcore).length, 2)
+  assert.equal(textsOf(arcore)[0], arcoreEntry.disclosure, 'the disclosure first')
+  assert.equal(textsOf(arcore)[1], suppliedOnFile(arcoreEntry.text!), "then the terms' text")
   assert.ok(textsOf(arcore).every((text) => !text.includes('Apache License')), 'ARCore is not under the Apache License')
   // As the notices file prints it: ARCore's notice, with the disclosure in it, applies to ARCore alone.
   const printed = renderNotices(notices, '0.0.0')

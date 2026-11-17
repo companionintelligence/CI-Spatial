@@ -1,4 +1,4 @@
 {
   "extends": "./tsconfig.json",
-  "include": ["tests/**/*.spec.ts"]
+  "include": ["tests/**/*.spec.ts", "tests/unit/node/native_ar_*.test.ts"]
 }

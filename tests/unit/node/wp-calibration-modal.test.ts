@@ -894,8 +894,13 @@ test('a committed return visit leaves the stored points in the scene for the res
   const names: string[] = []
   scene.traverse((object) => { if (object.name) names.push(object.name) })
   assert.equal(names.filter((name) => name === 'calibration stored reference').length, 3, 'the Place\'s three points, where this session puts them')
-  for (const marker of ['calibration anchor landmark', 'calibration anchor heading', 'calibration anchor check']) {
+  // The committed origin is one decal: the crosshair on the landmark and the arrow to the heading point (src/world/origin-decal.ts).
+  // The check point keeps a marker of its own, and the stored origin is drawn beside the committed one.
+  for (const marker of ['calibration origin', 'calibration stored origin', 'calibration anchor check']) {
     assert.equal(names.filter((name) => name === marker).length, 1, `${marker} stays`)
+  }
+  for (const gone of ['calibration anchor landmark', 'calibration anchor heading']) {
+    assert.equal(names.includes(gone), false, `${gone} is the origin decal now, not a marker of its own`)
   }
 })
 

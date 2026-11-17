@@ -9,7 +9,7 @@
  * and a new `frameId`.
  *
  * `GET /projects/:id/frame-status` is built by the server slice of the same package, so it is answered here by the test, with the
- * body ADR 0009 gives it (`FrameStatus`), which the stand-in server of tests/unit/node/support/fake-frame-server.ts builds from
+ * body ADR 0011 gives it (`FrameStatus`), which the stand-in server of tests/unit/node/support/fake-frame-server.ts builds from
  * the scans a test gives it. The PUT to `/projects/:id/spatial-frame` goes on to the real server, which stores the frame it is sent.
  *
  * Not covered here:
@@ -86,7 +86,7 @@ async function readPlace(request: APIRequestContext, id: string): Promise<Projec
   return (Array.isArray(after) ? after : after.projects).find((p) => p.projectId === id)
 }
 
-/** What the server slice answers for a Place whose reference is `frame` and which has `scans`: ADR 0009's `FrameStatus`. */
+/** What the server slice answers for a Place whose reference is `frame` and which has `scans`: ADR 0011's `FrameStatus`. */
 function statusBody(projectId: string, frame: ProjectSpatialFrame | undefined, scans: ScanFacts[]) {
   return new FakeFrameServer({ projectId, frame: frame ?? null, revision: frame ? 1 : 0, scans }).statusBody()
 }

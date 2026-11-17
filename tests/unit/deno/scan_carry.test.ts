@@ -1,5 +1,5 @@
 /**
- * Carrying a scan between worlds (server/world/scan_carry.ts, ADR 0009), and the lock that lets one world's
+ * Carrying a scan between worlds (server/world/scan_carry.ts, ADR 0011), and the lock that lets one world's
  * holder reach for another's without waiting on it (`tryWithWorldLock`, server/world/world_lock.ts).
  *
  * What is pinned: what goes with a scan when its Place changes (its patches, comments and finished jobs, and its

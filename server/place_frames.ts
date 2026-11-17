@@ -1,5 +1,5 @@
 /**
- * The server's decisions about a Place's frame generations (ADR 0009): whether a write may replace the frame
+ * The server's decisions about a Place's frame generations (ADR 0011): whether a write may replace the frame
  * the Place holds, what a merge or a moved scan does when the frames differ, how a Place's scans are counted
  * by frame, and the sentences the answers carry.
  *

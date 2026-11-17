@@ -1,5 +1,5 @@
 /**
- * The routes of a Place's frame generations that read or hold a frame's own data (ADR 0009): the status a client asks
+ * The routes of a Place's frame generations that read or hold a frame's own data (ADR 0011): the status a client asks
  * before it replaces a reference, and the reference photos of each frame.
  *
  * A module of its own, registered on the server's app by one call in `server/main.ts`, so the hub carries a hook and not

@@ -1,6 +1,6 @@
 /**
  * What replacing a Place's reference means on the phone, and what the phone reads of the server's answers (WP-08, client
- * slice; the server's half is ADR 0009 and `src/world/frame-generations.ts`).
+ * slice; the server's half is ADR 0011 and `src/world/frame-generations.ts`).
  *
  * A frame is immutable once written. Replacing a Place's frame is a new generation: a new `frameId`, minted here on the
  * phone when a calibration builds the frame, and a write that says which generation it replaces and why (`replaces`). The
@@ -29,7 +29,7 @@
  *
  * ## What the phone reads of the server
  *
- * Each reader below takes the body ADR 0009 gives (its "Interface for the client slice") and nothing else, and answers
+ * Each reader below takes the body ADR 0011 gives (its "Interface for the client slice") and nothing else, and answers
  * null, or "not known", for anything it cannot read. A caller treats that as the cautious case and never as "none".
  */
 import { newArRunId, type RunIdRandomSource } from '../shared/ar-run-id.ts'

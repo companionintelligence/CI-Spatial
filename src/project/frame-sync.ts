@@ -42,7 +42,7 @@
  * ## Replacing a frame the server never received
  *
  * A write that replaces a frame names the generation the SERVER holds, and the server refuses it when that is not the one
- * it has (ADR 0009). The phone's copy of the Place can hold a frame the server never received: one made offline, or one
+ * it has (ADR 0011). The phone's copy of the Place can hold a frame the server never received: one made offline, or one
  * whose request failed, waiting in its row. Replacing that frame replaces what the row replaced, and nothing the server has
  * not seen, so the new write carries the row's own `replaces` (`replacesAtServer`). Without that, the second replacement
  * would name a frame the server has never held, be refused, and take the first down with it although no other device wrote.

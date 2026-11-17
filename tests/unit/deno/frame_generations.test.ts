@@ -1,5 +1,5 @@
 /**
- * Frame generations (ADR 0009), the pure half: the rules that decide what replacing a Place's frame means
+ * Frame generations (ADR 0011), the pure half: the rules that decide what replacing a Place's frame means
  * (src/world/frame-generations.ts), the server's decisions built on them (server/place_frames.ts) and the
  * compare-and-swap write that applies them (`applySpatialFrameWrite`, server/wp-a-projects.ts).
  *

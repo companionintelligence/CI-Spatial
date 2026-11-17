@@ -3,7 +3,7 @@
  *
  * A Place is a whole building with its rooms as Areas, not one Place per room: the frame, the world and the
  * share boundary belong to the Place, and a house made of one Place per room is a chain of independent frames that
- * nothing relates (ADR 0009, F3). The form used to start on Room, which is what produced that chain. It starts on
+ * nothing relates (ADR 0011, F3). The form used to start on Room, which is what produced that chain. It starts on
  * Building now. The person can still choose any of the four, and every Place already saved keeps its type.
  *
  * In its own module so the default is one value a test can read, and not the `selected` attribute of an option in

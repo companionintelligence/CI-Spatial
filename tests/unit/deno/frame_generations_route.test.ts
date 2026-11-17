@@ -1,5 +1,5 @@
 /**
- * Frame generations over HTTP, with the real server (ADR 0009): an override that makes a new generation, the status
+ * Frame generations over HTTP, with the real server (ADR 0011): an override that makes a new generation, the status
  * a client asks before it replaces a reference, a merge or a moved scan that would put scans into a frame they were not
  * measured in, the hand-over of what was made of a scan to the world it moves to, photos kept per frame, and the
  * routes behind the guard their siblings are behind.

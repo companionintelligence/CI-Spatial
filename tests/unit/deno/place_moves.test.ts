@@ -1,5 +1,5 @@
 /**
- * What the registry does about frames when scans are put in another Place (server/place_moves.ts, ADR 0009), with the
+ * What the registry does about frames when scans are put in another Place (server/place_moves.ts, ADR 0011), with the
  * registry, the stored scans and the photo folder stood in for: a moved scan is judged before anything is touched and
  * the Place changes only once the scans are filed; a merge across frames describes the other Place's reference in the
  * target's history and copies its photos; a Place with no frame takes the one the scans were measured against.

@@ -116,6 +116,14 @@ const tapsOf = (scenario: Scenario): Vec3[] => scenario.steps.flatMap((step) => 
 const near = (actual: number, expected: number, message: string) =>
   assert.ok(Math.abs(actual - expected) < 1e-9, `${message}: ${actual} is not ${expected}`)
 
+/**
+ * The heading point has no marker of its own: the origin decal's arrow ends on it, and the arrow's geometry is single precision
+ * (Float32BufferAttribute), so its tip is the heading point to about 1e-7 m. Checks that read the heading point from the arrow hold it to this.
+ */
+const ARROW_TIP_TOLERANCE_M = 1e-6
+const nearTip = (actual: number, expected: number, message: string) =>
+  assert.ok(Math.abs(actual - expected) < ARROW_TIP_TOLERANCE_M, `${message}: ${actual} is not ${expected}`)
+
 /** The spacing tolerance a verdict applies at the adopted tap noise: what every two-point record carries, whatever the stored frame says. */
 const TOLERANCE_M = twoPointToleranceM(SIGMA0_M)
 
@@ -184,10 +192,17 @@ function checkTwoPoint(scenario: Scenario, result: Returned): void {
   }
   assert.equal(result.referencePhotos?.length ?? 0, changed && scenario.capture ? 2 : 0, 'a photo of each marker, when the host can take them')
 
-  // The scene: both markers, snapped to the landmark's height, and the stored pair drawn only against a matched visit.
+  // The scene: the origin decal on the landmark, with its arrow ending on the heading point, both at the landmark's height, and the
+  // stored pair drawn only against a matched visit.
   const named = (name: string) => outcome(scenario.name).scene.filter((entry) => entry.name === name)
-  assert.deepEqual(named('calibration anchor landmark').map((entry) => entry.position), [[landmark.x, landmark.y, landmark.z]])
-  assert.deepEqual(named('calibration anchor heading').map((entry) => entry.position), [[marker.x, landmark.y, marker.z]])
+  const decal = named('calibration origin')
+  assert.deepEqual(decal.map((entry) => entry.position), [[landmark.x, landmark.y, landmark.z]])
+  const tip = decal[0]!.arrowTip
+  assert.ok(tip, 'the origin decal has its arrow')
+  nearTip(tip[0], marker.x, 'the arrow ends on the heading point: x')
+  nearTip(tip[1], landmark.y, "the arrow ends on the heading point: y, the landmark's height")
+  nearTip(tip[2], marker.z, 'the arrow ends on the heading point: z')
+  assert.equal(named('calibration anchor landmark').length + named('calibration anchor heading').length, 0, 'neither point has a marker of its own')
   const drawn = named('calibration stored reference').map((entry) => entry.position)
   if (storedTwoPoint && !override) {
     assert.equal(drawn.length, 2, 'the stored pair is drawn beside what was tapped')
@@ -221,7 +236,10 @@ function checkThreePoint(scenario: Scenario, result: Returned): void {
     assert.ok(entry, `${name} is in the scene`)
     return { x: entry.position[0], y: entry.position[1], z: entry.position[2] }
   }
-  const taps = [at('calibration anchor landmark'), at('calibration anchor heading'), at('calibration anchor check')]
+  // The heading point is where the origin decal's arrow ends (to the single precision of its geometry); the check point has a marker.
+  const decal = named('calibration origin')[0]
+  assert.ok(decal?.arrowTip, 'the origin decal is in the scene, with its arrow')
+  const taps = [at('calibration origin'), { x: decal.arrowTip[0], y: decal.arrowTip[1], z: decal.arrowTip[2] }, at('calibration anchor check')]
   const M = calibration.sessionToProject
   near(rotationDeterminant(M), 1, 'determinant')
   assert.equal(calibration.toleranceM, TOLERANCE_M)
@@ -233,7 +251,8 @@ function checkThreePoint(scenario: Scenario, result: Returned): void {
     const points = [stored!.landmark, stored!.headingMarker, stored!.checkPoints![0]!]
     taps.forEach((tap, index) => {
       const placed = transformPoint(M, tap)
-      near(Math.hypot(placed.x - points[index]!.x, placed.z - points[index]!.z), fit.perPoint[index]!.residualM, `the residual of point ${index}: where it lands minus where it is stored`)
+      const holds = index === 1 ? nearTip : near
+      holds(Math.hypot(placed.x - points[index]!.x, placed.z - points[index]!.z), fit.perPoint[index]!.residualM, `the residual of point ${index}: where it lands minus where it is stored`)
     })
     const residuals = fit.perPoint.map((point) => point.residualM)
     near(fit.rmsResidualM, Math.sqrt(residuals.reduce((sum, r) => sum + r * r, 0) / residuals.length), 'rms')
@@ -260,7 +279,7 @@ function checkThreePoint(scenario: Scenario, result: Returned): void {
     // A frame this visit wrote: the new pair is the frame (the landmark is the origin, the heading marker on +Z), and the check point is the tap carried into it.
     const origin = transformPoint(M, taps[0]!)
     near(Math.hypot(origin.x, origin.y, origin.z), 0, 'the landmark is the origin')
-    near(transformPoint(M, taps[1]!).z, calibration.separationM, 'the heading marker is on +Z at the separation')
+    nearTip(transformPoint(M, taps[1]!).z, calibration.separationM, 'the heading marker is on +Z at the separation')
     const frame = result.spatialFrame as { checkPoints?: Array<Vec3 & { label?: string }> } | undefined
     assert.ok(frame?.checkPoints?.length === 1, 'the frame stores the check point')
     const placed = transformPoint(M, taps[2]!)
@@ -284,7 +303,8 @@ function checkOnePoint(scenario: Scenario, result: Returned): void {
   assert.ok('spatialFrame' in result)
   assert.equal(result.spatialFrame !== undefined, scenario.stored === undefined, 'a Place that holds a frame is never given another by this tier')
   assert.ok(!('referencePhotos' in result), 'no photos on this tier')
-  assert.deepEqual(outcome(scenario.name).scene.map((entry) => entry.name), ['calibration anchor landmark'], 'only the landmark is drawn')
+  assert.deepEqual(outcome(scenario.name).scene.map((entry) => entry.name), ['calibration origin'], 'only the origin is drawn')
+  assert.equal(outcome(scenario.name).scene[0]!.arrowTip, undefined, 'and it has no arrow: this tier has no heading point')
 }
 
 for (const scenario of SCENARIOS) {
@@ -413,7 +433,8 @@ for (const [name, how] of [
     assert.match(found.looks['landmark placed']!.status, /^Landmark placed\./, 'the next tap places the landmark: the failed read did not wedge the modal')
     assert.equal(found.closed, true, 'and the calibration goes on to commit')
     assert.equal(found.counts.hitTests, 3, 'asked for the touch that found nothing, and for each of the two taps')
-    assert.deepEqual(found.scene.map((entry) => entry.name), ['calibration anchor landmark', 'calibration anchor heading'], 'only the two real taps were placed')
+    assert.deepEqual(found.scene.map((entry) => entry.name), ['calibration origin'], 'only the two real taps were placed: one decal')
+    assert.ok(found.scene[0]!.arrowTip, 'with its arrow ending on the second tap')
     assert.deepEqual(unhandled, [], 'a failing hit test is a tap with no surface, not an error nobody caught')
   })
 }
@@ -437,7 +458,8 @@ test('a second commit press while the photos are pending is ignored: one result,
   assert.equal(found.looks['waiting']!.status, 'Saving reference photos…')
   assert.equal(found.closed, true)
   assert.equal(found.counts.captures, 2)
-  assert.equal(found.scene.filter((entry) => entry.name.startsWith('calibration anchor')).length, 2)
+  assert.equal(found.scene.filter((entry) => entry.name === 'calibration origin').length, 1, 'one origin decal, not one for each press')
+  assert.equal(found.scene.filter((entry) => entry.name.startsWith('calibration anchor')).length, 0, 'and no marker of its own for either point')
 })
 
 test('what a commit records is read when it completes, not when the button was pressed: compass, clock and labels', () => {
@@ -482,7 +504,7 @@ test('a first calibration with a check point stores it in the Place frame with i
   assert.deepEqual(frame.pointLabels, ['north door frame', ''], 'the label typed once the check point is down names the check point, not point B')
   assert.deepEqual(photoRoles('first calibration with a check point, named and photographed'), [['landmark', 'north door frame'], ['headingMarker', null], ['check1', 'by the radiator']])
   assert.ok(!('fit' in result.calibration) && !('checkedBy' in result.calibration), 'a first calibration compared nothing')
-  assert.deepEqual(outcome('first calibration with a check point, named and photographed').scene.map((entry) => entry.name), ['calibration anchor landmark', 'calibration anchor heading', 'calibration anchor check'])
+  assert.deepEqual(outcome('first calibration with a check point, named and photographed').scene.map((entry) => entry.name), ['calibration origin', 'calibration anchor check'])
   const review = outcome('first calibration with a check point, named and photographed').looks['review with the check point']!
   assert.match(review.separation.text, /^Point C: 2\.8 m from A, 2\.6 m off the A–B line\. Estimate: .* At least 3 m from A and 2 m off the line is better\.$/)
   assert.match(review.copy, /all three sit on features/)

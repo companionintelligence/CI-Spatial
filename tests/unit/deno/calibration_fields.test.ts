@@ -449,8 +449,13 @@ Deno.test("server/main.ts builds the manifest's calibration fields with calibrat
     /\.\.\.calibrationFromMeta\(\s*scan\.meta\s*\)/.test(build),
     "scanManifestFromStored no longer builds the manifest's calibration fields with calibrationFromMeta(scan.meta)",
   )
+  // The one read of the nested record that stays is the origin's floor height, through `readCalibrationGroundY`
+  // (src/world/geo.ts), which tests/unit/node/origin_decal.test.ts and origin_persistence.test.ts hold. The check looks at
+  // the rest of the function, so a hand-read of any other calibration key still fails it.
+  const groundYRead = "readCalibrationGroundY(scan.meta['calibration'])"
+  assert(build.includes(groundYRead), 'scanManifestFromStored no longer reads the origin\'s floor height with readCalibrationGroundY')
   assert(
-    !/scan\.meta\['(calibrationMethod|calibrationStatus|calibration)'\]/.test(build),
+    !/scan\.meta\['(calibrationMethod|calibrationStatus|calibration)'\]/.test(build.replace(groundYRead, '')),
     'scanManifestFromStored reads a calibration key of the sidecar by hand again, beside calibrationFromMeta',
   )
 })

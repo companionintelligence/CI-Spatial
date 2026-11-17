@@ -538,6 +538,87 @@ export function twoPointSeparationM(landmark: Vec3, headingMarker: Vec3): number
   return Math.hypot(headingMarker.x - landmark.x, headingMarker.z - landmark.z)
 }
 
+/**
+ * Everything the committed origin decal needs, as plain numbers. The decal
+ * builder (`src/world/origin-decal.ts`) only turns this into geometry, so the
+ * origin's placement and orientation are decided here, where they can be tested
+ * without a renderer.
+ */
+export interface OriginDecalPlan {
+  /** Crosshair centre: the origin, on the ground at its committed height. */
+  origin: Vec3
+  /**
+   * Arrow yaw in degrees on the compass convention (0 = +Z), the same one
+   * `twoPointHeadingDeg` uses. Null when there is no heading point.
+   */
+  headingDeg: number | null
+  /**
+   * Arrow length in metres. The tip lands on the heading point, so the arrow
+   * is the baseline the user defined. 0 when there is no arrow.
+   */
+  arrowLengthM: number
+  /**
+   * Session yaw, in degrees, at which true north lies: the `buildAnchorMarker`
+   * convention, where rotating by this yaw turns the north tick toward north.
+   * Null when there is no compass fix, which leaves the decal without a tick.
+   */
+  northYawDeg: number | null
+}
+
+/**
+ * Plans the origin decal from the committed origin, an optional heading point
+ * on the same ground plane, and the session's north yaw.
+ *
+ * A degenerate heading (the point coincides with the origin) gives no arrow
+ * rather than an arrow with an undefined direction.
+ */
+export function originDecalPlan(
+  origin: Vec3,
+  headingPoint: Vec3 | null,
+  northYawDeg: number | null,
+): OriginDecalPlan {
+  const plan: OriginDecalPlan = {
+    origin: { x: origin.x, y: origin.y, z: origin.z },
+    headingDeg: null,
+    arrowLengthM: 0,
+    northYawDeg,
+  }
+  if (!headingPoint) return plan
+  const length = twoPointSeparationM(origin, headingPoint)
+  if (!(length > 0)) return plan
+  plan.headingDeg = twoPointHeadingDeg(origin, headingPoint)
+  plan.arrowLengthM = length
+  return plan
+}
+
+/**
+ * True-north bearing of the origin's heading arrow, in degrees clockwise from
+ * north: what the HUD's frame-heading needle shows.
+ *
+ * The arrow's yaw is in session space and north lies at `northYawDeg` there, so
+ * the arrow's bearing is its yaw measured from north. It comes from the same
+ * single compass fix as the north tick, so it is only as good as that tick:
+ * indoor compass readings can be well off. Null when there is no arrow or no
+ * compass fix, since then there is no bearing to show.
+ */
+export function originHeadingBearingDeg(plan: OriginDecalPlan): number | null {
+  if (plan.headingDeg === null || plan.northYawDeg === null) return null
+  return normaliseBearingDeg(plan.headingDeg - plan.northYawDeg)
+}
+
+/**
+ * The floor height, in session metres, that a scan's origin sat on: the
+ * `groundY` a `ScanCalibration` record carries.
+ *
+ * Null for records written before the field existed, and for any value that is
+ * not a finite number. Records that predate it are not an error — they simply
+ * do not say where the floor was.
+ */
+export function readCalibrationGroundY(calibration: unknown): number | null {
+  const groundY = (calibration as { groundY?: unknown } | null | undefined)?.groundY
+  return typeof groundY === 'number' && Number.isFinite(groundY) ? groundY : null
+}
+
 export function matrixTranslation(matrix: number[]): Vec3 {
   return {
     x: Number(matrix[12] ?? 0),

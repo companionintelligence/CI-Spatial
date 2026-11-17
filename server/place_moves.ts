@@ -1,5 +1,5 @@
 /**
- * What the registry does about frames when scans are put in another Place (ADR 0009): a merge, and a scan moved by
+ * What the registry does about frames when scans are put in another Place (ADR 0011): a merge, and a scan moved by
  * `PATCH /projects/:id/scans/:scanId`. The decisions are `./place_frames.ts`'s and have no I/O; this is the part that
  * reads the scans stored, changes the Place registry in the one step it is changed in, and copies photos.
  *

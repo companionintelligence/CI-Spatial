@@ -615,6 +615,37 @@ export type ScanCalibration = {
    */
   scaleMode?: ScaleMode
   scaleKind?: ScaleKind
+  /**
+   * The session-space floor height, in metres, the origin sat on when this scan
+   * was committed: the landmark's own measured `y`.
+   *
+   * Recorded with the scan rather than left inside `sessionToProject`'s
+   * translation, so the origin's ground height can be read back without
+   * decomposing a matrix. Project-space floor is `y = 0` by construction, so
+   * the Place-level `ProjectSpatialFrame` needs no field of its own.
+   *
+   * Optional and nullable so existing records stay valid: a record written
+   * before this field simply does not say where its floor was. Read it with
+   * `readCalibrationGroundY()` in `./geo.ts`, which turns absence and
+   * non-finite values into `null`.
+   *
+   * This nested record is the canonical one. `ScanManifest.calibrationGroundY`
+   * is a flat projection of it, derived by the server.
+   */
+  groundY?: number | null
+  /**
+   * `true` when this commit's floor check was bypassed: "Place anchor without
+   * floor check", or an off-floor tap accepted by a same-height retry.
+   *
+   * A bypassed commit is always `'provisional'`, and it never writes the Place's
+   * `spatialFrame`, whether as a first creation or as an override. See
+   * `mayWritePlaceFrame()` and `committedStatus()` in `src/ar/ground-gate.ts`.
+   *
+   * Optional so existing records stay valid: a record without it predates the
+   * field, and reads as "not recorded". Uncalibrated scans carry no calibration
+   * record at all. Their sidecar status `uncalibrated` is their record.
+   */
+  floorCheckBypassed?: boolean
 } & (
   | {
       method: 'two-point-ground'
@@ -1191,6 +1222,17 @@ export interface ScanManifest {
    * read it. Absent otherwise.
    */
   placementStale?: boolean
+  /**
+   * The session-space floor height, in metres, this scan's origin sat on — the
+   * `groundY` of its `ScanCalibration`, surfaced alongside the separation so a
+   * consumer can place the origin decal without reading the sidecar. Null for
+   * scans that predate the field or carry no calibration.
+   *
+   * A flat projection of the nested `ScanCalibration.groundY`, derived by the
+   * server the same way `calibrationSeparationM` is. The client never writes
+   * this field: the nested record is canonical.
+   */
+  calibrationGroundY?: number | null
   capturedAt: string | null
   pointCount: number | null
   detectionCount: number | null

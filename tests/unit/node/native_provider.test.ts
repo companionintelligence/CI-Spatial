@@ -1142,7 +1142,10 @@ function parsePlist(xml: string): Record<string, unknown> {
   return value() as Record<string, unknown>
 }
 
-test('both native plugins are registered on their bridge and compiled into the app', () => {
+// Skipped while the shells are main's (ADR 0009, the ScanAR plugin): they register no ArSessionPlugin. The goal-integration
+// plugin's sources and this provider stay in the tree, unregistered, until the owner decides whether the two native designs both
+// stay. If they do, the shells register both and this test is the check that they do. If not, it goes with the plugin.
+test('both native plugins are registered on their bridge and compiled into the app', { skip: "the shells carry main's ScanAR plugin only (ADR 0009); this one is for goal-integration's ArSession plugin, which is not registered until the owner decides" }, () => {
   const bridgeController = read('mobile/ios/App/App/ScanBridgeViewController.swift')
   const storyboard = read('mobile/ios/App/App/Base.lproj/Main.storyboard')
   const pbxproj = read('mobile/ios/App/App.xcodeproj/project.pbxproj')

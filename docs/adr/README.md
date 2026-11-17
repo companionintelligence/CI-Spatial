@@ -22,4 +22,6 @@ shape future work, promote it to an ADR and link back to the issue.
 - [0006. A person capture is a calibrated take; view densification is a subsystem](0006-person-capture-is-a-calibrated-take-and-densification-is-a-subsystem.md) — Accepted
 - [0007. Splat backends are selectable; a rotation-only sweep is not a reconstruction capture](0007-splat-backends-are-selectable-and-a-rotation-only-sweep-is-not-a-reconstruction-capture.md) — Proposed
 - [0008. Station-dome capture is a supported path, and its baseline comes from moving the tripod](0008-station-dome-capture-is-a-supported-path-and-its-baseline-comes-from-moving-the-tripod.md) — Proposed
-- [0009. A Place's frame is replaced by a new generation, never edited](0009-frame-generations.md) — Proposed
+- [0009. Native ARKit and ARCore runtimes sit beside the 8th Wall provider](0009-native-ar-runtime-beside-8th-wall.md) — Accepted
+- [0010. iOS world maps stay on the phone, keyed by world slug](0010-ios-world-maps-stay-on-the-phone.md) — Accepted
+- [0011. A Place's frame is replaced by a new generation, never edited](0011-frame-generations.md) — Proposed

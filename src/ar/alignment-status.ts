@@ -113,6 +113,21 @@ function constellationText(calibration: Extract<ScanCalibration, { method: 'two-
   return `Frame set. ${fit.pointsUsed} points are ${off} cm off the stored ones\n• Not verified: the points agreed, but the check could not be relied on${limit}`
 }
 
+/** A scan continued without a calibration: no frame, no alignment, and it does not set the Place's frame (#269). */
+export const NO_ALIGNMENT_TEXT = '⚠ No project alignment\n• Scanning without it. This scan does not set the Place frame'
+
+/**
+ * A commit whose floor check was bypassed ("Place anchor without floor check", or an off-floor tap accepted by a same-height retry):
+ * provisional, and it never writes the Place's frame (`mayWritePlaceFrame`, ./ground-gate.ts; the origin decal's wave, #269).
+ */
+export const FLOOR_CHECK_BYPASSED_TEXT = 'Floor check bypassed — provisional, and this scan does not set the Place frame.'
+
+/**
+ * The origin decal draws a north tick when the compass was read, and the tick is where that reading put north in this session. It is
+ * not a surveyed north, so the line says so wherever a tick was drawn (#269).
+ */
+export const NORTH_TICK_NOTE = 'North tick is session-local'
+
 /**
  * The status text for a finished calibration.
  *
@@ -120,7 +135,11 @@ function constellationText(calibration: Extract<ScanCalibration, { method: 'two-
  * scan still saves, and the server places it by GPS or on a grid.
  */
 export function alignmentStatusText(calibration: ScanCalibration | null | undefined): string {
-  if (!calibration) return '⚠ No project alignment'
+  if (!calibration) return NO_ALIGNMENT_TEXT
+
+  // A bypassed floor check is said first, on either tier and whatever the separation was: it caps the scan at provisional and keeps it
+  // from setting the Place frame.
+  if (calibration.floorCheckBypassed === true) return FLOOR_CHECK_BYPASSED_TEXT
 
   // The scanner's own flow returns only the two tiers handled here; anything
   // that is not a two-point frame gets the one-point warning, as it did when
@@ -129,6 +148,15 @@ export function alignmentStatusText(calibration: ScanCalibration | null | undefi
     return '⚠ Single-point anchor\n• Aligns only at the same spot'
   }
 
+  const text = twoPointStatusText(calibration)
+  const tickDrawn = typeof calibration.anchorBearingDeg === 'number' && Number.isFinite(calibration.anchorBearingDeg)
+  return tickDrawn ? `${text}\n• ${NORTH_TICK_NOTE}` : text
+}
+
+type TwoPointCalibration = Extract<ScanCalibration, { method: 'two-point-ground' }>
+
+/** What a two-point calibration says for itself: the fit's verdict, or the spacing that was compared, or that nothing was. */
+function twoPointStatusText(calibration: TwoPointCalibration): string {
   const off = centimetres(calibration.residualM)
 
   // Three or more points were fitted to the stored ones: the verdict's own words, from the fit the record keeps.

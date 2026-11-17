@@ -1,5 +1,5 @@
 /**
- * Carrying a scan from the world of one Place into the world of another, with what was made of it (ADR 0009).
+ * Carrying a scan from the world of one Place into the world of another, with what was made of it (ADR 0011).
  *
  * A scan belongs to the world of the Place its record names, so when a scan is filed under another Place (a
  * reassign, a merge) the world it was in stops holding it: `refreshWorldScans` (server/main.ts) drops the row

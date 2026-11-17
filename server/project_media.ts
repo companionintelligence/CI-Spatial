@@ -1,5 +1,5 @@
 /**
- * The file operations of a Place's photo storage (ADR 0009): storing a frame's photo, copying the photos a frame keeps from
+ * The file operations of a Place's photo storage (ADR 0011): storing a frame's photo, copying the photos a frame keeps from
  * one Place's folder to another's. The layout, the roles, the paths and the validation are `./project_media_meta.ts`
  * (pure, and re-exported here so this module is still the one place the server imports them from).
  */

@@ -227,13 +227,15 @@ async function startFlow(t: TestContext, setup: Setup) {
     },
     /** Where the north tick on the committed landmark decal points, in session space. */
     northTick(): Vec3 | null {
-      const group = scene.getObjectByName('calibration anchor landmark')
-      const tick = group?.children.find((child) => child.name === 'anchor north tick') as THREE.LineSegments | undefined
-      if (!group || !tick) return null
-      group.updateMatrixWorld(true)
+      // The committed origin is the origin decal (src/world/origin-decal.ts); its north tick sits in a group turned to north,
+      // so the tick's own world matrix carries both turns.
+      const decal = scene.getObjectByName('calibration origin')
+      const tick = decal?.getObjectByName('origin north tick') as THREE.LineSegments | undefined
+      if (!decal || !tick) return null
+      decal.updateMatrixWorld(true)
       const pos = tick.geometry.getAttribute('position')
-      const base = new THREE.Vector3(pos.getX(0), pos.getY(0), pos.getZ(0)).applyMatrix4(group.matrixWorld)
-      const tip = new THREE.Vector3(pos.getX(1), pos.getY(1), pos.getZ(1)).applyMatrix4(group.matrixWorld)
+      const base = new THREE.Vector3(pos.getX(0), pos.getY(0), pos.getZ(0)).applyMatrix4(tick.matrixWorld)
+      const tip = new THREE.Vector3(pos.getX(1), pos.getY(1), pos.getZ(1)).applyMatrix4(tick.matrixWorld)
       return { x: tip.x - base.x, y: tip.y - base.y, z: tip.z - base.z }
     },
   }
@@ -301,7 +303,7 @@ test('two points with no compass reading: the frame stands, the bearings are nul
   assert.equal(readableAnchorBearingDeg(calibration), null)
   assert.equal((result.spatialFrame as { projectBearingDeg?: number | null }).projectBearingDeg, null)
   assert.equal(flow.northTick(), null, 'no compass, no tick')
-  assert.ok(flow.scene.getObjectByName('calibration anchor landmark'), 'the landmark itself is still drawn')
+  assert.ok(flow.scene.getObjectByName('calibration origin'), 'the origin itself is still drawn, as the decal without a compass fix')
 })
 
 // ── One point ───────────────────────────────────────────────────────────────

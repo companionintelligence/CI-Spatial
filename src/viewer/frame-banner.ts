@@ -2,7 +2,7 @@
  * The editor's account of which reference each scan was made against: a chip on the scan, a banner for the Place, and
  * the "Previous reference" layer that dims and groups the scans of an earlier reference (WP-08).
  *
- * A Place's frame is replaced by a new generation, never edited (ADR 0009, ../world/frame-replacement.ts), and every
+ * A Place's frame is replaced by a new generation, never edited (ADR 0011, ../world/frame-replacement.ts), and every
  * scan's calibration names the generation it was measured against (`ScanManifest.calibrationFrameId`). Nothing moves a
  * scan when its Place's reference is replaced, so scans made against the old one stay where they were and the editor
  * has to say so, or they pass for scans of the current reference: they sit on the same origin and look coherent.

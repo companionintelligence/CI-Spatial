@@ -3121,6 +3121,12 @@
                   <polygon points="14,3 15.4,14 14,12 12.6,14" fill="#72ddd4"/>
                   <polygon points="14,25 15.4,14 14,16 12.6,14" fill="rgba(255,255,255,0.4)"/>
                 </g>
+                <!-- The origin's heading as a true-north bearing (wave 12, ticket 0001).
+                     Hollow and amber, so it cannot be mistaken for the device needle
+                     above. Hidden until a committed origin has a compass fix. -->
+                <g id="compass-frame-needle" style="transform-origin:14px 14px; display:none">
+                  <polygon points="14,6.5 15.1,14 14,12.5 12.9,14" fill="none" stroke="#ffd166" stroke-width="1" stroke-linejoin="round"/>
+                </g>
                 <text x="13" y="11" font-size="4" fill="rgba(255,255,255,0.5)" font-family="sans-serif" font-weight="700">N</text>
               </svg>
             </div>
@@ -3152,6 +3158,7 @@
               <div id="geo-chip">
                 <div id="geo-text">
                   <span id="geo-address">Locating…</span>
+                  <span id="geo-frame" style="display:none; font-size:10px; font-weight:600; color:#ffd166; white-space:nowrap"></span>
                   <span id="geo-coords">Compass waiting</span>
                 </div>
               </div>

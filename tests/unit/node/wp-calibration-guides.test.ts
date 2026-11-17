@@ -19,9 +19,7 @@ import {
   DISTANCE_RING_COLOR,
   DISTANCE_RING_NAME,
   DISTANCE_RING_OPACITY,
-  KEPT_GRID_OPACITY,
   buildDistanceRing,
-  keepFloorGrid,
 } from '../../../src/ar/calibration-guides.ts'
 import { ANCHOR_RADIUS_M, buildAnchorMarker, ringVertices } from '../../../src/world/anchor-marker.ts'
 
@@ -112,51 +110,14 @@ test('a distance ring is drawn to be seen: a line, solid, and not in the grid\'s
   assert.equal(material.opacity, DISTANCE_RING_OPACITY)
   assert.ok(DISTANCE_RING_OPACITY >= 0.8, 'about as solid as the decal\'s ring, which it is read beside')
   assert.equal(material.color.getHex(), DISTANCE_RING_COLOR)
-  // The grid helper keeps its colour in its vertices, not in its material: it is the teal it was built with.
-  const { grid } = gridInPlacement()
+  // The grid the flow builds (`refreshFloorGrid` in project-calibration.ts): the overlay's teal, 0.4 once the markers have settled.
+  // The helper keeps its colour in its vertices, not in its material: it is the teal it was built with.
+  const grid = new THREE.GridHelper(10, 20, 0x72ddd4, 0x72ddd4)
+  ;(grid.material as THREE.Material).transparent = true
+  ;(grid.material as THREE.Material).opacity = 0.4
   const teal = new THREE.Color(0x72ddd4)
   const vertex = grid.geometry.getAttribute('color')
   teal.toArray().forEach((channel, i) => near([vertex.getX(0), vertex.getY(0), vertex.getZ(0)][i]!, channel, 1e-6, 'the grid the flow builds is the overlay\'s teal'))
   assert.equal(material.color.equals(teal), false, 'and the ring is not')
   assert.ok(material.opacity > (grid.material as THREE.Material).opacity, 'and more solid than the grid it lies on')
-})
-
-// ── The floor grid that stays ─────────────────────────────────────────────────────────────────────
-
-function gridInPlacement() {
-  const scene = new THREE.Scene()
-  const placement = new THREE.Group()
-  placement.name = 'calibration placement'
-  scene.add(placement)
-  const grid = new THREE.GridHelper(10, 20, 0x72ddd4, 0x72ddd4)
-  grid.name = 'calibration floor plane'
-  ;(grid.material as THREE.Material).transparent = true
-  ;(grid.material as THREE.Material).opacity = 0.4
-  grid.position.set(1, -1.2, 2)
-  placement.add(grid)
-  return { scene, placement, grid }
-}
-
-test('the kept grid is handed to the scene: it survives its placement group being removed, fainter, where it was', () => {
-  const { scene, placement, grid } = gridInPlacement()
-  const kept = keepFloorGrid(scene, grid, placement)
-  assert.equal(kept, null, 'the flow no longer holds it, so its teardown leaves it alone')
-  assert.equal(grid.parent, scene)
-  assert.ok(!placement.children.includes(grid))
-  assert.equal((grid.material as THREE.Material).opacity, KEPT_GRID_OPACITY)
-  assert.ok(KEPT_GRID_OPACITY < 0.4, 'fainter than while the markers were being placed')
-  assert.deepEqual([grid.position.x, grid.position.y, grid.position.z], [1, -1.2, 2])
-
-  scene.remove(placement)
-  assert.equal(scene.getObjectByName('calibration floor plane'), grid, 'still in the scene after the flow\'s own group is gone')
-})
-
-test('with no scene to give it to, or no grid, the flow keeps what it had, and disposes it with the rest', () => {
-  const { placement, grid } = gridInPlacement()
-  assert.equal(keepFloorGrid(null, grid, placement), grid)
-  assert.equal(grid.parent, placement, 'not moved')
-  assert.equal((grid.material as THREE.Material).opacity, 0.4, 'not changed')
-  const scene = new THREE.Scene()
-  assert.equal(keepFloorGrid(scene, null, placement), null)
-  assert.equal(scene.children.length, 0)
 })

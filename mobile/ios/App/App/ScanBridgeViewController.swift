@@ -1,16 +1,17 @@
 import Capacitor
 import UIKit
 
-/// The app's Capacitor bridge view controller. SceneDelegate creates it as the window's root view controller, and nothing
-/// else may make a bridge: the stock CAPBridgeViewController would leave ArSessionPlugin unregistered. (Main.storyboard
-/// still names this class, but the scene configuration in Info.plist loads no storyboard.)
-///
-/// The bridge registers the npm plugins that its capacitor.config.json lists. The app's own plugin is not in that
-/// list, so it is registered here, with registerPluginInstance. capacitorDidLoad() runs after the bridge is created
-/// and before the page loads, which is when a plugin has to be on the bridge.
-@objc(ScanBridgeViewController)
+/// The Scan shell's bridge view controller. Capacitor finds npm plugins from the generated config, but
+/// a plugin written in this app target has to be registered here, so this subclass registers ScanAR
+/// when the bridge loads.
 class ScanBridgeViewController: CAPBridgeViewController {
     override func capacitorDidLoad() {
-        bridge?.registerPluginInstance(ArSessionPlugin())
+        bridge?.registerPluginInstance(ScanARPlugin())
+    }
+
+    /// Portrait only. The native camera view is fitted to the portrait overlay rect, and a rotation
+    /// mid-scan would change the frame under the overlay.
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        .portrait
     }
 }

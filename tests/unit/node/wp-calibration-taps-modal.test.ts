@@ -194,6 +194,10 @@ class FakeScene {
   children: unknown[] = []
   add(object: unknown): void { this.children.push(object) }
   remove(object: unknown): void { this.children = this.children.filter((each) => each !== object) }
+  /** As THREE's, for the objects the flow keeps by name (the origin decal, the floor plane): top level is where they go. */
+  getObjectByName(name: string): unknown {
+    return this.children.find((each) => (each as { name?: string }).name === name)
+  }
 }
 
 interface Flow {
@@ -943,12 +947,12 @@ test('"Use this alignment" pressed while a tap is being read commits the pair, a
   await settle()
   await flow.press(COMMIT)
   await committed(flow)
-  // The two committed markers, and the floor grid, which stays on the scene for the rest of the scan (WP-07, owner R10): not the
-  // flow's placement group, which went with it.
+  // The floor plane, which stays on the scene for the rest of the scan (WP-07, owner R10), and the committed origin, one decal for
+  // the landmark and the arrow to the heading point: not the flow's placement group, which went with it.
   const names = () => flow.scene.children.map((child) => (child as { name?: string }).name)
-  assert.deepEqual(names(), ['calibration anchor landmark', 'calibration anchor heading', 'calibration floor plane'])
+  assert.deepEqual(names(), ['calibration floor plane', 'calibration origin'])
   await flow.releaseBursts()
-  assert.deepEqual(names(), ['calibration anchor landmark', 'calibration anchor heading', 'calibration floor plane'], 'and the read that ended afterwards drew nothing more')
+  assert.deepEqual(names(), ['calibration floor plane', 'calibration origin'], 'and the read that ended afterwards drew nothing more')
 })
 
 test('"Re-place points" pressed while a tap is being read: the read, when it ends, places nothing in the cleared flow', async () => {

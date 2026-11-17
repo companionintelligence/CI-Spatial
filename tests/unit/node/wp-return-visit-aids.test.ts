@@ -517,9 +517,11 @@ withVisit('the floor grid stays on the scene after a commit, where the landmark 
   assert.equal(grid.parent, visit.scene, 'it belongs to the scene now, not to the flow\'s group')
   assert.equal(visit.scene.getObjectByName('calibration placement'), undefined, 'the flow\'s own group is gone')
   assert.deepEqual([grid.position.x, grid.position.y, grid.position.z], [a.x, a.y, a.z], 'centred on the landmark, on the floor')
-  assert.equal((grid.material as THREE.Material).opacity, 0.25)
-  assert.ok(visit.scene.getObjectByName('calibration anchor landmark'))
-  assert.ok(visit.scene.getObjectByName('calibration anchor heading'))
+  assert.equal((grid.material as THREE.Material).opacity, 0.12, 'dimmed to a reference to glance at (SCAN_FLOOR_OPACITY in project-calibration.ts)')
+  // The committed origin is one decal: the crosshair on the landmark and the arrow to the heading point (src/world/origin-decal.ts).
+  assert.ok(visit.scene.getObjectByName('calibration origin'))
+  assert.equal(visit.scene.getObjectByName('calibration anchor landmark'), undefined, 'the landmark has no marker of its own now')
+  assert.equal(visit.scene.getObjectByName('calibration anchor heading'), undefined, 'nor the heading point: the arrowhead stands for it')
 })
 
 withVisit('the one-point tier keeps the grid too', {}, async (visit) => {
@@ -880,8 +882,8 @@ withVisit('nothing is moved while a commit waits for its photos: a tap then chan
   const result = await visit.result()
   assert.equal(result?.calibration.method, 'two-point-ground')
   assert.equal(visit.capture.calls, 2, 'one frame for each of the two points, and nothing at Commit')
-  const landmarkMarker = visit.scene.getObjectByName('calibration anchor landmark')!
-  assert.deepEqual([landmarkMarker.position.x, landmarkMarker.position.z], [a.x, a.z], 'the landmark is where it was when Commit was pressed')
+  const origin = visit.scene.getObjectByName('calibration origin')!
+  assert.deepEqual([origin.position.x, origin.position.z], [a.x, a.z], 'the landmark is where it was when Commit was pressed')
 })
 
 // ── The hold names the button that is on the card ─────────────────────────────────────────────────
@@ -943,7 +945,7 @@ withVisit('Re-place points pressed while the commit waits for its photos stands:
   visit.capture.release()
   await visit.settle()
   assert.equal(visit.closed(), false, 'the person asked to place the points again, and the old pair was not committed')
-  assert.equal(visit.scene.getObjectByName('calibration anchor landmark'), undefined, 'and none of it was dropped into the scene')
+  assert.equal(visit.scene.getObjectByName('calibration origin'), undefined, 'and none of it was dropped into the scene')
   assert.equal(visit.copy(), FIRST_VISIT_LANDMARK)
   assert.notEqual(visit.status(), 'Saving reference photos…')
 
@@ -972,7 +974,7 @@ withVisit('anything that takes the flow to another step while the commit waits f
   visit.capture.release()
   await visit.settle()
   assert.equal(visit.closed(), false, 'the flow is at another step: the commit that was waiting is not carried out')
-  assert.equal(visit.scene.getObjectByName('calibration anchor landmark'), undefined)
+  assert.equal(visit.scene.getObjectByName('calibration origin'), undefined)
 })
 
 withVisit('a tap that was on its way when Commit was pressed moves a marker under the commit: that commit is not carried out, and the pair on the card is what the next press commits', {}, async (visit) => {
@@ -992,7 +994,7 @@ withVisit('a tap that was on its way when Commit was pressed moves a marker unde
   visit.capture.release()
   await visit.settle()
   assert.equal(visit.closed(), false, 'the pair the commit was pressed for is not the pair on the card')
-  assert.equal(visit.scene.getObjectByName('calibration anchor landmark'), undefined, 'and none of it was dropped into the scene')
+  assert.equal(visit.scene.getObjectByName('calibration origin'), undefined, 'and none of it was dropped into the scene')
   assert.notEqual(visit.status(), 'Saving reference photos…')
 
   visit.hits.mode = 'ok'
@@ -1152,8 +1154,7 @@ withVisit('with the floor 1.4 m below the session origin the ring, the kept grid
   }
   const grid = visit.scene.getObjectByName('calibration floor plane')!
   assert.equal(grid.position.y, -1.4, 'the kept grid is on the floor')
-  assert.equal(visit.scene.getObjectByName('calibration anchor landmark')!.position.y, -1.4)
-  assert.equal(visit.scene.getObjectByName('calibration anchor heading')!.position.y, -1.4)
+  assert.equal(visit.scene.getObjectByName('calibration origin')!.position.y, -1.4, 'the origin decal is on the floor')
 })
 
 withVisit('a phone that has not moved since the tap gives the tap itself as the crosshair, through the cover-crop of a 1080 x 1440 frame on a 360 x 640 view', { frame: { width: 1080, height: 1440 } }, async (visit) => {

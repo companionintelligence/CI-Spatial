@@ -21,7 +21,7 @@
  * photos per Place, replaced on re-calibration"), and the `GET :file`
  * parameter reduces to an allowlist rather than a sanitiser.
  *
- * ## Frame-scoped photos (ADR 0009)
+ * ## Frame-scoped photos (ADR 0011)
  *
  * A frame that has a `frameId` keeps its photos under its own folder, `<Place>/frames/<frameId>/ref-<role>.jpg`,
  * served at `/projects/:id/frames/:frameId/ref-<role>.jpg` (`framePhotoPath`, src/world/spatial-frame.ts). A

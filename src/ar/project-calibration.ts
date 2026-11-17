@@ -20,8 +20,11 @@ import {
   sessionFrameBearingDeg,
   twoPointSeparationM,
   MIN_POINT_SEPARATION_M,
+  originDecalPlan,
+  originHeadingBearingDeg,
 } from '../world/geo'
 import { buildAnchorMarker, ANCHOR_RADIUS_M } from '../world/anchor-marker'
+import { buildOriginDecal } from '../world/origin-decal'
 import { twoPointToleranceM } from '../world/frame-fit'
 import {
   baselineGuidance,
@@ -75,7 +78,6 @@ import {
   uncomparedReadout,
 } from './constellation-copy'
 import { createGhostLayer, drawStoredConstellation } from './constellation-ghosts'
-import { keepFloorGrid } from './calibration-guides'
 import { createReferencePhotoFlow, lensOfProvider } from './reference-photo-flow'
 import { createReturnVisitAids, returnAidsEnabled, returnVisitMarkup } from './return-visit-aids'
 
@@ -122,6 +124,15 @@ export interface CalibrationResult {
    * signal. Read as the flow begins, not at the commit, so a shift while the points were being placed counts.
    */
   calibrationEpoch?: number
+  /**
+   * True-north bearing of the committed origin's heading arrow, for the HUD's
+   * frame-heading needle (wave 12, ticket 0001). Present only when this visit
+   * committed a two-point origin with a compass fix. A return-visit commit carries
+   * it too, since that commit draws its own origin with a tick; the stored origin
+   * drawn beside it has no tick. Absent on the one-point tier, which draws no
+   * arrow, and when there is no compass fix.
+   */
+  originBearingDeg?: number
 }
 
 interface CalibrationOptions {
@@ -223,6 +234,13 @@ const MARKER_IDS: MarkerId[] = ['landmark', 'heading', 'check']
 const MARKER_HEIGHT_DISAGREEMENT_M = 0.15
 
 /**
+ * Opacity of the floor grid once the origin is committed and it stays up for
+ * the scan. Well under the flow's 0.4 "settled" value: during calibration the
+ * grid is the thing being judged, and during a scan it is a reference only.
+ */
+const SCAN_FLOOR_OPACITY = 0.12
+
+/**
  * Floor-plane overlay extent, in metres, and its subdivision count.
  *
  * 10 m at 20 divisions gives 0.5 m cells, which is deliberate on two counts:
@@ -291,6 +309,12 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
   let groundWaitStartedAt = Date.now()
   /** Set when the user chooses to place without a settled floor estimate. */
   let groundWaitOverridden = false
+  /**
+   * True once this flow has bypassed a floor check: the skip-ground button, or an
+   * off-floor tap accepted by a same-height retry. It is recorded on the commit,
+   * and a bypassed commit never writes the Place frame (`mayWritePlaceFrame`).
+   */
+  let floorCheckBypassed = false
   /**
    * Height of the most recent tap rejected as off-floor, or null. A retry at
    * this height is the confirmation the override asks for; a tap anywhere else
@@ -655,42 +679,115 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
   }
 
   /**
-   * Adds a marker to the scene **directly**, so it outlives the flow.
+   * Adds an object to the scene **directly**, so it outlives the flow.
    *
    * Everything under `placement` is torn down by `clearPlacement()` on every
    * exit path; anything added here is not. That difference is the whole reason
    * this helper is separate.
+   *
+   * An object already in the scene under the same name is replaced, not
+   * stacked. Without that, a second commit in one session would draw a second
+   * origin on the same spot, and the two would drift apart as soon as either
+   * was re-placed.
    */
-  function dropPersistentMarker(position: Vec3, northYawDeg: number | null, name: string): THREE.Group | null {
+  function replacePersistent(object: THREE.Object3D): void {
     const target = ensureScene()
-    if (!target) return null
-    const marker = buildAnchorMarker(northYawDeg)
-    marker.name = name
-    marker.position.set(position.x, position.y, position.z)
-    target.add(marker)
-    return marker
+    if (!target) return
+    const previous = target.getObjectByName(object.name)
+    if (previous) {
+      target.remove(previous)
+      disposeObject(previous)
+    }
+    target.add(object)
   }
 
   /**
-   * Keeps **both** committed markers (and the check point, when there is one) in the scene for the rest of the session.
+   * Keeps the floor grid for the rest of the scan, at the committed height.
    *
-   * Ticket 0004 as shipped kept only the landmark: `clearPlacement()` tore the
-   * heading marker's decal down at commit, so point B vanished the moment the
-   * user committed — leaving the one thing that fixes the frame's rotation
-   * invisible for the entire scan that followed. Ticket 0007 requires both,
-   * because the pair *is* the reference: a user who cannot see where B went
-   * cannot notice they placed it on the wrong feature.
-   *
-   * Only the landmark carries the north tick — the bearing describes one
-   * orientation for the frame, not a property of each marker, and drawing it
-   * twice would read as two independent compass fixes.
+   * The grid was the only drawing of the ground the flow made, and it lived in
+   * `placement`, so `clearPlacement()` removed it the moment the origin was
+   * committed. The origin was left floating with no floor under it, and the
+   * ground plane the scan depends on disappeared with the flow. It is moved out
+   * of `placement` here and dimmed: a reference to glance at, not a surface to
+   * read.
    */
-  function dropCommittedPair(landmark: Vec3, headingMarker: Vec3 | null, checkPoint: Vec3 | null = null): void {
-    // The marker lives in session space, so its tick takes the session yaw at
-    // which north lies — not the compass bearing. See buildAnchorMarker.
-    dropPersistentMarker(landmark, northYawInSession(), 'calibration anchor landmark')
-    if (headingMarker) dropPersistentMarker(headingMarker, null, 'calibration anchor heading')
-    if (checkPoint) dropPersistentMarker(checkPoint, null, 'calibration anchor check')
+  function keepFloorPlane(): void {
+    if (!floorGrid || !ensureScene()) return
+    placement.remove(floorGrid)
+    floorGrid.name = 'calibration floor plane'
+    ;(floorGrid.material as THREE.Material).opacity = SCAN_FLOOR_OPACITY
+    replacePersistent(floorGrid)
+    floorGrid = null
+    floorGridY = null
+  }
+
+  /**
+   * Draws the committed origin as **one** decal on the ground: a crosshair at
+   * the landmark, an arrow along the heading, and the north tick.
+   *
+   * This replaces the two separate rings the flow used to leave behind, which
+   * showed where each point was but not which way the frame faced. The heading
+   * point is no longer a decal of its own. The arrow's tip lands on it, so the
+   * arrow is the baseline the user defined and the point they placed stays
+   * visible as the arrowhead, and the north tick is the one compass fix on the
+   * decal, so the bearing reads once rather than twice.
+   *
+   * The tick takes the session yaw at which north lies, not the compass bearing,
+   * because the decal lives in session space. See `northYawInSession()`.
+   *
+   * A check point is not on the arrow: it keeps a marker of its own, so the person can see where it went.
+   *
+   * Returns the arrow's true-north bearing for the HUD (`originHeadingBearingDeg`),
+   * or null when there is no arrow or no compass fix.
+   */
+  function dropCommittedOrigin(landmark: Vec3, headingPoint: Vec3 | null, checkPoint: Vec3 | null = null): number | null {
+    const plan = originDecalPlan(landmark, headingPoint, northYawInSession())
+    if (ensureScene()) {
+      keepFloorPlane()
+      replacePersistent(buildOriginDecal(plan, 'committed'))
+      // The check point (WP-04b) is not part of the origin: it keeps a marker of its own, so the person can see where it went.
+      if (checkPoint) {
+        const marker = buildAnchorMarker(null)
+        marker.name = 'calibration anchor check'
+        marker.position.set(checkPoint.x, checkPoint.y, checkPoint.z)
+        replacePersistent(marker)
+      }
+    }
+    return originHeadingBearingDeg(plan)
+  }
+
+  /**
+   * Draws the Place's **stored** origin into the live scene — step 4 of ticket
+   * 0007's return-visit flow, and the only moment at which it is possible.
+   *
+   * Stored points are project-space and tautological (`landmark` is the origin,
+   * `headingMarker` is +Z at `separationM`), so rendering them needs a
+   * session→project transform. That transform is what calibration produces, so
+   * before this point the overlay would be circular — which is exactly why the
+   * flow shows *photos* beforehand and geometry only afterwards.
+   *
+   * Here the transform exists, and its inverse is available without matrix
+   * work: the stored landmark maps to the landmark the user just placed, and
+   * the stored heading marker maps to `storedSeparationM` along the baseline
+   * they just defined. Any visible gap between this and the marker they placed
+   * is the residual, shown at room scale instead of as a number.
+   */
+  function drawStoredPair(landmark: Vec3, headingMarker: Vec3, storedSeparationM: number): void {
+    const dx = headingMarker.x - landmark.x
+    const dz = headingMarker.z - landmark.z
+    const measured = Math.hypot(dx, dz)
+    if (!Number.isFinite(measured) || measured <= 0) return
+    if (!ensureScene()) return
+    // The stored heading point: the stored distance along the baseline the user
+    // just defined. Any gap between it and the point they placed is the residual.
+    const storedHeading: Vec3 = {
+      x: landmark.x + (dx / measured) * storedSeparationM,
+      y: landmark.y,
+      z: landmark.z + (dz / measured) * storedSeparationM,
+    }
+    // No north tick on the stored decal. The committed origin carries the
+    // frame's one compass fix, and a second tick would read as a second reading.
+    replacePersistent(buildOriginDecal(originDecalPlan(landmark, storedHeading, null), 'stored'))
   }
 
   // ── Geometry helpers ────────────────────────────────────────────────────
@@ -1309,6 +1406,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
           stored: storedTwoPoint,
           override,
           unitsMode: options.provider.scaleKind?.(),
+          floorCheckBypassed,
         },
         commitOptions,
       )
@@ -1328,6 +1426,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
         renderStage()
         return
       }
+
 
       // Only a changed frame keeps photos, so only a changed frame is worth a
       // capture. This sits after the mismatch check on purpose: a pair that is
@@ -1374,11 +1473,12 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
         checkPointLabel: labels.check,
         calibratedAt: new Date().toISOString(),
         tap,
+        floorCheckBypassed,
       })
 
-      // Both markers, not just the landmark: the pair is the reference, and a
-      // heading marker the user cannot see is one they cannot check.
-      dropCommittedPair(landmark, headingMarker, points.check)
+      // One origin decal: the crosshair on the landmark, the arrow to the heading
+      // point, and the north tick. The heading point stays visible as the arrowhead.
+      const originBearingDeg = dropCommittedOrigin(landmark, headingMarker, points.check)
 
       // Step 4 of the return-visit flow. Reachable only here, because only a
       // committed frame makes the stored points renderable at all.
@@ -1391,11 +1491,18 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
             comparison: verdict.comparison,
           }))
         }
+        // The stored origin, drawn like the committed one and beside it: the gap between the two decals is the residual,
+        // shown at room scale (wave 12). The ghosts above carry the stored points one by one, with their residuals.
+        drawStoredPair(landmark, headingMarker, storedTwoPoint.separationM)
       }
 
-      // The floor stays on screen for the whole scan, as the committed markers do (owner R10): the scene takes the grid.
-      floorGrid = keepFloorGrid(ensureScene(), floorGrid, placement)
-      close({ calibration, spatialFrame, ...(verdict.frameChanged ? { referencePhotos } : {}), ...epochField })
+      close({
+        calibration,
+        spatialFrame,
+        ...(verdict.frameChanged ? { referencePhotos } : {}),
+        ...(originBearingDeg !== null ? { originBearingDeg } : {}),
+        ...epochField,
+      })
     }
 
     /** #141's single-tap tier, kept for rooms where a second point is impractical. */
@@ -1412,6 +1519,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
           bearingConvention,
           existingFrame,
           calibratedAt: new Date().toISOString(),
+          floorCheckBypassed,
         },
         onePointOptions,
       )
@@ -1424,8 +1532,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
       // No reference photos on this tier (ticket 0007's non-goals): it has no
       // cross-session verification story, and a re-acquisition aid would imply
       // one. There is also no second marker to draw.
-      dropCommittedPair(landmark, null)
-      floorGrid = keepFloorGrid(ensureScene(), floorGrid, placement)
+      dropCommittedOrigin(landmark, null)
       close({ calibration: outcome.calibration, spatialFrame: outcome.spatialFrame, ...epochField })
     }
 
@@ -1583,6 +1690,8 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
               `That looked about ${Math.abs(delta)} cm ${side} the floor. Aim at the floor, or tap the same height again to use it anyway.`
             return
           }
+          // A tap accepted off the floor by a same-height retry is a bypass.
+          if (confirmingRejectedHeight && !isTapOnGround(hit.position.y, groundY)) floorCheckBypassed = true
           offGroundTapY = null
 
           // Pass the raw hit through. applyTap() decides the height, because
@@ -1606,6 +1715,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
     skip.addEventListener('click', () => close(null))
     skipGround.addEventListener('click', () => {
       groundWaitOverridden = true
+      floorCheckBypassed = true
       update()
     })
     confirmBtn.addEventListener('click', () => {

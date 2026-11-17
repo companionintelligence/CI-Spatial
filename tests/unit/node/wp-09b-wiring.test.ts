@@ -228,7 +228,8 @@ test('the calibration result carries the epoch the flow began in, on both tiers,
   assert.match(modal, /const epochField = calibrationEpochField\(options\.provider\)/)
   const begins = modal.indexOf('const epochField = ')
   assert.ok(begins > 0 && begins < modal.indexOf('const trackingWaitStartedAt'), 'read as the flow begins, before any tap')
-  assert.match(modal, /close\(\{ calibration, spatialFrame, \.\.\.\(verdict\.frameChanged \? \{ referencePhotos \} : \{\}\), \.\.\.epochField \}\)/)
+  // The origin's compass bearing (the decal's heading, wave 12) rides in the same result, between the photos and the epoch.
+  assert.match(modal, /close\(\{\s*calibration,\s*spatialFrame,\s*\.\.\.\(verdict\.frameChanged \? \{ referencePhotos \} : \{\}\),\s*\.\.\.\(originBearingDeg !== null \? \{ originBearingDeg \} : \{\}\),\s*\.\.\.epochField,?\s*\}\)/)
   assert.match(modal, /close\(\{ calibration: outcome\.calibration, spatialFrame: outcome\.spatialFrame, \.\.\.epochField \}\)/)
   assert.equal(modal.split('epochField').length, 4, 'declared once and spread into the two results')
 })

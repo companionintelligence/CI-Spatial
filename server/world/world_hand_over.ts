@@ -1,5 +1,5 @@
 /**
- * The hand-over of scans between the worlds of two Places, as the server does it (ADR 0009): what `refreshWorldScans`
+ * The hand-over of scans between the worlds of two Places, as the server does it (ADR 0011): what `refreshWorldScans`
  * calls when a world no longer holds a scan, what a merge or a moved scan calls to have it done before it answers, and
  * what finishes it when it could not be done then.
  *

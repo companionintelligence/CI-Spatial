@@ -277,7 +277,11 @@ test('two points: the old code\'s records, in every field and in key order, but 
     if (built.spatialFrame) assert.ok(Object.is(built.spatialFrame.toleranceM, tolerance), where)
 
     // What did not: every other field, to the last digit, and the layout a stored record has.
-    const { toleranceM: _t, status: _s, checkedBy: _c, ...newCalibration } = built.calibration as Record<string, unknown>
+    // Two fields are new since the old code: the floor the origin sat on and whether the floor check was skipped (the origin
+    // decal's wave, #269). They are pinned here by value and by their own tests below, and set aside from the old record.
+    const { toleranceM: _t, status: _s, checkedBy: _c, groundY, floorCheckBypassed, ...newCalibration } = built.calibration as Record<string, unknown>
+    assert.ok(Object.is(groundY, landmark.y), `${where}: the floor the origin sat on is the landmark's own height`)
+    assert.equal(floorCheckBypassed, false, `${where}: nothing here skipped the floor check`)
     const { toleranceM: _ot, status: _os, ...oldCalibration } = old.calibration as unknown as Record<string, unknown>
     assert.deepStrictEqual(newCalibration, oldCalibration, where)
     assert.deepEqual(Object.keys(newCalibration), Object.keys(oldCalibration), where)
@@ -330,9 +334,13 @@ test('one point: refusal, records and sentence are the old code\'s, on 10,000 se
     }
     assert.equal(outcome.kind, 'committed', where)
     if (outcome.kind !== 'committed') continue
-    assert.deepStrictEqual(outcome.calibration, old.calibration, where)
+    // The floor the origin sat on and the floor-check flag are new since the old code (#269): pinned by value, then set aside.
+    const { groundY, floorCheckBypassed, ...calibration } = outcome.calibration as unknown as Record<string, unknown>
+    assert.ok(Object.is(groundY, landmark.y), `${where}: the floor the origin sat on is the landmark's own height`)
+    assert.equal(floorCheckBypassed, false, `${where}: nothing here skipped the floor check`)
+    assert.deepStrictEqual(calibration, old.calibration, where)
     assert.deepStrictEqual(outcome.spatialFrame, old.spatialFrame, where)
-    assert.equal(JSON.stringify(outcome), JSON.stringify({ kind: 'committed', calibration: old.calibration, spatialFrame: old.spatialFrame }), where)
+    assert.equal(JSON.stringify({ kind: outcome.kind, calibration, spatialFrame: outcome.spatialFrame }), JSON.stringify({ kind: 'committed', calibration: old.calibration, spatialFrame: old.spatialFrame }), where)
     assert.deepEqual(Object.keys(outcome.spatialFrame ?? {}), Object.keys(old.spatialFrame ?? {}), where)
     if (outcome.spatialFrame) {
       if (existingFrame === null) seen.nullFrame += 1
@@ -533,7 +541,7 @@ test('a fitted visit writes the fit and the check it rests on, after the fields 
   const verdict = assessVisit()
   assert.ok(verdict.kind === 'accepted')
   const { calibration, spatialFrame } = buildTwoPointCommit(verdict, { ...BUILD, ...visitTaps(), frameBearingDeg: 100 })
-  assert.deepEqual(Object.keys(calibration), ['method', 'sessionToProject', 'separationM', 'residualM', 'toleranceM', 'anchorBearingDeg', 'projectBearingDeg', 'bearingConvention', 'calibratedAt', 'status', 'fit', 'checkedBy'])
+  assert.deepEqual(Object.keys(calibration), ['method', 'sessionToProject', 'separationM', 'residualM', 'toleranceM', 'anchorBearingDeg', 'projectBearingDeg', 'bearingConvention', 'groundY', 'floorCheckBypassed', 'calibratedAt', 'status', 'fit', 'checkedBy'])
   assert.equal(calibration.status, 'verified')
   assert.equal(calibration.method === 'two-point-ground' && calibration.checkedBy, 'constellation')
   const taps = visitTaps()
@@ -737,7 +745,7 @@ test('a first two-point commit writes the calibration and the Place frame, in th
   const verdict = assessTwoPoint({ landmark, headingMarker, stored: null, override: false }, DEFAULTS)
   assert.ok(verdict.kind === 'accepted')
   const { calibration, spatialFrame } = buildTwoPointCommit(verdict, { ...BUILD, landmark, headingMarker, frameBearingDeg: 100 })
-  assert.deepEqual(Object.keys(calibration), ['method', 'sessionToProject', 'separationM', 'residualM', 'toleranceM', 'anchorBearingDeg', 'projectBearingDeg', 'bearingConvention', 'calibratedAt', 'status'])
+  assert.deepEqual(Object.keys(calibration), ['method', 'sessionToProject', 'separationM', 'residualM', 'toleranceM', 'anchorBearingDeg', 'projectBearingDeg', 'bearingConvention', 'groundY', 'floorCheckBypassed', 'calibratedAt', 'status'])
   assert.deepEqual(Object.keys(spatialFrame!), ['version', 'createdAt', 'method', 'landmark', 'headingMarker', 'separationM', 'toleranceM', 'anchorBearingDeg', 'projectBearingDeg', 'bearingConvention'])
   assert.equal(calibration.method, 'two-point-ground')
   assert.equal(calibration.status, 'provisional')
@@ -838,7 +846,10 @@ test('one point: a compass reading makes a provisional calibration with no verif
   const first = buildOnePointCommit({ ...input, existingFrame: undefined }, DEFAULTS)
   assert.equal(first.kind, 'committed')
   if (first.kind !== 'committed') return
-  assert.deepEqual(Object.keys(first.calibration), ['method', 'sessionToProject', 'anchorBearingDeg', 'bearingConvention', 'calibratedAt', 'status'])
+  // The one-point record keeps its old keys in their old order, and the two fields of the origin decal's wave (#269) come after them.
+  assert.deepEqual(Object.keys(first.calibration), ['method', 'sessionToProject', 'anchorBearingDeg', 'bearingConvention', 'calibratedAt', 'status', 'groundY', 'floorCheckBypassed'])
+  assert.equal(first.calibration.groundY, -1.2, "the floor the origin sat on is the landmark's own height")
+  assert.equal(first.calibration.floorCheckBypassed, false)
   assert.equal(first.calibration.status, 'provisional')
   assert.deepEqual(first.spatialFrame, { version: 1, createdAt: '2026-11-16T09:30:00.000Z', method: 'ground-tap-compass', anchorBearingDeg: 90, bearingConvention: 2 })
   assert.deepEqual(Object.keys(first.spatialFrame!), ['version', 'createdAt', 'method', 'anchorBearingDeg', 'bearingConvention'])
@@ -987,5 +998,7 @@ test('the module reads no DOM, no Deno API, no clock and no randomness, and impo
   const imports = [...source.matchAll(/from '([^']+)'/g)].map((match) => match[1])
   // calibration-evidence.ts is the leaf that declares `ScanCalibration.tap` (`TapEvidence`): the commit hands the evidence
   // a tap reader gathered to the calibration it builds and reads none of it.
-  assert.deepEqual(imports.sort(), ['../world/baseline-guidance.ts', '../world/calibration-evidence.ts', '../world/frame-fit.ts', '../world/geo.ts', '../world/types.ts', './constellation-flow.ts'])
+  // ground-gate.ts is the pure rule for when a commit may write the Place's frame (#269): a commit with the floor check skipped keeps
+  // the frame the Place has.
+  assert.deepEqual(imports.sort(), ['../world/baseline-guidance.ts', '../world/calibration-evidence.ts', '../world/frame-fit.ts', '../world/geo.ts', '../world/types.ts', './constellation-flow.ts', './ground-gate.ts'])
 })

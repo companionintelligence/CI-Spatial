@@ -31,7 +31,7 @@
  * the same slug — it would wait on itself forever. In `main.ts` that means
  * only `loadWorld`/`updateWorld`/`mutateWorldFiles` take the lock (and the
  * hand-over of scans between two worlds, which takes the second world's lock
- * only if it is free: `tryWithWorldLock`, ADR 0009); the unlocked
+ * only if it is free: `tryWithWorldLock`, ADR 0011); the unlocked
  * `readWorldUnlocked`/`writeWorldUnlocked` primitives they call inside it
  * never do.
  *

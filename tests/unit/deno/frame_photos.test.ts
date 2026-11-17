@@ -1,5 +1,5 @@
 /**
- * A frame's reference photos on disk (server/project_media.ts, ADR 0009): where a frame-scoped photo lives and which
+ * A frame's reference photos on disk (server/project_media.ts, ADR 0011): where a frame-scoped photo lives and which
  * names resolve, how an upload's `meta` is read for the frame roles, how a photo is stored without touching another
  * frame's, and how a Place that takes over another's frame gets photos of its own.
  *

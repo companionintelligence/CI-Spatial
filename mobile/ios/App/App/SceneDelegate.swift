@@ -8,8 +8,6 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         guard let windowScene = scene as? UIWindowScene else { return }
 
         window = UIWindow(windowScene: windowScene)
-        // The app's own bridge controller, not the stock CAPBridgeViewController: it registers ArSessionPlugin on the
-        // bridge. Info.plist names no storyboard for the scene, so this is the one place the app makes a bridge.
         window?.rootViewController = ScanBridgeViewController()
         window?.makeKeyAndVisible()
 

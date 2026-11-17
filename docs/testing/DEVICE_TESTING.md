@@ -48,6 +48,31 @@ Suggested devices: `iphone182`, `liam-ipad-pro`.
 | 11 | Airplane-mode ON (keep Wi-Fi off), capture | HUD shows offline/queue messaging rather than a spinner hang |
 | 12 | Airplane-mode OFF | Queued uploads flush (watch server logs); no data lost |
 
+### A-origin — calibrated origin: ground plane, decal, return visit
+
+Wave 12 ticket 0001. Run after step 2. Use a Place with **no** stored frame for the first pass,
+then the same Place again for the return visit. Mock tests prove the decal is in the scene; only
+a phone shows whether it lands on the floor.
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| O1 | First visit to a Place with no stored frame: wait for the readiness step to lock | The teal floor grid appears under the feed, dim until the floor estimate settles, then solid |
+| O2 | Place the landmark on the floor and confirm, then place the heading point and commit | One origin appears on the floor: a white crosshair on the landmark and a teal arrow whose **tip sits on the heading point you tapped**. No second ring |
+| O3 | Walk 3–4 m away and look back at the origin from two sides | Decal stays fixed on the floor; it does not float or swim with the camera. The arrow still points at the heading point |
+| O4 | Turn slowly through 360° with the origin in view | The red north tick stays on the bearing the compass read at commit. Its label says session-local. Cross-check the first reading against a compass app |
+| O5 | Keep scanning for several minutes | The floor grid is still visible at low opacity for the whole scan. Before ticket 0001 it was removed at commit |
+| O6 | Export the scan (step 8), then open the World file for this Place | The scan's `calibrationGroundY` is a number in metres, not null. It is the height the floor grid was drawn at |
+| O7 | Second visit, same Place: go through the reference photos and place both points | After the separation check passes, a dimmer **stored** origin appears. Its arrow and the committed arrow differ by the residual the status line reports |
+| O8 | Second visit: deliberately place the heading point about 0.5 m off | The flow sends you back to re-place. No stored origin is drawn. Overriding the check still commits one origin |
+| O9 | Skip calibration on a Place | The floor grid is removed with the flow. No origin appears, and scanning proceeds uncalibrated |
+| O10 | Tap a point on a tabletop (~75 cm up) as the landmark | The existing "cm above the floor" gate rejects it. It still accepts a same-height retry |
+| O11 | Tap **Continue uncalibrated** on a Place | Status reads "Heading unverified — scanning without project alignment. This scan does not set the Place frame." The Place's stored frame is unchanged on the next visit |
+| O12 | Tap **Place anchor without floor check**, then commit | Status reads "Floor check bypassed — provisional…". On a return visit the commit is not `verified`, and a first visit leaves the Place with no frame. Use "Use one point instead (lower accuracy)" to check that the one-point button is labelled and explicit |
+| O13 | Commit an origin with a compass fix, then turn to face along the origin's arrow | The amber **frame heading** needle sits under the teal device needle, and its label shows the same bearing, within the compass error you see. Note how far apart they sit. It also appears after a return-visit commit. It stays hidden after a one-point commit and after **Continue uncalibrated** |
+
+The same checks apply on Android WebXR (Checklist B2). The decal is the same code path on both
+runtimes.
+
 **Watch the box side throughout:** `journalctl --user -u cscan-server -f` for
 API traffic and inference timing; `npm run logs:watch` for on-device console
 errors (page must be loaded with `?debug=remote`).
@@ -245,6 +270,36 @@ measured**. ADR 0005 rule 5 says a tolerance must cite a measurement; this is th
    - [ ] Resident memory stays bounded over a few minutes of looping (the windowed loader)
 
 ---
+
+## Checklist D — native ARKit (Scan iOS shell)
+
+The Capacitor iOS shell runs `ScanARPlugin.swift` (ARKit) in place of the 8th
+Wall engine. Build it on a Mac: `npx cap sync ios` in `mobile/`, open
+`mobile/ios/App/App.xcodeproj`, set **your** Apple development team under
+Signing & Capabilities, and run it on the phone. Use an iPhone with LiDAR for
+the depth rows, and one without for the rest.
+
+To drive the plugin directly, turn on **Settings → Safari → Advanced → Web
+Inspector** on the phone, then open the app's page from Safari's **Develop**
+menu on the Mac and use the console. The commands below run there.
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| 1 | Launch the app, start the scanner, grant camera permission | The camera shows behind the web view, fitted whole (contain fit); the HUD sits on top |
+| 2 | Walk slowly around a room | Pose events move the overlay; the HUD tracking reads NORMAL |
+| 3 | Aim at a wall: `await Capacitor.Plugins.ScanAR.hitTest({ x: 0.5, y: 0.5 })` | `rotation` is not `[0,0,0,1]`; its Y axis is horizontal (the wall's normal), so a placed item faces the wall |
+| 4 | Background the app for 10 s, then return | The Web Inspector shows the state after return: the first `tracking` event is `notAvailable`, then pose events carry `normal` or `limited.relocalizing`, and the scan keeps its coordinates |
+| 5 | Walk the room for a few seconds, then `await Capacitor.Plugins.ScanAR.saveWorldMap({ name: 'room-7' })` | Resolves with `{ name, bytes }`. Right after start it rejects with ARKit's reason, so save once the room is mapped |
+| 6 | Quit the app fully, relaunch, stand where the map was saved, and run `await Capacitor.Plugins.ScanAR.start({ depth: false, hitGrid: 20, worldMap: 'room-7' })` before the scanner starts | Resolves with `worldMap: "loaded"`; `tracking` events go `limited.relocalizing`, then `normal`, and the overlay lines up with the saved room |
+| 7 | Quit the app fully again, relaunch, and run the same start with `worldMap: 'room-none'` | Resolves with `worldMap: "missing"`, and the session runs fresh |
+| 8 | `await Capacitor.Plugins.ScanAR.saveWorldMap({ name: '../x' })` | Rejects: "A world map name may only use letters, digits, dashes and underscores" |
+| 9 | On a LiDAR phone, quit the app and relaunch, then run `await Capacitor.Plugins.ScanAR.start({ depth: true, hitGrid: 20 })` and `await Capacitor.Plugins.ScanAR.captureFrame({ depth: true })` | The start resolves, and the result has a `depth` payload with `width`, `height` and `metersBase64` |
+| 10 | With row 6's session running, background the app, wait 10 s, return, then open Xcode → Devices and Simulators → the app → Download Container | `AppData/Library/Application Support/ScanWorldMaps/room-7.worldmap` exists: the autosave ran when the app went to the background |
+
+Rows 5–10 test the plugin directly. In the app, the native session takes its
+map name from the page's `?world=` Place (never `default`), so these rows are
+the check of relocalization until the Place flow is confirmed on a phone (see
+ADR 0010).
 
 ## Results matrix
 

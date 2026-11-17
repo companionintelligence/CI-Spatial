@@ -29,8 +29,9 @@
  *
  * Every component gets its licence text: the files it ships, or, for one that ships none, its
  * project's text kept in scripts/native/licence-texts/ (SUPPLIED_TEXTS). A proprietary SDK whose
- * agreement is linked, not reproduced (the XR Engine, ARCore), gets a short notice of its own
- * instead. The notices are not made while any component is left without a text.
+ * agreement is linked, not reproduced (the XR Engine), gets a short notice of its own instead. ARCore's
+ * terms are reproduced from licence-texts/ and come after Google's disclosure. The notices are not made
+ * while any component is left without a text.
  */
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
@@ -57,6 +58,9 @@ export const SUPPLIED_TEXT_SOURCES = {
   // Copied without the contact addresses that follow two of the names in its copyright lines.
   'dlopen2-LICENSE.txt': 'https://github.com/OpenByteDev/dlopen2/blob/master/LICENSE',
   'cordova-android-NOTICE.txt': 'https://github.com/apache/cordova-android/blob/14.0.1/NOTICE',
+  // ARCore's AAR ships no licence file. Its terms are Google's ARCore Additional Terms of Service,
+  // copied from the page on 2026-11-16; the page says the terms were last modified on 2022-05-11.
+  'arcore-additional-terms.txt': 'https://developers.google.com/ar/develop/terms, retrieved 2026-11-16',
 }
 
 /**
@@ -322,8 +326,8 @@ export function lockedLibraries(text, configuration = 'releaseRuntimeClasspath')
  * What Google asks an app that uses ARCore to tell its users, and the terms the SDK is under. Google's
  * page (https://developers.google.com/ar/develop/privacy-requirements) asks for the first sentence below
  * to be prominent and easy to find, with links to Google Play Services for AR and to the Google Privacy
- * Policy. This is the copy THIRD-PARTY-NOTICES.txt carries. The SDK's terms are proprietary, so they are
- * linked and not reproduced, as the XR Engine's are (addVendored).
+ * Policy. This is the copy THIRD-PARTY-NOTICES.txt carries, ahead of the text of the SDK's terms
+ * (licence-texts/arcore-additional-terms.txt).
  */
 export const ARCORE_NOTICE = [
   'This application runs on Google Play Services for AR (ARCore), which is provided by Google and governed by the Google Privacy Policy.',
@@ -331,17 +335,17 @@ export const ARCORE_NOTICE = [
     + 'Google Privacy Policy: https://policies.google.com/privacy',
   'The ARCore SDK for Android (com.google.ar:core) is licensed under the ARCore Additional Terms of Service, '
     + 'https://developers.google.com/ar/develop/terms, not under the licence of this app. Those terms are proprietary: '
-    + 'they are linked here, not reproduced.',
+    + 'their text follows this notice.',
 ].join('\n\n')
 
 /**
  * The licence of each library the Android app's release build pins, by `group:artifact`, as each
- * library's POM declares it (and the LICENSE.txt the AndroidX AARs carry). All are under the Apache
- * License 2.0, whose text each one gets (androidLicenceTexts), except ARCore: Google's ARCore
- * Additional Terms of Service are proprietary, so its entry carries its own notice `text` in place
- * of the Apache text. Cordova also has a NOTICE file (`notice`), which section 4(d) of the Apache
- * licence asks to pass on. A library that matches none stops the notices: check its licence, then
- * add it here.
+ * library's POM declares it (and the LICENSE.txt the AndroidX AARs carry). All but ARCore are under
+ * the Apache License 2.0, whose text each one gets (androidLicenceTexts); Cordova also has a NOTICE file
+ * (`notice`), which section 4(d) of that licence asks to pass on. ARCore's AAR carries no licence file, so
+ * its entry names Google's ARCore Additional Terms of Service, supplies their text (`text`, a file in
+ * licence-texts/) and carries the disclosure Google asks an app that uses ARCore to make (`disclosure`).
+ * A library that matches none stops the notices: check its licence, then add it here.
  */
 export const ANDROID_LICENCES = [
   { match: /^androidx\./, licence: 'Apache-2.0', source: 'https://developer.android.com/jetpack/androidx' },
@@ -353,18 +357,24 @@ export const ANDROID_LICENCES = [
   { match: /^com\.google\.guava:listenablefuture$/, licence: 'Apache-2.0', source: 'https://github.com/google/guava' },
   {
     match: /^com\.google\.ar:core$/,
-    licence: 'ARCore Additional Terms of Service (proprietary, Google)',
+    licence: 'ARCore Additional Terms of Service',
     source: 'https://developers.google.com/ar/develop/terms',
-    text: ARCORE_NOTICE,
+    disclosure: ARCORE_NOTICE,
+    text: 'arcore-additional-terms.txt',
   },
 ]
 
 /**
- * The licence texts an ANDROID_LICENCES entry puts in the notices: the Apache License 2.0, or the
- * entry's own `text` when its library is not under it, and then the entry's `notice` file, if any.
+ * The licence texts an ANDROID_LICENCES entry puts in the notices: its `disclosure`, if it has one, then the
+ * Apache License 2.0, or the entry's own `text` (a file in licence-texts/) when its library is not under it,
+ * and then the entry's `notice` file, if any.
  */
 export function androidLicenceTexts(entry) {
-  return [...(entry.text ? [entry.text] : apacheText()), ...(entry.notice ? [suppliedText(entry.notice)] : [])]
+  return [
+    ...(entry.disclosure ? [entry.disclosure] : []),
+    ...(entry.text ? [suppliedText(entry.text)] : apacheText()),
+    ...(entry.notice ? [suppliedText(entry.notice)] : []),
+  ]
 }
 
 function addVendored(notices, shell, targets) {

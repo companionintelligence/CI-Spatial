@@ -31,9 +31,9 @@
  * GET  /projects/:id       → Project
  * PUT  /projects/:id       JSON (Project) → Project
  * DELETE /projects/:id     → { ok: true } (409 while the Place holds a scan, an upload scan included; removes its reference photos)
- * POST /projects/:id/reference-photos        multipart { image, meta } → { ok, role, url }  (a Place whose frame has no id: ADR 0009)
+ * POST /projects/:id/reference-photos        multipart { image, meta } → { ok, role, url }  (a Place whose frame has no id: ADR 0011)
  * GET  /projects/:id/reference-photos/:file  → image/jpeg
- * PUT  /projects/:id/spatial-frame           JSON { frame, expectedRevision, replaces? } → { revision, frame } | 409 (ADR 0009)
+ * PUT  /projects/:id/spatial-frame           JSON { frame, expectedRevision, replaces? } → { revision, frame } | 409 (ADR 0011)
  * GET  /projects/:id/frame-status            → FrameStatus: the current frame and revision, scans by frame, the history
  * POST /projects/:id/frames/:frameId/reference-photos  multipart { image, meta } → { ok, role, url }
  * GET  /projects/:id/frames/:frameId/:file   → image/jpeg
@@ -170,7 +170,7 @@ import {
 import { storeUploadedScan } from './world/scan_store.ts'
 import { calibrationEvidenceFromMeta } from './calibration_fields.ts'
 import { buildRevertPatch, planRevert, stampFirstSightPlacements } from '../src/world/scan-placement.ts'
-import { composeYUpTransform, geoToEnu, hasGeoPose } from '../src/world/geo.ts'
+import { composeYUpTransform, geoToEnu, hasGeoPose, readCalibrationGroundY } from '../src/world/geo.ts'
 import { defaultLayerIndex } from '../src/world/layers.ts'
 import { EVENT, type EventPayload } from '../src/shared/events.ts'
 import { formatSetupBanner } from '../src/shared/model-catalog.ts'
@@ -2606,6 +2606,8 @@ function scanManifestFromStored(
     ...calibrationEvidenceFromMeta(scan.meta),
     // Set when the upload's transform was set aside (sanitiseUploadMetadata), so the scan sits by GPS or the grid.
     ...rejectedTransformField(scan.meta),
+    // The origin's floor height, read from the nested calibration record `src/export/gltf.ts` writes (wave 12).
+    calibrationGroundY: readCalibrationGroundY(scan.meta['calibration']),
     capturedAt: asString(scan.meta['capturedAt']) ?? asString(scan.meta['exportedAt']) ?? scan.uploadedAt,
     pointCount: asNumber(scan.meta['pointCount']),
     detectionCount: asNumber(scan.meta['detectionCount']),
@@ -2702,7 +2704,7 @@ function createWorldMembers(): WorldMember[] {
  * the same directory and is renamed over `path`, which is atomic on one filesystem. `Deno.writeTextFile` on the path
  * itself truncates it first, and a read that lands in that gap sees an empty file. For a scan's sidecar that is not a
  * slow read but a lost scan: `readScanMeta` reads an unparseable sidecar as `{}`, the scan then reads as filed under no
- * Place, a world refresh evicts it, and the eviction takes its patches, comments and jobs with it (ADR 0009 hands those
+ * Place, a world refresh evicts it, and the eviction takes its patches, comments and jobs with it (ADR 0011 hands those
  * over to the Place the scan went to, which needs the sidecar to be whole while it is read).
  */
 async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
@@ -3121,7 +3123,7 @@ async function readProjectWorldUnlocked(slug: string, projectId: string): Promis
 }
 
 /**
- * The hand-over of scans between the worlds of two Places (server/world/world_hand_over.ts, ADR 0009). The world of the
+ * The hand-over of scans between the worlds of two Places (server/world/world_hand_over.ts, ADR 0011). The world of the
  * Place a scan goes to is edited and saved under its own lock, if that lock is free: the caller holds the lock of the world
  * the scan leaves, so this one is never waited for.
  */
@@ -6226,7 +6228,7 @@ app.patch('/projects/:id/scans/:scanId', async (c) => {
   if (body.areaId && !(project.areas ?? []).some(area => area.areaId === body.areaId)) {
     return c.json({ error: 'Area not found' }, 404)
   }
-  // ADR 0009: a scan that was measured in another frame is not filed here unless the request says it knows; the Place
+  // ADR 0011: a scan that was measured in another frame is not filed here unless the request says it knows; the Place
   // takes the frame, or describes the one the scan names, only once the scan is filed (server/place_moves.ts).
   const plan = await placeMoves.planScanMove(scanId, projectId, body.acceptFrameMismatch === true)
   if (plan.kind === 'refused') return c.json(plan.body, 409)
@@ -6309,7 +6311,7 @@ app.post('/projects/:id/reference-photos', async (c) => {
 
   const place = (await loadProjects()).find(p => p.projectId === projectId)
   if (!place) return c.json({ error: 'Project not found' }, 404)
-  // ADR 0009: once the Place holds a frame that has an id, its photos are kept with that frame (the route below), and the
+  // ADR 0011: once the Place holds a frame that has an id, its photos are kept with that frame (the route below), and the
   // files here belong to the frames written before ids: they are read, and never written over again. A Place whose
   // frame has no id still takes photos here, as the phone's frame code (src/project/frame-sync.ts) sends them.
   if (frameIdOf(place.spatialFrame) !== null) {
@@ -6380,7 +6382,7 @@ app.get('/projects/:id/reference-photos/:file', async (c) => {
   }
 })
 
-// ADR 0009: a Place's frame status, and the photos of each of its frames (server/place_frame_routes.ts).
+// ADR 0011: a Place's frame status, and the photos of each of its frames (server/place_frame_routes.ts).
 registerPlaceFrameRoutes(app, { loadProjects, countScansByFrame, mediaDir: PROJECT_MEDIA_DIR, maxPhotoBytes: UPLOAD_MAX_FRAME_BYTES })
 
 // A Place is deleted only when it holds no scan, so its keyframes are never separated from the scan they belong to
@@ -6426,7 +6428,7 @@ app.post('/projects/:id/merge', async (c) => {
     const source = projects.find(p => p.projectId === sourceProjectId) ?? null
     if (!target) return { result: { target: null }, save: false }
     if (!source) return { result: { target, alreadyMerged: true }, save: false }
-    // ADR 0009: the source's scans come with the frame they were measured in. Another frame than the target's is
+    // ADR 0011: the source's scans come with the frame they were measured in. Another frame than the target's is
     // refused before anything moves, unless the request says it knows; a target with no frame takes the source's.
     const mismatch = await placeMoves.mergeFrames(target, source, body.acceptFrameMismatch === true)
     if (mismatch) return { result: { target, mismatch }, save: false }
@@ -6511,13 +6513,13 @@ async function countScansForProject(projectId: string): Promise<number> {
   return (await countScansByFrame(projectId)).scanCount
 }
 
-/** How a Place's stored scans split by the frame they were measured against, from their sidecars (ADR 0009). */
+/** How a Place's stored scans split by the frame they were measured against, from their sidecars (ADR 0011). */
 async function countScansByFrame(projectId: string): Promise<ScanFrameCounts> {
   const scans = await listStoredScans()
   return tallyScansByFrame(scans.filter(scan => scanProjectId(scan.meta) === projectId).map(scan => scan.meta))
 }
 
-/** What a merge or a moved scan does about the frames of the Places it puts scans between (server/place_moves.ts, ADR 0009). */
+/** What a merge or a moved scan does about the frames of the Places it puts scans between (server/place_moves.ts, ADR 0011). */
 const placeMoves = createPlaceMoves({
   mediaDir: PROJECT_MEDIA_DIR,
   listStoredScans,
@@ -6582,7 +6584,7 @@ async function rewriteProjectReferences(sourceProjectId: string, targetProjectId
     } catch { /* ignore */ }
   }
   // The source's world is not relabelled as the target's any more: it stays the source's, and reading it hands every
-  // scan it held over to the target's world (ADR 0009), with their patches, comments and finished jobs. Relabelled,
+  // scan it held over to the target's world (ADR 0011), with their patches, comments and finished jobs. Relabelled,
   // it was a second world for the target that nothing opened, and what was made of the scans stayed in it.
   const held = new Map<string, Set<string>>()
   await mutateWorldFiles((world) => {

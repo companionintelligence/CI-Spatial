@@ -271,7 +271,7 @@ test("the Android app carries ARCore, so NOTICE.md and THIRD_PARTY.md name it wi
   assert.ok(notice.includes('(https://policies.google.com/terms)'), 'NOTICE.md links the Google Terms of Service that the Additional Terms name')
   assert.match(flattened(notice), /terms of service of an app that uses ARCore must tell its users that the app includes ARCore functionality provided by Google/)
   assert.match(flattened(notice), /is the owner's to do/, 'NOTICE.md says who owns writing that into the app\'s own terms')
-  assert.match(read('mobile/README.md').split('## Not done')[1] ?? '', /the privacy policy/, "mobile/README.md no longer lists the privacy policy as not done: NOTICE.md's sentence that the app has no terms yet needs checking")
+  assert.match(read('mobile/README.md').split('## Not done')[1] ?? '', /the privacy policy/i, "mobile/README.md no longer lists the privacy policy as not done: NOTICE.md's sentence that the app has no terms yet needs checking")
 
   const exceptions = notice.indexOf('Not everything here is under a permissive licence')
   const everythingElse = notice.indexOf('Everything else', exceptions)

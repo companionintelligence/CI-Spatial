@@ -193,8 +193,11 @@ export interface Outcome {
   /** What it resolved to: the records, with each photo's bytes reduced to their length. `undefined` while open. */
   result: unknown
   looks: Record<string, Card>
-  /** What the modal left in the scene, top level only. */
-  scene: Array<{ name: string; position: [number, number, number] }>
+  /**
+   * What the modal left in the scene, top level only. The origin decal also reports where its arrow ends (`arrowTip`, in scene
+   * coordinates): the heading point has no marker of its own, and the arrowhead stands for it.
+   */
+  scene: Array<{ name: string; position: [number, number, number]; arrowTip?: [number, number, number] }>
   /** How often it asked the host for each thing. */
   counts: { hitTests: number; compass: number; pose: number; captures: number }
 }
@@ -355,7 +358,16 @@ export async function runScenario(runModal: RunModal, scenario: Scenario): Promi
       looks,
       scene: scene.children
         .filter((child) => child.name !== 'calibration placement' && child.name !== KEPT_FLOOR_GRID)
-        .map((child) => ({ name: child.name, position: [child.position.x, child.position.y, child.position.z] as [number, number, number] })),
+        .map((child) => {
+          const entry = { name: child.name, position: [child.position.x, child.position.y, child.position.z] as [number, number, number] }
+          // The arrow is the origin decal's first line, from the decal's own origin to its tip, in a group turned to the heading.
+          const arrow = child.getObjectByName('origin heading arrow') as THREE.LineSegments | undefined
+          if (!arrow) return entry
+          child.updateMatrixWorld(true)
+          const vertices = arrow.geometry.getAttribute('position')
+          const tip = new THREE.Vector3(vertices.getX(1), vertices.getY(1), vertices.getZ(1)).applyMatrix4(arrow.matrixWorld)
+          return { ...entry, arrowTip: [tip.x, tip.y, tip.z] as [number, number, number] }
+        }),
       counts,
     }
   } finally {

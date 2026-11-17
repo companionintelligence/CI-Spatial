@@ -11,6 +11,10 @@
  * Start button, the #ar-help line and, through arRuntimeError, the permission banner. Reloading
  * cannot add a file that is not in the bundle, and no server is involved.
  *
+ * A phone in the native shell, whose ScanAR plugin reports that ARKit or ARCore can run, does not wait for
+ * the engine either (`nativeActive` in main.ts): the engine is loaded only if the native session fails to
+ * start, and then by createWebRuntimeProvider.
+ *
  * main() touches the DOM when it loads, so node cannot import it. Two things follow:
  *  - "is the engine part of this page at all" is a pure function, src/ar/engine-state.ts, tested
  *    directly;
@@ -44,12 +48,13 @@ const ENGINE_BLAME = /did not load|Reload|server may be down/i
 type Waited = 'ready' | 'failed' | 'timeout'
 const WAITS: Waited[] = ['ready', 'failed', 'timeout']
 
-interface Mode { name: string, forcedMode: string | null, desktopShell: boolean }
+interface Mode { name: string, forcedMode: string | null, desktopShell: boolean, nativeActive?: boolean }
 const PAGE: Mode = { name: 'a phone or browser page', forcedMode: null, desktopShell: false }
 const DESKTOP: Mode = { name: 'the desktop app', forcedMode: null, desktopShell: true }
 const FORCED_WEBXR: Mode = { name: 'a page forced into WebXR (?ar=webxr)', forcedMode: 'webxr', desktopShell: false }
 const DESKTOP_FORCED_WEBXR: Mode = { name: 'the desktop app forced into WebXR', forcedMode: 'webxr', desktopShell: true }
 const NO_ENGINE = [DESKTOP, FORCED_WEBXR, DESKTOP_FORCED_WEBXR]
+const NATIVE_PHONE: Mode = { name: 'a phone whose native AR runtime is in use', forcedMode: null, desktopShell: false, nativeActive: true }
 
 /** The text of `source` from `from` up to, not including, `to`. Both must be there, in that order. */
 function between(source: string, from: string, to: string): string {
@@ -92,13 +97,15 @@ const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
 /**
  * Runs main.ts's wait block and its reason ladder as main() would on `mode`, where the wait, if it
  * is started, ends in `waited`. The block and the ladder are main.ts's own text. `engineExpected`
- * is the real function the block imports, and the rest are stand-ins.
+ * is the real function the block imports, and the rest are stand-ins. `nativeActive` is declared
+ * above the block in main(), so the mode hands it in. The ladder is only reached where no runtime
+ * was made, so a mode whose native runtime is in use reads the wait block's outcome and not `reason`.
  */
 async function boot(mode: Mode, waited: Waited): Promise<BootResult> {
   const statuses: string[] = []
   const waits: number[] = []
   const run = new AsyncFunction(
-    'forcedMode', 'isDesktopShell', 'engineExpected', 'overlay', 'waitForXR8', 'XR8_LOAD_TIMEOUT_MS',
+    'forcedMode', 'isDesktopShell', 'engineExpected', 'overlay', 'waitForXR8', 'XR8_LOAD_TIMEOUT_MS', 'nativeActive',
     stripTypeScriptTypes(`${WAIT_BLOCK}\n${LADDER}`) + '\nreturn { xr8Load, xr8Available, reason }',
   )
   const out = await run(
@@ -108,6 +115,7 @@ async function boot(mode: Mode, waited: Waited): Promise<BootResult> {
     { setStatus: (text: string) => { statuses.push(text) } },
     async (timeoutMs: number) => { waits.push(timeoutMs); return waited },
     90_000,
+    mode.nativeActive ?? false,
   )
   return { ...out, reason: out.xr8Available ? null : out.reason, statuses, waits }
 }
@@ -216,6 +224,15 @@ test('a page forced into WebXR, in a browser or in the desktop app: absent, neve
   }
 })
 
+test('a phone whose native runtime is in use: the engine is not waited for, and the page does not say it is loading it', async () => {
+  for (const waited of WAITS) {
+    const run = await boot(NATIVE_PHONE, waited)
+    assert.equal(run.waits.length, 0, `a wait that would say ${waited} is never started`)
+    assert.equal(run.xr8Load, 'absent', `a wait that would say ${waited} does not decide the state: the engine was not needed`)
+    assert.deepEqual(run.statuses, [], 'no "Loading AR engine…" while the native session is the one that starts')
+  }
+})
+
 test('a page that never loads the engine is never told the engine did not load, and is not sent to reload', async () => {
   for (const mode of NO_ENGINE) {
     for (const waited of WAITS) {
@@ -273,8 +290,8 @@ test('source shape: main.ts starts from absent and asks engineExpected before it
   assert.doesNotMatch(main, /let xr8Load: XR8Load = 'failed'/, 'a page that never waited is not a page whose engine failed')
   assert.match(
     WAIT_BLOCK,
-    /^let xr8Load: XR8Load = 'absent'\n\s+if \(engineExpected\(forcedMode, isDesktopShell\(\)\)\) \{\n\s+overlay\.setStatus\('Loading AR engine…'\)\n\s+xr8Load = await waitForXR8\(XR8_LOAD_TIMEOUT_MS\)\n\s+\}\n\s+const xr8Available = xr8Load === 'ready'$/,
-    'the only way out of absent is a wait, and the wait is started only where the engine is expected',
+    /^let xr8Load: XR8Load = 'absent'\n\s+if \(!nativeActive && engineExpected\(forcedMode, isDesktopShell\(\)\)\) \{\n\s+overlay\.setStatus\('Loading AR engine…'\)\n\s+xr8Load = await waitForXR8\(XR8_LOAD_TIMEOUT_MS\)\n\s+\}\n\s+const xr8Available = xr8Load === 'ready'$/,
+    'the only way out of absent is a wait, and the wait is started only where the engine is expected and no native runtime is in use',
   )
 })
 

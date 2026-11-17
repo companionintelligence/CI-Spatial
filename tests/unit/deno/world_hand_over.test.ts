@@ -1,5 +1,5 @@
 /**
- * The hand-over of scans between worlds as the server runs it (server/world/world_hand_over.ts, ADR 0009): what happens
+ * The hand-over of scans between worlds as the server runs it (server/world/world_hand_over.ts, ADR 0011): what happens
  * when the world a scan is going to is busy, or cannot be read or saved, and how the hand-over is finished without anybody
  * having to read the old world again.
  *

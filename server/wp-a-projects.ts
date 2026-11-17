@@ -297,7 +297,7 @@ export type SpatialFrameWriteReply =
  * applied, or a client retrying after a reply it never received, is therefore not a conflict.
  * `createdAt` is part of a frame, so two calibrations are never the same frame.
  *
- * ## Replacing a frame (ADR 0009)
+ * ## Replacing a frame (ADR 0011)
  *
  * A frame is immutable once written, and a replacement is a new generation with a new `frameId`. When the
  * revision matches and the Place holds a frame, `decideReplacement` (./place_frames.ts) judges the write:

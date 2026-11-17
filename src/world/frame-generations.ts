@@ -1,6 +1,6 @@
 /**
  * Frame generations: what it means to replace a Place's reference, and the words both halves use for it
- * (ADR 0009).
+ * (ADR 0011).
  *
  * A Place keeps one durable reference, its frame (`ProjectSpatialFrame`). A frame is immutable once it is
  * written: changing the reference is a new frame, a new generation with a new `frameId` that the capture client
@@ -281,7 +281,7 @@ export interface FrameMismatchBody {
 
 /**
  * What a merge or a moved scan says, beside `ok`, when what was made of the scans (their patches, comments and finished
- * jobs: ADR 0009, decision 7) did not all arrive with them. Each field is present only when it is more than zero, and
+ * jobs: ADR 0011, decision 7) did not all arrive with them. Each field is present only when it is more than zero, and
  * the answer carries no `handOver` at all when both are, so a client that does not know it reads the answers it always did.
  *
  *  - `pending`: scans whose records have not reached the world of their new Place yet, because that world was busy or
