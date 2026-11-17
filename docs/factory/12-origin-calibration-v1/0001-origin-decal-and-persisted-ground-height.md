@@ -22,7 +22,7 @@ Before this ticket the committed origin was two separate rings, one per point, w
 - Do not change `src/ar/eighthwall.ts`, `src/ar/webxr.ts` or `src/ar/provider.ts`. Both runtimes already feed the floor estimate through the point cloud, and the provider contract is unchanged.
 - Do not add automatic alignment, or a single-tap user-heading calibration tier. See the wave README.
 - Do not add a field to `ProjectSpatialFrame`. Its floor is `y = 0` in project space by construction.
-- Do not remove absolute north from the tick. That is an open product decision (see Open questions). The HUD's device needle keeps its meaning. The frame heading is a second, labelled needle beside it.
+- Keep the north tick, labelled session-local. The user decided this on 2026-11-17 (see Open questions). The HUD's device needle keeps its meaning. The frame heading is a second, labelled needle beside it.
 
 ## Pinned conventions
 
@@ -66,7 +66,7 @@ Before this ticket the committed origin was two separate rings, one per point, w
 - Q: What does a bypass on a first visit do to the Place? — A: It leaves the Place without a frame until a floor-checked calibration runs. The alternative, creating a frame from an unchecked floor, would make the Place's floor depend on the check that was skipped. This reading of "the Place-frame floor is authoritative" is confirmed by the user, 2026-11-17. (decided by the implementer, 2026-11-16)
 - Q: Are "Continue uncalibrated" scans recorded as bypassed? — A: They have no `ScanCalibration` record. Their sidecar status `uncalibrated` is their record: no floor check ran, and the scan does not set the Place frame. The status copy reads "Heading unverified". The Spatial Editor should render `calibrationStatus: 'uncalibrated'` as "heading unverified". (decided by the implementer, 2026-11-16)
 - Q: Does the one-point tier stay explicit and labelled? — A: Yes. "Use one point instead (lower accuracy)" is an explicit button shown after the landmark. It is not automatic. (decided by the implementer, 2026-11-16)
-- Q: Is absolute north removed from the tick for v1? — OPEN, for the user. The brief asks for a world-direction-aware compass, and removing absolute north would change that. This ticket keeps the tick and labels it session-local in the status copy. Removing it is a behaviour change to the decal's orientation, and nothing here makes it.
+- Q: Is absolute north removed from the tick for v1? — A: No. The tick stays and is labelled session-local, as the status copy already says. The brief asks for a world-direction-aware compass, and removing the tick would leave the origin with no north reference. (decided by the user, 2026-11-17)
 - Q: Does the HUD compass read "frame heading"? — A: Both. The teal needle keeps the device's compass bearing. A second, hollow amber needle shows the origin's heading arrow as a true-north bearing, labelled "frame heading" with its degrees under the address (`originHeadingBearingDeg`). It uses the compass fix that the committed origin's north tick uses, so it appears after any two-point commit with a compass fix, on a first visit or a return visit. The stored origin drawn beside it on a return visit has no tick and no needle. It stays hidden after a one-point commit, a skip, or a commit with no compass fix. (decided by the user, 2026-11-17; implemented)
 - Q: Is the decal correct on a phone? — OPEN. Only DEVICE_TESTING § A-origin can answer this.
 
@@ -95,7 +95,7 @@ Before this ticket the committed origin was two separate rings, one per point, w
 - [x] Review decisions applied: the one-point button is labelled, the floor bypass is recorded and blocks `verified` and the Place-frame write, "Continue uncalibrated" reads "Heading unverified", and the tick is labelled session-local.
 - [ ] DEVICE_TESTING § A-origin O1 to O12 run on an iPhone (Safari, 8th Wall).
 - [ ] The same checks run on Android WebXR (Checklist B2).
-- [ ] Open questions for the user are answered. The HUD readout and the first-visit bypass are answered. Absolute north is still open.
+- [x] Open questions for the user are answered: absolute north (the tick stays, session-local), the HUD readout (both), and the first-visit bypass (confirmed). The on-device question stays with DEVICE_TESTING § A-origin.
 
 ## Tests
 

@@ -59,7 +59,7 @@ a phone shows whether it lands on the floor.
 | O1 | First visit to a Place with no stored frame: wait for the readiness step to lock | The teal floor grid appears under the feed, dim until the floor estimate settles, then solid |
 | O2 | Place the landmark on the floor and confirm, then place the heading point and commit | One origin appears on the floor: a white crosshair on the landmark and a teal arrow whose **tip sits on the heading point you tapped**. No second ring |
 | O3 | Walk 3–4 m away and look back at the origin from two sides | Decal stays fixed on the floor; it does not float or swim with the camera. The arrow still points at the heading point |
-| O4 | Turn slowly through 360° with the origin in view | The red north tick stays pointed at true north. Cross-check the first reading against a compass app |
+| O4 | Turn slowly through 360° with the origin in view | The red north tick stays on the bearing the compass read at commit. Its label says session-local. Cross-check the first reading against a compass app |
 | O5 | Keep scanning for several minutes | The floor grid is still visible at low opacity for the whole scan. Before ticket 0001 it was removed at commit |
 | O6 | Export the scan (step 8), then open the World file for this Place | The scan's `calibrationGroundY` is a number in metres, not null. It is the height the floor grid was drawn at |
 | O7 | Second visit, same Place: go through the reference photos and place both points | After the separation check passes, a dimmer **stored** origin appears. Its arrow and the committed arrow differ by the residual the status line reports |
