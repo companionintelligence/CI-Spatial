@@ -2,6 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- AR is optional: a phone without ARCore still runs the app, on the web runtimes. -->
+    <uses-feature android:name="android.hardware.camera.ar" android:required="false" />
+
     <!-- No backup and no device-to-device transfer: the WebView's storage holds the session
          token and the scans, which stay on this phone. allowBackup="false" covers Android 11 and
          earlier; on Android 12 and later it still allows a device transfer, which the
@@ -16,12 +19,16 @@
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
 
+        <!-- ARCore is optional, so the app installs on phones without it. The ScanAR plugin asks at run time. -->
+        <meta-data android:name="com.google.ar.core" android:value="optional" />
+
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"
             android:name=".MainActivity"
             android:label="@string/title_activity_main"
             android:theme="@style/AppTheme.NoActionBarLaunch"
             android:launchMode="singleTask"
+            android:screenOrientation="portrait"
             android:exported="true">
 
             <intent-filter>

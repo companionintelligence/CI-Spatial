@@ -50,6 +50,13 @@ export interface ARProvider {
   hitTest(x: number, y: number): HitResult | null
 
   /**
+   * Optional exact hit test, asked of the runtime rather than answered from a cache. A runtime
+   * that can only answer inside a frame callback (WebXR) or over a bridge (native) implements
+   * it. Callers that need the exact point (calibration) prefer it and fall back to hitTest().
+   */
+  hitTestAsync?(x: number, y: number): Promise<HitResult | null>
+
+  /**
    * Sample SLAM feature-point world positions at a `gridSize×gridSize` grid
    * of normalised screen coordinates.  Returns all positions that resolve
    * against the live SLAM map.  Empty array on platforms without feature-

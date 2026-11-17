@@ -54,6 +54,9 @@ export const SUPPLIED_TEXT_SOURCES = {
   // Copied without the contact addresses that follow two of the names in its copyright lines.
   'dlopen2-LICENSE.txt': 'https://github.com/OpenByteDev/dlopen2/blob/master/LICENSE',
   'cordova-android-NOTICE.txt': 'https://github.com/apache/cordova-android/blob/14.0.1/NOTICE',
+  // ARCore's AAR ships no licence file. Its terms are Google's ARCore Additional Terms of Service,
+  // copied from the page on 2026-11-16; the page says the terms were last modified on 2022-05-11.
+  'arcore-additional-terms.txt': 'https://developers.google.com/ar/develop/terms, retrieved 2026-11-16',
 }
 
 /**
@@ -294,8 +297,11 @@ function addAndroid(notices) {
       unknown.push(`${name}:${version}`)
       continue
     }
-    notices.add({ group: 'android', name, version, licence: known.licence, source: known.source },
-      [...apacheText(), ...(known.notice ? [suppliedText(known.notice)] : [])])
+    // A library with its own text (ARCore's terms) carries that text; the rest are Apache-2.0.
+    const texts = known.text
+      ? [suppliedText(known.text)]
+      : [...apacheText(), ...(known.notice ? [suppliedText(known.notice)] : [])]
+    notices.add({ group: 'android', name, version, licence: known.licence, source: known.source }, texts)
   }
   if (unknown.length) {
     throw new Error(`the Android app's libraries include some of no known licence: ${unknown.join(', ')}. `
@@ -318,8 +324,10 @@ export function lockedLibraries(text, configuration = 'releaseRuntimeClasspath')
 
 /**
  * The licence of each library the Android app's release build pins, by `group:artifact`, as each
- * library's POM declares it (and the LICENSE.txt the AndroidX AARs carry). All are under the Apache
- * License 2.0; Cordova also has a NOTICE file, which section 4(d) of that licence asks to pass on.
+ * library's POM declares it (and the LICENSE.txt the AndroidX AARs carry). All but ARCore are under
+ * the Apache License 2.0; Cordova also has a NOTICE file, which section 4(d) of that licence asks to
+ * pass on. ARCore's AAR carries no licence file, so its entry names Google's ARCore Additional Terms
+ * of Service and supplies their text.
  * A library that matches none stops the notices: check its licence, then add it here.
  */
 export const ANDROID_LICENCES = [
@@ -330,6 +338,7 @@ export const ANDROID_LICENCES = [
   { match: /^org\.jetbrains:annotations$/, licence: 'Apache-2.0', source: 'https://github.com/JetBrains/java-annotations' },
   { match: /^org\.jspecify:jspecify$/, licence: 'Apache-2.0', source: 'https://github.com/jspecify/jspecify' },
   { match: /^com\.google\.guava:listenablefuture$/, licence: 'Apache-2.0', source: 'https://github.com/google/guava' },
+  { match: /^com\.google\.ar:core$/, licence: 'ARCore Additional Terms of Service', source: 'https://developers.google.com/ar/develop/terms', text: 'arcore-additional-terms.txt' },
 ]
 
 function addVendored(notices, shell, targets) {

@@ -4,13 +4,16 @@
  * Boot sequence:
  *   1. Open IndexedDB store
  *   2. Mount UI (overlay + panel)
- *   3. Detect AR runtime (8th Wall OSS binary → WebXR fallback)
+ *   3. Detect AR runtime (native ARKit / ARCore in the shell → 8th Wall → WebXR)
  *   4. Init inference router (WebGPU worker or Deno server path)
  *   5. Start AR session
  *   6. Wire capture button → infer → resolve → store → UI update loop
  *   7. Wire auto-capture toggle → pose-delta-based automated capture
  */
 import { createEighthWallProvider } from './ar/eighthwall'
+import { createNativeARProvider, NativeARProvider } from './ar/native'
+import { probeNativeAR } from './ar/native-bridge'
+import { preferNativeRuntime } from './ar/runtime-select'
 import { createWebXRProvider, WebXRProvider, isImmersiveARSupported } from './ar/webxr'
 import type { ARProvider, Pose } from './ar/provider'
 import { trackingIsUsable } from './ar/tracking-quality'
@@ -626,6 +629,7 @@ async function main() {
   // ── 3. AR runtime detection ────────────────────────────────────────────────
   let provider: ARProvider
   let use8thWall = false
+  let nativeActive = false
 
   // Forced runtime: /webxr.html redirects here with ?ar=webxr — used in
   // WebXR-capable iOS browsers (e.g. HelloXR) where the native WebXR session
@@ -654,12 +658,20 @@ async function main() {
   // later. The fallback then called createWebXRProvider(), which throws on any
   // Android Chrome without ARCore, and main() returned with the user's tap still
   // sitting behind the Place picker — a button that did nothing, with no error.
+  // Native first, where the shell's ScanAR plugin reports that ARKit or ARCore can run. Native
+  // being available also skips the wait for the 8th Wall engine: a native phone never needs it
+  // unless the native session fails to start, and then createWebRuntimeProvider loads it.
+  const nativeProbe = await probeNativeAR()
+  nativeActive = nativeProbe !== null && preferNativeRuntime({ forced: forcedMode, nativeSupported: nativeProbe.supported })
   // The desktop app never loads the engine (index.html skips it there, and the desktop
   // bundle leaves it out), so waiting the full timeout for it would only delay the
   // start screen's upload path by 20 s.
-  const xr8Available = forcedMode === 'webxr' || isDesktopShell() ? false : await waitForXR8(XR8_LOAD_TIMEOUT_MS)
+  const xr8Available = nativeActive || forcedMode === 'webxr' || isDesktopShell() ? false : await waitForXR8(XR8_LOAD_TIMEOUT_MS)
 
-  if (xr8Available) {
+  if (nativeActive && nativeProbe) {
+    provider = createNativeARProvider({ fallback: createWebRuntimeProvider })
+    overlay.setStatus(nativeProbe.engine === 'arcore' ? 'ARCore ready' : 'ARKit ready')
+  } else if (xr8Available) {
     try {
       provider = await createEighthWallProvider()
       use8thWall = true
@@ -693,9 +705,15 @@ async function main() {
   // it wants it for its LIMITS as much as its value: isSessionSupported() is
   // only trustworthy in the negative (see probeVerdict), so asking twice would
   // buy two chances to read it as a green light.
-  const immersiveArAdvertised = await isImmersiveARSupported()
+  const immersiveArAdvertised = nativeActive ? false : await isImmersiveARSupported()
   const webxrSupported = use8thWall ? immersiveArAdvertised : true
-  updateXrModeLink(use8thWall, webxrSupported)
+  if (nativeActive) {
+    // The WebXR / 8th Wall switch is a web-only choice. The native runtime has no such switch.
+    const modeLink = document.getElementById('xr-mode-link')
+    if (modeLink) modeLink.style.display = 'none'
+  } else {
+    updateXrModeLink(use8thWall, webxrSupported)
+  }
 
   // ── 3b. Preflight — what can this device honestly do, said before the tap ───
   // Section 5 does not run until the user commits to a scan, and the two
@@ -704,26 +722,34 @@ async function main() {
   // knowable now goes on the start screen, beside the cards that are the
   // alternative — including the honest caveat when the only evidence we have
   // is a browser saying "yes" that a Beam Pro also says.
-  const probeEnv = {
-    secureContext: window.isSecureContext,
-    xr8Loaded: xr8Available,
-    webxrApi: typeof navigator.xr !== 'undefined',
-    immersiveArAdvertised,
+  if (nativeActive) {
+    // The native layer answers for AR on this device. The browser probe below would
+    // describe the web runtimes, which are only the fallback here.
+    setCaptureDevice({ secureContext: window.isSecureContext, nativeAr: 'yes', browserAr: 'no' })
+  } else {
+    const probeEnv = {
+      secureContext: window.isSecureContext,
+      xr8Loaded: xr8Available,
+      webxrApi: typeof navigator.xr !== 'undefined',
+      immersiveArAdvertised,
+    }
+    const probe = probeVerdict(probeEnv)
+    applyPreflightToStartScreen(probe)
+    // The same probe, read a second way: the verdict says whether to warn, this
+    // says which method to put in front of the person. One `ProbeEnv`, two
+    // readers — deviceFromProbe() is where the reading happens, so the rule that
+    // an advertised AR session is not a proven one lives in one tested place.
+    setCaptureDevice(deviceFromProbe(probeEnv))
   }
-  const probe = probeVerdict(probeEnv)
-  applyPreflightToStartScreen(probe)
-  // The same probe, read a second way: the verdict says whether to warn, this
-  // says which method to put in front of the person. One `ProbeEnv`, two
-  // readers — deviceFromProbe() is where the reading happens, so the rule that
-  // an advertised AR session is not a proven one lives in one tested place.
-  setCaptureDevice(deviceFromProbe(probeEnv))
 
   // ── 4. AR Overlay & Capture setup ──────────────────────────────────────────
   keyframes = new KeyframeStreamer(provider)
   const arOverlay = new AROverlay(store, use8thWall, provider)
   const capture = new CaptureModule(provider)
-  const asyncHitTest = !use8thWall && provider instanceof WebXRProvider
-    ? (x: number, y: number) => (provider as WebXRProvider).hitTestAsync(x, y)
+  // The asynchronous hit test serves calibration exactly: WebXR asks its session, and native asks
+  // the ARKit / ARCore session (or, after a fallback, the web runtime it handed over to).
+  const asyncHitTest = !use8thWall && (provider instanceof WebXRProvider || provider instanceof NativeARProvider)
+    ? (x: number, y: number) => (provider as WebXRProvider | NativeARProvider).hitTestAsync(x, y)
     : undefined
 
   // Shared capture handler used by both the manual button and auto-capture
@@ -4162,6 +4188,22 @@ function waitForXR8(timeoutMs: number): Promise<boolean> {
  * rather than sending the user to a dead-end landing page. A WebXR session
  * always links back to the 8th Wall scanner.
  */
+/**
+ * The web runtime a native session falls back to: 8th Wall when its engine loads, otherwise
+ * WebXR. The same order the scanner uses when there is no native layer. The 8th Wall configuration
+ * (xr.js, its load timeout, its provider) is unchanged; native only chooses to wait for it later.
+ */
+async function createWebRuntimeProvider(): Promise<ARProvider> {
+  if (await waitForXR8(XR8_LOAD_TIMEOUT_MS)) {
+    try {
+      return await createEighthWallProvider()
+    } catch (e) {
+      console.warn('[main] 8th Wall init failed, falling back to WebXR:', e)
+    }
+  }
+  return createWebXRProvider()
+}
+
 function updateXrModeLink(use8thWall: boolean, webxrSupported: boolean): void {
   const link = document.getElementById('xr-mode-link') as HTMLAnchorElement | null
   if (!link) return
