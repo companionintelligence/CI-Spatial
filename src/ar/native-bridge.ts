@@ -45,11 +45,16 @@ export interface NativeStartResult {
   /** Width over height of the camera image in display orientation. Equals rect.width / rect.height. */
   cameraAspect: number
   /**
-   * Set when start() was given a world map name: `loaded` when the session starts from that saved map
-   * and relocalizes into its coordinates, `missing` when no map has that name (the session starts fresh).
+   * Set when start() was given a world map name. `loaded`: the saved map is the session's starting map, and the
+   * session relocalizes into its coordinates (tracking reads limited.relocalizing until it does). `missing`: no
+   * map has that name, or the name cannot be a file name, so the session starts fresh. `unreadable`: a file exists
+   * under the name but does not decode, so the session starts fresh and the file is left in place.
    */
-  worldMap?: 'loaded' | 'missing'
+  worldMap?: NativeWorldMapStart
 }
+
+/** What a native start reports about a requested world map. */
+export type NativeWorldMapStart = 'loaded' | 'missing' | 'unreadable'
 
 /** A world map saved on the phone. The map itself never leaves the device. */
 export interface NativeWorldMapSaved {

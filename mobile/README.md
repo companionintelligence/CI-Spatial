@@ -118,7 +118,7 @@ The shell runs AR natively, with ARKit on iOS and ARCore on Android, through the
 **Known gaps.**
 
 - Android: Capacitor offers no pause hook to plugins, so backgrounding the app is not handled. The next frame reports a camera error, and the web app starts the session again.
-- iOS: ARKit stops the session when the app is backgrounded. The plugin does not report that yet.
+- iOS: ARKit stops the session when the app is backgrounded. The plugin reports the interruption as tracking `notAvailable`, and autosaves the map of a named Place (ADR 0010). The pose events carry the state again after the app returns.
 - The keyframe upload does not send the depth map yet (`FrameObservation.depthUrl` in `src/world/types.ts` is the slot for it).
 
 ## Publishing
@@ -154,7 +154,7 @@ The bundle is `app/build/outputs/bundle/release/app-release.aab`.
 
 - AR capture on a real phone: camera, motion and location prompts, the 8th Wall SLAM start, GLB export, and the sign-in return on Android.
 - The store gates in PR #244: the measurement step, and the owner's sign-off on the XR Engine licence (see *xr.js licence* above) before any store binary.
-- `PrivacyInfo.xcprivacy`, the privacy policy, and the App Privacy and Play data-safety answers. Location goes to OpenStreetMap Nominatim, and captures go to the Scan server.
+- `PrivacyInfo.xcprivacy` is drafted with no collected data types, and the draft's comment lists what the owner must decide. The privacy policy and the App Privacy and Play data-safety answers are still open. Location goes to OpenStreetMap Nominatim, and captures go to the Scan server.
 - Companion Account sign-in against the real Portal, and on Android. Both are unverified (see *Companion Account sign-in*).
 - Keychain or Keystore storage for the shell's session token. It is in `localStorage` for now.
 - A 1024 px vector master for the app icon (see *Icons and launch screens*).

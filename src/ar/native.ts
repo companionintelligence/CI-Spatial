@@ -39,6 +39,7 @@ import {
   type NativePoseEvent,
   type NativeRect,
   type NativeWorldMapSaved,
+  type NativeWorldMapStart,
   type ScanARPlugin,
 } from './native-bridge.ts'
 
@@ -160,6 +161,30 @@ function defaultRenderer(canvas: HTMLCanvasElement): NativeRenderer {
   return renderer
 }
 
+/** The longest world map name the native side accepts: the limit ScanARPlugin.swift applies to a file name. */
+export const WORLD_MAP_NAME_MAX = 64
+const WORLD_MAP_NAME = /^[A-Za-z0-9_-]+$/
+
+/**
+ * The world map name for a Place, or undefined when the Place has none. The default world is shared by every scan
+ * made without a Place, so it never gets a map: it would mix unrelated rooms. A name the native side could not use
+ * as a file name is dropped here, so it can never fail a native start.
+ */
+export function worldMapNameFor(world: string | null | undefined): string | undefined {
+  if (!world || world === 'default') return undefined
+  if (world.length > WORLD_MAP_NAME_MAX || !WORLD_MAP_NAME.test(world)) return undefined
+  return world
+}
+
+/** The Place named in the page address (?world=), as a world map name. Undefined outside a browser. */
+function worldMapNameFromPage(): string | undefined {
+  if (typeof location === 'undefined') return undefined
+  return worldMapNameFor(new URLSearchParams(location.search).get('world'))
+}
+
+/** What a requested world map came to: the native start's state, or 'unsupported' where the platform keeps none. */
+export type WorldMapState = NativeWorldMapStart | 'unsupported'
+
 export class NativeARProvider implements ARProvider {
   private readonly plugin: ScanARPlugin | null
   private readonly fallback: (() => Promise<ARProvider>) | null
@@ -198,7 +223,9 @@ export class NativeARProvider implements ARProvider {
   private lastJumpM = 0
   private lastTranslation: Point3 | null = null
   /** The world map state the last native start reported. Null when no map was asked for. */
-  private worldMapResult: 'loaded' | 'missing' | null = null
+  /** Whether the platform keeps world maps, from the plugin's capabilities. False until the native session starts. */
+  private worldMapSupported = false
+  private worldMapResult: WorldMapState | null = null
 
   constructor(options: NativeARProviderOptions = {}) {
     this.plugin = options.plugin !== undefined ? options.plugin : scanARPlugin()
@@ -209,7 +236,9 @@ export class NativeARProvider implements ARProvider {
     this.cancelFrame = options.cancel ?? ((handle) => cancelAnimationFrame(handle as number))
     this.now = options.now ?? (() => performance.now())
     this.depth = options.depth ?? false
-    this.worldMapName = options.worldMap ? options.worldMap : null
+    this.worldMapName = options.worldMap !== undefined
+      ? (worldMapNameFor(options.worldMap) ?? null)
+      : (worldMapNameFromPage() ?? null)
   }
 
   /** Why the native session did not start and the web runtime took over. Null while native is running. */
@@ -224,11 +253,12 @@ export class NativeARProvider implements ARProvider {
   }
 
   /**
-   * Whether the saved world map was found when the native session started: `loaded` when the session
-   * relocalizes into it, `missing` when no map has that name. Null when none was asked for, or the native
+   * What the saved world map came to when the native session started: `loaded` (the session starts from it and
+   * relocalizes into its coordinates), `missing` (no map has that name), `unreadable` (a file exists but does not
+   * decode), or `unsupported` (this platform keeps no world maps). Null when no map was asked for, or the native
    * session is not running.
    */
-  worldMapState(): 'loaded' | 'missing' | null {
+  worldMapState(): WorldMapState | null {
     if (this.delegate) return null
     return this.nativeRunning ? this.worldMapResult : null
   }
@@ -242,7 +272,7 @@ export class NativeARProvider implements ARProvider {
     if (this.delegate) throw new Error('World maps need the native AR session, which is not running')
     const plugin = this.plugin
     if (!plugin || !this.nativeRunning) throw new Error('Native AR is not running')
-    if (!plugin.saveWorldMap) throw new Error('World maps are not available on this platform')
+    if (!this.worldMapSupported || !plugin.saveWorldMap) throw new Error('World maps are not available on this platform')
     return plugin.saveWorldMap({ name })
   }
 
@@ -276,12 +306,19 @@ export class NativeARProvider implements ARProvider {
       plugin.addListener('tracking', (e) => this.onTracking(e.state)),
       plugin.addListener('error', (e) => console.warn('[native-ar]', e.message)),
     ])
+    // Only a platform that keeps world maps is asked for one. Android would ignore the name, and a null result would
+    // then read as "none was asked for", so 'unsupported' says what happened instead.
+    const capabilities = await plugin.capabilities().catch(() => null)
+    this.worldMapSupported = capabilities?.worldMap === true
+    const sendMap = this.worldMapName !== null && this.worldMapSupported
     const result = await plugin.start(
-      this.worldMapName
-        ? { depth: this.depth, hitGrid: HIT_GRID, worldMap: this.worldMapName }
+      sendMap
+        ? { depth: this.depth, hitGrid: HIT_GRID, worldMap: this.worldMapName ?? undefined }
         : { depth: this.depth, hitGrid: HIT_GRID },
     )
-    this.worldMapResult = result.worldMap ?? null
+    if (this.worldMapName === null) this.worldMapResult = null
+    else if (!this.worldMapSupported) this.worldMapResult = 'unsupported'
+    else this.worldMapResult = result.worldMap ?? null
     this.nativeRunning = true
     this.startedAt = this.now()
     const rectAspect = result.rect.height > 0 ? result.rect.width / result.rect.height : 1

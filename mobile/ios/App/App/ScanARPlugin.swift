@@ -22,12 +22,15 @@ import simd
 ///     "notAvailable" straight away, so the web side never keeps a stale tracking state.
 ///   - Saves the world map under a name, and starts a session from the saved map of that name, so scans of one
 ///     room share coordinates. Maps stay in Application Support and are excluded from backup.
+///   - Autosaves a named place's map every minute, when the app goes to the background, when ARKit is interrupted,
+///     and on stop. A save needs normal tracking and enough of the room mapped.
 ///
 /// ARKit world space is in metres, gravity-aligned and Y-up. Its yaw is arbitrary, so heading still
 /// comes from the editor's calibration.
 ///
-/// The iOS simulator job in CI compiles this file. ARKit behaviour (tracking, interruptions, relocalization,
-/// depth) runs only on a device, so verify it there before relying on it.
+/// The mobile-build workflow compiles this file when it is run by hand (workflow_dispatch). It is not a push or
+/// pull request check. ARKit behaviour (tracking, interruptions, relocalization, depth, autosave) runs only on a
+/// device, so verify it there before relying on it.
 @objc(ScanARPlugin)
 public class ScanARPlugin: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
     public let identifier = "ScanARPlugin"
@@ -57,8 +60,16 @@ public class ScanARPlugin: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
     private var cameraRect: CGRect = .zero
     private var hitGridSize = 20
     private var depthRequested = false
-    /// "loaded" or "missing" when the last start() was given a world map name. Nil when none was.
+    /// "loaded", "missing" or "unreadable" when the last start() was given a world map name. Nil when none was.
     private var worldMapState: String?
+    /// The world name the running session was started with, as the caller sent it. Nil when none.
+    private var currentWorldRequest: String?
+    /// The valid world name the running session saves to. Nil when the session does not autosave.
+    private var autosaveName: String?
+    private var autosaveTimer: Timer?
+    private var autosaveObservers: [NSObjectProtocol] = []
+    /// True while a save runs, so the timer and the background observer never overlap.
+    private var isSavingWorldMap = false
     private var lastPoseAt: TimeInterval = 0
     private var lastPointsAt: TimeInterval = 0
     private var lastHitsAt: TimeInterval = 0
@@ -96,11 +107,7 @@ public class ScanARPlugin: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
             return
         }
         let hitGrid = call.getInt("hitGrid") ?? 20
-        let worldName = call.getString("worldMap")
-        if let worldName = worldName, !ScanARPlugin.isValidWorldName(worldName) {
-            call.reject("A world map name may only use letters, digits, dashes and underscores.")
-            return
-        }
+        let requestedWorld = call.getString("worldMap")
 
         DispatchQueue.main.async {
             guard let webView = self.bridge?.webView, let container = webView.superview else {
@@ -108,8 +115,14 @@ public class ScanARPlugin: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
                 return
             }
             if self.arView != nil {
-                call.resolve(self.startResult())
-                return
+                // The same options answer with the session already running. Different options start it again,
+                // so the reply always describes the session the caller asked for.
+                if self.currentWorldRequest == requestedWorld && self.depthRequested == wantDepth {
+                    self.hitGridSize = max(2, min(hitGrid, 40))
+                    call.resolve(self.startResult())
+                    return
+                }
+                self.tearDown()
             }
 
             let configuration = ARWorldTrackingConfiguration()
@@ -118,11 +131,22 @@ public class ScanARPlugin: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
                 configuration.frameSemantics.insert(.sceneDepth)
             }
             // A saved map starts the session in that room's coordinates, so this scan lines up with the earlier one.
+            // A name that cannot be a file name has no saved map, so it reports missing and starts without one.
+            self.currentWorldRequest = requestedWorld
+            self.autosaveName = nil
             self.worldMapState = nil
-            if let worldName = worldName {
-                if let map = self.loadWorldMap(named: worldName) {
-                    configuration.initialWorldMap = map
-                    self.worldMapState = "loaded"
+            if let requested = requestedWorld {
+                if ScanARPlugin.isValidWorldName(requested) {
+                    self.autosaveName = requested
+                    switch self.loadWorldMap(named: requested) {
+                    case .loaded(let map):
+                        configuration.initialWorldMap = map
+                        self.worldMapState = "loaded"
+                    case .missing:
+                        self.worldMapState = "missing"
+                    case .unreadable:
+                        self.worldMapState = "unreadable"
+                    }
                 } else {
                     self.worldMapState = "missing"
                 }
@@ -153,14 +177,25 @@ public class ScanARPlugin: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
             self.lastPoseAt = 0
             self.lastPointsAt = 0
             self.lastHitsAt = 0
+            self.startAutosave()
             call.resolve(self.startResult())
         }
     }
 
     @objc func stop(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
-            self.tearDown()
-            call.resolve()
+            guard self.arView != nil, let name = self.autosaveName else {
+                self.tearDown()
+                call.resolve()
+                return
+            }
+            // Keep the session's map before it is paused. The reply waits for the save, so the map is not lost.
+            self.saveCurrentWorldMap(named: name) { _, _ in
+                DispatchQueue.main.async {
+                    self.tearDown()
+                    call.resolve()
+                }
+            }
         }
     }
 
@@ -182,6 +217,10 @@ public class ScanARPlugin: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
     }
 
     private func tearDown() {
+        stopAutosave()
+        currentWorldRequest = nil
+        autosaveName = nil
+        worldMapState = nil
         guard let view = arView else { return }
         view.session.pause()
         view.removeFromSuperview()
@@ -238,44 +277,132 @@ public class ScanARPlugin: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
 
     // MARK: - World maps
 
-    /// Saves the running session's world map under `name`, the web app's world id. A later start() with the
-    /// same name relocalizes into these coordinates, so scans of one room share a frame.
+    /// The result of reading a saved map: a map the session can start from, no file under that name, or a file
+    /// that does not decode.
+    private enum WorldMapLoad {
+        case loaded(ARWorldMap)
+        case missing
+        case unreadable
+    }
+
+    /// Saves the running session's world map under `name`, the web app's world id. A later start() with the same
+    /// name relocalizes into these coordinates, so scans of one room share a frame.
     @objc func saveWorldMap(_ call: CAPPluginCall) {
         guard let name = call.getString("name"), ScanARPlugin.isValidWorldName(name) else {
             call.reject("A world map name may only use letters, digits, dashes and underscores.")
             return
         }
         DispatchQueue.main.async {
-            guard let session = self.arView?.session else {
-                call.reject("AR is not running, so there is no world map to save.")
+            self.saveCurrentWorldMap(named: name) { error, bytes in
+                if let error = error {
+                    call.reject(error)
+                } else {
+                    call.resolve(["name": name, "bytes": bytes])
+                }
+            }
+        }
+    }
+
+    /// Archives the running session's map under `name`. The completion gets an error message, or nil and the byte
+    /// count. A save needs the camera tracking normally and enough of the room mapped: without that the map does not
+    /// match the saved one, so it is refused rather than written over it. Call on the main queue; the completion
+    /// runs on the main queue too.
+    private func saveCurrentWorldMap(named name: String, completion: @escaping (String?, Int) -> Void) {
+        guard let session = arView?.session, let frame = session.currentFrame else {
+            completion("AR is not running, so there is no world map to save.", 0)
+            return
+        }
+        guard case .normal = frame.camera.trackingState else {
+            completion("The camera is not tracking normally yet, so the room is not saved.", 0)
+            return
+        }
+        switch frame.worldMappingStatus {
+        case .mapped, .extending:
+            break
+        default:
+            completion("ARKit has not mapped enough of the room yet.", 0)
+            return
+        }
+        session.getCurrentWorldMap { map, error in
+            guard let map = map else {
+                let reason = error?.localizedDescription ?? "ARKit returned no map"
+                DispatchQueue.main.async {
+                    completion("No world map to save: \(reason)", 0)
+                }
                 return
             }
-            session.getCurrentWorldMap { map, error in
-                DispatchQueue.main.async {
-                    guard let map = map else {
-                        let reason = error?.localizedDescription ?? "ARKit has not mapped enough of the room yet"
-                        call.reject("No world map to save: \(reason)")
-                        return
+            // Archive and write off the main queue: a map can be tens of megabytes.
+            DispatchQueue.global(qos: .utility).async {
+                do {
+                    let data = try NSKeyedArchiver.archivedData(withRootObject: map, requiringSecureCoding: true)
+                    let url = try ScanARPlugin.worldMapURL(named: name)
+                    try data.write(to: url, options: .atomic)
+                    DispatchQueue.main.async {
+                        completion(nil, data.count)
                     }
-                    do {
-                        let data = try NSKeyedArchiver.archivedData(withRootObject: map, requiringSecureCoding: true)
-                        let url = try ScanARPlugin.worldMapURL(named: name)
-                        try data.write(to: url, options: .atomic)
-                        call.resolve(["name": name, "bytes": data.count])
-                    } catch {
-                        call.reject("Could not save the world map: \(error.localizedDescription)")
+                } catch {
+                    DispatchQueue.main.async {
+                        completion("Could not save the world map: \(error.localizedDescription)", 0)
                     }
                 }
             }
         }
     }
 
-    private func loadWorldMap(named name: String) -> ARWorldMap? {
-        guard let url = try? ScanARPlugin.worldMapURL(named: name),
-              let data = try? Data(contentsOf: url) else {
-            return nil
+    /// Reads the saved map under `name`, if there is one.
+    private func loadWorldMap(named name: String) -> WorldMapLoad {
+        guard ScanARPlugin.isValidWorldName(name), let url = try? ScanARPlugin.worldMapURL(named: name) else {
+            return .missing
         }
-        return try? NSKeyedUnarchiver.unarchivedObject(ofClass: ARWorldMap.self, from: data)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return .missing
+        }
+        guard let data = try? Data(contentsOf: url) else {
+            return .unreadable
+        }
+        do {
+            guard let map = try NSKeyedUnarchiver.unarchivedObject(ofClass: ARWorldMap.self, from: data) else {
+                return .unreadable
+            }
+            return .loaded(map)
+        } catch {
+            return .unreadable
+        }
+    }
+
+    /// Autosave: every minute while the session runs, when the app goes to the background, and when ARKit is
+    /// interrupted. A save that the tracking state or the mapping does not allow is skipped, and says so in the log.
+    private func startAutosave() {
+        stopAutosave()
+        guard autosaveName != nil else { return }
+        autosaveTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            self?.autosaveNow()
+        }
+        autosaveObservers = [
+            NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+                self?.autosaveNow()
+            },
+        ]
+    }
+
+    private func stopAutosave() {
+        autosaveTimer?.invalidate()
+        autosaveTimer = nil
+        for observer in autosaveObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        autosaveObservers = []
+    }
+
+    private func autosaveNow() {
+        guard !isSavingWorldMap, let name = autosaveName else { return }
+        isSavingWorldMap = true
+        saveCurrentWorldMap(named: name) { [weak self] error, _ in
+            self?.isSavingWorldMap = false
+            if let error = error {
+                print("[ScanAR] autosave skipped: \(error)")
+            }
+        }
     }
 
     /// Letters, digits, dashes and underscores only, because the name becomes a file name.
@@ -311,6 +438,7 @@ public class ScanARPlugin: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
     /// events arrive until frames resume, so say so now: the web side must not keep the last tracking state.
     /// Once frames resume, each pose event carries the current tracking state.
     public func sessionWasInterrupted(_ session: ARSession) {
+        autosaveNow()
         notifyListeners("tracking", data: ["state": "notAvailable"])
     }
 

@@ -7,7 +7,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { NativeARProvider, type NativeRenderer } from '../../../src/ar/native.ts'
+import { NativeARProvider, worldMapNameFor, type NativeRenderer } from '../../../src/ar/native.ts'
 import type { ARProvider, RawFrame } from '../../../src/ar/provider.ts'
 import type { NativeFrame, NativeHitSample, ScanARPlugin } from '../../../src/ar/native-bridge.ts'
 
@@ -37,7 +37,7 @@ interface FakePlugin extends ScanARPlugin {
   nextHit: NativeHitSample
   startFails: string | null
   startOptions: Array<{ depth: boolean; hitGrid: number; worldMap?: string }>
-  worldMapResult: 'loaded' | 'missing' | null
+  worldMapResult: 'loaded' | 'missing' | 'unreadable' | null
   saves: string[]
 }
 
@@ -66,14 +66,14 @@ function fakePlugin(): FakePlugin {
     saves: [],
     nextHit: { hit: true, position: [0, 1, -2], rotation: [0, 0, 0, 1], distance: 2.24 },
     nextFrame: async () => fakeJpegFrame(),
-    emit(event, payload) {
+    emit(event: string, payload: unknown) {
       for (const listener of listeners.get(event) ?? []) listener(payload)
     },
-    listenerCount(event) {
+    listenerCount(event: string) {
       return listeners.get(event)?.length ?? 0
     },
     async capabilities() {
-      return { platform: 'ios', engine: 'arkit', supported: true, depth: false }
+      return { platform: 'ios', engine: 'arkit', supported: true, depth: false, worldMap: true }
     },
     async start(options: { depth: boolean; hitGrid: number; worldMap?: string }) {
       if (plugin.startFails) throw new Error(plugin.startFails)
@@ -94,7 +94,7 @@ function fakePlugin(): FakePlugin {
       plugin.captures += 1
       return plugin.nextFrame()
     },
-    async hitTest({ x, y }) {
+    async hitTest({ x, y }: { x: number; y: number }) {
       plugin.hitCalls.push({ x, y })
       return plugin.nextHit
     },
@@ -433,4 +433,59 @@ test('an ARKit interruption reads as not available, and the next pose restores t
   assert.equal(provider.trackingStatus(), 'NOT_AVAILABLE')
   plugin.emit('pose', { timestamp: 2, transform: IDENTITY, projection: perspective(60, 0.75), tracking: 'limited.relocalizing' })
   assert.equal(provider.trackingStatus(), 'LIMITED')
+})
+
+test('a platform without world maps gets no map, and the state says unsupported', async () => {
+  const plugin = fakePlugin()
+  plugin.capabilities = async () => ({ platform: 'android', engine: 'arcore', supported: true, depth: false, worldMap: false })
+  const provider = new NativeARProvider(options(plugin, { worldMap: 'room-7' }))
+  await provider.start(fakeCanvas())
+  assert.deepEqual(plugin.startOptions, [{ depth: false, hitGrid: 20 }], 'the native side is not asked for a map it cannot keep')
+  assert.equal(provider.worldMapState(), 'unsupported')
+  await assert.rejects(provider.saveWorldMap('room-7'), /not available on this platform/)
+})
+
+test('a saved map that will not decode is reported as unreadable, and the session still runs', async () => {
+  const plugin = fakePlugin()
+  plugin.worldMapResult = 'unreadable'
+  const provider = new NativeARProvider(options(plugin, { worldMap: 'room-9' }))
+  await provider.start(fakeCanvas())
+  assert.equal(provider.activeRuntime(), 'native')
+  assert.equal(provider.worldMapState(), 'unreadable')
+})
+
+test('worldMapNameFor sends only names the native side can use as a file name', () => {
+  assert.equal(worldMapNameFor('room-7'), 'room-7')
+  assert.equal(worldMapNameFor('Room_7'), 'Room_7')
+  assert.equal(worldMapNameFor('default'), undefined, 'the default world is shared, so it never gets a map')
+  assert.equal(worldMapNameFor(null), undefined)
+  assert.equal(worldMapNameFor(''), undefined)
+  assert.equal(worldMapNameFor('../etc'), undefined)
+  assert.equal(worldMapNameFor('room 7'), undefined)
+  assert.equal(worldMapNameFor('x'.repeat(64))?.length, 64)
+  assert.equal(worldMapNameFor('x'.repeat(65)), undefined)
+})
+
+test('a Place in the page address names its map', async () => {
+  const scope = globalThis as { location?: unknown }
+  const before = scope.location
+  scope.location = { search: '?world=room-7' }
+  try {
+    const plugin = fakePlugin()
+    plugin.worldMapResult = 'loaded'
+    const provider = new NativeARProvider(options(plugin))
+    await provider.start(fakeCanvas())
+    assert.deepEqual(plugin.startOptions, [{ depth: false, hitGrid: 20, worldMap: 'room-7' }])
+  } finally {
+    scope.location = before
+  }
+})
+
+test('a hit keeps the surface rotation the native layer reports', async () => {
+  const plugin = fakePlugin()
+  plugin.nextHit = { hit: true, position: [1, 2, 3], rotation: [0, 0.7071068, 0, 0.7071068], distance: 2 }
+  const provider = new NativeARProvider(options(plugin))
+  await provider.start(fakeCanvas())
+  const hit = await provider.hitTestAsync(0.5, 0.5)
+  assert.deepEqual(hit?.rotation, { x: 0, y: 0.7071068, z: 0, w: 0.7071068 })
 })
