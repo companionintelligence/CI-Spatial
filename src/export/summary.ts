@@ -39,7 +39,9 @@ export async function exportSessionSummary(data: SummaryData): Promise<void> {
 
 function buildMarkdown(data: SummaryData): string {
   const { store, pointCloud, poseHistory, captureCount, geoFix } = data
-  const dets = [...store.detections.values()]
+  // This run's objects only: the positions printed below are measured against this run's cloud and path,
+  // and an earlier run's are in another frame (see DetectionStore.currentRunDetections).
+  const dets = [...store.currentRunDetections().values()]
   const now = new Date()
   const sessionStart = new Date(store.startedAt)
   const durationMs = now.getTime() - sessionStart.getTime()
@@ -98,7 +100,7 @@ function buildMarkdown(data: SummaryData): string {
     lines.push(`| Longitude | ${geoFix.lng.toFixed(6)}° |`)
     lines.push(`| Accuracy | ±${Math.round(geoFix.accuracy)} m |`)
     if (geoFix.altitudeM !== null) lines.push(`| Altitude | ${Math.round(geoFix.altitudeM)} m ASL |`)
-    if (geoFix.bearing !== null) lines.push(`| Compass Bearing | ${Math.round(geoFix.bearing)}° (true north) |`)
+    if (geoFix.bearing !== null) lines.push(`| Compass Bearing | ${Math.round(geoFix.bearing)}° (magnetic north) |`)
     const mapUrl = `https://maps.google.com/maps?q=${geoFix.lat.toFixed(6)},${geoFix.lng.toFixed(6)}`
     lines.push(`| Map | [View on Google Maps](${mapUrl}) |`)
     lines.push(``)
@@ -122,7 +124,9 @@ function buildMarkdown(data: SummaryData): string {
   // Captures are reported with their inference outcome. One whose detection
   // failed carries no labels, so it cannot be a row in the object table below —
   // counting it here is what keeps it from disappearing from the report entirely.
-  const caps = store.captureCounts()
+  // This run's captures: the objects above, the cloud and the path are this run's, so a capture an earlier run
+  // took (and the failure it may have had) is not part of the scan being described.
+  const caps = store.captureCounts('run')
   const capsUnresolved = caps.pending + caps.failed
   lines.push(`| Captures | ${captureCount}${
     capsUnresolved > 0 ? ` (${caps.failed} failed, ${caps.pending} pending)` : ''

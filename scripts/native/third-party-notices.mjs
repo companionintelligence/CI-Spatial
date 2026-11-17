@@ -24,10 +24,14 @@
  *     behind the APK.
  *   - Components no package manager knows: the vendored XR Engine (mobile), the Draco decoder,
  *     the onnxruntime-web WASM files, qrcodegen, and the WebView2 loader (Windows).
+ *   - Data the bundle includes by its module: the World Magnetic Model coefficients (NOAA NCEI), when
+ *     the web bundle holds src/world/wmm<year>-coefficients.ts (addBundledData).
  *
  * Every component gets its licence text: the files it ships, or, for one that ships none, its
- * project's text kept in scripts/native/licence-texts/ (SUPPLIED_TEXTS). The notices are not
- * made while any component is left without a text.
+ * project's text kept in scripts/native/licence-texts/ (SUPPLIED_TEXTS). A proprietary SDK whose
+ * agreement is linked, not reproduced (the XR Engine), gets a short notice of its own instead. ARCore's
+ * terms are reproduced from licence-texts/ and come after Google's disclosure. The notices are not made
+ * while any component is left without a text.
  */
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
@@ -297,11 +301,7 @@ function addAndroid(notices) {
       unknown.push(`${name}:${version}`)
       continue
     }
-    // A library with its own text (ARCore's terms) carries that text; the rest are Apache-2.0.
-    const texts = known.text
-      ? [suppliedText(known.text)]
-      : [...apacheText(), ...(known.notice ? [suppliedText(known.notice)] : [])]
-    notices.add({ group: 'android', name, version, licence: known.licence, source: known.source }, texts)
+    notices.add({ group: 'android', name, version, licence: known.licence, source: known.source }, androidLicenceTexts(known))
   }
   if (unknown.length) {
     throw new Error(`the Android app's libraries include some of no known licence: ${unknown.join(', ')}. `
@@ -323,11 +323,28 @@ export function lockedLibraries(text, configuration = 'releaseRuntimeClasspath')
 }
 
 /**
+ * What Google asks an app that uses ARCore to tell its users, and the terms the SDK is under. Google's
+ * page (https://developers.google.com/ar/develop/privacy-requirements) asks for the first sentence below
+ * to be prominent and easy to find, with links to Google Play Services for AR and to the Google Privacy
+ * Policy. This is the copy THIRD-PARTY-NOTICES.txt carries, ahead of the text of the SDK's terms
+ * (licence-texts/arcore-additional-terms.txt).
+ */
+export const ARCORE_NOTICE = [
+  'This application runs on Google Play Services for AR (ARCore), which is provided by Google and governed by the Google Privacy Policy.',
+  'Google Play Services for AR: https://play.google.com/store/apps/details?id=com.google.ar.core\n'
+    + 'Google Privacy Policy: https://policies.google.com/privacy',
+  'The ARCore SDK for Android (com.google.ar:core) is licensed under the ARCore Additional Terms of Service, '
+    + 'https://developers.google.com/ar/develop/terms, not under the licence of this app. Those terms are proprietary: '
+    + 'their text follows this notice.',
+].join('\n\n')
+
+/**
  * The licence of each library the Android app's release build pins, by `group:artifact`, as each
  * library's POM declares it (and the LICENSE.txt the AndroidX AARs carry). All but ARCore are under
- * the Apache License 2.0; Cordova also has a NOTICE file, which section 4(d) of that licence asks to
- * pass on. ARCore's AAR carries no licence file, so its entry names Google's ARCore Additional Terms
- * of Service and supplies their text.
+ * the Apache License 2.0, whose text each one gets (androidLicenceTexts); Cordova also has a NOTICE file
+ * (`notice`), which section 4(d) of that licence asks to pass on. ARCore's AAR carries no licence file, so
+ * its entry names Google's ARCore Additional Terms of Service, supplies their text (`text`, a file in
+ * licence-texts/) and carries the disclosure Google asks an app that uses ARCore to make (`disclosure`).
  * A library that matches none stops the notices: check its licence, then add it here.
  */
 export const ANDROID_LICENCES = [
@@ -338,8 +355,27 @@ export const ANDROID_LICENCES = [
   { match: /^org\.jetbrains:annotations$/, licence: 'Apache-2.0', source: 'https://github.com/JetBrains/java-annotations' },
   { match: /^org\.jspecify:jspecify$/, licence: 'Apache-2.0', source: 'https://github.com/jspecify/jspecify' },
   { match: /^com\.google\.guava:listenablefuture$/, licence: 'Apache-2.0', source: 'https://github.com/google/guava' },
-  { match: /^com\.google\.ar:core$/, licence: 'ARCore Additional Terms of Service', source: 'https://developers.google.com/ar/develop/terms', text: 'arcore-additional-terms.txt' },
+  {
+    match: /^com\.google\.ar:core$/,
+    licence: 'ARCore Additional Terms of Service',
+    source: 'https://developers.google.com/ar/develop/terms',
+    disclosure: ARCORE_NOTICE,
+    text: 'arcore-additional-terms.txt',
+  },
 ]
+
+/**
+ * The licence texts an ANDROID_LICENCES entry puts in the notices: its `disclosure`, if it has one, then the
+ * Apache License 2.0, or the entry's own `text` (a file in licence-texts/) when its library is not under it,
+ * and then the entry's `notice` file, if any.
+ */
+export function androidLicenceTexts(entry) {
+  return [
+    ...(entry.disclosure ? [entry.disclosure] : []),
+    ...(entry.text ? [suppliedText(entry.text)] : apacheText()),
+    ...(entry.notice ? [suppliedText(entry.notice)] : []),
+  ]
+}
 
 function addVendored(notices, shell, targets) {
   if (shell === 'mobile') {
@@ -398,6 +434,61 @@ function addVendored(notices, shell, targets) {
   }
 }
 
+/**
+ * The generated coefficient modules of the World Magnetic Model, by the id of a bundled module (the Vite module
+ * list build-web.mjs records): src/world/wmm<year>-coefficients.ts, whose header scripts/gen-wmm-coefficients.mjs
+ * writes with the notice NOAA NCEI asks for (17 U.S.C. 403).
+ */
+export const WMM_MODULE = /(?:^|\/)src\/world\/(wmm(\d{4})-coefficients\.ts)$/
+
+/**
+ * The NCEI notice in the header of a generated coefficient module, as one paragraph: the header's paragraph that
+ * starts "Notice (17 U.S.C. 403)", or null when it has none. The notice is written once, by the generator, and this
+ * carries those words, so a bundle cannot say anything but what the module says.
+ */
+export function wmmNotice(moduleSource) {
+  const header = moduleSource.match(/^\/\*\*([\s\S]*?)\*\//)?.[1] ?? ''
+  const paragraphs = header.split('\n').map((line) => line.replace(/^\s*\* ?/, '')).join('\n').split(/\n\s*\n/)
+  const paragraph = paragraphs.find((text) => text.trim().startsWith('Notice (17 U.S.C. 403)'))
+  return paragraph ? paragraph.replace(/\s*\n\s*/g, ' ').trim() : null
+}
+
+/**
+ * The notices a bundle owes for the data it includes by module, beyond the packages and libraries the lockfiles list:
+ * for the World Magnetic Model coefficients, the notice NCEI asks for, with the component it is for. Throws when the
+ * module is bundled but its header carries no notice, so a bundle cannot ship the data without it.
+ * @param {string[]} bundledModules module ids, as the bundle report lists them
+ * @param {string} [root] the checkout the module is read from (the tests give another)
+ * @returns {Array<{ component: object, texts: string[] }>}
+ */
+export function bundledDataNotices(bundledModules, root = ROOT) {
+  const found = new Map()
+  for (const id of bundledModules) {
+    const match = id.replace(/\\/g, '/').match(WMM_MODULE)
+    if (match) found.set(match[1], match[2])
+  }
+  return [...found].sort().map(([file, year]) => {
+    const notice = wmmNotice(readFileSync(join(root, 'src', 'world', file), 'utf8'))
+    if (!notice) {
+      throw new Error(`src/world/${file} is in the bundle but its header has no "Notice (17 U.S.C. 403)" paragraph, which NOAA asks to go with `
+        + 'the data. Write the module again with scripts/gen-wmm-coefficients.mjs.')
+    }
+    return {
+      component: {
+        group: 'vendored',
+        name: `World Magnetic Model WMM${year} coefficients (NOAA NCEI), in src/world/${file}`,
+        licence: 'Public domain (U.S. Government material, 17 U.S.C. 403)',
+        source: 'https://www.ncei.noaa.gov/products/world-magnetic-model',
+      },
+      texts: [notice],
+    }
+  })
+}
+
+function addBundledData(notices, bundledModules) {
+  for (const { component, texts } of bundledDataNotices(bundledModules)) notices.add(component, texts)
+}
+
 /** The components left with no licence text, by group, name and version. The notices are not made while there are any. */
 export function componentsWithoutText(notices) {
   return notices.components.filter((c) => !c.texts?.length).map((c) => `${c.group} ${c.name}${c.version ? ` ${c.version}` : ''}`)
@@ -407,6 +498,7 @@ export function componentsWithoutText(notices) {
 export function bundleNotices({ shell, bundledModules, targets = [], title }) {
   const notices = new Notices(title ?? `${shell === 'desktop' ? 'Desktop app' : 'Android app'}${targets.length ? ` (${targets.join(', ')})` : ''}`)
   addVendored(notices, shell, targets)
+  addBundledData(notices, bundledModules)
   addNpmPackages(notices, bundledModules)
   if (shell === 'mobile') addAndroid(notices)
   if (shell === 'desktop') addRustCrates(notices, targets)

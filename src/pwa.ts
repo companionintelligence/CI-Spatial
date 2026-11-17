@@ -1,13 +1,19 @@
 import { SW_SYNC_TAG } from './shared/storage-keys'
+import { whenPageLoaded } from './shared/page-load'
 
-export function registerPWA(): void {
+export function registerPWA(options: { flushQueue?: boolean } = {}): void {
+  // Only a page that owns the scan store flushes the offline queue. A read-only
+  // scanner tab passes flushQueue: false, so it cannot resend a writer's uploads.
+  const flushQueue = options.flushQueue !== false
   // The native shell is built with VITE_DISABLE_PWA set; see pwaSwitch() in vite.config.ts.
   if (import.meta.env.VITE_DISABLE_PWA) return
   if (typeof window === 'undefined') return
   if (!('serviceWorker' in navigator)) return
   if (!window.isSecureContext) return
 
-  window.addEventListener('load', () => {
+  // Not a bare 'load' listener: the scanner awaits its writer-role check before it calls this, so the
+  // page may already have loaded, and a listener added after `load` never runs (see shared/page-load.ts).
+  whenPageLoaded(window, document, () => {
     navigator.serviceWorker.register('/sw.js', { scope: '/' })
       .then((registration) => {
         const flush = () => {
@@ -19,13 +25,15 @@ export function registerPWA(): void {
             // Background Sync is not available in every browser, especially iOS.
           })
         }
-        window.addEventListener('online', flush)
-        flush()
+        if (flushQueue) {
+          window.addEventListener('online', flush)
+          flush()
+        }
       })
       .catch((error) => {
         console.warn('[pwa] Service worker registration failed:', error)
       })
-  }, { once: true })
+  })
 
   navigator.serviceWorker.addEventListener('message', (event) => {
     const data = event.data as { type?: string; status?: number; message?: string } | undefined

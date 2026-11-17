@@ -29,6 +29,7 @@ import {
   SUBJECTS,
   WORDS_BEFORE_CAMERA_MAX,
   allCases,
+  bootCases,
   countWords,
   ftueStatusWordsMax,
   readStaticCopy,
@@ -40,8 +41,8 @@ const where = (c: { subject: string, deviceName: string }) => `${c.subject} / ${
 
 test('every screen this can draw stays under the word budget', () => {
   // The point of computing rather than sampling. A browser run measures one
-  // combination; this is all 24. The mock renders 124 words and the worst real
-  // screen is 135 (the first-run status rows are 32 of each) — a room or a building on a phone that advertises WebXR
+  // combination; this is all 24. The mock renders 119 words and the worst real
+  // screen is 130 (the first-run status rows are 32 of each) — a room or a building on a phone that advertises WebXR
   // without having proven it, which is the exact device (XREAL Beam Pro) the
   // capture ladder was built for, and which pays an extra eleven-word hedge on
   // top of its recommendation. Re-baselining against the convenient sample is
@@ -61,8 +62,8 @@ test('every screen this can draw stays under the word budget', () => {
   // changed on purpose, re-measure, update this literal, and say in
   // WORDS_BEFORE_CAMERA_MAX why the new number is the right ceiling.
   assert.equal(
-    worst.words.total, 135,
-    `the worst screen is now ${where(worst)} at ${worst.words.total} words, not 135`,
+    worst.words.total, 130,
+    `the worst screen is now ${where(worst)} at ${worst.words.total} words, not 130`,
   )
 })
 
@@ -95,7 +96,28 @@ test('a native shell pays for its Server and legal rows, and its worst screen st
     assert.ok(total <= WORDS_BEFORE_CAMERA_MAX, `${where(c)} in a shell: ${total} words, budget ${WORDS_BEFORE_CAMERA_MAX}`)
   }
   const worst = allCases()[0]!
-  assert.equal(worst.words.total - worst.words.status + shellRows, 140, 'the worst shell screen is the browser one plus the two rows')
+  // The browser's worst screen is 130 words (the start-screen copy was trimmed from 135 when the
+  // boot-help line was budgeted), so the worst shell screen is 130 - 32 + 37 = 135.
+  assert.equal(worst.words.total - worst.words.status + shellRows, 135, 'the worst shell screen is the browser one plus the two rows')
+})
+
+test('a native shell that also shows the boot-help line is over the ceiling by a known amount', () => {
+  // OPEN, FOUND WHEN TWO LINES OF WORK WERE MERGED. The shell's Server and legal rows (5 words) were
+  // budgeted without the boot-written #ar-help line, and the help line (12 words) was budgeted
+  // without the shell rows. Together the worst shell screen reads 147 words, 5 over
+  // WORDS_BEFORE_CAMERA_MAX, on every device where the help line shows. The desktop app is one of
+  // them: it has no in-browser engine and no WebXR.
+  //
+  // This pins the overrun so it can only shrink. Closing it is a copy decision, not a test change:
+  // cut five words from the shell rows or from the help line a shell shows, or raise the ceiling
+  // for shells on purpose and write the reason beside WORDS_BEFORE_CAMERA_MAX.
+  const shellRows = ftueStatusWordsMax(true)
+  const worst = Math.max(...bootCases().map((c) => c.words.withBootHelp - c.words.status + shellRows))
+  assert.equal(worst, 147, `a shell with the help line now reads ${worst} words at worst, not 147: it may shrink, never grow — re-measure and write why`)
+  assert.ok(
+    worst - WORDS_BEFORE_CAMERA_MAX <= 5,
+    `the shell overrun is ${worst - WORDS_BEFORE_CAMERA_MAX} words over the ${WORDS_BEFORE_CAMERA_MAX} ceiling; it was 5 when it was found`,
+  )
 })
 
 test('the overrun is the un-recommended methods, not the recommendation', () => {
@@ -247,14 +269,15 @@ test('the mock screen is the one the Playwright spec measures', () => {
   // browser shows whatever the three endpoints answer, and the spec holds that
   // to the rows' worst case rather than to a single measured value.
   assert.equal(
-    mock.total - mock.status, 92,
-    `the model now says ${mock.total - mock.status} before the status rows; Chrome said 92 on 2026-08-30 — re-measure before trusting either`,
+    mock.total - mock.status, 87,
+    `the model now says ${mock.total - mock.status} before the status rows; the pin is 87 after the 2026-11-10 copy change, and Chrome (92 on 2026-08-30) is not re-measured yet`,
   )
   // What the same screen was before the disclosure, and what Chrome measured
   // on the build immediately before it (140). Kept because it is the size of
-  // what the control bought.
+  // what the control bought. Re-pinned 142 -> 137 on 2026-11-10 after the copy went
+  // to bullets; the model counts it, and Chrome has not been re-measured since.
   assert.equal(
-    mock.totalExpanded - mock.status, 142,
+    mock.totalExpanded - mock.status, 137,
     'the mock screen with both alternatives open, plus the control itself (before the status rows)',
   )
 })

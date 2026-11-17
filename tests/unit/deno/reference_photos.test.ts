@@ -23,6 +23,7 @@
 import { assertEquals, assertAlmostEquals, assert } from 'jsr:@std/assert@^1.0.0'
 import {
   PROJECT_ID_RE,
+  REFERENCE_PHOTO_ROLES,
   parseReferencePhotoMeta,
   projectMediaDirPath,
   referencePhotoFileName,
@@ -71,11 +72,26 @@ Deno.test('projectMediaDirPath refuses anything that could leave its parent', ()
 
 // ── Filename allowlist ───────────────────────────────────────────────────────
 
-Deno.test('only the two names the POST route writes are servable', () => {
+Deno.test('only the names the POST route writes are servable: the two markers, and up to three check points', () => {
   assertEquals(roleForReferencePhotoFile('ref-landmark.jpg'), 'landmark')
   assertEquals(roleForReferencePhotoFile('ref-headingMarker.jpg'), 'headingMarker')
   assertEquals(referencePhotoFileName('landmark'), 'ref-landmark.jpg')
   assertEquals(referencePhotoFileName('headingMarker'), 'ref-headingMarker.jpg')
+  for (const role of ['check1', 'check2', 'check3'] as const) {
+    assertEquals(referencePhotoFileName(role), `ref-${role}.jpg`)
+    assertEquals(roleForReferencePhotoFile(`ref-${role}.jpg`), role)
+  }
+  assertEquals([...REFERENCE_PHOTO_ROLES], ['landmark', 'headingMarker', 'check1', 'check2', 'check3'])
+})
+
+Deno.test('a Place written before check points existed keeps its two photos servable: the legacy roles are still the first two, under the same names', () => {
+  // The records and the files on disk name only `landmark` and `headingMarker`; nothing about them changed.
+  assertEquals(REFERENCE_PHOTO_ROLES.slice(0, 2), ['landmark', 'headingMarker'])
+  assertEquals(referencePhotoUrl('proj-1756051200000', 'landmark'), '/projects/proj-1756051200000/reference-photos/ref-landmark.jpg')
+  assertEquals(referencePhotoUrl('proj-1756051200000', 'check1'), '/projects/proj-1756051200000/reference-photos/ref-check1.jpg')
+  // A fourth check point is not in the schema (`MAX_CHECK_POINTS` is 3), so it is not on the allowlist.
+  assertEquals(roleForReferencePhotoFile('ref-check4.jpg'), null)
+  assertEquals(roleForReferencePhotoFile('ref-check0.jpg'), null)
 })
 
 Deno.test('traversal in :file fails by not being on the allowlist', () => {
@@ -137,8 +153,17 @@ Deno.test('parseReferencePhotoMeta rejects a missing or unparseable body', () =>
   assert('error' in notJson && notJson.error === 'meta is not valid JSON')
 })
 
+Deno.test('parseReferencePhotoMeta accepts a check point\'s role and its description', () => {
+  for (const role of ['check1', 'check2', 'check3']) {
+    const result = parse({ ...VALID_META, role, label: 'radiator' })
+    assert(!('error' in result), `unexpected error for ${role}: ${JSON.stringify(result)}`)
+    assertEquals(result.meta.role, role)
+    assertEquals(result.meta.label, 'radiator')
+  }
+})
+
 Deno.test('parseReferencePhotoMeta rejects an unknown role', () => {
-  for (const role of ['origin', 'heading', 'Landmark', '', 1, null]) {
+  for (const role of ['origin', 'heading', 'Landmark', 'check', 'check0', 'check4', '', 1, null]) {
     const result = parse({ ...VALID_META, role })
     assert('error' in result, `should reject role: ${String(role)}`)
     assert(result.error.includes('role must be one of'))
@@ -256,4 +281,12 @@ Deno.test('the two photos are labelled A and B, because order sets the rotation'
   assert(referencePhotoTitle('landmark').includes('A'))
   assert(referencePhotoTitle('headingMarker').includes('B'))
   assert(referencePhotoTitle('landmark') !== referencePhotoTitle('headingMarker'))
+})
+
+Deno.test('a check point\'s photo carries on the lettering, C first, and says it is a check point', () => {
+  assertEquals(referencePhotoTitle('landmark'), 'Point A — the landmark')
+  assertEquals(referencePhotoTitle('headingMarker'), 'Point B — the heading marker')
+  assertEquals(referencePhotoTitle('check1'), 'Point C — the check point')
+  assertEquals(referencePhotoTitle('check2'), 'Point D — the check point')
+  assertEquals(referencePhotoTitle('check3'), 'Point E — the check point')
 })

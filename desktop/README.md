@@ -7,11 +7,16 @@ server, and it cannot capture.
 
 ```sh
 npm ci                      # in the repo root, once
+ALLOW_DEV_ORIGINS=1 npm run server   # in the repo root: a Scan server that admits the dev window
 cd desktop
 npm ci
-npm run dev                 # the app against the local Vite and Deno servers
+npm run dev                 # the app on the Vite dev server, which proxies to that Scan server
 npm run build               # this OS's installers, in src-tauri/target/release/bundle
 ```
+
+`npm run dev` needs a Scan server running with `ALLOW_DEV_ORIGINS=1`. The dev window's origin is
+`http://localhost:5199`, and a Scan server admits a localhost page only with that flag
+(`server/origin.ts`). See the last bullet under "What the app is".
 
 Tauri needs Rust 1.90 or later and the platform's WebView: WebView2 on Windows (the
 installer fetches it if it is missing), WKWebView on macOS 12 or later, and WebKitGTK 4.1
@@ -39,9 +44,19 @@ app never loads the 8th Wall engine, and its bundle leaves it out.
   never reaches its onboarding without an AR runtime. Its setup is in the editor's
   Navigate menu instead: the Scan server (set, test and change it; the editor also asks
   for one on launch while none is set), Legal notices (Companion Scan's licence and the
-  open-source licences in the app), and the account control that signs in.
+  licences of the third-party software in the app), and the account control that signs in.
 - `npm run dev` serves the app from `vite.http.config.ts` on port 5199, because the
-  main Vite config serves HTTPS with a certificate the webview does not trust.
+  main Vite config serves HTTPS with a certificate the webview does not trust. It starts
+  Vite only (`beforeDevCommand` in `src-tauri/tauri.conf.json`), which proxies the Scan
+  server's routes to `API_TARGET`, `http://localhost:8000` unless set. The dev window's origin
+  is `http://localhost:5199` (`devUrl`), and a Scan server admits a localhost origin only when it
+  runs with `ALLOW_DEV_ORIGINS=1` (`server/origin.ts`). Without the flag it answers the editor's
+  `/events` and `/rtc-signal` WebSockets with 403 and logs
+  `WebSocket upgrade rejected for origin: http://localhost:5199`, so the editor shows no live
+  scan or job updates. Start the server with `ALLOW_DEV_ORIGINS=1 npm run server`, on a dev
+  machine only, since the flag also admits every page on localhost or your LAN. A Scan server
+  the app is pointed at needs the flag too. An installed app needs none: `tauri://localhost`,
+  `http://tauri.localhost` and `https://tauri.localhost` are always admitted.
 
 A build can name a default server with `VITE_API_BASE` in the parent environment;
 an address saved in the app overrides it. Release builds set none. Do not ship a

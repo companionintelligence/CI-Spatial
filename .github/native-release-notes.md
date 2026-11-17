@@ -33,6 +33,6 @@ To check a download against `SHA256SUMS.txt`: `sha256sum -c SHA256SUMS.txt --ign
 
 ## Licences
 
-Companion Scan is licensed under the PolyForm Noncommercial License 1.0.0 (`LICENSE`). The Android app includes the Niantic Spatial XR Engine (8th Wall), which is proprietary and licensed under the [XR Engine License Agreement](https://github.com/8thwall/engine/blob/main/LICENSE); the desktop app does not include it. `THIRD-PARTY-NOTICES.txt` lists every other component with its licence, and each app shows these under Legal notices.
+Companion Scan is licensed under the PolyForm Noncommercial License 1.0.0 (`LICENSE`). The Android app includes the Niantic Spatial XR Engine (8th Wall), which is proprietary and licensed under the [XR Engine License Agreement](https://github.com/8thwall/engine/blob/main/LICENSE); the desktop app does not include it. The Android app also includes Google's ARCore SDK, which is proprietary and licensed under the [ARCore Additional Terms of Service](https://developers.google.com/ar/develop/terms), not under the licence of this app. `THIRD-PARTY-NOTICES.txt` lists every other component with its licence, and each app shows these under Legal notices.
 
 Built from {{COMMIT}}.

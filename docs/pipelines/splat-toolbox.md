@@ -250,7 +250,7 @@ several visits); the server route always ingests one upload as one session.
   ```
   The route registers a `scan-<sessionId>` in the `default` world and
   auto-enqueues a `lingbot-map-reconstruct` job, exactly like `/ingest-video`.
-  Uploads over `INGEST_MAX_PHOTOS_BYTES` (default 500 MB) get a `413`.
+  Uploads over `INGEST_MAX_PHOTOS_BYTES` (default `1500000000`: the 1000-photo count cap at 1.5 MB a photo) get a `413`.
 
 ---
 

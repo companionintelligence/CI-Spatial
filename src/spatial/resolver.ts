@@ -196,10 +196,12 @@ function pointOnCaptureRay(
 
 /**
  * Convert a VLM bbox point from captured-image coordinates into live viewport
- * coordinates. XR8 renders the camera feed as a full-bleed canvas; when the
+ * coordinates, assuming the feed is cover-cropped to fill the window: when the
  * captured camera frame has a different aspect ratio than the viewport, the
- * visual feed is effectively cover-cropped. Hit-tests and Three.js rays must
- * use the post-crop viewport coordinate, not the raw image coordinate.
+ * visual feed is effectively cropped. This is the window mapping. A provider
+ * that frames its camera differently supplies its own (see
+ * {@link ImageHitTestContract}), and this is the fallback for a provider that
+ * does not.
  */
 export function imagePointToViewportPoint(
   x: number,
@@ -223,6 +225,42 @@ export function imagePointToViewportPoint(
     x: (x * iw * scale + offsetX) / vw,
     y: (y * ih * scale + offsetY) / vh,
   }
+}
+
+/**
+ * A provider's own answer to "where does a point on the captured image sit, in
+ * the coordinates my hit-test takes?" Each AR runtime frames its camera
+ * differently, so the mapping belongs to the provider. 8th Wall under `contain`
+ * (its default) puts the whole camera frame on the canvas and its hit-test takes
+ * canvas coordinates, so the point is unchanged. Under `cover`, and for WebXR,
+ * the window cover-crop applies.
+ */
+export interface ImageHitTestContract {
+  imagePointToHitTestPoint(
+    x: number,
+    y: number,
+    imageSize: ViewSize | undefined,
+    viewportSize: ViewSize | undefined,
+  ): { x: number; y: number }
+}
+
+/**
+ * The point a provider's hit-test, and the capture-camera ray, should use for an
+ * image-normalised point. A provider with no contract of its own gets the window
+ * cover-crop, which is the mapping this resolver has always used.
+ */
+function hitTestPointFor(
+  provider: ARProvider,
+  x: number,
+  y: number,
+  imageSize: ViewSize | undefined,
+  viewportSize: ViewSize | undefined,
+): { x: number; y: number } {
+  const contract = provider as ARProvider & Partial<ImageHitTestContract>
+  if (typeof contract.imagePointToHitTestPoint === 'function') {
+    return contract.imagePointToHitTestPoint(x, y, imageSize, viewportSize)
+  }
+  return imagePointToViewportPoint(x, y, imageSize, viewportSize)
 }
 
 /**
@@ -271,19 +309,61 @@ export function viewportPointToImagePoint(
   }
 }
 
+/**
+ * How far the phone may move, in metres, and still count as where it was. Adopted, not measured (ADR 0005 rule 5): the
+ * figure this file has always used for "the live hit-test still casts from the viewpoint the frame was captured at".
+ */
+const STILL_MAX_SHIFT_M = 0.02
+
+/** How far the phone may turn, in degrees, and still count as where it was. Adopted, not measured; see `STILL_MAX_SHIFT_M`. */
+const STILL_MAX_TURN_DEG = 2
+
+/**
+ * Whether two camera poses are the same place for this app's purposes: within 2 cm and 2 degrees of each other. The
+ * live hit-test casts from the camera's current pose, so once the phone has moved its ray starts from the wrong
+ * viewpoint (`resolveDetections`), and a tap's pixel stops being where its marker is in a later picture
+ * (src/ar/reference-photo-flow.ts). Quaternions are compared as given, so they must be unit length, as every pose
+ * the providers publish is.
+ */
+export function posesAreStill(a: Pose, b: Pose): boolean {
+  const dp = Math.hypot(a.position.x - b.position.x, a.position.y - b.position.y, a.position.z - b.position.z)
+  const dot = Math.abs(
+    a.rotation.x * b.rotation.x + a.rotation.y * b.rotation.y + a.rotation.z * b.rotation.z + a.rotation.w * b.rotation.w,
+  )
+  const angleDeg = 2 * Math.acos(Math.min(1, dot)) * (180 / Math.PI)
+  return dp < STILL_MAX_SHIFT_M && angleDeg < STILL_MAX_TURN_DEG
+}
+
+/**
+ * True while the phone is still where the frame was captured. The live hit-test casts from
+ * the camera's current pose, so once the phone has moved its ray starts from the wrong
+ * viewpoint, and only the capture-time paths are valid. Within 2 cm and 2 degrees counts as
+ * still.
+ */
+function stillAtCapturePose(provider: ARProvider, capturePose: Pose | undefined): boolean {
+  if (!capturePose || typeof provider.getPose !== 'function') return true
+  const now = provider.getPose()
+  if (!now?.position || !now.rotation) return true
+  return posesAreStill(now, capturePose)
+}
+
 export async function resolveDetections(
   detections: RawDetection[],
   timestamp: number,
   opts: ResolveOptions,
 ): Promise<WorldDetection[]> {
   const results: WorldDetection[] = []
+  const liveValid = stillAtCapturePose(opts.provider, opts.cameraPose)
+  if (!liveValid) {
+    console.log('[resolver] phone moved since capture — live hit-tests skipped, using the capture-time camera')
+  }
 
   for (const det of detections) {
     console.log(`[resolver] Resolving object "${det.label}" with bbox:`, JSON.stringify(det.bbox))
     const [x1, y1, x2, y2] = det.bbox
     const imageCx = (x1 + x2) / 2
     const imageCy = (y1 + y2) / 2
-    const mapped = imagePointToViewportPoint(imageCx, imageCy, opts.imageSize, opts.viewportSize)
+    const mapped = hitTestPointFor(opts.provider, imageCx, imageCy, opts.imageSize, opts.viewportSize)
     const cx = mapped.x
     const cy = mapped.y
     if (cx !== imageCx || cy !== imageCy) {
@@ -299,7 +379,7 @@ export async function resolveDetections(
     let hitRot = { x: 0, y: 0, z: 0, w: 1 }
 
     // 1. Try synchronous provider hit-testing at centroid (0-1 screen coordinates)
-    const syncHit = opts.provider.hitTest(cx, cy)
+    const syncHit = liveValid ? opts.provider.hitTest(cx, cy) : null
     if (syncHit) {
       let dist = syncHit.distance
       if (dist === undefined || isNaN(dist)) {
@@ -327,7 +407,7 @@ export async function resolveDetections(
     }
 
     // 2. Try asynchronous hit-testing fallback (for WebXR frame context)
-    if (!hitPos && opts.asyncHitTest) {
+    if (!hitPos && liveValid && opts.asyncHitTest) {
       const asyncHit = await opts.asyncHitTest(cx, cy)
       if (asyncHit) {
         let dist = asyncHit.distance

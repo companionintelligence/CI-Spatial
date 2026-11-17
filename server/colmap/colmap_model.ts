@@ -422,6 +422,26 @@ export function pointsToPly(points: ColmapPoint3D[]): Uint8Array {
 }
 
 /**
+ * The OpenCV world-to-camera 3x4 of one registered image, from its quaternion and translation.
+ *
+ * `cameraToWorld` is the key the poses file keeps for it, for the format reasons in {@link buildPosesJson}.
+ */
+function worldToCamera3x4(img: ColmapImage): number[][] {
+  const [w, x, y, z] = img.qvec
+  // Quaternion → rotation matrix (world→camera), COLMAP's `QuaternionToRotationMatrix`.
+  const R = [
+    [1 - 2 * y * y - 2 * z * z, 2 * x * y - 2 * z * w, 2 * x * z + 2 * y * w],
+    [2 * x * y + 2 * z * w, 1 - 2 * x * x - 2 * z * z, 2 * y * z - 2 * x * w],
+    [2 * x * z - 2 * y * w, 2 * y * z + 2 * x * w, 1 - 2 * x * x - 2 * y * y],
+  ]
+  return [
+    [R[0][0], R[0][1], R[0][2], img.tvec[0]],
+    [R[1][0], R[1][1], R[1][2], img.tvec[1]],
+    [R[2][0], R[2][1], R[2][2], img.tvec[2]],
+  ]
+}
+
+/**
  * Build the `poses.json` payload from parsed COLMAP images.
  *
  * `cameraToWorld` carries the 3×4 world-to-camera [R|t] matrix — the same
@@ -429,30 +449,19 @@ export function pointsToPly(points: ColmapPoint3D[]): Uint8Array {
  * `lingbot-map.poses.json` uses, so a single reader and a single conversion
  * serve both producers. `name` is reduced to its basename because COLMAP
  * paths are relative to its own image root, while the dataset builder keys
- * frames by the bare `kf-NNNNN.jpg` filename.
+ * frames by the bare `kf-NNNNN.jpg` filename. A solve over several sessions
+ * keeps the folder instead, because the basename is the same in every session:
+ * see {@link buildJointPosesJson}.
  */
 export function buildPosesJson(images: ColmapImage[], tool = 'colmap', camera?: ColmapCamera): {
   tool: string
   camera?: { fx: number; fy: number; cx: number; cy: number; width: number; height: number }
   frames: Array<{ file: string; cameraToWorld: number[][] }>
 } {
-  const frames = images.map((img) => {
-    const [w, x, y, z] = img.qvec
-    // Quaternion → rotation matrix (world→camera), COLMAP's `QuaternionToRotationMatrix`.
-    const R = [
-      [1 - 2 * y * y - 2 * z * z, 2 * x * y - 2 * z * w, 2 * x * z + 2 * y * w],
-      [2 * x * y + 2 * z * w, 1 - 2 * x * x - 2 * z * z, 2 * y * z - 2 * x * w],
-      [2 * x * z - 2 * y * w, 2 * y * z + 2 * x * w, 1 - 2 * x * x - 2 * y * y],
-    ]
-    return {
-      file: img.name.split('/').pop() ?? img.name,
-      cameraToWorld: [
-        [R[0][0], R[0][1], R[0][2], img.tvec[0]],
-        [R[1][0], R[1][1], R[1][2], img.tvec[1]],
-        [R[2][0], R[2][1], R[2][2], img.tvec[2]],
-      ],
-    }
-  })
+  const frames = images.map((img) => ({
+    file: img.name.split('/').pop() ?? img.name,
+    cameraToWorld: worldToCamera3x4(img),
+  }))
   // The solved intrinsics ride along with the poses deliberately: they were fit
   // to these exact images, in this exact model, so splitting them into a second
   // sidecar would let a consumer pair one solver's poses with another's lens.
@@ -465,4 +474,43 @@ export function buildPosesJson(images: ColmapImage[], tool = 'colmap', camera?: 
       frames,
     }
     : { tool, frames }
+}
+
+/** One session's solved lens, as the joint poses file records it. */
+export interface JointCameraRecord {
+  fx: number
+  fy: number
+  cx: number
+  cy: number
+  width: number
+  height: number
+}
+
+/**
+ * The poses payload for a solve over several sessions, one camera each.
+ *
+ * Two things differ from {@link buildPosesJson}, and both are the folder:
+ *
+ *  - `file` is the image's whole path under the image root, `<sessionId>/kf-00012.jpg`. Every session names its frames
+ *    `kf-NNNNN.jpg`, so the basename would give two sessions' first frames the same key and `readSolvedPoses` would keep
+ *    one of them. The path is also the key `sfmCentresFromPoses` returns, which is what pairs a solved centre with the
+ *    same frame's recorded one.
+ *  - there is no single `camera` block. The lens of each session is under `cameras`, by the same folder name, because a
+ *    reader that took one lens for all of them would be making the mistake this layout exists to remove. A single-session
+ *    reader (`readSolvedCamera`) finds no `camera` and falls back to its own derivation, which is right.
+ */
+export function buildJointPosesJson(
+  images: ColmapImage[],
+  cameras: Record<string, JointCameraRecord>,
+  tool = 'colmap',
+): {
+  tool: string
+  cameras: Record<string, JointCameraRecord>
+  frames: Array<{ file: string; cameraToWorld: number[][] }>
+} {
+  return {
+    tool,
+    cameras,
+    frames: images.map((img) => ({ file: img.name, cameraToWorld: worldToCamera3x4(img) })),
+  }
 }

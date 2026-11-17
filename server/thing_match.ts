@@ -1,3 +1,5 @@
+import { identityMatrix, transformPoint } from '../src/world/geo.ts'
+import { isInPlaceFrame } from '../src/world/frame-generations.ts'
 import type { ScanManifest, Thing, ThingObservation, Vec3, WorldProject } from '../src/world/types.ts'
 
 export const THING_MATCH_RADIUS_M = 0.75
@@ -33,9 +35,60 @@ export interface ThingMatchResult {
   artifacts: Array<{ type: string; label: string; metadata: Record<string, unknown> }>
 }
 
+/**
+ * Whether a scan's detections may be matched to the Place's Things (D6). Only a scan measured in the Place frame
+ * may: its detections are positions in that frame, so two of them are comparable. One that was never calibrated, or
+ * calibrated with the one-point method, stands where its GPS fix and compass, or its own tapped point, put it, and
+ * a position there cannot be told from a position in the Place frame: matched, it would merge Things that are
+ * metres apart and duplicate Things that are one. It joins the matching when it is calibrated. Things already
+ * made from such a scan are not taken away.
+ */
+export function scanTakesPartInThingMatching(scan: Pick<ScanManifest, 'calibrationMethod' | 'calibrationStatus'>): boolean {
+  return isInPlaceFrame(scan)
+}
+
+/**
+ * The sentence a Thing-matching job adds to its result when it left scans out (D6), for the job list, which prints a
+ * job's result: a Place whose scans are all uncalibrated has no Things made from them, and the list says why instead of
+ * showing a job that did nothing. Nothing at all when no scan was left out.
+ */
+export function scansLeftOutNote(count: number): string {
+  if (!Number.isInteger(count) || count < 1) return ''
+  return count === 1
+    ? ' 1 scan was left out: it is not in the Place frame.'
+    : ` ${count} scans were left out: they are not in the Place frame.`
+}
+
 export function normalizeThingLabel(label: string): string {
   const token = label.toLowerCase().trim().replace(/[^a-z0-9]+/g, ' ').split(/\s+/).filter(Boolean)[0] ?? 'object'
   return SYNONYMS.get(token) ?? token
+}
+
+/**
+ * One scan's detections, ready for correspondence. Each position arrives in the scan's own
+ * session frame, so it goes through the scan's localToWorld into the Place frame. Without
+ * this, two sessions with different origins compared raw coordinates: the same object could
+ * duplicate and unrelated objects could merge. A scan with no localToWorld (an older world)
+ * keeps its session frame, the same as before.
+ */
+export function thingLikesForScan(
+  scan: { scanId: string; sessionId: string | null; capturedAt?: string | null; localToWorld?: number[] | null },
+  withPositions: ReadonlyArray<{ label: string; confidence?: number | null; worldPos: Vec3 }>,
+): DetectionLike[] {
+  const matrix = scan.localToWorld && scan.localToWorld.length === 16 ? scan.localToWorld : identityMatrix()
+  return withPositions.map((detection, index) => {
+    const safeName = detection.label.replace(/[^a-zA-Z0-9]/g, '_').replace(/^_+/, '') || 'Object'
+    const name = `${safeName}_${String(index + 1).padStart(3, '0')}`
+    return {
+      scanId: scan.scanId,
+      sessionId: scan.sessionId,
+      targetId: `${scan.scanId}:${name}:lod`,
+      label: detection.label,
+      confidence: detection.confidence,
+      worldPos: transformPoint(matrix, detection.worldPos),
+      observedAt: scan.capturedAt,
+    }
+  })
 }
 
 export function runThingCorrespondence(

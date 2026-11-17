@@ -327,9 +327,10 @@ Deno.test('push: uploads the GLB then records a capture.scan event with geo + de
 // ── Object geometry ───────────────────────────────────────────────────────────
 //
 // The sidecar's oriented boxes are the only real extents in this system.
-// src/export/gltf.ts fabricates its `dimensions` from a 2D bbox fraction times
-// hard-coded constants — plausible-looking, invented, and deliberately not a
-// source here. These tests pin the real numbers to the wire.
+// src/export/gltf.ts writes no `dimensions` for its detection boxes. It draws
+// them as flagged placeholders, sized from a 2D bbox fraction times hard-coded
+// constants: plausible-looking, invented, and deliberately not a source here.
+// These tests pin the real numbers to the wire.
 
 Deno.test('push: each object carries its 3D extent, orientation, confidence and votes', async () => {
   const srv = stubServer()
@@ -1043,9 +1044,10 @@ Deno.test('push: capture-time detections ship with their world positions and the
     assertEquals('confidence' in mesh[1], false, 'no score is invented for an entry that carried none')
     assertEquals(result.meshObjectCount, 2)
 
-    // The GLB exporter's `dimensions` is a 2D bbox fraction times hard-coded
-    // constants. It is present in the fixture and must not be forwarded: it
-    // would arrive indistinguishable from splat_analyzer's measured extents.
+    // The GLB writes no `dimensions` now: its boxes are flagged placeholders, sized
+    // from a 2D bbox fraction times hard-coded constants. The fixture still carries
+    // one, and it must not be forwarded: it would pass for splat_analyzer's
+    // measured extents.
     assertEquals('dimensions' in mesh[0], false, "gltf.ts's fabricated dimensions are not forwarded")
     assert(!JSON.stringify(mesh).includes('dimensions'), 'not under any name, anywhere in the block')
 
@@ -1182,6 +1184,179 @@ Deno.test('push: the splat/align/mesh fields are additive — the old payload is
     await Deno.remove(bareDir, { recursive: true })
     await Deno.remove(richDir, { recursive: true })
   }
+})
+
+// ── The scan's own calibration tier ───────────────────────────────────────────
+//
+// `scan.calibrationMethod` is what asCalibrationMethod (server/calibration_fields.ts) lets
+// through from the upload sidecar. It used to let through the one-point tier only, so a real
+// server served a two-point scan with `calibrationStatus` and `calibrationSeparationM` but no
+// method (a sidecar naming `'known-distance'` was dropped the same way), and two things in
+// this payload were conditional on the method it did not send:
+//   - `spatial_frame` is shipped when there is a splat fit OR the scan names its tier, so a
+//     fit-less two-point scan shipped none;
+//   - `mesh_object_frame.calibration_method` read null beside a `calibration_status` of
+//     'verified'.
+// Passing the tier through changes both for those scans, and CI-Server sees it: one new
+// top-level key, `spatial_frame`, and a non-null `mesh_object_frame.calibration_method`.
+// The tests below pin that delta exactly, so a change to it is a decision rather than a side
+// effect. memory_push.ts itself did not change: this is the shape the one-point tier shipped.
+
+/** A real two-point scan as a real server served it before the tier passed through: status and separation, no method. */
+const TWO_POINT_BEFORE: ScanManifest = {
+  ...SCAN,
+  calibrationStatus: 'verified',
+  calibrationSeparationM: 2.80178514522438,
+}
+
+/** The same scan now: the sidecar's `calibration.method` reaches the manifest. */
+const TWO_POINT_NOW: ScanManifest = { ...TWO_POINT_BEFORE, calibrationMethod: 'two-point-ground' }
+
+/** Push `scan` to a stub CI-Server and hand back the event payload it received, and the push result. */
+async function pushed(
+  scan: ScanManifest,
+  detections: DetectFixture = 'none',
+  opts: Parameters<typeof tempScans>[1] = {},
+) {
+  const srv = stubServer()
+  const dir = await tempScans(detections, opts)
+  try {
+    const result = await pushScanToMemory(cfgFor(srv.base), scan, { scansDir: dir })
+    return { payload: payloadOf(srv.seen), result }
+  } finally {
+    await srv.close()
+    await Deno.remove(dir, { recursive: true })
+  }
+}
+
+Deno.test('push: a two-point scan with no splat fit ships spatial_frame from its own tier, and nothing else changes', async () => {
+  const before = await pushed(TWO_POINT_BEFORE)
+  const now = await pushed(TWO_POINT_NOW)
+
+  assertEquals('spatial_frame' in before.payload, false, 'with no fit and no tier there is nothing to say about scale')
+  assertEquals(before.result.spatialFrameMetric, false)
+
+  // One new top-level key; every key that was there is byte-identical, and none is dropped.
+  assertEquals(Object.keys(now.payload).filter((k) => !(k in before.payload)).join(','), 'spatial_frame')
+  assertEquals(Object.keys(before.payload).filter((k) => !(k in now.payload)).join(','), '')
+  for (const k of Object.keys(before.payload)) {
+    assertEquals(JSON.stringify(now.payload[k]), JSON.stringify(before.payload[k]), `${k} must not change`)
+  }
+
+  const frame = now.payload.spatial_frame as Record<string, unknown>
+  assertEquals(
+    Object.keys(frame).sort().join(','),
+    [
+      'calibration_method',
+      'caveat',
+      'correspondence_count',
+      'fit_at',
+      'fit_status',
+      'fit_tool',
+      'frame',
+      'max_residual_m',
+      'metric',
+      'min_correspondences',
+      'project_transform',
+      'residual_m',
+      'scale',
+      'scan_calibration_method',
+      'scan_calibration_status',
+      'splat_path',
+      'transform_convention',
+      'units',
+    ].join(','),
+    'the wire shape, key for key',
+  )
+  assertEquals(frame.units, 'm')
+  assertEquals(frame.frame, 'project')
+  assertEquals(frame.metric, false, 'the tier is provenance, not a fit: nothing here converts a length')
+  assertEquals(now.result.spatialFrameMetric, false)
+  for (
+    const k of [
+      'scale',
+      'residual_m',
+      'max_residual_m',
+      'correspondence_count',
+      'min_correspondences',
+      'project_transform',
+      'fit_tool',
+      'fit_status',
+      'fit_at',
+      'splat_path',
+    ]
+  ) {
+    assertEquals(frame[k], null, `${k} is null: there is no fit`)
+  }
+  assertEquals(frame.calibration_method, null, "the FIT's tier, and there is no fit")
+  assertEquals(frame.scan_calibration_method, 'two-point-ground', "the SCAN's own tier: the field this change fills")
+  assertEquals(frame.scan_calibration_status, 'verified', 'which was already served, and is why the pair read as inconsistent')
+  assert(String(frame.caveat).includes('When `metric` is false'), 'and the caveat tells a consumer not to use `scale`')
+})
+
+Deno.test("push: capture-time detections carry the scan's own tier in mesh_object_frame, where they carried null", async () => {
+  const sidecars = { 'room.json': META_SIDECAR }
+  const before = await pushed(TWO_POINT_BEFORE, 'none', { sidecars })
+  const now = await pushed(TWO_POINT_NOW, 'none', { sidecars })
+  const was = before.payload.mesh_object_frame as Record<string, unknown>
+  const is = now.payload.mesh_object_frame as Record<string, unknown>
+
+  assertEquals(was.calibration_method, null, 'the method was null …')
+  assertEquals(was.calibration_status, 'verified', '… beside a status that said a calibration had been checked')
+  assertEquals(is.calibration_method, 'two-point-ground')
+  assertEquals(is.calibration_status, 'verified')
+
+  // Nothing else in the block moved, and the detections themselves are untouched.
+  assertEquals(Object.keys(is).sort().join(','), Object.keys(was).sort().join(','))
+  for (const k of Object.keys(was)) {
+    if (k === 'calibration_method') continue
+    assertEquals(JSON.stringify(is[k]), JSON.stringify(was[k]), `mesh_object_frame.${k} must not change`)
+  }
+  assertEquals(JSON.stringify(now.payload.mesh_objects), JSON.stringify(before.payload.mesh_objects))
+})
+
+Deno.test('push: two-point and known-distance scans ship the spatial_frame shape the one-point tier already shipped', async () => {
+  // The claim that this adds no new wire format: the block is identical for every tier but the
+  // tier's own name, so a consumer that reads a one-point scan's block reads the others.
+  const masked = new Map<string, string>()
+  for (const tier of ['ground-tap-compass', 'two-point-ground', 'known-distance'] as const) {
+    const { payload } = await pushed({ ...TWO_POINT_BEFORE, calibrationMethod: tier })
+    const frame = payload.spatial_frame as Record<string, unknown>
+    assertEquals(frame.scan_calibration_method, tier)
+    masked.set(tier, JSON.stringify({ ...frame, scan_calibration_method: null }))
+  }
+  assertEquals(masked.get('two-point-ground'), masked.get('ground-tap-compass'))
+  assertEquals(masked.get('known-distance'), masked.get('ground-tap-compass'))
+})
+
+Deno.test("push: with a splat fit the scan's tier fills scan_calibration_method only, and moves no converted number", async () => {
+  // A fit whose own tier differs from the scan's, to show they are two fields and not one:
+  // `calibration_method` is the tier the aligner recorded, `scan_calibration_method` the scan's.
+  const opts = {
+    detectManifest: true,
+    sidecars: { 'room.splat-align.manifest.json': { ...ALIGN_MANIFEST, calibrationMethod: 'known-distance' } },
+  }
+  const before = await pushed(TWO_POINT_BEFORE, 'full', opts)
+  const now = await pushed(TWO_POINT_NOW, 'full', opts)
+
+  assertEquals(before.result.spatialFrameMetric, true)
+  assertEquals(now.result.spatialFrameMetric, true)
+
+  // Of everything in the payload, only spatial_frame differs, and in one field of it.
+  const changed = Object.keys(now.payload).filter((k) => JSON.stringify(now.payload[k]) !== JSON.stringify(before.payload[k]))
+  assertEquals(changed.join(','), 'spatial_frame')
+  const a = before.payload.spatial_frame as Record<string, unknown>
+  const b = now.payload.spatial_frame as Record<string, unknown>
+  assertEquals(Object.keys(b).sort().join(','), Object.keys(a).sort().join(','))
+  for (const k of Object.keys(a)) {
+    if (k === 'scan_calibration_method') continue
+    assertEquals(JSON.stringify(b[k]), JSON.stringify(a[k]), `spatial_frame.${k} must not change`)
+  }
+  assertEquals(a.scan_calibration_method, null)
+  assertEquals(b.scan_calibration_method, 'two-point-ground')
+  assertEquals(b.calibration_method, 'known-distance', "the aligner's tier, unaffected by the scan's")
+  assertEquals(b.metric, true)
+  assertEquals(b.scale, 2, 'every number that was converted still is')
 })
 
 // ── Status route ──────────────────────────────────────────────────────────────

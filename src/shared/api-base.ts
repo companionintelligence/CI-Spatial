@@ -44,6 +44,16 @@ export function isCapacitorShell(): boolean {
   return cap?.isNativePlatform?.() === true
 }
 
+/**
+ * True inside the Android app, the one shell that runs ARCore. isCapacitorShell() is true on iOS too, so this asks
+ * Capacitor which platform it is: the bridge it injects answers getPlatform() with 'android', 'ios' or 'web'. No
+ * Capacitor object, or one that does not say, is not Android.
+ */
+export function isAndroidShell(): boolean {
+  const cap = (globalThis as unknown as { Capacitor?: { getPlatform?: () => string } }).Capacitor
+  return isCapacitorShell() && cap?.getPlatform?.() === 'android'
+}
+
 /** True inside the Tauri desktop shell. Tauri 2 gives every page it serves `__TAURI_INTERNALS__` before any page script runs. */
 export function isDesktopShell(): boolean {
   const internals = (globalThis as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__

@@ -65,6 +65,11 @@ test-results/
 # as scans/ and worlds/ below — loadProjects() seeds a default when it is absent,
 # so a fresh clone does not need it committed.
 /projects.json
+# The copies the server keeps beside it (server/wp-a-projects.ts): the previous version on every
+# save (.bak), an unparsable file set aside (.corrupt-<ms>), and the temp file of a save in flight
+# (.<uuid>.tmp). They hold the same Places, with their coordinates and street addresses, so none of
+# them is ever committed. (A snapshot branch once picked up projects.json.bak with three real Places.)
+/projects.json.*
 scans/
 summaries/
 worlds/

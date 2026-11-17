@@ -36,7 +36,20 @@ interface LogEntry {
 }
 
 const MAX_BUFFERED = 50
-const MAX_MSG_CHARS = 500
+/**
+ * The longest message the relay sends, in characters. It was 500. The `?debug=probe` line
+ * (src/capture/probe-log.ts) is JSON that a cut makes invalid, and with the raw compass sample, the tap sampler's
+ * columns and the calibration's fit summary in it the longest line it can write is about 835 characters; a test
+ * (tests/unit/node/probe_log.test.ts) measures that line against this number, and holds this one at or below what the
+ * server keeps of a message (`CLIENT_LOG_MSG_MAX_CHARS`, 1000, in server/wp-a-client-logs.ts), so a message is cut once,
+ * here, and never a second time over there. It is not simply the server's number: the server refuses a whole POST over
+ * 16 KiB (`CLIENT_LOG_MAX_BODY_BYTES`) and this relay empties its buffer before it sends, so every character a message
+ * may have is room for fewer messages in one flush: about 17 of 880 characters fit in a body (20 of 740, before the fit summary joined
+ * the line), 15 of 1000.
+ * Adopted, not measured (ADR 0005 rule 5): the longest probe line with room for a column or two, not a
+ * threshold anything is judged by.
+ */
+const MAX_MSG_CHARS = 880
 const FLUSH_INTERVAL_MS = 3000
 
 let installed = false

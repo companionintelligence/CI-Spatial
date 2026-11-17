@@ -38,14 +38,24 @@ untouched.
 **Fix it by measuring instead.** At the moment the heading is read, the camera's forward
 direction is a single physical direction described in *both* frames at once: as a yaw within
 the session (computable from the pose quaternion, which is already available) and as a compass
-bearing (the reading itself). Their difference **is** the offset between the frames:
+bearing (the reading itself). Their **sum** is the offset between the frames. Seen from above, a
+right-handed session's yaw grows counter-clockwise and a compass bearing grows clockwise, so a
+session direction at yaw `y` has bearing `B_Z − y`, and the camera's yaw is added back:
 
 ```
-sessionFrameBearing = deviceBearing − cameraYawInSession
+sessionFrameBearing = deviceBearing + cameraYawInSession
 ```
 
 This assumes nothing about the provider, and the 180° falls out on its own whenever the camera
 happens to sit at the session's starting orientation.
+
+> **Corrected (audit F53).** This ticket first specified `deviceBearing − cameraYawInSession`.
+> That agrees with the truth only while the camera has not turned since the session started, and
+> is off by twice the turn otherwise. Its tests read the expected bearing back through
+> `composeYUpTransform`, which assumes the same direction of yaw, so they passed. The sign is now
+> pinned against a physical model that shares no code with the app
+> (`tests/unit/deno/world_registration.test.ts`); what a phone's compass reports still needs
+> the spin test on a device.
 
 ## What this does and does not fix
 
@@ -162,7 +172,7 @@ carry the old meaning and cannot be migrated.
 
 - [ ] `cameraYawInSessionDeg()` returns the camera's forward yaw in session coordinates,
       `atan2(x, z)`, with an identity rotation giving 180°
-- [ ] `sessionFrameBearingDeg()` returns `deviceBearing − cameraYawInSession`, normalised, and
+- [ ] `sessionFrameBearingDeg()` returns `deviceBearing + cameraYawInSession`, normalised, and
       `null` for a null/non-finite heading
 - [ ] No literal 180 appears anywhere in the fix
 - [ ] Both calibration commit paths record the corrected bearing
@@ -177,10 +187,10 @@ carry the old meaning and cannot be migrated.
 ## Tests
 
 - [ ] `cameraYawInSessionDeg`: identity → 180°; ±90° yaw quaternions → ∓90°; 180° → 0°
-- [ ] **The defining property:** for a grid of device bearings × camera yaws, the camera's
-      forward direction resolves to the *same* compass bearing whether read as a bearing or
-      pushed through `composeYUpTransform(frameBearing, cameraSessionYaw)`. Deriving the answer
-      from the matrix rather than asserting an angle is what ties the test to the real contract
+- [ ] **The defining property:** for a grid of device bearings × camera yaws, the frame bearing
+      is the true bearing of session +Z in a physical model (`tests/unit/deno/physical_oracle.ts`).
+      It is not read back through `composeYUpTransform(frameBearing, cameraSessionYaw)`, which
+      assumes the same direction of yaw as the function under test and so cannot see a sign error
 - [ ] **The bug, as a test:** at the session's starting orientation the uncorrected value is
       exactly 180° out, and the uncorrected transform reports a camera looking east as facing
       west

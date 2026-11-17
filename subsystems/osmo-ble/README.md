@@ -168,6 +168,17 @@ case for how long the motors push. It is 10 s, i.e. about 20 s of contact for a 
 move that is still travelling when the budget ends is re-aimed at the same target rather than
 stepped past, so a short budget costs a move, never a measurement.
 
+### Backend settings
+
+Read from the shell that starts `npm run backend`, not from `.env`:
+
+- `BACKEND_PORT`: the port. Default `8788`.
+- `BACKEND_TEST_ROUTES=1`: turns on `POST /api/test/recenter-probe` and `POST /api/test/command-probe`,
+  the bench probes that fire one command and report whether the gimbal moved. Off by default. With
+  them off, a request to either returns `404 Test route disabled`.
+
+The `.env` fallback reads `ANDROID_MCP_*` names only, so set these in the shell.
+
 ### Configuring the phone it drives
 
 Only needed for the modes where **this backend takes the photos** — `POST /api/capture-photo`,
@@ -209,6 +220,16 @@ Resolution order, highest first:
 | 2 | `ANDROID_MCP_URL_<DEVICE>` | `ANDROID_MCP_TOKEN_<DEVICE>` for the named device |
 | 3 | `.mcp.json`'s `android-<device>` entry | the variable that entry's `Authorization` header names |
 | 4 | `ANDROID_MCP_URL` | `ANDROID_MCP_TOKEN` (single-phone shortcut; a per-device token always wins) |
+
+A URL set in the environment or `.mcp.json` is matched to a phone by its address, or else by the
+first label of its host name. So `ANDROID_MCP_URL=http://beam-pro-1.<tailnet>.ts.net:8080/mcp` finds
+`ANDROID_MCP_TOKEN_BEAM_PRO_1`, and that per-device token still wins over the shared `ANDROID_MCP_TOKEN`.
+With `ANDROID_MCP_DEVICE=beam-pro-1` and no `.mcp.json` entry, that same `ANDROID_MCP_URL` is used when its
+host is `beam-pro-1` and `ANDROID_MCP_TOKEN_BEAM_PRO_1` is set. A phone's token is never sent to another phone's address.
+
+A URL given in the request takes a stored token only when it is that phone's registered address
+(same scheme, host and port as its `.mcp.json` entry). Any other address needs `deviceToken` in
+the request, and the shared `ANDROID_MCP_TOKEN` is never sent to a request URL.
 
 Which device, when none is named: `ANDROID_MCP_DEVICE`, else the single `.mcp.json` device that
 has a token set. **Several with tokens and no choice made is refused**, not guessed — driving
@@ -273,8 +294,24 @@ What the pause guarantees, for a wait of any length:
   hung connection to undici's own idle timeout, which is what killed two real runs before
   per-position streaming existed.
 - **The manual controls come back.** The scan interlock that rejects joystick/recenter commands
-  mid-sweep (two controllers fighting for two motors) is lifted while parked, because no
-  controller is running. Confirmed on hardware: 409 during a sweep, 200 while parked.
+  mid-sweep (two controllers fighting for two motors) is lifted while parked, because the capture
+  is not driving the motors then. Confirmed on hardware: 409 during a sweep, 200 while parked.
+  A move or probe you start while parked is allowed too, as long as no other move or probe is
+  still driving the motors. While one is, the parked scan refuses the same non-stop commands it
+  refuses mid-sweep, with a 409. Stops still go through. The run cannot advance until that move
+  or probe has finished (see No overlap below).
+- **One controller at a time, while a scan runs unparked.** The backend refuses every outside
+  command that moves the gimbal, with a 409:
+  - the joystick (`speed`), `recenter`, `resetAndCenter` and `absoluteAngle`
+  - `setMode`, so the orientation buttons are refused too
+  - any other raw frame that moves the gimbal
+  - turning the stick on (turning it off is still allowed)
+  - a move-to and an arc probe
+
+  Zero-speed stops always go through. The web UI disables these same controls while a scan runs.
+- **No overlap with an outside move.** A move-to or probe started while parked can still be
+  driving when the operator advances. `POST /api/grid-advance` refuses with a 409 until it has
+  finished, and a capture cannot start while one is still driving the gimbal.
 - **It is bounded at 30 minutes.** Far past any real station move, but a run that parks forever
   holds the gimbal and can only be recovered by restarting the backend. An expiry ends the run
   as a *partial* capture, never as a completed one.
@@ -511,6 +548,11 @@ and was investigated as one at length. `POST /api/pair-trigger` surfaces the *OS
 dialog that creates the bond; the `SetPairingPin` handshake here is a different mechanism and
 was never the missing piece. Note `paired: false` in `/api/status` does not tell you — that flag
 is `ble-transport.mjs`'s own latch, not the OS bond state.
+
+Whether the trigger's write returns before or after that dialog is answered has not been checked
+on hardware. The trigger's write therefore waits up to 60 s, not the 2 s that motion writes get,
+so a write held until the dialog is answered does not fail early. Hardware verification is still
+needed: with the dialog left open, confirm when `POST /api/pair-trigger` returns.
 
 ### Advanced / reverse-engineering escape hatch
 

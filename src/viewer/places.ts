@@ -1,5 +1,7 @@
 import type { PlaceArea, Project, ScanManifest } from '../world/types'
 import { apiUrl } from '../shared/api-base.ts'
+import { noQueueHeaders } from '../project/frame-sync.ts'
+import { ASSIGN_NEEDS_CONNECTION, MERGE_NEEDS_CONNECTION, assignQuestion, mergeQuestion, sendUnlessReferencesDiffer } from './frame-mismatch.ts'
 
 export class PlacesPanel {
   constructor(
@@ -72,11 +74,19 @@ export class PlacesPanel {
       section.querySelector<HTMLButtonElement>('[data-action="merge"]')?.addEventListener('click', async () => {
         const sourceProjectId = prompt('Source project id to merge into this place')
         if (!sourceProjectId) return
-        await fetch(apiUrl(`/projects/${encodeURIComponent(project.projectId)}/merge`), {
-          method: 'POST',
-          headers: { ...this.headers(), 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sourceProjectId }),
-        })
+        // Two Places with different references are refused until the person says go on (WP-08). Not queued: a refusal is for them to read.
+        const answer = await sendUnlessReferencesDiffer(
+          (acceptFrameMismatch) => fetch(apiUrl(`/projects/${encodeURIComponent(project.projectId)}/merge`), {
+            method: 'POST',
+            headers: { ...this.headers(), 'Content-Type': 'application/json', ...noQueueHeaders() },
+            body: JSON.stringify({ sourceProjectId, ...(acceptFrameMismatch ? { acceptFrameMismatch } : {}) }),
+          }),
+          (message) => confirm(mergeQuestion(message)),
+        )
+        if (answer === null) {
+          alert(MERGE_NEEDS_CONNECTION)
+          return
+        }
         await this.refresh()
       })
 
@@ -132,11 +142,19 @@ export class PlacesPanel {
     const scan = this.selectedScan()
     if (!scan) return
     const area = project.areas?.find(candidate => candidate.areaId === areaId) ?? null
-    await fetch(apiUrl(`/projects/${encodeURIComponent(project.projectId)}/scans/${encodeURIComponent(scan.scanId)}`), {
-      method: 'PATCH',
-      headers: { ...this.headers(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ floorId: area?.floorId ?? null, roomId: area?.roomId ?? null, areaId }),
-    })
+    // A scan measured against another Place's reference is refused until the person says go on (WP-08). Not queued.
+    const answer = await sendUnlessReferencesDiffer(
+      (acceptFrameMismatch) => fetch(apiUrl(`/projects/${encodeURIComponent(project.projectId)}/scans/${encodeURIComponent(scan.scanId)}`), {
+        method: 'PATCH',
+        headers: { ...this.headers(), 'Content-Type': 'application/json', ...noQueueHeaders() },
+        body: JSON.stringify({ floorId: area?.floorId ?? null, roomId: area?.roomId ?? null, areaId, ...(acceptFrameMismatch ? { acceptFrameMismatch } : {}) }),
+      }),
+      (message) => confirm(assignQuestion(message)),
+    )
+    if (answer === null) {
+      alert(ASSIGN_NEEDS_CONNECTION)
+      return
+    }
     await this.refresh()
   }
 }

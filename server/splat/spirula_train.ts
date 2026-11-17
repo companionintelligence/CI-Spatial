@@ -48,6 +48,7 @@
 import { resolve } from '@std/path'
 import { buildBrushDataset } from './splat_train_dataset.ts'
 import { isRunnable } from '../exec_probe.ts'
+import { budgetFromEnv, runWithDeadline } from '../run_with_deadline.ts'
 import { runColmapPoses } from '../colmap/colmap_poses.ts'
 // ADR 0001 — these three are the splat-train driver's, not Brush's: the
 // session-dir predicate, the manifest-sized stderr condenser, and the PLY
@@ -140,7 +141,7 @@ export interface SpirulaTrainRunOptions {
     bin: string,
     args: string[],
     env: Record<string, string>,
-  ) => Promise<{ code: number; stderr: string; stdout?: string }>
+  ) => Promise<{ code: number; stderr: string; stdout?: string; timeoutReason?: string | null }>
   /** Provenance forwarded into the manifest. */
   provenance?: { sessionId: string; scanId?: string }
 }
@@ -320,7 +321,7 @@ export async function runSpirulaTrain(opts: SpirulaTrainRunOptions): Promise<Spi
   const outputPrefix = `${dataset.datasetDir}/${OUTPUT_SUBDIR}`
   const args = buildSpirulaArgs(dataset.datasetDir, outputPrefix, params)
 
-  let spawnResult: { code: number; stderr: string; stdout?: string }
+  let spawnResult: { code: number; stderr: string; stdout?: string; timeoutReason?: string | null }
   try {
     spawnResult = opts._spawn
       ? await opts._spawn(params.spirulaBin, args, {})
@@ -341,10 +342,13 @@ export async function runSpirulaTrain(opts: SpirulaTrainRunOptions): Promise<Spi
 
   if (spawnResult.code !== 0) {
     const tail = stderrTail(diagnosis)
+    const outcome = spawnResult.timeoutReason
+      ? `${spawnResult.timeoutReason} and was stopped`
+      : `exited ${spawnResult.code}`
     return _finish(manifestPath, {
       ...baseManifest,
       status: 'error',
-      error: tail ? `spirula exited ${spawnResult.code}: ${tail}` : `spirula exited ${spawnResult.code}`,
+      error: tail ? `spirula ${outcome}: ${tail}` : `spirula ${outcome}`,
       remediation:
         'Read the message above — it is Spirula\'s own. Re-run the same command by hand to see the full log: ' +
         `${params.spirulaBin} ${args.join(' ')} (see docs/pipelines/splat-train.md — Backends).`,
@@ -464,15 +468,23 @@ export async function findSpirulaPly(runDir: string): Promise<{ path: string; st
   return best
 }
 
+/** Three hours, the same ceiling as Brush: both are whole-scene trainers on the one GPU. Untuned. */
+const DEFAULT_SPIRULA_TIMEOUT_MS = 3 * 60 * 60 * 1000
+
 async function defaultSpawn(
   bin: string,
   args: string[],
-): Promise<{ code: number; stderr: string; stdout: string }> {
-  const output = await new Deno.Command(bin, { args, stdout: 'piped', stderr: 'piped' }).output()
+): Promise<{ code: number; stderr: string; stdout: string; timeoutReason: string | null }> {
+  const output = await runWithDeadline(
+    bin,
+    { args, stdout: 'piped', stderr: 'piped' },
+    budgetFromEnv('SPIRULA_TIMEOUT_MS', DEFAULT_SPIRULA_TIMEOUT_MS),
+  )
   return {
     code: output.code,
     stderr: new TextDecoder().decode(output.stderr).trim(),
     stdout: new TextDecoder().decode(output.stdout).trim(),
+    timeoutReason: output.timeoutReason,
   }
 }
 

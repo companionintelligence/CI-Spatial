@@ -1,7 +1,7 @@
 /**
  * Legal notices, inside the native apps: Companion Scan's own licence, the notice the
- * Niantic Spatial XR Engine licence asks for, and the open-source licences of the
- * software in the bundle.
+ * Niantic Spatial XR Engine licence asks for, the disclosure Google asks of an app that
+ * uses ARCore (the Android app only), and the licences of the other software in the bundle.
  *
  * The XR Engine (public/xr.js, xr-slam.js, xr-face.js and public/resources/) ships in
  * the Android and iOS apps, unmodified. Its licence (section 1.3.2 of the XR Engine
@@ -12,11 +12,19 @@
  * editor and viewer only and leaves the engine out of its bundle, so it shows no
  * engine notice.
  *
+ * The Android app also runs ARCore. That is Google's and proprietary: the SDK is under the
+ * ARCore Additional Terms of Service, not an open-source licence. Google's user privacy
+ * requirements (https://developers.google.com/ar/develop/privacy-requirements) ask an app that
+ * uses ARCore to say so prominently, where it is easy to find (a main menu or notice screen),
+ * with links to Google Play Services for AR and the Google Privacy Policy. This view is that
+ * notice screen. iOS runs ARKit and the desktop app has no AR, so neither shows it.
+ *
  * The first-run Legal notices row (src/ui/ftue-status.ts) and the editor's Navigate
  * menu (src/viewer/shell-menu.ts) open this. The hosted web app never shows it.
- * tests/unit/node/legal_notices.test.ts holds the notice to the engine's own header.
+ * tests/unit/node/legal_notices.test.ts holds the notice to the engine's own header, and the
+ * ARCore notice to the one THIRD-PARTY-NOTICES.txt carries.
  */
-import { isDesktopShell } from '../shared/api-base.ts'
+import { isAndroidShell, isDesktopShell } from '../shared/api-base.ts'
 import { openShellDialog } from './shell-dialog.ts'
 
 /** The XR Engine's notice, word for word from the header Niantic ships at the top of public/xr.js. */
@@ -29,6 +37,32 @@ export const XR_ENGINE_NOTICE = {
   disclaimer: 'Niantic Spatial provides the XR Engine "as is", without warranties of any kind. '
     + 'Section 4 (Disclaimers) of the XR Engine License Agreement sets out the disclaimer of warranties.',
   noEndorsement: 'Companion Scan is not made, sponsored or endorsed by Niantic Spatial.',
+} as const
+
+/**
+ * What Google asks an app that uses ARCore to tell its people, and the terms the SDK is under. The sentence goes
+ * on a main menu or notice screen, with links to Google Play Services for AR and the Google Privacy Policy
+ * (https://developers.google.com/ar/develop/privacy-requirements). The SDK is under the ARCore Additional Terms
+ * of Service. They are proprietary, so they are linked and not reproduced, as the XR Engine's Agreement is. Only
+ * the Android app runs ARCore. scripts/native/third-party-notices.mjs prints the same words in
+ * THIRD-PARTY-NOTICES.txt (its ARCORE_NOTICE) and tests/unit/node/legal_notices.test.ts holds the two together:
+ * compare the sentence with Google's page before a store build.
+ *
+ * The sentence is Google's own, word for word. It was compared with the page on 2026-11-16 (the page's footer
+ * read "Last updated 2024-10-31") and an earlier draft that said "provided by Google LLC" was corrected to the
+ * page's "provided by Google". The words are held in three places that must change together: `disclosure` below,
+ * ARCORE_NOTICE in scripts/native/third-party-notices.mjs, and ARCORE_SENTENCE in
+ * tests/unit/node/legal_notices.test.ts. Compare it with Google's page again before a store build: the page can change.
+ */
+export const ARCORE_NOTICE = {
+  name: 'Google Play Services for AR (ARCore)',
+  disclosure: 'This application runs on Google Play Services for AR (ARCore), which is provided by Google and governed by the Google Privacy Policy.',
+  licence: 'The ARCore SDK is licensed under the ARCore Additional Terms of Service, not under the licence of this app.',
+  links: [
+    { text: 'Google Play Services for AR', href: 'https://play.google.com/store/apps/details?id=com.google.ar.core' },
+    { text: 'Google Privacy Policy', href: 'https://policies.google.com/privacy' },
+    { text: 'ARCore Additional Terms of Service', href: 'https://developers.google.com/ar/develop/terms' },
+  ],
 } as const
 
 /** Companion Scan's own licence and Required Notice (LICENSE). */
@@ -52,14 +86,24 @@ export interface LegalSection {
 
 /**
  * The sections a build shows. `engineBundled` is false for the desktop app, whose bundle
- * leaves the XR Engine out.
+ * leaves the XR Engine out. `arcoreBundled` is true for the Android app alone, the one that
+ * runs ARCore.
  */
-export function legalSections(engineBundled: boolean): LegalSection[] {
+export function legalSections(engineBundled: boolean, arcoreBundled = false): LegalSection[] {
   const sections: LegalSection[] = [{
     heading: APP_NOTICE.name,
     paragraphs: [APP_NOTICE.copyright, APP_NOTICE.licence],
     links: [{ text: 'PolyForm Noncommercial License 1.0.0', href: APP_NOTICE.licenceUrl }],
   }]
+  // ARCore goes ahead of the engine: Google asks for its sentence to be prominent, and the engine's five
+  // paragraphs fill a phone's first screen, which would leave the sentence below the fold.
+  if (arcoreBundled) {
+    sections.push({
+      heading: ARCORE_NOTICE.name,
+      paragraphs: [ARCORE_NOTICE.disclosure, ARCORE_NOTICE.licence],
+      links: ARCORE_NOTICE.links.map((link) => ({ ...link })),
+    })
+  }
   if (engineBundled) {
     sections.push({
       heading: XR_ENGINE_NOTICE.name,
@@ -74,8 +118,8 @@ export function legalSections(engineBundled: boolean): LegalSection[] {
     })
   }
   sections.push({
-    heading: 'Open-source software',
-    paragraphs: ['This app includes open-source software. Each piece keeps its own licence, listed in full below.'],
+    heading: 'Third-party software',
+    paragraphs: ['This app includes third-party software. Each piece keeps its own licence, listed below.'],
     links: [],
   })
   return sections
@@ -125,11 +169,14 @@ function fileDisclosure(doc: Document, label: string, path: string): HTMLElement
   return holder
 }
 
-/** Opens the legal notices in a dialog. In the desktop app the engine notice is left out, as is the engine. */
-export function openLegalNotices(engineBundled = !isDesktopShell()): HTMLDialogElement {
+/**
+ * Opens the legal notices in a dialog. In the desktop app the engine notice is left out, as is the engine.
+ * The ARCore notice is shown in the Android app alone, which is the one shell that runs ARCore.
+ */
+export function openLegalNotices(engineBundled = !isDesktopShell(), arcoreBundled = isAndroidShell()): HTMLDialogElement {
   const doc = document
   const body: Node[] = []
-  for (const section of legalSections(engineBundled)) {
+  for (const section of legalSections(engineBundled, arcoreBundled)) {
     const block = doc.createElement('section')
     block.className = 'cs-notice'
     const heading = doc.createElement('h3')
@@ -153,7 +200,7 @@ export function openLegalNotices(engineBundled = !isDesktopShell()): HTMLDialogE
     body.push(block)
   }
   body.push(
-    fileDisclosure(doc, 'Show open-source licences', NOTICES_FILE),
+    fileDisclosure(doc, 'Show third-party licences', NOTICES_FILE),
     fileDisclosure(doc, 'Show the Companion Scan licence', LICENSE_FILE),
   )
   return openShellDialog('Legal notices', body)

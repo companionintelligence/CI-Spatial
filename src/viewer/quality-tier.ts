@@ -74,12 +74,17 @@ export function computeQualityTier(artifacts: QualityArtifacts): QualityTierStat
  * currently queued/processing, e.g. `splat-train` → "training splat". Returns
  * null for job types with no user-facing quality meaning, so the caller hides
  * the processing line for those.
+ *
+ * The six job types with no worker (src/shared/placeholder-jobs.ts) are among them:
+ * this line reads "Improving your scan — aligning…", and a job that computes nothing
+ * is not improving anything. They used to be named here ("aligning", "reconstructing",
+ * "labeling objects"), so for the instant a no-op took, the editor said it was doing
+ * work. What they did is in the job list: the result says "No-op:".
+ * tests/unit/node/honest_placeholders.test.ts holds this to the list of those types.
  */
 export function jobProcessingLabel(type: WorldJobType): string | null {
   switch (type) {
     case 'lingbot-map-reconstruct':
-    case 'depth-reconstruct':
-    case 'merge-points':
       return 'reconstructing'
     case 'splat-train':
       return 'training splat'
@@ -89,13 +94,6 @@ export function jobProcessingLabel(type: WorldJobType): string | null {
       // Long-running and off-box, so the label matters more here than for the
       // local jobs — a user watching this waits minutes, not seconds.
       return 'reconstructing person'
-    case 'semantic-pass':
-      return 'labeling objects'
-    case 'align-scan':
-      return 'aligning'
-    case 'ingest':
-    case 'extract-layers':
-      return 'processing'
     default:
       return null
   }

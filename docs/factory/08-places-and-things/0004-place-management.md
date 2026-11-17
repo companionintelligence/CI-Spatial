@@ -193,6 +193,11 @@ plain display strings.
 - Q: Does merge touch `WorldProject.scans` ordering or `EditPatch` records? — A: No. It
   rewrites `ScanManifest.projectId` and nothing else in the world file. Edit patches key off
   `worldId`/`scanId` (src/world/types.ts:131-144) and are unaffected.
+  *Amended by ADR 0011: that held while a scan's world stayed the source's; a merged scan
+  now leaves it. The next read of the source's world hands each moved scan to the target's
+  world with its patches, comments and finished jobs (a hand-set placement included, when
+  it still means the same there), and the merge no longer relabels the source's world file
+  as the target's.*
 - Q: Should merge offer an undo? — A: **OPEN.** Out of scope as pinned, but the response's
   `remappedIds` is deliberately shaped so a future inverse operation is possible. Decide
   whether to keep that field before merging, since removing it later is a breaking change.

@@ -23,7 +23,7 @@ test('the Place Scan Editor card is named by what it shows', async ({ page }) =>
 test('the first-run copy names the prompt the phone shows', async ({ page }) => {
   await page.goto('/?mock=xr8&onboarding=1')
   const copy = page.locator('.onboard-step[data-step="0"] .onboard-desc')
-  await expect(copy).toContainText('Your phone asks when you start.')
+  await expect(copy).toContainText('Your phone asks when you start')
   await expect(copy).not.toContainText('Tap Allow')
 })
 

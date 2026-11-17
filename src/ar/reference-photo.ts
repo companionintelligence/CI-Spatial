@@ -13,10 +13,15 @@
  * frame exactly 180°, and reports `'verified'`. The residual cannot detect
  * that; only the user can, and only if given something to recognise.
  */
-import { viewportPointToImagePoint } from '../spatial/resolver'
-import type { CalibrationReferencePhoto } from '../world/types'
+import { viewportPointToImagePoint } from '../spatial/resolver.ts'
+import { twoPointSeparationM } from '../world/geo.ts'
+import type { CalibrationReferencePhoto, Vec3 } from '../world/types'
 
-export type ReferencePhotoRole = 'landmark' | 'headingMarker'
+/**
+ * Which point a photo is of: the landmark, the heading marker, or a check point (`check1` is the first, the one the flow
+ * offers; the schema holds up to three).
+ */
+export type ReferencePhotoRole = 'landmark' | 'headingMarker' | 'check1' | 'check2' | 'check3'
 
 /** Width/height of either the camera frame or the rendered photo, in pixels. */
 export interface PhotoSize {
@@ -104,8 +109,124 @@ export function referenceCrosshairPixels(
 /**
  * Human-facing name for a marker. The A/B wording is not decoration: order
  * determines the frame's rotation, so the panel has to make unmistakably clear
- * which photo is which.
+ * which photo is which. A check point carries on the lettering: C is the first.
  */
 export function referencePhotoTitle(role: ReferencePhotoRole): string {
-  return role === 'landmark' ? 'Point A — the landmark' : 'Point B — the heading marker'
+  if (role === 'landmark') return 'Point A — the landmark'
+  if (role === 'headingMarker') return 'Point B — the heading marker'
+  return `Point ${role === 'check1' ? 'C' : role === 'check2' ? 'D' : 'E'} — the check point`
+}
+
+/**
+ * Where a marker lands in the view a camera has, in the normalised coordinates a tap is read in: `u` across from the
+ * left edge, `v` down from the top, both 0 to 1. They are `u` and `v` and not the `x` and `y` of a tap because they are
+ * in the view and not yet in a photo: `tapPointWithinPhoto` takes `{ x: u, y: v }` and returns the point in the photo.
+ */
+export interface MarkerInView {
+  u: number
+  v: number
+}
+
+/**
+ * Where a marker sits in the picture a camera at `capturePose` took: the crosshair for a reference photo, worked out
+ * from the marker's position and not from the tap that placed it. Null when the marker is behind the camera or in
+ * its plane, outside the view, or when a number is not one, the field of view is not a lens (`fovYDeg` outside 0 to
+ * 180 exclusive, `aspect` not above 0) or the rotation has no length.
+ *
+ * ## Why the tap is the wrong crosshair
+ *
+ * The tap is read at the moment the marker is placed. The photo is grabbed later: at Confirm for the landmark, at
+ * Commit for the heading marker, after the review and any label typed. A phone that has moved in between has its
+ * picture moved with it, and the tap then points at another place in the photo than the one it was made at. For the
+ * heading marker that is the normal case. The marker does not move with the phone, so its position through the pose
+ * the *photo* was taken at is right however far the phone went.
+ *
+ * ## Built the way `src/main.ts` builds a capture camera
+ *
+ * `new THREE.PerspectiveCamera(provider.getCameraFovY(), provider.getCameraAspect(), ...)` at the pose's position and
+ * quaternion: it looks down its own -Z with +Y up, `fovYDeg` is the vertical field of view, `aspect` is width over
+ * height, and the lens is a symmetric pinhole (distortion and a principal point off the centre are not modelled, as
+ * in every camera the app builds from those two numbers). `markerSession` and `capturePose` are in the same session
+ * frame, as the markers and `ReferencePhotoCapture.pose` are. The pixel convention is the one `hitTest()` takes and
+ * `floorRayPoint()` inverts: NDC `(2u - 1, 1 - 2v)`, a horizontal half-extent of `aspect * tan(fovY / 2)`. Pass the
+ * pose a tap was read at and a marker that tap placed on the floor, and `(u, v)` is the tap again.
+ *
+ * ## The view, and the photo
+ *
+ * `(u, v)` is in the view the field of view and aspect describe, which is the canvas the user tapped on. The stored
+ * photo is the camera frame, and the canvas cover-crops it, so a point in the view is not yet a point in the photo.
+ * Hand `{ x: u, y: v }` to `tapPointWithinPhoto` as `canvasPoint`, with the frame's size and the canvas's, for the one
+ * a `CalibrationReferencePhoto` records; that wrapper owns the crop (ADR 0001).
+ *
+ * A null here means the marker is outside the canvas view, the picture the person had in front of them. It is not proof
+ * that the stored photo leaves the marker out: where the canvas crops the frame, the margin the person never saw is
+ * part of the photo, and a marker standing in it is null here though the photo shows it. Whether to keep or retake such
+ * a photo is the caller's decision; this answers for what the person could see.
+ *
+ * Edges count as in view; a marker exactly on one may fall either side of it by rounding.
+ */
+export function projectMarkerIntoPhoto(
+  markerSession: Vec3,
+  capturePose: CalibrationReferencePhoto['pose'],
+  fovYDeg: number,
+  aspect: number,
+): MarkerInView | null {
+  const { position: p, rotation: q } = capturePose
+  const finite = [markerSession.x, markerSession.y, markerSession.z, p.x, p.y, p.z, q.x, q.y, q.z, q.w, fovYDeg, aspect]
+    .every(Number.isFinite)
+  if (!finite || !(fovYDeg > 0 && fovYDeg < 180) || !(aspect > 0)) return null
+  const norm = Math.hypot(q.x, q.y, q.z, q.w)
+  if (!(norm > 1e-9)) return null
+
+  // The marker's offset from the camera in the camera's own axes: the inverse (conjugate) of the pose rotation applied
+  // to it. v' = v + w t + q x t, with t = 2 q x v, q the vector part; the conjugate negates the vector part.
+  const dx = markerSession.x - p.x
+  const dy = markerSession.y - p.y
+  const dz = markerSession.z - p.z
+  const qx = -q.x / norm
+  const qy = -q.y / norm
+  const qz = -q.z / norm
+  const qw = q.w / norm
+  const tx = 2 * (qy * dz - qz * dy)
+  const ty = 2 * (qz * dx - qx * dz)
+  const tz = 2 * (qx * dy - qy * dx)
+  const cx = dx + qw * tx + (qy * tz - qz * ty)
+  const cy = dy + qw * ty + (qz * tx - qx * tz)
+  const cz = dz + qw * tz + (qx * ty - qy * tx)
+
+  const depth = -cz
+  if (!(depth > 0)) return null
+  const tanHalf = Math.tan((fovYDeg * Math.PI) / 360)
+  const u = (cx / (depth * aspect * tanHalf) + 1) / 2
+  const v = (1 - cy / (depth * tanHalf)) / 2
+  if (!(u >= 0 && u <= 1 && v >= 0 && v <= 1)) return null
+  return { u, v }
+}
+
+/**
+ * The radius, in metres, of the floor ring that marks each stored point on a return visit: how far it lies from the
+ * landmark along the floor, in the order given.
+ *
+ * The visit asks the person to stand where the Place was calibrated. Once they have tapped the landmark again, a ring
+ * of this radius around it shows where each other stored point is in distance, if not in direction: walk to the
+ * circle, then use the photo for the direction. No transform is involved. A ground distance is the same in the stored
+ * frame and in this session's, so the ring is drawn round the landmark's session position at the stored radius.
+ *
+ * `points` are the stored points in the stored frame (the heading marker, and any check points a later frame
+ * carries), `landmark` the stored landmark in the same frame: `(0, 0, 0)` in a record this app wrote. The distance is
+ * the one `twoPointSeparationM` measures, in the ground plane, because a ring lies on the floor and a stored
+ * `separationM` is that distance. A point that is not a number, or lies at the landmark (no ring to draw), has no
+ * radius and is left out, so the result can be shorter than `points` and `radii[i]` need not belong to `points[i]`. A
+ * caller that labels each ring measures each point itself with `twoPointSeparationM`, which this wraps.
+ *
+ * It assumes this session's unit is the one the points were stored in; `scaleKind()` on the provider says what a unit
+ * is worth, and a ring in a session whose unit is not the stored one is as wrong as every other distance on screen.
+ */
+export function ringRadiiFromStoredPoints(points: readonly Vec3[], landmark: Vec3): number[] {
+  const radii: number[] = []
+  for (const point of points) {
+    const radius = twoPointSeparationM(landmark, point)
+    if (Number.isFinite(radius) && radius > 0) radii.push(radius)
+  }
+  return radii
 }

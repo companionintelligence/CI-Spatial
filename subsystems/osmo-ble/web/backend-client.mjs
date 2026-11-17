@@ -185,9 +185,13 @@ function setScanActive(active) {
   // a drag on some builds.
   els.joystickPad?.classList.toggle('disabled', active || !lastConnected);
   els.joystickPad?.toggleAttribute('inert', active);
-  for (const el of [els.recenter, els.landscape, els.stickToggle, els.capture, els.captureBoth]) {
+  // The orientation buttons send setMode, which the backend refuses (409) while a scan owns the gimbal.
+  // The raw send can carry any of those frames, so it is locked the same way.
+  for (const el of [els.recenter, els.landscape, els.stickToggle, els.capture, els.captureBoth, ...els.modeButtons, els.rawSend]) {
     if (el) el.disabled = active || !lastConnected;
   }
+  // The test matrix sends the same motion commands, so it is locked the same way.
+  for (const el of testButtons) el.disabled = active || !lastStreaming;
   // The grid is closed-loop, so it restores on the streaming tier — not on `lastConnected`,
   // which is only "a handle exists". See setConnectedControlsEnabled.
   if (els.gridRun) els.gridRun.disabled = active || !lastStreaming;
@@ -810,15 +814,42 @@ els.stickToggle.addEventListener('click', async () => {
   }
 });
 
+// speedLatched: a non-zero speed has gone out and no stop has followed it yet.
+let speedLatched = false;
 attachJoystick(els.joystickPad, {
   onMove: (vector) => {
+    speedLatched = true;
     api('POST', '/api/command', { type: 'speed', params: vector }).catch((err) => log(`Joystick move failed: ${err.message}`, 'warn'));
   },
   onStop: () => {
+    speedLatched = false;
     api('POST', '/api/command', { type: 'speed', params: {} }).catch(() => {
       /* best-effort stop */
     });
   },
+});
+
+// Leaving mid-drag (tab closed or hidden) would leave the last speed latched on the gimbal, because
+// nothing sends the stop once the page is gone. Sent only while a speed is latched. keepalive lets
+// the request outlive the page; the abort caps it at 2 s, the same bound disconnect() uses.
+function stopOnPageExit() {
+  if (!speedLatched) return;
+  speedLatched = false;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 2000);
+  fetch(`${baseUrl()}/api/command`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'speed', params: {} }),
+    keepalive: true,
+    signal: ctrl.signal,
+  }).catch(() => {
+    /* best-effort: the page is going away either way */
+  }).finally(() => clearTimeout(timer));
+}
+window.addEventListener('pagehide', stopOnPageExit);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') stopOnPageExit();
 });
 
 els.rawSend.addEventListener('click', async () => {
@@ -828,6 +859,7 @@ els.rawSend.addEventListener('click', async () => {
       cmdId: Number(els.rawCmdId.value),
       payloadHex: els.rawPayload.value.trim().replace(/\s+/g, ''),
     };
+    if (!confirm('Send this raw frame to the gimbal?\n\n• It goes out exactly as typed.\n• A running scan still refuses raw motion.')) return;
     const { frameHex } = await api('POST', '/api/command', { type: 'raw', params });
     logTxFrame(frameHex, { label: 'Raw (manual probe)' });
   } catch (err) {
@@ -881,7 +913,8 @@ for (const def of TEST_DEFS) {
       verdict.className = 'verdict';
       log(`[${def.label}] failed: ${err.message}`, 'warn');
     } finally {
-      btn.disabled = false;
+      // Not a blind re-enable: a scan that started while this probe ran owns the gimbal, and the link may be gone.
+      btn.disabled = scanActive || !lastStreaming;
     }
   });
 

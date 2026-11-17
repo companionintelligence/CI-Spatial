@@ -18,7 +18,7 @@
 // .mcp.json already states that mapping exactly once, per device:
 //
 //   "android-beam-pro-1": {
-//     "url": "http://beam-pro-1.capybara-ulmer.ts.net:8080/mcp",
+//     "url": "http://beam-pro-1.example.ts.net:8080/mcp",
 //     "headers": { "Authorization": "Bearer ${ANDROID_MCP_TOKEN_BEAM_PRO_1}" }
 //   }
 //
@@ -36,10 +36,34 @@ export function envSlug(name) {
   return String(name).trim().replace(/^android-/i, '').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').toUpperCase();
 }
 
-/** `http://beam-pro-1.capybara-ulmer.ts.net:8080/mcp` -> `beam-pro-1`, for matching a bare URL back to a registry entry. */
+/**
+ * `http://beam-pro-1.example.ts.net:8080/mcp` -> `beam-pro-1`: the name a host is keyed by.
+ * A name is not an address. A request URL is never matched or named by it; an operator's own URL
+ * (env or .mcp.json) may be, as resolveDevice() explains.
+ */
 export function hostLabel(url) {
   try {
     return new URL(url).hostname.split('.')[0].toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * The origin (scheme, host, port) of an http(s) URL, or '' for anything else.
+ *
+ * This is the address a request-supplied URL must match to receive a stored token. Origin, not
+ * hostLabel(): two hosts can share a first label (`beam-pro-1.example.com` and
+ * `beam-pro-1.attacker.example`), and only the exact address a phone is registered at may receive
+ * that phone's token when the URL came in on the request.
+ *
+ * @param {string} url
+ * @returns {string}
+ */
+export function urlOrigin(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.origin : '';
   } catch {
     return '';
   }
@@ -101,6 +125,15 @@ function refuse(error, remediation) {
 }
 
 /**
+ * The rule that decides which phone an operator's ANDROID_MCP_URL belongs to. It goes into the
+ * refusal, so a URL that was not used has a stated reason.
+ */
+function hostLabelRule(name) {
+  return 'With no .mcp.json entry, an ANDROID_MCP_URL is used for a phone only when the first label of its host name is '
+    + `that phone's name, such as ${name}.<tailnet>.ts.net.`;
+}
+
+/**
  * Work out the phone to drive and the token to drive it with.
  *
  * Precedence, highest first: an explicit `deviceUrl`/`deviceToken` in the request body (so a
@@ -126,12 +159,31 @@ export function resolveDevice({ request = {}, env = {}, devices = [] } = {}) {
   if (named) {
     entry = devices.find((d) => d.name === named) ?? null;
     // A named device with no .mcp.json entry is still drivable if the environment carries its
-    // URL, so this is only fatal once that has been ruled out too.
-    if (!entry && !env[`ANDROID_MCP_URL_${envSlug(named)}`] && !request.deviceUrl) {
+    // URL, so this is only fatal once that has been ruled out too. The operator's ANDROID_MCP_URL
+    // counts for the named phone only when its host IS that phone and its own token is set, so a
+    // phone's token is never sent to another phone's address.
+    const namedSlug = envSlug(named);
+    const operatorUrlLabel = hostLabel(env.ANDROID_MCP_URL ?? '');
+    const operatorUrlNamesPhone = operatorUrlLabel === named;
+    const operatorUrlIsNamedPhone = operatorUrlNamesPhone && Boolean(env[`ANDROID_MCP_TOKEN_${namedSlug}`]);
+    if (!entry && !env[`ANDROID_MCP_URL_${namedSlug}`] && !operatorUrlIsNamedPhone && !request.deviceUrl) {
+      // The URL is for this phone, but its token is missing. Say that, rather than that the phone is unknown.
+      if (operatorUrlNamesPhone) {
+        return refuse(
+          `The ANDROID_MCP_URL is for "${named}", but ANDROID_MCP_TOKEN_${namedSlug} is not set.`,
+          `Export ANDROID_MCP_TOKEN_${namedSlug} (read it from that phone's Settings → Access) in the shell `
+          + `that starts this backend, then restart it, or put it in the repo's .env, which this backend reads. `
+          + `${hostLabelRule(named)} See ${SETUP_DOC}.`,
+        );
+      }
+      const urlNote = operatorUrlLabel
+        ? ` The ANDROID_MCP_URL is for "${operatorUrlLabel}", so it is not used for "${named}".`
+        : '';
       return refuse(
         `No phone named "${named}" is configured.`,
         `Known devices: ${knownList}. Add an "android-${named}" entry to .mcp.json, or set `
-        + `ANDROID_MCP_URL_${envSlug(named)} and ANDROID_MCP_TOKEN_${envSlug(named)}. See ${SETUP_DOC}.`,
+        + `ANDROID_MCP_URL_${namedSlug} and ANDROID_MCP_TOKEN_${namedSlug}.${urlNote} `
+        + `${hostLabelRule(named)} See ${SETUP_DOC}.`,
       );
     }
   }
@@ -185,23 +237,38 @@ export function resolveDevice({ request = {}, env = {}, devices = [] } = {}) {
     }
   }
 
-  // Match a URL that arrived without a device name back to a registry entry, so the per-device
-  // token variable is still found. Host label, not the whole URL: the registry's port/path are
-  // uniform, and an operator who passes the same phone with a trailing slash still means it.
-  if (!entry) {
+  const fromRequest = source === 'request';
+
+  // A URL that did not name a device is matched back to a registry entry by ORIGIN, so the phone's
+  // own token is still found when the phone is given by its address. An operator's own URL (env or
+  // .mcp.json) may also match by host label, as it did before, so ANDROID_MCP_URL on the same host
+  // at another port still finds that phone's token. A request URL never matches by label.
+  if (!entry && urlOrigin(url)) {
+    entry = devices.find((d) => urlOrigin(d.url) === urlOrigin(url)) ?? null;
+  }
+  if (!entry && !fromRequest && hostLabel(url)) {
     const label = hostLabel(url);
     entry = devices.find((d) => hostLabel(d.url) === label) ?? null;
   }
 
   // ---- Token --------------------------------------------------------------
+  // A stored token is one phone's secret, so it may only travel to that phone's own address. A URL
+  // that came in on the request therefore gets a stored token only when its origin is exactly the
+  // registry entry's origin, and never the shared ANDROID_MCP_TOKEN, which belongs to no phone. A
+  // URL from the environment or .mcp.json is the operator's own choice of address, so it keeps the
+  // full fallback order below. Such a URL with no registry entry is named by its host label, which
+  // is how ANDROID_MCP_TOKEN_<LABEL> is found. A request URL is never named that way.
+  const deviceName = entry?.name || named || (fromRequest ? null : hostLabel(url) || null);
+  const slug = deviceName ? envSlug(deviceName) : '';
+  const sameAddress = entry !== null && urlOrigin(url) !== '' && urlOrigin(url) === urlOrigin(entry.url);
   // Ordered so the most specific wins, and so the fleet-hostile shared ANDROID_MCP_TOKEN is
   // last: it still works for a one-phone setup, but it can never shadow a per-device token.
-  const deviceName = entry?.name || named || hostLabel(url) || null;
-  const slug = deviceName ? envSlug(deviceName) : '';
   const candidates = [];
-  if (entry?.tokenEnv) candidates.push(entry.tokenEnv);
-  if (slug) candidates.push(`ANDROID_MCP_TOKEN_${slug}`);
-  candidates.push('ANDROID_MCP_TOKEN');
+  if (!fromRequest || sameAddress) {
+    if (entry?.tokenEnv) candidates.push(entry.tokenEnv);
+    if (slug) candidates.push(`ANDROID_MCP_TOKEN_${slug}`);
+    if (!fromRequest) candidates.push('ANDROID_MCP_TOKEN');
+  }
 
   let token = '';
   let tokenEnv = null;
@@ -220,6 +287,13 @@ export function resolveDevice({ request = {}, env = {}, devices = [] } = {}) {
 
   if (!token) {
     const wanted = candidates[0];
+    if (!wanted) {
+      return refuse(
+        `No access token for the phone at ${url}.`,
+        'A stored token is only sent to the address its phone is registered at, and this URL is not one '
+        + `of them. Send deviceToken with the request for this address, or drive a registered phone by name. See ${SETUP_DOC}.`,
+      );
+    }
     return refuse(
       `No access token for the phone at ${url}${deviceName ? ` ("${deviceName}")` : ''}.`
       + ' Each phone runs its own remote-control server with its own token, so there is one variable per device.',

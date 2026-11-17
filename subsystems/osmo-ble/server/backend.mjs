@@ -20,15 +20,25 @@ import {
   planDomePans, unreachablePans, assessCapture, describeArc, createArcProbe, diagnoseJam,
   DEFAULT_PAN_ARC, PROBE_MAX_MOVES,
 } from '../protocol/dome.mjs';
-import { buildGimbalRecenter, buildGimbalAbsoluteAngle, buildGimbalSetMode, buildGimbalSpeedControl, buildGimbalStickControlEnable, buildGimbalResetAndCenter, buildRawCommand } from '../protocol/commands.mjs';
-import { GIMBAL_MODE } from '../protocol/constants.mjs';
+import { buildGimbalRecenter, buildGimbalAbsoluteAngle, buildGimbalSetMode, buildGimbalSpeedControl, buildGimbalStickControlEnable, buildGimbalResetAndCenter, buildRawCommand, PayloadHexError } from '../protocol/commands.mjs';
+import { CMD_SET, CMD_ID, GIMBAL_MODE } from '../protocol/constants.mjs';
 import { quaternionDelta, quatToGimbalControlDeg } from '../protocol/telemetry.mjs';
 import { AndroidMcpClient, capturePhoto, planGrid } from './android-capture.mjs';
 import { resolveCaptureDevice, describeCaptureDevice } from './device-config.mjs';
 import { PHONE_TELEMETRY, isPhoneTelemetry, normalizePhoneTelemetry } from '../protocol/phone_telemetry.mjs';
 import { STREAM_STALE_MS } from '../protocol/link_state.mjs';
+import { decodeFrame } from '../protocol/duml.mjs';
+import { motionRefusal, moveRefusal, MotionRefusedError, isStopFrame } from '../protocol/motion_gate.mjs';
 
 const PORT = Number(process.env.BACKEND_PORT) || 8788;
+/**
+ * The test routes fire single commands at the gimbal to see whether they move it. They are bench
+ * tools, so they exist only when the backend is started with BACKEND_TEST_ROUTES=1.
+ *
+ * Set it in the shell that starts the backend, as BACKEND_PORT is. The repo's .env fallback reads
+ * ANDROID_MCP_* names only.
+ */
+const TEST_ROUTES_ENABLED = process.env.BACKEND_TEST_ROUTES === '1';
 const transport = new OsmoBleTransport();
 const execFileAsync = promisify(execFile);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -43,9 +53,10 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * pose (pan -121.5, tilt -27.6) for six consecutive positions, each burning the full `maxMs`
  * timeout and photographing the same view.
  *
- * Guarded at the HTTP boundary specifically: the grid's own corrections go through
- * `buildAndSend()` directly and are unaffected, so this blocks external interference without
- * blocking the run itself.
+ * Enforced where frames leave this process. `buildAndSend()` refuses every motion frame an outside
+ * caller sends (protocol/motion_gate.mjs), and POST /api/move-to refuses a closed-loop move. The
+ * run's own moves go straight to the transport from `driveClosedLoop`, and its own mode changes
+ * pass `{ runOwned: true }`, so the run itself is not blocked.
  */
 let gridRunning = false;
 /** Set by POST /api/grid-stop; the run loop checks it between positions and unwinds cleanly. */
@@ -230,7 +241,12 @@ transport.on('frame', (frame) => {
     payloadHex: frame.payload ? Buffer.from(frame.payload).toString('hex') : undefined,
   });
 });
-transport.on('disconnect', () => broadcast({ type: 'status', ...statusPayload() }));
+transport.on('disconnect', () => {
+  // A move or probe bound to the link that just went cannot finish on it. Stop them, and release the
+  // gimbal interlock they were holding, so a capture is not refused for a motion that can no longer run.
+  cancelExternalMotions();
+  broadcast({ type: 'status', ...statusPayload() });
+});
 // Surfaced rather than swallowed: an automatic recovery that nobody can see is how a link that
 // needs a power-cycle gets mistaken for one that is merely flaky.
 transport.on('link-recovery', ({ peripheralId, reason, action, attempt, attempts }) => {
@@ -375,6 +391,36 @@ function sendJson(res, code, body) {
   res.end(JSON.stringify(body));
 }
 
+/**
+ * Closed-loop moves and probes this process started on its own initiative (a move-to, an arc probe,
+ * a test probe) that are holding the gimbal right now. A capture cannot start while any is in
+ * flight: it would be a second controller on the same two motors (see gridRunning above). Each
+ * counted route calls this synchronously after its own refusal check, so no check can be skipped.
+ *
+ * A Set, not a count, so a link teardown can clear it without a motion's own `finally` later taking
+ * a second bite. Each motion carries a `cancelled` flag that its drive loop checks every tick.
+ */
+const externalMotions = new Set();
+async function asExternalMotion(work) {
+  const motion = { cancelled: false };
+  externalMotions.add(motion);
+  try {
+    return await work(motion);
+  } finally {
+    externalMotions.delete(motion);
+  }
+}
+
+/**
+ * Every outside move is bound to the link it started on. When that link goes, each one is marked
+ * cancelled, so its loop stops at the next tick instead of resuming on whatever link comes next, and
+ * the gimbal interlock is released at once rather than when that loop happens to notice.
+ */
+function cancelExternalMotions() {
+  for (const motion of externalMotions) motion.cancelled = true;
+  externalMotions.clear();
+}
+
 async function readJsonBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
@@ -384,7 +430,22 @@ async function readJsonBody(req) {
 
 const GIMBAL_MODE_BY_NAME = { lock: GIMBAL_MODE.LOCK, follow: GIMBAL_MODE.FOLLOW, fpv: GIMBAL_MODE.FPV };
 
-async function buildAndSend(type, params = {}) {
+/**
+ * Build one command frame and send it. This is the motion interlock's choke point for every frame
+ * an outside caller sends, and the check is made on the frame itself: the bytes are decoded and
+ * judged by cmdSet and cmdId, so a raw frame that drives the gimbal is held to the same rule as
+ * the named command it duplicates.
+ *
+ * `runOwned` marks a frame the capture sends for itself. Nothing else gets past a running scan
+ * that is not parked (see motionRefusal). Zero-speed stops always pass.
+ *
+ * `motion` is the outside move or probe making this call, when it has registered one (see
+ * asExternalMotion). It is not counted as a second outside motion against its own frames.
+ *
+ * A reset is recognised from the same decoded bytes, so every route that sends one forgets the
+ * measured arc: the named command, a raw frame and a probe alike (see isResetFrame).
+ */
+async function buildAndSend(type, params = {}, { runOwned = false, motion = null } = {}) {
   let frame;
   switch (type) {
     case 'recenter':
@@ -416,7 +477,23 @@ async function buildAndSend(type, params = {}) {
     default:
       throw new Error(`Unknown command type "${type}"`);
   }
-  await transport.sendRaw(frame);
+  const { cmdSet, cmdId, payload } = decodeFrame(frame);
+  const outsideMotion = [...externalMotions].some((other) => other !== motion);
+  const refusal = motionRefusal({ cmdSet, cmdId, payload }, {
+    scanRunning: gridRunning, parked: stationGate !== null, runOwned, outsideMotion,
+  });
+  if (refusal) throw refusal;
+  // Recorded on every attempt that reached the transport, including one whose write then failed: a write
+  // that timed out (the 2 s cap) can still have reached the gimbal, and the datum moves with the frame.
+  // Only a refusal by the interlock is known to have sent nothing, and that throws above.
+  const resetting = isResetFrame(cmdSet, cmdId);
+  try {
+    await transport.sendRaw(frame);
+  } catch (err) {
+    if (resetting) invalidateArc(RESET_REASON);
+    throw err;
+  }
+  if (resetting) invalidateArc(RESET_REASON);
   return { frameHex: Buffer.from(frame).toString('hex') };
 }
 
@@ -643,7 +720,7 @@ const PROBE_TOLERANCE_DEG = 4;
  * cancelled run) — the speed command LATCHES, so "the probe gave up" must never mean "the
  * motors are still driving into the stop it found".
  */
-async function runArcProbe({ emit = () => {}, stepDeg, reason = 'requested' } = {}) {
+async function runArcProbe({ emit = () => {}, stepDeg, reason = 'requested', motion = null } = {}) {
   const quat = transport.lastQuaternion;
   if (!quat) {
     return {
@@ -690,7 +767,14 @@ async function runArcProbe({ emit = () => {}, stepDeg, reason = 'requested' } = 
         tickMs: PROBE_TICK_MS,
         settleMs: PROBE_SETTLE_MS,
         maxMs: PROBE_MOVE_MAX_MS,
+        motion,
       });
+      // A move cut short by a link reset is not a stop. Recording it as one would write a limit the
+      // gimbal never reported, so the probe ends here with nothing measured.
+      if (move.cancelled) {
+        emit({ phase: 'arc-probe', state: 'cancelled', moves: probe.moves });
+        return { ok: false, arc: null, moves: probe.moves, reason: 'The gimbal link was reset part-way through the probe, so the probe was stopped there.' };
+      }
       // A move that could not see is not a stop. Handing finalPan: null to the probe is how it
       // is told that, and it abandons rather than writing a fabricated limit into the planner.
       probe.observe({
@@ -742,7 +826,7 @@ async function runArcProbe({ emit = () => {}, stepDeg, reason = 'requested' } = 
   return result;
 }
 
-async function driveClosedLoop({ yawDeg = 0, pitchDeg = 0, toleranceDeg = 3, speedDegPerSec = 25, tickMs = 250, settleMs = 150, maxMs = 8000 }) {
+async function driveClosedLoop({ yawDeg = 0, pitchDeg = 0, toleranceDeg = 3, speedDegPerSec = 25, tickMs = 250, settleMs = 150, maxMs = 8000, motion = null }) {
   const start = Date.now();
   const history = [];
   let yawSign = 1;
@@ -755,7 +839,38 @@ async function driveClosedLoop({ yawDeg = 0, pitchDeg = 0, toleranceDeg = 3, spe
   /** When the link stopped streaming, or 0 while it is healthy. See the check in the loop. */
   let noTelemetrySince = 0;
 
+  /** The outcome of a move that a link reset cut short. */
+  const cancelledOutcome = () => ({
+    converged: false,
+    timedOut: false,
+    stalled: false,
+    cancelled: true,
+    reason: 'The gimbal link was reset while this move was running, so the move was stopped rather than resumed on the next link.',
+    ticks: history.length,
+    finalYaw: history.at(-1)?.yaw ?? null,
+    finalPitch: history.at(-1)?.pitch ?? null,
+    history,
+  });
+  /**
+   * The zero-speed write that ends a tick, and the stop sent before a jam verdict. A link that drops under
+   * an outside move leaves no characteristic to write on, so the write throws. That is the move being cut
+   * short, not a failure, so this returns false. Anything else still throws. A capture's own moves carry no
+   * `motion`, and keep throwing as they always did.
+   */
+  const sendStop = async () => {
+    try {
+      await transport.sendRaw(buildGimbalSpeedControl(transport.nextMsgId(), {}));
+      return true;
+    } catch (err) {
+      if (motion && (motion.cancelled || !transport.linked)) return false;
+      throw err;
+    }
+  };
+
   while (Date.now() - start < maxMs) {
+    // An outside move whose link has gone must not carry on: the link it would drive next is not the one
+    // it was started on. Checked before this tick sends anything, so it cannot write on a new link.
+    if (motion?.cancelled) return cancelledOutcome();
     // Telemetry is this loop's only sensor. If it stops, every remaining tick is a correction
     // computed from a pose nothing is refreshing — so say so and stop, instead of spending the
     // rest of maxMs and reporting `timedOut`, which reads as "nearly there, needs longer".
@@ -844,7 +959,7 @@ async function driveClosedLoop({ yawDeg = 0, pitchDeg = 0, toleranceDeg = 3, spe
     } else if (verdict === 'jammed') {
       // Leave the motors stopped rather than holding a speed the gimbal is
       // ignoring — a wedged axis that frees itself should not lurch.
-      await transport.sendRaw(buildGimbalSpeedControl(transport.nextMsgId(), {}));
+      if (!(await sendStop())) return cancelledOutcome();
       return {
         converged: false,
         timedOut: false,
@@ -869,7 +984,7 @@ async function driveClosedLoop({ yawDeg = 0, pitchDeg = 0, toleranceDeg = 3, spe
 
     await transport.sendRaw(buildGimbalSpeedControl(transport.nextMsgId(), { yawDegPerSec: yawSpeed, pitchDegPerSec: pitchSpeed }));
     await new Promise((resolve) => setTimeout(resolve, tickMs));
-    await transport.sendRaw(buildGimbalSpeedControl(transport.nextMsgId(), {}));
+    if (!(await sendStop())) return cancelledOutcome();
     await new Promise((resolve) => setTimeout(resolve, settleMs));
 
     prevYawError = yawError;
@@ -932,13 +1047,45 @@ function linkRefusal(need) {
   }];
 }
 
+/**
+ * Why a caller's stop cannot end a probe, or null when it can. A probe ends on its stop, so the stop has
+ * to be a zero-speed speed command. Checked before the probe starts: a stop refused only afterwards leaves
+ * the probe's own speed latched on the gimbal, which is the failure this exists to prevent.
+ */
+function probeStopProblem(stop) {
+  if (stop === undefined || stop === null) return null; // the default zero-speed stop
+  if (typeof stop !== 'object' || stop.type !== 'speed') {
+    return 'stop must be a speed command with zero speed on every axis.';
+  }
+  let frame;
+  try {
+    frame = decodeFrame(buildGimbalSpeedControl(0, stop.params ?? {}));
+  } catch (err) {
+    return `stop is not a valid speed command: ${err.message}`;
+  }
+  return isStopFrame(frame.cmdSet, frame.cmdId, frame.payload) ? null : 'stop must have zero speed on every axis.';
+}
+
+/** Why a reset forgets the measured arc. One string, so the status payload and the reset agree. */
+const RESET_REASON = 'the gimbal was reset, so pan angles measured before it may not mean the same thing now';
+
+/**
+ * True for the gimbal's reset-and-centre frame, whichever route sent it. A reset re-establishes the
+ * gimbal's own reference, so pan angles measured before it are not necessarily the same angles
+ * afterwards. Plain `recenter` is left alone: it drives the motors within the existing frame and has
+ * never been observed to move the datum.
+ */
+function isResetFrame(cmdSet, cmdId) {
+  return cmdSet === CMD_SET.GIMBAL_FN && cmdId === CMD_ID.GIMBAL_RESET_AND_CENTER;
+}
+
 const routes = {
   'GET /': async () => [
     200,
     {
       ok: true,
       message: 'Osmo BLE backend is running.',
-      routes: ['GET /api/status', 'POST /api/scan', 'POST /api/connect', 'POST /api/pair-trigger', 'POST /api/pair', 'POST /api/disconnect', 'POST /api/forget-os', 'POST /api/command', 'POST /api/arc-probe', 'POST /api/move-to', 'POST /api/capture-photo', 'POST /api/grid-capture', 'POST /api/grid-advance', 'POST /api/grid-stop', 'GET /api/scan-sessions', 'GET /api/frames', 'POST /api/test/recenter-probe', 'POST /api/test/command-probe', 'WS /ws'],
+      routes: ['GET /api/status', 'POST /api/scan', 'POST /api/connect', 'POST /api/pair-trigger', 'POST /api/pair', 'POST /api/disconnect', 'POST /api/forget-os', 'POST /api/command', 'POST /api/arc-probe', 'POST /api/move-to', 'POST /api/capture-photo', 'POST /api/grid-capture', 'POST /api/grid-advance', 'POST /api/grid-stop', 'GET /api/scan-sessions', 'GET /api/frames', ...(TEST_ROUTES_ENABLED ? ['POST /api/test/recenter-probe', 'POST /api/test/command-probe'] : []), 'WS /ws'],
     },
   ],
   'GET /api/status': async () => [200, statusPayload()],
@@ -986,6 +1133,8 @@ const routes = {
   },
 
   'POST /api/disconnect': async () => {
+    // transport.disconnect() sends the zero-speed stop before it tears the link down, so a latched
+    // speed does not outlive the link (see ble-transport.mjs).
     await transport.disconnect();
     invalidateArc('the gimbal was disconnected');
     broadcast({ type: 'status', ...statusPayload() });
@@ -1058,6 +1207,14 @@ const routes = {
         remediation: 'Reconnect the gimbal (scan -> connect), then advance again. The stations already captured are safe.',
       }];
     }
+    // A move or probe started from outside while the capture was parked can still be driving the same
+    // motors. Refused here, before the gate opens, so the next station cannot start on top of it.
+    if (externalMotions.size > 0) {
+      return [409, {
+        error: 'A move or probe is still driving the gimbal, so the next station would overlap it.',
+        remediation: 'Wait for it to finish, then advance again. It stops on its own.',
+      }];
+    }
     const gate = stationGate;
     stationGate = null;
     gate.release('advance');
@@ -1070,31 +1227,9 @@ const routes = {
     // gimbal driving on a latched speed needs most when telemetry has already died.
     const refusal = linkRefusal('write');
     if (refusal) return refusal;
-    // Motion commands only — a scan does not care about setMode/raw probes, and blocking
-    // those would be surprising. 409 (conflict) rather than 400: the request is well-formed,
-    // it just lost a race for a single physical resource.
-    // An all-zero `speed` is a STOP, not a motion command, and must never be refused — refusing
-    // it means the one command that can save overheating motors is unavailable exactly while a
-    // scan is driving them.
-    const isStopCommand = type === 'speed'
-      && !['yawDegPerSec', 'pitchDegPerSec', 'rollDegPerSec'].some((k) => Number(params?.[k]) || 0);
-    // A parked run is exempt. The interlock exists because two controllers steering the same
-    // two motors fight each other — and while the capture is waiting between stations there is
-    // no controller running at all: the motors are stopped and the loop is asleep on a promise.
-    // Refusing here would take the joystick and Center away from the operator at exactly the
-    // moment they are carrying the rig and most likely to need them. The next station's first
-    // move is closed-loop, so whatever pose they leave it in is absorbed.
-    const parked = stationGate !== null;
-    if (gridRunning && !parked && !isStopCommand && (type === 'speed' || type === 'recenter' || type === 'resetAndCenter')) {
-      return [409, {
-        error: 'A scan is running and owns the gimbal — motion commands are rejected until it finishes.',
-        remediation: 'Wait for the scan to finish, or stop it, before moving the gimbal by hand.',
-      }];
-    }
-    // A reset re-establishes the gimbal's own reference, so pan angles measured before it are
-    // not necessarily the same angles afterwards. Plain `recenter` is left alone: it drives the
-    // motors within the existing frame and has never been observed to move the datum.
-    if (type === 'resetAndCenter') invalidateArc('the gimbal was reset, so pan angles measured before it may not mean the same thing now');
+    // The motion interlock, and the forgetting of the measured arc after a reset, are both in
+    // buildAndSend(). Every route that sends a reset gets the arc invalidation from there, not only
+    // this one, so nothing is repeated here.
     const result = await buildAndSend(type, params);
     return [200, result];
   },
@@ -1113,18 +1248,25 @@ const routes = {
   'POST /api/arc-probe': async (req) => {
     const refusal = linkRefusal('stream');
     if (refusal) return refusal;
+    // Read before the scan state is checked, not after: a capture that starts while the body is
+    // still arriving must not be missed (the same ordering as move-to below).
+    const body = await readJsonBody(req);
     if (gridRunning && stationGate === null) {
       return [409, {
         error: 'A capture is running and owns the gimbal.',
         remediation: 'The capture measures the arc itself at each station (send probeArc: false to turn that off). Stop it first if you want to probe by hand.',
       }];
     }
-    const body = await readJsonBody(req);
-    const result = await runArcProbe({
+    // A parked capture is not driving the motors, but a move or probe that is still driving them is a second
+    // controller on the same two motors. Refused here, before this probe registers as one.
+    const busy = moveRefusal({ scanRunning: gridRunning, parked: stationGate !== null, outsideMotion: externalMotions.size > 0 });
+    if (busy) return [409, { error: busy.message, remediation: busy.remediation }];
+    const result = await asExternalMotion((motion) => runArcProbe({
       emit: (event) => broadcast({ type: 'grid-progress', ...event }),
       stepDeg: Number(body.stepDeg) > 0 ? Number(body.stepDeg) : undefined,
       reason: 'operator asked',
-    });
+      motion,
+    }));
     return [200, {
       ...result,
       arc: arcPayload(),
@@ -1147,7 +1289,15 @@ const routes = {
     const refusal = linkRefusal('stream');
     if (refusal) return refusal;
     const { yawDeg, pitchDeg, toleranceDeg, speedDegPerSec, tickMs, settleMs, maxMs } = await readJsonBody(req);
-    const result = await moveToClosedLoop({ yawDeg, pitchDeg, toleranceDeg, speedDegPerSec, tickMs, settleMs, maxMs });
+    // A closed-loop move sends its own speed frames (driveClosedLoop writes to the transport
+    // directly), so the interlock cannot see it inside buildAndSend(). The door is the place to
+    // ask, and it is asked after the body is read, just before the move starts: a scan that begins
+    // while the body is still arriving must still refuse it. The capture's own moves never come
+    // through this route. A parked capture also refuses a move while another move or probe is still
+    // driving the same motors (see moveRefusal).
+    const motionRefused = moveRefusal({ scanRunning: gridRunning, parked: stationGate !== null, outsideMotion: externalMotions.size > 0 });
+    if (motionRefused) return [409, { error: motionRefused.message, remediation: motionRefused.remediation }];
+    const result = await asExternalMotion((motion) => moveToClosedLoop({ yawDeg, pitchDeg, toleranceDeg, speedDegPerSec, tickMs, settleMs, maxMs, motion }));
     return [200, result];
   },
 
@@ -1284,6 +1434,12 @@ const routes = {
     const refusal = linkRefusal('stream');
     if (refusal) return refusal;
     if (gridRunning) return [409, { error: 'A capture is already running and owns the gimbal.', remediation: 'Stop it (POST /api/grid-stop) before starting another.' }];
+    // A move or probe the backend started on its own is still driving the same motors. Checked here,
+    // with no await between this line and gridRunning = true below, so nothing can start in between.
+    if (externalMotions.size > 0) return [409, {
+      error: 'A move or probe is still driving the gimbal.',
+      remediation: 'Wait for it to finish, then start the capture.',
+    }];
 
     // Capped at 12: a station is a physical walk plus a full dome, so a hundred of them is a
     // typo, not a plan. Three to five is what a room takes.
@@ -1566,10 +1722,10 @@ const routes = {
               // see the "Orientation toggle" section's own caveat. Land landscape first (the
               // confirmed one) so a run that only manages one shot per position before a failure
               // still has the orientation we trust.
-              await buildAndSend('setMode', { mode: 'follow' });
+              await buildAndSend('setMode', { mode: 'follow' }, { runOwned: true });
               await sleep(1000);
               entry.photoUrl = await capturePhoto(client, { path: `${stem}-landscape.jpg`, ...photoOpts });
-              await buildAndSend('setMode', { mode: 'lock' });
+              await buildAndSend('setMode', { mode: 'lock' }, { runOwned: true });
               await sleep(1000);
               entry.photoUrlPortrait = await capturePhoto(client, { path: `${stem}-portrait.jpg`, ...photoOpts });
             } else {
@@ -1687,6 +1843,10 @@ const routes = {
         }) });
       }
     } catch (err) {
+      // A refused motion (a scan owns the gimbal, e.g. bothOrientations) is a conflict, not a fault.
+      if (err instanceof MotionRefusedError) {
+        return [err.status, { error: err.message, remediation: err.remediation, device: device.device, shots }];
+      }
       return [500, { error: String(err.message || err), device: device.device, shots }];
     } finally {
       await client.close();
@@ -1752,12 +1912,14 @@ const routes = {
     const refusal = linkRefusal('stream');
     if (refusal) return refusal;
     const { durationSeconds } = await readJsonBody(req);
-    const before = transport.lastQuaternion;
-    await buildAndSend('recenter', { durationSeconds: durationSeconds ?? 1 });
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    const after = transport.lastQuaternion;
-    const delta = quaternionDelta(before, after);
-    return [200, { before, after, delta, moved: delta !== null && delta > 0.02 }];
+    return asExternalMotion(async (motion) => {
+      const before = transport.lastQuaternion;
+      await buildAndSend('recenter', { durationSeconds: durationSeconds ?? 1 }, { motion });
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      const after = transport.lastQuaternion;
+      const delta = quaternionDelta(before, after);
+      return [200, { before, after, delta, moved: delta !== null && delta > 0.02 }];
+    });
   },
 
   // Generic version of the above: fires ANY command type/params, captures orientation
@@ -1768,15 +1930,30 @@ const routes = {
   'POST /api/test/command-probe': async (req) => {
     const { type, params, waitMs, stop } = await readJsonBody(req);
     if (!type) return [400, { error: 'type is required' }];
+    // Checked before anything is sent. A bad stop found after the probe's speed has gone out returns a 500
+    // and leaves that speed latched on the gimbal.
+    const stopProblem = probeStopProblem(stop);
+    if (stopProblem) {
+      return [400, {
+        error: stopProblem,
+        remediation: 'Leave stop out for the default zero-speed stop, or send {"type": "speed", "params": {}}.',
+      }];
+    }
     const refusal = linkRefusal('stream'); // same reason as recenter-probe above
     if (refusal) return refusal;
-    const before = transport.lastQuaternion;
-    const sent = await buildAndSend(type, params ?? {});
-    await new Promise((resolve) => setTimeout(resolve, waitMs ?? 1500));
-    const after = transport.lastQuaternion;
-    const delta = quaternionDelta(before, after);
-    if (stop) await buildAndSend(stop.type, stop.params ?? {});
-    return [200, { sent, before, after, delta, moved: delta !== null && delta > 0.02 }];
+    return asExternalMotion(async (motion) => {
+      const before = transport.lastQuaternion;
+      const sent = await buildAndSend(type, params ?? {}, { motion });
+      await new Promise((resolve) => setTimeout(resolve, waitMs ?? 1500));
+      const after = transport.lastQuaternion;
+      const delta = quaternionDelta(before, after);
+      // A speed is a latch, and any command can leave the gimbal moving, so the probe always ends with a
+      // stop, whatever the type: the caller's own, or a zero-speed one when the caller left it out. A
+      // zero-speed stop is never refused by the interlock.
+      const stopCmd = stop ?? { type: 'speed', params: {} };
+      await buildAndSend(stopCmd.type, stopCmd.params ?? {}, { motion });
+      return [200, { sent, before, after, delta, moved: delta !== null && delta > 0.02 }];
+    });
   },
 };
 
@@ -1793,6 +1970,13 @@ const server = http.createServer(async (req, res) => {
 
   const url = new URL(req.url, `http://${req.headers.host}`);
   const key = `${req.method} ${url.pathname}`;
+  if (url.pathname.startsWith('/api/test/') && !TEST_ROUTES_ENABLED) {
+    sendJson(res, 404, {
+      error: `Test route disabled: ${key}`,
+      remediation: 'The test routes are off. Restart the backend with BACKEND_TEST_ROUTES=1 in the shell that starts it, to use them.',
+    });
+    return;
+  }
   const handler = routes[key];
   if (!handler) {
     sendJson(res, 404, { error: `No route for ${key}` });
@@ -1808,8 +1992,13 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, code, body);
     }
   } catch (err) {
-    if (!res.headersSent) sendJson(res, 500, { error: err.message });
-    else res.end(JSON.stringify({ phase: 'error', error: err.message }) + '\n');
+    if (res.headersSent) {
+      res.end(JSON.stringify({ phase: 'error', error: err.message }) + '\n');
+    } else if (err instanceof MotionRefusedError || err instanceof PayloadHexError) {
+      sendJson(res, err.status, { error: err.message, remediation: err.remediation });
+    } else {
+      sendJson(res, 500, { error: err.message });
+    }
   }
 });
 
@@ -1827,9 +2016,36 @@ wss.on('connection', (ws) => {
   ws.on('close', () => wsClients.delete(ws));
 });
 
-server.listen(PORT, () => {
-  console.log(`Osmo BLE backend: http://localhost:${PORT}  (WebSocket at /ws)`);
-});
+// BACKEND_NO_LISTEN=1 skips the listener. The interlock test drives `server` with fake requests and
+// never binds a port (see server/wp-f2-backend-interlock.test.mjs).
+if (!process.env.BACKEND_NO_LISTEN) {
+  server.listen(PORT, () => {
+    console.log(`Osmo BLE backend: http://localhost:${PORT}  (WebSocket at /ws)`);
+  });
+}
+
+/**
+ * Test seam. `server` and `routes` are the real request handler and route table; a test drives them
+ * without listening. setScanStateForTest puts the interlock in the state a grid run leaves it in.
+ * transportForTest hands over the one transport so a test can stub the characteristic a write goes to.
+ */
+export { routes, server };
+export function transportForTest() {
+  return transport;
+}
+export function setScanStateForTest({ scanRunning, parked = false }) {
+  gridRunning = Boolean(scanRunning);
+  stationGate = gridRunning && parked ? { nextStation: 2, stationsPlanned: 4, since: Date.now(), release() {} } : null;
+}
+/** Put the arc a probe would have left behind in place, or pass null to forget it. */
+export function setMeasuredArcForTest(arc) {
+  measuredArc = arc;
+  arcUnmeasuredReason = arc ? 'measured' : 'nothing has been measured this session';
+}
+/** How many outside moves are holding the gimbal right now. A test waits on this rather than sleeping. */
+export function externalMotionCountForTest() {
+  return externalMotions.size;
+}
 
 /**
  * Stop the motors before this process goes away.

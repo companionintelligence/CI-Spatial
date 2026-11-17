@@ -38,6 +38,21 @@
 export const QUEUED_OFFLINE_HEADER = 'X-Companion-Queued-Offline'
 
 /**
+ * Request header that asks the service worker not to queue this write. With the value `'1'` the
+ * worker lets the request through as an ordinary fetch, so offline it fails at once instead of
+ * answering 202 and replaying later. Must stay byte-identical to the literal in `public/sw.js`.
+ *
+ * For a write whose person is told "needs a connection" and is then free to try again: creating a
+ * Place or an Area. A queued one would make the Place after they were told it was not made, and
+ * the second try would make another. And for a Place's frame, which the page keeps in its own
+ * database until the server holds it: the worker's queue replays in the order things were queued and
+ * cannot replace a write, so a second calibration would be replayed after the first and lose to it.
+ * A page sends it only where a worker can queue the request at all: same origin, with a controlling
+ * worker (see `noQueueHeaders` in src/project/frame-sync.ts).
+ */
+export const NO_QUEUE_HEADER = 'X-Companion-No-Queue'
+
+/**
  * True when this response came from the offline queue rather than the server.
  *
  * Treat it as "not delivered yet": the request is durably stored and will be

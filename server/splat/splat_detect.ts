@@ -23,7 +23,9 @@
  * Input selection:
  *   - prefer the scan's <base>.splat.ply (Brush-trained 3DGS),
  *   - else convert the session's lingbot-map.point-cloud.ply into a 3DGS-attribute
- *     PLY via $SPLAT_DETECT_DIR/pointcloud_to_gs.py first, then detect on that.
+ *     PLY via $SPLAT_DETECT_DIR/pointcloud_to_gs.py first, then detect on that —
+ *     unless the LingBot run judged that cloud degenerate (quality.degenerate in
+ *     lingbot-map.manifest.json), in which case detection is skipped.
  */
 
 // The manifest type lives in src/world/manifests.ts, not here — see that
@@ -33,7 +35,9 @@
 // `import type { SplatDetectManifest } from './splat_detect.ts'` still works.
 import type { SplatDetectManifest } from '../../src/world/types.ts'
 import { isRunnable } from '../exec_probe.ts'
+import { budgetFromEnv, runWithDeadline } from '../run_with_deadline.ts'
 import { isServerSessionId } from '../../src/shared/session-id.ts'
+import { lingBotCloudCollapsed } from './splat_train_dataset.ts'
 export type { SplatDetectManifest }
 
 const DEFAULT_DETECT_PYTHON = `${Deno.env.get('HOME') ?? '~'}/.venvs/splat-analyzer/bin/python`
@@ -68,7 +72,11 @@ export interface SplatDetectRunOptions {
   /** Best single-frame confidence required. Env SPLAT_DETECT_MIN_PEAK_SCORE; unset = run_local.py default (0.40). */
   minPeakScore?: string
   /** For testing: skip the real spawn and treat these results as the analyzer run. */
-  _spawn?: (bin: string, args: string[], env: Record<string, string>) => Promise<{ code: number; stderr: string }>
+  _spawn?: (
+    bin: string,
+    args: string[],
+    env: Record<string, string>,
+  ) => Promise<{ code: number; stderr: string; timeoutReason?: string | null }>
   /** Provenance forwarded into the manifest. */
   provenance?: { sessionId?: string; scanId?: string }
 }
@@ -190,6 +198,18 @@ export async function runSplatDetect(opts: SplatDetectRunOptions): Promise<Splat
     if (opts.splatPlyPath && (await exists(opts.splatPlyPath))) {
       detectPly = opts.splatPlyPath
     } else {
+      // A LingBot cloud its own run judged collapsed is not detection input. This
+      // is the same verdict splat_train_dataset.ts applies before it seeds a splat.
+      if (opts.sessionDir && (await lingBotCloudCollapsed(opts.sessionDir))) {
+        await removeQuietly(jobDir)
+        return _finish(manifestPath, {
+          ...baseManifest,
+          status: 'skipped',
+          skippedReason:
+            'lingbot-map verdict: its point cloud was judged degenerate, so there is no input to detect on',
+          remediation: 'Run a splat-train job on this scan, or re-scan the room and run lingbot-map-reconstruct again.',
+        }, 0, 'splat-detect skipped: lingbot-map verdict is degenerate')
+      }
       const srcCloud = opts.sessionDir ? `${opts.sessionDir}/lingbot-map.point-cloud.ply` : undefined
       if (!srcCloud || !(await exists(srcCloud))) {
         await removeQuietly(jobDir)
@@ -197,7 +217,7 @@ export async function runSplatDetect(opts: SplatDetectRunOptions): Promise<Splat
           ...baseManifest,
           status: 'skipped',
           skippedReason: 'no splat: scan has no <base>.splat.ply and the session has no lingbot-map.point-cloud.ply',
-          remediation: 'Run a splat-train (or lingbot-map-reconstruct) job on this scan first.',
+          remediation: 'Run a splat-train job on this scan first, or a lingbot-map-reconstruct job whose cloud is not judged degenerate.',
         }, 0, 'splat-detect has no input ply')
       }
       // Convert the plain xyz+rgb cloud into a 3DGS-attribute PLY.
@@ -205,7 +225,7 @@ export async function runSplatDetect(opts: SplatDetectRunOptions): Promise<Splat
       const convEnv: Record<string, string> = {
         HIP_VISIBLE_DEVICES: params.hipVisibleDevices,
       }
-      let convResult: { code: number; stderr: string }
+      let convResult: { code: number; stderr: string; timeoutReason?: string | null }
       try {
         convResult = opts._spawn
           ? await opts._spawn(params.python, [converterPath, srcCloud, convertedPly], convEnv)
@@ -224,7 +244,9 @@ export async function runSplatDetect(opts: SplatDetectRunOptions): Promise<Splat
         return _finish(manifestPath, {
           ...baseManifest,
           status: 'error',
-          error: `pointcloud_to_gs exited ${convResult.code}`,
+          error: convResult.timeoutReason
+            ? `pointcloud_to_gs ${convResult.timeoutReason} and was stopped`
+            : `pointcloud_to_gs exited ${convResult.code}`,
           timing: { elapsedMs: Date.now() - started },
         }, convResult.code || 3, convResult.stderr)
       }
@@ -239,7 +261,7 @@ export async function runSplatDetect(opts: SplatDetectRunOptions): Promise<Splat
       POINT_SPLAT_SIZE: params.pointSplatSize,
     }
 
-    let spawnResult: { code: number; stderr: string }
+    let spawnResult: { code: number; stderr: string; timeoutReason?: string | null }
     try {
       spawnResult = opts._spawn
         ? await opts._spawn(params.python, args, env)
@@ -257,7 +279,9 @@ export async function runSplatDetect(opts: SplatDetectRunOptions): Promise<Splat
       return _finish(manifestPath, {
         ...baseManifest,
         status: 'error',
-        error: `splat-analyzer exited ${spawnResult.code}`,
+        error: spawnResult.timeoutReason
+          ? `splat-analyzer ${spawnResult.timeoutReason} and was stopped`
+          : `splat-analyzer exited ${spawnResult.code}`,
         timing: { elapsedMs: Date.now() - started },
       }, spawnResult.code, spawnResult.stderr)
     }
@@ -354,20 +378,21 @@ async function removeQuietly(path: string): Promise<void> {
   }
 }
 
+/** Covers the converter and the analyzer; each call gets this budget, not one shared across both. Untuned. */
+const DEFAULT_DETECT_TIMEOUT_MS = 60 * 60 * 1000
+
 async function defaultSpawn(
   bin: string,
   args: string[],
   extraEnv: Record<string, string>,
-): Promise<{ code: number; stderr: string }> {
-  const cmd = new Deno.Command(bin, {
-    args,
-    env: extraEnv,
-    stdout: 'piped',
-    stderr: 'piped',
-  })
-  const output = await cmd.output()
+): Promise<{ code: number; stderr: string; timeoutReason: string | null }> {
+  const output = await runWithDeadline(
+    bin,
+    { args, env: extraEnv, stdout: 'piped', stderr: 'piped' },
+    budgetFromEnv('SPLAT_DETECT_TIMEOUT_MS', DEFAULT_DETECT_TIMEOUT_MS),
+  )
   const stderr = new TextDecoder().decode(output.stderr).trim()
-  return { code: output.code, stderr }
+  return { code: output.code, stderr, timeoutReason: output.timeoutReason }
 }
 
 async function writeManifest(path: string, manifest: SplatDetectManifest): Promise<void> {

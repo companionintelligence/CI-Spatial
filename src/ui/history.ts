@@ -6,6 +6,11 @@
  * individually selected/deselected and have their label/description edited.
  */
 import type { DetectionStore, StoredDetection } from '../scene/store'
+import { icon } from './icons'
+import { PREVIOUS_RUN_LABEL } from './previous-run'
+
+/** Delete's title on a read-only page (MAIN10-5). The delete is refused there, so the control says where to do it. */
+const READ_ONLY_DELETE_TITLE = 'The scan is open in another tab, so sessions can be deleted only from there.'
 
 export class SessionHistory {
   private drawer: HTMLElement
@@ -14,8 +19,20 @@ export class SessionHistory {
   private isOpen = false
   /** Tracks which session cards are expanded to show their detections */
   private expandedSessions = new Set<string>()
+  /** Set on a read-only page by setReadOnly(). Delete is then disabled and does nothing (MAIN10-5). */
+  private readOnly = false
 
-  constructor(private readonly store: DetectionStore) {
+  /**
+   * `onScanReset` empties the live scan (main.ts). It runs after deleting the
+   * session being scanned and after switching to another, so the next export
+   * cannot carry geometry from a session that is no longer the one shown. It
+   * gets the number of detections the scan being left had, read before the
+   * store changed.
+   */
+  constructor(
+    private readonly store: DetectionStore,
+    private readonly onScanReset: (detectionCount: number) => void = () => {},
+  ) {
     this.drawer = document.getElementById('history-drawer')!
     this.trigger = document.getElementById('history-btn') as HTMLButtonElement
     this.body = document.getElementById('history-body')!
@@ -34,6 +51,15 @@ export class SessionHistory {
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && this.isOpen) this.close()
     })
+  }
+
+  /**
+   * Put the drawer on a read-only page (MAIN10-5, main.ts). Each session's delete control is disabled
+   * when its row is drawn, and does nothing if clicked: the store refuses a delete without a word, and
+   * the live scan must not be reset for one that did not happen. Load is unaffected, since it only reads.
+   */
+  setReadOnly(): void {
+    this.readOnly = true
   }
 
   async open(): Promise<void> {
@@ -114,29 +140,87 @@ export class SessionHistory {
     const actions = document.createElement('div')
     actions.style.cssText = 'display:flex;align-items:center;gap:4px;flex-shrink:0;margin-left:8px;'
 
+    // Named for the item as well as the action, because the glyph is all a
+    // screen reader would otherwise have to go on.
+    const what = `${s.count} object${s.count === 1 ? '' : 's'}`
+
     const loadBtn = document.createElement('button')
     loadBtn.textContent = '↩'
-    loadBtn.title = 'Load session into view'
+    // Not "into view": the objects an earlier run saved are not drawn in this run's view (see _buildDetectionRow).
+    loadBtn.title = 'Open this session'
+    loadBtn.setAttribute('aria-label', `Load session from ${dateStr}, ${what}`)
     loadBtn.className = 'ci-icon-btn ci-icon-btn--sm'
     loadBtn.addEventListener('click', async (e) => {
       e.stopPropagation()
       loadBtn.style.opacity = '0.5'
-      await this.store.loadSession(s.sessionId)
+      // Both read before the load replaces the store's session and detections. The count is the scan's own
+      // objects (this run's): the ones an earlier run saved were never part of the scan being left.
+      const before = this.store.sessionId
+      const leavingCount = this.store.currentRunDetections().size
+      let loaded = false
+      try {
+        loaded = await this.store.loadSession(s.sessionId)
+      } catch (err) {
+        console.error('[history] load failed', err)
+      } finally {
+        loadBtn.style.opacity = ''
+      }
+      // Reset whenever the store moved to another session, even when the load
+      // then failed part way: the live scan must not outlive the session it showed.
+      if (this.store.sessionId !== before) this.onScanReset(leavingCount)
+      if (!loaded) {
+        // The row stays, and says why nothing changed.
+        wrap.querySelector('[data-load-error]')?.remove()
+        const note = document.createElement('p')
+        note.dataset['loadError'] = ''
+        note.setAttribute('role', 'alert')
+        note.style.cssText = 'margin:0;padding:0 16px 10px;font-size:12px;color:#ffb7b7;'
+        note.textContent = 'Could not load this session. Try again.'
+        header.after(note)
+        return
+      }
       this.close()
     })
 
     const delBtn = document.createElement('button')
-    delBtn.textContent = '✕'
+    delBtn.innerHTML = icon('trash', { size: '15px' })
     delBtn.title = 'Delete session'
+    delBtn.setAttribute('aria-label', `Delete session from ${dateStr}, ${what}`)
     delBtn.className = 'ci-icon-btn ci-icon-btn--sm'
     delBtn.style.color = '#ffb7b7'
+    if (this.readOnly) {
+      delBtn.disabled = true
+      delBtn.title = READ_ONLY_DELETE_TITLE
+    }
     delBtn.addEventListener('click', async (e) => {
+      // A read-only page deletes nothing and resets nothing (MAIN10-5).
+      if (this.readOnly) return
       e.stopPropagation()
-      wrap.style.transition = 'opacity 0.2s'
-      wrap.style.opacity = '0'
-      setTimeout(() => wrap.remove(), 200)
-      await this.store.deleteSession(s.sessionId)
+      // The same confirm as Clear in the side panel, naming what goes.
+      if (!confirm(`Erase this session from this phone? ${what} and their photos go. Copies already on the server stay.`)) return
+      const wasActive = this.store.sessionId === s.sessionId
+      // Read before the delete empties the store, for the reset that follows it. This run's objects only,
+      // as for a load above.
+      const leavingCount = this.store.currentRunDetections().size
+      delBtn.disabled = true
+      try {
+        await this.store.deleteSession(s.sessionId)
+      } catch (err) {
+        console.error('[history] delete failed', err)
+        delBtn.disabled = false
+        // The row stays, and says why it is still there.
+        wrap.querySelector('[data-delete-error]')?.remove()
+        const note = document.createElement('p')
+        note.dataset['deleteError'] = ''
+        note.setAttribute('role', 'alert')
+        note.style.cssText = 'margin:0;padding:0 16px 10px;font-size:12px;color:#ffb7b7;'
+        note.textContent = 'Could not delete this session. It is still here.'
+        header.after(note)
+        return
+      }
+      wrap.remove()
       this.expandedSessions.delete(s.sessionId)
+      if (wasActive) this.onScanReset(leavingCount)
       if (this.body.children.length === 0) await this._render()
     })
 
@@ -267,15 +351,28 @@ export class SessionHistory {
     coordEl.textContent = `${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}  ${conf}%`
     info.append(labelEl, coordEl)
 
+    // A position is in the frame of the run that found the object. The ones an earlier run saved stay listed
+    // here, and are not drawn in the AR view, counted, or exported: this note is why (DetectionStore.isCurrentRun).
+    const placedByThisRun = this.store.isCurrentRun(det)
+    if (!placedByThisRun) {
+      const runEl = document.createElement('div')
+      runEl.dataset['previousRun'] = ''
+      runEl.style.cssText = 'color:#ffcc80;font-size:10px;margin-top:2px;'
+      runEl.textContent = PREVIOUS_RUN_LABEL
+      info.append(runEl)
+    }
+
     // Right-side actions: select toggle (active sessions only) + edit
     const btns = document.createElement('div')
     btns.style.cssText = 'display:flex;gap:4px;flex-shrink:0;'
 
-    if (isActive) {
+    // Selection highlights an object in the AR view and in the panel list, and an earlier run's object is in neither.
+    if (isActive && placedByThisRun) {
       const selBtn = document.createElement('button')
       selBtn.title = isSelected ? 'Deselect' : 'Select'
       selBtn.textContent = isSelected ? '☑' : '☐'
       selBtn.className = 'ci-icon-btn ci-icon-btn--sm'
+      selBtn.setAttribute('aria-label', `${isSelected ? 'Deselect' : 'Select'} ${det.label}`)
       selBtn.style.color = isSelected ? '#72ddd4' : 'rgba(255,255,255,0.5)'
       selBtn.addEventListener('click', () => {
         this.store.toggleSelect(key)
@@ -291,6 +388,7 @@ export class SessionHistory {
       editBtn.textContent = '✏'
       editBtn.title = 'Edit'
       editBtn.className = 'ci-icon-btn ci-icon-btn--sm'
+      editBtn.setAttribute('aria-label', `Edit ${det.label}`)
 
       const editForm = document.createElement('div')
       editForm.style.cssText = 'display:none;position:absolute;inset-x:24px;background:rgba(8,28,38,0.98);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:10px;z-index:1;margin-top:4px;'

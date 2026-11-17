@@ -93,7 +93,9 @@ matters here because torch/transformers do not yet support 3.14:
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv --python 3.12 ~/.venvs/panoptic
-uv pip install --python ~/.venvs/panoptic/bin/python torch torchvision transformers pillow numpy
+uv pip install --python ~/.venvs/panoptic/bin/python torch torchvision transformers pillow numpy scipy
+# scipy is required: transformers' Mask2Former builds its loss at construction time and
+# raises "requires the scipy library" without it. Verified on 2026-11-12 with torch 2.11.0+cu128.
 
 # (where `python3 -m venv` already works, that plus pip install of the same
 #  five packages is equivalent — uv is only avoiding the ensurepip problem.)
@@ -110,9 +112,11 @@ transformers' `AutoImageProcessor` requires it and fails at `from_pretrained()`
 rather than at import, so leaving it out reads as a transformers bug rather than
 a missing package.
 
-The weights download on first run (HF cache). `.env` is **not** read by the
-server — nothing passes `--env-file` — so export these into the shell that runs
-`npm start` (`set -a; . ./.env; set +a` works).
+The weights download on first run (HF cache). `npm run server`, `npm start` and
+`deno task dev|start` pass `--env-file`, so a `.env` file in the directory they start in is
+read by the server. A server started any other way (the systemd unit, the Docker image, a bare
+`deno run`) does not read it: export these into its environment (`set -a; . ./.env; set +a`
+works in a shell).
 
 Measured on an RTX 4080 Laptop (12 GB), Swin-L at fp16:
 

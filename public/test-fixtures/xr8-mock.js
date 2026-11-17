@@ -3,9 +3,17 @@
  * used by automated tests.  Loaded by index.html when ?mock=xr8 is set.
  *
  * Implements the API surface src/ar/eighthwall.ts consumes:
- *   addCameraPipelineModules, run, stop, loadChunk,
+ *   addCameraPipelineModule(s), removeCameraPipelineModule, run, stop, loadChunk,
  *   GlTextureRenderer.pipelineModule, XrController.pipelineModule + hitTest,
+ *   XrController.configure + updateCameraProjectionMatrix (record-only, see below),
  *   CameraPixelArray.pipelineModule, XrConfig.device
+ *
+ * A module added while the session runs is called from the next frame and one
+ * removed stops being called: a calibration tap adds a pipeline module for its
+ * hit-test burst and removes it again (src/ar/hit-burst.ts). The documentation has
+ * `onAttach` called on modules added before or after the pipeline runs
+ * (https://8thwall.org/docs/api/engine/xr8/addcamerapipelinemodule); from which frame a real
+ * engine calls such a module is not documented, so "the next frame" is this mock's choice.
  *
  * Behaviour: a scripted camera glides through a synthetic 6×6 m room,
  * emitting SLAM poses, world feature points, and a fake camera feed that
@@ -98,12 +106,22 @@
   var frozenPoints = null
   var startFired = false
   var pendingStartTicks = 0
+  // `?mockJumpAt=<tick>`: from that tick on, the scripted camera is JUMP_M further along Z with
+  // tracking still NORMAL and the walk otherwise unchanged. That is what a frame shift looks like
+  // from inside the app (a relocalization moves the whole map, and nothing else says so), so a spec
+  // can see the app notice it. See run() and jumpAt() below.
+  var JUMP_M = 1.0
+  var jumpTick = null
+  // True between run() and stop(). Only used to say, in configureCalls below, whether a configure()
+  // call came before the engine ran.
+  var runCalled = false
 
   function currentPose() {
     // Slow sinusoidal walk along X at eye height, looking down -Z
     var t = tickCount / 30
+    var shift = jumpTick !== null && tickCount >= jumpTick ? JUMP_M : 0
     return {
-      position: { x: Math.sin(t * 0.4) * 1.2, y: 1.5 + Math.sin(t * 1.3) * 0.03, z: 2.4 },
+      position: { x: Math.sin(t * 0.4) * 1.2, y: 1.5 + Math.sin(t * 1.3) * 0.03, z: 2.4 + shift },
       rotation: { x: 0, y: 0, z: 0, w: 1 },
     }
   }
@@ -333,8 +351,11 @@
       if (ctx) drawScene(ctx, runCanvas.width, runCanvas.height)
     }
 
-    for (var m = 0; m < modules.length; m++) {
-      var mod = modules[m]
+    // A snapshot of the modules for this frame: a module may add or remove modules
+    // (a tap's hit-test burst removes its own) without a neighbour being skipped.
+    var frameModules = modules.slice()
+    for (var m = 0; m < frameModules.length; m++) {
+      var mod = frameModules[m]
       try {
         if (typeof mod.onProcessCpu === 'function') mod.onProcessCpu({ processGpuResult: processGpuResult })
         if (typeof mod.onUpdate === 'function') mod.onUpdate({ processCpuResult: processCpuResult })
@@ -347,12 +368,25 @@
   window.XR8 = {
     isMock: true,
 
+    /**
+     * What the app asked of the engine's scale, in call order, so a spec can check that configure()
+     * came before run(). The mock only remembers the calls. It emulates nothing of the real engine's
+     * scale handling (https://8thwall.org/docs/api/engine/xrcontroller/configure): it does not refuse a
+     * late call, and it never changes the units of the scripted pose.
+     */
+    configureCalls: [],
+    projectionCalls: [],
+
     addCameraPipelineModule: function (mod) { modules.push(mod) },
     addCameraPipelineModules: function (mods) { modules = modules.concat(mods) },
+    removeCameraPipelineModule: function (name) {
+      modules = modules.filter(function (mod) { return mod.name !== name })
+    },
 
     loadChunk: function () { return Promise.resolve() },
 
     run: function (opts) {
+      runCalled = true
       runCanvas = opts && opts.canvas ? opts.canvas : null
       feedCanvas = document.createElement('canvas')
       feedCanvas.width = FEED_W
@@ -367,20 +401,29 @@
       var freeze = new URLSearchParams(location.search).get('mockFreeze')
       if (freeze !== null) window.XR8.freezeAt(freeze)
 
-      // Fire each registered module's onStart once, as the real engine does.
+      // `?mockJumpAt=<tick>` shifts the camera by JUMP_M at that tick (see currentPose()). A value
+      // that is not a non-negative number is ignored rather than thrown, since a URL is not a call.
+      var jump = new URLSearchParams(location.search).get('mockJumpAt')
+      if (jump !== null && jump !== '' && isFinite(Number(jump)) && Number(jump) >= 0) {
+        window.XR8.jumpAt(Number(jump))
+      }
+
+      // Fire each registered module's onStart once (documented: onStart is called when the engine
+      // starts, https://8thwall.org/docs/api/engine/xr8/addcamerapipelinemodule).
       // Without this the mock never ran onStart at all, so eighthwall.ts's
       // `self._scene = XR8.Threejs.xrScene().scene` never executed and
       // provider.getScene() returned null — meaning no calibration decal,
       // anchor marker or floor grid was ever created under the mock, and any
       // test asserting on them silently passed against an empty scene.
       //
-      // `?mockSceneDelay=<ticks>` defers them, which is the *real* engine's
-      // timing and not an artificial hazard: `provider.start()` resolves as
-      // soon as it has called XR8.run(), while 8th Wall creates its Three.js
-      // scene on the first frame. Firing onStart synchronously here made the
-      // mock strictly more forgiving than the device, and hid a bug where
-      // calibration captured a null scene once and then silently rendered
-      // nothing — no floor grid, no markers — for the whole session.
+      // `?mockSceneDelay=<ticks>` defers them, which is closer to a device than
+      // firing them at once: `provider.start()` resolves as soon as it has called
+      // XR8.run(), and the documented order has `onStart` after the camera status
+      // changes (onBeforeRun, onCameraStatusChange, onStart), so a Three.js scene
+      // created in `onStart` cannot exist when run() returns. Firing onStart
+      // synchronously here made the mock strictly more forgiving than the device,
+      // and hid a bug where calibration captured a null scene once and then
+      // silently rendered nothing — no floor grid, no markers — for the whole session.
       var delay = new URLSearchParams(location.search).get('mockSceneDelay')
       pendingStartTicks = delay === null ? 0 : Math.max(0, Number(delay) || 0)
       if (pendingStartTicks === 0) fireOnStart()
@@ -395,6 +438,7 @@
     stop: function () {
       if (tickHandle) clearInterval(tickHandle)
       tickHandle = null
+      runCalled = false
     },
 
     /**
@@ -429,12 +473,31 @@
       return tickCount
     },
 
+    /**
+     * Frame-shift hook — the camera is JUMP_M further along Z from tick `target` on, with the
+     * status still NORMAL (see currentPose()). The scripted walk moves at under 0.5 m/s, so a
+     * metre in one 33 ms tick is not walking, and the app's frame-epoch detector
+     * (src/ar/frame-epoch.ts) reads it as a shift. Pass `null` to take it away.
+     */
+    jumpAt: function (target) {
+      if (target === null) {
+        jumpTick = null
+        return jumpTick
+      }
+      var want = Number(target)
+      if (!isFinite(want) || want < 0) {
+        throw new Error('[xr8-mock] jumpAt() needs a non-negative tick index or null, got ' + target)
+      }
+      jumpTick = want
+      return jumpTick
+    },
+
     GlTextureRenderer: {
       pipelineModule: function () { return { name: 'mock-gltexturerenderer' } },
     },
 
     /**
-     * The real engine's Three.js integration. Absent from this mock until now,
+     * The engine's Three.js integration (XR8.Threejs). Absent from this mock until now,
      * which broke every mock-xr8 spec outright rather than subtly: eighthwall.ts
      * calls XR8.Threejs.pipelineModule() unconditionally in start(), so the
      * missing key threw "Cannot read properties of undefined (reading
@@ -475,6 +538,14 @@
 
     XrController: {
       pipelineModule: function () { return { name: 'mock-xrcontroller' } },
+      /** Record-only: see configureCalls above. `afterRun` is true when run() has been called and stop() has not. */
+      configure: function (config) {
+        window.XR8.configureCalls.push({ config: config || {}, afterRun: runCalled })
+      },
+      /** Record-only, like configure(): see projectionCalls above. */
+      updateCameraProjectionMatrix: function (args) {
+        window.XR8.projectionCalls.push({ args: args || {}, afterRun: runCalled })
+      },
       /**
        * Deterministic hit-test: projects the screen point onto the room's
        * floor/back-wall from the current pose.  Good enough for the spatial

@@ -29,9 +29,11 @@
  *
  * NOT reentrant: a critical section must never call `withWorldLock` again for
  * the same slug — it would wait on itself forever. In `main.ts` that means
- * only `loadWorld`/`updateWorld`/`mutateWorldFiles` take the lock; the
- * unlocked `readWorldUnlocked`/`writeWorldUnlocked` primitives they call
- * inside it never do.
+ * only `loadWorld`/`updateWorld`/`mutateWorldFiles` take the lock (and the
+ * hand-over of scans between two worlds, which takes the second world's lock
+ * only if it is free: `tryWithWorldLock`, ADR 0011); the unlocked
+ * `readWorldUnlocked`/`writeWorldUnlocked` primitives they call inside it
+ * never do.
  *
  * In-process only. It assumes the single-process-server model ADR 0003
  * already assumes for crash recovery; two server processes sharing a
@@ -61,6 +63,24 @@ export function withWorldLock<T>(slug: string, critical: () => Promise<T>): Prom
     if (_chains.get(slug) === tail) _chains.delete(slug)
   })
   return result
+}
+
+/**
+ * `withWorldLock` that never waits: when a critical section for `slug` is running or queued it answers
+ * `{ ran: false }` at once and runs nothing, and otherwise runs `critical` and answers `{ ran: true, value }`.
+ *
+ * For a caller that already holds one world's lock and needs to touch a second world. Waiting for the second lock
+ * while holding the first is how two such callers, each holding the lock the other wants, wait on each other for
+ * good, and nothing here releases either. A caller that is told `ran: false` leaves what it meant to do for
+ * the next time it runs: nothing is lost, only put off. The check and the claim of the lock happen in one
+ * synchronous step, so two callers cannot both find the world free.
+ */
+export async function tryWithWorldLock<T>(
+  slug: string,
+  critical: () => Promise<T>,
+): Promise<{ ran: true; value: T } | { ran: false }> {
+  if (_chains.has(slug)) return { ran: false }
+  return { ran: true, value: await withWorldLock(slug, critical) }
 }
 
 /** Slugs with a critical section running or queued — for tests/diagnostics. */

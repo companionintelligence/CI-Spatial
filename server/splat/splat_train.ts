@@ -24,6 +24,7 @@
 import { resolve } from '@std/path'
 import { buildBrushDataset } from './splat_train_dataset.ts'
 import { isRunnable } from '../exec_probe.ts'
+import { budgetFromEnv, runWithDeadline } from '../run_with_deadline.ts'
 import { runColmapPoses } from '../colmap/colmap_poses.ts'
 import { isServerSessionId } from '../../src/shared/session-id.ts'
 // The manifest type lives in src/world/manifests.ts, not here — see that
@@ -128,7 +129,11 @@ export interface SplatTrainRunOptions {
   /** Eval cadence in steps (default = trainIters, i.e. eval once at the end). */
   evalEvery?: number
   /** For testing: skip the real spawn and treat these results as the Brush run. */
-  _spawn?: (bin: string, args: string[], env: Record<string, string>) => Promise<{ code: number; stderr: string }>
+  _spawn?: (
+    bin: string,
+    args: string[],
+    env: Record<string, string>,
+  ) => Promise<{ code: number; stderr: string; timeoutReason?: string | null }>
   /** Provenance forwarded into the manifest. */
   provenance?: { sessionId: string; scanId?: string }
 }
@@ -325,7 +330,7 @@ export async function runSplatTrain(opts: SplatTrainRunOptions): Promise<SplatTr
     ? { CUBECL_WGPU_DEFAULT_DEVICE: params.device }
     : {}
 
-  let spawnResult: { code: number; stderr: string }
+  let spawnResult: { code: number; stderr: string; timeoutReason?: string | null }
   try {
     spawnResult = opts._spawn
       ? await opts._spawn(params.brushBin, args, env)
@@ -350,13 +355,18 @@ export async function runSplatTrain(opts: SplatTrainRunOptions): Promise<SplatTr
     // training views (all images missing or filtered out)" — which names the
     // real cause. Same reasoning as colmap_poses.ts keeping a stderr slice.
     const tail = stderrTail(spawnResult.stderr)
+    const outcome = spawnResult.timeoutReason
+      ? `${spawnResult.timeoutReason} and was stopped`
+      : `exited ${spawnResult.code}`
     return _finish(manifestPath, {
       ...baseManifest,
       status: 'error',
-      error: tail ? `brush exited ${spawnResult.code}: ${tail}` : `brush exited ${spawnResult.code}`,
-      remediation:
-        'Read the message above — it is Brush\'s own. Re-run the same command by hand to see the full log: ' +
-        `${params.brushBin} ${args.join(' ')} (see docs/pipelines/splat-train.md — Troubleshooting).`,
+      error: tail ? `brush ${outcome}: ${tail}` : `brush ${outcome}`,
+      remediation: spawnResult.timeoutReason
+        ? 'Brush ran past its time budget and was stopped. Raise BRUSH_TIMEOUT_MS if this GPU is simply ' +
+          'slow, or check the GPU for a stall before re-running.'
+        : 'Read the message above — it is Brush\'s own. Re-run the same command by hand to see the full log: ' +
+          `${params.brushBin} ${args.join(' ')} (see docs/pipelines/splat-train.md — Troubleshooting).`,
       timing: { elapsedMs: Date.now() - started },
     }, spawnResult.code, spawnResult.stderr)
   }
@@ -527,20 +537,25 @@ async function findExportedPly(
 // splat_detect.ts, and both copies mis-detected every binary as non-runnable
 // on Windows (see that file's header for the mode-bit reason).
 
+/**
+ * Three hours. A Brush run is tens of minutes on a healthy GPU, so this is
+ * generous enough not to cut a slow one short, and short enough that a hang
+ * does not hold the queue overnight. Untuned.
+ */
+const DEFAULT_BRUSH_TIMEOUT_MS = 3 * 60 * 60 * 1000
+
 async function defaultSpawn(
   bin: string,
   args: string[],
   extraEnv: Record<string, string>,
-): Promise<{ code: number; stderr: string }> {
-  const cmd = new Deno.Command(bin, {
-    args,
-    env: extraEnv,
-    stdout: 'piped',
-    stderr: 'piped',
-  })
-  const output = await cmd.output()
+): Promise<{ code: number; stderr: string; timeoutReason: string | null }> {
+  const output = await runWithDeadline(
+    bin,
+    { args, env: extraEnv, stdout: 'piped', stderr: 'piped' },
+    budgetFromEnv('BRUSH_TIMEOUT_MS', DEFAULT_BRUSH_TIMEOUT_MS),
+  )
   const stderr = new TextDecoder().decode(output.stderr).trim()
-  return { code: output.code, stderr }
+  return { code: output.code, stderr, timeoutReason: output.timeoutReason }
 }
 
 async function writeManifest(path: string, manifest: SplatTrainManifestWithQuality): Promise<void> {

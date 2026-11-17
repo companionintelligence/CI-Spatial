@@ -9,6 +9,7 @@ import type { DetectionStore, StoredDetection } from '../scene/store'
 import type { InferMode } from '../inference/router'
 import { formatBytes, type ProvisioningStatus } from '../inference/model-provisioning'
 import { icon, iconLabel, type IconName } from './icons'
+import { previousRunPanelNote } from './previous-run'
 
 const CATEGORY_COLORS: Record<string, string> = {
   chair: '#72ddd4', table: '#81c784', sofa: '#ff8a65', couch: '#ff8a65',
@@ -53,19 +54,44 @@ const EXPORT_LABELS: Record<ExportOutcome, string> = {
   failed: 'Export failed',
 }
 
+/** Clear's title on a read-only page (MAIN10-5). The erase is refused there, so Clear says where to do it. */
+const READ_ONLY_CLEAR_TITLE = 'The scan is open in another tab. Erase it there.'
+
 export class SidePanel {
   private panel: HTMLElement
   private content: HTMLElement
   private footer: HTMLElement
   private toggle: HTMLButtonElement
   private isOpen = false
+  /** Set on a read-only page by setReadOnly(). Clear then erases and resets nothing (MAIN10-5). */
+  private readOnly = false
   private _streamBtn: HTMLButtonElement | null = null
   private _aiServerBtn: HTMLButtonElement | null = null
   private _aiWebGPUBtn: HTMLButtonElement | null = null
   private _modelStatusText: HTMLElement | null = null
   private _modelActionBtn: HTMLButtonElement | null = null
+  /**
+   * The inline edit open in the list, kept across re-renders so a capture cannot wipe it.
+   * Tied to the stored session it was typed in, by that session's start time: adopting
+   * a server session id keeps the start time, but a load or a new session changes it,
+   * so a draft never reaches another session's object.
+   */
+  private _editing: { startedAt: number; key: string; label: string; description: string } | null = null
 
   get streamButton(): HTMLButtonElement | null { return this._streamBtn }
+
+  /**
+   * Put this panel on a read-only page (MAIN10-5, main.ts), after mount(). Clear is disabled with a
+   * title that says the scan is open in another tab, and its click resets nothing: the store refuses
+   * the erase without a word, so the live scan must not be emptied for an erase that did not happen.
+   */
+  setReadOnly(): void {
+    this.readOnly = true
+    const clearBtn = this.footer.querySelector<HTMLButtonElement>('#panel-clear-session-btn')
+    if (!clearBtn) return
+    clearBtn.disabled = true
+    clearBtn.title = READ_ONLY_CLEAR_TITLE
+  }
 
   constructor(
     private readonly store: DetectionStore,
@@ -91,6 +117,11 @@ export class SidePanel {
      * lifetime of this SidePanel instance.
      */
     private readonly webGPUUnavailableReason: string | null = null,
+    /**
+     * Empties the live scan (main.ts) once Clear has erased the stored one. Gets the
+     * number of detections the erased scan had, read before Clear emptied the store.
+     */
+    private readonly onScanReset?: (detectionCount: number) => void,
   ) {
     this.panel = document.getElementById('side-panel')!
     this.content = document.getElementById('panel-content')!
@@ -131,13 +162,16 @@ export class SidePanel {
     const exportHint = document.createElement('p')
     exportHint.id = 'panel-export-hint'
     exportHint.hidden = true
-    exportHint.textContent = 'Export unlocks after you scan an object.'
+    exportHint.textContent = '• Export unlocks after you scan an object'
     exportHint.style.cssText = 'margin:0;font-size:12px;line-height:1.5;color:rgba(255,255,255,0.6);'
     this.footer.appendChild(exportHint)
+    // The resting label carries the box icon. The temporary outcome labels stay text only,
+    // and the timers put the icon label back.
+    const exportGlbLabel = iconLabel('box', 'Export GLB', { size: '15px' })
     const exportBtn = document.createElement('button')
     exportBtn.className = 'panel-btn-primary'
     exportBtn.id = 'panel-export-glb-btn'
-    exportBtn.textContent = 'Export GLB'
+    exportBtn.innerHTML = exportGlbLabel
     exportBtn.addEventListener('click', async () => {
       exportBtn.disabled = true
       exportBtn.textContent = 'Exporting...'
@@ -145,13 +179,13 @@ export class SidePanel {
         const outcome = await this.onExport()
         exportBtn.textContent = EXPORT_LABELS[outcome] ?? EXPORT_LABELS.exported
         // Leave a bad outcome up longer — it is the one worth reading.
-        setTimeout(() => { exportBtn.textContent = 'Export GLB' },
+        setTimeout(() => { exportBtn.innerHTML = exportGlbLabel },
           outcome === 'exported' || outcome === 'cancelled' ? 1400 : 2400)
       } catch {
         // onExport is expected to report failure as a value; a throw means
         // something unhandled, which is still the user's failed export.
         exportBtn.textContent = EXPORT_LABELS.failed
-        setTimeout(() => { exportBtn.textContent = 'Export GLB' }, 1800)
+        setTimeout(() => { exportBtn.innerHTML = exportGlbLabel }, 1800)
       } finally {
         exportBtn.disabled = false
       }
@@ -162,7 +196,7 @@ export class SidePanel {
       const summaryBtn = document.createElement('button')
       summaryBtn.className = 'panel-btn-ghost'
       summaryBtn.id = 'panel-export-summary-btn'
-      summaryBtn.textContent = 'Export Summary'
+      summaryBtn.innerHTML = iconLabel('text-lines', 'Export Summary', { size: '15px' })
       summaryBtn.addEventListener('click', this.onSummary)
       this.footer.appendChild(summaryBtn)
     }
@@ -193,15 +227,42 @@ export class SidePanel {
     const clearBtn = document.createElement('button')
     clearBtn.className = 'panel-btn-ghost panel-btn-danger'
     clearBtn.id = 'panel-clear-session-btn'
-    clearBtn.textContent = 'Clear session'
-    // One unconfirmed tap, in the same footer as Export, deleted this session's
-    // detections and every captured frame from IndexedDB. Navigating away from
-    // exactly that data already raises a confirm (src/main.ts), so the button
-    // that destroys it outright should not be the quieter of the two — same
-    // pattern, same wording, so the two agree.
+    clearBtn.innerHTML = iconLabel('trash', 'Clear session', { size: '15px' })
+    // Clear deletes this session's detections and every captured frame from
+    // IndexedDB, so its confirm names what goes and what stays. The history
+    // drawer's delete confirm says the same. It also empties the live scan
+    // (onScanReset), so the next export cannot upload what was just cleared.
     clearBtn.addEventListener('click', async () => {
-      if (!confirm('Clear this scan? Unsaved progress will be lost.')) return
-      await this.store.clear()
+      // A read-only page erases nothing and resets nothing (MAIN10-5).
+      if (this.readOnly) return
+      if (!confirm('Erase this scan from this phone? Objects and photos go. Copies already on the server stay.')) return
+      // Counted before Clear empties the store, so the keyframe summary of the scan being erased is right.
+      // The scan's own objects: an earlier run's are in the record and go with it, but were never in this scan.
+      const erased = this.store.currentRunDetections().size
+      this.footer.querySelector('[data-clear-error]')?.remove()
+      // clear() empties the detections before its first await, so the live scan resets
+      // right after that synchronous part. It does not wait for the IndexedDB erase, so a
+      // hung erase still leaves no old point cloud on screen.
+      const erasing = this.store.clear()
+      // Handled here too: if onScanReset throws, the await below is never reached, and a failed
+      // erase would then reject with no handler. The await still reports a real failure to the user.
+      erasing.catch(() => {})
+      this.onScanReset?.(erased)
+      try {
+        await erasing
+      } catch (err) {
+        console.error('[panel] clear failed', err)
+        // clear() had already emptied the scan, but its notify() never ran, so the
+        // list would still show what was erased. Redraw it from the store.
+        this.render(this.store.currentRunDetections(), this.store.selected)
+        // The stored copy may still be on the phone, so the line says the erase did not finish.
+        const note = document.createElement('p')
+        note.dataset['clearError'] = ''
+        note.setAttribute('role', 'alert')
+        note.style.cssText = 'margin:0;font-size:12px;line-height:1.5;color:#ffb7b7;'
+        note.textContent = 'Could not erase this scan from this phone. Try again.'
+        clearBtn.after(note)
+      }
     })
     this.footer.appendChild(clearBtn)
 
@@ -260,7 +321,7 @@ export class SidePanel {
       const aiNote = document.createElement('div')
       aiNote.id = 'ai-engine-note'
       aiNote.style.cssText = 'font-size:10px;color:rgba(255,255,255,0.6);padding:2px 0;'
-      aiNote.textContent = this.webGPUUnavailableReason ?? 'Runs on the scan server'
+      aiNote.textContent = this._aiNoteText(this._currentInferMode)
       aiWrap.appendChild(aiNote)
 
       // ── On-device model provisioning (wave 05 ticket 0002) ────────────────
@@ -284,7 +345,7 @@ export class SidePanel {
         const modelBtn = document.createElement('button')
         modelBtn.className = 'panel-btn-ghost'
         modelBtn.id = 'panel-provision-model-btn'
-        modelBtn.textContent = 'Download'
+        modelBtn.innerHTML = iconLabel('save', 'Download', { size: '15px' })
         modelBtn.disabled = true
         modelBtn.addEventListener('click', () => { void this._handleModelAction() })
         this._modelActionBtn = modelBtn
@@ -297,8 +358,10 @@ export class SidePanel {
       this._setAIMode(this._currentInferMode)
     }
 
-    this.store.subscribe((dets, selected) => this.render(dets, selected))
-    this.render(this.store.detections, this.store.selected)
+    // The list, its count and the export buttons describe what this page's AR run found: an earlier
+    // run's objects are in the history drawer, and are not exported (DetectionStore.currentRunDetections).
+    this.store.subscribe((_all, selected) => this.render(this.store.currentRunDetections(), selected))
+    this.render(this.store.currentRunDetections(), this.store.selected)
 
     // The footer is built once, but whether it overflows depends on the viewport:
     // below 700 px tall it scrolls so the object list keeps a usable height
@@ -324,7 +387,7 @@ export class SidePanel {
     this.panel.classList.toggle('open', open)
     // The help button sits in the panel's top corner; while the panel is open that corner belongs to the panel.
     document.body.classList.toggle('side-panel-open', open)
-    const count = this.store.detections.size
+    const count = this.store.currentRunDetections().size
     this.toggle.setAttribute('data-count', count > 0 ? String(count) : '')
   }
 
@@ -347,14 +410,22 @@ export class SidePanel {
       this._aiWebGPUBtn.setAttribute('data-active', String(mode === 'webgpu'))
     }
     const note = document.getElementById('ai-engine-note')
-    if (note) {
-      // A device that can't run on-device inference says so persistently —
-      // this note is the "why" the disabled toggle's title also carries, and
-      // it must survive updateInferMode() calls, not just mount() (wave 05
-      // ticket 0004's "says so specifically" acceptance criterion).
-      note.textContent = this.webGPUUnavailableReason
-        ?? (mode === 'server' ? 'Runs on the scan server' : 'On-device — no data leaves your phone')
-    }
+    if (note) note.textContent = this._aiNoteText(mode)
+  }
+
+  /**
+   * The line under the engine toggle for a mode. Mount and every mode switch
+   * use it, so the two cannot disagree.
+   */
+  private _aiNoteText(mode: InferMode): string {
+    // A device that can't run on-device inference says so persistently —
+    // this note is the "why" the disabled toggle's title also carries, and
+    // it must survive updateInferMode() calls, not just mount() (wave 05
+    // ticket 0004's "says so specifically" acceptance criterion).
+    return this.webGPUUnavailableReason
+      ?? (mode === 'server'
+        ? 'Sends photos to your Scan server for analysis.'
+        : 'Detection runs on this phone. Scan data still syncs to your Scan server.')
   }
 
   /**
@@ -388,7 +459,7 @@ export class SidePanel {
       this._modelActionBtn.dataset['action'] = 'retry'
     } else {
       this._modelStatusText.textContent = `On-device model: not downloaded (${sizeLabel})`
-      this._modelActionBtn.textContent = 'Download'
+      this._modelActionBtn.innerHTML = iconLabel('save', 'Download', { size: '15px' })
       this._modelActionBtn.dataset['action'] = 'download'
     }
     this._modelActionBtn.disabled = false
@@ -442,23 +513,41 @@ export class SidePanel {
   }
 
   private render(dets: Map<string, StoredDetection>, selected: Set<string>): void {
+    // A draft belongs to one stored session and one object. A load or a new
+    // session must not carry it over, and an object that has gone (cleared,
+    // deleted, merged away) has nothing left to save to.
+    if (this._editing && (this._editing.startedAt !== this.store.startedAt || !dets.has(this._editing.key))) {
+      this._editing = null
+    }
     const count = dets.size
     this.toggle.setAttribute('data-count', count > 0 ? String(count) : '')
     this._setActionsEnabled(count > 0)
 
     if (count === 0) {
+      // Where someone who remembers objects looks for them: say where an earlier run's went.
+      const earlier = this.store.previousRunCount()
       this.content.innerHTML = `
         <div style="padding:24px 16px;text-align:center;">
           <div style="margin-bottom:10px;opacity:0.3;">${icon('pin', { size: '32px' })}</div>
           <p style="color:rgba(255,255,255,0.6);font-size:13px;line-height:1.5;">
             No objects yet.<br>Tap the capture button to scan.
-          </p>
+          </p>${earlier > 0 ? `
+          <p data-previous-run-note style="color:rgba(255,255,255,0.6);font-size:12px;line-height:1.5;">
+            ${previousRunPanelNote(earlier)}
+          </p>` : ''}
         </div>`
       this._markScrollable(this.content)
       return
     }
 
     const sorted = [...dets.entries()].sort(([, a], [, b]) => b.confidence - a.confidence)
+    // What had focus in the list, and where its caret was, so the rebuild can put both back.
+    const active = document.activeElement
+    const focused = active instanceof HTMLElement && this.content.contains(active) ? active : null
+    const focusId = focused?.dataset['focusId'] ?? null
+    const caret = focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement
+      ? { start: focused.selectionStart, end: focused.selectionEnd }
+      : null
     this.content.innerHTML = ''
 
     const selCount = selected.size
@@ -473,6 +562,19 @@ export class SidePanel {
 
     for (const [key, det] of sorted) {
       this.content.appendChild(this._buildCard(key, det, selected.has(key)))
+    }
+    // A capture rebuilt the list while the person was typing or tapping a control:
+    // put focus back on that same control (and the caret in a text field).
+    if (focusId) {
+      const target = [...this.content.querySelectorAll<HTMLElement>('[data-focus-id]')]
+        .find((el) => el.dataset['focusId'] === focusId)
+      if (target) {
+        target.focus()
+        if (caret && caret.start !== null && caret.end !== null
+          && (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) {
+          target.setSelectionRange(caret.start, caret.end)
+        }
+      }
     }
 
     this._markScrollable(this.content)
@@ -535,8 +637,10 @@ export class SidePanel {
     const editBtn = document.createElement('button')
     editBtn.textContent = '✏'
     editBtn.title = 'Edit label & description'
+    editBtn.setAttribute('aria-label', `Edit ${det.label}`)
     editBtn.className = 'ci-icon-btn ci-icon-btn--sm'
     editBtn.style.marginLeft = 'auto'
+    editBtn.dataset['focusId'] = `${key}:edit`
 
     row1.append(dot, labelEl, confEl, editBtn)
 
@@ -562,7 +666,9 @@ export class SidePanel {
 
     // Inline edit form
     const editForm = document.createElement('div')
-    editForm.style.cssText = 'display:none;margin-top:8px;'
+    // A draft typed before a re-render reopens here, with what was typed.
+    const draft = this._editing?.key === key ? this._editing : null
+    editForm.style.cssText = `display:${draft ? 'block' : 'none'};margin-top:8px;`
     // Structure only — the label/description are user- and VLM-authored text and
     // are assigned as DOM properties below, never interpolated. Interpolating them
     // into the value="" attribute truncated any label containing a double quote
@@ -579,27 +685,50 @@ export class SidePanel {
         <button class="edit-cancel ci-inline-btn ci-inline-btn--muted" style="flex:1;">Cancel</button>
       </div>
     `
-    editForm.querySelector<HTMLInputElement>('input')!.value = det.label
-    editForm.querySelector<HTMLTextAreaElement>('textarea')!.value = det.description
+    const labelInput = editForm.querySelector<HTMLInputElement>('input')!
+    const descInput = editForm.querySelector<HTMLTextAreaElement>('textarea')!
+    labelInput.value = draft ? draft.label : det.label
+    descInput.value = draft ? draft.description : det.description
+    labelInput.dataset['focusId'] = `${key}:label`
+    descInput.dataset['focusId'] = `${key}:desc`
+    if (draft) card.dataset['editing'] = 'true'
+    // The typed text lives in SidePanel state as well as in this node, so a re-render keeps it.
+    const keepDraft = () => {
+      if (this._editing?.key === key) {
+        this._editing.label = labelInput.value
+        this._editing.description = descInput.value
+      }
+    }
+    labelInput.addEventListener('input', keepDraft)
+    descInput.addEventListener('input', keepDraft)
 
     editBtn.addEventListener('click', (e) => {
       e.stopPropagation()
       const show = editForm.style.display === 'none'
       editForm.style.display = show ? 'block' : 'none'
-      if (show) editForm.querySelector<HTMLInputElement>('input')?.focus()
+      this._editing = show
+        ? { startedAt: this.store.startedAt, key, label: labelInput.value, description: descInput.value }
+        : null
+      if (show) labelInput.focus()
     })
 
-    editForm.querySelector<HTMLButtonElement>('.edit-save')!.addEventListener('click', async (e) => {
+    const saveBtn = editForm.querySelector<HTMLButtonElement>('.edit-save')!
+    saveBtn.dataset['focusId'] = `${key}:save`
+    saveBtn.addEventListener('click', async (e) => {
       e.stopPropagation()
-      const newLabel = (editForm.querySelector<HTMLInputElement>('input')!.value || det.label).trim()
-      const newDesc = (editForm.querySelector<HTMLTextAreaElement>('textarea')!.value || det.description).trim()
+      const newLabel = (labelInput.value || det.label).trim()
+      const newDesc = (descInput.value || det.description).trim()
       editForm.style.display = 'none'
+      this._editing = null
       await this.store.updateDetection(key, { label: newLabel, description: newDesc })
     })
 
-    editForm.querySelector<HTMLButtonElement>('.edit-cancel')!.addEventListener('click', (e) => {
+    const cancelBtn = editForm.querySelector<HTMLButtonElement>('.edit-cancel')!
+    cancelBtn.dataset['focusId'] = `${key}:cancel`
+    cancelBtn.addEventListener('click', (e) => {
       e.stopPropagation()
       editForm.style.display = 'none'
+      this._editing = null
     })
 
     info.append(row1, desc, posBadge, editForm)

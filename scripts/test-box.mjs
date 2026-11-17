@@ -12,6 +12,9 @@
  *
  * Env knobs: TEST_BOX_API_PORT (8100), TEST_BOX_VITE_PORT (5273),
  * CHROMIUM_EXECUTABLE_PATH (forwarded to Playwright).
+ *
+ * Extra command-line arguments are forwarded to Playwright, so a single spec can be run
+ * on its own ports: npm run test:box -- tests/mock-offline-queue.spec.ts --repeat-each=3
  */
 import { spawn, execSync } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, openSync, rmSync, writeFileSync } from 'node:fs'
@@ -160,6 +163,12 @@ launch('deno', denoBin, ['run', '--allow-net', '--allow-read', '--allow-write', 
   // though this run's real Vite is on TEST_BOX_VITE_PORT — its share links/QR
   // output would then leak the wrong port instead of this instance's own.
   VITE_PORT: String(VITE_PORT),
+  // The pages under test are served by this run's own Vite on https://localhost:<port>, and the
+  // server admits localhost and LAN origins only behind this flag (server/origin.ts). Without it
+  // the viewer's /events WebSocket is refused and every spec that waits for a live job update
+  // (mock-optimize-scan-job-update) times out. This box is localhost-only and isolated, which is
+  // exactly what the flag is for.
+  ALLOW_DEV_ORIGINS: '1',
 })
 // Vite's default recursive file watcher watches every GLB the seed dumps into
 // .test-run/scans (plus node_modules) — on this shared box that exhausts the
@@ -201,7 +210,7 @@ try {
 
   // 4. Test suites
   console.log('[test-box] running playwright: api + chromium-mock')
-  const pw = spawnCompat('npx', ['playwright', 'test', '--project=api', '--project=chromium-mock'], {
+  const pw = spawnCompat('npx', ['playwright', 'test', '--project=api', '--project=chromium-mock', ...process.argv.slice(2)], {
     cwd: root,
     stdio: 'inherit',
     env: {

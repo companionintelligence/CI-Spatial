@@ -102,9 +102,10 @@ flip is a constant.
 **Ticket 0009 fixed both**, on the client, by measuring rather than by subtracting a literal
 180 — which would have encoded an unguaranteed assumption about how each provider initialises
 its world frame *and* left the tap-time error in place. `sessionFrameBearingDeg()` computes
-`deviceBearing − cameraYawInSession`: the camera's forward is one physical direction described
-in both frames at once, so their difference is the offset between them, and the 180° falls out
-on its own.
+`deviceBearing + cameraYawInSession` (it subtracted when this was written, which audit F53 found
+wrong by twice the turn since the session started): the camera's forward is one physical
+direction described in both frames at once, as a yaw that grows counter-clockwise and a bearing
+that grows clockwise, so their sum is the offset between them, and the 180° falls out on its own.
 
 Three things to carry forward:
 
@@ -117,10 +118,19 @@ Three things to carry forward:
   correction needs the camera pose at the instant the bearing was sampled, which was never
   stored. A blanket −180 would fix only those captured at the session's starting orientation
   and would add error to the rest. Survivable only because nothing reads `anchorBearingDeg`.
-- **The fix is analytic, not device-verified.** The tests are self-consistent with
-  `composeYUpTransform`'s convention; if that convention is itself wrong relative to the real
-  world they would agree with it and still be wrong. The settling check is small — stand facing
-  a known bearing, calibrate, read back `anchorBearingDeg` — and belongs with 0005's checklist.
+  The same holds for every frame written between 0009 and the sign correction: none carries
+  `bearingConvention`, so `readableAnchorBearingDeg()` and `readableProjectBearingDeg()` in
+  `src/world/geo.ts` return `null` for it, and a scan of the source checks that nothing else reads
+  the field.
+- **The fix is analytic, not device-verified.** The sign is pinned against a physical model that
+  shares no code with the app (`tests/unit/deno/physical_oracle.ts`, used by
+  `world_registration.test.ts`): a right-handed session, a camera looking down its own −Z, a
+  perfect compass. What a phone's compass actually reports (which axis of the phone, true or
+  magnetic north, the screen's rotation) is not in it. The old settling check here — stand facing
+  a known bearing, calibrate, read back `anchorBearingDeg` — cannot tell the two rules apart: at the
+  orientation AR started in they give the same number. The check that can is the spin test in
+  `docs/testing/DEVICE_TESTING.md` (B2 step 4): turn on the spot with `?debug=pose` and read
+  `B+yaw` and `B-yaw`.
 
 0009 also fixed the anchor marker's north tick, which had the same root cause:
 `buildAnchorMarker`'s parameter is a yaw **in the marker's parent frame**, which equals a
@@ -138,8 +148,9 @@ points." This is sharper: reversal is a *guaranteed* 180° error that verificati
 blesses.
 
 **Ticket 0007 has since landed both mitigations** — a reference photo per marker, crosshaired
-at the recorded tap, and the `pointLabels` description beside it, shown per stage on a return
-visit. Read what that does and does not buy you honestly: the residual still cannot detect a
+at the recorded tap (since WP-07, where the marker is in the photo), and the `pointLabels`
+description beside it, shown per stage on a return visit. Read what that does and does not
+buy you honestly: the residual still cannot detect a
 reversed pair, and nothing in the code can. Only the user can, and only if the panel gives
 them something to recognise — which is why the two photos are labelled "Point A" and "Point B"
 rather than by role. **Whether it actually reduces re-acquisition error is unmeasured**: the

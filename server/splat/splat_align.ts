@@ -354,7 +354,7 @@ export function umeyamaSimilarity(source: number[][], target: number[][]): Simil
  * silently; `THREE.Matrix4.set(...)` takes row-major arguments and is the
  * correct consumer. Asserted in splat_align.test.ts.
  */
-export function similarityToRowMajor(fit: SimilarityFit): number[] {
+export function similarityToRowMajor(fit: Pick<SimilarityFit, 'rotation' | 'translation' | 'scale'>): number[] {
   const { rotation: r, translation: t, scale: s } = fit
   return [
     s * r[0][0], s * r[0][1], s * r[0][2], t[0],
@@ -1051,11 +1051,11 @@ function num(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : 0
 }
 
-function identity3(): number[][] {
+export function identity3(): number[][] {
   return [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
 }
 
-function matMul3(a: number[][], b: number[][]): number[][] {
+export function matMul3(a: number[][], b: number[][]): number[][] {
   const out = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
   for (let i = 0; i < 3; i++) {
     for (let j = 0; j < 3; j++) {
@@ -1065,7 +1065,7 @@ function matMul3(a: number[][], b: number[][]): number[][] {
   return out
 }
 
-function transpose3(m: number[][]): number[][] {
+export function transpose3(m: number[][]): number[][] {
   return [
     [m[0][0], m[1][0], m[2][0]],
     [m[0][1], m[1][1], m[2][1]],
@@ -1073,7 +1073,7 @@ function transpose3(m: number[][]): number[][] {
   ]
 }
 
-function matVec3(m: number[][], p: Vec3Tuple): Vec3Tuple {
+export function matVec3(m: number[][], p: Vec3Tuple): Vec3Tuple {
   return [
     m[0][0] * p[0] + m[0][1] * p[1] + m[0][2] * p[2],
     m[1][0] * p[0] + m[1][1] * p[1] + m[1][2] * p[2],

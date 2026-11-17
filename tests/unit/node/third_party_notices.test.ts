@@ -8,7 +8,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -19,6 +19,8 @@ import {
   SUPPLIED_TEXTS,
   SUPPLIED_TEXT_SOURCES,
   TEXTS_DIR,
+  androidLicenceTexts,
+  bundleNotices,
   componentsWithoutText,
   licenceFiles,
   linkedCrates,
@@ -152,6 +154,98 @@ test('every library the release APK holds is locked, transitive ones included, a
   assert.deepEqual(unknown, [], 'a library with no known licence stops the notices')
   const cordova = ANDROID_LICENCES.find((entry: { match: RegExp }) => entry.match.test('org.apache.cordova:framework')) as { notice?: string }
   assert.equal(cordova.notice, 'cordova-android-NOTICE.txt', "Cordova's NOTICE goes with it (Apache-2.0 section 4(d))")
+})
+
+/** A supplied licence text as the notices read it: line ends as LF, no blank lines at either end. */
+const suppliedOnFile = (file: string) => readFileSync(join(TEXTS_DIR, file), 'utf8').replace(/\r\n/g, '\n').trim()
+type AndroidLicence = { match: RegExp; licence: string; source: string; notice?: string; text?: string; disclosure?: string }
+const androidLicence = (library: string) => ANDROID_LICENCES.filter((entry: AndroidLicence) => entry.match.test(library)) as AndroidLicence[]
+
+test("ARCore is listed under Google's proprietary terms, with the disclosure Google asks for, then the terms' text, and no Apache License text", () => {
+  const entries = androidLicence('com.google.ar:core')
+  assert.equal(entries.length, 1, 'one entry names ARCore')
+  const [arcore] = entries
+  assert.equal(arcore!.licence, 'ARCore Additional Terms of Service')
+  assert.equal(arcore!.source, 'https://developers.google.com/ar/develop/terms')
+  const texts = androidLicenceTexts(arcore) as string[]
+  assert.equal(texts.length, 2, "the disclosure and the terms' text: not the Apache License, and no NOTICE file of another project's")
+  const [notice, terms] = texts
+  assert.ok(notice!.includes('This application runs on Google Play Services for AR (ARCore), which is provided by Google and governed by the Google Privacy Policy.'),
+    'the disclosure Google asks an app that uses ARCore to make')
+  assert.ok(notice!.includes('Google Play Services for AR: https://play.google.com/store/apps/details?id=com.google.ar.core'), 'with the link to Google Play Services for AR')
+  assert.ok(notice!.includes('Google Privacy Policy: https://policies.google.com/privacy'), 'and the link to the Google Privacy Policy the sentence names')
+  assert.match(notice!, /licensed under the ARCore Additional Terms of Service, https:\/\/developers\.google\.com\/ar\/develop\/terms, not under the licence of this app/,
+    'the terms it is under, linked, and not the app licence')
+  assert.doesNotMatch(notice!, /Apache/, 'ARCore is not under the Apache License')
+  assert.ok(notice!.length < 1000, 'the notice stays short: the proprietary agreement comes after it, as a text of its own')
+  assert.match(notice!, /their text follows this notice/, 'and says the terms follow')
+  assert.ok(terms!.startsWith('ARCore Additional Terms of Service\n'), "the text after it is the terms' own, from licence-texts/arcore-additional-terms.txt")
+  assert.equal(terms, suppliedOnFile('arcore-additional-terms.txt'), 'copied as it is on file')
+  assert.doesNotMatch(terms!, /Apache/, 'ARCore is not under the Apache License')
+})
+
+test('a library gets the Apache License 2.0 exactly when its entry says it is under it, and Cordova its NOTICE after that', () => {
+  for (const entry of ANDROID_LICENCES as AndroidLicence[]) {
+    assert.equal(entry.text === undefined, entry.licence === 'Apache-2.0', `${entry.match}: an entry under another licence carries its own text, and an Apache one does not`)
+  }
+  const [core, cordova] = ['androidx.core:core', 'org.apache.cordova:framework'].map((library) => androidLicenceTexts(androidLicence(library)[0]) as string[])
+  assert.equal(core!.length, 1)
+  assert.match(core![0]!, /^Apache License\b/)
+  assert.equal(cordova!.length, 2)
+  assert.deepEqual(cordova!.slice(0, 1), core, 'the same Apache text comes first')
+  assert.match(cordova![1]!, /^Apache Cordova\b/, "Cordova's NOTICE, which section 4(d) asks to pass on")
+})
+
+// The notices as the Android app's build writes them: the whole generation, as scripts/native/build-web.mjs runs it, so
+// it reads installed packages (the Apache License from typescript, Capacitor's runtime licences from mobile/node_modules).
+// It is skipped where they are not installed.
+const GENERATION_NEEDS = [
+  'node_modules/typescript',
+  'node_modules/onnxruntime-web',
+  ...['android', 'app', 'browser', 'core'].map((name) => `mobile/node_modules/@capacitor/${name}`),
+]
+const notInstalled = GENERATION_NEEDS.filter((path) => !existsSync(join(ROOT, path)))
+
+type Generated = {
+  components: Array<{ group: string; name: string; version?: string; licence: string; source?: string; texts: string[] }>
+  texts: Record<string, string>
+}
+const generate = bundleNotices as unknown as (options: { shell: 'mobile' | 'desktop'; bundledModules: string[] }) => Generated
+
+test('the notices generated for the Android app give each library the text its entry names, ARCore its disclosure and its terms and not the Apache License', {
+  skip: notInstalled.length ? `not installed: ${notInstalled.join(', ')} (run npm ci in the repo root and in mobile/)` : false,
+}, () => {
+  const notices = generate({ shell: 'mobile', bundledModules: [] })
+  assert.deepEqual(componentsWithoutText(notices), [])
+  const textsOf = (component: Generated['components'][number]) => component.texts.map((id) => notices.texts[id]!)
+  const listed = (library: string) => notices.components.filter((c) => c.group === 'android' && c.name === library)
+  // Each library the lockfile pins is listed once, at its locked version, with its entry's licence and the texts its entry names.
+  const pins = (lockedLibraries(readFileSync(ANDROID_LOCKFILE, 'utf8')) as Array<{ group: string; artifact: string; version: string }>)
+    .filter((pin) => !pin.artifact.endsWith('-bom'))
+  assert.ok(pins.length > 20, 'the lockfile is read')
+  for (const { group, artifact, version } of pins) {
+    const library = `${group}:${artifact}`
+    const [entry] = androidLicence(library)
+    const found = listed(library)
+    assert.equal(found.length, 1, `${library} is listed once`)
+    assert.equal(found[0]!.version, version, `${library} at the version the lockfile pins`)
+    assert.equal(found[0]!.licence, entry!.licence, `${library}: its entry's licence`)
+    const texts = textsOf(found[0]!)
+    assert.deepEqual(texts, androidLicenceTexts(entry), `${library}: the texts its entry names`)
+    if (entry!.licence === 'Apache-2.0') assert.match(texts[0]!, /^Apache License\b/, `${library} is under the Apache License 2.0, and its first text is that licence`)
+  }
+  // ARCore carries the disclosure and then its terms' text, and not the Apache License.
+  const [arcore] = listed('com.google.ar:core')
+  assert.ok(arcore, 'ARCore is in the lockfile, so it is in the notices')
+  const arcoreEntry = androidLicence('com.google.ar:core')[0]!
+  assert.equal(textsOf(arcore).length, 2)
+  assert.equal(textsOf(arcore)[0], arcoreEntry.disclosure, 'the disclosure first')
+  assert.equal(textsOf(arcore)[1], suppliedOnFile(arcoreEntry.text!), "then the terms' text")
+  assert.ok(textsOf(arcore).every((text) => !text.includes('Apache License')), 'ARCore is not under the Apache License')
+  // As the notices file prints it: ARCore's notice, with the disclosure in it, applies to ARCore alone.
+  const printed = renderNotices(notices, '0.0.0')
+  assert.ok(printed.includes(`\n---- Applies to: com.google.ar:core ${arcore.version}\n\nThis application runs on Google Play Services for AR (ARCore), which is provided by Google and`),
+    "the notices file prints ARCore's own notice under its name")
 })
 
 test('every supplied licence text is on file, says where it came from, and carries no e-mail address', () => {

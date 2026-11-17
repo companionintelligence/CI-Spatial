@@ -88,11 +88,12 @@ export interface PreflightVerdict {
    * Whether `detail` is worth putting in front of someone BEFORE they commit.
    *
    * Separate from `canScan` because the interesting case is a verdict that says
-   * yes and should still be read: "this browser reports AR support" is the
-   * exact claim a Beam Pro also makes, and a start screen that shows that
-   * sentence has told the truth, while one that shows "The AR engine loaded"
-   * on a phone that is about to work fine has only added noise. Kept in the
-   * verdict rather than re-derived at the call site so the rule is tested.
+   * yes and should still be read: an advertised AR session is the exact claim a
+   * Beam Pro also makes, so the one warming-up detail worth reading says it is
+   * unproven. A start screen that says so has told the truth, while one that
+   * shows "The AR engine loaded" on a phone that is about to work fine has only
+   * added noise. Kept in the verdict rather than re-derived at the call site so
+   * the rule is tested.
    */
   caveat: boolean
 }
@@ -139,6 +140,22 @@ const NO_AR_NEXT_STEP_LOWER =
 const NO_AR_NEXT_STEP =
   'The other ways to capture need no AR and still work here. A phone on a tripod, swept from three to five spots, rebuilds the room from every side. A video or photos you already have of this Place is the other, though it rebuilds the room without cataloguing anything in it.'
 
+/**
+ * The boot-written no-AR line: what `#ar-help` shows on a device that cannot run
+ * a live scan, before the camera opens. It sits on the start screen, so it is
+ * held to that screen's word budget (bootHelpWords() in
+ * tests/support/startup-budget.ts). NO_AR_NEXT_STEP above is written after a
+ * tap, in the failure verdicts, and is not budgeted.
+ *
+ * It keeps what a dead end must say: what to do instead, tripod first, and that
+ * an upload catalogues nothing. The upload's caveat is on its card too, but for
+ * a room that card sits behind "Other ways", so for a room this line is the only
+ * place the caveat shows on first paint. It is 14 words, not 15: a place or a
+ * person on a device with no live capture is already 128 words before this line,
+ * and 14 is the most that fits under the 142 ceiling (bootHelpWords() pins it).
+ */
+const BOOT_NO_AR_NEXT_STEP = 'No live scan. Try a tripod sweep, or video or photos, which catalogues nothing.'
+
 export interface ProbeEnv {
   /** `window.isSecureContext` — camera, WebXR and IndexedDB all require it. */
   secureContext: boolean
@@ -164,13 +181,20 @@ export interface ProbeEnv {
  * one thing that IS knowable up front — no engine, and no AR API to fall back
  * to — and it is worth knowing, because it means the Start button will never
  * do anything and the start screen can say so while it is still on screen.
+ *
+ * The details are short on purpose: applyPreflightToStartScreen() can write a
+ * caveated one into #ar-help at boot, and the start screen's word budget counts
+ * it (bootHelpWords() in tests/support/startup-budget.ts).
  */
 export function probeVerdict(env: ProbeEnv): PreflightVerdict {
   if (!env.secureContext) {
+    // Never written at boot: main() returns before the probe on an insecure
+    // page. It is held to the same copy limits anyway, because probeVerdict()
+    // can return it and the budget charges it.
     return {
       outcome: 'unavailable',
       headline: 'Needs a secure (HTTPS) link',
-      detail: 'The camera and AR both need an HTTPS page, so nothing can start here. Ask for the correct https:// link for this scanner.',
+      detail: 'Camera and AR need HTTPS. Ask for the https:// link.',
       canScan: false,
       routeToUpload: false,
       caveat: true,
@@ -196,7 +220,7 @@ export function probeVerdict(env: ProbeEnv): PreflightVerdict {
     return {
       outcome: 'unavailable',
       headline: 'No AR on this browser',
-      detail: `This browser has no AR support at all, so a live scan cannot run. ${NO_AR_NEXT_STEP}`,
+      detail: BOOT_NO_AR_NEXT_STEP,
       canScan: false,
       routeToUpload: true,
       caveat: true,
@@ -209,7 +233,7 @@ export function probeVerdict(env: ProbeEnv): PreflightVerdict {
     return {
       outcome: 'unavailable',
       headline: 'AR not supported here',
-      detail: `This browser cannot open an AR session, so there is nothing for the scanner to track. ${NO_AR_NEXT_STEP}`,
+      detail: BOOT_NO_AR_NEXT_STEP,
       canScan: false,
       routeToUpload: true,
       caveat: true,
@@ -220,8 +244,9 @@ export function probeVerdict(env: ProbeEnv): PreflightVerdict {
     outcome: 'warming-up',
     headline: 'AR ready to start',
     // Named, rather than presented as a green light, because this is the exact
-    // claim that misled us for a week on the Beam Pro.
-    detail: 'This browser reports AR support. That only means the API is present — some devices answer yes with no AR service installed, and fail when the session opens. If this one does, the other ways to capture need no AR and still work.',
+    // claim that misled us for a week on the Beam Pro. Twelve words: the start
+    // screen's word budget counts it, and its worst screen sits at the ceiling.
+    detail: 'AR is unproven. If it fails, other capture options need no AR.',
     canScan: true,
     routeToUpload: false,
     // The one warming-up verdict worth reading first: this is the sentence the
@@ -271,7 +296,7 @@ export function startFailureVerdict(err: unknown): PreflightVerdict {
       // it is the part that is true regardless of cause. The device-specific
       // reason follows, because "retrying will not help" is the thing that
       // changes what the person does next.
-      detail: `AR could not start: this device advertises AR support but has no AR service installed to back it (on Android that is Google Play Services for AR), so retrying will not help. ${NO_AR_NEXT_STEP}`,
+      detail: 'AR could not start: this device advertises AR support but has no AR service installed to back it (on Android that is Google Play Services for AR), so retrying will not help. ' + NO_AR_NEXT_STEP,
       canScan: false,
       routeToUpload: true,
       caveat: true,
@@ -281,7 +306,7 @@ export function startFailureVerdict(err: unknown): PreflightVerdict {
   return {
     outcome: 'unavailable',
     headline: 'AR could not start on this device',
-    detail: `AR could not start on this device, so there is nothing for the scanner to track. ${NO_AR_NEXT_STEP}`,
+    detail: 'AR could not start on this device, so there is nothing for the scanner to track. ' + NO_AR_NEXT_STEP,
     canScan: false,
     routeToUpload: true,
     caveat: true,
@@ -364,7 +389,7 @@ export function firstFrameVerdict(obs: FirstFrameObservation): PreflightVerdict 
       // four — the failure here is the start, not the hardware.
       outcome: 'degraded',
       headline: 'AR did not start this time',
-      detail: `The camera opened but the AR engine sent no frame in ${seconds} seconds, so there is nothing to track yet. This often clears on a second try. If it keeps happening, ${NO_AR_NEXT_STEP_LOWER}`,
+      detail: 'The camera opened but the AR engine sent no frame in ' + seconds + ' seconds, so there is nothing to track yet. This often clears on a second try. If it keeps happening, ' + NO_AR_NEXT_STEP_LOWER,
       canScan: true,
       routeToUpload: false,
       caveat: true,

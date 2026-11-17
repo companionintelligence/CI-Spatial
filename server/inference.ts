@@ -24,6 +24,12 @@ export type { RawDetection }
 // own Jimp/onnxruntime-node imports live behind the driver port (see load()).
 let JimpClass: any = null
 
+// Qwen3.5 is a thinking model, and Ollama turns reasoning on by default. The reasoning
+// tokens used the output budget: 1,200+ of them before the 55 s timeout, or an empty
+// answer under a cap. `think: false` returns the JSON directly, in about 3 s. The cap
+// stays as a backstop; a normal reply for the 8-object prompt is ~200 tokens.
+const OLLAMA_NUM_PREDICT = 640
+
 // Ollama otherwise uses the model's full context window (262144 for qwen3-vl:4b),
 // which reserves ~44 GB of KV cache, overflows a 24 GB GPU and forces a 50/50
 // CPU split — 100+ s per capture instead of ~20 s. Captures reach us downscaled
@@ -382,9 +388,11 @@ export class InferenceEngine {
       prompt: SPATIAL_DETECTION_PROMPT,
       images: [base64Image],
       stream: false,
+      think: false,
       options: {
         temperature: 0.1,
         num_ctx: OLLAMA_NUM_CTX,
+        num_predict: OLLAMA_NUM_PREDICT,
       }
     }
 

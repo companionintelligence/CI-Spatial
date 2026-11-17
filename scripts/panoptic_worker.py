@@ -9,8 +9,14 @@ Contract with the driver (stable — the TS tests assert on it):
 
     panoptic_worker.py --session-dir DIR --out FILE.json
                        --model HF_ID --max-frames N --min-segment-pixels N
+                       [--frame NAME ...]
+
+    --frame NAME   segment exactly these keyframes, in the order given. The driver
+                   passes the frames it picked evenly across the session. Without
+                   any, the worker takes the first --max-frames keyframes by name.
 
     exit 0 + writes FILE.json   ran; see `frames`
+    exit 4 + stderr             a --frame name is not a keyframe in the session dir
     exit non-zero + stderr      failed; the driver keeps the stderr tail
 
     {
@@ -59,6 +65,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-frames", type=int, default=64)
     p.add_argument("--min-segment-pixels", type=int, default=1500)
     p.add_argument(
+        "--frame",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Keyframe to segment, by file name. Repeat it for each frame: they are "
+            "segmented in the order given, and --max-frames does not apply. Without "
+            "any, the first --max-frames keyframes by name are taken."
+        ),
+    )
+    p.add_argument(
         "--thing-labels",
         default=None,
         type=Path,
@@ -74,9 +91,9 @@ def parse_args() -> argparse.Namespace:
         "--device",
         default=None,
         help=(
-            "torch device: auto (default), cpu, cuda, cuda:N, mps. auto prefers "
-            "CUDA/ROCm, then Apple MPS, then cpu. Anything else is passed to "
-            "torch unvalidated. See scripts/_torch_device.py."
+            "torch device: auto (default), cpu, cuda, cuda:N, mps, xpu. auto prefers "
+            "CUDA/ROCm, then Apple MPS, then Intel XPU, then cpu. Anything else is "
+            "passed to torch unvalidated. See scripts/_torch_device.py."
         ),
     )
     return p.parse_args()
@@ -102,6 +119,21 @@ def _import_device_resolver():
 def keyframes(session_dir: Path, limit: int) -> list[Path]:
     names = sorted(p for p in session_dir.iterdir() if p.is_file() and KEYFRAME_RE.match(p.name))
     return names[:limit]
+
+
+def listed_keyframes(session_dir: Path, names: list[str]) -> list[Path]:
+    """The keyframes named by --frame, in the order given.
+
+    A name must be a keyframe file name, as `keyframes()` accepts, and must exist in
+    the session dir. Anything else is an error rather than a shorter run: the driver
+    picked these frames, and dropping one silently would hide it.
+    """
+    frames: list[Path] = []
+    for name in names:
+        if not KEYFRAME_RE.fullmatch(name) or not (session_dir / name).is_file():
+            raise ValueError(f"not a keyframe in {session_dir}: {name!r}")
+        frames.append(session_dir / name)
+    return frames
 
 
 def label_aliases(name: str) -> set[str]:
@@ -175,6 +207,11 @@ def resolve_thing_split(raw, id2label: dict[int, str]):
 
 
 def main() -> int:
+    # Unsupported ops fall back to CPU on Apple MPS instead of aborting the run.
+    # Set before torch is imported; a no-op on CUDA, ROCm, XPU and CPU.
+    import os
+
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     args = parse_args()
 
     # Imported inside main so `--help` works in a venv that has not finished
@@ -205,7 +242,14 @@ def main() -> int:
         )
         return 2
 
-    frames_in = keyframes(args.session_dir, args.max_frames)
+    if args.frame:
+        try:
+            frames_in = listed_keyframes(args.session_dir, args.frame)
+        except ValueError as exc:
+            print(f"panoptic worker: {exc}", file=sys.stderr)
+            return 4
+    else:
+        frames_in = keyframes(args.session_dir, args.max_frames)
     if not frames_in:
         print(f"panoptic worker: no keyframes in {args.session_dir}", file=sys.stderr)
         return 3

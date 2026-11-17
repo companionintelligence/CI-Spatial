@@ -136,7 +136,7 @@ npm run test:auth:unit
 | Video walkthrough upload | Select a small walkthrough video from the start screen. | `mock-splat-toolbox` upload test, `api-video-ingest`. |
 | Keyframe streaming | Toggle Stream keyframes during a mock scan. | `api-video-ingest`, `api-house-readiness`, session sidecar checks. |
 | Auto-capture | Toggle Auto-capture during a mock scan and let it run briefly. | `mock-ui-mobile`, capture module unit coverage. |
-| Session persistence | Capture, reload, verify count is restored; clear, reload, verify empty. | `mock-session-reload`. |
+| Session persistence | Capture, reload, verify the objects are kept in the history drawer, labelled "previous run, different frame", and are not counted, drawn or exportable in the new view; scan again and verify the export holds only the new objects; clear, reload, verify empty. | `mock-session-reload`. |
 | Offline queue/PWA | Install/open PWA, capture offline, restore network. | `mock-offline-queue`, service-worker checks in Chromium. |
 | Scan history | Open Scan Memory and restore/delete a session. | `mock-ui-mobile`, `mock-session-reload`. |
 | Desktop editor | Open the Spatial Editor, select a scan, edit semantic metadata and notes. | `mock-editor-homes`, `editor_pick.test.ts`. |

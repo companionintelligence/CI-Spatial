@@ -1,4 +1,4 @@
-import type { GeoPose, Quat, Vec3 } from './types'
+import type { BearingConvention, GeoPose, Quat, Vec3 } from './types'
 
 const EARTH_RADIUS_M = 6_378_137
 const DEG_TO_RAD = Math.PI / 180
@@ -133,6 +133,10 @@ export function enuToGeo(origin: GeoPose, local: Vec3): GeoPose {
  * work around; it is the measurement that makes
  * {@link sessionFrameBearingDeg} correct without assuming anything about how a
  * provider initialises its world frame.
+ *
+ * In a right-handed Y-up session this yaw grows **counter-clockwise** seen from
+ * above (turning left raises it), while a compass bearing grows clockwise. That
+ * opposition is the whole reason {@link sessionFrameBearingDeg} adds the yaw.
  */
 export function cameraYawInSessionDeg(rotation: Quat): number {
   // Third column of the rotation matrix is R·(0,0,1); the camera's forward is
@@ -149,8 +153,45 @@ export function normaliseBearingDeg(deg: number): number {
 }
 
 /**
- * The true-north bearing of the **session frame's +Z axis**, given the device's
+ * The sign rule every new bearing is written under: `deviceBearing + cameraYaw`.
+ * See {@link BearingConvention} and {@link sessionFrameBearingDeg}.
+ */
+export const BEARING_CONVENTION: BearingConvention = 2
+
+/**
+ * The rule the app used before it was corrected: `deviceBearing − cameraYaw`.
+ * Reachable only through {@link bearingConventionFromSearch}, so a tester can
+ * compare the two on one phone. Never a default.
+ */
+export const LEGACY_BEARING_CONVENTION: BearingConvention = 1
+
+/**
+ * The device experiment's switch: `?bearing=1` selects the legacy sign rule, so
+ * the compass spin test can run both rules on one phone and read which one holds
+ * still while the phone turns (open the page with `?debug=pose` as well, and see
+ * {@link compassSpinTerms}). Anything else, or no parameter, is the current rule.
+ *
+ * `search` is a parameter and not `location.search` so this stays a pure
+ * function; the calibration flow passes the live query string.
+ *
+ * The rule the page ran under is written onto every record it produces
+ * (`bearingConvention`), so a record made with the switch on can never be read
+ * as a current one. With it on, the whole chain follows the old rule and not
+ * only the sign in {@link sessionFrameBearingDeg}: the AR north tick
+ * ({@link northYawInSessionDeg}) and the one-point frame
+ * ({@link oneTapToProjectTransform}) take their old directions too. A hybrid
+ * would compare neither rule.
+ */
+export function bearingConventionFromSearch(search: string): BearingConvention {
+  return new URLSearchParams(search).get('bearing') === '1' ? LEGACY_BEARING_CONVENTION : BEARING_CONVENTION
+}
+
+/**
+ * The compass bearing of the **session frame's +Z axis**, given the device's
  * compass heading and the camera pose at the moment that heading was read.
+ * "North" is the compass's north, which every web platform documents as
+ * magnetic north (see `GeoFix.bearing`); no declination is applied, and the spin
+ * test below does not measure how far it is from true north.
  *
  * ## Why the raw compass heading is the wrong number
  *
@@ -171,6 +212,46 @@ export function normaliseBearingDeg(deg: number): number {
  *    user taps, not at session start, so any turning done in between is
  *    included in the reading and none of it belongs to the frame.
  *
+ * ## The sign: add the yaw
+ *
+ * An AR session frame is right-handed with +Y up and its camera looks down its
+ * own −Z: that is how three.js and WebXR define it, and how this file reads a
+ * pose (see {@link cameraYawInSessionDeg}). Seen from above, session yaw
+ * `atan2(x, z)` then grows **counter-clockwise**, and a compass bearing grows
+ * **clockwise**. So a session direction at yaw `y` has bearing `B_Z − y`, where
+ * `B_Z` is the bearing of session +Z. The camera's forward is one direction
+ * described in both frames at once, as `cameraYaw` and as `deviceBearing`:
+ *
+ *     deviceBearing = B_Z − cameraYaw        so        B_Z = deviceBearing + cameraYaw
+ *
+ * Turning right by `t` lowers the session yaw by `t` and raises the compass
+ * bearing by `t`, so the sum does not move.
+ *
+ * The version before this subtracted. That agrees with the truth only while the
+ * camera is still at its starting orientation (turn 0 or 180°) and is off by
+ * **twice the turn since session start** everywhere else — a 90° turn gave a
+ * bearing 180° out. Its tests derived their "truth" through
+ * `composeYUpTransform`, which assumes the same yaw direction, so they passed.
+ * tests/unit/deno/world_registration.test.ts checks against a physical model
+ * that shares no code with this file, and keeps the old rule as a regression
+ * guard (an assertion that it disagrees).
+ *
+ * ## What is settled and what is not
+ *
+ * Computed, not measured. It rests on three premises: the session is
+ * right-handed with the camera looking down −Z; `deviceBearing` is the compass
+ * bearing of the camera's forward direction; bearings grow clockwise. On Android
+ * the second one is arranged and not assumed: `GeoTracker.pairedCompass`
+ * (src/geo/compass-heading.ts) hands over the camera's own bearing, or the one the
+ * camera's bearing is worked out to be from the top edge's when the camera points
+ * steeply, or nothing. What a phone's compass actually reports needs a device:
+ * which axis of a tilted iPhone its heading follows (an iPhone's is used as the
+ * camera's, as it always was), how far any reading is from true north (it is
+ * magnetic, with no declination applied), what the screen's rotation does to the
+ * browser's angles and to the AR pose. Until the spin
+ * test has been run on a phone, `?bearing=1` selects the old rule
+ * ({@link bearingConventionFromSearch}) so both can be compared on one phone.
+ *
  * ## Why this needs no assumption about the provider
  *
  * It would be tempting to subtract a literal 180. That would encode a guess
@@ -178,20 +259,159 @@ export function normaliseBearingDeg(deg: number): number {
  * still leave error 2 in place. Measuring
  * {@link cameraYawInSessionDeg} instead makes the correction self-evident: the
  * camera's forward is one direction expressed in both frames at once — session
- * yaw on one side, compass bearing on the other — so their difference *is* the
+ * yaw on one side, compass bearing on the other — so their combination *is* the
  * offset between the frames. The 180° falls out on its own whenever the camera
  * happens to sit at the session's starting orientation.
  *
  * Returns `null` for a null heading, which stays the honest "no compass fix"
- * value rather than a silent 0.
+ * value rather than a silent 0, and for a pose that gives no finite yaw.
  */
 export function sessionFrameBearingDeg(
   deviceBearingDeg: number | null | undefined,
   cameraRotation: Quat,
+  convention: BearingConvention = BEARING_CONVENTION,
 ): number | null {
   if (deviceBearingDeg === null || deviceBearingDeg === undefined) return null
   if (!Number.isFinite(deviceBearingDeg)) return null
-  return normaliseBearingDeg(deviceBearingDeg - cameraYawInSessionDeg(cameraRotation))
+  const yaw = cameraYawInSessionDeg(cameraRotation)
+  if (!Number.isFinite(yaw)) return null
+  return normaliseBearingDeg(convention === LEGACY_BEARING_CONVENTION ? deviceBearingDeg - yaw : deviceBearingDeg + yaw)
+}
+
+/**
+ * The session yaw at which **north** (the compass's) lies — what the AR north tick needs,
+ * because the decal it is drawn on lives in the session frame, where yaw is
+ * `atan2(x, z)` and grows counter-clockwise from above.
+ *
+ * A session direction at yaw `y` has bearing `B_Z − y` (see
+ * {@link sessionFrameBearingDeg}). North is bearing 0, so north lies at yaw
+ * `B_Z`: the tick is drawn at **+bearing**. The old rule drew it at `−B_Z`,
+ * which is right only for `B_Z` of 0 or 180.
+ *
+ * `null` in, `null` out: no compass reading draws no tick, not a tick at 0.
+ */
+export function northYawInSessionDeg(
+  frameBearingDeg: number | null,
+  convention: BearingConvention = BEARING_CONVENTION,
+): number | null {
+  if (frameBearingDeg === null) return null
+  return normaliseBearingDeg(convention === LEGACY_BEARING_CONVENTION ? -frameBearingDeg : frameBearingDeg)
+}
+
+/**
+ * Compass bearing of the **project frame's +Z axis** on the two-point tier.
+ *
+ * Project +Z is the landmark→marker baseline, whose session yaw is
+ * {@link twoPointHeadingDeg}. A session direction at yaw `y` has bearing
+ * `B_Z − y` (see {@link sessionFrameBearingDeg}), so the frame's +Z has bearing
+ * `B_Z − baselineYaw`. `anchorBearingDeg` cannot stand in for it: that is the
+ * session's +Z, and the baseline is wherever the person walked.
+ *
+ * `null` when there is no compass reading. Data only for now: nothing places a
+ * scan with it.
+ */
+export function projectBearingDeg(
+  frameBearingDeg: number | null,
+  baselineYawInSessionDeg: number,
+): number | null {
+  if (frameBearingDeg === null || !Number.isFinite(baselineYawInSessionDeg)) return null
+  return normaliseBearingDeg(frameBearingDeg - baselineYawInSessionDeg)
+}
+
+/**
+ * The bearing fields a two-point record carries beside `anchorBearingDeg`, so
+ * the calibration and the Place frame are written from one place and cannot
+ * drift apart.
+ */
+export function twoPointBearingFields(
+  frameBearingDeg: number | null,
+  landmark: Vec3,
+  headingMarker: Vec3,
+  convention: BearingConvention = BEARING_CONVENTION,
+): { projectBearingDeg: number | null; bearingConvention: BearingConvention } {
+  return {
+    projectBearingDeg: projectBearingDeg(frameBearingDeg, twoPointHeadingDeg(landmark, headingMarker)),
+    bearingConvention: convention,
+  }
+}
+
+/** The one rule for reading a stored bearing: only a record written under the current rule is readable. */
+function readableBearingDeg(
+  value: number | null | undefined,
+  convention: BearingConvention | undefined,
+): number | null {
+  if (convention !== BEARING_CONVENTION) return null
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+/**
+ * A stored `anchorBearingDeg`, or `null` when it must not be used.
+ *
+ * Values written before the sign was corrected carry no `bearingConvention`;
+ * values from a `?bearing=1` page carry `1`. Both were computed as
+ * `deviceBearing − cameraYaw`, and correcting one needs the camera pose at the
+ * instant it was sampled, which was never stored, so they are unreadable rather
+ * than approximately right. Nothing in the app reads the field today; whatever
+ * starts to must come through here.
+ */
+export function readableAnchorBearingDeg(
+  record: { anchorBearingDeg?: number | null; bearingConvention?: BearingConvention },
+): number | null {
+  return readableBearingDeg(record.anchorBearingDeg, record.bearingConvention)
+}
+
+/** A stored `projectBearingDeg`, or `null` when absent, null or written under the old rule. */
+export function readableProjectBearingDeg(
+  record: { projectBearingDeg?: number | null; bearingConvention?: BearingConvention },
+): number | null {
+  return readableBearingDeg(record.projectBearingDeg, record.bearingConvention)
+}
+
+/**
+ * The four numbers the compass spin test reads off a phone: the compass reading,
+ * the camera's yaw in the session, and their sum and difference. Stand still and
+ * turn the phone on the spot. A compass that reports the camera's heading gives a
+ * sum that holds still (that is the session's +Z bearing) and a difference that
+ * moves by twice the turn; a phone that does anything else is telling you about
+ * its sensor, not about the sign.
+ *
+ * `null` when there is no compass reading or the pose gives no finite yaw.
+ */
+export function compassSpinTerms(
+  deviceBearingDeg: number | null | undefined,
+  cameraRotation: Quat,
+): { deviceBearingDeg: number; cameraYawDeg: number; sumDeg: number; differenceDeg: number } | null {
+  if (deviceBearingDeg === null || deviceBearingDeg === undefined || !Number.isFinite(deviceBearingDeg)) return null
+  const cameraYawDeg = cameraYawInSessionDeg(cameraRotation)
+  if (!Number.isFinite(cameraYawDeg)) return null
+  return {
+    deviceBearingDeg: normaliseBearingDeg(deviceBearingDeg),
+    cameraYawDeg,
+    sumDeg: normaliseBearingDeg(deviceBearingDeg + cameraYawDeg),
+    differenceDeg: normaliseBearingDeg(deviceBearingDeg - cameraYawDeg),
+  }
+}
+
+/**
+ * The `?debug=pose` line for {@link compassSpinTerms}. Plain numbers only: it
+ * claims nothing about which rule is right, which is what the test is for.
+ * `rule` is the sign rule this page writes (1 only under `?bearing=1`). `via`,
+ * when there is one, says how the compass bearing was paired with the camera
+ * (`camera`, `top`, `platform`: see `PairedCompass` in src/geo/compass-heading.ts)
+ * or that the reading was withheld (`withheld`), so a tester reading the line
+ * can tell which case produced `compass`.
+ */
+export function formatCompassSpin(
+  terms: ReturnType<typeof compassSpinTerms>,
+  convention: BearingConvention = BEARING_CONVENTION,
+  via?: string | null,
+): string {
+  const how = via ? ` · via ${via}` : ''
+  if (!terms) return `compass none · rule ${convention}${how}`
+  // Whole degrees (`String(-0)` is "0", so a yaw of -0.2 reads 0), and a bearing that rounds up to 360 reads 0.
+  const whole = (deg: number) => String(Math.round(deg))
+  const bearing = (deg: number) => whole(normaliseBearingDeg(Math.round(deg)))
+  return `compass ${bearing(terms.deviceBearingDeg)} · yaw ${whole(terms.cameraYawDeg)} · B+yaw ${bearing(terms.sumDeg)} · B-yaw ${bearing(terms.differenceDeg)} · rule ${convention}${how}`
 }
 
 export function composeYUpTransform(translation: Vec3, bearingDeg: number | null | undefined, scale = 1): number[] {
@@ -232,6 +452,36 @@ export function anchorToProjectTransform(tapPos: Vec3, bearingDeg: number | null
   rotation[13] = -(r10 * tapPos.x + r11 * tapPos.y + r12 * tapPos.z)
   rotation[14] = -(r20 * tapPos.x + r21 * tapPos.y + r22 * tapPos.z)
   return rotation
+}
+
+/**
+ * The one-point tier's `sessionToProject`: the tapped point is the origin and
+ * project **+Z is north** (the compass's), from the session frame's own bearing
+ * ({@link sessionFrameBearingDeg}).
+ *
+ * `composeYUpTransform(b)` turns a session direction at yaw `y` to yaw `y + b`.
+ * North lies at session yaw `B_Z` ({@link northYawInSessionDeg}), and it has to
+ * land on project +Z, yaw 0, so the rotation handed to
+ * {@link anchorToProjectTransform} is **−B_Z**. Passing `+B_Z`, as the
+ * calibration did before, puts project +Z at twice the compass bearing — right
+ * only when the camera faced north or south (audit F53). Under the legacy rule
+ * (`?bearing=1`) the old `+B_Z` is kept, so that rule can be compared as a whole.
+ *
+ * Returns `null` with no compass reading. The caller refuses to commit then:
+ * the old fallback to a null bearing left the frame at whatever yaw the AR
+ * session happened to boot with, on a frame stored as valid.
+ *
+ * Project +X on this frame is **west**. A right-handed frame with +Y up and +Z
+ * north has no other choice; the scene frame in ./enu.ts is this frame turned
+ * half a way round.
+ */
+export function oneTapToProjectTransform(
+  tapPos: Vec3,
+  frameBearingDeg: number | null,
+  convention: BearingConvention = BEARING_CONVENTION,
+): number[] | null {
+  if (frameBearingDeg === null) return null
+  return anchorToProjectTransform(tapPos, convention === LEGACY_BEARING_CONVENTION ? frameBearingDeg : -frameBearingDeg)
 }
 
 /**
@@ -374,5 +624,18 @@ export function matrixTranslation(matrix: number[]): Vec3 {
     x: Number(matrix[12] ?? 0),
     y: Number(matrix[13] ?? 0),
     z: Number(matrix[14] ?? 0),
+  }
+}
+
+/**
+ * Applies a column-major 4x4 matrix to a point. This is the layout of
+ * `scan.localToWorld`, `composeYUpTransform` and three.js `Matrix4.elements`, which is
+ * what the viewer applies to a scan root. Maps a session-frame point into the Place frame.
+ */
+export function transformPoint(matrix: number[], p: Vec3): Vec3 {
+  return {
+    x: matrix[0] * p.x + matrix[4] * p.y + matrix[8] * p.z + matrix[12],
+    y: matrix[1] * p.x + matrix[5] * p.y + matrix[9] * p.z + matrix[13],
+    z: matrix[2] * p.x + matrix[6] * p.y + matrix[10] * p.z + matrix[14],
   }
 }

@@ -113,6 +113,15 @@ sub-models (`0/`, `1/`, …) and `0` is *not* reliably the largest. A run given
 with no subdirectory. Model discovery checks both; looking only for
 subdirectories silently discards every seeded pass.
 
+## Several sessions at once
+
+`runColmapPoses` solves one session. Registering a scan against the Place's other
+scans needs frames from several sessions in one model, with a camera for each
+phone: that is `runColmapJointPoses` in
+[`server/colmap/colmap_joint.ts`](../../server/colmap/colmap_joint.ts), which writes to a
+work directory of its own and never into a session. It is described in
+[`place-register.md`](place-register.md#slice-2-building-blocks-no-job-yet).
+
 ## When it legitimately cannot solve
 
 SfM needs **parallax** — the camera must translate, not just rotate. A camera

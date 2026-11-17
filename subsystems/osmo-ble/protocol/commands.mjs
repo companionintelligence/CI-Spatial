@@ -189,11 +189,29 @@ export function buildGimbalResetAndCenter(msgId, mode = GIMBAL_MODE.FOLLOW) {
 }
 
 /**
+ * A payloadHex that is not hex digits in pairs. The caller sent it wrong, so it carries the HTTP
+ * status a backend route answers with (400). A RangeError, so existing catches still match it.
+ */
+export class PayloadHexError extends RangeError {
+  constructor(message) {
+    super(message);
+    this.name = 'PayloadHexError';
+    this.status = 400;
+    this.remediation = 'Send payloadHex as hex pairs with no spaces, for example "01ff00", or leave it out.';
+  }
+}
+
+/**
  * Escape hatch for reverse-engineering: build an arbitrary DUML frame. LOW confidence by
  * definition — this is for probing/capturing what the real device does with a given
  * cmdSet/cmdId/payload, not a verified command. Use deliberately and log the response.
  */
 export function buildRawCommand(msgId, { sender = COMPONENT.APP, receiver = COMPONENT.CAMERA, flags = FLAGS.REQUEST, cmdSet, cmdId, payloadHex = '' }) {
-  const payload = payloadHex.length ? Uint8Array.from(payloadHex.match(/../g).map((b) => parseInt(b, 16))) : new Uint8Array(0);
+  // Refuse rather than repair. parseInt() reads a bad pair as 0 and a dangling digit is dropped,
+  // so a malformed payload used to go out as different bytes with no error at all.
+  if (typeof payloadHex !== 'string' || !/^([0-9a-f]{2})*$/i.test(payloadHex)) {
+    throw new PayloadHexError('buildRawCommand: payloadHex must be hex digits in pairs, with no spaces (e.g. "01ff00")');
+  }
+  const payload = Uint8Array.from(payloadHex.match(/../g) ?? [], (b) => parseInt(b, 16));
   return encodeFrame({ sender, receiver, msgId, flags, cmdSet, cmdId, payload });
 }

@@ -108,11 +108,12 @@ undescribed), the **SLAM point-cloud accumulator** card (gains a stable ground e
 
 Real work this wave surfaced and deliberately did not take on:
 
-- **Automatic re-acquisition via image targets or VPS anchors.** 8th Wall's Wayspot Anchors
-  ship inside the vendored `public/xr.js` and `public/xr-slam.js` but are never called; WebXR's
-  native anchors API is likewise unused. Either would replace this wave's manual re-placement
-  with genuine relocalization. Deferred because both are large, provider-specific, and only
-  worth designing once 0006 says how much error is actually left.
+- **Automatic re-acquisition via image targets or runtime anchors.** 8th Wall lists VPS as not
+  supported by the self-hosted binary (https://8thwall.org/docs/migration/self-hosted), so the web
+  path has no VPS anchors to call; image targets and WebXR's native anchors API (unused) are what
+  is left. Either would replace this wave's manual re-placement with genuine relocalization.
+  Deferred because both are large, provider-specific, and only worth designing once 0006 says
+  how much error is actually left.
 - **Picking the two markers against the previous scan** (the Map/BIM step in the cited
   two-point reference). The World Editor already renders anchors as a layer; the missing piece
   is loading a prior scan on-device during capture. Natural follow-up to 0004.

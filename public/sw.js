@@ -27,6 +27,7 @@ const APP_SHELL = [
 // entry on a 2xx, so one bad 200 is served for good.
 const API_PREFIXES = [
   '/health',
+  '/capabilities', // GET /capabilities?versions=0: the maps read their tile source from it, and a stale one would outlive a change
   '/memory',
   '/authenticate',
   '/project-locations',
@@ -74,6 +75,12 @@ const QUEUE_STORE = 'requests'
 // repeated autosaves of a scan supersede each other, so the newest body is
 // the one worth keeping.
 //
+// Oldest-first alone dropped the wrong thing. A Place write (the frame a
+// calibration just made, a rename) is the oldest write of an offline session and
+// every capture after it is one more autosaved scan, so about 22 captures pushed
+// the calibration out first. Writes to /projects are therefore marked durable
+// (see DURABLE_QUEUE_KINDS) and are evicted only when nothing else is left to.
+//
 // The bound is count + age, not bytes. Measuring bytes means reading every
 // queued body into memory to add them up, which is the allocation this cap
 // exists to prevent; the item cap is deliberately low enough to stand in for
@@ -104,6 +111,45 @@ const QUEUEABLE_WRITE_PREFIXES = [
   '/process-scan',
   '/upload-summary',
 ]
+
+// What a queued write is, by the path it went to. The kind is written into the queue id
+// (`<ms>-<kind>-<random>`), so pruneQueue can tell a Place change from a scan upload from the keys
+// alone, without loading a body (see pruneQueue). An id made before kinds were recorded is
+// `<ms>-<random>`: it reads as 'other' and is not durable, and it is still flushed like any other.
+// The queue database, its store and its version are unchanged (CLAUDE.md, "Do not rename"): an older
+// worker that still holds a queue opened at version 1 keeps working on a queue this one wrote to.
+const QUEUE_KIND_PREFIXES = [
+  ['/projects', 'place'],
+  ['/upload-scan', 'scan'],
+  ['/upload-summary', 'summary'],
+  ['/sessions', 'session'],
+  ['/worlds', 'world'],
+  ['/process-scan', 'process'],
+]
+
+// How a kind reads in the notice that says it was dropped: [one, many].
+const QUEUE_KIND_NAMES = {
+  place: ['Place change', 'Place changes'],
+  scan: ['scan upload', 'scan uploads'],
+  summary: ['scan summary', 'scan summaries'],
+  session: ['keyframe upload', 'keyframe uploads'],
+  world: ['editor change', 'editor changes'],
+  process: ['processing request', 'processing requests'],
+  other: ['queued upload', 'queued uploads'],
+}
+
+// The kinds pruneQueue evicts last. Only a write to a Place qualifies: it carries the one reference
+// a Place keeps (its frame), and a later scan upload does not supersede it.
+const DURABLE_QUEUE_KINDS = ['place']
+
+// A page that must be told "not now" when it is offline, rather than have a write kept and replayed
+// later, sends this header with the value '1'. Two writes do: creating a Place or an Area, where a queued
+// write would make the Place after the person was told it was not made; and a Place's frame, which the
+// page keeps in its own database until the server holds it (src/project/frame-sync.ts), so that a second
+// calibration replaces the first instead of both being replayed in the order they were queued, and the same
+// frame is not queued again each time the page retries. Mirrors NO_QUEUE_HEADER in
+// src/shared/offline-queue.ts, and tests/unit/node/sw_offline_queue.test.ts asserts the two agree.
+const NO_QUEUE_HEADER = 'X-Companion-No-Queue'
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -161,6 +207,14 @@ self.addEventListener('sync', (event) => {
 self.addEventListener('message', (event) => {
   if (event.data?.type === 'flushQueue') {
     event.waitUntil?.(flushQueuedRequests())
+  } else if (event.data?.type === 'dropQueuedKeyframes') {
+    // Mirrors DROP_QUEUED_KEYFRAMES_MESSAGE in src/capture/keyframe-consent.ts. The page waits for the count on the
+    // port it sends, and treats no answer as "this worker does not know the message".
+    const reply = event.ports?.[0]
+    event.waitUntil?.(dropQueuedKeyframes().then(
+      (count) => reply?.postMessage({ count }),
+      () => reply?.postMessage({ count: null }),
+    ))
   }
 })
 
@@ -191,6 +245,7 @@ async function staleWhileRevalidate(request) {
 function isQueueableWrite(request, url) {
   if (!['POST', 'PUT', 'PATCH'].includes(request.method)) return false
   if (url.pathname === '/infer') return false
+  if (request.headers.get(NO_QUEUE_HEADER) === '1') return false
   return QUEUEABLE_WRITE_PREFIXES.some((prefix) => url.pathname === prefix || url.pathname.startsWith(`${prefix}/`))
 }
 
@@ -239,7 +294,7 @@ async function networkOrQueue(request) {
 }
 
 async function queueRequest(request) {
-  const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  const id = `${Date.now()}-${queueKindOfPath(new URL(request.url).pathname)}-${Math.random().toString(36).slice(2)}`
   const body = await request.clone().arrayBuffer()
   const headers = Array.from(request.headers.entries())
     .filter(([name]) => !['content-length', 'host'].includes(name.toLowerCase()))
@@ -261,14 +316,49 @@ async function queueRequest(request) {
   return id
 }
 
+/** The kind of write a path is: see QUEUE_KIND_PREFIXES. */
+function queueKindOfPath(pathname) {
+  for (const [prefix, kind] of QUEUE_KIND_PREFIXES) {
+    if (pathname === prefix || pathname.startsWith(`${prefix}/`)) return kind
+  }
+  return 'other'
+}
+
+/**
+ * The kind recorded in a queue id. Ids are `<ms>-<kind>-<random>`; one made before kinds were
+ * recorded is `<ms>-<random>` and is 'other', as is any id whose middle part is not a kind.
+ */
+function queueKindOfId(id) {
+  const parts = String(id).split('-')
+  const kind = parts.length === 3 ? parts[1] : 'other'
+  return Object.prototype.hasOwnProperty.call(QUEUE_KIND_NAMES, kind) ? kind : 'other'
+}
+
+function isDurableQueueId(id) {
+  return DURABLE_QUEUE_KINDS.includes(queueKindOfId(id))
+}
+
+/** "2 scan uploads and 1 Place change", for the notice that names what was dropped. */
+function describeQueueKinds(keys) {
+  const counts = new Map()
+  for (const key of keys) {
+    const kind = queueKindOfId(key)
+    counts.set(kind, (counts.get(kind) ?? 0) + 1)
+  }
+  const parts = [...counts].map(([kind, count]) => `${count} ${QUEUE_KIND_NAMES[kind][count === 1 ? 0 : 1]}`)
+  return parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0]
+}
+
 /**
  * Drop queued requests that are too old or over the item cap, oldest first.
  *
- * Reads keys only. Ids are `${Date.now()}-${random}`, so they sort
- * chronologically and carry their own timestamp — which means age and order
- * come for free without deserializing a single body. Loading the bodies to
- * decide what to evict would allocate exactly the memory the cap is here to
- * avoid.
+ * Reads keys only. Ids are `${Date.now()}-${kind}-${random}`, so they sort chronologically and carry
+ * their own timestamp and kind, which means age, order and durability come for free without
+ * deserializing a single body. Loading the bodies to decide what to evict would allocate exactly the
+ * memory the cap is here to avoid.
+ *
+ * Over the cap, writes that are not durable go first, oldest first, and a durable write (a Place
+ * change) goes only when nothing else is left. The notice names what was dropped by kind.
  */
 async function pruneQueue(db) {
   const keys = await idbGetAllKeys(db)
@@ -284,7 +374,9 @@ async function pruneQueue(db) {
 
   // Leave room for the request about to be written.
   const overflow = live.length - (MAX_QUEUE_ITEMS - 1)
-  const evicted = overflow > 0 ? live.slice(0, overflow) : []
+  const evicted = overflow > 0
+    ? [...live.filter((key) => !isDurableQueueId(key)), ...live.filter(isDurableQueueId)].slice(0, overflow)
+    : []
 
   const dropped = [...expired, ...evicted]
   for (const key of dropped) await idbDelete(db, key)
@@ -295,7 +387,7 @@ async function pruneQueue(db) {
       count: dropped.length,
       expired: expired.length,
       evicted: evicted.length,
-      message: `Dropped ${dropped.length} queued upload(s) — the offline queue is full.`,
+      message: `Dropped ${describeQueueKinds(dropped)} — the offline queue is full.`,
     })
   }
   return dropped.length
@@ -318,11 +410,18 @@ async function runQueueFlush() {
   const db = await openQueueDb()
   const items = await idbGetAll(db)
   for (const item of items) {
+    // Read into this pass before a person withdrew consent to send it: not replayed (see dropQueuedKeyframes).
+    if (droppedQueueIds.delete(item.id)) continue
+    // The one request in flight, so that a withdrawal can cancel it (see dropQueuedKeyframes). A scope without
+    // AbortController replays as it always did, and a withdrawal then only drops what has not started.
+    const control = typeof AbortController === 'function' ? new AbortController() : null
+    replayInFlight = { id: item.id, control }
     try {
       const response = await fetch(item.url, {
         method: item.method,
         headers: new Headers(item.headers),
         body: item.body,
+        signal: control?.signal,
       })
       if (response.ok) {
         await idbDelete(db, item.id)
@@ -347,9 +446,67 @@ async function runQueueFlush() {
       }
     } catch (error) {
       await recordFailedAttempt(db, item, error instanceof Error ? error.message : String(error))
+    } finally {
+      replayInFlight = null
     }
   }
+  // Every row this pass read has been replayed, skipped or restored by now: what was dropped while it ran has been dealt
+  // with, and what is still remembered would only sit in memory. (A drop after this adds its ids for the next pass.)
+  droppedQueueIds.clear()
   db.close()
+}
+
+/**
+ * Ids of queued uploads that were dropped while a flush that had already read them was running. The flush skips them,
+ * and a replay that was in flight when its row was dropped does not put the row back when it fails (recordFailedAttempt).
+ * Only this worker's own run remembers them: a worker that has been stopped and started again reads the queue afresh,
+ * and the rows are already gone from it.
+ */
+const droppedQueueIds = new Set()
+
+/** The queued request being replayed right now, with what cancels it (null where the scope cannot cancel), or null. */
+let replayInFlight = null
+
+/** Whether a queued request is a camera frame (POST /sessions/<id>/keyframes) or the request that opens a session for them. */
+function isKeyframeUpload(item) {
+  if (item?.method !== 'POST') return false
+  let path
+  try {
+    path = new URL(item.url).pathname
+  } catch {
+    return false
+  }
+  return path === '/sessions' || /^\/sessions\/[^/]+\/keyframes$/.test(path)
+}
+
+/**
+ * Removes the keyframe uploads from the queue, and resolves with how many there were. Called when a person withdraws
+ * consent to send camera frames (src/capture/keyframe-consent.ts), so that frames held for when the phone is back
+ * online are not sent after all. Nothing else is touched: the finalize that closes a session carries counts and a
+ * filename, not a picture.
+ *
+ * Only rows that can be a session write are read: a row made since kinds were recorded names its kind in its id, and
+ * one made before is 'other', so both are looked at. A scan upload, whose body is the large one, never is.
+ */
+async function dropQueuedKeyframes() {
+  const db = await openQueueDb()
+  try {
+    let dropped = 0
+    for (const key of await idbGetAllKeys(db)) {
+      const kind = queueKindOfId(key)
+      if (kind !== 'session' && kind !== 'other') continue
+      if (!isKeyframeUpload(await idbGet(db, key))) continue
+      droppedQueueIds.add(key)
+      await idbDelete(db, key)
+      dropped += 1
+      // A replay in flight is cancelled rather than left to finish: the person said no, and its answer, a failure or a
+      // success, must not matter. (A reply that had already come back cannot be taken back.)
+      if (replayInFlight?.id === key) replayInFlight.control?.abort()
+    }
+    return dropped
+  } finally {
+    db.close()
+  }
 }
 
 async function registerFlushSync() {
@@ -377,6 +534,9 @@ async function notifyClients(message) {
  * slot and its bytes against the queue for the life of the install.
  */
 async function recordFailedAttempt(db, item, lastError) {
+  // The row was dropped while this replay was in flight (a person withdrew consent to send it). Writing it back would
+  // resurrect a camera frame the person said not to send, for the next flush to replay.
+  if (droppedQueueIds.has(item.id)) return
   const attempts = (item.attempts ?? 0) + 1
   if (attempts >= MAX_FLUSH_ATTEMPTS) {
     await idbDelete(db, item.id)
@@ -423,6 +583,15 @@ function idbPut(db, value) {
     tx.objectStore(QUEUE_STORE).put(value)
     tx.oncomplete = () => resolve()
     tx.onerror = () => reject(tx.error)
+  })
+}
+
+function idbGet(db, id) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(QUEUE_STORE, 'readonly')
+    const req = tx.objectStore(QUEUE_STORE).get(id)
+    req.onsuccess = () => resolve(req.result)
+    req.onerror = () => reject(req.error)
   })
 }
 

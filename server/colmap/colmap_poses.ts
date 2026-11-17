@@ -29,15 +29,22 @@
  * A run that finishes is not the same as a run that worked, and this driver used
  * to conflate them — see `ColmapReconstructionQuality` and
  * `DEFAULT_MIN_REGISTRATION_RATIO` for the measurement that now separates them.
+ *
+ * The frames of SEVERAL sessions in one model, with one camera each (registering a scan against a Place's other scans),
+ * are solved by `runColmapJointPoses` in colmap_joint.ts. It builds its command lines with the builders exported
+ * below and reads models with the readers below, so a COLMAP option that changes its spelling is fixed in one place;
+ * this driver is exactly what it was: one session is one shared camera, flat images and the files above.
  */
 import { isServerSessionId } from '../../src/shared/session-id.ts'
 import { isRunnable } from '../exec_probe.ts'
+import { budgetFromEnv, runWithDeadline } from '../run_with_deadline.ts'
 import type { ColmapCamera } from './colmap_model.ts'
 import {
   parseCamerasBin,
   parseImagesBin,
   parsePoints3DBin,
   pointsToPly,
+  buildJointPosesJson,
   buildPosesJson,
   estimateUpAxis,
   rotationBetween,
@@ -56,6 +63,9 @@ import type { ScanReviewStatus } from '../../src/world/types.ts'
 import { viewpointsFromKeyframes, type Viewpoint } from '../capture/known_distance.ts'
 import { openCvW2cToC2w, readKeyframes } from '../splat/splat_train_dataset.ts'
 import { sfmCentresFromPoses, type Vec3Tuple } from '../splat/splat_align.ts'
+// A solve over several sessions keys its frames by `<sessionId>/kf-NNNNN.jpg`; `cameraCentres` and
+// `measureSessionBaseline` take an option for that layout and nothing else here knows about it.
+import { keyedRecords } from '../register/session_priors.ts'
 
 export interface ColmapPosesRunOptions {
   /** Absolute path to the session directory (scans/sessions/<id>). */
@@ -86,7 +96,7 @@ export interface ColmapPosesRunOptions {
    */
   glbProvenance?: { sessionId?: string; scanId?: string; capturedAt?: string }
   /** Injection seam for tests: replaces the subprocess spawn. */
-  _spawn?: (bin: string, args: string[]) => Promise<{ code: number; stderr: string }>
+  _spawn?: (bin: string, args: string[]) => Promise<{ code: number; stderr: string; timeoutReason?: string | null }>
   /**
    * Injection seam for tests, mirroring `_spawn`: replaces the PLY→GLB build.
    * Needed because the real builder pulls in `@gltf-transform/functions`, which
@@ -270,20 +280,62 @@ const FALLBACK_COLMAP_BINS = [
   `${Deno.env.get('HOME') ?? '~'}/.local/micromamba/envs/colmap/bin/colmap`,
 ]
 
+/** How the PATH probe for `colmap -h` ended. `not-tried` when the binary was named explicitly. */
+export type ColmapProbe = 'not-tried' | 'found' | 'missing' | 'timed-out'
+
+/** The PATH probe runs before every solve, so its budget is short. Untuned. */
+const PATH_PROBE_MS = 30_000
+
 /**
- * Resolve `colmapBin` to something runnable, or null.
+ * Resolve `colmapBin` to something runnable, or null, and say how the PATH probe
+ * ended. A skip needs that: a probe that timed out does not show COLMAP is
+ * missing. `probeMs` exists for tests.
  *
  * An explicit binary (opts.colmapBin / COLMAP_BIN) is taken at its word and
  * only probed; the bare default `colmap` means "find one", so it tries PATH
  * and then the documented install paths above.
  */
-export async function resolveColmapBin(colmapBin: string): Promise<string | null> {
-  if (colmapBin !== 'colmap') return (await isRunnable(colmapBin)) ? colmapBin : null
-  if (await which('colmap')) return 'colmap'
-  for (const candidate of FALLBACK_COLMAP_BINS) {
-    if (await isRunnable(candidate)) return candidate
+export async function locateColmapBin(
+  colmapBin: string,
+  probeMs: number = PATH_PROBE_MS,
+): Promise<{ bin: string | null; pathProbe: ColmapProbe }> {
+  if (colmapBin !== 'colmap') {
+    return { bin: (await isRunnable(colmapBin)) ? colmapBin : null, pathProbe: 'not-tried' }
   }
-  return null
+  const pathProbe = await which('colmap', probeMs)
+  if (pathProbe === 'found') return { bin: 'colmap', pathProbe }
+  for (const candidate of FALLBACK_COLMAP_BINS) {
+    if (await isRunnable(candidate)) return { bin: candidate, pathProbe }
+  }
+  return { bin: null, pathProbe }
+}
+
+/** `locateColmapBin`, reduced to the binary path (or null). */
+export async function resolveColmapBin(colmapBin: string): Promise<string | null> {
+  return (await locateColmapBin(colmapBin)).bin
+}
+
+/**
+ * The skip for a run that found no COLMAP. A PATH probe that ran out of time is
+ * named as such: COLMAP may well be installed, and "not found" would send the
+ * operator looking for a binary that is already there.
+ */
+export function colmapNotFoundSkip(
+  colmapBin: string,
+  pathProbe: ColmapProbe,
+): { skippedReason: string; remediation: string } {
+  if (pathProbe === 'timed-out') {
+    return {
+      skippedReason: 'COLMAP probe timed out: `colmap -h` did not answer in time on PATH, so COLMAP was not confirmed',
+      remediation: 'Check that `colmap -h` runs in a shell, or set COLMAP_BIN to the full path of a working binary.',
+    }
+  }
+  return {
+    skippedReason: colmapBin === 'colmap'
+      ? `COLMAP binary not found on PATH or at ${FALLBACK_COLMAP_BINS.join(', ')}`
+      : `COLMAP binary not found: ${colmapBin}`,
+    remediation: 'Install COLMAP (`brew install colmap` / `apt install colmap`) or set COLMAP_BIN.',
+  }
 }
 
 export function resolveParams(opts: ColmapPosesRunOptions) {
@@ -407,9 +459,15 @@ export function resolveQualityThresholds(): ColmapQualityThresholds {
  * -Rᵀ·t here would be a fourth copy of an inverse that has already been got
  * wrong once in this repo's history.
  */
-export function cameraCentres(images: Parameters<typeof buildPosesJson>[0]): Map<string, Vec3Tuple> {
+export function cameraCentres(
+  images: Parameters<typeof buildPosesJson>[0],
+  options: { keepFolder?: boolean } = {},
+): Map<string, Vec3Tuple> {
   const c2w = new Map<string, number[][]>()
-  for (const frame of buildPosesJson(images).frames) {
+  // A joint solve keys its frames by the whole path, `<sessionId>/kf-NNNNN.jpg` (see `buildJointPosesJson`), because the
+  // basename is the same in every session. The default is the single-session key, the basename, as before.
+  const frames = options.keepFolder ? buildJointPosesJson(images, {}).frames : buildPosesJson(images).frames
+  for (const frame of frames) {
     const m = openCvW2cToC2w(frame.cameraToWorld)
     if (m) c2w.set(frame.file, m)
   }
@@ -467,15 +525,25 @@ export function measureStationBaseline(
   }
 }
 
-/** {@link measureStationBaseline} for a session on disk. Never throws. */
+/**
+ * {@link measureStationBaseline} for a session on disk. Never throws.
+ *
+ * `options.folder` is for a session solved jointly with others: its frames are then keyed `<folder>/kf-NNNNN.jpg` in
+ * the solve, so the keyframe records get the same prefix before `viewpointsFromKeyframes` groups them, and only the
+ * solved images of that folder are read. Without it, the keys are the bare filenames of a single-session solve.
+ */
 export async function measureSessionBaseline(
   sessionDir: string,
   images: Parameters<typeof buildPosesJson>[0],
+  options: { folder?: string } = {},
 ): Promise<StationBaseline | null> {
   try {
-    const viewpoints = viewpointsFromKeyframes(await readKeyframes(sessionDir))
+    const { folder } = options
+    const records = await readKeyframes(sessionDir)
+    const viewpoints = viewpointsFromKeyframes(folder ? keyedRecords(records, folder) : records)
     if (viewpoints.length < 2) return null
-    return measureStationBaseline(cameraCentres(images), viewpoints)
+    const ofSession = folder ? images.filter((image) => image.name.startsWith(`${folder}/`)) : images
+    return measureStationBaseline(cameraCentres(ofSession, { keepFolder: Boolean(folder) }), viewpoints)
   } catch {
     // An unreadable keyframes.jsonl leaves the baseline unmeasured, which is
     // reported as unmeasured. It must never be reported as measured and fine.
@@ -613,7 +681,7 @@ export function degenerateRemediation(
 }
 
 /** Name of every keyframe COLMAP is fed, and the only files the fingerprint covers. */
-const KEYFRAME_RE = /^kf-\d+\.jpg$/
+export const KEYFRAME_RE = /^kf-\d+\.jpg$/
 
 /**
  * Identity of the *frames* a solve is computed from.
@@ -640,7 +708,7 @@ export async function frameFingerprint(sessionDir: string, names: string[]): Pro
   return await sha256Hex(new TextEncoder().encode(lines.join('\n')))
 }
 
-async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
+export async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', bytes)
   return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('')
 }
@@ -651,10 +719,152 @@ export function isValidSessionDir(sessionDir: string): boolean {
   return isServerSessionId(base)
 }
 
-async function defaultSpawn(bin: string, args: string[]): Promise<{ code: number; stderr: string }> {
-  const cmd = new Deno.Command(bin, { args, stdout: 'piped', stderr: 'piped' })
-  const { code, stderr } = await cmd.output()
-  return { code, stderr: new TextDecoder().decode(stderr).slice(-4000) }
+/**
+ * Two hours per COLMAP step. Each of the four steps (feature extraction,
+ * exhaustive matching, the mapper, and the mapper's grow pass) gets its own
+ * budget. A healthy solve of a few hundred keyframes is well inside this on
+ * CPU. Untuned.
+ */
+const DEFAULT_COLMAP_TIMEOUT_MS = 2 * 60 * 60 * 1000
+
+export async function defaultSpawn(
+  bin: string,
+  args: string[],
+): Promise<{ code: number; stderr: string; timeoutReason: string | null }> {
+  const out = await runWithDeadline(
+    bin,
+    { args, stdout: 'piped', stderr: 'piped' },
+    budgetFromEnv('COLMAP_TIMEOUT_MS', DEFAULT_COLMAP_TIMEOUT_MS),
+  )
+  return { code: out.code, stderr: new TextDecoder().decode(out.stderr).slice(-4000), timeoutReason: out.timeoutReason }
+}
+
+/**
+ * Runs one COLMAP step and says how it ended: null on success, otherwise a sentence for the manifest. Every step's
+ * output is appended to `logs`. Shared by the single-session solve and the joint one, so both report a failure in
+ * the same words.
+ */
+export function createStepRunner(
+  spawn: NonNullable<ColmapPosesRunOptions['_spawn']>,
+  colmapBin: string,
+  logs: string[],
+): (label: string, args: string[]) => Promise<string | null> {
+  return async (label, args) => {
+    const { code, stderr, timeoutReason } = await spawn(colmapBin, args)
+    logs.push(`[${label}] exit=${code}${timeoutReason ? ` (${timeoutReason})` : ''}\n${stderr}`)
+    if (code === 0) return null
+    if (timeoutReason) return `${label} ${timeoutReason} and was stopped`
+    // Carry COLMAP's own last words into the message that reaches the manifest.
+    // `logs` is only returned to the caller and then dropped, so a manifest
+    // reading `feature_extractor failed (exit 1)` is a dead end — that is
+    // exactly how the two option-name bugs fixed in this file (see the
+    // `--SiftExtraction.max_image_size` and matcher-type comments) stayed
+    // invisible for as long as they did. The last
+    // lines, not the first: COLMAP logs progress before it complains.
+    // (splat_train.ts has the same-shaped `stderrTail`; it is not imported here
+    // because splat_train.ts already imports THIS module — sharing it would
+    // make the two files circular for two lines of string handling.)
+    const tail = stderr.split('\n').map((l) => l.trim()).filter(Boolean).slice(-2).join(' | ')
+    return tail ? `${label} failed (exit ${code}): ${tail.slice(-400)}` : `${label} failed (exit ${code})`
+  }
+}
+
+/**
+ * The `feature_extractor` command line. `reader` is the part that decides which images are read and which cameras they
+ * get: `--ImageReader.single_camera 1` for the one session of `runColmapPoses`, and for each session of a joint solve
+ * its own image list, one camera for its folder and that camera's prior ({@link jointReaderArgs}). Everything else
+ * is the same for both, so an option spelling that COLMAP stops accepting is fixed in one place.
+ */
+export function featureExtractorArgs(
+  params: Pick<ReturnType<typeof resolveParams>, 'featureType' | 'maxImageSize'>,
+  database: string,
+  imagePath: string,
+  reader: string[],
+): string[] {
+  return [
+    'feature_extractor',
+    '--database_path', database,
+    '--image_path', imagePath,
+    ...reader,
+    '--ImageReader.camera_model', 'SIMPLE_RADIAL',
+    '--FeatureExtraction.type', params.featureType,
+    '--FeatureExtraction.use_gpu', USE_GPU,
+    // `max_image_size` lives under SiftExtraction, NOT FeatureExtraction —
+    // COLMAP 3.12 moved the extractor-generic options (type, use_gpu,
+    // num_threads, gpu_index) to the `FeatureExtraction.*` prefix and left the
+    // SIFT-specific ones behind. Getting this wrong is not a warning: COLMAP
+    // aborts the whole step. Measured against the build this repo's own setup
+    // instructions produce (COLMAP 3.13.0 from conda-forge):
+    //   E … option_manager.cc:976] Failed to parse options - unrecognised
+    //   option '--FeatureExtraction.max_image_size'.  → exit 1, 40ms,
+    // i.e. every colmap-poses run failed before extracting a single feature.
+    // `--SiftExtraction.max_image_size` is also the spelling every pre-3.12
+    // release accepts, so it is the compatible choice, not just the working one.
+    '--SiftExtraction.max_image_size', String(params.maxImageSize),
+  ]
+}
+
+/** `exhaustive_matcher`: every image against every other. A joint solve refuses it beyond about 100 images (pair_list.ts). */
+export function exhaustiveMatcherArgs(
+  params: Pick<ReturnType<typeof resolveParams>, 'matcherType'>,
+  database: string,
+): string[] {
+  return [
+    'exhaustive_matcher',
+    '--database_path', database,
+    '--FeatureMatching.type', params.matcherType,
+    '--FeatureMatching.use_gpu', USE_GPU,
+  ]
+}
+
+/**
+ * `matches_importer` over an explicit pair list: one `name name` pair per line in `pairsPath`, names being the image
+ * paths under `--image_path`. What a joint solve matches with when the poses say which pairs can overlap.
+ */
+export function matchesImporterArgs(
+  params: Pick<ReturnType<typeof resolveParams>, 'matcherType'>,
+  database: string,
+  pairsPath: string,
+): string[] {
+  return [
+    'matches_importer',
+    '--database_path', database,
+    '--match_list_path', pairsPath,
+    '--match_type', 'pairs',
+    '--FeatureMatching.type', params.matcherType,
+    '--FeatureMatching.use_gpu', USE_GPU,
+  ]
+}
+
+/** The first `mapper` pass: a new model, built from scratch, into `outputPath`. */
+export function mapperArgs(database: string, imagePath: string, outputPath: string): string[] {
+  return [
+    'mapper',
+    '--database_path', database,
+    '--image_path', imagePath,
+    '--output_path', outputPath,
+    // Stock thresholds assume a large, densely-overlapping capture. A handheld
+    // room sweep is neither, and the default init routinely registers a
+    // handful of frames before discarding the model as "insufficient size".
+    '--Mapper.init_min_num_inliers', '25',
+    '--Mapper.abs_pose_min_num_inliers', '12',
+    '--Mapper.min_num_matches', '12',
+    '--Mapper.init_min_tri_angle', '2',
+    '--Mapper.tri_min_angle', '0.5',
+  ]
+}
+
+/** The second `mapper` pass, seeded from the best first-pass model in `inputPath`: see the file header. */
+export function growMapperArgs(database: string, imagePath: string, inputPath: string, outputPath: string): string[] {
+  return [
+    'mapper',
+    '--database_path', database,
+    '--image_path', imagePath,
+    '--input_path', inputPath,
+    '--output_path', outputPath,
+    '--Mapper.abs_pose_min_num_inliers', '12',
+    '--Mapper.min_num_matches', '12',
+  ]
 }
 
 export async function runColmapPoses(opts: ColmapPosesRunOptions): Promise<ColmapPosesResult> {
@@ -679,15 +889,13 @@ export async function runColmapPoses(opts: ColmapPosesRunOptions): Promise<Colma
 
   // A missing COLMAP is a *skip*, not an error: the server keeps running and
   // the UI shows a remediation, matching how splat_train treats a missing Brush.
-  const resolvedBin = await resolveColmapBin(params.colmapBin)
+  const located = await locateColmapBin(params.colmapBin)
+  const resolvedBin = located.bin
   if (!resolvedBin) {
     return finish(manifestPath, {
       ...base,
       status: 'skipped',
-      skippedReason: params.colmapBin === 'colmap'
-        ? `COLMAP binary not found on PATH or at ${FALLBACK_COLMAP_BINS.join(', ')}`
-        : `COLMAP binary not found: ${params.colmapBin}`,
-      remediation: 'Install COLMAP (`brew install colmap` / `apt install colmap`) or set COLMAP_BIN.',
+      ...colmapNotFoundSkip(params.colmapBin, located.pathProbe),
     }, 0, '', started)
   }
   // Record what we actually ran, not what we were asked for — `base.params` is
@@ -784,71 +992,19 @@ export async function runColmapPoses(opts: ColmapPosesRunOptions): Promise<Colma
   const db = `${work}/db.db`
   const logs: string[] = []
 
-  const step = async (label: string, args: string[]): Promise<string | null> => {
-    const { code, stderr } = await spawn(params.colmapBin, args)
-    logs.push(`[${label}] exit=${code}\n${stderr}`)
-    if (code === 0) return null
-    // Carry COLMAP's own last words into the message that reaches the manifest.
-    // `logs` is only returned to the caller and then dropped, so a manifest
-    // reading `feature_extractor failed (exit 1)` is a dead end — that is
-    // exactly how the two option-name bugs fixed in this file (see the
-    // `--SiftExtraction.max_image_size` and matcher-type comments) stayed
-    // invisible for as long as they did. The last
-    // lines, not the first: COLMAP logs progress before it complains.
-    // (splat_train.ts has the same-shaped `stderrTail`; it is not imported here
-    // because splat_train.ts already imports THIS module — sharing it would
-    // make the two files circular for two lines of string handling.)
-    const tail = stderr.split('\n').map((l) => l.trim()).filter(Boolean).slice(-2).join(' | ')
-    return tail ? `${label} failed (exit ${code}): ${tail.slice(-400)}` : `${label} failed (exit ${code})`
-  }
+  const step = createStepRunner(spawn, params.colmapBin, logs)
 
-  let err = await step('feature_extractor', [
-    'feature_extractor',
-    '--database_path', db,
-    '--image_path', imagesDir,
-    '--ImageReader.single_camera', '1',
-    '--ImageReader.camera_model', 'SIMPLE_RADIAL',
-    '--FeatureExtraction.type', params.featureType,
-    '--FeatureExtraction.use_gpu', USE_GPU,
-    // `max_image_size` lives under SiftExtraction, NOT FeatureExtraction —
-    // COLMAP 3.12 moved the extractor-generic options (type, use_gpu,
-    // num_threads, gpu_index) to the `FeatureExtraction.*` prefix and left the
-    // SIFT-specific ones behind. Getting this wrong is not a warning: COLMAP
-    // aborts the whole step. Measured against the build this repo's own setup
-    // instructions produce (COLMAP 3.13.0 from conda-forge):
-    //   E … option_manager.cc:976] Failed to parse options - unrecognised
-    //   option '--FeatureExtraction.max_image_size'.  → exit 1, 40ms,
-    // i.e. every colmap-poses run failed before extracting a single feature.
-    // `--SiftExtraction.max_image_size` is also the spelling every pre-3.12
-    // release accepts, so it is the compatible choice, not just the working one.
-    '--SiftExtraction.max_image_size', String(params.maxImageSize),
-  ])
+  // One camera for every image: one session is one phone. A solve over several sessions gives each folder its own
+  // (`runColmapJointPoses`), which is why the reader options are the part the caller chooses.
+  let err = await step('feature_extractor', featureExtractorArgs(params, db, imagesDir, ['--ImageReader.single_camera', '1']))
   if (err) return finish(manifestPath, { ...base, status: 'error', error: err }, 2, logs.join('\n'), started)
 
-  err = await step('exhaustive_matcher', [
-    'exhaustive_matcher',
-    '--database_path', db,
-    '--FeatureMatching.type', params.matcherType,
-    '--FeatureMatching.use_gpu', USE_GPU,
-  ])
+  err = await step('exhaustive_matcher', exhaustiveMatcherArgs(params, db))
   if (err) return finish(manifestPath, { ...base, status: 'error', error: err }, 2, logs.join('\n'), started)
 
   const sparse = `${work}/sparse`
   await Deno.mkdir(sparse, { recursive: true })
-  err = await step('mapper', [
-    'mapper',
-    '--database_path', db,
-    '--image_path', imagesDir,
-    '--output_path', sparse,
-    // Stock thresholds assume a large, densely-overlapping capture. A handheld
-    // room sweep is neither, and the default init routinely registers a
-    // handful of frames before discarding the model as "insufficient size".
-    '--Mapper.init_min_num_inliers', '25',
-    '--Mapper.abs_pose_min_num_inliers', '12',
-    '--Mapper.min_num_matches', '12',
-    '--Mapper.init_min_tri_angle', '2',
-    '--Mapper.tri_min_angle', '0.5',
-  ])
+  err = await step('mapper', mapperArgs(db, imagesDir, sparse))
   if (err) return finish(manifestPath, { ...base, status: 'error', error: err }, 2, logs.join('\n'), started)
 
   const first = await largestModel(sparse)
@@ -867,15 +1023,7 @@ export async function runColmapPoses(opts: ColmapPosesRunOptions): Promise<Colma
   // Second pass, seeded from the best first-pass model — see the file header.
   const grown = `${work}/sparse_grown`
   await Deno.mkdir(grown, { recursive: true })
-  const growErr = await step('mapper(grow)', [
-    'mapper',
-    '--database_path', db,
-    '--image_path', imagesDir,
-    '--input_path', first.dir,
-    '--output_path', grown,
-    '--Mapper.abs_pose_min_num_inliers', '12',
-    '--Mapper.min_num_matches', '12',
-  ])
+  const growErr = await step('mapper(grow)', growMapperArgs(db, imagesDir, first.dir, grown))
   // A failed grow pass is not fatal: the first-pass model is still valid, so
   // fall back to it rather than discarding a usable reconstruction.
   const modelDir = growErr ? first.dir : await bestOf(grown, first.dir)
@@ -1050,11 +1198,25 @@ export async function runColmapPoses(opts: ColmapPosesRunOptions): Promise<Colma
  */
 async function largestModel(root: string): Promise<{ dir: string; count: number } | null> {
   let best: { dir: string; count: number } | null = null
+  for (const model of await listModels(root)) {
+    if (!best || model.count > best.count) best = { dir: model.dir, count: model.count }
+  }
+  return best
+}
+
+/**
+ * Every model under `root`, as COLMAP lays them out (see {@link largestModel}): `root` itself when it holds one, then
+ * each sub-directory that does, in the order the directory listing gives them. With the image names each one registered,
+ * which is what a solve over several sessions reads to say which session's frames are in which model. A directory with
+ * no readable `images.bin`, or none registered, is not a model.
+ */
+export async function listModels(root: string): Promise<Array<{ dir: string; count: number; names: Set<string> }>> {
+  const out: Array<{ dir: string; count: number; names: Set<string> }> = []
 
   const consider = async (dir: string) => {
     try {
       const imgs = parseImagesBin(await Deno.readFile(`${dir}/images.bin`))
-      if (imgs.length > 0 && (!best || imgs.length > best.count)) best = { dir, count: imgs.length }
+      if (imgs.length > 0) out.push({ dir, count: imgs.length, names: new Set(imgs.map((img) => img.name)) })
     } catch {
       // absent or unreadable — not a model
     }
@@ -1068,11 +1230,11 @@ async function largestModel(root: string): Promise<{ dir: string; count: number 
   } catch {
     // root missing entirely
   }
-  return best
+  return out
 }
 
 /** The grown model when it beats the seed, else the seed. */
-async function bestOf(grownRoot: string, fallbackDir: string): Promise<string> {
+export async function bestOf(grownRoot: string, fallbackDir: string): Promise<string> {
   const grown = await largestModel(grownRoot)
   if (!grown) return fallbackDir
   try {
@@ -1083,13 +1245,19 @@ async function bestOf(grownRoot: string, fallbackDir: string): Promise<string> {
   }
 }
 
-/** `colmap` resolved via PATH rather than an absolute path. */
-async function which(bin: string): Promise<boolean> {
+/**
+ * `colmap` resolved via PATH rather than an absolute path. A probe that ran out
+ * of time is `timed-out`, not `missing`: the binary may be there and slow.
+ */
+async function which(bin: string, probeMs: number): Promise<ColmapProbe> {
   try {
-    const { code } = await new Deno.Command(bin, { args: ['-h'], stdout: 'null', stderr: 'null' }).output()
-    return code === 0
+    // A probe, not a stage: it runs before every solve, so a hung binary here
+    // would stall the job before any budget above applies.
+    const out = await runWithDeadline(bin, { args: ['-h'], stdout: 'null', stderr: 'null' }, probeMs)
+    if (out.timeoutReason) return 'timed-out'
+    return out.code === 0 ? 'found' : 'missing'
   } catch {
-    return false
+    return 'missing'
   }
 }
 

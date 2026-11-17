@@ -75,6 +75,35 @@ export class WebGpuInferenceError extends Error {
 const WORKER_TIMEOUT_LOADING_MS = 150_000
 const WORKER_TIMEOUT_READY_MS = 45_000
 
+/** How long the WebGPU probe waits for requestAdapter(). Past this, the browser counts as having no adapter. */
+const WEBGPU_PROBE_TIMEOUT_MS = 2_000
+
+/**
+ * Ask the browser for a WebGPU adapter. `navigator.gpu` on its own is not enough:
+ * a browser can expose it with no usable adapter, and the on-device path would
+ * then fail on every capture. A probe that rejects, or runs past the timeout,
+ * counts as no adapter, and so does one that resolves to nothing (undefined too).
+ */
+async function probeWebGpuAdapter(): Promise<unknown | null> {
+  const gpu = typeof navigator !== 'undefined'
+    ? (navigator as { gpu?: { requestAdapter(): Promise<unknown> } }).gpu
+    : undefined
+  if (!gpu) return null
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timedOut = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), WEBGPU_PROBE_TIMEOUT_MS)
+  })
+  try {
+    const adapter = await Promise.race([
+      Promise.resolve().then(() => gpu.requestAdapter()).catch(() => null),
+      timedOut,
+    ])
+    return adapter ?? null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export class InferenceRouter {
   private worker: Worker | null = null
   private useWorker = false
@@ -82,9 +111,13 @@ export class InferenceRouter {
   private modelReady = false
   private onProgress: ProgressCallback | null = null
   private onModeChange: ModeChangeCallback | null = null
+  /** The adapter the probe found, or null. Set once by probeWebGPU(). */
+  private _webGpuAdapter: unknown | null = null
+  /** The one probe, shared by every caller, so requestAdapter() is asked once. */
+  private _webGpuProbe: Promise<boolean> | null = null
 
   /**
-   * True if this browser exposes a WebGPU adapter.
+   * True if this browser exposes a WebGPU adapter, as found by probeWebGPU().
    *
    * This is a device-capability check, not a feature flag — every route into
    * the worker funnels through this getter (init(), setMode(), the panel's
@@ -92,9 +125,28 @@ export class InferenceRouter {
    * cannot run the on-device path never gets offered it, and never silently
    * re-gains it later (docs/factory/05-on-device-inference/
    * 0004-ungate-toggle-and-fallback-policy.md's Non-goals).
+   *
+   * False until probeWebGPU() has resolved, so anything that builds UI from it
+   * must await that first (src/main.ts does, before it builds the side panel).
    */
   get hasWebGPU(): boolean {
-    return typeof navigator !== 'undefined' && 'gpu' in navigator
+    return this._webGpuAdapter != null
+  }
+
+  /**
+   * Find out once whether this browser has a WebGPU adapter, and cache the
+   * answer. Resolves to what `hasWebGPU` reports from then on. Safe to call
+   * more than once: the browser is asked only the first time, and init()
+   * reuses the same result.
+   */
+  probeWebGPU(): Promise<boolean> {
+    if (!this._webGpuProbe) {
+      this._webGpuProbe = probeWebGpuAdapter().then((adapter) => {
+        this._webGpuAdapter = adapter
+        return this.hasWebGPU
+      })
+    }
+    return this._webGpuProbe
   }
 
   /** Currently active inference path. */
@@ -110,6 +162,8 @@ export class InferenceRouter {
   async init(onProgress?: ProgressCallback, onModeChange?: ModeChangeCallback): Promise<void> {
     this.onProgress = onProgress ?? null
     this.onModeChange = onModeChange ?? null
+    // Reuses the probe if probeWebGPU() already ran (src/main.ts runs it first).
+    await this.probeWebGPU()
 
     const saved = typeof localStorage !== 'undefined' ? localStorage.getItem(INFER_MODE_KEY) as InferMode | null : null
     const wantsWebGPU = saved === 'webgpu' && this.hasWebGPU

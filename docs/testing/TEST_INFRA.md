@@ -155,7 +155,7 @@ The test suite contains **53+ browser and server checks** organized across 4 dis
 
 ### Tailscale Integration & CORS
 The Deno server is designed to support remote devices (like iPhones) connecting over a Tailscale Tailnet.
-*   **CORS Origin Matching:** In `server/main.ts`, the CORS allowed origins are programmatically matched against `localhost`, `127.0.0.1`, private local subnets (`192.168.x.x`, `10.x.x.x`, `172.16.0.0/12`), Tailscale subnet IPs (`100.64.0.0/10`), and Tailscale domain names (`*.ts.net`).
+*   **CORS Origin Matching:** The rules are in `server/origin.ts`; CORS, the WebSocket upgrade and the file routes all ask them. They admit the native shells (iOS `capacitor://localhost`, Android `https://localhost`, the desktop app's `tauri://localhost` and `http(s)://tauri.localhost`), the configured tailnet host and `ALLOWED_ORIGIN_PREFIX`, and the app's public address (`APP_BASE_URL`). `localhost`, `127.0.0.1` and private or Tailscale address ranges (`192.168.x.x`, `10.x.x.x`, `172.16.0.0/12`, `100.64.0.0/10`) are admitted only with `ALLOW_DEV_ORIGINS=1`, and any other `*.ts.net` name is refused. `npm run test:box` sets `ALLOW_DEV_ORIGINS=1` for the server it boots, because its pages are served from `https://localhost`; without it the viewer's `/events` WebSocket is refused and every spec that waits for a live job update times out.
 *   **Configuring HTTPS:** To use WebXR/8th Wall on a remote phone, the app must be served over HTTPS. Ensure the Tailscale URL is configured with HTTPS or use `vite-plugin-basic-ssl` to test securely.
 
 ### Deno Execution Flags

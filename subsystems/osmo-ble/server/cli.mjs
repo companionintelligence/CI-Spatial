@@ -40,7 +40,9 @@ async function api(method, path, body) {
     throw new Error(`Can't reach the backend at ${BACKEND_URL} — start it with "npm run backend" in a real terminal (${err.message})`);
   }
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(json.error || `Backend returned HTTP ${res.status}`);
+  // The remediation says what to do about a refusal (a scan owns the gimbal, a test route is off),
+  // so it is printed with the error rather than dropped.
+  if (!res.ok) throw new Error([json.error || `Backend returned HTTP ${res.status}`, json.remediation].filter(Boolean).join(' — '));
   return json;
 }
 
@@ -112,8 +114,10 @@ Motion / commands:
   move-to <yawDeg> <pitchDeg>            Closed-loop absolute move
       [--tolerance deg] [--speed degPerSec] [--tick ms] [--settle ms] [--max ms]
   probe <type> [--params json] [--wait ms] [--stop-type type] [--stop-params json]
-                                          Send one command, report before/after moved:true/false
-  recenter-probe [--duration seconds]    Shorthand for: probe recenter --stop-type none
+                                          Send one command, wait, then send a stop, and report
+                                          before/after moved:true/false. The stop is --stop-type
+                                          if given, otherwise a zero-speed stop, for any type.
+  recenter-probe [--duration seconds]    Send a recenter and report whether the gimbal moved
   arc-probe [--step deg]                Measure how far pan really swings from this tripod spot.
                                         The arc is fixed to the BASE, so it moves when the tripod
                                         does — re-run this after every move. The grid command does
@@ -263,7 +267,7 @@ async function main() {
       print(await api('POST', '/api/connect', { deviceId: match.id }));
       console.error('\nTriggering pairing...');
       await api('POST', '/api/pair-trigger');
-      console.error('\nAccept the macOS Bluetooth confirmation dialog now (or read a PIN off the gimbal screen and run `pair <pin>`), then verify with: node server/cli.mjs recenter-probe');
+      console.error('\nIf a macOS Bluetooth confirmation dialog appears, accept it (or read a PIN off the gimbal screen and run `pair <pin>`), then verify with: node server/cli.mjs recenter-probe. That route returns 404 unless the backend was started with BACKEND_TEST_ROUTES=1.');
       return;
     }
 

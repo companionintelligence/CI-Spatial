@@ -93,7 +93,7 @@ test.describe('WebXR session-start failure', () => {
     // including scripted ones — so this proves the handler cannot fire, not
     // just that the button looks disabled.
     await page.locator('#stream-btn').click({ force: true }).catch(() => {})
-    await expect(page.locator('#status-text')).not.toContainText('Streaming keyframes', { timeout: 3_000 })
+    await expect(page.locator('#status-text')).not.toContainText('Streaming on', { timeout: 3_000 })
 
     // Navigation controls are deliberately left alone — they don't imply a
     // live session and stay useful (e.g. Export, History) after a failure.

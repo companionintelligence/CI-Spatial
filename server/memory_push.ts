@@ -586,10 +586,10 @@ function spatialFrame(align: SplatAlignManifest | null, scan: ScanManifest, fit:
 // different contract (see src/world/detect-objects.ts), and fusing the two
 // would produce one list whose entries mean two different things.
 //
-// Those three fields are all the sidecar carries. The GLB's per-detection
-// `dimensions` is not read here and must not be: gltf.ts derives it from a 2D
-// bbox fraction times hard-coded constants, so it would arrive
-// indistinguishable from splat_analyzer's measured extents while being invented.
+// Those three fields are all the sidecar carries. The GLB's detection boxes are
+// not read here and must not be: gltf.ts sizes each one from a 2D bbox fraction
+// times hard-coded constants, and writes no `dimensions` for it. The box is a
+// flagged placeholder, not a measurement, so there is no extent to forward.
 //
 // The parse is a few lines rather than an import because main.ts's sibling
 // reader (`detectionsFromMeta`, for thing-correspondence) lives in the module
@@ -639,9 +639,9 @@ function meshObjectProvenance(scan: ScanManifest) {
     units: 'm',
     convention:
       'world_pos is the detection centroid in the scan world frame — the same frame localToWorld '
-      + 'places on Earth. These are points, not volumes: the sidecar carries no extent, and the '
-      + "GLB's per-detection `dimensions` is derived from a 2D bounding-box fraction times "
-      + 'hard-coded constants, so it is not forwarded here. confidence is the detector score.',
+      + 'places on Earth. These are points, not volumes: the sidecar carries no extent. The GLB '
+      + 'draws its detection boxes as flagged placeholders sized from a 2D bounding-box fraction, '
+      + 'so they are not forwarded here. confidence is the detector score.',
     has_extents: false,
     calibration_method: scan.calibrationMethod ?? null,
     calibration_status: scan.calibrationStatus ?? null,
@@ -658,10 +658,11 @@ function meshObjectProvenance(scan: ScanManifest) {
 // if the wire drops the numbers.
 //
 // The one place these numbers may NOT come from is the GLB exporter:
-// src/export/gltf.ts derives its `dimensions` from a 2D bbox fraction times
-// hard-coded constants (bw = max((x2-x1)*3.5, 0.25), and friends). Those are
-// invented, and they look exactly as plausible as a measurement. Only
-// interactions.json extents are the detector's own 3D output.
+// src/export/gltf.ts sizes its placeholder boxes from a 2D bbox fraction times
+// hard-coded constants (bw = max((x2-x1)*3.5, 0.25), and friends) and writes no
+// `dimensions` for them. Those sizes are invented, and they look exactly as
+// plausible as a measurement. Only interactions.json extents are the detector's
+// own 3D output.
 
 /** Non-negative, non-degenerate extent, or null. `ci.inventory` CHECKs > 0. */
 function positiveExtent(scale: Vec3 | undefined): Vec3 | null {

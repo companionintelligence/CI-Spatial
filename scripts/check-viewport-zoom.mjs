@@ -56,7 +56,7 @@ import { basename, dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /** Directories that are not ours to fix: dependencies, build output, test output, vendored code, scan data. */
-const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'coverage', 'playwright-report', 'test-results', 'vendor', '.test-run', 'scans', 'worlds'])
+const SKIP_DIRS = new Set(['node_modules', '.git', '.worktrees', '.claude', 'dist', 'coverage', 'playwright-report', 'test-results', 'vendor', '.test-run', 'scans', 'worlds'])
 /** The smallest `maximum-scale` a page may declare. */
 export const MIN_MAXIMUM_SCALE = 5
 /** The smallest text size at which iOS Safari does not zoom into a focused field. */

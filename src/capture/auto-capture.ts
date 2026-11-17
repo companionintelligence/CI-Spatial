@@ -7,6 +7,7 @@
  *   3. The camera has moved at least `minDistanceM` metres from the position of
  *      the previous capture (or this is the very first capture)
  *   4. No capture is already in flight
+ *   5. Capturing is not held (`hold`): a held tick does nothing, and is not counted
  *
  * Motion is estimated from the SLAM provider's getPose(). If the provider has
  * not yet locked tracking, the distance check is skipped for the first capture.
@@ -29,6 +30,12 @@ export interface AutoCaptureOptions {
   pollIntervalMs?: number
   /** Maximum number of auto-captures per session (0 = unlimited, default 0) */
   maxCaptures?: number
+  /**
+   * Whether capturing is held (default: never). The re-anchor flow holds the scan while it asks what to do about a frame
+   * shift (src/ar/reanchor-flow.ts), and the capture handler turns a capture away then. A tick that asks anyway would be
+   * counted as a capture that was never taken, and would rewrite the status line each time it was turned away.
+   */
+  hold?: () => boolean
 }
 
 export type AutoCaptureCallback = () => Promise<void>
@@ -44,6 +51,7 @@ const DEFAULTS: Required<AutoCaptureOptions> = {
   minDistanceM:    0.35,
   pollIntervalMs:  400,
   maxCaptures:     0,
+  hold:            () => false,
 }
 
 export class AutoCapture {
@@ -54,15 +62,17 @@ export class AutoCapture {
   private _lastPos: { x: number; y: number; z: number } | null = null
   private _pollHandle: ReturnType<typeof setInterval> | null = null
   private _opts: Required<AutoCaptureOptions>
+  private readonly provider: ARProvider
+  private readonly onCapture: AutoCaptureCallback
 
   /** Fires when a capture is triggered; used by the UI to update indicators */
   onStatusChange: ((s: AutoCaptureStatus) => void) | null = null
 
-  constructor(
-    private readonly provider: ARProvider,
-    private readonly onCapture: AutoCaptureCallback,
-    opts: AutoCaptureOptions = {},
-  ) {
+  // The two fields are declared above and set here, not as parameter properties, so a unit test can load this file
+  // (Node's type stripping does not take parameter properties).
+  constructor(provider: ARProvider, onCapture: AutoCaptureCallback, opts: AutoCaptureOptions = {}) {
+    this.provider = provider
+    this.onCapture = onCapture
     this._opts = { ...DEFAULTS, ...opts }
   }
 
@@ -107,7 +117,7 @@ export class AutoCapture {
   }
 
   private async _tick(): Promise<void> {
-    if (!this._enabled || this._inFlight) return
+    if (!this._enabled || this._inFlight || this._opts.hold()) return
 
     const { maxCaptures, minIntervalMs, minDistanceM } = this._opts
     if (maxCaptures > 0 && this._captureCount >= maxCaptures) {

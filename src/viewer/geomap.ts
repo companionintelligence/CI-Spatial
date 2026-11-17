@@ -2,14 +2,19 @@
  * GeoMap — Leaflet-based map drawer for the 3D viewer.
  *
  * Shows a map panel (top-level overlay) with:
- *   - OpenStreetMap tile layer (no API key required)
+ *   - A basemap, only when the Scan server names a tile source (src/geo/tile-source.ts, drawn by
+ *     src/geo/basemap-layer.ts). With none, which is the default, the pins sit on a blank canvas
+ *     and the map says "No basemap configured"
  *   - A pin for every saved project with a known location
  *   - Clicking a pin switches the active project in the viewer
  *
  * Leaflet is bundled from npm and pulled in with a dynamic import, so the drawer
- * costs nothing until it is opened. Tile imagery still comes from basemaps.cartocdn.com,
- * so offline yields a dark canvas with correctly-placed pins rather than a full map.
+ * costs nothing until it is opened. Neither does the basemap: no tile host is asked for
+ * anything until the drawer has been opened, and a host that is not this app's own is asked
+ * about first. Offline, or with no tile source, the canvas is blank and the pins are still
+ * placed correctly.
  */
+import type { BasemapHandle } from '../geo/basemap-layer'
 
 export interface ProjectLocationEntry {
   projectId: string
@@ -56,6 +61,7 @@ export class GeoMap {
   private _emptyEl: HTMLElement | null = null
   private _onSelect: ProjectSelectCallback | null = null
   private _open = false
+  private _basemap: BasemapHandle | null = null
 
   get isOpen(): boolean { return this._open }
 
@@ -82,6 +88,22 @@ export class GeoMap {
     })
     setTimeout(() => this._refreshMapSize(), 80)
     setTimeout(() => this._refreshMapSize(), 360)
+    void this._startBasemap()
+  }
+
+  /**
+   * Puts the basemap on the map, once the drawer is open and the map exists. Both are needed: a
+   * closed drawer has no size, and no tile host should hear from a map nobody opened.
+   */
+  private async _startBasemap(): Promise<void> {
+    if (this._basemap || !this._open || !this._map || !this._L) return
+    try {
+      const { attachBasemap } = await import('../geo/basemap-layer')
+      if (this._basemap || !this._map || !this._L) return
+      this._basemap = attachBasemap({ L: this._L, map: this._map as import('leaflet').Map })
+    } catch (e) {
+      console.error('[geomap] basemap load failed:', e)
+    }
   }
 
   close(): void {
@@ -131,13 +153,7 @@ export class GeoMap {
         maxZoom: 19,
         zoomControl: true,
       })
-
-      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        attribution: '© OpenStreetMap © CARTO',
-        subdomains: 'abcd',
-        maxZoom: 19,
-        maxNativeZoom: 19,
-      }).addTo(this._map as import('leaflet').Map)
+      void this._startBasemap()
     }
 
     // Clear existing markers
@@ -229,6 +245,8 @@ export class GeoMap {
       style.id = 'geomap-styles'
       style.textContent = `
         #geomap-drawer.geomap-open { transform: translateY(0) !important; }
+        /* The blank canvas the pins sit on when no basemap is drawn: the drawer's own colour. */
+        #geomap-drawer .leaflet-container { background: #0a222e; }
 
         .geomap-pin-wrapper { background: transparent !important; border: none !important; }
 

@@ -101,12 +101,17 @@ function readStorage(key: string): string | null {
   }
 }
 
-function writeStorage(key: string, value: string | null): void {
+/** Returns false when the value was not written: storage is blocked, full, or absent. */
+function writeStorage(key: string, value: string | null): boolean {
   try {
-    if (value === null) globalThis.localStorage?.removeItem(key)
-    else globalThis.localStorage?.setItem(key, value)
+    const storage = globalThis.localStorage
+    if (!storage) return false
+    if (value === null) storage.removeItem(key)
+    else storage.setItem(key, value)
+    return true
   } catch {
     // Blocked storage: the sign-in cannot resume, and the status row says it did not finish.
+    return false
   }
 }
 
@@ -143,13 +148,16 @@ function systemBrowser(): ((url: string) => Promise<void>) | null {
 
 /**
  * Opens the server's sign-in in the system browser. The verifier waits in storage
- * until the app comes back. Throws if this build cannot open the system browser.
+ * until the app comes back. Throws if this build cannot open the system browser, or if
+ * the verifier cannot be saved: the return could not finish, so the browser stays shut.
  */
 export async function beginShellSignIn(): Promise<void> {
   const open = systemBrowser()
   if (!open) throw new Error('This build cannot open the system browser')
   const { verifier, challenge } = await createShellPkce()
-  writeStorage(PENDING_KEY, JSON.stringify({ verifier, startedAt: Date.now() }))
+  if (!writeStorage(PENDING_KEY, JSON.stringify({ verifier, startedAt: Date.now() }))) {
+    throw new Error('The sign-in could not be saved on this device')
+  }
   await open(apiUrl(shellSignInPath(challenge, isDesktopShell() ? 'desktop' : 'phone')))
 }
 
@@ -210,8 +218,8 @@ export async function finishShellSignIn(url: string): Promise<boolean | null> {
     })
     const body = await res.json().catch(() => null) as { token?: unknown } | null
     if (!res.ok || typeof body?.token !== 'string') return false
-    writeStorage(TOKEN_KEY, body.token)
-    return true
+    // Signed in only once the token is kept: without it the shell has no session to use.
+    return writeStorage(TOKEN_KEY, body.token)
   } catch {
     return false
   }
@@ -230,7 +238,9 @@ export async function shellSignedIn(fetchFn: typeof fetch = fetch): Promise<bool
       credentials: 'omit',
       signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
     })
-    if (res.status === 401 || res.status === 403) writeStorage(TOKEN_KEY, null)
+    // Clear only the token this check sent. A sign-in that finished while the check was in flight has
+    // stored a newer one, and this refusal of the old one must not erase it.
+    if ((res.status === 401 || res.status === 403) && readStorage(TOKEN_KEY) === token) writeStorage(TOKEN_KEY, null)
     return res.ok
   } catch {
     return false

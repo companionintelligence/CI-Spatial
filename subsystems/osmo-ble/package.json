@@ -9,7 +9,7 @@
     "backend": "node --watch server/backend.mjs",
     "mcp": "node server/mcp-server.mjs",
     "cli": "node server/cli.mjs",
-    "test:protocol": "node --test protocol/duml.test.mjs protocol/dome.test.mjs protocol/device_registry.test.mjs"
+    "test:protocol": "node --test protocol/duml.test.mjs protocol/dome.test.mjs protocol/device_registry.test.mjs protocol/wp-f-motion-gate.test.mjs protocol/wp-f-device-token.test.mjs protocol/wp-f2-operator-token.test.mjs server/wp-f-disconnect-stop.test.mjs server/wp-f2-transport-link.test.mjs server/wp-f2-backend-interlock.test.mjs protocol/wp-f3-operator-token.test.mjs server/wp-f3-transport.test.mjs server/wp-f3-motion-and-probes.test.mjs protocol/wp-f4-registry-messages.test.mjs server/wp-f4-reset-invalidation.test.mjs server/wp-f4-link-drop-move.test.mjs server/wp-f4-pairing-trigger-cap.test.mjs protocol/wp-f5-parked-motion-gate.test.mjs server/wp-f5-parked-outside-motion.test.mjs server/wp-f5-reset-and-probe-stop.test.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.0",

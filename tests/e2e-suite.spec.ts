@@ -413,6 +413,9 @@ test.describe('Tier 1: Feature Coverage', () => {
 
       const store = new DetectionStore()
       store.sessionId = 'test-session-123'
+      // The export carries the detections of the AR run in progress (WP-02). Without a run, a detection set
+      // straight into the map belongs to no run, and the GLB would hold no box for it.
+      store.startArRun('test-run')
       store.detections.set('chair-1', {
         label: 'chair',
         confidence: 0.95,
@@ -420,7 +423,8 @@ test.describe('Tier 1: Feature Coverage', () => {
         bbox: [0.1, 0.1, 0.3, 0.3],
         worldPos: { x: 0, y: 0, z: -1 },
         worldRot: { x: 0, y: 0, z: 0, w: 1 },
-        captureTimestamp: Date.now()
+        captureTimestamp: Date.now(),
+        arRunId: 'test-run'
       })
 
       const pointCloud = new PointCloud()
@@ -1147,7 +1151,7 @@ test.describe('Tier 4: Real-World Application Scenarios', () => {
       ...project,
       floors: [
         ...project.floors,
-        { name: 'First Floor', level: 1, scans: [] }
+        { floorId: 'floor-first', name: 'First Floor', level: 1, rooms: [], scans: [] }
       ]
     }
 

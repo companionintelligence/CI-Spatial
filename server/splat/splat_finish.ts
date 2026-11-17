@@ -32,6 +32,7 @@
 import { fromFileUrl } from '@std/path'
 import { REPO_ROOT } from '../repo-root.ts'
 import { countPlyVertices } from './splat_train.ts'
+import { budgetFromEnv, runWithDeadline } from '../run_with_deadline.ts'
 // The manifest types live in src/world/manifests.ts, not here — see that
 // file's header (it's the canonical, Deno-API-free home so the browser
 // viewer can type-import it without dragging this file's `Deno.*` calls into
@@ -64,7 +65,11 @@ export interface SplatFinishRunOptions {
   /** SH-compression k-means iterations. Env SPLAT_FINISH_SH_ITERS, then 10. */
   iterations?: number
   /** For testing: skip the real spawn and treat these results as the CLI run. */
-  _spawn?: (bin: string, args: string[], env: Record<string, string>) => Promise<{ code: number; stderr: string }>
+  _spawn?: (
+    bin: string,
+    args: string[],
+    env: Record<string, string>,
+  ) => Promise<{ code: number; stderr: string; timeoutReason?: string | null }>
   /** Provenance forwarded into the manifest. */
   provenance?: { sessionId?: string; scanId?: string }
 }
@@ -170,7 +175,7 @@ export async function runSplatFinish(opts: SplatFinishRunOptions): Promise<Splat
 
   // 3. Leg 1: PLY → SOG bundle.
   const sogArgs = buildSogArgs(params.cliPath, opts.splatPlyPath, opts.outputSogPath, params)
-  let sogRun: { code: number; stderr: string }
+  let sogRun: { code: number; stderr: string; timeoutReason?: string | null }
   try {
     sogRun = opts._spawn
       ? await opts._spawn(params.nodeBin, sogArgs, {})
@@ -187,14 +192,16 @@ export async function runSplatFinish(opts: SplatFinishRunOptions): Promise<Splat
     return _finish(manifestPath, {
       ...baseManifest,
       status: 'error',
-      error: `splat-transform (sog) exited ${sogRun.code}`,
+      error: sogRun.timeoutReason
+        ? `splat-transform (sog) ${sogRun.timeoutReason} and was stopped`
+        : `splat-transform (sog) exited ${sogRun.code}`,
       timing: { elapsedMs: Date.now() - started },
     }, sogRun.code, sogRun.stderr)
   }
 
   // 4. Leg 2: PLY → compressed PLY.
   const compressedArgs = buildCompressedArgs(params.cliPath, opts.splatPlyPath, opts.outputCompressedPlyPath)
-  let compressedRun: { code: number; stderr: string }
+  let compressedRun: { code: number; stderr: string; timeoutReason?: string | null }
   try {
     compressedRun = opts._spawn
       ? await opts._spawn(params.nodeBin, compressedArgs, {})
@@ -211,7 +218,9 @@ export async function runSplatFinish(opts: SplatFinishRunOptions): Promise<Splat
     return _finish(manifestPath, {
       ...baseManifest,
       status: 'error',
-      error: `splat-transform (compressed.ply) exited ${compressedRun.code}`,
+      error: compressedRun.timeoutReason
+        ? `splat-transform (compressed.ply) ${compressedRun.timeoutReason} and was stopped`
+        : `splat-transform (compressed.ply) exited ${compressedRun.code}`,
       timing: { elapsedMs: Date.now() - started },
     }, compressedRun.code, compressedRun.stderr)
   }
@@ -284,20 +293,21 @@ async function readPrefix(path: string, n: number): Promise<Uint8Array> {
   }
 }
 
+/** Covers each splat-transform call (the .sog leg and the compressed leg separately). Untuned. */
+const DEFAULT_FINISH_TIMEOUT_MS = 60 * 60 * 1000
+
 async function defaultSpawn(
   bin: string,
   args: string[],
   extraEnv: Record<string, string>,
-): Promise<{ code: number; stderr: string }> {
-  const cmd = new Deno.Command(bin, {
-    args,
-    env: extraEnv,
-    stdout: 'piped',
-    stderr: 'piped',
-  })
-  const output = await cmd.output()
+): Promise<{ code: number; stderr: string; timeoutReason: string | null }> {
+  const output = await runWithDeadline(
+    bin,
+    { args, env: extraEnv, stdout: 'piped', stderr: 'piped' },
+    budgetFromEnv('SPLAT_FINISH_TIMEOUT_MS', DEFAULT_FINISH_TIMEOUT_MS),
+  )
   const stderr = new TextDecoder().decode(output.stderr).trim()
-  return { code: output.code, stderr }
+  return { code: output.code, stderr, timeoutReason: output.timeoutReason }
 }
 
 async function writeManifest(path: string, manifest: SplatFinishManifest): Promise<void> {

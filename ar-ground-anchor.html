@@ -19,9 +19,9 @@
       biased grid of live XrController.hitTest() feature points, since proving
       that discovery works is the actual point of this test.
 
-      Loads the CURRENT engine from the CDN rather than this repo's vendored
-      public/xr.js, matching ar-hittest-sphere.html's rationale (the vendored
-      build is missing XrController.hitTest entirely).
+      Loads the engine from the CDN rather than this repo's vendored
+      public/xr.js, matching ar-hittest-sphere.html's rationale: isolating the
+      SLAM engine from the rest of the app for on-device debugging.
     -->
     <script src="https://cdn.jsdelivr.net/npm/@8thwall/engine-binary@1/dist/xr.js" async crossorigin="anonymous" data-preload-chunks="slam"></script>
     <script src="https://cdn.jsdelivr.net/npm/@8thwall/xrextras@1/dist/xrextras.js" crossorigin="anonymous"></script>

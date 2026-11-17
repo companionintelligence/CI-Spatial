@@ -92,6 +92,11 @@ known-failures baseline" for what that file is and how the gate uses it.
   Toolbox, and `memory-push`/`optimize-scan`/`person-4d-reconstruct` are
   triggered by their own flows (Publish, upload, and person-capture) rather
   than picked from the dropdown.
+- **Whole-Place export** — `export-world` writes one GLB for a Place,
+  `<slug>.world.glb`: each scan's GLB under its `localToWorld`, and one node per Thing
+  with its tag in `extras` (`server/world_export.ts`). The editor's Publish step queues it,
+  and `GET /worlds/<slug>/export.glb` serves it, with a viewer's world token wherever strict
+  world auth is on. The editor shows no link to the file yet.
 - **Splat toolbox** — train (Brush, GPU-pinned), detect (3D interaction boxes),
   view, and compress Gaussian splats (`viewer/splat-*.ts`).
 - **Video ingest** — `/ingest-video` turns an uploaded walkthrough video into a
@@ -161,8 +166,8 @@ Larger bets that are not yet scoped for delivery.
   (e.g. Redis Streams) with CPU/GPU worker capability advertising.
 - **AR glasses support** — adapt the provider for WebXR hand-tracking headsets;
   detection pins become volumetric objects.
-- **One-click world export bundle** — turn `export-world` into a single bundled
-  GLB + semantic-JSON download rather than a manifest/worker-ready step.
+- **One-click world export** — a labelled button in the editor that downloads the
+  `.world.glb` `export-world` already writes (see Shipped), instead of fetching it by URL.
 
 ---
 
