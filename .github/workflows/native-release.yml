@@ -1,0 +1,356 @@
+name: Native Release
+
+# Publishes the desktop and Android apps as a GitHub pre-release. Run it by hand only:
+#
+#   tag              The release tag: v and the apps' version, for example v0.2.0
+#                    (scripts/native/check-versions.mjs holds the six places it is written).
+#                    v0.1.0 is the container pre-release. No release and no git tag may have the
+#                    name yet: the release makes the tag, on the commit it built.
+#   android_signing  auto (default): the release key in the repository secrets when all four are
+#                    set, a throwaway key when none is, and a failed run when only some are.
+#                    keystore: the release key, or fail. throwaway: a key generated in the job
+#                    with keytool, used once and never stored. skip: an unsigned APK, named so.
+#
+# Release key secrets: ANDROID_KEYSTORE_BASE64 (the keystore file, base64), ANDROID_KEYSTORE_PASSWORD,
+# ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD. Nothing else is secret, and no API key, server
+# address or secret is built into any app: the apps ask for the person's own Scan server.
+#
+# The installers are unsigned, apart from the macOS app's ad-hoc signature. The publish job runs
+# only after every build job has succeeded, and uses the gh CLI rather than a release action.
+#
+# Only the publish job can write to the repository, and it installs no dependencies. Every other
+# job has a read-only token, since the build jobs run npm, Cargo and Gradle code. No checkout keeps
+# its token in .git/config (persist-credentials: false): nothing here runs git with credentials.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag, v and the apps' version (for example v0.2.0)
+        required: true
+        type: string
+      android_signing:
+        description: How to sign the Android APK
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto
+          - keystore
+          - throwaway
+          - skip
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag }}
+
+jobs:
+  prepare:
+    name: Check the release
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: The tag matches the apps' version
+        id: version
+        run: |
+          node scripts/native/check-versions.mjs --tag "$TAG"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+      # A read-only token sees published releases and pre-releases (the ones gh release create
+      # would refuse at the end), but not drafts.
+      - name: No release has the tag yet
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "::error::A release called $TAG exists already."
+            exit 1
+          fi
+      # gh release create makes the tag on the commit built here (--target), but it ignores
+      # --target when the tag exists already: pushed by hand, say, or left by a deleted release.
+      # The builds would then be published under another commit. The publish job checks again.
+      - name: No tag has the name yet
+        run: |
+          status=0
+          git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null || status=$?
+          case "$status" in
+            2) ;;
+            0) echo "::error::The tag $TAG exists already, on a commit that may not be $GITHUB_SHA."; exit 1 ;;
+            *) echo "::error::Could not check for the tag $TAG: git ls-remote exited with $status."; exit 1 ;;
+          esac
+      - name: The XR Engine files are Niantic's published bytes
+        run: node scripts/native/check-xr-engine.mjs
+      - name: No model weights or local settings in the checkout
+        run: |
+          test ! -e public/models || { echo "::error::public/models must not exist in a release checkout."; exit 1; }
+          for f in .env .env.local .env.production .env.production.local; do
+            test ! -e "$f" || { echo "::error::$f must not exist in a release checkout."; exit 1; }
+          done
+
+  desktop:
+    name: Desktop (${{ matrix.name }})
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            rust-targets: x86_64-pc-windows-msvc
+            tauri-args: --bundles nsis,msi
+            bundle-dir: desktop/src-tauri/target/release/bundle
+          - name: macOS universal
+            os: macos-latest
+            rust-targets: aarch64-apple-darwin x86_64-apple-darwin
+            tauri-args: --target universal-apple-darwin --bundles app,dmg
+            bundle-dir: desktop/src-tauri/target/universal-apple-darwin/release/bundle
+          - name: Linux
+            os: ubuntu-22.04
+            rust-targets: x86_64-unknown-linux-gnu
+            tauri-args: --bundles deb,rpm
+            bundle-dir: desktop/src-tauri/target/release/bundle
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      BUNDLE_DIR: ${{ matrix.bundle-dir }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: Rust toolchain (the runner's rustup)
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add ${{ matrix.rust-targets }}
+      - name: WebKitGTK 4.1 and the other Tauri build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential file libwebkit2gtk-4.1-dev libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix desktop
+      - name: Check shell config
+        run: npm run test:native --prefix desktop
+      - name: Build installers
+        run: npm run build --prefix desktop -- ${{ matrix.tauri-args }}
+      - name: Collect the installers under their release names
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          name() { node scripts/native/release-notes.mjs --asset "$1" --version "$VERSION"; }
+          one() { local found=("$@"); [ "${#found[@]}" -eq 1 ] && [ -f "${found[0]}" ] || { echo "::error::expected one file, found: ${found[*]}" >&2; exit 1; }; echo "${found[0]}"; }
+          case "$RUNNER_OS" in
+            Windows)
+              cp "$(one "$BUNDLE_DIR"/nsis/*-setup.exe)" "release/$(name windows-setup)"
+              cp "$(one "$BUNDLE_DIR"/msi/*.msi)" "release/$(name windows-msi)" ;;
+            macOS)
+              cp "$(one "$BUNDLE_DIR"/dmg/*.dmg)" "release/$(name macos-dmg)" ;;
+            Linux)
+              cp "$(one "$BUNDLE_DIR"/deb/*.deb)" "release/$(name linux-deb)"
+              cp "$(one "$BUNDLE_DIR"/rpm/*.rpm)" "release/$(name linux-rpm)" ;;
+          esac
+          mkdir -p notices
+          cp desktop/build/third-party-notices.json "notices/desktop-$RUNNER_OS.json"
+          ls -l release notices
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-desktop-${{ runner.os }}
+          path: |
+            release/
+            notices/
+          if-no-files-found: error
+          retention-days: 7
+
+  android:
+    name: Android (release APK)
+    needs: prepare
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix mobile
+      - name: Check shell config
+        run: npm run test:native --prefix mobile
+      - name: Build the web app and sync it into the Android project
+        run: |
+          npm run build:web --prefix mobile
+          cd mobile && npx cap sync android
+      - name: The bundle carries Niantic's engine bytes, its notices, and no model weights
+        run: |
+          node scripts/native/check-xr-engine.mjs mobile/android/app/src/main/assets/public
+          test -s mobile/android/app/src/main/assets/public/THIRD-PARTY-NOTICES.txt
+          test -s mobile/android/app/src/main/assets/public/LICENSE.txt
+          test ! -e mobile/android/app/src/main/assets/public/models
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Android SDK packages (the runner's own SDK)
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;35.0.0" > /dev/null
+      - name: Build the release APK
+        id: apk
+        working-directory: mobile/android
+        env:
+          SIGNING: ${{ inputs.android_signing }}
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keystore="$RUNNER_TEMP/android-signing.jks"
+          trap 'rm -f "$keystore"' EXIT
+          # The names of the release-key secrets that are empty (names only, never values).
+          missing=()
+          [ -n "$KEYSTORE_BASE64" ] || missing+=(ANDROID_KEYSTORE_BASE64)
+          [ -n "$KEYSTORE_PASSWORD" ] || missing+=(ANDROID_KEYSTORE_PASSWORD)
+          [ -n "$KEY_ALIAS" ] || missing+=(ANDROID_KEY_ALIAS)
+          [ -n "$KEY_PASSWORD" ] || missing+=(ANDROID_KEY_PASSWORD)
+          mode="$SIGNING"
+          if [ "$mode" = auto ]; then
+            case "${#missing[@]}" in
+              0) mode=keystore ;;
+              4) mode=throwaway ;;
+              # Some but not all is a mistake, such as a misnamed secret, not a choice. A throwaway
+              # key would make everyone who installs this APK uninstall it, and lose their scans,
+              # before they could install the first build signed with the release key.
+              *) echo "::error::android_signing is auto, but only $((4 - ${#missing[@]})) of the four release-key secrets are set (missing: ${missing[*]}). Set all four to sign with the release key, or run again with android_signing throwaway."
+                 exit 1 ;;
+            esac
+          fi
+          case "$mode" in
+            keystore)
+              [ "${#missing[@]}" -eq 0 ] || { echo "::error::android_signing is keystore, but these release-key secrets are not set: ${missing[*]}."; exit 1; }
+              printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore"
+              export ANDROID_SIGNING_STORE_FILE="$keystore" ANDROID_SIGNING_STORE_PASSWORD="$KEYSTORE_PASSWORD"
+              export ANDROID_SIGNING_KEY_ALIAS="$KEY_ALIAS" ANDROID_SIGNING_KEY_PASSWORD="$KEY_PASSWORD" ;;
+            throwaway)
+              password="$(openssl rand -hex 24)"
+              echo "::add-mask::$password"
+              keytool -genkeypair -keystore "$keystore" -storetype PKCS12 -alias throwaway -keyalg RSA -keysize 3072 \
+                -validity 10000 -storepass "$password" -keypass "$password" \
+                -dname "CN=Companion Scan $TAG pre-release (throwaway key)"
+              export ANDROID_SIGNING_STORE_FILE="$keystore" ANDROID_SIGNING_STORE_PASSWORD="$password"
+              export ANDROID_SIGNING_KEY_ALIAS=throwaway ANDROID_SIGNING_KEY_PASSWORD="$password" ;;
+            skip) ;;
+            *) echo "::error::unknown android_signing $mode"; exit 1 ;;
+          esac
+          ./gradlew assembleRelease --no-daemon
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+      - name: Check the APK, and name it for how it is signed
+        env:
+          MODE: ${{ steps.apk.outputs.mode }}
+        run: |
+          set -euo pipefail
+          tools="$ANDROID_HOME/build-tools/35.0.0"
+          dir=mobile/android/app/build/outputs/apk/release
+          if [ "$MODE" = skip ]; then apk="$dir/app-release-unsigned.apk"; else apk="$dir/app-release.apk"; fi
+          "$tools/aapt2" dump badging "$apk" > badging.txt
+          grep -q "package: name='com.companionintelligence.scan'" badging.txt
+          grep -q "versionName='$VERSION'" badging.txt
+          if grep -q "application-debuggable" badging.txt; then echo "::error::the release APK is debuggable"; exit 1; fi
+          cert=""
+          if [ "$MODE" != skip ]; then
+            "$tools/apksigner" verify --print-certs "$apk" | tee certs.txt
+            cert="$(grep -m1 'certificate SHA-256 digest' certs.txt | awk '{print $NF}')"
+          fi
+          mkdir -p release notices
+          cp "$apk" "release/$(node scripts/native/release-notes.mjs --asset android-apk --version "$VERSION" --signing "$MODE")"
+          cp mobile/build/third-party-notices.json notices/android.json
+          printf '{"mode":"%s","cert":"%s"}\n' "$MODE" "$cert" > notices/android-signing.json
+          ls -l release notices
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-android
+          path: |
+            release/
+            notices/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish the pre-release
+    needs: [prepare, desktop, android]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-*
+          path: built
+          merge-multiple: true
+      - name: Assemble the release files, notices, checksums and notes
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp built/release/* out/
+          cp LICENSE out/LICENSE
+          node scripts/native/third-party-notices.mjs --merge built/notices/desktop-*.json built/notices/android.json \
+            --out out/THIRD-PARTY-NOTICES.txt
+          mode="$(node -p "require('./built/notices/android-signing.json').mode")"
+          cert="$(node -p "require('./built/notices/android-signing.json').cert")"
+          node scripts/native/release-notes.mjs --notes --version "$VERSION" --signing "$mode" --cert "$cert" \
+            --commit "$GITHUB_SHA" --out notes.md
+          (cd out && sha256sum -- * > SHA256SUMS.txt)
+          ls -l out
+          cat out/SHA256SUMS.txt
+      - name: Create the GitHub pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The tag again, as prepare checked it: one pushed while the builds ran would make
+          # gh release create ignore --target and publish these files under its commit.
+          status=0
+          git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null || status=$?
+          case "$status" in
+            2) ;;
+            0) echo "::error::The tag $TAG exists already, on a commit that may not be $GITHUB_SHA."; exit 1 ;;
+            *) echo "::error::Could not check for the tag $TAG: git ls-remote exited with $status."; exit 1 ;;
+          esac
+          gh release create "$TAG" out/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Companion Scan $VERSION (desktop and Android pre-release)" \
+            --notes-file notes.md

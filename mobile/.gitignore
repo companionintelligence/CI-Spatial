@@ -15,6 +15,9 @@ android/app/src/main/assets/plugins/
 android/app/src/main/assets/capacitor.plugins.json
 android/capacitor-cordova-android-plugins/
 
+# ios/App/CapApp-SPM is committed, not ignored: the Xcode project uses it as its local
+# Swift package, and Capacitor only picks Swift Package Manager when that folder exists.
+
 # Release signing: never commit keys or their passwords.
 android/keystore.properties
 *.jks

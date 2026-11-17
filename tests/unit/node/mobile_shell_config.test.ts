@@ -32,6 +32,22 @@ test('the bundle is the one scripts build into mobile/www', () => {
   assert.equal(config.webDir, 'www')
 })
 
+test('the Android app stays out of backup and device-to-device transfer, which would copy its session token', () => {
+  const manifest = read('mobile/android/app/src/main/AndroidManifest.xml')
+  const application = manifest.match(/<application\b([^>]*)>/)?.[1] ?? ''
+  assert.match(application, /android:allowBackup="false"/, 'Android 11 and earlier')
+  assert.match(application, /android:dataExtractionRules="@xml\/data_extraction_rules"/, 'Android 12 and later')
+  const rules = read('mobile/android/app/src/main/res/xml/data_extraction_rules.xml').replace(/<!--[\s\S]*?-->/g, '')
+  assert.doesNotMatch(rules, /<include\b/, 'nothing is opted back in')
+  const domains = ['root', 'file', 'database', 'sharedpref', 'external', 'device_root', 'device_file', 'device_database', 'device_sharedpref']
+  for (const section of ['cloud-backup', 'device-transfer']) {
+    const body = rules.match(new RegExp(`<${section}>([\\s\\S]*?)</${section}>`))?.[1]
+    assert.ok(body !== undefined, `${section} is configured`)
+    const excluded = [...body.matchAll(/<exclude domain="([a-z_]+)" path="\." \/>/g)].map((m) => m[1])
+    assert.deepEqual(excluded, domains, `${section}: every domain is excluded whole`)
+  }
+})
+
 test('the Capacitor app id matches the Android applicationId and the iOS bundle id', () => {
   assert.equal(config.appId, 'com.companionintelligence.scan')
   assert.match(read('mobile/android/app/build.gradle'), /applicationId "com\.companionintelligence\.scan"/)

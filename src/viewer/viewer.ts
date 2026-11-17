@@ -62,12 +62,15 @@ import type {
   WorldProject,
 } from '../world/types'
 import { apiCredentials, apiUrl, shellSessionToken, withSessionToken, wsUrl } from '../shared/api-base.ts'
+import { mountShellMenu } from './shell-menu'
 
 // Place composition remains opt-in while its building/floor/room editing flow
 // is refined. The static HTML stays hidden unless this build-time flag is set.
 const PLACE_COMPOSER_ENABLED = import.meta.env?.VITE_ENABLE_PLACE_COMPOSER === 'true'
 
 registerPWA()
+// Inside a native shell: the Scan server entry in the Navigate menu, and a prompt when none is set.
+mountShellMenu()
 void refreshAccountChip()
 
 interface Label3D {

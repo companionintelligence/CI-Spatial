@@ -12,8 +12,10 @@ import {
   createPkcePair,
   createStateNonce,
   registerPortalAuth,
+  DESKTOP_RETURN_URL,
   safeRelativePath,
   SHELL_RETURN_URL,
+  shellReturnFor,
   signSession,
   verifySession,
   type PortalAuthConfig,
@@ -320,14 +322,18 @@ Deno.test('status: on a stock install nothing else in the sign-in flow is regist
   assertEquals((await app.request('https://scan.example/authenticate/whoami')).status, 404, 'whoami')
 })
 
-/** Runs the Portal leg of a shell sign-in and returns the app-scheme URL the callback redirected to. */
-async function shellCallback(app: Hono, challenge: string): Promise<string> {
-  const init = await app.request(`https://scan.example/authenticate/oidc?shell=1&challenge=${challenge}`)
+/**
+ * Runs the Portal leg of a shell sign-in and returns the app-scheme URL the callback redirected to.
+ * `shell` is what the app sends: `1` from the phone app, `desktop` from the desktop app.
+ */
+async function shellCallback(app: Hono, challenge: string, shell: '1' | 'desktop' = '1'): Promise<string> {
+  const init = await app.request(`https://scan.example/authenticate/oidc?shell=${shell}&challenge=${challenge}`)
   const jar = cookiesFrom(init)
   const state = jar.get('oidc_state')!
+  const appMark = jar.get('oidc_shell_app') ? `; oidc_shell_app=${jar.get('oidc_shell_app')}` : ''
   const cb = await app.request(
     `https://scan.example/authenticate/oidc/callback?code=shell-authcode&state=${state}`,
-    { headers: { cookie: `oidc_state=${state}; oidc_pkce=${jar.get('oidc_pkce')}; oidc_shell=${challenge}` } },
+    { headers: { cookie: `oidc_state=${state}; oidc_pkce=${jar.get('oidc_pkce')}; oidc_shell=${challenge}${appMark}` } },
   )
   assertEquals(cb.status, 302, `shell callback should redirect, got ${cb.status}: ${await cb.text()}`)
   assertEquals(cookiesFrom(cb).has('cs_session'), false, 'the shell gets no session cookie')
@@ -379,6 +385,55 @@ Deno.test('shell: the callback ends in the app scheme, and the code trades for a
   }
 })
 
+Deno.test('desktop: the callback ends in the desktop app scheme, and the code trades for a Bearer token once', async () => {
+  const portal = stubPortal({ email: 'owner@example.com' })
+  try {
+    const app = testApp(portal.url, ['owner@example.com'])
+    const { verifier, challenge } = await createPkcePair()
+    const loc = await shellCallback(app, challenge, 'desktop')
+    assert(loc.startsWith(`${DESKTOP_RETURN_URL}?code=`), `desktop-scheme return, got ${loc}`)
+    assert(!loc.startsWith(SHELL_RETURN_URL), 'not the phone app')
+    const code = new URL(loc).searchParams.get('code')!
+
+    const first = await exchange(app, code, verifier)
+    assertEquals(first.status, 200)
+    const body = await first.json() as { token: string; email: string }
+    assertEquals(body.email, 'owner@example.com')
+    const who = await app.request('https://scan.example/authenticate/whoami', {
+      headers: { authorization: `Bearer ${body.token}` },
+    })
+    assertEquals(who.status, 200)
+    assertEquals((await who.json() as Record<string, unknown>)['via'], 'shell-token')
+    assertEquals((await exchange(app, code, verifier)).status, 400, 'the code is single use')
+  } finally {
+    await portal.close()
+  }
+})
+
+Deno.test('desktop: initiate marks the desktop app, and a phone or web initiate clears the mark', async () => {
+  const app = testApp('https://portal.example', ['a@b.c'])
+  const challenge = 'C'.repeat(43)
+  const desktop = cookiesFrom(await app.request(`https://scan.example/authenticate/oidc?shell=desktop&challenge=${challenge}`))
+  assertEquals(desktop.get('oidc_shell_app'), 'desktop')
+  assertEquals(desktop.get('oidc_shell'), challenge)
+  const phone = cookiesFrom(await app.request(`https://scan.example/authenticate/oidc?shell=1&challenge=${challenge}`))
+  assertEquals(phone.get('oidc_shell_app'), '', 'the phone app clears it')
+  assertEquals(phone.get('oidc_shell'), challenge)
+  const web = cookiesFrom(await app.request('https://scan.example/authenticate/oidc'))
+  assertEquals(web.get('oidc_shell_app'), '', 'a web sign-in clears it')
+  assertEquals(web.get('oidc_shell'), '')
+  const refused = await app.request('https://scan.example/authenticate/oidc?shell=desktop&challenge=too-short')
+  assertEquals(refused.status, 400, 'the desktop app needs a PKCE challenge too')
+})
+
+Deno.test('shellReturnFor: only shell=1 and shell=desktop start a shell sign-in, each to its own fixed scheme', () => {
+  assertEquals(shellReturnFor('1'), SHELL_RETURN_URL)
+  assertEquals(shellReturnFor('desktop'), DESKTOP_RETURN_URL)
+  for (const other of [undefined, '', '0', 'true', 'Desktop', 'https://evil.example', 'computer.ci.scan.desktop://auth']) {
+    assertEquals(shellReturnFor(other), null, String(other))
+  }
+})
+
 Deno.test('shell: a wrong verifier fails, and it uses the code up so the right one cannot retry', async () => {
   const portal = stubPortal({ email: 'owner@example.com' })
   try {
@@ -418,6 +473,7 @@ Deno.test('shell cookie: a web sign-in after a shell one still ends at the owner
     const app = testApp(portal.url, ['owner@example.com'])
     const init = await app.request('https://scan.example/authenticate/oidc')
     assert(init.headers.getSetCookie().some((c) => c.startsWith('oidc_shell=;')), 'a web initiate clears the shell cookie')
+    assert(init.headers.getSetCookie().some((c) => c.startsWith('oidc_shell_app=;')), 'and the desktop app mark')
     const jar = cookiesFrom(init)
     const state = jar.get('oidc_state')!
     const cb = await app.request(

@@ -21,6 +21,8 @@
  *   GET  /authenticate/oidc/callback   → validates state, exchanges code, mints session
  *   GET  /authenticate/oidc?shell=1&challenge=…  → the same, for a native shell. The callback ends
  *                                        in SHELL_RETURN_URL with a one-time code, not a cookie
+ *   GET  /authenticate/oidc?shell=desktop&challenge=…  → the same, for the desktop app. The callback
+ *                                        ends in DESKTOP_RETURN_URL instead
  *   POST /authenticate/shell/exchange  → { code, verifier } → { token, email, name }, the shell's session
  *   GET  /authenticate/whoami          → { sub, email, name } for a valid session; also accepts the
  *                                        shell's Bearer token, or a Portal-issued Bearer JWT (JWKS-verified)
@@ -385,6 +387,25 @@ const HANDSHAKE_TTL_SEC = 600
  * Keep it in step with SHELL_RETURN_PREFIX in src/shared/shell-sign-in.ts.
  */
 export const SHELL_RETURN_URL = 'com.companionintelligence.scan://auth'
+/**
+ * Where a desktop app sign-in ends: the desktop app's own URL scheme, registered by its installers
+ * (desktop/src-tauri/tauri.conf.json, plugins.deep-link). Fixed like SHELL_RETURN_URL; the request
+ * only chooses between the two. Keep it in step with DESKTOP_RETURN_PREFIX in
+ * src/shared/shell-sign-in.ts.
+ */
+export const DESKTOP_RETURN_URL = 'computer.ci.scan.desktop://auth'
+/** Set beside the shell challenge when the desktop app started the sign-in. */
+const SHELL_APP_COOKIE = 'oidc_shell_app'
+
+/**
+ * The app a shell sign-in returns to: `shell=1` is the phone app (the value it has always sent),
+ * `shell=desktop` the desktop app. Any other value is a web sign-in.
+ */
+export function shellReturnFor(shell: string | undefined): string | null {
+  if (shell === '1') return SHELL_RETURN_URL
+  if (shell === 'desktop') return DESKTOP_RETURN_URL
+  return null
+}
 /** How long the one-time code from a shell sign-in waits to be exchanged. */
 const SHELL_CODE_TTL_MS = 60_000
 /** A PKCE verifier or challenge: 32 random bytes, base64url, 43 characters. */
@@ -468,11 +489,15 @@ export function registerPortalAuth(app: Hono, cfg: PortalAuthConfig, deps: Porta
   app.get('/authenticate/oidc', async (c) => {
     // A shell sign-in carries the PKCE challenge the shell made. The callback keeps it, so only the
     // shell that started the sign-in can exchange the code the callback issues.
-    const shell = c.req.query('shell') === '1'
+    const shellReturn = shellReturnFor(c.req.query('shell'))
+    const shell = shellReturn !== null
     const shellChallenge = c.req.query('challenge') ?? ''
     if (shell && !PKCE_SHAPE.test(shellChallenge)) return c.text('Shell sign-in needs a PKCE challenge', 400)
     if (shell) setCookie(c, SHELL_CHALLENGE_COOKIE, shellChallenge, HANDSHAKE_TTL_SEC, '/authenticate')
     else clearCookie(c, SHELL_CHALLENGE_COOKIE, '/authenticate')
+    // Which app gets the code back. Only the desktop app is marked; the phone app's sign-in is unchanged.
+    if (shellReturn === DESKTOP_RETURN_URL) setCookie(c, SHELL_APP_COOKIE, 'desktop', HANDSHAKE_TTL_SEC, '/authenticate')
+    else clearCookie(c, SHELL_APP_COOKIE, '/authenticate')
     const { verifier, challenge } = await createPkcePair()
     const state = createStateNonce()
     setCookie(c, STATE_COOKIE, state, HANDSHAKE_TTL_SEC, '/authenticate')
@@ -569,7 +594,9 @@ export function registerPortalAuth(app: Hono, cfg: PortalAuthConfig, deps: Porta
       exp: Math.floor(Date.now() / 1000) + cfg.sessionTtlSec,
     }
     const shellChallenge = cookie(c, SHELL_CHALLENGE_COOKIE)
+    const desktopApp = cookie(c, SHELL_APP_COOKIE) === 'desktop'
     clearCookie(c, SHELL_CHALLENGE_COOKIE, '/authenticate')
+    clearCookie(c, SHELL_APP_COOKIE, '/authenticate')
     if (shellChallenge && PKCE_SHAPE.test(shellChallenge)) {
       // The shell's origin never receives the session cookie, which belongs to this server's origin.
       // It gets a one-time code instead, and trades it, with its own verifier, for the session token.
@@ -577,8 +604,8 @@ export function registerPortalAuth(app: Hono, cfg: PortalAuthConfig, deps: Porta
       const shellCode = b64url(crypto.getRandomValues(new Uint8Array(32)))
       shellCodes.set(shellCode, { challenge: shellChallenge, claims, expiresAt: Date.now() + SHELL_CODE_TTL_MS })
       clearCookie(c, REDIRECT_COOKIE, '/authenticate')
-      console.log(`[portal-auth] ${profile.email} signed in via Companion Account (shell)`)
-      return c.redirect(`${SHELL_RETURN_URL}?code=${shellCode}`, 302)
+      console.log(`[portal-auth] ${profile.email} signed in via Companion Account (${desktopApp ? 'desktop app' : 'shell'})`)
+      return c.redirect(`${desktopApp ? DESKTOP_RETURN_URL : SHELL_RETURN_URL}?code=${shellCode}`, 302)
     }
 
     setCookie(c, SESSION_COOKIE, await signSession(claims, cfg.sessionSecret), cfg.sessionTtlSec)

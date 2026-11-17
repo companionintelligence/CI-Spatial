@@ -57,6 +57,20 @@ package manager's own `licenses` command.
 
 1. [`@companionintelligence/video-kit`](https://github.com/companionintelligence/CI-Spatial) `^0.1.0` — dev
 
+## Not in any manifest
+
+<!-- Maintained by hand: the generator reads package manifests, and these are not in one. -->
+
+These ship with the web app or the native apps, but no manifest above declares them.
+
+| Component | Where it comes from | Licence |
+| --- | --- | --- |
+| Niantic Spatial XR Engine (8th Wall) | Vendored binary: `public/xr.js`, `xr-slam.js`, `xr-face.js` and `public/resources/` (@8thwall/engine-binary 1.0.0). In the web app and the Android and iOS apps, not the desktop app. | [XR Engine License Agreement](https://github.com/8thwall/engine/blob/main/LICENSE), proprietary and binary only. See [NOTICE.md](NOTICE.md). |
+| Draco 3D decoder (Google) | `public/draco/`, copied from `three/examples/jsm/libs/draco/gltf` by `scripts/copy-draco.mjs` | Apache-2.0 |
+| onnxruntime-web WebAssembly runtime (Microsoft) | `public/ort/`, copied from `onnxruntime-web` by `scripts/copy-ort-wasm.mjs` | MIT |
+| QR Code generator library (Project Nayuki) | Vendored source: `src/third-party/qrcodegen/qrcodegen.ts` | MIT |
+| Tauri and its Rust crates | The desktop app, pinned in `desktop/src-tauri/Cargo.lock` | Mostly MIT or Apache-2.0; five crates are MPL-2.0. See [NOTICE.md](NOTICE.md). |
+| Capacitor's Android runtime and AndroidX | The Android app: `mobile/package-lock.json` and the Gradle build in `mobile/android` | MIT (Capacitor), Apache-2.0 (AndroidX) |
 
 ---
 

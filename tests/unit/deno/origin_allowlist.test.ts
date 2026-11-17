@@ -3,7 +3,14 @@
  * WebSocket upgrade both ask, so a wrong answer lets a page in, or keeps the app's own page out.
  * Runs with the rest of the unit suite: deno task test
  */
-import { isAllowedOrigin, NATIVE_SHELL_ORIGIN, originOf, type OriginAllowlist } from '../../../server/origin.ts'
+import {
+  DESKTOP_SHELL_ORIGINS,
+  isAllowedOrigin,
+  isNativeShellOrigin,
+  NATIVE_SHELL_ORIGIN,
+  originOf,
+  type OriginAllowlist,
+} from '../../../server/origin.ts'
 
 function assertEquals<T>(a: T, b: T, msg?: string) {
   if (a !== b) throw new Error(`${msg ?? 'assertEquals'}: ${JSON.stringify(a)} !== ${JSON.stringify(b)}`)
@@ -14,6 +21,35 @@ const allowlist: OriginAllowlist = { prefix: 'https://scan.example.test', public
 
 Deno.test('the native shell origin is allowed', () => {
   assertEquals(isAllowedOrigin(NATIVE_SHELL_ORIGIN, allowlist), true, 'capacitor')
+})
+
+Deno.test('the desktop shell origins are allowed, on every platform', () => {
+  // macOS and Linux serve the Tauri bundle from tauri://localhost; Windows from http://tauri.localhost,
+  // or https://tauri.localhost with useHttpsScheme.
+  assertEquals(DESKTOP_SHELL_ORIGINS.length, 3, 'three origins')
+  for (const origin of ['tauri://localhost', 'http://tauri.localhost', 'https://tauri.localhost']) {
+    assertEquals(DESKTOP_SHELL_ORIGINS.includes(origin), true, `listed: ${origin}`)
+    assertEquals(isAllowedOrigin(origin, allowlist), true, origin)
+    assertEquals(isAllowedOrigin(origin, { prefix: 'https://other.example.test', publicOrigin: null }), true, `${origin}, whatever the prefix`)
+  }
+})
+
+Deno.test('only the exact desktop origins are allowed, as with the iOS one', () => {
+  assertEquals(isAllowedOrigin('tauri://evil.example', allowlist), false, 'another tauri host')
+  assertEquals(isAllowedOrigin('tauri://localhost:8080', allowlist), false, 'a tauri port')
+  assertEquals(isAllowedOrigin('http://tauri.localhost:8080', allowlist), false, 'a port on the Windows origin')
+  assertEquals(isAllowedOrigin('https://tauri.localhost.evil.example', allowlist), false, 'a longer host')
+  assertEquals(isAllowedOrigin('http://evil.tauri.localhost', allowlist), false, 'a deeper subdomain')
+  assertEquals(isAllowedOrigin('capacitor://evil.example', allowlist), false, 'another capacitor host')
+})
+
+Deno.test('a shell origin is the app on the device, not an address to share', () => {
+  for (const origin of [NATIVE_SHELL_ORIGIN, 'https://localhost', ...DESKTOP_SHELL_ORIGINS]) {
+    assertEquals(isNativeShellOrigin(origin), true, origin)
+  }
+  for (const origin of [PUBLIC, 'http://localhost:5173', 'https://localhost:5173', 'https://phone.tailnet.ts.net']) {
+    assertEquals(isNativeShellOrigin(origin), false, origin)
+  }
 })
 
 Deno.test("the app's own public origin is allowed", () => {

@@ -10,7 +10,7 @@
     "dev": "vite --host",
     "build": "tsc --noEmit && vite build",
     "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",
-    "verify": "deno task check && npm run test:viewport && deno task test && tsc --noEmit && npm run typecheck:tests && npm run test:pipeline:graph && npm run test:editor:pick && npm run test:store && npm run test:resolver && npm run test:provenance && npm run test:detection-gate && npm run test:model-provisioning && npm run test:router && npm run test:clock-sync && npm run test:clip-validation && npm run test:splat4d && npm run test:gimbal:stall && npm run test:gimbal:control && npm run test:gimbal:link && npm run test:gimbal:protocol && npm run test:tracking:quality && npm run test:object:filter && npm run test:status-line && npm run test:panoptic:lift && npm run test:wake-lock && npm run test:ar:preflight && npm run test:scan:lighting && npm run test:upload:expectation && npm run test:capture:intent && npm run test:capture:station && npm run test:capture:distance && npm run test:capture:sweep && npm run test:startup:budget && npm run test:ftue:status && npm run test:app-icons && npm run test:public-site && npm run test:sw-queue && npm run test:mobile-config && npm run test:scan-coherence && npm run test:inference-errors && npm run test:capture:recovery && npm run test:api-base && npm run test:native-art && npm run test:shell-sign-in && npm run test:shell-session && npm run test:native-ar",
+    "verify": "deno task check && npm run test:viewport && deno task test && tsc --noEmit && npm run typecheck:tests && npm run test:pipeline:graph && npm run test:editor:pick && npm run test:store && npm run test:resolver && npm run test:provenance && npm run test:detection-gate && npm run test:model-provisioning && npm run test:router && npm run test:clock-sync && npm run test:clip-validation && npm run test:splat4d && npm run test:gimbal:stall && npm run test:gimbal:control && npm run test:gimbal:link && npm run test:gimbal:protocol && npm run test:tracking:quality && npm run test:object:filter && npm run test:status-line && npm run test:panoptic:lift && npm run test:wake-lock && npm run test:ar:preflight && npm run test:scan:lighting && npm run test:upload:expectation && npm run test:capture:intent && npm run test:capture:station && npm run test:capture:distance && npm run test:capture:sweep && npm run test:startup:budget && npm run test:ftue:status && npm run test:app-icons && npm run test:public-site && npm run test:sw-queue && npm run test:mobile-config && npm run test:scan-coherence && npm run test:inference-errors && npm run test:capture:recovery && npm run test:api-base && npm run test:native-art && npm run test:shell-sign-in && npm run test:shell-session && npm run test:server-setting && npm run test:native-build && npm run test:xr-engine && npm run test:legal-notices && npm run test:notices && npm run test:native-release && npm run test:native-ar",
     "test:pipeline:graph": "node --experimental-strip-types --no-warnings --test tests/unit/node/pipeline_detection_graph.test.ts",
     "test:editor:pick": "node --experimental-strip-types --no-warnings --test tests/unit/node/editor_pick.test.ts",
     "test:store": "node --experimental-strip-types --no-warnings --test tests/unit/node/detection_store.test.ts",
@@ -26,7 +26,13 @@
     "test:native-art": "node --experimental-strip-types --no-warnings --test tests/unit/node/native_art.test.ts",
     "test:shell-sign-in": "node --experimental-strip-types --no-warnings --test tests/unit/node/shell_sign_in.test.ts",
     "test:native-ar": "node --experimental-strip-types --no-warnings --test tests/unit/node/native_ar_codec.test.ts tests/unit/node/native_ar_provider.test.ts tests/unit/node/native_ar_bridge.test.ts",
-    "test:shell-session": "node --experimental-strip-types --no-warnings --test tests/unit/node/shell_session.test.ts",
+    "test:shell-session": "node --experimental-strip-types --no-warnings --test tests/unit/node/shell_session.test.ts tests/unit/node/shell_session_server.test.ts",
+    "test:server-setting": "node --experimental-strip-types --no-warnings --test tests/unit/node/server_setting.test.ts",
+    "test:native-build": "node --experimental-strip-types --no-warnings --test tests/unit/node/native_build.test.ts",
+    "test:xr-engine": "node --experimental-strip-types --no-warnings --test tests/unit/node/xr_engine.test.ts",
+    "test:legal-notices": "node --experimental-strip-types --no-warnings --test tests/unit/node/legal_notices.test.ts",
+    "test:notices": "node --experimental-strip-types --no-warnings --test tests/unit/node/third_party_notices.test.ts",
+    "test:native-release": "node --experimental-strip-types --no-warnings --test tests/unit/node/native_release.test.ts",
   "test:status-line": "node --experimental-strip-types --no-warnings --test tests/unit/node/status_line.test.ts",
     "test:startup:budget": "node --experimental-strip-types --no-warnings --test tests/unit/node/startup_word_budget.test.ts",
     "test:ftue:status": "node --experimental-strip-types --no-warnings --test tests/unit/node/ftue_status.test.ts",
@@ -121,5 +127,11 @@
     "typescript": "^6.0.3",
     "vite": "^8.0.16",
     "ws": "^8.21.0"
+  },
+  "overrides": {
+    "sharp": "^0.35.5",
+    "jimp": {
+      "zod": "^4.6.6"
+    }
   }
 }
