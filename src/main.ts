@@ -1663,18 +1663,24 @@ async function main() {
       // Status is a measurement again on the two-point tier, so the copy can
       // finally report something that was actually checked rather than
       // asserting an alignment nothing verified.
+      // A bypassed floor check is said first: it caps the scan at provisional and
+      // stops it from setting the Place frame, whatever the separation was.
+      // The north tick is labelled session-local: it is not true north in v1.
       const committed = calibration.calibration
-      if (committed.method === 'two-point-ground') {
+      if (committed.floorCheckBypassed === true) {
+        overlay.setStatus('Floor check bypassed — provisional, and this scan does not set the Place frame.')
+      } else if (committed.method === 'two-point-ground') {
         overlay.setStatus(
           committed.status === 'verified'
-            ? `Alignment verified — ${Math.abs(committed.residualM * 100).toFixed(0)} cm from this Place's stored pair.`
-            : 'Project frame set from two points. Start scanning.',
+            ? `Alignment verified — ${Math.abs(committed.residualM * 100).toFixed(0)} cm from this Place's stored pair. North tick is session-local.`
+            : 'Project frame set from two points. North tick is session-local. Start scanning.',
         )
       } else {
-        overlay.setStatus('Single-point anchor — scans align only if it is the same physical spot.')
+        overlay.setStatus('Single point (lower accuracy) — scans align only if it is the same physical spot.')
       }
     } else {
-      overlay.setStatus('Scanning without project alignment')
+      // "Continue uncalibrated": no frame, no alignment, and the scan says so.
+      overlay.setStatus('Heading unverified — scanning without project alignment. This scan does not set the Place frame.')
     }
   }
 

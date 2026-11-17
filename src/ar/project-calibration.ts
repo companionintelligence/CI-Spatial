@@ -27,7 +27,13 @@ import {
 } from '../world/geo'
 import { buildAnchorMarker, ANCHOR_RADIUS_M } from '../world/anchor-marker'
 import { buildOriginDecal } from '../world/origin-decal'
-import { isSameHeightRetry, isTapOnGround, tapHeightAboveGroundCm } from './ground-gate'
+import {
+  committedStatus,
+  isSameHeightRetry,
+  isTapOnGround,
+  mayWritePlaceFrame,
+  tapHeightAboveGroundCm,
+} from './ground-gate'
 
 const TRACKING_TIMEOUT_MS = 10_000
 /**
@@ -190,6 +196,12 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
   /** Set when the user chooses to place without a settled floor estimate. */
   let groundWaitOverridden = false
   /**
+   * True once this flow has bypassed a floor check: the skip-ground button, or an
+   * off-floor tap accepted by a same-height retry. It is recorded on the commit,
+   * and a bypassed commit never writes the Place frame (`mayWritePlaceFrame`).
+   */
+  let floorCheckBypassed = false
+  /**
    * Height of the most recent tap rejected as off-floor, or null. A retry at
    * this height is the confirmation the override asks for; a tap anywhere else
    * is a fresh attempt and is gated normally.
@@ -285,7 +297,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
         <button id="project-calibration-replace" type="button" class="project-calibration-link" hidden>Re-place points</button>
         <button id="project-calibration-override" type="button" class="project-calibration-link" hidden>Use anyway</button>
         <button id="project-calibration-skip-ground" type="button" class="project-calibration-link project-calibration-link-promoted" hidden>Place anchor without floor check</button>
-        <button id="project-calibration-fallback" type="button" class="project-calibration-link" hidden>Use one point instead (less accurate)</button>
+        <button id="project-calibration-fallback" type="button" class="project-calibration-link" hidden>Use one point instead (lower accuracy)</button>
         <button id="project-calibration-skip" type="button" class="project-calibration-link">Continue uncalibrated</button>
       </div>
     </div>`
@@ -1100,7 +1112,12 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
         return
       }
 
-      const frameChanged = !storedTwoPoint || override
+      // A bypassed floor check never writes the Place frame, first creation included.
+      const frameChanged = mayWritePlaceFrame({
+        floorCheckBypassed,
+        hasStoredFrame: !!storedTwoPoint,
+        override,
+      })
       // Only a changed frame keeps photos, so only a changed frame is worth a
       // capture. This sits after the mismatch check on purpose: a pair that is
       // about to be sent back for re-placement should not cost a frame.
@@ -1131,10 +1148,15 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
         calibratedAt,
         // 'verified' is a measurement here, not a label: it requires a stored
         // reference that this session's re-measured separation actually matched.
-        status: storedTwoPoint && !override ? 'verified' : 'provisional',
+        status: committedStatus({
+          hasStoredFrame: !!storedTwoPoint,
+          override,
+          floorCheckBypassed,
+        }),
         // The floor the origin sits on, in session metres: the landmark's own
         // measured height, which is already snapped onto the established plane.
         groundY: landmark.y,
+        floorCheckBypassed,
       }
 
       const spatialFrame: ProjectSpatialFrame | undefined = frameChanged
@@ -1188,10 +1210,12 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
         // agrees with itself — there is nothing here to verify against.
         status: 'provisional',
         groundY: landmark.y,
+        floorCheckBypassed,
       }
       // Never downgrade a stored frame to this tier: a Place that already has a
       // reference keeps it, and this session simply aligns provisionally.
-      const spatialFrame: ProjectSpatialFrame | undefined = existingFrame
+      // A bypassed floor check never writes the Place frame either.
+      const spatialFrame: ProjectSpatialFrame | undefined = existingFrame || floorCheckBypassed
         ? undefined
         : {
             version: 1,
@@ -1322,6 +1346,8 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
               `That looked about ${Math.abs(delta)} cm ${side} the floor. Aim at the floor, or tap the same height again to use it anyway.`
             return
           }
+          // A tap accepted off the floor by a same-height retry is a bypass.
+          if (confirmingRejectedHeight && !isTapOnGround(hit.position.y, groundY)) floorCheckBypassed = true
           offGroundTapY = null
 
           // Pass the raw hit through. applyTap() decides the height, because
@@ -1343,6 +1369,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
     skip.addEventListener('click', () => close(null))
     skipGround.addEventListener('click', () => {
       groundWaitOverridden = true
+      floorCheckBypassed = true
       update()
     })
     confirmBtn.addEventListener('click', () => {

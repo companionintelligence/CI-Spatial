@@ -66,6 +66,8 @@ a phone shows whether it lands on the floor.
 | O8 | Second visit: deliberately place the heading point about 0.5 m off | The flow sends you back to re-place. No stored origin is drawn. Overriding the check still commits one origin |
 | O9 | Skip calibration on a Place | The floor grid is removed with the flow. No origin appears, and scanning proceeds uncalibrated |
 | O10 | Tap a point on a tabletop (~75 cm up) as the landmark | The existing "cm above the floor" gate rejects it. It still accepts a same-height retry |
+| O11 | Tap **Continue uncalibrated** on a Place | Status reads "Heading unverified — scanning without project alignment. This scan does not set the Place frame." The Place's stored frame is unchanged on the next visit |
+| O12 | Tap **Place anchor without floor check**, then commit | Status reads "Floor check bypassed — provisional…". On a return visit the commit is not `verified`, and a first visit leaves the Place with no frame. Use "Use one point instead (lower accuracy)" to check that the one-point button is labelled and explicit |
 
 The same checks apply on Android WebXR (Checklist B2). The decal is the same code path on both
 runtimes.
