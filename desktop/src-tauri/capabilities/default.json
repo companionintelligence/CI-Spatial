@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default desktop window permissions for Companion Scan: the core APIs, the sign-in return link, and opening https pages in the system browser",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "deep-link:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://*" }]
+    }
+  ]
+}

@@ -184,8 +184,33 @@ function pwaSwitch() {
   }
 }
 
+// The native apps' third-party notices list each npm package in the bundle
+// (scripts/native/third-party-notices.mjs). scripts/native/build-web.mjs sets
+// NATIVE_BUNDLE_REPORT to a file, and this plugin writes the module ids of the main
+// build and of the worker builds into it. The hosted web build never sets it, and
+// then the plugin is not added at all.
+const BUNDLE_REPORT = process.env.NATIVE_BUNDLE_REPORT
+const bundledModules = new Set<string>()
+function bundleReport(file: string) {
+  return {
+    name: 'native-bundle-report',
+    generateBundle(_options: unknown, bundle: Record<string, { type: string, moduleIds?: string[], modules?: Record<string, unknown> }>) {
+      for (const output of Object.values(bundle)) {
+        if (output.type !== 'chunk') continue
+        for (const id of output.moduleIds ?? Object.keys(output.modules ?? {})) {
+          if (!id.startsWith('\0')) bundledModules.add(id)
+        }
+      }
+      fs.writeFileSync(file, JSON.stringify({ modules: [...bundledModules].sort() }, null, 2))
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: tsCert ? [rewriteEditorRoute(), pwaSwitch()] : [basicSsl(), rewriteEditorRoute(), pwaSwitch()],
+  plugins: [
+    ...(tsCert ? [rewriteEditorRoute(), pwaSwitch()] : [basicSsl(), rewriteEditorRoute(), pwaSwitch()]),
+    ...(BUNDLE_REPORT ? [bundleReport(BUNDLE_REPORT)] : []),
+  ],
   build: {
     rollupOptions: {
       input: {
@@ -210,10 +235,12 @@ export default defineConfig({
     hmr: { host: HOSTNAME },
     proxy,
     // Vite answers CORS preflights itself, before the proxy above reaches the Deno API. The Capacitor
-    // shells call the API from capacitor://localhost (iOS) or https://localhost (Android), so without
-    // this a shell's JSON request fails its preflight here in dev. Vite's own localhost pattern is kept.
+    // shells call the API from capacitor://localhost (iOS) or https://localhost (Android), and the
+    // desktop shell from tauri://localhost (macOS, Linux) or http(s)://tauri.localhost (Windows), so
+    // without this a shell's JSON request fails its preflight here in dev. Vite's own localhost
+    // pattern is kept, and it already covers tauri.localhost. server/origin.ts lists the same origins.
     cors: {
-      origin: [/^https?:\/\/(?:(?:[^:]+\.)?localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/, 'capacitor://localhost'],
+      origin: [/^https?:\/\/(?:(?:[^:]+\.)?localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/, 'capacitor://localhost', 'tauri://localhost'],
     },
     // These are runtime data stores written by the Deno API (uploaded scans,
     // optimized GLBs/LODs, world state) and served to the browser through the
@@ -239,6 +266,7 @@ export default defineConfig({
   },
   worker: {
     format: 'es',
+    ...(BUNDLE_REPORT ? { plugins: () => [bundleReport(BUNDLE_REPORT)] } : {}),
   },
   optimizeDeps: {
     exclude: ['@huggingface/transformers'],

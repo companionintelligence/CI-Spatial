@@ -224,6 +224,36 @@ measured**. ADR 0005 rule 5 says a tolerance must cite a measurement; this is th
 
 ---
 
+## Checklist D — native ARKit (Scan iOS shell)
+
+The Capacitor iOS shell runs `ScanARPlugin.swift` (ARKit) in place of the 8th
+Wall engine. Build it on a Mac: `npx cap sync ios` in `mobile/`, open
+`mobile/ios/App/App.xcodeproj`, set **your** Apple development team under
+Signing & Capabilities, and run it on the phone. Use an iPhone with LiDAR for
+the depth rows, and one without for the rest.
+
+To drive the plugin directly, turn on **Settings → Safari → Advanced → Web
+Inspector** on the phone, then open the app's page from Safari's **Develop**
+menu on the Mac and use the console. The commands below run there.
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| 1 | Launch the app, start the scanner, grant camera permission | The camera shows behind the web view, fitted whole (contain fit); the HUD sits on top |
+| 2 | Walk slowly around a room | Pose events move the overlay; the HUD tracking reads NORMAL |
+| 3 | Aim at a wall: `await Capacitor.Plugins.ScanAR.hitTest({ x: 0.5, y: 0.5 })` | `rotation` is not `[0,0,0,1]`; its Y axis is horizontal (the wall's normal), so a placed item faces the wall |
+| 4 | Background the app for 10 s, then return | The Web Inspector shows the state after return: the first `tracking` event is `notAvailable`, then pose events carry `normal` or `limited.relocalizing`, and the scan keeps its coordinates |
+| 5 | Walk the room for a few seconds, then `await Capacitor.Plugins.ScanAR.saveWorldMap({ name: 'room-7' })` | Resolves with `{ name, bytes }`. Right after start it rejects with ARKit's reason, so save once the room is mapped |
+| 6 | Quit the app fully, relaunch, stand where the map was saved, and run `await Capacitor.Plugins.ScanAR.start({ depth: false, hitGrid: 20, worldMap: 'room-7' })` before the scanner starts | Resolves with `worldMap: "loaded"`; `tracking` events go `limited.relocalizing`, then `normal`, and the overlay lines up with the saved room |
+| 7 | Quit the app fully again, relaunch, and run the same start with `worldMap: 'room-none'` | Resolves with `worldMap: "missing"`, and the session runs fresh |
+| 8 | `await Capacitor.Plugins.ScanAR.saveWorldMap({ name: '../x' })` | Rejects: "A world map name may only use letters, digits, dashes and underscores" |
+| 9 | On a LiDAR phone, quit the app and relaunch, then run `await Capacitor.Plugins.ScanAR.start({ depth: true, hitGrid: 20 })` and `await Capacitor.Plugins.ScanAR.captureFrame({ depth: true })` | The start resolves, and the result has a `depth` payload with `width`, `height` and `metersBase64` |
+| 10 | With row 6's session running, background the app, wait 10 s, return, then open Xcode → Devices and Simulators → the app → Download Container | `AppData/Library/Application Support/ScanWorldMaps/room-7.worldmap` exists: the autosave ran when the app went to the background |
+
+Rows 5–10 test the plugin directly. In the app, the native session takes its
+map name from the page's `?world=` Place (never `default`), so these rows are
+the check of relocalization until the Place flow is confirmed on a phone (see
+ADR 0010).
+
 ## Results matrix
 
 Copy per test session:

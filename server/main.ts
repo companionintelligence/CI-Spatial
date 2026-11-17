@@ -112,7 +112,7 @@ import { runSenseNovaVision, senseNovaTask } from './sensenova_vision.ts'
 import { runPanopticScan } from './panoptic/panoptic_scan.ts'
 import { runPanopticLift } from './panoptic/panoptic_lift.ts'
 import { configFromEnv as portalAuthConfig, registerPortalAuth, requireScanSession } from './portal_auth.ts'
-import { isAllowedOrigin as isAllowedByList, originOf, type OriginAllowlist } from './origin.ts'
+import { isAllowedOrigin as isAllowedByList, isNativeShellOrigin, originOf, type OriginAllowlist } from './origin.ts'
 import {
   configFromEnv as memoryPushConfig,
   pushScanToMemory,
@@ -271,8 +271,8 @@ function localScriptPath(relative: string): string {
 const LINGBOT_MAP_SCRIPT = Deno.env.get('LINGBOT_MAP_SCRIPT') ??
   localScriptPath('./scripts/lingbot_map_worker.py')
 
-// Who may call the Scan from a browser: the shells, this machine and the tailnet, and the app's own
-// public address. The rules are in server/origin.ts; CORS and the WebSocket upgrade both ask them.
+// Who may call the Scan from a browser: the shells (iOS, Android, desktop), this machine and the tailnet,
+// and the app's own public address. The rules are in server/origin.ts; CORS and the WebSocket upgrade both ask them.
 const ORIGIN_ALLOWLIST: OriginAllowlist = {
   prefix: ALLOWED_ORIGIN_PREFIX,
   publicOrigin: originOf(portalAuthConfig().publicBaseUrl),
@@ -2969,10 +2969,16 @@ function warnOnScanIdCollision(world: WorldProject): void {
   )
 }
 
-/** Best client-facing base URL: request origin → forwarded host → Vite default */
+/**
+ * Best client-facing base URL: request origin → forwarded host → Vite default. A native shell's
+ * origin is its own bundle on the device (capacitor://localhost, tauri://localhost, …), which no one
+ * else can open, so a request from a shell gets this server's public address (APP_BASE_URL) when it
+ * has one, and otherwise the address the request reached this server at.
+ */
 function clientBaseUrl(c: { req: { url: string; header: (name: string) => string | undefined } }): string {
   const origin = c.req.header('origin')
-  if (origin && isAllowedOrigin(origin)) return origin
+  if (origin && isAllowedOrigin(origin) && !isNativeShellOrigin(origin)) return origin
+  if (origin && isNativeShellOrigin(origin) && ORIGIN_ALLOWLIST.publicOrigin) return ORIGIN_ALLOWLIST.publicOrigin
 
   const forwardedHost = c.req.header('x-forwarded-host')
   if (forwardedHost) {

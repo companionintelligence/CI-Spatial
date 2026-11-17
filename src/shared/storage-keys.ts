@@ -57,6 +57,15 @@ export const INFER_MODE_KEY = 'infer-mode'
 export const ONBOARDING_KEY = 'companion-scan-onboarded'
 
 /**
+ * localStorage key: the Scan server a native shell talks to, as an https origin
+ * the person typed on the first-run screen or in the editor. Read/written by
+ * src/shared/api-base.ts, and only inside a shell: the hosted web app never
+ * reads it. Renaming it silently disconnects every installed app from its
+ * server until the person types the address again.
+ */
+export const SCAN_SERVER_KEY = 'companion-scan-server'
+
+/**
  * sessionStorage key: caches the most recent GeoTracker fix so a page
  * reload mid-session doesn't lose GPS/compass state. Read/written by
  * src/geo/geo-tracker.ts (there as `SESSION_KEY`). Do not rename — breaks

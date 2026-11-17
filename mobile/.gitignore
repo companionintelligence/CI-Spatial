@@ -7,7 +7,6 @@ www/
 # Written by `cap sync` into each native project. Regenerated on every sync.
 ios/App/App/public/
 ios/App/App/capacitor.config.json
-ios/App/CapApp-SPM/
 ios/App/App/config.xml
 ios/capacitor-cordova-ios-plugins/
 android/app/src/main/assets/public/
@@ -15,6 +14,9 @@ android/app/src/main/assets/capacitor.config.json
 android/app/src/main/assets/plugins/
 android/app/src/main/assets/capacitor.plugins.json
 android/capacitor-cordova-android-plugins/
+
+# ios/App/CapApp-SPM is committed, not ignored: the Xcode project uses it as its local
+# Swift package, and Capacitor only picks Swift Package Manager when that folder exists.
 
 # Release signing: never commit keys or their passwords.
 android/keystore.properties

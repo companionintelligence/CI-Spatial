@@ -6,6 +6,29 @@
 /** The iOS shell loads the app from this origin (mobile/capacitor.config.ts). The Android shell's https://localhost passes the localhost rule. */
 export const NATIVE_SHELL_ORIGIN = 'capacitor://localhost'
 
+/**
+ * The desktop shell's origins (desktop/, Tauri 2). macOS and Linux serve the bundle from
+ * tauri://localhost, and Windows from http://tauri.localhost, or https://tauri.localhost when a
+ * window sets useHttpsScheme. Each is accepted as it is, the way the iOS shell's is: a longer host,
+ * a port or another scheme is not one of them.
+ */
+export const DESKTOP_SHELL_ORIGINS: readonly string[] = [
+  'tauri://localhost',
+  'http://tauri.localhost',
+  'https://tauri.localhost',
+]
+
+/** The Android shell's origin (mobile/capacitor.config.ts, androidScheme https). */
+const ANDROID_SHELL_ORIGIN = 'https://localhost'
+
+/**
+ * True when `origin` is a native shell's own page: the app's bundle on the device, which no one
+ * else can open. It may call the Scan, but it is no address to put in a link for anyone else.
+ */
+export function isNativeShellOrigin(origin: string): boolean {
+  return origin === NATIVE_SHELL_ORIGIN || origin === ANDROID_SHELL_ORIGIN || DESKTOP_SHELL_ORIGINS.includes(origin)
+}
+
 export interface OriginAllowlist {
   /** ALLOWED_ORIGIN_PREFIX, a tailnet origin by default. Matched whole: `https://host` admits `https://host:8443`, never `https://host.example.com`. */
   prefix: string
@@ -25,6 +48,7 @@ export function originOf(url: string | null): string | null {
 
 export function isAllowedOrigin(origin: string, allowlist: OriginAllowlist): boolean {
   if (origin === NATIVE_SHELL_ORIGIN) return true
+  if (DESKTOP_SHELL_ORIGINS.includes(origin)) return true
   if (origin === allowlist.publicOrigin) return true
   try {
     const { hostname, protocol } = new URL(origin)

@@ -54,6 +54,69 @@ Claude Code picks it up automatically once the backend above is running.
 
 ---
 
+## Desktop and Android apps
+
+The same web app also ships as two native apps, built from this repository: a desktop app for
+Windows, macOS and Linux ([`desktop/`](desktop/README.md), Tauri 2) and an Android app
+([`mobile/`](mobile/README.md), Capacitor 8). Pre-releases are published on
+[GitHub Releases](https://github.com/companionintelligence/CI-Spatial/releases) by
+[`.github/workflows/native-release.yml`](.github/workflows/native-release.yml). They are not in
+any app store.
+
+| | Desktop app | Android app |
+|---|---|---|
+| What it is | The Place Scan Editor and viewer. It opens the editor, and it cannot capture. | The scanner and the editor. AR capture (the 8th Wall engine in the app's WebView) has not been tried on a phone yet. |
+| Scan server | The person's own, such as the one on their Companion Hub: its https address is set in the app ([why https only](#the-scan-server-in-the-android-ios-and-desktop-apps)). | The same. |
+| Companion Account | Signs in through the default browser and comes back on `computer.ci.scan.desktop://auth`. | Signs in through the browser sheet and comes back on `com.companionintelligence.scan://auth`. |
+| Release files | NSIS and MSI installers (Windows), a universal dmg (macOS, ad-hoc signed), deb and rpm (Linux). All unsigned apart from the macOS ad-hoc signature. | A release APK, signed with the release key or a throwaway key, and named for which. |
+| Engine | Leaves the XR Engine out. | Carries the XR Engine unmodified, and shows Niantic's notice. |
+
+Each app carries `THIRD-PARTY-NOTICES.txt` (generated from the lockfiles for exactly what that
+bundle contains) and `LICENSE.txt`, and shows both under Legal notices. No server address, API
+key or secret is built into either app, and no model weights ship in them.
+
+### Building them
+
+```bash
+npm ci
+npm ci --prefix desktop && npm run build --prefix desktop     # this OS's installers
+npm ci --prefix mobile && npm run build:web --prefix mobile   # then:
+(cd mobile && npx cap sync android) && (cd mobile/android && ./gradlew assembleRelease)
+```
+
+Both web builds go through [`scripts/native/build-web.mjs`](scripts/native/build-web.mjs), which
+builds without the service worker, leaves the engine out of the desktop app, leaves model weights
+and test files out of both, refuses a `.env` file that sets a `VITE_` variable, and writes the
+notices. The Android release build signs from four environment variables or the git-ignored
+`mobile/android/keystore.properties` ([mobile/README.md](mobile/README.md#publishing)).
+
+### Publishing a pre-release
+
+1. Set the next version in all six places, and raise the Android `versionCode` by one.
+   `node scripts/native/check-versions.mjs` says whether they agree.
+2. Dispatch **Native Release** with the tag `v<version>` (for example `v0.2.0`; `v0.1.0` is the
+   container pre-release) and `android_signing`: `auto` signs with the release key when the four
+   repository secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`
+   and `ANDROID_KEY_PASSWORD` are set, with a throwaway key made in the job and never stored when
+   none of them is, and stops when only some are. The tag must not exist yet, as a release or as
+   a git tag: the release makes it on the commit it built, and the workflow stops if it finds
+   one, before building and again just before publishing.
+3. The workflow builds every installer and the APK, and publishes only when all of them
+   succeeded: a GitHub pre-release with the installers, the APK, `LICENSE`,
+   `THIRD-PARTY-NOTICES.txt`, `SHA256SUMS.txt` and notes on installing each one.
+
+### Not done yet
+
+- The identifiers are provisional: `computer.ci.scan.desktop` and `com.companionintelligence.scan`.
+  They name where each app keeps its local data, so change them before people rely on a build.
+- AR capture in the Android app has not run on a phone, and Companion Account sign-in has not run
+  against a real Portal on either app.
+- The installers are not code-signed or notarized, so Windows and macOS warn on first open.
+- iOS, Google Play and the App Store are out of scope here: they need the owner's Apple and
+  Google accounts ([mobile/README.md](mobile/README.md#publishing)).
+
+---
+
 
 ## Screenshots
 
@@ -226,7 +289,7 @@ graph TD
 | **Offline recovery** | Queue writes when disconnected and export scene geometry as GLB. |
 
 
-- **AR scanning** — 8th Wall OSS SLAM tracks the environment and accumulates a colourised point cloud in real time.
+- **AR scanning** — the 8th Wall XR Engine's SLAM tracks the environment and accumulates a colourised point cloud in real time. The engine is Niantic Spatial's proprietary binary (`public/xr.js`), free to use but not open source; see [NOTICE.md](NOTICE.md).
 - **Engine-agnostic inference** — object detection runs through a local Deno server whose engine is chosen by `INFERENCE_MODE`: `ollama` (default, runs whatever `OLLAMA_MODEL` names — `qwen3-vl:4b` by default, with the context window pinned by `OLLAMA_NUM_CTX`), `onnx` (bundled `LiquidAI/LFM2.5-VL-1.6B-ONNX` via `onnxruntime-node`), or `mock` (deterministic colour-blob CV engine for CI/tests). An on-device WebGPU path also exists — opt-in, offered wherever the browser exposes `navigator.gpu` (see [Inference](#inference) below). `npm run eval:cv` / `npm run bench:models` score `/infer` output against ground truth from a corpus selected by `CV_CORPUS`: `real` (default, `test-data/real/`) is human-verified photographs — the only fixture that can tell a working vision model from a fabricating one, so it's what `bench:models` uses to rank candidates; `synthetic` (`test-data/cv/`) is the generated colour-rectangle corpus, a regression fixture for the *mock* engine only — scoring a real model against it warns loudly instead of reporting a silent 0%. As of this writing the real corpus is scaffolded but has **0 photographs** (a manual/physical step, not yet done — see `docs/factory/06-detection-ground-truth/`), so `bench:models` cannot rank models until it is populated.
 - **3D object pins** — detected objects are placed at their SLAM-resolved world positions as live 3D labels tracking the scene.
 - **Onboarding Overlay** — 2-step interactive overlay guiding users through permission prompts and walking speed. Its second step lists this install's setup status (see [First-run setup status and settings](#first-run-setup-status-and-settings)). Bypasses automatically on CI/mocks and replays on help button click.
@@ -397,7 +460,7 @@ New here? [docs/product/UX_FLOW.md](docs/product/UX_FLOW.md) walks the whole hap
 
 ### First-run setup status and settings
 
-The second step of the first-run overlay lists three things about this install. Each row comes from an endpoint on the scanner's own origin. The status rows contact no third-party host and show no address or key.
+The second step of the first-run overlay lists three things about this install. Each row comes from an endpoint on the scanner's own origin (in the apps, on the Scan server set on the device; see below). The status rows contact no third-party host and show no address or key. The one exception is the apps' Server row, which names the host the person typed.
 
 | Row | Read from | What it says |
 |---|---|---|
@@ -406,6 +469,12 @@ The second step of the first-run overlay lists three things about this install. 
 | Sign-in | `GET /authenticate/status` | "Sign in with Companion Account" when sign-in is on, or "Off on this install." In the native shell, "Signed in." once the shell holds a session. |
 
 A row reads "Status unavailable." when its endpoint does not answer. When none of the three answers, as on the static public site, one Server row replaces them: "None answered. Sign-in, saved projects and object labels need one." Reading the Companion Memory row makes the server probe the configured Companion Memory once: an empty-batch POST with a five-second timeout.
+
+#### The Scan server in the Android, iOS and desktop apps
+
+The apps have no server of their own. They talk to the person's own Scan server, such as the one on their Companion Hub, and its address is set on the device. In the Android and iOS apps a Server row comes first on the second step: "None set" with an Add server control, the server's host with a Change control, or the host followed by "did not answer". The control opens a form that tests the address (`GET /health`) and saves it. The editor has the same form under Navigate, Scan server, and asks for an address when none is set. The phone apps also end the list with Legal notices (and the editor's Navigate menu has it too), which shows Companion Scan's licence, the Niantic Spatial XR Engine notice in the apps that bundle the engine, and the open-source licences (`src/ui/legal-notices.ts`). The desktop app opens the editor and never shows the first-run screen, so its Navigate menu holds all of this: Scan server, Legal notices, and the account control that signs in. Either way the address is kept in the app's storage (`companion-scan-server`, `src/shared/api-base.ts`), and saving a different server drops the session token, which belongs to the old one. A build can name a default server with `VITE_API_BASE`; an address saved on the device wins over it. The hosted web app never reads the saved address, so the public site behaves as it always has.
+
+Only `https://` addresses are accepted, and an address is an origin: no path, query or user name. Plain `http` is refused rather than allowed, because no documented setup needs it. A Companion Hub serves its apps over HTTPS, a self-hosted server on a tailnet uses a `tailscale cert` certificate ([docs/operations/DEPLOY.md](docs/operations/DEPLOY.md)), and the phone browser already needs HTTPS for the camera. The Android app refuses cleartext and mixed content (`mobile/capacitor.config.ts`), the desktop app's content security policy allows only `https:` and `wss:` to remote hosts, and the session token must not cross a network in clear text. A server that only answers plain `http` on a LAN needs TLS in front of it before the apps can use it.
 
 `engineLoadState: ready` means Ollama answered and a model was resolved. It does not mean a capture has run. The engine loads once, when the server starts, and is not retried, so start Ollama before the Deno server, or restart the server after you start Ollama.
 
@@ -430,7 +499,7 @@ When Companion Hub hosts the scanner, the Hub fills the memory and inference val
 
 The sign-in endpoints (authorize, token, userinfo and JWKS) are not set by hand. The server reads them from CI-Portal's OpenID metadata, at `${OIDC_ISSUER_URL}/.well-known/openid-configuration` or, where CI-Portal serves it under its auth routes, at `${OIDC_ISSUER_URL}/api/auth/.well-known/openid-configuration`. It accepts the metadata only if its issuer is `OIDC_ISSUER_URL`, every endpoint is on that origin, and PKCE S256 is offered. The boot log says what it found. If neither location can be read, the server uses the usual `/api/auth/` paths and logs a warning. `PORTAL_OIDC_JWKS_URI` overrides the JWKS URL only.
 
-Sign-in is off unless `PORTAL_OIDC_ENABLED` is on. The first-run control starts it at `/authenticate/oidc?redirect=/`, which returns to the scanner after CI-Portal. A direct visit to `/authenticate/oidc` lands in the world editor instead. When sign-in is off, the only sign-in route registered is `/authenticate/status`. A native shell starts the same sign-in with `shell=1` and a PKCE challenge, and gets its session from `POST /authenticate/shell/exchange`; see [mobile/README.md](mobile/README.md#companion-account-sign-in).
+Sign-in is off unless `PORTAL_OIDC_ENABLED` is on. The first-run control starts it at `/authenticate/oidc?redirect=/`, which returns to the scanner after CI-Portal. A direct visit to `/authenticate/oidc` lands in the world editor instead. When sign-in is off, the only sign-in route registered is `/authenticate/status`. A native shell starts the same sign-in with `shell=1` and a PKCE challenge, and gets its session from `POST /authenticate/shell/exchange`; see [mobile/README.md](mobile/README.md#companion-account-sign-in). The desktop app sends `shell=desktop` instead, and the server hands its code back at `computer.ci.scan.desktop://auth` rather than the phone app's scheme. CI-Portal only ever redirects to the Scan server's own `/authenticate/oidc/callback`, so neither app scheme is registered with the Portal.
 
 Once sign-in is on, the API needs a Companion session. The session comes as the browser cookie, as a `Bearer` token from the app, or as a `token` query parameter for media and sockets. The data, write and compute routes (scans, sessions, projects, uploads, ingest, inference, jobs, events) answer `401` without one, and `/health`, `/authenticate/*` and the app bundle stay open. World writes need that world's token. `SCAN_REQUIRE_AUTH=1` applies the same gate with sign-in off, and then no request gets in. A public Scan needs sign-in on.
 

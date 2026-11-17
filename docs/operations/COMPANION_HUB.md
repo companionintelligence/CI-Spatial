@@ -46,6 +46,13 @@ browser sheet and holds a Bearer token instead. The flow is in
 iOS simulator against a stand-in Portal. A real Portal account, and Android, are not
 verified.
 
+The desktop app signs in the same way through the person's default browser, and the
+server returns its one-time code to `computer.ci.scan.desktop://auth`
+([desktop/README.md](../../desktop/README.md#companion-account-sign-in)). The Portal
+redirects only to the Scan server's own `/authenticate/oidc/callback`, as for a web
+sign-in, so the apps need nothing new registered for the `ci-web-xr-scan` client. The
+desktop flow is covered by unit tests only: it has not run against a real Portal.
+
 ## Companion Memory
 
 Scans push to Companion Memory once the Hub connects it (the `memory-push` job). The

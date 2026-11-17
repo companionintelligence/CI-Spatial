@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        DRAFT for the owner. The technical keys are here. The collected data types are not decided yet.
+        Before any App Store build:
+        - fill NSPrivacyCollectedDataTypes so it matches the App Privacy answers in App Store Connect. The
+          candidates are location (the street-address lookup), photos or video (captures sent to the Scan
+          server), and the account token (Companion Account sign-in);
+        - run Xcode's privacy report on an archive, to see which required-reason APIs the app and its SDKs use,
+          and add their reasons to NSPrivacyAccessedAPITypes.
+    -->
+    <key>NSPrivacyTracking</key>
+    <false/>
+    <key>NSPrivacyTrackingDomains</key>
+    <array/>
+    <key>NSPrivacyCollectedDataTypes</key>
+    <array/>
+    <key>NSPrivacyAccessedAPITypes</key>
+    <array/>
+</dict>
+</plist>
