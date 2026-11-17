@@ -48,6 +48,31 @@ Suggested devices: `iphone182`, `liam-ipad-pro`.
 | 11 | Airplane-mode ON (keep Wi-Fi off), capture | HUD shows offline/queue messaging rather than a spinner hang |
 | 12 | Airplane-mode OFF | Queued uploads flush (watch server logs); no data lost |
 
+### A-origin — calibrated origin: ground plane, decal, return visit
+
+Wave 12 ticket 0001. Run after step 2. Use a Place with **no** stored frame for the first pass,
+then the same Place again for the return visit. Mock tests prove the decal is in the scene; only
+a phone shows whether it lands on the floor.
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| O1 | First visit to a Place with no stored frame: wait for the readiness step to lock | The teal floor grid appears under the feed, dim until the floor estimate settles, then solid |
+| O2 | Place the landmark on the floor and confirm, then place the heading point and commit | One origin appears on the floor: a white crosshair on the landmark and a teal arrow whose **tip sits on the heading point you tapped**. No second ring |
+| O3 | Walk 3–4 m away and look back at the origin from two sides | Decal stays fixed on the floor; it does not float or swim with the camera. The arrow still points at the heading point |
+| O4 | Turn slowly through 360° with the origin in view | The red north tick stays on the bearing the compass read at commit. Its label says session-local. Cross-check the first reading against a compass app |
+| O5 | Keep scanning for several minutes | The floor grid is still visible at low opacity for the whole scan. Before ticket 0001 it was removed at commit |
+| O6 | Export the scan (step 8), then open the World file for this Place | The scan's `calibrationGroundY` is a number in metres, not null. It is the height the floor grid was drawn at |
+| O7 | Second visit, same Place: go through the reference photos and place both points | After the separation check passes, a dimmer **stored** origin appears. Its arrow and the committed arrow differ by the residual the status line reports |
+| O8 | Second visit: deliberately place the heading point about 0.5 m off | The flow sends you back to re-place. No stored origin is drawn. Overriding the check still commits one origin |
+| O9 | Skip calibration on a Place | The floor grid is removed with the flow. No origin appears, and scanning proceeds uncalibrated |
+| O10 | Tap a point on a tabletop (~75 cm up) as the landmark | The existing "cm above the floor" gate rejects it. It still accepts a same-height retry |
+| O11 | Tap **Continue uncalibrated** on a Place | Status reads "Heading unverified — scanning without project alignment. This scan does not set the Place frame." The Place's stored frame is unchanged on the next visit |
+| O12 | Tap **Place anchor without floor check**, then commit | Status reads "Floor check bypassed — provisional…". On a return visit the commit is not `verified`, and a first visit leaves the Place with no frame. Use "Use one point instead (lower accuracy)" to check that the one-point button is labelled and explicit |
+| O13 | Commit an origin with a compass fix, then turn to face along the origin's arrow | The amber **frame heading** needle sits under the teal device needle, and its label shows the same bearing, within the compass error you see. Note how far apart they sit. It also appears after a return-visit commit. It stays hidden after a one-point commit and after **Continue uncalibrated** |
+
+The same checks apply on Android WebXR (Checklist B2). The decal is the same code path on both
+runtimes.
+
 **Watch the box side throughout:** `journalctl --user -u cscan-server -f` for
 API traffic and inference timing; `npm run logs:watch` for on-device console
 errors (page must be loaded with `?debug=remote`).

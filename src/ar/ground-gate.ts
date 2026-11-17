@@ -83,3 +83,38 @@ export function isSameHeightRetry(tapY: number, rejectedTapY: number | null): bo
   if (rejectedTapY === null) return false
   return Math.abs(tapY - rejectedTapY) <= GROUND_TAP_TOLERANCE_M
 }
+
+/**
+ * Whether a committed calibration may write the Place's frame.
+ *
+ * Only a floor-checked calibration may author the Place's floor. A commit whose
+ * floor check was bypassed, by "Place anchor without floor check" or by an
+ * accepted off-floor same-height retry, never writes `Project.spatialFrame`:
+ * not as a first creation, and not as an override. The Place keeps the frame it
+ * had, or none, until a floor-checked calibration runs. This is the wave 12
+ * review decision that the Place-frame floor is authoritative.
+ */
+export function mayWritePlaceFrame(input: {
+  floorCheckBypassed: boolean
+  hasStoredFrame: boolean
+  override: boolean
+}): boolean {
+  if (input.floorCheckBypassed) return false
+  return !input.hasStoredFrame || input.override
+}
+
+/**
+ * The status a two-point commit is recorded with.
+ *
+ * `'verified'` is a measurement: this session's separation matched a stored
+ * frame, the user did not override a mismatch, and the floor check was not
+ * bypassed. Everything else is `'provisional'`, including every bypassed commit,
+ * whatever its separation.
+ */
+export function committedStatus(input: {
+  hasStoredFrame: boolean
+  override: boolean
+  floorCheckBypassed: boolean
+}): 'verified' | 'provisional' {
+  return input.hasStoredFrame && !input.override && !input.floorCheckBypassed ? 'verified' : 'provisional'
+}

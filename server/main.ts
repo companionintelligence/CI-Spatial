@@ -118,7 +118,7 @@ import {
   pushScanToMemory,
   registerMemoryPush,
 } from './memory_push.ts'
-import { composeYUpTransform, geoToEnu, hasGeoPose } from '../src/world/geo.ts'
+import { composeYUpTransform, geoToEnu, hasGeoPose, readCalibrationGroundY } from '../src/world/geo.ts'
 import { defaultLayerIndex } from '../src/world/layers.ts'
 import { EVENT, type EventPayload } from '../src/shared/events.ts'
 import { formatSetupBanner } from '../src/shared/model-catalog.ts'
@@ -2451,6 +2451,9 @@ function scanManifestFromStored(
     // sidecar, so this works for scans already on disk instead of only for ones
     // uploaded after this change.
     calibrationSeparationM: asCalibrationSeparationM(scan.meta['calibration']),
+    // Same nested record as the separation above, for the same reason: the
+    // origin's floor height, read from what `gltf.ts` already writes.
+    calibrationGroundY: readCalibrationGroundY(scan.meta['calibration']),
     calibrationStatus: asCalibrationStatus(scan.meta['calibrationStatus']),
     capturedAt: asString(scan.meta['capturedAt']) ?? asString(scan.meta['exportedAt']) ?? scan.uploadedAt,
     pointCount: asNumber(scan.meta['pointCount']),
