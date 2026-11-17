@@ -114,13 +114,13 @@ The shell runs AR natively, with ARKit on iOS and ARCore on Android, through the
 
 **Verification status.**
 
-- Android: the debug build compiles (`./gradlew assembleDebug`, JDK 21 and SDK 36), and `./gradlew testDebugUnitTest` passes the origin file's round trip (`OriginAnchorStoreTest`). It has **not run on a device**, so the pause and resume, and the origin anchor, are unverified there.
-- iOS: **not compiled.** The build host has no Xcode. The Swift is written against the Capacitor and ARKit APIs and needs a Mac build before anyone relies on it.
+- Android: the debug build compiles (`./gradlew assembleDebug`, JDK 21 and SDK 36), and `./gradlew testDebugUnitTest` passes the origin file's round trip (`OriginAnchorStoreTest`). It has **not run on a device**, so the pause, resume and destroy hooks, and the origin anchor, are unverified there.
+- iOS: **compiled, not run on a device.** The mobile-build workflow's iOS Simulator job compiles the Swift and passed on the current commit (run 44013563826). The workflow runs only when someone starts it by hand. This build host has no Xcode.
 - Web: `npm run test:native-ar` covers the codec, the provider against a fake plugin (including the fallback), and the runtime choice. `tests/mock-native-ar.spec.ts` runs the scanner in Chromium on a stand-in plugin, and checks the handover to the 8th Wall mock.
 
 **Known gaps.**
 
-- iOS: ARKit stops the session when the app is backgrounded. The plugin does not report that yet.
+- iOS: ARKit stops the session when the app is backgrounded. The plugin reports the interruption as tracking `notAvailable`, and autosaves the map of a named Place (ADR 0010). The pose events carry the state again after the app returns.
 - The keyframe upload does not send the depth map yet (`FrameObservation.depthUrl` in `src/world/types.ts` is the slot for it).
 
 ## Publishing
@@ -156,11 +156,11 @@ The bundle is `app/build/outputs/bundle/release/app-release.aab`.
 
 - AR capture on a real phone: camera, motion and location prompts, the 8th Wall SLAM start, GLB export, and the sign-in return on Android.
 - The store gates in PR #244: the measurement step, and the owner's sign-off on the XR Engine licence (see *xr.js licence* above) before any store binary.
-- `PrivacyInfo.xcprivacy`, the privacy policy, and the App Privacy and Play data-safety answers. Location goes to OpenStreetMap Nominatim, and captures go to the Scan server.
+- `PrivacyInfo.xcprivacy` is drafted with no collected data types, and the draft's comment lists what the owner must decide. The privacy policy and the App Privacy and Play data-safety answers are still open. Location goes to OpenStreetMap Nominatim, and captures go to the Scan server.
 - Companion Account sign-in against the real Portal, and on Android. Both are unverified (see *Companion Account sign-in*).
 - Keychain or Keystore storage for the shell's session token. It is in `localStorage` for now.
 - A 1024 px vector master for the app icon (see *Icons and launch screens*).
-- `ScanAR` on a device. An ARKit iPhone (the Swift has never been compiled), and an ARCore Android phone (the build passes; no session has run).
+- `ScanAR` on a device. An ARKit iPhone has not run it: the simulator job compiles the Swift, but ARKit behaviour is only verified on a phone. An ARCore Android phone has not run a session either (the build passes).
 - Depth in the keyframe upload (`FrameObservation.depthUrl`), and a UI entry point for the depth capture.
 - Pause and resume on iOS: ARKit's interruptions are not reported yet (see *Native AR capture*).
 - Placing a saved origin again in a later session. ARCore's frame does not carry over from one session to the next, and no cloud anchor is used.
