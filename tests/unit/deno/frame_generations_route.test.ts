@@ -17,8 +17,10 @@
  *  - frame-status counts a Place's scans by the frame their sidecars name, and not from any world;
  *  - a merge and a moved scan: 409 `frame-mismatch` with a sentence a person can read, nothing changed; with
  *    `acceptFrameMismatch` the move is done and the patches, comments and finished jobs of the scan are in the world it
- *    moved to and no longer in the one it left (0 manual alignments lost); a Place with no frame takes the scans' frame,
- *    with its photos;
+ *    moved to and no longer in the one it left (0 manual alignments lost, except that a merge removes the merged-away
+ *    Place's world once it has handed everything over, and with it the placement a scan had against that world's origin,
+ *    which means nothing in another, and which the answer counts as `placementsRemoved`:
+ *    tests/unit/deno/data_lifecycle_route.test.ts); a Place with no frame takes the scans' frame, with its photos;
  *  - photos belong to their frame: a new generation never shows, or overwrites, the previous one's;
  *  - Thing matching leaves out the scans that are not in the Place frame, and the job says how many;
  *  - what the hand-over does when the other world is not free: a world that is busy or cut short never makes the old world
@@ -1082,18 +1084,30 @@ Deno.test('a merge across frames is a 409 until the request says it knows, and t
     const merged = await server.send('POST', '/projects/proj-b/merge', { sourceProjectId: 'proj-a', acceptFrameMismatch: true })
     assertEquals(merged.status, 200, merged.text)
     assertEquals((merged.json as { alreadyMerged: boolean }).alreadyMerged, false)
-    assertEquals((merged.json as { handOver?: unknown }).handOver, { placementsKept: 1 }, 'and says that the hall\'s placement, which is relative to House A\'s origin, stayed there')
+    // The hall's placement is relative to House A's origin, and House A's world goes with the merge (below), so it is not kept: the
+    // answer does not say it stayed in a world that is not there, and says that it went with it, so the person who merged can be
+    // told, as the one that said 'kept' did (ADR 0011). (While House A's world stays, because something in it is waiting to be
+    // handed over, the answer still says `placementsKept`: 'a merge reports on the scans it moved', below, asserts it.)
+    assertEquals((merged.json as { handOver?: unknown }).handOver, undefined, 'and does not say that the hall\'s placement stayed in House A\'s world')
+    assertEquals((merged.json as { sourceWorldRemoved?: boolean }).sourceWorldRemoved, true, 'House A\'s world went with the merge')
+    assertEquals((merged.json as { placementsRemoved?: number }).placementsRemoved, 1, 'and the hall\'s placement, the one that was kept, went with it: the answer counts it')
     // (The registry always holds the default Place beside the others once it has been saved.)
     assertEquals((await server.registry()).map((place) => place.projectId).filter((id) => id !== 'proj-default').sort(), ['proj-b', 'proj-c'])
     const survivor = await getPlace(server, 'proj-b')
     assertEquals(survivor.spatialFrame, GEN_B, 'the target keeps its own frame')
     assertEquals(survivor.spatialFrameRevision, 1)
 
-    // The source's world has handed everything over: it holds no scan, comment or job of the ones that moved, and only
-    // the placement of the hall that was set against its own origin, which means nothing in another world.
-    const emptied = await server.worldFile('project-proj-a')
-    assertEquals([emptied.scans.length, idsOf(emptied.editPatches), emptied.comments!.length, emptied.jobs.length], [0, ['p-move-hall'], 0, 0])
-    assertEquals(emptied.projectId, 'proj-a', 'and it is not relabelled as the target\'s: it was a second world for it that nothing opened')
+    // The source's world handed everything over and then went with the merge: nothing opens the world of a Place that is out of
+    // the registry, and it held that Place's name, location and Things (docs/operations/PRIVACY.md, section 5). The placement of
+    // the hall that was set against its origin, the one thing the hand-over kept there, means nothing in another world and went
+    // with it. It was not relabelled as the target's either: no world but House B's own says it is House B's (it was a second
+    // world for it that nothing opened).
+    assertEquals(await Deno.stat(`${server.dirs.worlds}/project-proj-a.json`).then(() => true, () => false), false)
+    const labelled: Record<string, unknown> = {}
+    for await (const entry of Deno.readDir(server.dirs.worlds)) {
+      if (entry.isFile && entry.name.endsWith('.json')) labelled[entry.name] = (JSON.parse(await Deno.readTextFile(`${server.dirs.worlds}/${entry.name}`)) as WorldProject).projectId
+    }
+    assertEquals(Object.entries(labelled).filter(([, projectId]) => projectId === 'proj-b').map(([name]) => name), ['project-proj-b.json'])
 
     const arrived = await server.worldFile('project-proj-b')
     assertEquals(arrived.scans.map((scan) => scan.filename).sort(), [HALL, KITCHEN, LOFT, STUDY, VISIT].sort())

@@ -97,7 +97,17 @@ import { deleteStreamedSession } from './session_deletion.ts'
 import { deleteAllScans, deleteScan } from './scan_deletion.ts'
 import { jobIsForScanBeingDeleted, SCAN_BEING_DELETED_NOTE } from './scan_job_guard.ts'
 import { scanWorldSide } from './scan_world_side.ts'
-import { removePlaceMedia, removePlaceWorlds, uploadScansOfPlace } from './place_deletion.ts'
+import {
+  type KeepWorld,
+  type LeftoverWorlds,
+  placeWorldSlugs,
+  removeLeftoverPlaceWorlds,
+  removePlaceMedia,
+  removePlaceWorlds,
+  uploadScansOfPlace,
+  worldHoldsScansOnDisk,
+  worldIsInUse,
+} from './place_deletion.ts'
 import { KEYFRAME_RETENTION_ENV, keyframePurgeFailure, purgeRequestFromPayload, runKeyframePurge, scheduleKeyframeRetention } from './keyframe_retention.ts'
 import { budgetFromEnv, runWithDeadline } from './run_with_deadline.ts'
 import { eligibleOnDiskForWorld } from './wp-a-prune-count.ts'
@@ -156,7 +166,7 @@ import {
   pushScanToMemory,
   registerMemoryPush,
 } from './memory_push.ts'
-import { calibrationFromMeta, calibrationScaleFromMeta } from './calibration_fields.ts'
+import { calibrationFromMeta, calibrationGroundYFromMeta, calibrationScaleFromMeta, withReplacedCalibration } from './calibration_fields.ts'
 import { frameEpochFieldsFromMeta } from './frame_epoch_fields.ts'
 import {
   PlacementRefused,
@@ -170,7 +180,7 @@ import {
 import { storeUploadedScan } from './world/scan_store.ts'
 import { calibrationEvidenceFromMeta } from './calibration_fields.ts'
 import { buildRevertPatch, planRevert, stampFirstSightPlacements } from '../src/world/scan-placement.ts'
-import { composeYUpTransform, geoToEnu, hasGeoPose, readCalibrationGroundY } from '../src/world/geo.ts'
+import { composeYUpTransform, geoToEnu, hasGeoPose } from '../src/world/geo.ts'
 import { defaultLayerIndex } from '../src/world/layers.ts'
 import { EVENT, type EventPayload } from '../src/shared/events.ts'
 import { formatSetupBanner } from '../src/shared/model-catalog.ts'
@@ -501,15 +511,21 @@ app.get('/health', (c) => c.json({
 /**
  * GET /capabilities — "what can this machine actually do?" over HTTP.
  *
- * Same posture as /health directly above: unauthenticated, and covered by the
- * global CORS policy. Deliberately not stricter — the report was previously
- * only reachable by SSHing in and running `deno run server/capabilities.ts`,
- * which is precisely why a missing ffmpeg showed up as an HTTP 500 instead of
- * a fact anyone could read, and an auth gate on the one route that explains a
- * broken box would recreate that. Deliberately not looser either: it names
- * absolute install paths and versions, which is the same class of host detail
- * /health already returns (model id, mode, uptime), on a server whose reachable
- * surface is Tailscale/LAN (see `isAllowedOrigin`).
+ * On an install that is open by design this is the same posture as /health
+ * directly above: no sign-in, and covered by the global CORS policy. Deliberately
+ * no gate of its own — the report was previously only reachable by SSHing in and
+ * running `deno run server/capabilities.ts`, which is precisely why a missing
+ * ffmpeg showed up as an HTTP 500 instead of a fact anyone could read, and a gate
+ * on the one route that explains a broken box would recreate that. Once sign-in
+ * is on, or SCAN_REQUIRE_AUTH=1, it is behind the Companion session guard like
+ * the data routes (it is the first of SESSION_GUARDED_PATHS, above): an anonymous
+ * request is answered 401. /health is not behind the guard. Nor is a single world
+ * (`/worlds/:slug`): it answers by the world's own token rules, and some of its reads,
+ * `GET /worlds/:slug` among them, answer a request that carries no token (the comment
+ * on the guard says so). This route names absolute install paths and versions, the
+ * same class of host detail /health returns (model id, mode, uptime); an install that
+ * is open by design is one whose reachable surface is Tailscale/LAN (see
+ * `isAllowedOrigin`).
  *
  * Cost is where it differs from /health, and it is not a small difference:
  * a full probe spawns one subprocess per tool and the torch one-liner alone
@@ -992,7 +1008,7 @@ app.delete('/scans/:filename', async (c) => {
     sessionsDir: SESSIONS_DIR,
     splatSuffixes: SPLAT_ARTIFACT_MIME.map(({ suffix }) => suffix),
     claimJobs: (name) => scanWorlds.claimJobs(name),
-    dropWorldExports: (name) => scanWorlds.dropExportsHolding(name),
+    dropWorldExports: (name, scanFound) => scanWorlds.dropExportsHolding(name, { scanFound }),
     removeFromWorlds: removeScanFromWorlds,
   })
   if (reply.status === 200) broadcast({ type: EVENT.SCAN_DELETED, filename })
@@ -2606,8 +2622,9 @@ function scanManifestFromStored(
     ...calibrationEvidenceFromMeta(scan.meta),
     // Set when the upload's transform was set aside (sanitiseUploadMetadata), so the scan sits by GPS or the grid.
     ...rejectedTransformField(scan.meta),
-    // The origin's floor height, read from the nested calibration record `src/export/gltf.ts` writes (wave 12).
-    calibrationGroundY: readCalibrationGroundY(scan.meta['calibration']),
+    // The origin's floor height: the nested calibration record `src/export/gltf.ts` writes (wave 12), or the flat key the
+    // `splat-align` job keeps when it replaces that record (server/calibration_fields.ts).
+    calibrationGroundY: calibrationGroundYFromMeta(scan.meta),
     capturedAt: asString(scan.meta['capturedAt']) ?? asString(scan.meta['exportedAt']) ?? scan.uploadedAt,
     pointCount: asNumber(scan.meta['pointCount']),
     detectionCount: asNumber(scan.meta['detectionCount']),
@@ -2779,16 +2796,33 @@ async function synthesizeWorld(slug: string, projectId: string | null = null): P
  * clobber (or be clobbered by) a concurrent `updateWorld` on the same world.
  * The lock key comes from the filename — the same name the read below uses —
  * which is `world.shareSlug` for every world this server writes.
+ *
+ * A world that cannot be changed is warned of and left, and the pass goes on:
+ * a world that is read for its jobs must not stop the others being read. A
+ * caller that is taking something out of the worlds (`strict`: the deletion of a
+ * scan) cannot go on as if it had: it is thrown, after the pass, with a message
+ * that names no path, so a world that still holds what was to be removed is
+ * never answered with a success. A file that is not JSON, or is JSON of no
+ * world's shape, is not a world a scan can be taken out of, and a world that
+ * has gone since the listing is not one to change: none of them is a failure.
+ * What is one is a world that could not be read or written.
  */
-async function mutateWorldFiles(mutator: (world: WorldProject) => boolean | Promise<boolean>): Promise<number> {
+async function mutateWorldFiles(
+  mutator: (world: WorldProject) => boolean | Promise<boolean>,
+  options: { strict?: boolean } = {},
+): Promise<number> {
   const names: string[] = []
   try {
     for await (const entry of Deno.readDir(WORLDS_DIR)) {
       if (entry.isFile && entry.name.endsWith('.json')) names.push(entry.name)
     }
-  } catch { /* worlds directory may be empty */ }
+  } catch (error) {
+    // The worlds directory may be empty (not there yet). A listing that failed for another reason has looked at no world.
+    if (options.strict && !(error instanceof Deno.errors.NotFound)) throw error
+  }
 
   let updated = 0
+  let failed = 0
   for (const name of names) {
     try {
       const changed = await withWorldLock(safeSlug(name.replace(/\.json$/, '')), async () => {
@@ -2799,9 +2833,11 @@ async function mutateWorldFiles(mutator: (world: WorldProject) => boolean | Prom
       })
       if (changed) updated += 1
     } catch (error) {
+      if (!(error instanceof SyntaxError || error instanceof TypeError || error instanceof Deno.errors.NotFound)) failed += 1
       console.warn(`[world] Could not mutate ${name}:`, error)
     }
   }
+  if (options.strict && failed > 0) throw new Error(`${failed} world file${failed === 1 ? '' : 's'} could not be changed`)
   return updated
 }
 
@@ -2826,8 +2862,9 @@ async function removeScanFromWorlds(filename: string): Promise<number> {
     const isRemovedScanId = (scanId: string | undefined): boolean =>
       scanId === removedScanId || (removedLegacyScanId !== null && scanId === removedLegacyScanId)
 
-    const beforeScans = world.scans.length
+    const before = { scans: world.scans.length, patches: world.editPatches.length, comments: (world.comments ?? []).length, jobs: world.jobs.length }
     world.scans = world.scans.filter(scan => scan.filename !== filename)
+    const lostRow = world.scans.length !== before.scans
     world.editPatches = world.editPatches.filter(
       patch => patch.targetId !== filename && !isRemovedScanId(patch.scanId),
     )
@@ -2837,23 +2874,44 @@ async function removeScanFromWorlds(filename: string): Promise<number> {
       // Explicit, rather than relying on the survivor scan below: while ids
       // collided, a sibling sharing the removed scan's id kept its jobs alive.
       if (isRemovedScanId(job.scanId)) return false
-      return world.scans.some(scan => scan.scanId === job.scanId)
+      // The survivor rule is for the world the row was taken out of, which is written because of it. A world that held no row
+      // of this scan can hold the finished jobs of other scans it has no row of yet (a hand-over brings a scan's jobs before
+      // the world builds its row), and a request for one scan is not the request to drop them.
+      return !lostRow || world.scans.some(scan => scan.scanId === job.scanId)
     })
-    return world.scans.length !== beforeScans
-  })
+    // Whatever was taken out is written back, not only a row: a world a scan was moved out of holds no row of it, and may
+    // hold the placement ADR 0011 keeps for it, which names the scan and has to go with it.
+    return lostRow
+      || world.editPatches.length !== before.patches
+      || (world.comments ?? []).length !== before.comments
+      || world.jobs.length !== before.jobs
+  }, { strict: true })
 }
 
 async function removeAllScansFromWorlds(): Promise<number> {
   return mutateWorldFiles((world) => {
     const hadScans = world.scans.length > 0
+    const before = { patches: world.editPatches.length, comments: (world.comments ?? []).length, jobs: world.jobs.length }
     world.scans = []
-    world.editPatches = world.editPatches.filter(patch => patch.scope === 'world')
     world.jobs = world.jobs.filter(job => !job.scanId)
-    world.comments = []
-    world.originGeoPose = { lat: null, lng: null, altitudeM: null, bearing: null, accuracyM: null }
-    world.localFrame.origin = world.originGeoPose
+    if (hadScans) {
+      world.editPatches = world.editPatches.filter(patch => patch.scope === 'world')
+      world.comments = []
+      world.originGeoPose = { lat: null, lng: null, altitudeM: null, bearing: null, accuracyM: null }
+      world.localFrame.origin = world.originGeoPose
+    } else {
+      // A world with no row left (one every scan was moved out of, or one they were moved into before their rows were built) is
+      // not a world that held scans, and what it keeps of its own (a note on the whole Place, a Thing's relabel) stays. What it
+      // holds of the scans that are gone does not: the placement a move kept, the notes a move handed over, the comments on a scan.
+      world.editPatches = world.editPatches.filter(patch => patch.scope !== 'scan' && patch.scanId == null)
+      world.comments = (world.comments ?? []).filter(comment => comment.scanId == null)
+    }
+    // Written back whenever something was taken out, and not only when a row was: see removeScanFromWorlds.
     return hadScans
-  })
+      || world.editPatches.length !== before.patches
+      || (world.comments ?? []).length !== before.comments
+      || world.jobs.length !== before.jobs
+  }, { strict: true })
 }
 
 /**
@@ -3977,8 +4035,9 @@ async function _runSplatAlignJob(slug: string, jobId: string): Promise<void> {
         try {
           meta = JSON.parse(await Deno.readTextFile(metaPath)) as Record<string, unknown>
         } catch { /* no sidecar yet — this run mints one */ }
-        meta['calibration'] = result.calibration
-        await writeJsonAtomic(metaPath, meta)
+        // The record is replaced and the floor height it held is kept beside it (withReplacedCalibration): the scan is still
+        // placed by the flat transform, and the manifest's calibrationGroundY would read null once the record went.
+        await writeJsonAtomic(metaPath, withReplacedCalibration(meta, result.calibration))
       } catch (err) {
         console.error(`[splat-align] failed to persist calibration for ${scan.filename}:`, err)
       }
@@ -6120,19 +6179,40 @@ async function loadProjects(forWrite = false): Promise<ProjectRecord[]> {
   return projects.map(withDerivedAreas)
 }
 
-/** Keeps the previous file as projects.json.bak, and keeps a copy of an unparsable one, before writing. */
-async function saveProjects(projects: ProjectRecord[]): Promise<void> {
-  const corruptCopy = await saveRegistry(PROJECTS_FILE, projects)
+/**
+ * Whether the Places registry can be read as a list (a file that is not there is an empty one). `loadProjects(true)`, which every
+ * write starts from, reads an unparsable file as an empty list so that the save can keep a copy of it, and from that list every Place
+ * reads as one that is not in the registry: a caller that is about to remove what is left of a Place that is gone asks this first.
+ */
+async function registryIsReadable(): Promise<boolean> {
+  try {
+    await readRegistry(PROJECTS_FILE)
+    return true
+  } catch (err) {
+    if (err instanceof RegistryUnparsableError) return false
+    throw err
+  }
+}
+
+/**
+ * Keeps the previous file as projects.json.bak, and keeps a copy of an unparsable one, before writing. A save that removes a
+ * Place (`removesPlace`) does not keep the previous file: it still holds that Place's name, address and location, so the
+ * backup is made the registry being saved (server/wp-a-projects.ts), before the registry is replaced. Over a file that cannot be
+ * read neither happens: that file is kept aside and the backup, the last registry that could be read, is left as it was, because
+ * the registry being saved was built from nothing readable and the one Place such a save can remove is the default Place.
+ */
+async function saveProjects(projects: ProjectRecord[], removesPlace = false): Promise<void> {
+  const corruptCopy = await saveRegistry(PROJECTS_FILE, projects, Date.now(), { keepPrevious: !removesPlace })
   if (corruptCopy) console.error(`[projects] registry was unparsable; kept a copy at ${corruptCopy} and saved over it`)
 }
 
 async function mutateProjects<T>(
-  mutator: (projects: ProjectRecord[]) => { result: T; save: boolean } | Promise<{ result: T; save: boolean }>,
+  mutator: (projects: ProjectRecord[]) => { result: T; save: boolean; removesPlace?: boolean } | Promise<{ result: T; save: boolean; removesPlace?: boolean }>,
 ): Promise<T> {
   const mutation = projectMutationQueue.then(async () => {
     const projects = await loadProjects(true)
-    const { result, save } = await mutator(projects)
-    if (save) await saveProjects(projects)
+    const { result, save, removesPlace } = await mutator(projects)
+    if (save) await saveProjects(projects, removesPlace === true)
     return result
   })
   projectMutationQueue = mutation.then(() => undefined, () => undefined)
@@ -6389,24 +6469,46 @@ registerPlaceFrameRoutes(app, { loadProjects, countScansByFrame, mediaDir: PROJE
 // by this route: each scan takes its own camera frames with it when it is deleted (DELETE /scans/:filename). A scan
 // made from an upload has no GLB, so it is counted here too. The reference photos and the Place's world (its name,
 // address, Things, share tokens and export) are the Place's own and go with it, before its registry entry does, so a
-// failure leaves a Place that can be deleted again (server/place_deletion.ts).
+// failure leaves a Place that can be deleted again (server/place_deletion.ts). The save that takes the entry out does not
+// keep the registry it replaces as projects.json.bak, which still holds the Place's name, address and location (a registry
+// that cannot be read is the exception, see saveProjects).
+//
+// A Place that is not in the registry may still have a world and reference photos: a merge took the Place out, and its
+// world goes with the merge once nothing in it is waiting to be handed over, so one that stayed (something was waiting, or it
+// could not be removed), or one an earlier build's merge left, is found here by the Place's id. Only what says it is that
+// Place's is removed; the answer is 404 when there is nothing of it.
 app.delete('/projects/:id', async (c) => {
   const id = c.req.param('id')
   const scanCount = await countScansForProject(id) + (await uploadScansOfPlace(SCANS_DIR, id)).length
   if (scanCount > 0) return c.json({ error: 'project has scans', scanCount }, 409)
   try {
-    const deleted = await mutateProjects<{ deleted: boolean; childCount: number; referencePhotosRemoved: boolean; worldsRemoved: number }>(async (projects) => {
+    const deleted = await mutateProjects<{ deleted: boolean; childCount: number; referencePhotosRemoved: boolean; worldsRemoved: number; handOverWaiting?: boolean }>(async (projects) => {
       const idx = projects.findIndex(p => p.projectId === id)
-      if (idx === -1) return { result: { deleted: false, childCount: 0, referencePhotosRemoved: false, worldsRemoved: 0 }, save: false }
+      if (idx === -1) {
+        // The registry a write starts from is an empty list when the file cannot be read, so every Place reads as gone from it.
+        // A registry that cannot be read cannot say this one is: nothing of the Place is removed, and the answer is the 500.
+        if (!(await registryIsReadable())) throw new Error('the Places registry cannot be read')
+        // What is left of a Place that is gone. A world that still lists a scan whose file is there is waiting to hand that
+        // scan's notes over to the world of the Place the scan is filed under now, and is kept until it has.
+        const left = await removeGonePlaceWorlds(id, (world) => worldHoldsScansOnDisk(world, SCANS_DIR))
+        if (left.kept > 0) {
+          return { result: { deleted: false, childCount: 0, referencePhotosRemoved: false, worldsRemoved: left.removed, handOverWaiting: true }, save: false }
+        }
+        const referencePhotosRemoved = await removePlaceMedia(PROJECT_MEDIA_DIR, id)
+        return { result: { deleted: left.removed > 0 || referencePhotosRemoved, childCount: 0, referencePhotosRemoved, worldsRemoved: left.removed }, save: false }
+      }
       const childCount = projects.filter(project => project.parentProjectId === id).length
       if (childCount > 0) return { result: { deleted: false, childCount, referencePhotosRemoved: false, worldsRemoved: 0 }, save: false }
       const referencePhotosRemoved = await removePlaceMedia(PROJECT_MEDIA_DIR, id)
       const worldsRemoved = await removePlaceWorlds(WORLDS_DIR, id)
       projects.splice(idx, 1)
-      return { result: { deleted: true, childCount: 0, referencePhotosRemoved, worldsRemoved }, save: true }
+      return { result: { deleted: true, childCount: 0, referencePhotosRemoved, worldsRemoved }, save: true, removesPlace: true }
     })
     if (deleted.childCount > 0) {
       return c.json({ error: 'project has linked child Places', childCount: deleted.childCount }, 409)
+    }
+    if (deleted.handOverWaiting) {
+      return c.json({ error: 'Some of this Place\'s scans are still being moved to the Place they are filed under, so its world was kept. Try again in a moment.' }, 409)
     }
     if (!deleted.deleted) return c.json({ error: 'Not found' }, 404)
     return c.json({ ok: true, referencePhotosRemoved: deleted.referencePhotosRemoved, worldsRemoved: deleted.worldsRemoved })
@@ -6499,15 +6601,79 @@ app.post('/projects/:id/merge', async (c) => {
 
     target.updatedAt = Date.now()
     projects.splice(projects.indexOf(source), 1)
-    return { result: { target }, save: true }
+    return { result: { target }, save: true, removesPlace: true }
   })
 
   if (!merged.target) return c.json({ error: 'Target project not found' }, 404)
   if (merged.photosFailed) return c.json({ error: 'Could not remove the merged Place\'s reference photos, so nothing was merged. Try again.' }, 500)
   if (merged.mismatch) return c.json(merged.mismatch, 409)
   const handOver = merged.alreadyMerged ? {} : await rewriteProjectReferences(sourceProjectId, targetProjectId)
-  return c.json({ ok: true, project: merged.target, alreadyMerged: merged.alreadyMerged ?? false, ...handOverAnswer(handOver) })
+  // The merged-away Place is gone from the registry and its scans are filed under the target: its world, which holds its name,
+  // location, Things and share tokens, goes too (PRIVACY.md, section 5), once nothing is waiting in it. A repeat of the merge
+  // comes here as well, and finishes what stayed.
+  let removal: MergedAwayWorld
+  try {
+    removal = await removeMergedAwayWorld(sourceProjectId)
+  } catch (err) {
+    console.error(`[project merge] could not remove the merged Place's world (${err instanceof Error ? err.name : 'Error'})`)
+    return c.json({ error: 'The Places were merged, but the merged Place\'s world could not be removed, so it was kept. Ask for the merge again to finish.' }, 500)
+  }
+  // ADR 0011 keeps a placement a person set by hand in the world a scan left, because it is a position in that world. A world that
+  // is gone keeps nothing: `handOver.placementsKept` is not said of it, and what went with it is counted from the world's own file
+  // as `placementsRemoved` (a repeat of the merge, which has nothing to hand over, counts it too), so the person can be told.
+  const report = removal.worldsRemoved > 0 ? { ...handOver, placementsKept: undefined } : handOver
+  return c.json({
+    ok: true,
+    project: merged.target,
+    alreadyMerged: merged.alreadyMerged ?? false,
+    sourceWorldRemoved: removal.gone,
+    ...(removal.placementsRemoved > 0 ? { placementsRemoved: removal.placementsRemoved } : {}),
+    ...handOverAnswer(report),
+  })
 })
+
+/**
+ * Removes what is left of the world of a Place that is not in the registry: a merge took the Place out, or an earlier build's
+ * merge did and left its world. Each world that says it is the Place's is read first, which hands over the scans it still holds
+ * to the worlds of the Places they are filed under now (nothing opens the world of a Place that is gone, so nothing else would),
+ * and is then removed with its export unless `keep` holds it back (server/place_deletion.ts). Resolves how many worlds were
+ * removed and how many were kept. Throws when one cannot be removed.
+ */
+async function removeGonePlaceWorlds(projectId: string, keep: KeepWorld): Promise<LeftoverWorlds> {
+  const slugs = await placeWorldSlugs(WORLDS_DIR, projectId)
+  // No scans to wait for: one read of each world, which hands over what can be handed over, and says nothing of it.
+  if (slugs.length > 0) await worldHandOver.settle(new Map(slugs.map((slug) => [slug, new Set<string>()])))
+  return await removeLeftoverPlaceWorlds(WORLDS_DIR, projectId, keep)
+}
+
+/** What `removeMergedAwayWorld` did. */
+interface MergedAwayWorld {
+  /** Whether no world of the Place is left: false while one is kept, and when nothing was looked at. */
+  gone: boolean
+  /** How many worlds of the Place were removed. */
+  worldsRemoved: number
+  /** The placements set by hand over a scan that those worlds held, counted from each world as it was removed. */
+  placementsRemoved: number
+}
+
+/**
+ * After a merge, or a repeat of one: the world of the merged-away Place goes with its export once nothing of it is left to
+ * hand over. It stays, and `gone` is false, while a scan is listed in it (its hand-over is waiting, or it is an upload with no
+ * GLB, which a merge does not move), while a job is queued or running in it, while a scan's record still names the Place (a
+ * sidecar the merge could not rewrite): then the Place is not gone, whatever the registry says, and while the registry cannot be
+ * read, which says nothing about any Place. Asking for the merge again, or
+ * `DELETE /projects/:id`, finishes what stayed. Throws when one cannot be removed.
+ */
+async function removeMergedAwayWorld(sourceProjectId: string): Promise<MergedAwayWorld> {
+  const nothingRemoved: MergedAwayWorld = { gone: false, worldsRemoved: 0, placementsRemoved: 0 }
+  // A registry that cannot be read reads every Place as one a merge took out (a repeat of a merge into the default Place gets
+  // this far): it cannot say that this one is gone, so nothing is removed.
+  if (!(await registryIsReadable())) return nothingRemoved
+  const stillFiled = await countScansForProject(sourceProjectId) + (await uploadScansOfPlace(SCANS_DIR, sourceProjectId)).length
+  if (stillFiled > 0) return nothingRemoved
+  const { removed, kept, placementsRemoved } = await removeGonePlaceWorlds(sourceProjectId, worldIsInUse)
+  return { gone: kept === 0, worldsRemoved: removed, placementsRemoved }
+}
 
 async function countScansForProject(projectId: string): Promise<number> {
   return (await countScansByFrame(projectId)).scanCount
@@ -6585,7 +6751,9 @@ async function rewriteProjectReferences(sourceProjectId: string, targetProjectId
   }
   // The source's world is not relabelled as the target's any more: it stays the source's, and reading it hands every
   // scan it held over to the target's world (ADR 0011), with their patches, comments and finished jobs. Relabelled,
-  // it was a second world for the target that nothing opened, and what was made of the scans stayed in it.
+  // it was a second world for the target that nothing opened, and what was made of the scans stayed in it. It is not
+  // left either: nothing opens the world of a Place that is out of the registry, and it holds that Place's name, location
+  // and Things, so the route removes it once it has handed everything over (removeMergedAwayWorld).
   const held = new Map<string, Set<string>>()
   await mutateWorldFiles((world) => {
     let changed = false

@@ -9,7 +9,12 @@
  *     bytes as `<file>.corrupt-<timestamp>` before it replaces the file, so the
  *     bytes survive even when a later step fails;
  *   - each save keeps the previous version as `<file>.bak`. A corrupt file is not
- *     a version, so it never becomes the `.bak`.
+ *     a version, so it never becomes the `.bak`, and a save over one leaves the `.bak`
+ *     as it was, whatever the save is. A save that removes a Place, over a file that
+ *     can be read, does not keep the previous version, which still holds that Place's
+ *     name, address and location: it makes the `.bak` the registry it saves
+ *     (`keepPrevious: false`). The `.corrupt-<time>` copy is the owner's, and nothing
+ *     here removes it.
  *
  * ## A Place's frame
  *
@@ -116,30 +121,68 @@ export async function copyUnparsableRegistryAside(path: string, now = Date.now()
   return aside
 }
 
+/** What a save does besides writing the registry. */
+export interface SaveRegistryOptions {
+  /**
+   * Whether the file the save replaces is kept as `<path>.bak`. True unless said otherwise. A save that removes a Place
+   * (`DELETE /projects/:id`, and the merge that takes the merged-away Place out) passes false: the file it replaces still
+   * holds that Place's name, address and location, and kept as the backup it would be the only copy left of a record the
+   * person asked to have gone. The backup is then made the registry being saved, so that it is still a backup, of the
+   * registry as it is now, and holds no Place the registry does not.
+   *
+   * That is for a file that can be read. An unparsable file is not a version: it is copied aside (`<path>.corrupt-<now>`;
+   * that copy is the owner's, and is never read, changed or removed here), and `<path>.bak` is left as it is, whatever this
+   * says. The registry being saved over it was built from nothing that could be read (the server reads such a file as an
+   * empty list and adds the default Place), so it is no record of the Places the file held, and the backup, the last registry
+   * that could be read, is the only copy of them: a save that removes the one Place it can find there, the default Place,
+   * must not replace it. In that case the backup can still hold the default Place's record.
+   */
+  keepPrevious?: boolean
+}
+
 /**
  * Saves the registry. The new content is written to a temp file first, so a failed write
- * leaves the registry as it was. Then an unparsable file is copied aside, or else the current
- * file is copied to `<path>.bak`. The temp file is renamed over the registry last, the one step
- * that replaces the original. A failure before that step removes the temp file.
+ * leaves the registry as it was. Then an unparsable file is copied aside, and the `.bak` is left
+ * as it is; or else the current file is copied to `<path>.bak` (or, for a save that removes a
+ * Place, the new content is written there instead: see {@link SaveRegistryOptions.keepPrevious}).
+ * The temp file is renamed over the registry last, the one step that replaces the original, so a
+ * failure at any step before it leaves the registry as it was, and a Place that was to be removed
+ * still in it, to be removed again. A failure before that step removes the temp files.
  * Returns the path an unparsable file was copied to, if there was one.
  */
-export async function saveRegistry(path: string, projects: Project[], now = Date.now()): Promise<string | null> {
+export async function saveRegistry(
+  path: string,
+  projects: Project[],
+  now = Date.now(),
+  options: SaveRegistryOptions = {},
+): Promise<string | null> {
   const tmpFile = `${path}.${crypto.randomUUID()}.tmp`
+  const backupTmpFile = `${path}.bak.${crypto.randomUUID()}.tmp`
   try {
-    await Deno.writeTextFile(tmpFile, JSON.stringify(projects, null, 2))
+    const text = JSON.stringify(projects, null, 2)
+    await Deno.writeTextFile(tmpFile, text)
     const corruptCopy = await copyUnparsableRegistryAside(path, now)
+    // An unparsable file is not a version, so it is not the backup, and the registry being saved over it is not either: it was built
+    // from nothing that could be read, so the backup, whatever the save removes, is left as it is (see SaveRegistryOptions).
     if (corruptCopy === null) {
-      try {
-        await Deno.copyFile(path, `${path}.bak`)
-      } catch (err) {
-        // No file to keep a copy of (the first save).
-        if (!(err instanceof Deno.errors.NotFound)) throw err
+      if (options.keepPrevious === false) {
+        // Written beside the backup and renamed over it, so that the backup is never a half-written file.
+        await Deno.writeTextFile(backupTmpFile, text)
+        await Deno.rename(backupTmpFile, `${path}.bak`)
+      } else {
+        try {
+          await Deno.copyFile(path, `${path}.bak`)
+        } catch (err) {
+          // No file to keep a copy of (the first save).
+          if (!(err instanceof Deno.errors.NotFound)) throw err
+        }
       }
     }
     await Deno.rename(tmpFile, path)
     return corruptCopy
   } catch (err) {
     await Deno.remove(tmpFile).catch(() => undefined)
+    await Deno.remove(backupTmpFile).catch(() => undefined)
     throw err
   }
 }

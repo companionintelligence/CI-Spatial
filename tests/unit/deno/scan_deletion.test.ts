@@ -193,6 +193,23 @@ Deno.test('a scan whose files are already gone but that a world still lists is r
   })
 })
 
+Deno.test('the deletion tells the world side whether it found the scan itself: its files or the frames only it names, and not a scan that is not there', async () => {
+  await withTree(async (tree) => {
+    const seen: Array<boolean | undefined> = []
+    const asked = { dropWorldExports: async (_name: string, scanFound?: boolean) => { seen.push(scanFound); return 0 } }
+    const calls: Calls = { order: [], worldsSawGlb: null, worldsHeld: 1 }
+    await makeScanWithEverything(tree.scans, MINE)
+    assertEquals((await deleteScan(MINE, fakeDeps(tree, calls, asked))).status, 200)
+    // Its files are gone, and nothing else of it: no world holds it. This is the answer for a scan that never was.
+    calls.worldsHeld = 0
+    assertEquals((await deleteScan(MINE, fakeDeps(tree, calls, asked))).status, 404)
+    // A scan made from an upload has no file yet, and the frames of its session are what the deletion finds.
+    await makeSession(tree.sessions, S1, { glbFilename: MINE })
+    assertEquals((await deleteScan(MINE, fakeDeps(tree, calls, asked))).status, 200)
+    assertEquals(seen, [true, false, true])
+  })
+})
+
 Deno.test('a world export that was removed counts as the scan having been there', async () => {
   await withTree(async (tree) => {
     const calls: Calls = { order: [], worldsSawGlb: null, worldsHeld: 1 }

@@ -43,6 +43,7 @@ import type { ScanManifest } from '../src/world/types.ts'
 import type { CheckedBy } from '../src/world/calibration-evidence.ts'
 import { isIsoDateTime } from '../src/shared/iso-time.ts'
 import { MAX_FIT_POINTS, MIN_FIT_POINTS } from '../src/world/calibration-evidence.ts'
+import { readCalibrationGroundY } from '../src/world/geo.ts'
 import { asScaleKind, asScaleMode } from '../src/world/scale-mode.ts'
 import { isFrameId } from '../src/world/spatial-frame.ts'
 import { outsidePlaceFrameOf } from '../src/world/frame-generations.ts'
@@ -317,6 +318,33 @@ export function calibrationEvidenceFromMeta(meta: Record<string, unknown>): Cali
     calibrationFitRmsM: fields.calibrationFitRmsM,
     calibrationFitMaxM: fields.calibrationFitMaxM,
   }
+}
+
+/**
+ * The session-space floor height the scan's origin sat on (`ScanManifest.calibrationGroundY`), or null when the sidecar does not
+ * say. Read from the flat `calibrationGroundY` key first and from the nested record second, which is read as the measurements
+ * are, through `recordBackingTier`: a record that names another tier than the flat summary does is not the one the scan's
+ * placement came from. The flat key is what survives the `splat-align` job, which replaces the nested record
+ * (`withReplacedCalibration`), as the flat `calibrationFrameId` is what keeps the frame generation. No client writes the flat
+ * key (the nested record is the one the capture writes, wave 12), so on a scan the job has not run on the record answers.
+ */
+export function calibrationGroundYFromMeta(meta: Record<string, unknown>): number | null {
+  const flat = finiteField(meta, 'calibrationGroundY')
+  if (flat !== null) return flat
+  return readCalibrationGroundY(recordBackingTier(meta['calibration'], asCalibrationMethod(meta['calibrationMethod'])))
+}
+
+/**
+ * The sidecar the `splat-align` job writes when it replaces the nested `calibration` record with its own known-distance one
+ * (`_runSplatAlignJob` in server/main.ts), and leaves the flat summaries and `projectTransform` as they are. The scan is
+ * still placed by that transform, so what the replaced record said of where the origin sat is still true of the placement,
+ * and nothing else will say it once the record is gone: the floor height is kept as the flat `calibrationGroundY` first.
+ * A flat value that is already there stays (a second run finds a record that has none), and a record with no finite floor
+ * height keeps none. Does not change `meta`.
+ */
+export function withReplacedCalibration(meta: Record<string, unknown>, record: unknown): Record<string, unknown> {
+  const kept = finiteField(meta, 'calibrationGroundY') ?? readCalibrationGroundY(meta['calibration'])
+  return { ...meta, ...(kept === null ? {} : { calibrationGroundY: kept }), calibration: record }
 }
 
 /**

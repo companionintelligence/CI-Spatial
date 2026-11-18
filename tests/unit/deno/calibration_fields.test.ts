@@ -21,6 +21,8 @@ import {
   asCalibrationSeparationM,
   asCalibrationStatus,
   calibrationFromMeta,
+  calibrationGroundYFromMeta,
+  withReplacedCalibration,
 } from '../../../server/calibration_fields.ts'
 import { anchorToProjectTransform, twoPointSeparationM, twoPointToProjectTransform } from '../../../src/world/geo.ts'
 import type { ScanCalibration, ScanManifest } from '../../../src/world/types.ts'
@@ -449,13 +451,107 @@ Deno.test("server/main.ts builds the manifest's calibration fields with calibrat
     /\.\.\.calibrationFromMeta\(\s*scan\.meta\s*\)/.test(build),
     "scanManifestFromStored no longer builds the manifest's calibration fields with calibrationFromMeta(scan.meta)",
   )
-  // The one read of the nested record that stays is the origin's floor height, through `readCalibrationGroundY`
-  // (src/world/geo.ts), which tests/unit/node/origin_decal.test.ts and origin_persistence.test.ts hold. The check looks at
-  // the rest of the function, so a hand-read of any other calibration key still fails it.
-  const groundYRead = "readCalibrationGroundY(scan.meta['calibration'])"
-  assert(build.includes(groundYRead), 'scanManifestFromStored no longer reads the origin\'s floor height with readCalibrationGroundY')
+  // The origin's floor height is read through `calibrationGroundYFromMeta`, which reads the flat key the `splat-align` job
+  // keeps first and the nested record, through `readCalibrationGroundY` (src/world/geo.ts, held by
+  // tests/unit/node/origin_decal.test.ts and origin_persistence.test.ts), second. It used to be one hand-read of the nested
+  // record, `readCalibrationGroundY(scan.meta['calibration'])`, which read null once that job had replaced the record. The check
+  // looks at the rest of the function, so a hand-read of any other calibration key still fails it.
+  const groundYRead = 'calibrationGroundYFromMeta(scan.meta)'
+  assert(build.includes(groundYRead), 'scanManifestFromStored no longer reads the origin\'s floor height with calibrationGroundYFromMeta')
   assert(
-    !/scan\.meta\['(calibrationMethod|calibrationStatus|calibration)'\]/.test(build.replace(groundYRead, '')),
+    !/scan\.meta\['(calibrationMethod|calibrationStatus|calibration|calibrationGroundY)'\]/.test(build.replace(groundYRead, '')),
     'scanManifestFromStored reads a calibration key of the sidecar by hand again, beside calibrationFromMeta',
   )
+})
+
+Deno.test('server/main.ts replaces the nested calibration record through withReplacedCalibration, so the floor height outlives it', async () => {
+  const main = await Deno.readTextFile(new URL('../../../server/main.ts', import.meta.url))
+  const job = functionSource(main, 'async function _runSplatAlignJob(')
+  assert(
+    /writeJsonAtomic\(\s*metaPath\s*,\s*withReplacedCalibration\(\s*meta\s*,\s*result\.calibration\s*\)\s*\)/.test(job),
+    "_runSplatAlignJob no longer writes the sidecar it replaces the record in with withReplacedCalibration(meta, result.calibration)",
+  )
+  assert(
+    !/meta\['calibration'\]\s*=/.test(job),
+    "_runSplatAlignJob assigns the nested calibration record by hand again, and the floor height it held is lost with it",
+  )
+  assert(
+    /import\s*\{[^}]*\bwithReplacedCalibration\b[^}]*\}\s*from\s*'\.\/calibration_fields\.ts'/.test(main),
+    'server/main.ts no longer imports withReplacedCalibration from ./calibration_fields.ts',
+  )
+})
+
+// ── The origin's floor height outlives the splat-align job ─────────────────────────────────────
+//
+// The capture writes the floor height the origin sat on only inside the nested `calibration` record (`groundY`, wave 12). The
+// `splat-align` job replaces that record with its own known-distance one and leaves the flat summaries and `projectTransform`
+// alone, so the scan is still placed by the transform the floor height belongs to, and the manifest read null. The expected
+// values here are the figures put in the fixtures, not anything the readers compute.
+
+const GROUND_Y = -1.2
+
+/** A sidecar as src/export/gltf.ts writes it for a two-point capture on a floor at session height -1.2 m. */
+function twoPointSidecar(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    projectTransform: TWO_POINT.sessionToProject,
+    calibrationMethod: 'two-point-ground',
+    calibrationStatus: 'verified',
+    calibration: { ...TWO_POINT, groundY: GROUND_Y },
+    ...extra,
+  }
+}
+
+Deno.test('calibrationGroundYFromMeta: the nested record answers on a scan no job has touched, a flat key answers first, and anything that is not a number is no floor height', () => {
+  assertEquals(calibrationGroundYFromMeta(twoPointSidecar()), GROUND_Y)
+  assertEquals(calibrationGroundYFromMeta(twoPointSidecar({ calibrationGroundY: 0.37 })), 0.37, 'the flat key is read first')
+  assertEquals(calibrationGroundYFromMeta(twoPointSidecar({ calibrationGroundY: 0 })), 0, 'a floor at session height 0 is a floor height')
+  for (const bad of [null, undefined, NaN, Infinity, -Infinity, '0.37', {}, [], true]) {
+    assertEquals(calibrationGroundYFromMeta(twoPointSidecar({ calibrationGroundY: bad })), GROUND_Y, `${String(bad)} in the flat key is not a floor height: the record answers`)
+  }
+  assertEquals(calibrationGroundYFromMeta({ calibrationMethod: 'two-point-ground', calibration: { ...TWO_POINT, groundY: 'high' } }), null)
+  assertEquals(calibrationGroundYFromMeta({ calibrationMethod: 'two-point-ground', calibration: TWO_POINT }), null, 'a record from before the field says nothing')
+  assertEquals(calibrationGroundYFromMeta({}), null)
+  assertEquals(calibrationGroundYFromMeta({ calibration: null }), null)
+})
+
+Deno.test('calibrationGroundYFromMeta: a nested record that is another tier\'s is not the one the scan was placed by, so its floor height is not read', () => {
+  // The record the job wrote, with a figure of its own that is not the origin's floor.
+  const replaced = { ...twoPointSidecar(), calibration: { ...KNOWN_DISTANCE, groundY: 9 } }
+  assertEquals(calibrationGroundYFromMeta(replaced), null)
+  assertEquals(calibrationGroundYFromMeta({ ...replaced, calibrationGroundY: GROUND_Y }), GROUND_Y, 'the flat key is the one that stays')
+  // A record that names no tier cannot be shown to be another one, and is read as it always was.
+  assertEquals(calibrationGroundYFromMeta({ calibrationMethod: 'two-point-ground', calibration: { groundY: GROUND_Y } }), GROUND_Y)
+})
+
+Deno.test('withReplacedCalibration: the record is replaced, the floor height it held is kept flat beside it, and nothing else of the sidecar changes', () => {
+  const before = twoPointSidecar({ scanName: 'kitchen', calibrationFrameId: 'frame-0b1c2d3e', pointCount: 1303 })
+  const snapshot = JSON.stringify(before)
+  const after = withReplacedCalibration(before, KNOWN_DISTANCE)
+  assertEquals(JSON.stringify(before), snapshot, 'the sidecar read is not changed')
+  assertEquals(after['calibration'], KNOWN_DISTANCE, 'the job\'s record is the nested record now')
+  assertEquals(after['calibrationGroundY'], GROUND_Y, 'and the floor height of the record it replaced is kept')
+  const { calibration: _record, calibrationGroundY: _kept, ...rest } = after
+  const { calibration: _was, ...restBefore } = before
+  assertEquals(rest, restBefore, 'every other key is as it was, the flat tier, the transform and the frame id included')
+  // What the manifest says of it: the floor height survives, and the other record's measurements are still not printed.
+  assertEquals(calibrationGroundYFromMeta(after), GROUND_Y)
+  assertEquals(calibrationFromMeta(after).calibrationMethod, 'two-point-ground')
+  assertEquals(calibrationFromMeta(after).calibrationResidualM, null)
+})
+
+Deno.test('withReplacedCalibration: a flat floor height that is already there is kept, a record without one adds none, and a second run loses nothing', () => {
+  // A second run finds the record the first one wrote, which has no floor height, and the flat key the first one kept.
+  const first = withReplacedCalibration(twoPointSidecar(), KNOWN_DISTANCE)
+  const second = withReplacedCalibration(first, { ...KNOWN_DISTANCE, residualM: 0.002 })
+  assertEquals(second['calibrationGroundY'], GROUND_Y)
+  assertEquals((second['calibration'] as { residualM: number }).residualM, 0.002)
+  // A flat value beats the record's, as it does when read.
+  assertEquals(withReplacedCalibration(twoPointSidecar({ calibrationGroundY: 0.37 }), KNOWN_DISTANCE)['calibrationGroundY'], 0.37)
+  // No floor height anywhere: no key is made, so a sidecar that never had one reads as it did.
+  const bare = withReplacedCalibration({ calibrationMethod: 'two-point-ground', calibration: TWO_POINT }, KNOWN_DISTANCE)
+  assertEquals('calibrationGroundY' in bare, false)
+  assertEquals(calibrationGroundYFromMeta(bare), null)
+  // A record whose floor height is not a number keeps none, and an absent record is no error.
+  assertEquals('calibrationGroundY' in withReplacedCalibration({ calibration: { groundY: NaN } }, KNOWN_DISTANCE), false)
+  assertEquals(withReplacedCalibration({}, KNOWN_DISTANCE), { calibration: KNOWN_DISTANCE })
 })

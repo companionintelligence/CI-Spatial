@@ -77,11 +77,18 @@ export interface ScanDeletionDeps {
    */
   claimJobs(filename: string): Promise<{ running: RunningScanJob[]; senseNovaJobIds: string[] }>
   /**
-   * Removes the world exports that hold a copy of the scan's geometry (`<world>.world.glb`, built on demand by a job), and
-   * resolves how many it removed. Throws when one cannot be removed.
+   * Removes the world exports that hold a copy of the scan's geometry (`<world>.world.glb`, built on demand by a job), whether or
+   * not the world they came from still lists the scan (a scan that was moved to another Place leaves the export of the world it
+   * left holding it), and resolves how many it removed. An export that cannot be read as an export cannot be shown not to hold
+   * the scan, and is removed with a scan that was found: `scanFound` says the deletion found its files or the frames only it
+   * names, and the world side finds it too through a world that lists it or an export that names it. It is never the evidence
+   * itself, so a request for a scan that is not there removes nothing. Throws when one cannot be read or removed.
    */
-  dropWorldExports(filename: string): Promise<number>
-  /** Takes the scan, its jobs and its patches out of every world, and resolves how many worlds held anything of it. */
+  dropWorldExports(filename: string, scanFound: boolean): Promise<number>
+  /**
+   * Takes the scan, its jobs, its comments and its patches (a placement a move kept in the world the scan left among them) out of
+   * every world, and resolves how many worlds held anything of it. Throws when a world cannot be changed.
+   */
   removeFromWorlds(filename: string): Promise<number>
 }
 
@@ -216,11 +223,13 @@ export async function deleteScan(filename: string, deps: ScanDeletionDeps): Prom
       }
     }
     // Before the worlds: a failure here is a 500 that leaves the scan in its worlds, so deleting it again removes the export.
-    const worldExports = await deps.dropWorldExports(filename)
+    // Whether anything of the scan itself was found is told to the world side first, which decides what an export that cannot
+    // be read is: a part of a scan that was there, or something that nothing says is a scan's (the 404 below).
+    const keyframeSessions = keyframes.report.deleted.length
+    const worldExports = await deps.dropWorldExports(filename, files.glb || files.metadata || files.derived > 0 || keyframeSessions > 0)
     // The worlds last, and always: a scan whose files are already gone (an earlier try that stopped after them, or a file
     // deleted by hand) may still have a row, jobs and patches in a world, and what a person asked for is the scan gone.
     const worlds = await deps.removeFromWorlds(filename)
-    const keyframeSessions = keyframes.report.deleted.length
     if (!files.glb && !files.metadata && files.derived === 0 && keyframeSessions === 0 && worldExports === 0 && worlds === 0) {
       return { status: 404, body: { error: 'Scan not found' } }
     }
