@@ -43,8 +43,8 @@ import {
   readTap,
   resolveCommitOptions,
 } from './calibration-commit'
-import { isSameHeightRetry, isTapOnGround, tapHeightAboveGroundCm } from './ground-gate'
-import { IMPROVE_REFERENCE_LABEL, KEEP_REFERENCE_LABEL, REPLACE_REFERENCE_LABEL } from './replace-copy'
+import { isSameHeightRetry, isTapOnGround, mayWritePlaceFrame, tapHeightAboveGroundCm } from './ground-gate'
+import { IMPROVE_REFERENCE_LABEL, KEEP_REFERENCE_LABEL, RECORD_UNVERIFIED_LABEL, REPLACE_REFERENCE_LABEL } from './replace-copy'
 import { generationActions, improveShown, isUpgrade, keepShown, type GenerationHooks } from './replace-reference'
 import { ONE_POINT_LABEL, onePointOffered } from './one-point-offer'
 import { describeTracking } from './frame-epoch'
@@ -392,15 +392,10 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
   /** Set when the user chooses to place without a settled floor estimate. */
   let groundWaitOverridden = false
   /**
-   * True once this flow has bypassed a floor check: the skip-ground button, or an
-   * off-floor tap accepted by a same-height retry. It is recorded on the commit,
-   * and a bypassed commit never writes the Place frame (`mayWritePlaceFrame`).
-   */
-  let floorCheckBypassed = false
-  /**
    * Height of the most recent tap rejected as off-floor, or null. A retry at
    * this height is the confirmation the override asks for; a tap anywhere else
-   * is a fresh attempt and is gated normally.
+   * is a fresh attempt and is gated normally. Re-place points forgets it: the
+   * gate then begins again, and the same height is turned away again.
    */
   let offGroundTapY: number | null = null
 
@@ -411,6 +406,29 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
    * the landmark's height, so that the baseline is level; a fit compares heights, so it is given these (./constellation-flow.ts).
    */
   const tappedAt: Partial<Record<MarkerId, Vec3>> = {}
+  /**
+   * The markers whose placing tap was accepted off the floor by a same-height retry, kept beside the tap each describes (`tappedAt`):
+   * set where a tap is applied to a marker (`applyTap`), and gone when that tap is: the marker placed again or moved by a tap that
+   * was on the floor, taken away, or Re-place points. A tap that only selected a marker changes nothing here.
+   */
+  const offFloorMarkers: Partial<Record<MarkerId, true>> = {}
+  /**
+   * Whether this commit bypassed a floor check. It is recorded on the commit, and a bypassed commit never writes the Place frame
+   * (`mayWritePlaceFrame`), so it is about the points the commit holds. "Place anchor without floor check" bypasses it for the whole
+   * flow, because no tap after it was judged against a floor that had locked. Otherwise it is a point that is still placed, whose tap
+   * was accepted off the floor by a same-height retry. A marker that was on a table, was seen to be wrong and was put on the floor, or
+   * was taken away, no longer counts: the pair that is committed was floor-checked.
+   */
+  const floorCheckBypassed = (): boolean =>
+    groundWaitOverridden || MARKER_IDS.some((id) => points[id] !== null && offFloorMarkers[id] === true)
+  /**
+   * Whether keeping the pair over a mismatch writes the Place's frame, and so replaces the reference the pair was compared with: it does
+   * unless the floor check was bypassed (`mayWritePlaceFrame`, the rule `assessTwoPoint` applies to this very press). Then it records the
+   * scan and replaces nothing, so the button must not say it replaces and the question that goes before a replacement is not asked.
+   * Read when the card is drawn and when the button is pressed, because the flag changes while the card is up.
+   */
+  const keepingPairReplacesReference = (): boolean =>
+    mayWritePlaceFrame({ floorCheckBypassed: floorCheckBypassed(), hasStoredFrame: storedTwoPoint !== null, override: true })
   let selected: MarkerId | null = null
   /** Residual that triggered the mismatch stage, in metres. */
   let mismatchResidualM = 0
@@ -460,6 +478,11 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
    * running, so without this a second tap would commit the same frame twice —
    * the second one resolving an already-resolved promise and dropping a
    * duplicate anchor into the scene.
+   *
+   * Nothing that changes the points the commit holds is live while it is true: a tap on the canvas
+   * (`placeAt`) and the check-point button, which adds or takes away a point, are inert. The buttons that
+   * end the flow or begin it again (Re-place points, Continue uncalibrated) are not, and what the person
+   * does with them stands (see `commitTwoPoint`).
    */
   let commitInFlight = false
   /**
@@ -1285,6 +1308,8 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
     if (readout !== null && separationEl.dataset['state'] !== 'short') show(separationEl, false)
     const action = checkAction({ stage, plan: checkPlan, hasCheck: check !== null, pairUsable: (separation() ?? 0) >= MIN_POINT_SEPARATION_M })
     show(checkBtn, action !== null)
+    // The commit that waits for its photos holds the points as they were when Commit was pressed: this button changes them.
+    checkBtn.disabled = commitInFlight
     if (action) checkBtn.textContent = action.label
     show(adjustBtn, stage === 'mismatch')
   }
@@ -1307,6 +1332,10 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
     show(commitBtn, stage === 'review')
     show(replaceBtn, stage === 'review' || stage === 'mismatch')
     show(overrideBtn, stage === 'mismatch')
+    // One button for the whole flow, so its words follow the floor check on every draw, in both directions: a tap that was off the floor
+    // and is moved onto it, or Re-place points, gives the replacement back.
+    const keepLabel = keepingPairReplacesReference() ? REPLACE_REFERENCE_LABEL : RECORD_UNVERIFIED_LABEL
+    if (overrideBtn.textContent !== keepLabel) overrideBtn.textContent = keepLabel
     show(wrongPlaceBtn, stage === 'mismatch' && !!options.onWrongPlace)
     show(
       skipGround,
@@ -1472,8 +1501,8 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
     /**
      * The frame the landmark was placed in has moved, or the landmark has waited too long since it was confirmed (./calibration-taps.ts):
      * sends the person back to the landmark and says why. It is "Re-place points" pressed for them, so what that
-     * clears (both markers and their photos) stays defined in one place. The stored reference photos show again for
-     * the landmark, as they do on any return to that stage.
+     * clears (the markers, their photos, and the floor check a tap of theirs bypassed) stays defined in one place. The stored
+     * reference photos show again for the landmark, as they do on any return to that stage.
      */
     function restartAfterDisturbance(): void {
       replaceBtn.click()
@@ -1516,6 +1545,8 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
         return
       }
 
+      // Whether the points this commit holds bypassed a floor check, read once: the verdict and the record say the same thing.
+      const bypassed = floorCheckBypassed()
       // The points as they were tapped (their own heights, which a fit compares), and the units the phone says it is in.
       const verdict = assessTwoPoint(
         {
@@ -1525,7 +1556,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
           stored: storedTwoPoint,
           override,
           unitsMode: options.provider.scaleKind?.(),
-          floorCheckBypassed,
+          floorCheckBypassed: bypassed,
         },
         commitOptions,
       )
@@ -1592,7 +1623,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
         checkPointLabel: labels.check,
         calibratedAt: new Date().toISOString(),
         tap,
-        floorCheckBypassed,
+        floorCheckBypassed: bypassed,
       })
 
       // One origin decal: the crosshair on the landmark, the arrow to the heading
@@ -1639,7 +1670,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
           bearingConvention,
           existingFrame,
           calibratedAt: new Date().toISOString(),
-          floorCheckBypassed,
+          floorCheckBypassed: floorCheckBypassed(),
         },
         onePointOptions,
       )
@@ -1677,7 +1708,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
      * statistic. The estimator keeps its proper job: sanity-checking taps in
      * `isTapOnGround()`, where being roughly right is enough.
      */
-    function applyTap(position: Vec3, tapPoint: { x: number; y: number }): void {
+    function applyTap(position: Vec3, tapPoint: { x: number; y: number }, acceptedOffFloor: boolean): void {
       // Select-then-retap, per ticket 0004: a selected marker moves to the next
       // tap wherever it lands; otherwise a tap within ANCHOR_RADIUS_M of an
       // existing marker selects it rather than placing something new.
@@ -1710,6 +1741,9 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
       photoTasks[target] = null
       // The height it was tapped at, before it is drawn at the landmark's: a fit compares heights (./constellation-flow.ts).
       tappedAt[target] = position
+      // And whether that tap was accepted off the floor, which is a bypass of the floor check for as long as this tap is the marker's.
+      if (acceptedOffFloor) offFloorMarkers[target] = true
+      else delete offFloorMarkers[target]
 
       if (target === 'landmark') {
         setMarker('landmark', position)
@@ -1801,8 +1835,9 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
           const groundY = options.ground()?.y ?? null
           // How high the tap measured, which is not its position's height when the floor ray placed it.
           const tapY = hit.surfaceY ?? hit.position.y
+          const offFloor = !isTapOnGround(tapY, groundY)
           const confirmingRejectedHeight = isSameHeightRetry(tapY, offGroundTapY)
-          if (!confirmingRejectedHeight && !isTapOnGround(tapY, groundY)) {
+          if (!confirmingRejectedHeight && offFloor) {
             offGroundTapY = tapY
             const delta = tapHeightAboveGroundCm(tapY, groundY as number)
             const side = delta >= 0 ? 'above' : 'below'
@@ -1810,15 +1845,16 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
               `That looked about ${Math.abs(delta)} cm ${side} the floor. Aim at the floor, or tap the same height again to use it anyway.`
             return
           }
-          // A tap accepted off the floor by a same-height retry is a bypass.
-          if (confirmingRejectedHeight && !isTapOnGround(hit.position.y, groundY)) floorCheckBypassed = true
+          // A tap accepted off the floor by a same-height retry is a bypass, for the marker it places (`applyTap`). It is judged by the
+          // height the gate judged (`tapY`), which under the floor ray is not the position's: that is the fitted floor's by construction.
+          const acceptedOffFloor = confirmingRejectedHeight && offFloor
           offGroundTapY = null
 
           // Pass the raw hit through. applyTap() decides the height, because
           // only it knows which marker this tap is for — and the landmark's own
           // measured height is what defines the floor.
           transientStatus = null
-          applyTap({ x: hit.position.x, y: hit.position.y, z: hit.position.z }, tapPoint)
+          applyTap({ x: hit.position.x, y: hit.position.y, z: hit.position.z }, tapPoint, acceptedOffFloor)
           // A tap after the landmark was confirmed is where a shift since then shows: say so now, not at the commit.
           if (taps.isDisturbed()) restartAfterDisturbance()
         } finally {
@@ -1834,8 +1870,8 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
 
     skip.addEventListener('click', () => close(null))
     skipGround.addEventListener('click', () => {
+      // The floor check is bypassed for the whole flow from here (`floorCheckBypassed()`).
       groundWaitOverridden = true
-      floorCheckBypassed = true
       update()
     })
     confirmBtn.addEventListener('click', () => {
@@ -1865,7 +1901,10 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
         tapPoints[id] = null
         photoTasks[id] = null
         delete tappedAt[id]
+        // And so does a tap that was accepted off the floor, and the height the gate last turned away: the gate begins again.
+        delete offFloorMarkers[id]
       })
+      offGroundTapY = null
       refreshBaseline()
       selected = null
       transientStatus = null
@@ -1881,9 +1920,13 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
       tapPoints.check = null
       photoTasks.check = null
       delete tappedAt.check
+      delete offFloorMarkers.check
       if (selected === 'check') selected = null
     }
     checkBtn.addEventListener('click', () => {
+      // A hidden or disabled button is the guard a person meets; this is the one a script meets. A commit that waits for its photos holds
+      // the points as they were: adding or taking one away now would be saved as something else, or would abandon the commit.
+      if (commitInFlight) return
       const action = checkAction({ stage, plan: checkPlan, hasCheck: points.check !== null, pairUsable: (separation() ?? 0) >= MIN_POINT_SEPARATION_M })
       if (!action) return
       if (action.kind === 'add') {
@@ -1912,6 +1955,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
       stage: () => stage,
       hasLandmark: () => !!points.landmark,
       residualM: () => mismatchResidualM,
+      replacesReference: keepingPairReplacesReference,
       keepPair: () => commitTwoPoint(true),
       close: () => close(null),
     })

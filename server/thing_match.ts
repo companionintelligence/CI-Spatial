@@ -1,5 +1,5 @@
 import { identityMatrix, transformPoint } from '../src/world/geo.ts'
-import { isInPlaceFrame } from '../src/world/frame-generations.ts'
+import { isInPlaceFrame, type PlaceFrameFacts } from '../src/world/frame-generations.ts'
 import type { ScanManifest, Thing, ThingObservation, Vec3, WorldProject } from '../src/world/types.ts'
 
 export const THING_MATCH_RADIUS_M = 0.75
@@ -42,8 +42,11 @@ export interface ThingMatchResult {
  * a position there cannot be told from a position in the Place frame: matched, it would merge Things that are
  * metres apart and duplicate Things that are one. It joins the matching when it is calibrated. Things already
  * made from such a scan are not taken away.
+ *
+ * So does a scan calibrated with two points whose commit wrote no Place frame and matched none (the floor check was bypassed): it
+ * is placed by its own pair, and its positions are in no frame the Things' are in.
  */
-export function scanTakesPartInThingMatching(scan: Pick<ScanManifest, 'calibrationMethod' | 'calibrationStatus'>): boolean {
+export function scanTakesPartInThingMatching(scan: Pick<ScanManifest, 'calibrationMethod' | 'calibrationStatus'> & PlaceFrameFacts): boolean {
   return isInPlaceFrame(scan)
 }
 

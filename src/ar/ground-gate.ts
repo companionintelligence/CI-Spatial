@@ -283,6 +283,10 @@ export function floorRayPoint(camera: RayCamera, x: number, y: number, floorY: n
  * not as a first creation, and not as an override. The Place keeps the frame it
  * had, or none, until a floor-checked calibration runs. This is the wave 12
  * review decision that the Place-frame floor is authoritative.
+ *
+ * What such a commit then says about the scan is `leavesScanOutsidePlaceFrame`
+ * below: no frame was written, so the scan is in the Place frame only if it was
+ * measured against the one the Place holds.
  */
 export function mayWritePlaceFrame(input: {
   floorCheckBypassed: boolean
@@ -291,6 +295,34 @@ export function mayWritePlaceFrame(input: {
 }): boolean {
   if (input.floorCheckBypassed) return false
   return !input.hasStoredFrame || input.override
+}
+
+/**
+ * Whether a commit leaves its scan in NO Place frame.
+ *
+ * A scan is in the Place frame when its commit wrote that frame (its own pair IS the frame) or was compared with the frame the
+ * Place holds and kept no mismatch, so that its `sessionToProject` is the comparison's. A commit that did neither is placed by
+ * its own two points alone: nothing has measured where that is in the Place, and it must not claim a generation (ADR 0011
+ * decision 3; ADR 0005 rule 3: a claim of membership is a measurement or it is not made).
+ *
+ * `mayWritePlaceFrame` is what makes this reachable. A bypassed commit writes no frame, and then "no frame came back" can mean
+ * one of four things, which only the commit can tell apart: the visit matched the frame the Place holds (in it); the pair was
+ * kept over a mismatch; the flow ran as a first calibration over a Place that holds a frame ("Improve this Place's reference",
+ * which compares nothing); or it ran as a first calibration over a Place that holds none. The last three are outside. Without a
+ * bypass a commit that wrote no frame has always matched: an override and a first calibration write one.
+ *
+ * `comparedWithStored` is whether the pair was compared with a stored two-point frame at all (the modal's own, which is none
+ * for a first calibration and for an improve run), and `override` is the mismatch screen's way to keep the pair ("Replace this
+ * Place's reference", which a bypassed floor check turns into "Record as unverified": nothing is replaced then): the pair was
+ * kept, so its comparison failed.
+ */
+export function leavesScanOutsidePlaceFrame(input: {
+  frameWritten: boolean
+  comparedWithStored: boolean
+  override: boolean
+}): boolean {
+  if (input.frameWritten) return false
+  return !input.comparedWithStored || input.override
 }
 
 /**

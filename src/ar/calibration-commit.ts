@@ -72,7 +72,7 @@ import type { TapEvidence } from '../world/calibration-evidence.ts'
 import { summariseFit, twoPointToleranceM, type UnitsMode } from '../world/frame-fit.ts'
 import type { BearingConvention, ProjectSpatialFrame, ScanCalibration, Vec3 } from '../world/types.ts'
 import { compareVisit, newReference, type VisitComparison } from './constellation-flow.ts'
-import { committedStatus, mayWritePlaceFrame } from './ground-gate.ts'
+import { committedStatus, leavesScanOutsidePlaceFrame, mayWritePlaceFrame } from './ground-gate.ts'
 
 export type TwoPointFrame = Extract<ProjectSpatialFrame, { method: 'two-point-ground' }>
 export type OnePointFrame = Extract<ProjectSpatialFrame, { method: 'ground-tap-compass' }>
@@ -167,8 +167,9 @@ export interface TwoPointInput {
   unitsMode?: UnitsMode
   /**
    * This visit bypassed a floor check ("Place anchor without floor check", or an off-floor tap accepted by a same-height
-   * retry). Such a commit is always `'provisional'` and never writes the Place's frame, first creation included
-   * (`mayWritePlaceFrame`, ./ground-gate.ts: the Place frame's floor is authored by a floor-checked calibration only).
+   * retry) and the points it holds still do. Such a commit is always `'provisional'` and never writes the Place's frame, first
+   * creation included (`mayWritePlaceFrame`, ./ground-gate.ts: the Place frame's floor is authored by a floor-checked calibration
+   * only). Its scan is in the frame the Place holds only if it was compared with it and matched (`outsidePlaceFrame` on the verdict).
    */
   floorCheckBypassed?: boolean
 }
@@ -183,6 +184,14 @@ export interface AcceptedTwoPoint {
   toleranceM: number
   /** Whether the Place's durable frame changes: a first calibration, or points kept over a mismatch. */
   frameChanged: boolean
+  /**
+   * `true`, and only when it is true, if this commit leaves the scan in no Place frame (`leavesScanOutsidePlaceFrame`,
+   * ./ground-gate.ts): it wrote no frame, and was not compared with the held one, or was and was kept over a mismatch. A bypassed
+   * floor check is the only way there is to that. The scan's `sessionToProject` is then this visit's own pair and nothing ties it
+   * to the Place's, so it names no generation (`planFrameGeneration`, ../world/frame-replacement.ts) and every reader counts it
+   * with the scans that are not in a frame (`isInPlaceFrame`, ../world/frame-generations.ts). Absent for every other commit.
+   */
+  outsidePlaceFrame?: true
   /**
    * `'verified'` is a measurement here, not a label: a visit whose points a fit of three or more compared with the
    * stored ones and found in agreement with nothing in the way. A distance check is never verified.
@@ -252,6 +261,7 @@ export function assessTwoPoint(input: TwoPointInput, options: ResolvedCommitOpti
 
   const bypassed = input.floorCheckBypassed === true
   const frameChanged = mayWritePlaceFrame({ floorCheckBypassed: bypassed, hasStoredFrame: !!stored, override })
+  const outsidePlaceFrame = leavesScanOutsidePlaceFrame({ frameWritten: frameChanged, comparedWithStored: comparison !== null, override })
   let reference: ReturnType<typeof newReference> | null = null
   if (frameChanged) {
     reference = newReference(landmark, headingMarker, checkPoint)
@@ -265,6 +275,7 @@ export function assessTwoPoint(input: TwoPointInput, options: ResolvedCommitOpti
     residualM: comparison ? comparison.residualM : 0,
     toleranceM,
     frameChanged,
+    ...(outsidePlaceFrame ? { outsidePlaceFrame: true as const } : {}),
     // 'verified' takes two things. The commit may be called verified at all (it was compared with a stored frame, was not kept over a
     // mismatch and did not bypass the floor check: `committedStatus`, ./ground-gate.ts), and the match was measured, which is the fit's
     // verdict and never a distance (ADR 0005 rule 3).
@@ -347,6 +358,10 @@ export function buildTwoPointCommit(verdict: AcceptedTwoPoint, input: TwoPointBu
     // established plane (wave 12). Recorded with the scan so it can be read back without decomposing the matrix.
     groundY: landmark.y,
     floorCheckBypassed: input.floorCheckBypassed === true,
+    // The record's own statement that its scan is in no Place frame, written only when it is true: a record in the frame it wrote or
+    // matched has no such key, as every record an earlier build wrote has none. It is declared on `ScanCalibration`
+    // (../world/types.ts), and the readers are `outsidePlaceFrameOf` (../world/frame-generations.ts) and `calibrationFromMeta`.
+    ...(verdict.outsidePlaceFrame ? { outsidePlaceFrame: true as const } : {}),
     ...(input.tap ? { tap: input.tap } : {}),
     calibratedAt,
     status: verdict.status,

@@ -111,6 +111,11 @@ export function decideReplacement(
  * How a Place's scans split by the frame they were measured against, from their sidecars (the metadata the
  * server stores for each scan, with the session record merged in: what `listStoredScans` returns). Each is read
  * as the scan list reads it (`calibrationFromMeta`), so the counts and the chips agree.
+ *
+ * A scan that is not in a Place frame (`isInPlaceFrame`) is counted as such, whatever else its record says: never calibrated,
+ * one-point, known-distance, and a two-point scan whose commit wrote no frame and matched none (the floor check was bypassed).
+ * It is not an unknown generation, which is a scan that is in the frame and cannot say which, and it is never under a generation's
+ * id, so what a replacement of the frame would strand is only what was measured against it.
  */
 export function tallyScansByFrame(metas: ReadonlyArray<Record<string, unknown>>): ScanFrameCounts {
   const byFrame = new Map<string, number>()
@@ -198,6 +203,8 @@ export interface ScanFrameFacts {
   calibrationStatus?: unknown
   /** `ScanManifest.calibrationFrameId`: absent for an unknown generation. */
   calibrationFrameId?: string
+  /** `true` for a two-point scan that is in no Place frame (`isInPlaceFrame`): a commit that wrote none and matched none. Absent otherwise. */
+  calibrationOutsidePlaceFrame?: unknown
 }
 
 /**

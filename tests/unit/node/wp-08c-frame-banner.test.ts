@@ -4,7 +4,9 @@
  *
  * The chip rules are held case by case against what the spec settles: only a different KNOWN id reads as "previous reference",
  * an unknown generation is neutral ("frame not recorded"), and uncalibrated and one-point scans are "not in Place frame"
- * (owner decision D6). Where the Place's own record shows that a frame with no id was replaced, a scan with no id calibrated
+ * (owner decision D6), and so is a two-point scan whose commit wrote no Place frame and matched none (a bypassed floor check:
+ * `calibrationOutsidePlaceFrame`), which the chip reads through the predicate the server's counts ask, in a Place whose frame has an
+ * id and in one whose frame has none. Where the Place's own record shows that a frame with no id was replaced, a scan with no id calibrated
  * before that is a previous reference: that is how the scans of a Place upgraded from a legacy frame are listed. The layer's
  * dimming is held on real three.js materials: it uses the compare tools' see-through style, leaves a scan those tools have
  * tinted alone, and takes off only what it put on.
@@ -24,6 +26,7 @@ import { fileURLToPath } from 'node:url'
 import * as THREE from 'three'
 import type { FrameHistoryEntry, ProjectSpatialFrame } from '../../../src/world/types.ts'
 import { isInPlaceFrame } from './support/fake-frame-server.ts'
+import { isInPlaceFrame as sharedIsInPlaceFrame } from '../../../src/world/frame-generations.ts'
 
 // The editor's modules are written for the bundler (`'./compare-style'`). Node needs the extension.
 registerHooks({
@@ -174,19 +177,69 @@ test('a Place with no reference has no frame to be in or out of, so no scan gets
 })
 
 test('a scan is "not in Place frame" exactly when the server does not count it in a Place frame: the chip and the counts are one rule', () => {
-  const place = { spatialFrame: frame({ frameId: 'frame-now' }) }
+  // A scan is listed in a Place whose frame has an id, or in one whose frame was written before ids: the rule is the same in both.
+  const places = [
+    ['a Place frame with an id', { spatialFrame: frame({ frameId: 'frame-now' }) }],
+    ['a Place frame with no id', { spatialFrame: frame() }],
+  ] as const
   const methods = [undefined, 'two-point-ground', 'ground-tap-compass', 'known-distance', 'something-new']
   const statuses = [undefined, 'verified', 'provisional', 'uncalibrated']
-  for (const calibrationMethod of methods) {
-    for (const calibrationStatus of statuses) {
-      for (const calibrationFrameId of [undefined, 'frame-now', 'frame-other']) {
-        const scan = { calibrationMethod, calibrationStatus, calibrationFrameId } as Scan
-        const chip = frameChipFor(scan, place)
-        const serverSaysIn = isInPlaceFrame({ calibrationMethod, calibrationStatus })
-        assert.equal(chip?.kind === 'not-in-frame', !serverSaysIn, `${String(calibrationMethod)} / ${String(calibrationStatus)} / ${String(calibrationFrameId)}`)
+  // What a commit that wrote no Place frame and matched none leaves on its scan (`calibrationOutsidePlaceFrame`, server/calibration_fields.ts):
+  // the key is there and `true`, or it is not there. A scan from before the key existed, and a scan that is in a frame, have none.
+  let checked = 0
+  for (const [placeName, place] of places) {
+    for (const calibrationMethod of methods) {
+      for (const calibrationStatus of statuses) {
+        for (const calibrationFrameId of [undefined, 'frame-now', 'frame-other']) {
+          for (const outside of [false, true]) {
+            const facts = { calibrationMethod, calibrationStatus, ...(outside ? { calibrationOutsidePlaceFrame: true as const } : {}) }
+            const scan = { ...facts, calibrationFrameId } as Scan
+            const chip = frameChipFor(scan, place)
+            const serverSaysIn = isInPlaceFrame(facts)
+            const what = `${placeName} / ${String(calibrationMethod)} / ${String(calibrationStatus)} / ${String(calibrationFrameId)} / outside ${outside}`
+            assert.equal(sharedIsInPlaceFrame(facts), serverSaysIn, `the stand-in is the shared predicate: ${what}`)
+            assert.equal(chip?.kind === 'not-in-frame', !serverSaysIn, what)
+            checked += 1
+          }
+        }
       }
     }
   }
+  assert.equal(checked, 2 * 5 * 4 * 3 * 2, 'every combination was held to the rule')
+})
+
+test('a two-point scan whose commit wrote no Place frame and matched none is "not in Place frame", whatever the Place\'s frame and history say', () => {
+  const outside = (extra: Partial<Scan> = {}): Scan => twoPointScan({ calibrationOutsidePlaceFrame: true, ...extra })
+  // The scan's own explanation. It must not say what the neutral chip says (references were not numbered then: false of a scan made now),
+  // and not that the reference was replaced: the scan was never measured against one.
+  const TITLE = "This scan was placed by its own two points and was not matched to this Place's reference, so it is not in the Place frame."
+  const replacedAfter = { spatialFrame: frame({ frameId: 'frame-now' }), frameHistory: [entry({ frameId: null, supersededAt: '2026-11-17T00:00:00.000Z' })] }
+  const places: Array<[string, Parameters<typeof frameChipFor>[1]]> = [
+    ['a Place whose frame has an id', NOW],
+    ['a Place whose frame has none', { spatialFrame: frame() }],
+    ['a Place that replaced a frame with no id after the scan was made', replacedAfter],
+    ['a Place whose history lists the frame the scan names', { spatialFrame: frame({ frameId: 'frame-now' }), frameHistory: [entry({ frameId: 'frame-old' })] }],
+  ]
+  for (const [what, place] of places) {
+    for (const calibrationFrameId of [undefined, 'frame-now', 'frame-old']) {
+      const chip = frameChipFor(outside({ calibrationFrameId }), place)
+      assert.equal(chip?.kind, 'not-in-frame', `${what}, scan names ${String(calibrationFrameId)}`)
+      assert.equal(chip?.text, NOT_IN_FRAME_TEXT)
+      assert.equal(chip?.title, TITLE)
+    }
+  }
+  assert.doesNotMatch(TITLE, /numbered|previous|replaced/, 'the explanation is its own')
+
+  // Only the statement itself counts: the boolean true. Anything else a hand-edited sidecar could carry reads as the record saying nothing.
+  for (const value of [false, 'true', 1, null, {}]) {
+    const chip = frameChipFor(twoPointScan({ calibrationOutsidePlaceFrame: value } as unknown as Partial<Scan>), NOW)
+    assert.notEqual(chip?.kind, 'not-in-frame', `calibrationOutsidePlaceFrame: ${JSON.stringify(value)}`)
+  }
+  // A scan that is not in a frame for another reason keeps that reason's own words, marker or none.
+  assert.match(frameChipFor({ calibrationMethod: 'ground-tap-compass', calibrationStatus: 'provisional', calibrationOutsidePlaceFrame: true } as Scan, NOW)!.title, /one point and the compass/)
+  assert.match(frameChipFor({ calibrationMethod: undefined, calibrationStatus: 'uncalibrated', calibrationOutsidePlaceFrame: true } as Scan, NOW)!.title, /not aligned to this Place's reference/)
+  // A Place with no reference has nothing to be in or out of, for this scan as for every other.
+  for (const place of [null, undefined, {}, { spatialFrame: null }]) assert.equal(frameChipFor(outside(), place), null)
 })
 
 // ── The banner ───────────────────────────────────────────────────────────────────────────────────────
@@ -209,6 +262,12 @@ test('the summary counts each kind, and the banner says only what the counts and
     "2 scans are not in this Place's frame.",
     '1 scan does not say which reference it was made against.',
   ])
+})
+
+test('the summary counts a scan placed by its own pair with the scans that are not in the Place frame, and not with those that do not say which reference they were made against', () => {
+  const summary = summariseFrames([...SCANS, twoPointScan({ calibrationOutsidePlaceFrame: true }), twoPointScan({ calibrationOutsidePlaceFrame: true, calibrationFrameId: 'frame-old' })], NOW)
+  assert.deepEqual(summary, { previous: 2, notInFrame: 4, notRecorded: 1 })
+  assert.deepEqual(frameBannerLines(summary, NOW).slice(-2), ["4 scans are not in this Place's frame.", '1 scan does not say which reference it was made against.'])
 })
 
 test('the banner is silent when there is nothing to say, and singular where there is one', () => {

@@ -58,6 +58,18 @@
  *    geometry is single precision, so the tip is the heading point to about 1e-7 m, and the contract holds it to 1e-6.
  *  Nothing else moved: no card, label, photo, record number or count of calls to the host differs.
  *
+ * The merge-integrity fix of the commit pipeline (what a commit that bypassed the floor check may claim, and the commit that waits
+ * for its photos) moved this one entry, on purpose, and nothing else (every difference `golden-regen.mts` reported, 42 scenarios run):
+ *
+ *  - The check-point button is disabled while a commit waits for its reference photos (`commitInFlight`, src/ar/project-calibration.ts).
+ *    It adds a point to the pair or takes one away, which the waiting commit holds as it was, so it is as inert as a tap on the canvas
+ *    has always been. In 'commit pressed twice while the photos are pending' the `waiting` look lists `check` among the disabled
+ *    buttons, and it is shown as before. No scenario presses it in that wait; tests/unit/node/wp-bypass-modal.test.ts does.
+ *  - No record moved. `floorCheckBypassed` is `true` only in the scenario whose check point is tapped on a table, as it was: the point
+ *    is still in the commit, and the visit matched the stored frame, so it writes no Place frame and stays in the frame it matched. No
+ *    scenario writes `outsidePlaceFrame`, which needs a commit that wrote no frame and matched none (a bypassed first visit, a bypassed
+ *    pair kept over a mismatch, or a bypassed improve run), and none of these is one. tests/unit/node/wp-bypass-modal.test.ts runs them.
+ *
  * Each entry is the outcome ./calibration-flow-driver.ts reports: whether the modal resolved, the records it
  * returned (a photo's bytes reduced to their length), what its card said at the moments a scenario looked, what it
  * left in the scene, and how often it asked the host for a hit, the compass, the pose and a camera frame.
@@ -1394,7 +1406,7 @@ export const GOLDEN: Record<string, Outcome> = {
         },
         label: { hidden: false, caption: 'Name point B (optional)', value: '' },
         shown: ['commit', 'check', 'replace', 'fallback', 'skip'],
-        disabled: [],
+        disabled: ['check'],
       },
     },
     scene: [

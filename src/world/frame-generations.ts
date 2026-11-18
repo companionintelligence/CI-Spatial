@@ -217,16 +217,48 @@ export function joinFrameHistory(history: unknown, entries: readonly FrameHistor
 }
 
 /**
+ * Whether a calibration record says its scan is in no Place frame: `outsidePlaceFrame: true`, which a commit writes when it wrote
+ * no frame and was not measured against the one the Place holds (`leavesScanOutsidePlaceFrame`, src/ar/ground-gate.ts). That is a
+ * commit whose floor check was bypassed and which is a first visit, a pair kept over a mismatch, or "Improve this Place's
+ * reference". Only a statement that is `true` counts. A record without it, which is every record an earlier build wrote and every record that is in a
+ * frame, says nothing, and reads as it always did.
+ *
+ * Read from any value, as `frameIdOf` reads an id, because a record that comes off a sidecar is whatever the sidecar held (the
+ * field is `ScanCalibration.outsidePlaceFrame`, src/world/types.ts). The one function the writer's planner
+ * (`planFrameGeneration`) and the server's reader (`calibrationFromMeta`) both ask.
+ */
+export function outsidePlaceFrameOf(calibration: unknown): boolean {
+  return (calibration as { outsidePlaceFrame?: unknown } | null | undefined)?.outsidePlaceFrame === true
+}
+
+/**
+ * What a scan's record says about which tier it was calibrated with and whether it is in a Place frame: the fields
+ * `calibrationFromMeta` (server/calibration_fields.ts) hands every reader. `calibrationOutsidePlaceFrame` is the flat form of
+ * the record's `outsidePlaceFrame`, `true` or absent.
+ */
+export interface PlaceFrameFacts {
+  calibrationMethod?: unknown
+  calibrationStatus?: unknown
+  calibrationOutsidePlaceFrame?: unknown
+}
+
+/**
  * Whether a scan was measured in a Place frame: calibrated with the two-point method, which is the one tier
- * whose `sessionToProject` puts it in the frame of the Place as a generation (it can carry a `frameId`).
+ * whose `sessionToProject` puts it in the frame of the Place as a generation (it can carry a `frameId`), and
+ * whose commit did not leave it in no frame (`calibrationOutsidePlaceFrame`: a commit that wrote no Place frame and
+ * matched none, as a bypassed floor check does).
  * False for a scan that was never calibrated, for a one-point scan (its frame is the compass-aligned frame of
- * that one tap, with no generation), and for a known-distance scan (its matrix carries the camera solve's own
- * coordinates: it fixes a size, not where the scan stands in the Place). The scan list says "not in Place
+ * that one tap, with no generation), for a known-distance scan (its matrix carries the camera solve's own
+ * coordinates: it fixes a size, not where the scan stands in the Place), and for a two-point scan that is placed by its own
+ * pair alone, because nothing wrote the Place's frame for it and nothing matched it to one. The scan list says "not in Place
  * frame" for these (D6), and Thing matching leaves them out (`server/thing_match.ts`), since a position that is
  * not in the Place frame cannot be compared with one that is.
+ *
+ * A two-point scan that matched the frame the Place holds is in it, and so is one whose record says nothing about it: an unknown
+ * generation is neutral, never another frame (decision 3 of ADR 0011).
  */
-export function isInPlaceFrame(scan: { calibrationMethod?: unknown; calibrationStatus?: unknown }): boolean {
-  return scan.calibrationMethod === 'two-point-ground' && scan.calibrationStatus !== 'uncalibrated'
+export function isInPlaceFrame(scan: PlaceFrameFacts): boolean {
+  return scan.calibrationMethod === 'two-point-ground' && scan.calibrationStatus !== 'uncalibrated' && scan.calibrationOutsidePlaceFrame !== true
 }
 
 /**
@@ -304,9 +336,12 @@ export interface ScanFrameCounts {
   scanCount: number
   /** Two-point scans whose record names the frame they were measured against, by that frame's id. */
   scansByFrame: Record<string, number>
-  /** Two-point scans whose record names none: an unknown generation. */
+  /** Two-point scans, in a Place frame, whose record names none: an unknown generation. */
   unrecordedScans: number
-  /** Scans that are not in a Place frame: never calibrated, one-point, known-distance (`isInPlaceFrame`). */
+  /**
+   * Scans that are not in a Place frame (`isInPlaceFrame`): never calibrated, one-point, known-distance, and two-point scans
+   * whose commit wrote no Place frame and matched none (the floor check was bypassed).
+   */
   notInFrameScans: number
 }
 
