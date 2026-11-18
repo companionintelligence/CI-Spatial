@@ -40,7 +40,12 @@ Only to your Scan server unless section 7 says otherwise. "When" is what the per
 
 On the phone itself the app keeps captures and detections (IndexedDB `ci-xr-scan`), Places and their reference photos, the
 list of scan sessions it streamed to (below), settings, and, for the offline queue, up to 24 requests for up to a day
-(`public/sw.js`). The scanner has no analytics, advertising or crash-reporting library: none is in `package.json`, the
+(`public/sw.js`). The iOS app also keeps ARKit's world map of each named Place the scanner runs in
+(`Application Support/ScanWorldMaps/<world slug>.worldmap`, and one previous copy), saved every minute while a session runs and
+when the app goes to the background (ADR 0010): ARKit's archive of what it mapped of the room, left out of iCloud and device
+backups and never sent anywhere. Nothing in the app deletes it; removing the app does. The Android plugin can keep the pose and
+heading of one origin anchor in `scan-origin-anchor.json` in the app's files directory (`mobile/README.md`), which is left out of
+backup too; nothing in the scanner asks it to yet. The scanner has no analytics, advertising or crash-reporting library: none is in `package.json`, the
 Android build (`mobile/android/app/build.gradle`) or the iOS packages (`mobile/ios/App/CapApp-SPM/Package.swift`).
 
 ## 3. Camera frames and consent
@@ -253,7 +258,7 @@ the developer hosts):
 | Other data: the Place names, addresses and notes | Yes | Yes | No | App functionality |
 | Identifiers, usage data, diagnostics, contacts | No | | | |
 
-`PrivacyInfo.xcprivacy` and its required-reason declarations are not written yet (`mobile/README.md`, Not done).
+`PrivacyInfo.xcprivacy` is drafted (`mobile/ios/App/App/`, in the Xcode project's Resources) with no collected data types and an empty list of required-reason API declarations; the draft's comment lists what the owner must decide (`mobile/README.md`, Not done).
 
 **Google Play Data safety:** the same rows. Data shared with third parties: precise location (Nominatim, to look up an address),
 and the approximate map area (CARTO). Camera frames are not shared. Encryption in transit follows the server's HTTPS (Tailscale

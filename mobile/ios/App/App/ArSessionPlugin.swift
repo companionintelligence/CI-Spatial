@@ -13,7 +13,8 @@ import simd
 /// - `pose`: `{ position: {x, y, z}, rotation: {x, y, z, w}, trackingStatus }`, once for each ARKit frame.
 /// - `state`: `{ running, reason? }` when the session starts, stops, is interrupted, resumes or fails.
 ///
-/// ScanBridgeViewController.capacitorDidLoad() puts this plugin on the bridge.
+/// Not registered: ScanBridgeViewController.capacitorDidLoad() puts ScanARPlugin on the bridge and not this plugin, and the Xcode
+/// target does not compile this file (ADR 0009). It is kept for the owner's decision on whether both native designs stay.
 @objc(ArSessionPlugin)
 public class ArSessionPlugin: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
     public let identifier = "ArSessionPlugin"

@@ -4,7 +4,7 @@ Companion Scan {{VERSION}} for desktop and Android. **This is a pre-release, not
 
 - **The apps need your own Scan server.** They have no server of their own. Run Companion Scan on your Companion Hub, or on a machine you run, and enter its https address in the app the first time you open it. See [Companion Hub: how Scan finds its services](https://github.com/companionintelligence/CI-Spatial/blob/main/docs/operations/COMPANION_HUB.md). The apps accept https addresses only.
 - **The desktop app is the editor and viewer only.** It opens the Place Scan Editor and cannot capture. Scan with a phone, then review, edit and export on the desktop.
-- **AR capture in the Android app has not been tried on a phone yet.** The app installs and opens, but the camera capture path (the 8th Wall engine in the app's WebView) is unverified. Expect problems there.
+- **AR capture in the Android app has not been tried on a phone yet.** The app installs and opens, but the camera capture path (the phone's own ARCore session, with the 8th Wall engine and then WebXR in the app's WebView as the fallback) is unverified. Expect problems there.
 
 ## Downloads
 

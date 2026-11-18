@@ -143,9 +143,9 @@ export const TRACKING_RECOVERING_TEXT = 'Hold still, tracking is recovering'
  * of pose jumps, so a shift shows there only as the viewer pose stepping. Both providers keep a running count between
  * taps (`getTrackingDiagnostics().poseJumps`, src/ar/frame-epoch.ts), and 8th Wall's burst frames carry it.
  *
- * **Adopted, not measured (ADR 0005 rule 5).** The same figure as `POSE_JUMP_THRESHOLD_M` in eighthwall.ts, which
- * counts jumps between every pair of frames; a second constant because that file cannot be imported without the
- * engine. DX4 (frame shifts and drift over a walk) sizes both.
+ * **Adopted, not measured (ADR 0005 rule 5).** The same figure as `FRAME_JUMP_TRANSLATION_M` in frame-epoch.ts, the floor
+ * under the translation that tracker reads as a jump between every pair of frames, and kept equal to it by hand: this one
+ * judges two frames of a burst by position alone. DX4 (frame shifts and drift over a walk) sizes both.
  */
 export const BURST_POSE_JUMP_M = 0.30
 

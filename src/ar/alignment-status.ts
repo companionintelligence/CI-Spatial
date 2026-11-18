@@ -41,9 +41,10 @@
  * ## The mismatch the person kept
  *
  * When the visit's points are off by more than the limits, the flow offers
- * "Use anyway". `commitTwoPoint(true)` then REPLACES the Place's stored frame
- * with this visit's points (`frameChanged = !storedTwoPoint || override`, and main.ts
- * persists the new `spatialFrame` to the Place), while every earlier scan keeps
+ * "Replace this Place's reference" (it was "Use anyway"). `commitTwoPoint(true)` then REPLACES the Place's stored frame
+ * with this visit's points, unless the floor check was bypassed (`frameChanged` is `mayWritePlaceFrame(...)`, ./ground-gate.ts:
+ * true for a first calibration and for an override, false for any bypassed commit, whose button reads "Record as unverified"
+ * and replaces nothing; main.ts persists the new `spatialFrame` to the Place when there is one), while every earlier scan keeps
  * the calibration it made against the old frame. Scans from before and after may
  * not line up, and nothing on screen would say so if this fell through to the
  * first-calibration line. That result is `'provisional'` and carries the evidence

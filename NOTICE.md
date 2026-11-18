@@ -39,12 +39,11 @@ Not everything here is under a permissive licence. These are the exceptions:
 
 - **Google ARCore (Android app)**: the `com.google.ar:core` library, version 1.57.0
   (`arcoreVersion` in `mobile/android/variables.gradle`), which the Android app depends on
-  (`mobile/android/app/build.gradle`) and its `ArSession` plugin calls. Google provides it
+  (`mobile/android/app/build.gradle`) and its `ScanAR` plugin calls. Google provides it
   under the [ARCore Additional Terms of Service](https://developers.google.com/ar/develop/terms),
   which are Google's own terms, not a permissive licence. The library's Maven POM
   names them as its licence. The app runs on Google Play Services for AR (ARCore), a
-  separate Google component that Google Play installs or updates when an AR session starts;
-  the manifest marks ARCore optional, so the app installs without it.
+  separate Google component; the manifest marks ARCore optional, so the app installs without it.
 
   Google's [user privacy requirements](https://developers.google.com/ar/develop/privacy-requirements)
   say an app that uses ARCore must disclose the use of Google Play Services for AR, and how it
@@ -62,7 +61,7 @@ Not everything here is under a permissive licence. These are the exceptions:
   service for the app yet (`mobile/README.md` lists the privacy policy among what is not done),
   so writing that into them is the owner's to do.
 
-  Only the Android app includes ARCore. The iOS app's `ArSession` plugin uses Apple's ARKit,
+  Only the Android app includes ARCore. The iOS app's `ScanAR` plugin uses Apple's ARKit,
   and the desktop app has no AR capture.
 
 Everything else in the apps and in this repository's manifests is under a permissive licence

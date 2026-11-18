@@ -555,7 +555,9 @@ surface.
 
 **8th Wall** is the primary runtime because one API covers Android, iOS, and
 headsets. **WebXR `immersive-ar`** is the secondary path for devices where 8th
-Wall is unavailable (Quest browser, Android XR). A thin `ARProvider` abstraction
+Wall is unavailable (Quest browser, Android XR). That is the order in a browser. In the Scan shells (the iOS and Android apps)
+the phone's own ARKit or ARCore session comes first, through the `ScanAR` plugin (`src/ar/native.ts`, ADR 0009), and 8th Wall,
+then WebXR, take over when it cannot start. A thin `ARProvider` abstraction
 (`src/ar/provider.ts`) means the capture layer never learns which runtime is
 active — it just consumes pose, intrinsics, and world points.
 

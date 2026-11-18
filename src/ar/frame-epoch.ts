@@ -159,8 +159,8 @@ import type { FrameClosureRecord } from './closure'
 /**
  * Smallest unexplained translation in one step that reads as a jump, in metres.
  *
- * Carried over unchanged from `POSE_JUMP_THRESHOLD_M` in src/ar/eighthwall.ts, where it
- * was already "adopted by decision, not by measurement" (ticket 0006 closed unrun). It is
+ * Carried over unchanged from the flat per-frame rule this tracker replaced (`POSE_JUMP_THRESHOLD_M`, which no file declares any
+ * more), where it was already "adopted by decision, not by measurement" (ticket 0006 closed unrun). It is
  * now a floor under the motion a step could contain by acceleration, not a fixed
  * per-frame distance, so a late frame no longer reads as a shift for being late.
  *

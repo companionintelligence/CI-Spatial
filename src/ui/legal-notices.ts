@@ -43,8 +43,9 @@ export const XR_ENGINE_NOTICE = {
  * What Google asks an app that uses ARCore to tell its people, and the terms the SDK is under. The sentence goes
  * on a main menu or notice screen, with links to Google Play Services for AR and the Google Privacy Policy
  * (https://developers.google.com/ar/develop/privacy-requirements). The SDK is under the ARCore Additional Terms
- * of Service. They are proprietary, so they are linked and not reproduced, as the XR Engine's Agreement is. Only
- * the Android app runs ARCore. scripts/native/third-party-notices.mjs prints the same words in
+ * of Service. They are proprietary, so this dialog links them and does not reproduce them, as it does the XR Engine's
+ * Agreement; THIRD-PARTY-NOTICES.txt does reproduce their text, after the disclosure (`androidLicenceTexts`,
+ * scripts/native/third-party-notices.mjs). Only the Android app runs ARCore. scripts/native/third-party-notices.mjs prints the same words in
  * THIRD-PARTY-NOTICES.txt (its ARCORE_NOTICE) and tests/unit/node/legal_notices.test.ts holds the two together:
  * compare the sentence with Google's page before a store build.
  *

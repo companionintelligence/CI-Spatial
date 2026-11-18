@@ -75,9 +75,14 @@ is not an object with a frame id (or null) and a known reason is a `400`.
 **3. An unknown generation is neutral.** Every frame and scan written before ids has none. That reads as "frame not
 recorded", never as a different frame: only two known ids that differ read as "previous reference". The one tier that has
 no generation at all is the one-point frame (`ground-tap-compass`): a one-point scan is "not in Place frame", as is a
-scan that was never calibrated and a known-distance one (its matrix carries the camera solve's own coordinates). That is
-`isInPlaceFrame` in the shared file: the one predicate the counts and Thing matching (D6) use here, and the one the client's
-chip is to use (WP-08c; there is no chip in this slice). A Thing-matching job leaves those scans out until they are calibrated
+scan that was never calibrated, a known-distance one (its matrix carries the camera solve's own coordinates), and a two-point
+scan whose commit wrote no Place frame and matched none: a commit whose floor check was bypassed, on a first visit, over a mismatch
+(the button then reads "Record as unverified" and replaces nothing) or in an improve run (`mayWritePlaceFrame` never lets a
+bypassed commit write the frame, and `leavesScanOutsidePlaceFrame`, `src/ar/ground-gate.ts`, says what such a commit then is). Its
+record says so itself, only when it is true: `ScanCalibration.outsidePlaceFrame` in the nested record, and
+`ScanManifest.calibrationOutsidePlaceFrame` in the manifest. That is `isInPlaceFrame` in the shared file, which reads it: the one
+predicate the counts and Thing matching (D6) use, and the one the client's chip uses (`frameChipFor`, `src/viewer/frame-banner.ts`,
+asks it, and the chip reads "not in Place frame"), so the counts, Thing matching and the chip are one rule. A Thing-matching job leaves those scans out until they are calibrated
 and says how many in its result (`scansLeftOutNote`, `server/thing_match.ts`), so a Place whose scans are all out of frame is not
 mistaken for one where nothing was found. Things already made from such scans stay.
 
@@ -92,7 +97,12 @@ a view of the scans, and one the Place's editor may never have opened. One known
 frame id is read from the nested record when no flat `calibrationFrameId` key is there, so such a scan counts as "frame not
 recorded" and not under the generation it was measured against. The reader prefers the flat key, so a scan whose sidecar
 carries it (the client slice writes it at upload) keeps its generation through that job; scans uploaded before it do not, and
-`splat-align` has no UI.
+`splat-align` has no UI. The statement that a scan is in no Place frame (decision 3) has the same limit and the key is not yet
+written flat: the exporter writes `calibrationFrameId` beside the nested record and no `calibrationOutsidePlaceFrame`
+(`src/export/gltf.ts`), so a `splat-align` job that replaces the nested record drops the statement from a count read from the
+sidecar (`tallyScansByFrame`), while a world row that already carries it keeps it (`refreshWorldScans` leaves a value the sidecar no
+longer gives standing, as it must for a value that can only be true). `asOutsidePlaceFrame` (`server/calibration_fields.ts`) reads
+the flat key first, so a writer that puts it beside the record closes the gap.
 
 **6. A merge or a moved scan must be in the frame it joins, or say it knows.** `POST /projects/:id/merge` and
 `PATCH /projects/:id/scans/:scanId` are `409 frame-mismatch` when the scans would join a Place whose frame is not the one
@@ -188,7 +198,9 @@ and every Place already saved keeps its type.
 
 Nothing parallel is added (ADR 0001). The schema is S0's and is not edited here: `ProjectSpatialFrame.frameId`,
 `ScanCalibration.frameId`, `ScanManifest.calibrationFrameId`, `Project.frameHistory`, `FrameHistoryEntry` and
-`FrameReplaceReason`, with `isFrameId`, `FRAME_PHOTO_ROLES` and `framePhotoPath` from `src/world/spatial-frame.ts`. The
+`FrameReplaceReason`, with `isFrameId`, `FRAME_PHOTO_ROLES` and `framePhotoPath` from `src/world/spatial-frame.ts`. One optional
+flag was added to it afterwards, for decision 3: `ScanCalibration.outsidePlaceFrame` and its manifest projection
+`ScanManifest.calibrationOutsidePlaceFrame` (`src/world/types.ts`), written only when true. The
 write is WP-03a's `applySpatialFrameWrite`, extended; the counts extend `countScansForProject` and read
 `calibrationFromMeta`; the move extends `rewriteScanProject`, `rewriteProjectReferences` and `refreshWorldScans` and uses
 `mutateProjects`, `mutateWorldFiles` and `withWorldLock`; the photos extend `server/project_media.ts`; the id is
@@ -216,7 +228,7 @@ beside it; there is no world role on them.
 - `GET /projects/:id/frame-status` answers `FrameStatus` (`src/world/frame-generations.ts`): `projectId`, `frame` (or
   null), `frameId` (or null), `revision`, `scanCount`, `scansByFrame` (frame id to count, two-point scans that name their
   frame), `unrecordedScans` (two-point scans that name none), `notInFrameScans` (never calibrated, one-point,
-  known-distance), `scansOnCurrentFrame` (what a replacement would leave in a previous reference: the count of the current
+  known-distance, and two-point scans whose commit wrote no Place frame and matched none), `scansOnCurrentFrame` (what a replacement would leave in a previous reference: the count of the current
   frame's id, or `unrecordedScans` while the current frame has no id) and `history`. `404 { error: 'Not found' }`.
 - `POST /projects/:id/merge`, body `{ sourceProjectId, acceptFrameMismatch? }`, and `PATCH /projects/:id/scans/:scanId`,
   body `{ floorId?, roomId?, areaId?, acceptFrameMismatch? }`: `409 FrameMismatchBody` =
