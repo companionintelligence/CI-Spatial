@@ -99,6 +99,11 @@ export interface CalibrationResult {
    * persisted — a first calibration, an upgrade from the one-point fallback
    * tier, or a deliberate override that re-establishes the reference.
    *
+   * Never returned by a commit whose floor check was bypassed (`mayWritePlaceFrame`,
+   * ./ground-gate.ts), a first calibration or an override included: such a commit
+   * is provisional and does not set the Place's frame, and a scan that matched no
+   * stored frame says so on its own record (`outsidePlaceFrame`).
+   *
    * Deliberately absent when a stored two-point frame was merely *verified*:
    * that frame is the reference the measurement was taken against, and
    * rewriting it on every visit would let it drift session by session, which

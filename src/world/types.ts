@@ -624,6 +624,11 @@ export type ScanCalibration = {
    * decomposing a matrix. Project-space floor is `y = 0` by construction, so
    * the Place-level `ProjectSpatialFrame` needs no field of its own.
    *
+   * It is the landmark's datum. For the two-point transform that is the matrix's
+   * own floor; for a fitted visit it is not, because the fit's matrix is aligned
+   * on the mean height of its points and its floor differs by the vertical
+   * residual the record keeps (`fit.perPoint[0].dy`).
+   *
    * Optional and nullable so existing records stay valid: a record written
    * before this field simply does not say where its floor was. Read it with
    * `readCalibrationGroundY()` in `./geo.ts`, which turns absence and

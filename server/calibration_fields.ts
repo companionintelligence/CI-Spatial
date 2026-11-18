@@ -143,8 +143,8 @@ export function asCalibrationCheckedBy(value: unknown): CheckedBy | undefined {
  * no Place frame and matched none (a bypassed floor check: `leavesScanOutsidePlaceFrame`, src/ar/ground-gate.ts). `true` or
  * `undefined`, never `false`: a record that does not say it is in none says nothing, and a value that is anything but the boolean
  * `true` ("true", 1) is not the statement. `flat` is the sidecar's own `calibrationOutsidePlaceFrame` key, read first as the
- * frame id's is: no writer puts it there yet, and when one does the statement outlives the `splat-align` job that replaces the
- * nested record.
+ * frame id's is: `withReplacedCalibration` writes it when the `splat-align` job replaces the nested record that said it, so the
+ * statement outlives that job.
  */
 export function asOutsidePlaceFrame(record: unknown, flat?: unknown): true | undefined {
   return flat === true || outsidePlaceFrameOf(record) ? true : undefined
@@ -340,11 +340,20 @@ export function calibrationGroundYFromMeta(meta: Record<string, unknown>): numbe
  * still placed by that transform, so what the replaced record said of where the origin sat is still true of the placement,
  * and nothing else will say it once the record is gone: the floor height is kept as the flat `calibrationGroundY` first.
  * A flat value that is already there stays (a second run finds a record that has none), and a record with no finite floor
- * height keeps none. Does not change `meta`.
+ * height keeps none. The same goes for the statement that the scan is in no Place frame (`outsidePlaceFrame`, true or absent):
+ * the job does not put the scan in a frame it was not measured in, so the statement is kept as the flat
+ * `calibrationOutsidePlaceFrame`, and a count read from the sidecar (`tallyScansByFrame`) still agrees with the world row after it.
+ * Does not change `meta`.
  */
 export function withReplacedCalibration(meta: Record<string, unknown>, record: unknown): Record<string, unknown> {
   const kept = finiteField(meta, 'calibrationGroundY') ?? readCalibrationGroundY(meta['calibration'])
-  return { ...meta, ...(kept === null ? {} : { calibrationGroundY: kept }), calibration: record }
+  const outside = asOutsidePlaceFrame(meta['calibration'], meta['calibrationOutsidePlaceFrame'])
+  return {
+    ...meta,
+    ...(kept === null ? {} : { calibrationGroundY: kept }),
+    ...(outside === undefined ? {} : { calibrationOutsidePlaceFrame: outside }),
+    calibration: record,
+  }
 }
 
 /**
@@ -354,9 +363,9 @@ export function withReplacedCalibration(meta: Record<string, unknown>, record: u
  * The statement that the scan is in no Place frame is not one of the five `calibrationEvidenceFromMeta` keeps as keys, so a world
  * row that has it keeps it: `refreshWorldScans` lays a manifest that lacks the key over the row and leaves its value standing. That is
  * the cautious way for a value that can only ever be true, and it is not the contract the five have (a value the sidecar no longer
- * gives is cleared). It means a `splat-align` job, which replaces the nested record, leaves the row saying the scan is in no frame
- * while a count read from the sidecar (`tallyScansByFrame`) no longer does, unless the flat key `calibrationOutsidePlaceFrame` is
- * written beside the record, as the frame id's is (`asOutsidePlaceFrame`).
+ * gives is cleared). A `splat-align` job, which replaces the nested record, keeps the statement as the flat key
+ * `calibrationOutsidePlaceFrame` (`withReplacedCalibration`, read first by `asOutsidePlaceFrame`), so the row and a count read from
+ * the sidecar (`tallyScansByFrame`) agree after it.
  */
 function twoPointEvidenceFromMeta(meta: Record<string, unknown>, record: unknown): Partial<CalibrationEvidenceFields> & OutsidePlaceFrameField {
   const flatFrameId = isFrameId(meta['calibrationFrameId']) ? meta['calibrationFrameId'] : undefined

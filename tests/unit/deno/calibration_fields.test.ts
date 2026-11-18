@@ -20,6 +20,7 @@ import {
   asCalibrationMethod,
   asCalibrationSeparationM,
   asCalibrationStatus,
+  asOutsidePlaceFrame,
   calibrationFromMeta,
   calibrationGroundYFromMeta,
   withReplacedCalibration,
@@ -554,4 +555,22 @@ Deno.test('withReplacedCalibration: a flat floor height that is already there is
   // A record whose floor height is not a number keeps none, and an absent record is no error.
   assertEquals('calibrationGroundY' in withReplacedCalibration({ calibration: { groundY: NaN } }, KNOWN_DISTANCE), false)
   assertEquals(withReplacedCalibration({}, KNOWN_DISTANCE), { calibration: KNOWN_DISTANCE })
+})
+
+Deno.test('withReplacedCalibration: the statement that a scan is in no Place frame outlives the record that made it, and is never invented', () => {
+  const outside = twoPointSidecar({ calibration: { ...TWO_POINT, outsidePlaceFrame: true } })
+  const replaced = withReplacedCalibration(outside, KNOWN_DISTANCE)
+  assertEquals(replaced['calibrationOutsidePlaceFrame'], true, 'kept flat beside the job\'s record')
+  assertEquals(asOutsidePlaceFrame(replaced['calibration'], replaced['calibrationOutsidePlaceFrame']), true, 'and read through the same reader as before')
+  assertEquals(calibrationFromMeta(replaced).calibrationOutsidePlaceFrame, true, 'so the manifest still says it after the job')
+  // A second run finds the flat key and no marker in the record the first one wrote: it stays.
+  assertEquals(withReplacedCalibration(replaced, { ...KNOWN_DISTANCE, residualM: 0.002 })['calibrationOutsidePlaceFrame'], true)
+  // A flat statement with no nested one is kept too (an exporter may write it flat).
+  assertEquals(withReplacedCalibration(twoPointSidecar({ calibrationOutsidePlaceFrame: true }), KNOWN_DISTANCE)['calibrationOutsidePlaceFrame'], true)
+  // A scan in its Place's frame says nothing, and the job does not make it say so; nor does a value that is not the boolean true.
+  assertEquals('calibrationOutsidePlaceFrame' in withReplacedCalibration(twoPointSidecar(), KNOWN_DISTANCE), false)
+  assertEquals('calibrationOutsidePlaceFrame' in withReplacedCalibration(twoPointSidecar({ calibration: { ...TWO_POINT, outsidePlaceFrame: 'true' } }), KNOWN_DISTANCE), false)
+  const junk = withReplacedCalibration(twoPointSidecar({ calibrationOutsidePlaceFrame: 1 }), KNOWN_DISTANCE)
+  assertEquals(junk['calibrationOutsidePlaceFrame'], 1, 'a flat value that is not the boolean true is left as it was, not turned into the statement')
+  assertEquals(asOutsidePlaceFrame(junk['calibration'], junk['calibrationOutsidePlaceFrame']), undefined, 'and is still not the statement')
 })

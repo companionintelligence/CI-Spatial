@@ -2140,7 +2140,8 @@ async function main() {
       // persisted" — a first calibration, an upgrade from the one-point tier,
       // or a deliberate override after a mismatch. Ticket 0004 widened this
       // from #141's narrower "first calibration ever", so do not read its
-      // presence as a first-visit signal.
+      // presence as a first-visit signal. A commit whose floor check was
+      // bypassed returns none, whichever of those it is (`mayWritePlaceFrame`).
       //
       // It is deliberately absent when a stored two-point frame was merely
       // *verified*: that frame is the reference the measurement was taken

@@ -97,12 +97,12 @@ a view of the scans, and one the Place's editor may never have opened. One known
 frame id is read from the nested record when no flat `calibrationFrameId` key is there, so such a scan counts as "frame not
 recorded" and not under the generation it was measured against. The reader prefers the flat key, so a scan whose sidecar
 carries it (the client slice writes it at upload) keeps its generation through that job; scans uploaded before it do not, and
-`splat-align` has no UI. The statement that a scan is in no Place frame (decision 3) has the same limit and the key is not yet
-written flat: the exporter writes `calibrationFrameId` beside the nested record and no `calibrationOutsidePlaceFrame`
-(`src/export/gltf.ts`), so a `splat-align` job that replaces the nested record drops the statement from a count read from the
-sidecar (`tallyScansByFrame`), while a world row that already carries it keeps it (`refreshWorldScans` leaves a value the sidecar no
-longer gives standing, as it must for a value that can only be true). `asOutsidePlaceFrame` (`server/calibration_fields.ts`) reads
-the flat key first, so a writer that puts it beside the record closes the gap.
+`splat-align` has no UI. The statement that a scan is in no Place frame (decision 3) does not share the limit: the exporter writes
+`calibrationFrameId` beside the nested record and no `calibrationOutsidePlaceFrame` (`src/export/gltf.ts`), but
+`withReplacedCalibration` (`server/calibration_fields.ts`) writes the flat `calibrationOutsidePlaceFrame` when a `splat-align` job
+replaces a record that said it, and `asOutsidePlaceFrame` reads the flat key first, so a count read from the sidecar
+(`tallyScansByFrame`) and the world row, which keeps a value the sidecar no longer gives (`refreshWorldScans`, as it must for a value
+that can only be true), agree after the job.
 
 **6. A merge or a moved scan must be in the frame it joins, or say it knows.** `POST /projects/:id/merge` and
 `PATCH /projects/:id/scans/:scanId` are `409 frame-mismatch` when the scans would join a Place whose frame is not the one

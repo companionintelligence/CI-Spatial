@@ -353,9 +353,11 @@ export function buildTwoPointCommit(verdict: AcceptedTwoPoint, input: TwoPointBu
     // the fit's own heading for a fit, which is not the baseline's by the heading residual the record keeps (`fit.headingResidualDeg`).
     ...(verdict.frameYawDeg === undefined
       ? twoPointBearingFields(frameBearingDeg, landmark, headingMarker, bearingConvention)
-      : { projectBearingDeg: projectBearingDeg(frameBearingDeg, verdict.frameYawDeg), bearingConvention }),
+      : { projectBearingDeg: projectBearingDeg(frameBearingDeg, verdict.frameYawDeg, bearingConvention), bearingConvention }),
     // The floor the origin sits on, in session metres: the landmark's own measured height, already snapped onto the
-    // established plane (wave 12). Recorded with the scan so it can be read back without decomposing the matrix.
+    // established plane (wave 12). Recorded with the scan so it can be read back without decomposing the matrix. It is the landmark's
+    // datum: for the two-point transform that is the matrix's own floor, and for a fit it is not, because a fit's matrix is aligned on
+    // the mean height of its points, so its floor is off by the vertical residual the record keeps (`fit.perPoint[0].dy`).
     groundY: landmark.y,
     floorCheckBypassed: input.floorCheckBypassed === true,
     // The record's own statement that its scan is in no Place frame, written only when it is true: a record in the frame it wrote or
