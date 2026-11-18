@@ -25,6 +25,7 @@ import type { ARProvider, Pose } from './ar/provider'
 import { trackingIsUsable } from './ar/tracking-quality'
 import { RoomScanner } from './ar/scanner'
 import { runProjectCalibration } from './ar/calibration-run'
+import { withdrawCalibrationDrawings } from './ar/project-calibration'
 import { openPlacePickerAndWait } from './ar/calibration-exits'
 import { calibrationTapSampler, probeTapReader } from './ar/calibration-taps'
 import { stampScale } from './ar/engine-config'
@@ -555,6 +556,9 @@ async function main() {
         void projectStore.updateScan(sessionScanEntry).catch(() => {})
       }
       overlay.setStatus(FRAME_CONFLICT_TEXT, 'sticky')
+      // What the calibration drew is a claim about a frame this Place no longer has: the needle and the scene's drawings go too.
+      // The scan is the same one, in the session frame it was, so the floor grid it keeps stays.
+      dropCalibrationDrawings({ floor: false })
     })
   }
   const qualityMonitor = new ScanQualityMonitor()
@@ -688,6 +692,8 @@ async function main() {
     clearCalibration: () => {
       sessionCalibration = undefined
       scanFrameEpochs.forgetCalibration()
+      // The next scan is in another frame and has no calibration yet: nothing drawn for the old one is its own, the floor grid included.
+      dropCalibrationDrawings({ floor: true })
     },
     get keyframes() { return keyframes },
     calibrate: calibrateScan,
@@ -2042,6 +2048,23 @@ async function main() {
 
   overlay.setStatus('Calibrate the project frame…')
 
+  /**
+   * A calibration the page no longer holds takes down what it showed: the frame-heading needle and label, and what the
+   * modal drew into the scene for it (the origin, the stored origin, the check point's marker, the stored points' rings).
+   * Called wherever `sessionCalibration` is dropped (a Place frame that lost a conflict, a re-anchor beginning a scan
+   * that has none) and by a calibration flow that ends with none.
+   *
+   * The floor grid is the ground the scan keeps (owner R10), and a commit replaces it by name, so it goes with the scan
+   * and not with the calibration. `floor: true` where there is no scan for it to be kept for: a re-anchor begins one in
+   * another frame, and the old grid stands at coordinates the shift moved; a flow that ends with no calibration is a skip,
+   * and ticket 0001 says a skip leaves no floor plane (DEVICE_TESTING O9). `floor: false` where the scan is the same one,
+   * in the frame it was: a Place frame that lost a conflict.
+   */
+  function dropCalibrationDrawings(options: { floor: boolean }): void {
+    setFrameHeadingNeedle(null)
+    withdrawCalibrationDrawings(provider.getScene?.() ?? null, options)
+  }
+
   // The Place calibration: for this scan now, and for the one a re-anchor begins after a frame shift
   // (src/ar/reanchor-flow.ts). Resolves true when it made a calibration.
   async function calibrateScan(): Promise<boolean> {
@@ -2144,8 +2167,10 @@ async function main() {
       overlay.setStatus(alignmentStatusText(sessionCalibration), 'sticky')
       showFrameSyncNote(statusNode, frameSync)
     } else {
-      // Continued without a frame: the same reason to hold it.
+      // Continued without a frame: the same reason to hold it. And no frame, so nothing drawn for one: what an earlier
+      // calibration of this page left in the scene and on the HUD is not this scan's, the floor grid included.
       overlay.setStatus(alignmentStatusText(null), 'sticky')
+      dropCalibrationDrawings({ floor: true })
     }
     return !!calibration
   }
@@ -4866,10 +4891,11 @@ function updateGeoIndicator(fix: GeoFix): void {
 }
 
 /**
- * The origin's heading as a true-north bearing (wave 12, ticket 0001): a second,
+ * The origin's heading as a compass bearing (wave 12, ticket 0001): a second,
  * hollow needle beside the device's, so the two readings can be told apart. It
  * shows only after this scan commits an origin with a compass fix, and is hidden
- * otherwise. The device needle in `updateGeoIndicator` is untouched.
+ * otherwise, including when the calibration it describes is dropped
+ * (`dropCalibrationDrawings`). The device needle in `updateGeoIndicator` is untouched.
  */
 function setFrameHeadingNeedle(bearingDeg: number | null): void {
   const needle = document.getElementById('compass-frame-needle') as SVGGElement | null
@@ -4885,7 +4911,8 @@ function setFrameHeadingNeedle(bearingDeg: number | null): void {
   }
   if (label) {
     label.style.display = ''
-    label.textContent = `frame heading ${Math.round(bearingDeg)}°`
+    // A bearing that rounds up to 360 reads 0, as the compass readout does (`formatCompassSpin`).
+    label.textContent = `frame heading ${Math.round(bearingDeg) % 360}°`
   }
 }
 

@@ -307,15 +307,32 @@ export function northYawInSessionDeg(
  * `B_Z − baselineYaw`. `anchorBearingDeg` cannot stand in for it: that is the
  * session's +Z, and the baseline is wherever the person walked.
  *
+ * Under the old rule (`?bearing=1`, {@link bearingConventionFromSearch}) a
+ * direction at yaw `y` has bearing `B_Z + y`, and the same axis reads
+ * `B_Z + baselineYaw`. The record follows the rule it is stamped with, as the
+ * tick and the one-point frame do, and does not put the current sign on a frame
+ * bearing computed under the old one: that hybrid would compare neither rule,
+ * and would disagree with the HUD's {@link originHeadingBearingDeg} for the same
+ * arrow. `convention` defaults to the current rule, so a caller that does not
+ * pass it keeps the current sign: the fit branch of `buildTwoPointCommit`
+ * (src/ar/calibration-commit.ts) is one, and until it passes its
+ * `bearingConvention` on, a fitted record written under `?bearing=1` is the
+ * hybrid this paragraph describes.
+ *
  * `null` when there is no compass reading. Data only for now: nothing places a
  * scan with it.
  */
 export function projectBearingDeg(
   frameBearingDeg: number | null,
   baselineYawInSessionDeg: number,
+  convention: BearingConvention = BEARING_CONVENTION,
 ): number | null {
   if (frameBearingDeg === null || !Number.isFinite(baselineYawInSessionDeg)) return null
-  return normaliseBearingDeg(frameBearingDeg - baselineYawInSessionDeg)
+  return normaliseBearingDeg(
+    convention === LEGACY_BEARING_CONVENTION
+      ? frameBearingDeg + baselineYawInSessionDeg
+      : frameBearingDeg - baselineYawInSessionDeg,
+  )
 }
 
 /**
@@ -330,7 +347,7 @@ export function twoPointBearingFields(
   convention: BearingConvention = BEARING_CONVENTION,
 ): { projectBearingDeg: number | null; bearingConvention: BearingConvention } {
   return {
-    projectBearingDeg: projectBearingDeg(frameBearingDeg, twoPointHeadingDeg(landmark, headingMarker)),
+    projectBearingDeg: projectBearingDeg(frameBearingDeg, twoPointHeadingDeg(landmark, headingMarker), convention),
     bearingConvention: convention,
   }
 }
@@ -558,9 +575,10 @@ export interface OriginDecalPlan {
    */
   arrowLengthM: number
   /**
-   * Session yaw, in degrees, at which true north lies: the `buildAnchorMarker`
-   * convention, where rotating by this yaw turns the north tick toward north.
-   * Null when there is no compass fix, which leaves the decal without a tick.
+   * Session yaw, in degrees, at which north lies (the compass's: magnetic, with no
+   * declination applied): the `buildAnchorMarker` convention, where rotating by this
+   * yaw turns the north tick toward north. Null when there is no compass fix, which
+   * leaves the decal without a tick.
    */
   northYawDeg: number | null
 }
@@ -592,18 +610,45 @@ export function originDecalPlan(
 }
 
 /**
- * True-north bearing of the origin's heading arrow, in degrees clockwise from
- * north: what the HUD's frame-heading needle shows.
+ * Compass bearing of the origin's heading arrow, in degrees clockwise from the
+ * compass's north: what the HUD's frame-heading needle shows. (The compass is
+ * magnetic and no declination is applied, so this is not a true-north bearing:
+ * see {@link sessionFrameBearingDeg}.)
  *
- * The arrow's yaw is in session space and north lies at `northYawDeg` there, so
- * the arrow's bearing is its yaw measured from north. It comes from the same
- * single compass fix as the north tick, so it is only as good as that tick:
- * indoor compass readings can be well off. Null when there is no arrow or no
- * compass fix, since then there is no bearing to show.
+ * The arrow's yaw and north's yaw are both session yaws, `atan2(x, z)`, which
+ * grow **counter-clockwise** seen from above, and a bearing grows clockwise.
+ * Under the current rule an arrow at yaw `h` has bearing `B_Z − h`, and north lies
+ * at yaw `B_Z` ({@link northYawInSessionDeg}), so the arrow's bearing is
+ * `northYaw − h`: the clockwise angle on the floor from the north tick to the
+ * arrow, and the same number as the record's {@link projectBearingDeg} for the
+ * same arrow. It was `h − northYaw`, which is the bearing under the old rule and
+ * the mirror image of this one: right for an arrow due north or due south and
+ * wrong, by twice its angle off that line, for every other.
+ *
+ * Under the old rule (`?bearing=1`) a direction at yaw `y` has bearing `B_Z + y`,
+ * north lies at `−B_Z`, and the arrow's bearing is `h − northYaw`, as it was.
+ * `convention` is the rule the plan's `northYawDeg` was made under, and defaults
+ * to the current one.
+ *
+ * It comes from the same single compass fix as the north tick, so it is only as
+ * good as that tick: indoor compass readings can be well off. It is the arrow as
+ * drawn, which is the landmark→heading-marker baseline that was tapped. On a
+ * return visit that fitted three points, under the current rule, the record's
+ * bearing follows the fit's heading instead (`ScanCalibration.fit.headingResidualDeg`
+ * apart); under `?bearing=1` that record is also the hybrid described at
+ * {@link projectBearingDeg}, which this number is not. Null when there is no arrow
+ * or no compass fix, since then there is no bearing to show.
  */
-export function originHeadingBearingDeg(plan: OriginDecalPlan): number | null {
+export function originHeadingBearingDeg(
+  plan: OriginDecalPlan,
+  convention: BearingConvention = BEARING_CONVENTION,
+): number | null {
   if (plan.headingDeg === null || plan.northYawDeg === null) return null
-  return normaliseBearingDeg(plan.headingDeg - plan.northYawDeg)
+  return normaliseBearingDeg(
+    convention === LEGACY_BEARING_CONVENTION
+      ? plan.headingDeg - plan.northYawDeg
+      : plan.northYawDeg - plan.headingDeg,
+  )
 }
 
 /**

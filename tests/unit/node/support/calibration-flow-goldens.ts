@@ -48,7 +48,12 @@
  *  - Every calibration record carries `groundY`, the floor the origin sat on, and `floorCheckBypassed` (src/ar/ground-gate.ts). In the
  *    scenario whose check point is tapped on a table the second is `true`: the off-floor tap was accepted by a second tap at the same
  *    height, so the record stays provisional and writes no Place frame, which is what it did before.
- *  - A two-point result made with a compass reading carries `originBearingDeg`, the arrow's true-north bearing, for the HUD.
+ *  - A two-point result made with a compass reading carries `originBearingDeg`, the arrow's compass bearing (clockwise from north), for the HUD. It
+ *    is the record's own `projectBearingDeg` for the same arrow. (It was recorded as the mirror image, 360 minus that, which is how the HUD came to
+ *    contradict the record: tests/unit/node/origin_heading_bearing.test.ts holds the two together, against a physical model.)
+ *  - The stored origin of a visit that fitted three points is carried back through the fit, as the rings of the stored points are
+ *    (`drawStoredPair`, src/ar/project-calibration.ts), and not read off the tapped pair. The three scenarios here that re-tap the stored points
+ *    exactly stand where they did to the last digit: only that digit moved (the fit's inverse is not the tapped pair's to the bit).
  *  - The scene entry of a decal also records `arrowTip`, where its arrow ends, in scene coordinates (./calibration-flow-driver.ts). The arrow's
  *    geometry is single precision, so the tip is the heading point to about 1e-7 m, and the contract holds it to 1e-6.
  *  Nothing else moved: no card, label, photo, record number or count of calls to the host differs.
@@ -128,7 +133,7 @@ export const GOLDEN: Record<string, Outcome> = {
           label: 'radiator corner',
         },
       ],
-      originBearingDeg: 71.86989764584405,
+      originBearingDeg: 288.13010235415595,
     },
     looks: {
       'ready to commit': {
@@ -235,7 +240,7 @@ export const GOLDEN: Record<string, Outcome> = {
         bearingConvention: 2,
       },
       referencePhotos: [],
-      originBearingDeg: 125,
+      originBearingDeg: 235,
     },
     looks: {},
     scene: [
@@ -362,7 +367,7 @@ export const GOLDEN: Record<string, Outcome> = {
           label: null,
         },
       ],
-      originBearingDeg: 125,
+      originBearingDeg: 235,
     },
     looks: {},
     scene: [
@@ -398,7 +403,7 @@ export const GOLDEN: Record<string, Outcome> = {
         checkedBy: 'separation',
       },
       spatialFrame: undefined,
-      originBearingDeg: 125,
+      originBearingDeg: 235,
     },
     looks: {},
     scene: [
@@ -447,7 +452,7 @@ export const GOLDEN: Record<string, Outcome> = {
         checkedBy: 'separation',
       },
       spatialFrame: undefined,
-      originBearingDeg: 125,
+      originBearingDeg: 235,
     },
     looks: {},
     scene: [
@@ -496,7 +501,7 @@ export const GOLDEN: Record<string, Outcome> = {
         checkedBy: 'separation',
       },
       spatialFrame: undefined,
-      originBearingDeg: 125,
+      originBearingDeg: 235,
     },
     looks: {},
     scene: [
@@ -587,7 +592,7 @@ export const GOLDEN: Record<string, Outcome> = {
         checkedBy: 'separation',
       },
       spatialFrame: undefined,
-      originBearingDeg: 125,
+      originBearingDeg: 235,
     },
     looks: {},
     scene: [
@@ -736,7 +741,7 @@ export const GOLDEN: Record<string, Outcome> = {
           label: null,
         },
       ],
-      originBearingDeg: 125,
+      originBearingDeg: 235,
     },
     looks: {},
     scene: [
@@ -793,7 +798,7 @@ export const GOLDEN: Record<string, Outcome> = {
         checkedBy: 'separation',
       },
       spatialFrame: undefined,
-      originBearingDeg: 125,
+      originBearingDeg: 235,
     },
     looks: {},
     scene: [
@@ -863,7 +868,7 @@ export const GOLDEN: Record<string, Outcome> = {
         checkedBy: 'separation',
       },
       spatialFrame: undefined,
-      originBearingDeg: 125,
+      originBearingDeg: 235,
     },
     looks: {},
     scene: [
@@ -912,7 +917,7 @@ export const GOLDEN: Record<string, Outcome> = {
         checkedBy: 'separation',
       },
       spatialFrame: undefined,
-      originBearingDeg: 125,
+      originBearingDeg: 235,
     },
     looks: {},
     scene: [
@@ -961,7 +966,7 @@ export const GOLDEN: Record<string, Outcome> = {
         checkedBy: 'separation',
       },
       spatialFrame: undefined,
-      originBearingDeg: 125,
+      originBearingDeg: 235,
     },
     looks: {},
     scene: [
@@ -1046,7 +1051,7 @@ export const GOLDEN: Record<string, Outcome> = {
           label: null,
         },
       ],
-      originBearingDeg: 125,
+      originBearingDeg: 235,
     },
     looks: {},
     scene: [
@@ -1200,7 +1205,7 @@ export const GOLDEN: Record<string, Outcome> = {
         bearingConvention: 2,
       },
       referencePhotos: [],
-      originBearingDeg: 71.86989764584405,
+      originBearingDeg: 288.13010235415595,
     },
     looks: {
       'no surface': {
@@ -1275,7 +1280,7 @@ export const GOLDEN: Record<string, Outcome> = {
         bearingConvention: 2,
       },
       referencePhotos: [],
-      originBearingDeg: 71.86989764584405,
+      originBearingDeg: 288.13010235415595,
     },
     looks: {
       'no surface': {
@@ -1375,7 +1380,7 @@ export const GOLDEN: Record<string, Outcome> = {
           label: null,
         },
       ],
-      originBearingDeg: 71.86989764584405,
+      originBearingDeg: 288.13010235415595,
     },
     looks: {
       waiting: {
@@ -1462,7 +1467,7 @@ export const GOLDEN: Record<string, Outcome> = {
           label: 'typed during the wait',
         },
       ],
-      originBearingDeg: 331.86989764584405,
+      originBearingDeg: 28.13010235415595,
     },
     looks: {},
     scene: [
@@ -1550,7 +1555,7 @@ export const GOLDEN: Record<string, Outcome> = {
           label: 'by the radiator',
         },
       ],
-      originBearingDeg: 125,
+      originBearingDeg: 235,
     },
     looks: {
       'check step': {
@@ -1653,7 +1658,7 @@ export const GOLDEN: Record<string, Outcome> = {
           label: null,
         },
       ],
-      originBearingDeg: 125,
+      originBearingDeg: 235,
     },
     looks: {
       'after removing': {
@@ -1717,7 +1722,7 @@ export const GOLDEN: Record<string, Outcome> = {
         ],
       },
       referencePhotos: [],
-      originBearingDeg: 125,
+      originBearingDeg: 235,
     },
     looks: {
       skipped: {
@@ -1831,7 +1836,7 @@ export const GOLDEN: Record<string, Outcome> = {
         checkedBy: 'constellation',
       },
       spatialFrame: undefined,
-      originBearingDeg: 125,
+      originBearingDeg: 235,
     },
     looks: {
       'check step': {
@@ -1889,8 +1894,8 @@ export const GOLDEN: Record<string, Outcome> = {
       },
       {
         name: 'calibration stored origin',
-        position: [4, -1.2, 1],
-        arrowTip: [7.5, -1.2, 1.0000000000000009],
+        position: [4, -1.2, 0.9999999999999996],
+        arrowTip: [7.5, -1.2, 1.0000000000000004],
       },
     ],
     counts: { hitTests: 3, compass: 2, pose: 2, captures: 0 },
@@ -1932,7 +1937,7 @@ export const GOLDEN: Record<string, Outcome> = {
         checkedBy: 'constellation',
       },
       spatialFrame: undefined,
-      originBearingDeg: 125,
+      originBearingDeg: 235,
     },
     looks: {
       'review, off': {
@@ -2028,8 +2033,8 @@ export const GOLDEN: Record<string, Outcome> = {
       },
       {
         name: 'calibration stored origin',
-        position: [4, -1.2, 1],
-        arrowTip: [7.5, -1.2, 1.0000000000000009],
+        position: [4, -1.2, 0.9999999999999996],
+        arrowTip: [7.5, -1.2, 1.0000000000000004],
       },
     ],
     counts: { hitTests: 5, compass: 2, pose: 2, captures: 0 },
@@ -2080,7 +2085,7 @@ export const GOLDEN: Record<string, Outcome> = {
         checkedBy: 'separation',
       },
       spatialFrame: undefined,
-      originBearingDeg: 125,
+      originBearingDeg: 235,
     },
     looks: {
       skipped: {
@@ -2223,7 +2228,7 @@ export const GOLDEN: Record<string, Outcome> = {
           label: 'by the radiator',
         },
       ],
-      originBearingDeg: 125,
+      originBearingDeg: 235,
     },
     looks: {},
     scene: [
@@ -2291,7 +2296,7 @@ export const GOLDEN: Record<string, Outcome> = {
         checkedBy: 'constellation',
       },
       spatialFrame: undefined,
-      originBearingDeg: 125,
+      originBearingDeg: 235,
     },
     looks: {
       review: {
@@ -2336,8 +2341,8 @@ export const GOLDEN: Record<string, Outcome> = {
       },
       {
         name: 'calibration stored origin',
-        position: [4, -1.2, 1],
-        arrowTip: [7.5, -1.2, 1.0000000000000009],
+        position: [4, -1.2, 0.9999999999999996],
+        arrowTip: [7.5, -1.2, 1.0000000000000004],
       },
     ],
     counts: { hitTests: 4, compass: 2, pose: 2, captures: 0 },
@@ -2366,7 +2371,7 @@ export const GOLDEN: Record<string, Outcome> = {
         checkedBy: 'separation',
       },
       spatialFrame: undefined,
-      originBearingDeg: 125,
+      originBearingDeg: 235,
     },
     looks: {
       review: {

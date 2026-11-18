@@ -15,6 +15,7 @@ import assert from 'node:assert/strict'
 import * as THREE from 'three'
 
 import {
+  LEGACY_BEARING_CONVENTION,
   originDecalPlan,
   originHeadingBearingDeg,
   readCalibrationGroundY,
@@ -28,6 +29,7 @@ import {
   STORED_ORIGIN_NAME,
 } from '../../../src/world/origin-decal.ts'
 import { ANCHOR_RADIUS_M, buildAnchorMarker } from '../../../src/world/anchor-marker.ts'
+import { clockwiseFromTickToArrow } from './origin_picture.ts'
 
 const EPS = 1e-9
 
@@ -242,22 +244,27 @@ function circularGapDeg(a: number, b: number): number {
   return Math.abs((((a - b) % 360) + 540) % 360 - 180)
 }
 
-test('originHeadingBearingDeg: the arrow bearing is its clockwise angle from the north tick, in world space', () => {
+// This test used to read "clockwise from the north tick" off `yawOf(arrowTip) - yawOf(northTip)`, with `yawOf` the
+// `atan2(x, z)` of a tip's world position. That is the COUNTER-clockwise angle seen from above (a session yaw grows
+// counter-clockwise), so it pinned the mirror image of the bearing and passed for as long as the formula had the mirror's
+// sign: the HUD's frame heading read 360 minus the arrow's bearing. The angle is now read from a real camera above the
+// floor (./origin_picture.ts), which knows nothing about yaws. The full set of checks, against the physical model and the
+// record, is tests/unit/node/origin_heading_bearing.test.ts.
+test('originHeadingBearingDeg: the arrow bearing is its clockwise angle from the north tick, as seen from above', () => {
   const origin = { x: 1, y: 0, z: -2 }
   const heading = { x: 4, y: 0, z: 2 }
   for (const northYawDeg of [0, 37, 180, 290]) {
     const plan = originDecalPlan(origin, heading, northYawDeg)
     const decal = buildOriginDecal(plan, 'committed')
-    const base = toWorld(decal, new THREE.Vector3())
-    const arrowTip = toWorld(requireChild(decal, 'origin heading'), new THREE.Vector3(0, 0, plan.arrowLengthM))
-    const northTip = toWorld(requireChild(decal, 'origin north'), new THREE.Vector3(0, 0, ANCHOR_RADIUS_M * 1.35))
-    const yawOf = (p: THREE.Vector3): number => THREE.MathUtils.radToDeg(Math.atan2(p.x - base.x, p.z - base.z))
-    const clockwiseFromNorth = yawOf(arrowTip) - yawOf(northTip)
+    const clockwiseFromNorth = clockwiseFromTickToArrow(decal)
     const bearing = originHeadingBearingDeg(plan)
     assert.ok(bearing !== null, `north ${northYawDeg}: a compass fix gives a bearing`)
+    // The comparison below is circular, so it cannot tell 323 from -37: the range is asserted beside it. (North at yaw 0
+    // and the arrow at yaw 37 is a raw angle of -37, which is the case that needs the fold.)
+    assert.ok(bearing >= 0 && bearing < 360, `north ${northYawDeg}: ${bearing} is a bearing, in [0, 360)`)
     assert.ok(
       circularGapDeg(bearing, clockwiseFromNorth) < 1e-6,
-      `north ${northYawDeg}: bearing ${bearing} vs world angle ${clockwiseFromNorth}`,
+      `north ${northYawDeg}: bearing ${bearing} vs angle on the floor ${clockwiseFromNorth}`,
     )
   }
 })
@@ -265,7 +272,30 @@ test('originHeadingBearingDeg: the arrow bearing is its clockwise angle from the
 test('originHeadingBearingDeg: null without an arrow or a compass fix, and folded into [0, 360)', () => {
   const origin = { x: 0, y: 0, z: 0 }
   const ahead = { x: 0, y: 0, z: 2 }
+  const east = { x: 2, y: 0, z: 0 }
   assert.equal(originHeadingBearingDeg(originDecalPlan(origin, null, 30)), null, 'no heading point, so no arrow')
   assert.equal(originHeadingBearingDeg(originDecalPlan(origin, ahead, null)), null, 'no compass fix, so no bearing')
-  assert.equal(originHeadingBearingDeg(originDecalPlan(origin, ahead, 90)), 270, 'heading 0 minus north 90 folds to 270')
+  // North at yaw 90 (the tick toward +X) and the arrow along +Z. Seen from above with +X to the right, +Z points at the
+  // viewer's bottom edge: the tick is at 3 o'clock and the arrow at 6, a quarter turn clockwise, so the bearing is 90. (It
+  // was pinned at 270 here, the mirror image, "heading 0 minus north 90 folds to 270".)
+  assert.equal(originHeadingBearingDeg(originDecalPlan(origin, ahead, 90)), 90, 'north 90, arrow 0: a quarter turn clockwise of north')
+  assert.equal(originHeadingBearingDeg(originDecalPlan(origin, ahead, 270)), 270, 'north 270 (9 o\'clock), arrow 0 (6 o\'clock): three quarters of a turn clockwise')
+
+  // THE FOLD. The two cases above have the arrow's yaw at or below north's, so the bearing `northYaw - heading` is not
+  // negative in either and they never need it. These do, and their answers are read off the clock face, not out of the
+  // formula. North at yaw 0 is the tick toward +Z, at 6 o'clock; the arrow along +X is at 3 o'clock. From 6 clockwise round to
+  // 3 is nine hours, 270 degrees, though the difference of the two yaws is -90.
+  assert.equal(originHeadingBearingDeg(originDecalPlan(origin, east, 0)), 270, 'north 0, arrow 90: -90 folds to 270')
+  // Not a quarter turn: the tick at yaw 10 and the arrow at yaw 47, which is 37 degrees further the counter-clockwise way, so
+  // it is 323 clockwise. A plan written out, so that the numbers are exactly these.
+  assert.equal(originHeadingBearingDeg({ origin, headingDeg: 47, arrowLengthM: 1, northYawDeg: 10 }), 323, 'north 10, arrow 47: -37 folds to 323')
+  // An arrow on north reads 0, not 360 (the other seam).
+  assert.equal(originHeadingBearingDeg({ origin, headingDeg: 40, arrowLengthM: 1, northYawDeg: 40 }), 0, 'on north')
+
+  // The old rule (`?bearing=1`) reads the arrow's yaw from north's, so its negative case is the other way round. This is the
+  // assertion this test held before the rule was corrected, and then the only pin there was on the fold: heading 0 minus
+  // north 90 folds to 270.
+  assert.equal(originHeadingBearingDeg(originDecalPlan(origin, ahead, 90), LEGACY_BEARING_CONVENTION), 270, 'old rule: heading 0 minus north 90 folds to 270')
+  assert.equal(originHeadingBearingDeg({ origin, headingDeg: 10, arrowLengthM: 1, northYawDeg: 350 }, LEGACY_BEARING_CONVENTION), 20, 'old rule: heading 10 minus north 350 folds to 20')
+  assert.equal(originHeadingBearingDeg({ origin, headingDeg: 40, arrowLengthM: 1, northYawDeg: 40 }, LEGACY_BEARING_CONVENTION), 0, 'old rule, on north')
 })

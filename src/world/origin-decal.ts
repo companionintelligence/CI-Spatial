@@ -70,7 +70,7 @@ function lineSegments(vertices: number[], color: number, opacity: number, name: 
  *
  * The arrow lives in its own group rotated to the heading, and the north tick
  * in another rotated to north. Keeping them apart is what lets the arrow point
- * where the user pointed while the tick still points at true north.
+ * where the user pointed while the tick still points at north (the compass's).
  */
 export function buildOriginDecal(plan: OriginDecalPlan, emphasis: OriginDecalEmphasis): THREE.Group {
   const group = new THREE.Group()
@@ -103,8 +103,11 @@ export function buildOriginDecal(plan: OriginDecalPlan, emphasis: OriginDecalEmp
   if (plan.headingDeg != null && plan.arrowLengthM > 0) {
     const heading = new THREE.Group()
     heading.name = 'origin heading'
-    // Local +Z is the arrow's direction, so a yaw of `headingDeg` (compass
-    // convention, 0 = +Z) points it along the baseline the user defined.
+    // Local +Z is the arrow's direction, so a turn of `headingDeg` (the session
+    // yaw `atan2(x, z)`: 0 = +Z, growing counter-clockwise seen from above, the
+    // way a compass bearing does not) points it along the baseline the user
+    // defined. The north tick below turns the same way, to north's yaw, so the
+    // clockwise angle on the floor from tick to arrow is `northYaw - headingDeg`.
     heading.rotation.y = THREE.MathUtils.degToRad(plan.headingDeg)
     const length = plan.arrowLengthM
     const headLength = Math.min(ARROW_HEAD_MAX_M, length * ARROW_HEAD_SHARE)
