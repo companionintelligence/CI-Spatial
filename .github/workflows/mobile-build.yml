@@ -13,6 +13,12 @@ on:
 permissions:
   contents: read
 
+# onnxruntime-node's install script downloads a CUDA build from the onnxruntime GitHub release page on Linux x64, and that file
+# (v1.21.0, onnxruntime-linux-x64-gpu-1.21.0.tgz) now answers 404, which fails every `npm ci` on a Linux runner. No job here runs a
+# model, so none needs the CUDA execution provider: skipping it is what the installer's own switch is for.
+env:
+  ONNXRUNTIME_NODE_INSTALL_CUDA: skip
+
 concurrency:
   group: mobile-build-${{ github.ref }}
   cancel-in-progress: true
