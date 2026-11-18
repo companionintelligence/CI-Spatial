@@ -1,7 +1,8 @@
 /**
  * The Places registry (server/wp-a-projects.ts). The file is the only copy of every Place,
  * floor, room and area, so a read error must never look like "no Places yet", a corrupt file
- * must survive a save, and a malformed Place body must be refused before it is stored.
+ * must survive a save, a save that removes a Place must not leave the Place in the backup, and
+ * a malformed Place body must be refused before it is stored.
  */
 import { assert, assertEquals, assertRejects } from 'jsr:@std/assert@^1.0.0'
 import {
@@ -89,6 +90,108 @@ Deno.test('each save keeps the previous registry as .bak', async () => {
     assertEquals((await readRegistry(file))?.length, 2)
   } finally {
     await Deno.remove(dir, { recursive: true })
+  }
+})
+
+/** A Place whose record carries what a person would want gone with it. */
+function placeWithAddress(projectId: string, address: string): Project {
+  return { ...place(projectId), address, geoPose: { lat: 51.50149, lng: -0.14187, altitudeM: null, bearing: null, accuracyM: null } }
+}
+
+Deno.test('a save that removes a Place does not keep the registry that still holds it as .bak: the backup is the registry as saved', async () => {
+  const { dir, file } = await tempRegistry()
+  try {
+    await saveRegistry(file, [placeWithAddress('proj-1', '12 Marker Lane'), place('proj-2')])
+    await saveRegistry(file, [placeWithAddress('proj-1', '12 Marker Lane'), place('proj-2'), place('proj-3')])
+    assertEquals(
+      (JSON.parse(await Deno.readTextFile(`${file}.bak`)) as Project[]).some((p) => p.address === '12 Marker Lane'),
+      true,
+      'the premise: an ordinary save leaves the backup holding the address',
+    )
+
+    // Place 1 is deleted. Nothing in either file says where it was.
+    assertEquals(await saveRegistry(file, [place('proj-2'), place('proj-3')], Date.now(), { keepPrevious: false }), null)
+    const registry = await Deno.readTextFile(file)
+    const backup = await Deno.readTextFile(`${file}.bak`)
+    for (const [name, text] of [['registry', registry], ['backup', backup]] as const) {
+      assertEquals(text.includes('12 Marker Lane') || text.includes('51.50149') || text.includes('proj-1'), false, `the ${name} no longer holds the Place`)
+    }
+    assertEquals(backup, registry, 'the backup is still a backup: of the registry as it is now')
+    // A save after it keeps the registry before it, as every save does.
+    await saveRegistry(file, [place('proj-2')])
+    assertEquals((JSON.parse(await Deno.readTextFile(`${file}.bak`)) as Project[]).map((p) => p.projectId), ['proj-2', 'proj-3'])
+  } finally {
+    await Deno.remove(dir, { recursive: true })
+  }
+})
+
+Deno.test('a save that removes a Place makes a .bak when there was none, and leaves no temp file behind', async () => {
+  const { dir, file } = await tempRegistry()
+  try {
+    await saveRegistry(file, [place('proj-1')], Date.now(), { keepPrevious: false })
+    assertEquals((JSON.parse(await Deno.readTextFile(`${file}.bak`)) as Project[]).map((p) => p.projectId), ['proj-1'])
+    const names: string[] = []
+    for await (const entry of Deno.readDir(dir)) names.push(entry.name)
+    assertEquals(names.sort(), ['projects.json', 'projects.json.bak'])
+  } finally {
+    await Deno.remove(dir, { recursive: true })
+  }
+})
+
+Deno.test('a save that removes a Place and cannot finish leaves the registry as it was, with the Place in it, so the removal can be asked for again', async () => {
+  const { dir, file } = await tempRegistry()
+  try {
+    await saveRegistry(file, [placeWithAddress('proj-1', '12 Marker Lane'), place('proj-2')])
+    const before = await Deno.readTextFile(file)
+    // A backup that is a folder with something in it cannot be replaced by a file.
+    await Deno.mkdir(`${file}.bak`)
+    await Deno.writeTextFile(`${file}.bak/inside`, 'x')
+    await assertRejects(() => saveRegistry(file, [place('proj-2')], Date.now(), { keepPrevious: false }))
+    assertEquals(await Deno.readTextFile(file), before, 'the registry is untouched, and still holds the Place')
+    const names: string[] = []
+    for await (const entry of Deno.readDir(dir)) names.push(entry.name)
+    assertEquals(names.sort(), ['projects.json', 'projects.json.bak'], 'and no temp file is left')
+  } finally {
+    await Deno.remove(dir, { recursive: true })
+  }
+})
+
+Deno.test('a corrupt registry is still kept aside by a save that removes a Place, and the backup, the last registry that could be read, is left as it was', async () => {
+  // A save that removes a Place makes the backup the registry it saves, so that the backup does not hold the Place. Over a file
+  // that cannot be read that must not happen: the registry being saved was built from nothing readable (the server reads such a
+  // file as an empty list and adds the default Place), and the backup is then the only copy of the Places the file held.
+  for (const options of [{}, { keepPrevious: true }, { keepPrevious: false }]) {
+    const { dir, file } = await tempRegistry()
+    try {
+      await saveRegistry(file, [place('proj-1'), place('proj-2')])
+      await saveRegistry(file, [place('proj-1'), place('proj-2'), place('proj-3')])
+      const lastReadable = await Deno.readTextFile(`${file}.bak`)
+      assertEquals((JSON.parse(lastReadable) as Project[]).map((p) => p.projectId), ['proj-1', 'proj-2'], 'the premise: the backup holds two Places')
+      // The file is cut short after that.
+      const cutShort = '[{"projectId":"proj-1","address":"12 Marker Lane"'
+      await Deno.writeTextFile(file, cutShort)
+      assertEquals(await saveRegistry(file, [place('proj-2')], 99, options), `${file}.corrupt-99`, JSON.stringify(options))
+      assertEquals(await Deno.readTextFile(`${file}.corrupt-99`), cutShort, 'the bytes that could not be read are kept, as they were')
+      assertEquals(await Deno.readTextFile(`${file}.bak`), lastReadable, `${JSON.stringify(options)}: the backup is byte for byte what it was`)
+      assertEquals(((await readRegistry(file)) ?? []).map((p) => p.projectId), ['proj-2'])
+    } finally {
+      await Deno.remove(dir, { recursive: true })
+    }
+  }
+})
+
+Deno.test('a corrupt registry with no backup gets none from a save that removes a Place either: it is not a version, and the registry saved over it is not a record of anything', async () => {
+  for (const options of [{}, { keepPrevious: false }]) {
+    const { dir, file } = await tempRegistry()
+    try {
+      await Deno.writeTextFile(file, '[{"projectId":"proj-1"')
+      assertEquals(await saveRegistry(file, [place('proj-2')], 99, options), `${file}.corrupt-99`)
+      const names: string[] = []
+      for await (const entry of Deno.readDir(dir)) names.push(entry.name)
+      assertEquals(names.sort(), ['projects.json', 'projects.json.corrupt-99'], JSON.stringify(options))
+    } finally {
+      await Deno.remove(dir, { recursive: true })
+    }
   }
 })
 

@@ -10,7 +10,9 @@
  * WebViews) and on iPhone (Safari has no WebXR AR). The 8th Wall and native providers have no `anchors` member, so
  * `provider.anchors` is undefined for them and a calibration there runs on its taps alone. Persistence, below, is narrower
  * again: Quest Browser only, because Chrome on Android has none. A store build would need the native ARKit and ARCore
- * bridge for any anchor path (src/ar/native-provider.ts); it is not built.
+ * bridge for any anchor path. That bridge is the `ScanAR` plugin the shells register (src/ar/native.ts), and it offers the page
+ * none: `provider.anchors` is undefined while its native session runs, the iOS plugin has no anchor method, and the Android
+ * plugin's one origin anchor is never called by the page.
  *
  * A runtime anchor is not the calibration anchor. The calibration anchor (src/world/anchor-marker.ts,
  * src/world/anchor-placement.ts, ScanCalibration) is the Place's landmark and heading marker, a point in the project frame
@@ -31,8 +33,9 @@
  * 40652382, via MDN browser-compat-data); Safari has no WebXR immersive-ar, so none on iPhone or in the Capacitor iOS shell; and
  * the iOS web bridges that were read document no anchors. There `provider.anchors` is undefined, as it is for the default 8th Wall
  * provider, and every caller works without it. A store build's route to a real anchor is the native ARKit and ARCore plugin
- * (src/ar/native-provider.ts), which is not built for it. docs/operations/AR_DEVICE_SUPPORT.md has the matrix, its sources and
- * the exit plan. None of this was run on a device.
+ * (`ScanAR`, src/ar/native.ts), which is built for the camera and the hit test and not for this; the other native design,
+ * the unregistered `ArSession` plugin and its provider src/ar/native-provider.ts, is not the route either.
+ * docs/operations/AR_DEVICE_SUPPORT.md has the matrix, its sources and the exit plan. None of this was run on a device.
  *
  * What an anchor event means. An anchor that moves, or stops being located, in the session frame says that the frame is no
  * longer the one earlier points were recorded in: the same fact as a reference-space 'reset' or a pose jump. So these events

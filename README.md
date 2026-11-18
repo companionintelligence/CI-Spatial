@@ -68,7 +68,7 @@ any app store.
 
 | | Desktop app | Android app |
 |---|---|---|
-| What it is | The Place Scan Editor and viewer. It opens the editor, and it cannot capture. | The scanner and the editor. AR capture (the 8th Wall engine in the app's WebView) has not been tried on a phone yet. |
+| What it is | The Place Scan Editor and viewer. It opens the editor, and it cannot capture. | The scanner and the editor. AR capture (the phone's own ARCore session, with the 8th Wall engine and then WebXR in the app's WebView as the fallback) has not been tried on a phone yet. |
 | Scan server | The person's own, such as the one on their Companion Hub: its https address is set in the app ([why https only](#the-scan-server-in-the-android-ios-and-desktop-apps)). | The same. |
 | Companion Account | Signs in through the default browser and comes back on `computer.ci.scan.desktop://auth`. | Signs in through the browser sheet and comes back on `com.companionintelligence.scan://auth`. |
 | Release files | NSIS and MSI installers (Windows), a universal dmg (macOS, ad-hoc signed), deb and rpm (Linux). All unsigned apart from the macOS ad-hoc signature. | A release APK, signed with the release key or a throwaway key, and named for which. |

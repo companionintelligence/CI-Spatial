@@ -624,6 +624,11 @@ export type ScanCalibration = {
    * decomposing a matrix. Project-space floor is `y = 0` by construction, so
    * the Place-level `ProjectSpatialFrame` needs no field of its own.
    *
+   * It is the landmark's datum. For the two-point transform that is the matrix's
+   * own floor; for a fitted visit it is not, because the fit's matrix is aligned
+   * on the mean height of its points and its floor differs by the vertical
+   * residual the record keeps (`fit.perPoint[0].dy`).
+   *
    * Optional and nullable so existing records stay valid: a record written
    * before this field simply does not say where its floor was. Read it with
    * `readCalibrationGroundY()` in `./geo.ts`, which turns absence and
@@ -674,6 +679,16 @@ export type ScanCalibration = {
        * neutral and never as another.
        */
       frameId?: string
+      /**
+       * `true` when this scan is in no Place frame: its commit wrote no frame and was not matched to the one the Place holds, so its
+       * `sessionToProject` is its own pair's and nothing ties it to the Place's. That is a commit whose floor check was bypassed
+       * (`floorCheckBypassed`, above: a bypassed commit never writes the Place's frame) that was a first visit, a pair kept over a
+       * mismatch, or "Improve this Place's reference". It names no `frameId`, whatever frame the Place holds. Written only when it is
+       * true (`leavesScanOutsidePlaceFrame`, src/ar/ground-gate.ts), never `false`: a record in the frame it wrote or matched has no such
+       * key, which is every record an earlier build wrote. The server surfaces it as `ScanManifest.calibrationOutsidePlaceFrame`
+       * (`calibrationFromMeta`), and every reader asks `isInPlaceFrame` (src/world/frame-generations.ts) what it makes of it.
+       */
+      outsidePlaceFrame?: true
       /**
        * What this visit's points measured against the Place's stored ones: a least-squares fit of three or more
        * (`summariseFit`, src/world/frame-fit.ts). The capture client will write it on a return visit to a Place
@@ -1183,6 +1198,16 @@ export interface ScanManifest {
    * leave a value the sidecar no longer gives (a record the `splat-align` job replaced) standing on the row.
    */
   calibrationFrameId?: string
+  /**
+   * `true` when the scan is a two-point one that is in no Place frame (`ScanCalibration.outsidePlaceFrame`, from the sidecar's
+   * calibration record by `calibrationFromMeta`): its commit wrote no Place frame and was not matched to the one the Place holds, as a
+   * commit with a bypassed floor check does on a first visit, over a mismatch, or when improving the reference. It is placed by its own
+   * pair alone and names no generation. Absent otherwise (never `false`): every other scan, and every scan from before the key existed.
+   * It is not a generation that cannot be named: `calibrationFrameId` absent says "in the frame, which one is not known", and this
+   * says "in none". Nobody reads it by itself: `isInPlaceFrame` (src/world/frame-generations.ts) is the one predicate the server's
+   * counts, Thing matching and the editor's chip (`frameChipFor`, src/viewer/frame-banner.ts) all ask.
+   */
+  calibrationOutsidePlaceFrame?: true
   /**
    * Which check the scan's `calibrationStatus` rests on (`ScanCalibration.checkedBy`): `'constellation'`
    * when three or more points were compared with the Place's stored ones and a fit of them backs it,

@@ -6,6 +6,9 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   aspectFromProjection,
   base64ToBytes,
@@ -15,6 +18,11 @@ import {
   poseFromTransform,
   trackingStatusFromNative,
 } from '../../../src/ar/native-codec.ts'
+import * as codec from '../../../src/ar/native-codec.ts'
+import { classifyTracking } from '../../../src/ar/frame-epoch.ts'
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
+const read = (path: string) => readFileSync(join(ROOT, path), 'utf8')
 
 const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
 
@@ -103,4 +111,43 @@ test('base64ToBytes round-trips raw bytes', () => {
 test('decodeFloat32Base64 reads little-endian values and refuses a payload of the wrong size', () => {
   assert.deepEqual(Array.from(decodeFloat32Base64(float32LE([1.5, 2.25, 0.125, 4]), 4)), [1.5, 2.25, 0.125, 4])
   assert.throws(() => decodeFloat32Base64(float32LE([1, 2, 3]), 4), /expected 16/)
+})
+
+// ── The reason a native state gives for being limited ────────────────────────────────────────────────
+
+test('trackingReasonFromNative gives the reason a limited state names, in the words the tracking code reads, and none for a state that names none', () => {
+  const reasonOf = (state: string) => (codec as unknown as { trackingReasonFromNative(state: string): string | undefined }).trackingReasonFromNative(state)
+  assert.equal(reasonOf('limited.relocalizing'), 'RELOCALIZING', 'the one reason that is a discontinuity by itself (src/ar/frame-epoch.ts, REASON_RELOCALIZING)')
+  assert.equal(reasonOf('limited.initializing'), 'INITIALIZING')
+  assert.equal(reasonOf('limited.excessiveMotion'), 'EXCESSIVE_MOTION', 'the native layer\'s own word, not another runtime\'s')
+  assert.equal(reasonOf('limited.insufficientFeatures'), 'INSUFFICIENT_FEATURES')
+  for (const state of ['normal', 'notAvailable', 'limited', 'limited.somethingNew', 'LIMITED', '', 'relocalizing']) {
+    assert.equal(reasonOf(state), undefined, `"${state}" names no reason, and none is made up`)
+  }
+})
+
+/** The string literals a function body returns, from its declaration to the closing brace the source indents by four spaces. */
+function returnedStrings(source: string, declaration: string): string[] {
+  const from = source.indexOf(declaration)
+  assert.notEqual(from, -1, `the source declares ${declaration}`)
+  const body = source.slice(from, source.indexOf('\n    }\n', from))
+  return [...body.matchAll(/return "([^"]+)"/g)].map((m) => m[1]!)
+}
+
+test('every tracking state either native layer can send is one the codec reads, and ARKit alone says it is relocalizing', () => {
+  const swift = returnedStrings(read('mobile/ios/App/App/ScanARPlugin.swift'), 'private static func describe(')
+  const java = returnedStrings(read('mobile/android/app/src/main/java/com/companionintelligence/scan/ScanARRenderer.java'), 'private static String trackingName(')
+  assert.ok(swift.length >= 6 && java.length >= 5, 'the two functions were read')
+  for (const state of [...swift, ...java]) {
+    assert.notEqual(trackingStatusFromNative(state), 'UNKNOWN', `"${state}" is sent, and the codec does not read it`)
+    if (state.startsWith('limited.')) {
+      assert.notEqual(codec.trackingReasonFromNative(state), undefined, `"${state}" names a reason the codec drops`)
+    }
+  }
+  // The asymmetry the epoch tests rely on, from the sources: ARKit has a relocalizing state, ARCore has no word for one.
+  // If Android starts to send it, a relocalization is a signal there too and the "no signal is invented" test must change.
+  assert.ok(swift.includes('limited.relocalizing'))
+  assert.ok(!java.includes('limited.relocalizing'))
+  // And what a status read from them is, for the tracker: a limited state is degraded, and relocalizing alone is a discontinuity.
+  assert.equal(classifyTracking(trackingStatusFromNative('limited.relocalizing'), codec.trackingReasonFromNative('limited.relocalizing')), 'degraded')
 })

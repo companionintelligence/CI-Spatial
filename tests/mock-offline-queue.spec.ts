@@ -269,6 +269,85 @@ test.describe('a calibration made offline', () => {
     await page.waitForTimeout(800)
   }
 
+  /**
+   * Wait until the mock has emitted `count` more frames. A frozen camera is the provider's only once a frame has gone by, and a
+   * clock only guesses at that on a loaded machine, where the mock's 33 ms timer runs late. The frames are counted by a pipeline
+   * module of this spec's own, added through the call the app uses (public/test-fixtures/xr8-mock.js runs its modules in the order
+   * they were added, the app's first), so a frame counted here is one the provider has already taken.
+   */
+  async function waitForMockFrames(page: Page, count: number): Promise<void> {
+    await page.evaluate((wanted) => new Promise<void>((resolve, reject) => {
+      const xr8 = (window as unknown as Record<string, {
+        addCameraPipelineModule(mod: { name: string; onUpdate(): void }): void
+        removeCameraPipelineModule(name: string): void
+      }>)['XR8']!
+      const name = 'spec-frame-counter'
+      let seen = 0
+      const giveUp = setTimeout(() => {
+        xr8.removeCameraPipelineModule(name)
+        reject(new Error(`the mock emitted ${seen} of ${wanted} frames in 10 s`))
+      }, 10_000)
+      xr8.addCameraPipelineModule({
+        name,
+        onUpdate: () => {
+          if (++seen < wanted) return
+          clearTimeout(giveUp)
+          xr8.removeCameraPipelineModule(name)
+          resolve()
+        },
+      })
+    }), count)
+  }
+
+  /**
+   * Freeze the mock's scripted camera where it is, with no step.
+   *
+   * `XR8.freezeAt(300)` SEEKS the mock to tick 300. From almost any other tick that is a step no hand makes in a frame, so the app
+   * counts a frame shift, and a calibration that was running ran across it. It is warned of when it ends, in words that replace the
+   * line this test reads, "Alignment not synced yet": `FRAME_SET_ACROSS_SHIFT_WARNING` (src/ar/reanchor-copy.ts), said by
+   * `ReanchorFlow.arm()` (src/ar/reanchor-flow.ts) straight after the sync note is written.
+   *
+   * Pinning the session before its first frame (`?mockFreeze=`) is no way round it. The floor is fitted again only when the map
+   * gains points (src/scene/pointcloud.ts), and a pinned map gains none after its first harvest, so its floor never locks and the
+   * calibration could go on only by "Place anchor without floor check". That never writes the Place's frame (`mayWritePlaceFrame`,
+   * src/ar/ground-gate.ts), and then there would be no frame to keep offline.
+   *
+   * So the floor locks while the mock walks, and the camera is frozen after that at a tick where its walk is at the camera's x now.
+   * The mock cannot be asked which tick it is at, so this tries each tick of a full cycle of the walk (it repeats about every 471
+   * ticks) and keeps the one whose camera x is nearest: a hit test through the middle of the screen reports it, since the screen's x
+   * maps to the world's as `(x - 0.5) * 4`. All of it is one call of the page's script, in which the mock emits no frame, so the app
+   * sees the last seek only: a step of some millimetres in x and at most 6 cm in height, which is no shift.
+   *
+   * Waits for three frames afterwards for the provider to take the frozen pose, as `freezeMock()` does in
+   * mock-two-point-calibration.spec.ts with a pause: a tap inside the frame after the freeze is made from the pose before it, and
+   * the photo taken later from the frozen one then reads as a phone that moved (WP-07).
+   */
+  async function freezeInPlace(page: Page): Promise<void> {
+    const gapM = await page.evaluate(() => {
+      const xr8 = (window as unknown as Record<string, {
+        freezeAt(n: number): number
+        XrController: { hitTest(x: number, y: number): Array<{ position: { x: number } }> }
+      }>)['XR8']!
+      const cameraX = (): number => xr8.XrController.hitTest(0.5, 0.5)[0]!.position.x
+      const now = cameraX()
+      // From tick 12 on, the mock's tracking is NORMAL and a hit test answers.
+      let best = 12
+      let bestGapM = Number.POSITIVE_INFINITY
+      for (let tick = 12; tick <= 600; tick++) {
+        xr8.freezeAt(tick)
+        const gap = Math.abs(cameraX() - now)
+        if (gap < bestGapM) {
+          best = tick
+          bestGapM = gap
+        }
+      }
+      xr8.freezeAt(best)
+      return bestGapM
+    })
+    expect(gapM, "some tick of the mock's walk is at the camera's x of now").toBeLessThan(0.05)
+    await waitForMockFrames(page, 3)
+  }
+
   /** The Places database's waiting frames, read as the page's own store holds them. */
   async function waitingFrames(page: Page): Promise<Array<{ projectId: string; syncState: string }>> {
     return await page.evaluate(() => new Promise<Array<{ projectId: string; syncState: string }>>((resolve) => {
@@ -305,22 +384,14 @@ test.describe('a calibration made offline', () => {
       await page.locator('#place-continue-btn').click()
       await page.locator('#project-calibration').waitFor({ state: 'attached', timeout: 30_000 })
 
-      // The ground stage, as mock-two-point-calibration.spec.ts gets through it.
-      const status = page.locator('#project-calibration-status')
-      await expect(async () => {
-        const text = (await status.textContent()) ?? ''
-        if (/place the landmark/i.test(text)) return
-        const override = page.locator('#project-calibration-skip-ground')
-        if (await override.isVisible().catch(() => false)) await override.click()
-        throw new Error(`still on the ground stage: ${text}`)
-      }).toPass({ timeout: 60_000 })
+      // The ground stage, on a floor that locks. mock-two-point-calibration.spec.ts also takes the override the flow offers once the
+      // floor wait expires, but a commit that bypassed the floor check never writes the Place's frame (`mayWritePlaceFrame`,
+      // src/ar/ground-gate.ts), and then there is nothing for this test to keep offline: it must not press it.
+      await expect(page.locator('#project-calibration-status')).toContainText(/place the landmark/i, { timeout: 60_000 })
 
-      // Offline from here: the two taps, the commit, and everything the commit sends.
+      // Offline from here: the two taps, the commit, and everything the commit sends. The camera is frozen where it is, with no step.
       await context.setOffline(true)
-      await page.evaluate(() => (window as unknown as Record<string, { freezeAt(n: number): number }>)['XR8'].freezeAt(300))
-      // Let the provider read the frozen pose before tapping: a tap inside the frame after the freeze is made from the
-      // pose the mock had before it, and the photo taken later from the frozen one then reads as a phone that moved (WP-07).
-      await page.waitForTimeout(100)
+      await freezeInPlace(page)
       // 0.28 and 0.72, not the screen's edges: the tap sampler reads no spot beyond 3 m, and the mock's edges are past it
       // (see TAP_A in mock-two-point-calibration.spec.ts).
       await tapCanvas(page, 0.28, 0.92)

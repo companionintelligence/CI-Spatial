@@ -96,8 +96,9 @@ export const TAP_SPREAD_MAX_M = 0.04
 
 /**
  * Farthest a tap may be from the camera, in metres. SLAM depth error grows with
- * range (eighthwall.ts `MAX_POINT_DISTANCE_M`) and a shallow view slides a hit
- * along the floor, so taps are steered close and steeply down.
+ * range (point-filter.ts `MAX_POINT_DISTANCE_M`, which every runtime shares) and
+ * a shallow view slides a hit along the floor, so taps are steered close and
+ * steeply down.
  *
  * **Adopted, not measured (ADR 0005 rule 5).** The work package's starting
  * value. DX5 taps at 1, 2, 3 and 5 m and sets it.

@@ -39,6 +39,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   DEFAULT_SEPARATION_TOLERANCE_M,
+  LEGACY_BEARING_CONVENTION,
   MIN_POINT_SEPARATION_M,
   normaliseBearingDeg,
   transformPoint,
@@ -579,6 +580,25 @@ test('the bearing recorded for the Place\'s +Z is the matrix\'s own axis: a fitt
   assert.ok(Math.abs(apart - Math.abs(calibration.fit!.headingResidualDeg!)) < 1e-6, 'by exactly the heading residual the record keeps')
   // The convention beside it is unchanged, and a frame is still written from the baseline it was tapped as.
   assert.equal(calibration.bearingConvention, BUILD.bearingConvention)
+})
+
+test('a fitted visit under ?bearing=1 records the Place\'s +Z bearing by the old rule it is stamped with, as a pair does', () => {
+  // The record's convention and its bearing must agree: a fit's projectBearingDeg used to take the current sign rule whatever the
+  // convention beside it said, a hybrid that neither the old nor the new reading could use.
+  const noisy = { ...visitTaps(), headingMarker: { ...visitTaps().headingMarker, x: visitTaps().headingMarker.x + 0.08 } }
+  const verdict = assessVisit(noisy)
+  assert.ok(verdict.kind === 'accepted' && verdict.comparison?.fit)
+  const frameBearingDeg = 100
+  const { calibration } = buildTwoPointCommit(verdict, { ...BUILD, ...noisy, frameBearingDeg, bearingConvention: LEGACY_BEARING_CONVENTION })
+  assert.ok(calibration.method === 'two-point-ground')
+  assert.equal(calibration.bearingConvention, LEGACY_BEARING_CONVENTION)
+  const aheadYaw = placeAheadYawDeg(calibration.sessionToProject)
+  assert.ok(Math.abs(aheadYaw - verdict.comparison.fit.headingDeg) < 1e-9, 'the fit\'s heading is still the matrix\'s axis')
+  // The old rule added the camera's yaw to the compass bearing, and the current rule subtracts it: the two differ by twice the yaw.
+  const expectedOld = normaliseBearingDeg(frameBearingDeg + aheadYaw)
+  const expectedCurrent = normaliseBearingDeg(frameBearingDeg - aheadYaw)
+  assert.ok(Math.abs(calibration.projectBearingDeg! - expectedOld) < 1e-9, `${calibration.projectBearingDeg} against the old rule's ${expectedOld}`)
+  assert.ok(Math.abs(normaliseBearingDeg(expectedOld - expectedCurrent)) > 1, 'the yaw is far enough from 0 and 180 for the two rules to differ here')
 })
 
 test('a pair, a first calibration and a frame kept over a mismatch have the baseline\'s bearing: their matrix IS the tapped baseline', () => {

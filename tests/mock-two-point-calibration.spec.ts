@@ -223,10 +223,11 @@ async function sceneMarks(page: Page, name: string): Promise<SceneMark[]> {
  * Give a Place a stored two-point frame over the API, as though it had been
  * calibrated on some other device.
  *
- * `toleranceM` is a parameter because two of the tests below are about the
- * reference panel rather than the separation check, and a frame whose stored
- * `separationM` cannot match this mock's geometry would bounce them into the
- * mismatch stage before they reached the thing under test.
+ * `toleranceM` is part of the record (the server refuses a two-point frame without one) and nothing else: the commit does
+ * not read it. A visit's pair is compared with the stored `separationM` inside `twoPointToleranceM`, the commit's own
+ * 0.17 m (src/ar/calibration-commit.ts), so a test that commits against a stored frame has to store the separation its
+ * own taps make, or it lands on the mismatch screen whatever tolerance the record states. A test that only reads the
+ * reference panel never commits, and may store any separation.
  */
 async function storeFrame(
   request: APIRequestContext,
@@ -325,6 +326,21 @@ async function placeBothMarkers(page: Page, labels?: { a?: string; b?: string })
 
 test.describe('two-point calibration', () => {
   test.setTimeout(180_000)
+
+  /** How far apart TAP_A and TAP_B land in the frozen mock: (0.72 - 0.28) * 4 m along x, and the same z. */
+  const TAPPED_PAIR_M = 1.76
+
+  /**
+   * The row of the canvas under the calibration card, for the taps that cannot be made beside it.
+   *
+   * The card stands 18 px above the bottom of the window (10 px on a screen no taller than 700 px: index.html,
+   * `.project-calibration-card`) and takes taps over its whole box, so the strip under it is camera view whatever the card
+   * holds. The mock puts a floor tap 2.2 m ahead of the camera in that strip, the nearest it puts one, so every column from
+   * about 0.2 to 0.8 is inside the 3 m the sampler reads (TAP_RANGE_MAX_M, src/ar/tap-sampling.ts). Beside the card there
+   * is no such room on a phone: it covers the whole width but 16 px at each side, and those columns, x 0.02 and 0.98, are
+   * 3.35 m away. `?tap=single` does not help: it reads one hit instead of a burst and keeps the same range limit.
+   */
+  const BELOW_CARD = 0.9925
 
   test('opens on the ground stage, and a tap cannot skip ahead of it', async ({ page, request }) => {
     const place = await createPlace(request, 'stages')
@@ -618,8 +634,8 @@ test.describe('two-point calibration', () => {
       await storeFrame(request, place.id, {
         headingMarker: { x: 0, y: 0, z: 3.04 },
         separationM: 3.04,
-        // Wide on purpose: this test is about the panel, not the separation
-        // check, which the commit test above already covers.
+        // This test is about the panel and never commits. The commit would not read the record's tolerance in any case (see
+        // storeFrame), so this is only a value the server accepts.
         toleranceM: 25,
         pointLabels: ['north door frame', 'radiator corner'],
         referencePhotos: {
@@ -655,10 +671,16 @@ test.describe('two-point calibration', () => {
     const place = await createPlace(request, 'nophotos')
     try {
       // Every Place calibrated before this ticket is in exactly this state.
+      //
+      // The stored pair is the one placeBothMarkers taps below. This test commits, and a commit against a stored pair compares
+      // the distance of the pair it taps with the stored `separationM`, inside its own tolerance and not the record's
+      // (`toleranceM` here is only what the server requires: see storeFrame). A stored pair that is more than that tolerance
+      // longer or shorter than the taps (this test stored 3.04 m, with a tolerance of 25 m, before the commit stopped reading
+      // the record's) is the mismatch screen, and the card never closes.
       await storeFrame(request, place.id, {
-        headingMarker: { x: 0, y: 0, z: 3.04 },
-        separationM: 3.04,
-        toleranceM: 25,
+        headingMarker: { x: 0, y: 0, z: TAPPED_PAIR_M },
+        separationM: TAPPED_PAIR_M,
+        toleranceM: 0.15,
       })
 
       await startArWithPlace(page, place.name)
@@ -882,11 +904,17 @@ test.describe('two-point calibration', () => {
     try {
       await startArWithPlace(page, place.name)
       await reachLandmarkStage(page)
+      // Frozen, and read by the provider before the first tap (freezeMock): the only jump the flow then sees is the one below.
+      await freezeMock(page)
 
       await tapCanvas(page, TAP_A, 0.92)
       await page.locator('#project-calibration-confirm').click()
       await tapCanvas(page, TAP_B, 0.92)
+      // A first calibration is offered a check point after the heading marker, and "Use this alignment" is on the card only in
+      // review. The button here skips the step, so the shift below still comes after both markers and before the commit.
+      await page.locator('#project-calibration-check').click()
       const commit = page.locator('#project-calibration-commit')
+      await expect(commit).toBeVisible()
       await expect(commit).toBeEnabled()
 
       await page.evaluate(() => (window as unknown as Record<string, { jumpAt(n: number): number }>)['XR8'].jumpAt(300))
@@ -899,10 +927,13 @@ test.describe('two-point calibration', () => {
       await expect(page.locator('#project-calibration-commit')).toBeHidden()
       expect(twoPointFrame(await readPlace(request, place.id)), 'nothing was saved for a pair placed in a frame that moved').toBeUndefined()
 
-      // A pass made in the frame as it now is commits: it is watched from its own confirmation.
+      // A pass made in the frame as it now is commits: it is watched from its own confirmation. The Place still has no frame,
+      // so the check point is offered again, and skipped again.
       await tapCanvas(page, TAP_A, 0.92)
       await page.locator('#project-calibration-confirm').click()
       await tapCanvas(page, TAP_B, 0.92)
+      await page.locator('#project-calibration-check').click()
+      await expect(commit).toBeVisible()
       await expect(commit).toBeEnabled()
       await commit.click()
       await expect(page.locator(CALIB)).toHaveCount(0)
@@ -965,8 +996,12 @@ test.describe('two-point calibration', () => {
       await expect(copy).toContainText(/tap Point A again, the same spot as the photo/i)
       await expect(copy).not.toContainText(/permanent feature|recognise next visit/i)
 
+      // The same two pixels as visit 1 (placeBothMarkers), which the sampler reads: it refuses a spot over 3 m away, and the
+      // far edges of the view this test used before it had that limit (x 0.10 and 0.86) are 3.18 and 3.10 m from the camera.
       await freezeMock(page)
-      await tapCanvas(page, 0.10, 0.92)
+      await tapCanvas(page, TAP_A, 0.92)
+      // The landmark is down (its Confirm is up) before the ring is asked about: before it exists, "no ring" would hold for nothing.
+      await expect(page.locator('#project-calibration-confirm')).toBeVisible()
       expect(await sceneMarks(page, 'calibration distance ring'), 'no ring until the landmark is confirmed').toHaveLength(0)
       await page.locator('#project-calibration-confirm').click()
 
@@ -980,7 +1015,7 @@ test.describe('two-point calibration', () => {
       expect([rings[0]!.x, rings[0]!.y, rings[0]!.z]).toEqual([decals[0]!.x, decals[0]!.y, decals[0]!.z])
 
       // Point B at the same pixel is the same distance from A: the chip passes, and says what it did not check.
-      await tapCanvas(page, 0.86, 0.92)
+      await tapCanvas(page, TAP_B, 0.92)
       const chip = page.locator('#project-calibration-chip')
       await expect(chip).toBeVisible()
       await expect(chip).toHaveAttribute('data-state', 'pass')
@@ -995,9 +1030,11 @@ test.describe('two-point calibration', () => {
       await expect(page.locator('#project-calibration-compare-label-b')).toContainText('radiator corner')
       await expect(page.locator('#project-calibration-reference')).toBeHidden()
 
-      // Select B where it is, and put it 64 cm closer to A: the chip fails, which is what Commit would say.
-      await tapCanvas(page, 0.86, 0.92)
-      await tapCanvas(page, 0.70, 0.92)
+      // Select B where it is, and put it about 48 cm closer to A: the chip fails, which is what Commit would say. The card is
+      // between the two, and the columns beside it that are more than the allowed 0.17 m closer than B are a strip about 30 px
+      // wide at its edge, so the tap goes in the camera view under the card (BELOW_CARD) and not there.
+      await tapCanvas(page, TAP_B, 0.92)
+      await tapCanvas(page, 0.60, BELOW_CARD)
       await expect(chip).toHaveAttribute('data-state', 'fail')
       await expect(chip).toContainText(/closer together than stored/i)
 
@@ -1025,15 +1062,22 @@ test.describe('two-point calibration', () => {
       await startArWithPlace(page, place.name)
       await reachLandmarkStage(page)
       await freezeMock(page)
-      await tapCanvas(page, 0.10, 0.92)
+      // TAP_A and TAP_B, the pair placeBothMarkers taps, and not the far edges of the view this test used before the sampler
+      // read no spot over 3 m away: x 0.10 and 0.86 are 3.18 and 3.10 m from the camera, and a tap there is turned away.
+      const movedTo = 0.24 // 16 cm further out than TAP_A, on the same side of the card and 2.94 m from the camera
+      await tapCanvas(page, TAP_A, 0.92)
+      await expect(page.locator('#project-calibration-confirm')).toBeVisible()
       await page.locator('#project-calibration-confirm').click()
-      await tapCanvas(page, 0.86, 0.92)
+      await tapCanvas(page, TAP_B, 0.92)
+      // The check point is offered after the heading marker, and "Use this alignment" is on the card only in review: skip the step.
+      await page.locator('#project-calibration-check').click()
 
       // Select the landmark where it is, and put it somewhere else.
-      await tapCanvas(page, 0.10, 0.92)
-      await tapCanvas(page, 0.16, 0.92)
+      await tapCanvas(page, TAP_A, 0.92)
+      await tapCanvas(page, movedTo, 0.92)
 
       const commit = page.locator('#project-calibration-commit')
+      await expect(commit).toBeVisible()
       await expect(commit).toBeEnabled()
       await commit.click()
       await expect(page.locator(CALIB)).toHaveCount(0)
@@ -1055,11 +1099,11 @@ test.describe('two-point calibration', () => {
         y: (v * box!.height - (box!.height - frameSize.height * scale) / 2) / (frameSize.height * scale),
       })
       const landmark = frame!.referencePhotos!.landmark.tapPoint
-      expect(landmark.x).toBeCloseTo(intoPhoto(0.16, 0.92).x, 2)
-      expect(landmark.y).toBeCloseTo(intoPhoto(0.16, 0.92).y, 2)
-      expect(Math.abs(landmark.x - intoPhoto(0.10, 0.92).x), 'not the spot it was first tapped at').toBeGreaterThan(0.01)
+      expect(landmark.x).toBeCloseTo(intoPhoto(movedTo, 0.92).x, 2)
+      expect(landmark.y).toBeCloseTo(intoPhoto(movedTo, 0.92).y, 2)
+      expect(Math.abs(landmark.x - intoPhoto(TAP_A, 0.92).x), 'not the spot it was first tapped at').toBeGreaterThan(0.01)
       const heading = frame!.referencePhotos!.headingMarker.tapPoint
-      expect(heading.x).toBeCloseTo(intoPhoto(0.86, 0.92).x, 2)
+      expect(heading.x).toBeCloseTo(intoPhoto(TAP_B, 0.92).x, 2)
     } finally {
       await deletePlace(request, place.id)
     }
@@ -1073,11 +1117,16 @@ test.describe('two-point calibration', () => {
       await placeBothMarkers(page)
 
       // Owner R10: the ground plane is for the whole scan. The flow's own group is gone; the grid is the scene's now.
+      // What stands on it is the one origin decal (src/world/origin-decal.ts): a crosshair on the landmark and an arrow
+      // along the heading. The committed pair is no longer two decals of its own, one per marker.
       const names = await sceneObjectNames(page)
       expect(names).toContain('calibration floor plane')
-      expect(names).toContain('calibration anchor landmark')
+      expect(names).toContain('calibration origin')
+      expect(names).toContain('origin crosshair')
+      expect(names).toContain('origin heading arrow')
       expect(names).not.toContain('calibration placement')
       expect(await sceneMarks(page, 'calibration floor plane')).toHaveLength(1)
+      expect(await sceneMarks(page, 'calibration origin')).toHaveLength(1)
     } finally {
       await deletePlace(request, place.id)
     }
@@ -1091,24 +1140,28 @@ test.describe('two-point calibration', () => {
    * inside its picture, and where there is not it is not on screen: it is never under the card. It is measured on each draw,
    * so a screen that changes height (a toolbar that comes and goes, a phone turned) takes the panel away and brings it back.
    *
-   * The card takes taps over most of a phone's width, so the taps here are at the two edges of the view, outside it.
+   * The card takes taps over a phone's whole width but 16 px at each edge, and those columns are too far from the camera for
+   * the sampler to read (see BELOW_CARD), so the taps here are in the strip of camera view under the card, which it does not cover.
    */
   test('on a phone screen the stored photos are above the calibration card, with their crosshairs in them, or are not shown: never under it', async ({ page, request }) => {
     const place = await createPlace(request, 'phone')
     try {
-      const edgeTaps = async (): Promise<void> => {
+      const tapsUnderCard = async (): Promise<void> => {
         await freezeMock(page)
-        await tapCanvas(page, 0.02, 0.92)
+        await tapCanvas(page, TAP_A, BELOW_CARD)
         await expect(page.locator('#project-calibration-confirm')).toBeVisible()
         await page.locator('#project-calibration-confirm').click()
-        await tapCanvas(page, 0.98, 0.92)
+        await tapCanvas(page, TAP_B, BELOW_CARD)
       }
 
       // Visit 1 sets the frame at a small phone's size, with both photos.
       await page.setViewportSize({ width: 375, height: 667 })
       await startArWithPlace(page, place.name)
       await reachLandmarkStage(page)
-      await edgeTaps()
+      await tapsUnderCard()
+      // The check point is offered after the heading marker. Its step has no label field, and review has the one that names
+      // Point B, so the step is skipped first (as placeBothMarkers does).
+      await page.locator('#project-calibration-check').click()
       await page.locator('#project-calibration-label-input').fill('radiator corner')
       await expect(page.locator('#project-calibration-commit')).toBeEnabled()
       await page.locator('#project-calibration-commit').click()
@@ -1120,7 +1173,7 @@ test.describe('two-point calibration', () => {
       // Visit 2 is checked in review at three screen heights, one after another in the one session.
       await startArWithPlace(page, place.name)
       await reachLandmarkStage(page)
-      await edgeTaps()
+      await tapsUnderCard()
       await expect(page.locator('#project-calibration-chip')).toBeVisible()
       const panel = page.locator('#project-calibration-compare')
       const checkAt = async (size: { width: number; height: number }): Promise<boolean> => {
@@ -1165,33 +1218,147 @@ test.describe('two-point calibration', () => {
  * The check point (WP-04b): a third point after the heading marker, so that a later visit is checked by where its points are and
  * which way they face, and not only by how far apart two of them are.
  *
- * The mock's hit test maps a screen tap to the floor as `x = pose.x + (nx - 0.5) * 4` and `z = pose.z - 2.2 - (1 - ny) * 1.2`, and only
- * heights that are about the floor (`ny` above about 0.83) are accepted without a second tap. So every tap on the floor has nearly
- * the same `z`, and a third point 1 m off the line between the first two needs the camera to move: `XR8.jumpAt(0)` puts it 1 m
- * further along Z (the mock's frame-shift hook, which the scanner counts as a tracking shift and does not act on yet). The
- * mock is deterministic, so a second visit that taps the same pixels taps the same points, and its three points agree exactly.
+ * Three things about the scripted mock decide how these tests tap.
+ *
+ * **Where it puts a tap.** Its hit test maps a screen tap to the floor as `x = pose.x + (nx - 0.5) * 4` and `z = pose.z - 2.2 - (1 - ny) * 1.2`,
+ * and only heights that are about the floor (`ny` above about 0.7) are accepted without a second tap. So every tap on the floor has nearly
+ * the same `z`, and a third point 1 m off the line between the first two needs the camera to be somewhere else along Z. The mock is
+ * deterministic, so a second visit that taps the same pixels taps the same points, and its three points agree exactly.
+ *
+ * **How far it reaches.** The pair is tapped at 0.10 and 0.86 across, which are 3.04 m apart, and 3.18 m and 3.10 m from the camera: past
+ * the 3 m a calibration tap is read from (`TAP_RANGE_MAX_M`, src/ar/tap-sampling.ts). A spot past it is refused with how far it is, and
+ * the same spot tapped again is the person using it anyway (src/ar/calibration-taps.ts), so each of the two is tapped twice.
+ * `?tap=single` reads one hit per tap, with no burst of hits and no hold-still wait, and it keeps the range limit: the second tap is
+ * needed with it as well. These tests are not about how a tap is read, so each page is opened with it and no tap waits for a burst.
+ *
+ * **How the camera gets to the check point.** The mock's only move of the camera along Z is `XR8.jumpAt`, which puts it 1 m further in a
+ * single frame. That is a frame shift, and a shift after the landmark is confirmed sends the flow back to the landmark and clears the
+ * markers (WP-05b: `restartAfterDisturbance` in src/ar/project-calibration.ts; the test above that jumps the camera between the
+ * landmark and the commit holds it to that). A person walking to the check point is not a shift, so `walkToCheckPoint` walks the
+ * camera there a few millimetres a frame instead.
  */
 test.describe('check point', () => {
   test.setTimeout(240_000)
 
-  /** Tap A and B (0.10 and 0.86 across, 3.04 m apart), then the check point at `cx` across, from a camera 1 m further along Z. */
-  async function placeAbAndC(page: Page, cx: number, labels: { a?: string; c?: string } = {}): Promise<void> {
-    await page.evaluate(() => (window as unknown as Record<string, { freezeAt(n: number): number }>)['XR8'].freezeAt(300))
-    await tapCanvas(page, 0.10, 0.92)
+  /**
+   * Walks the mock's camera along Z. The mock has no such move, so the engine it installs on the page is wrapped before anything else
+   * runs: every pipeline module is handed a pose `offset` metres further along Z, and every hit comes back `offset` metres further
+   * along it, so a tap after the walk is read from a camera that has moved. `offset` moves 8 mm a frame (0.24 m/s at the mock's 30
+   * frames a second, which the frame-epoch tracker, src/ar/frame-epoch.ts, follows as walking) towards the target that
+   * `window.__checkPointWalk.to(metres)` sets. Each page starts at 0, as each session does.
+   */
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => {
+      const STEP_M = 0.008
+      let offset = 0
+      let target = 0
+      interface Point { x: number; y: number; z: number }
+      interface Reality { position?: Point; walked?: boolean }
+      interface PipelineModule { onUpdate?: (args: { processCpuResult?: { reality?: Reality } }) => unknown; walks?: boolean }
+      interface Hit { position: Point }
+      interface Engine {
+        addCameraPipelineModule(mod: PipelineModule): unknown
+        addCameraPipelineModules(mods: PipelineModule[]): unknown
+        XrController: { hitTest(x: number, y: number, types?: unknown): Hit[] }
+      }
+      const walkModule = (mod: PipelineModule): PipelineModule => {
+        const onUpdate = mod?.onUpdate
+        if (typeof onUpdate !== 'function' || mod.walks) return mod
+        mod.walks = true
+        mod.onUpdate = (args) => {
+          const reality = args?.processCpuResult?.reality
+          // One step a frame, however many modules are handed the frame, and the same pose to all of them.
+          if (reality?.position && !reality.walked) {
+            reality.walked = true
+            offset = Math.abs(target - offset) <= STEP_M ? target : offset + Math.sign(target - offset) * STEP_M
+            reality.position = { ...reality.position, z: reality.position.z + offset }
+          }
+          return onUpdate.call(mod, args)
+        }
+        return mod
+      }
+      const walkEngine = (engine: Engine): void => {
+        const addOne = engine.addCameraPipelineModule
+        const addMany = engine.addCameraPipelineModules
+        engine.addCameraPipelineModule = function (this: unknown, mod) { return addOne.call(this, walkModule(mod)) }
+        engine.addCameraPipelineModules = function (this: unknown, mods) { return addMany.call(this, mods.map(walkModule)) }
+        const controller = engine.XrController
+        const hitTest = controller.hitTest
+        controller.hitTest = function (this: unknown, x, y, types) {
+          return hitTest.call(this, x, y, types).map((hit) => ({ ...hit, position: { ...hit.position, z: hit.position.z + offset } }))
+        }
+      }
+      let installed: unknown
+      Object.defineProperty(window, 'XR8', {
+        configurable: true,
+        get: () => installed,
+        set: (engine: Engine) => {
+          installed = engine
+          walkEngine(engine)
+        },
+      })
+      ;(window as unknown as Record<string, unknown>)['__checkPointWalk'] = {
+        to: (metres: number) => { target = metres },
+        arrived: () => offset === target,
+      }
+    })
+  })
+
+  /**
+   * Walk the camera 1 m along Z, as a person walks to the check point, and wait until the page has read the last of it. The tracking line on
+   * the card counts the frame shifts the provider has seen, and a walk is none: if the line changes, the tracker read a step of the walk as a
+   * shift, which sends the flow back to the landmark at the next tap, and this says so here and not there.
+   */
+  async function walkToCheckPoint(page: Page): Promise<void> {
+    const tracking = page.locator('#project-calibration-tracking')
+    const before = await tracking.textContent()
+    await page.evaluate(() => (window as unknown as Record<string, { to(metres: number): void }>)['__checkPointWalk'].to(1))
+    await page.waitForFunction(() => (window as unknown as Record<string, { arrived(): boolean }>)['__checkPointWalk'].arrived(), null, { timeout: 120_000, polling: 100 })
+    // The card is redrawn every 200 ms.
+    await page.waitForTimeout(300)
+    expect(await tracking.textContent(), 'the walk was read as a frame shift').toBe(before)
+  }
+
+  /** The page of a check-point test: one hit per tap unless `query` says otherwise (see above), and the calibration open at the landmark. */
+  async function openAtLandmark(page: Page, placeName: string, query = '&tap=single'): Promise<void> {
+    await startArWithPlace(page, placeName, query)
+    await reachLandmarkStage(page)
+  }
+
+  /** Tap a spot that is past the range a tap is read from: refused the first time, with how far it is, and taken the second, at the same spot. */
+  async function tapFarSpot(page: Page, nx: number): Promise<void> {
+    await tapCanvas(page, nx, 0.92)
+    await expect(page.locator('#project-calibration-status')).toHaveText(/^That spot is 3\.\d m away\. Move closer and tap again\. Or tap the same spot again to use it anyway\.$/)
+    await tapCanvas(page, nx, 0.92)
+  }
+
+  /** Tap A and B (0.10 and 0.86 across, 3.04 m apart), confirming A between them, with the camera held still while they are read. */
+  async function tapPair(page: Page, labels: { a?: string } = {}): Promise<void> {
+    await freezeMock(page)
+    await tapFarSpot(page, 0.10)
     await expect(page.locator('#project-calibration-confirm')).toBeVisible()
     if (labels.a) await page.locator('#project-calibration-label-input').fill(labels.a)
     await page.locator('#project-calibration-confirm').click()
-    await tapCanvas(page, 0.86, 0.92)
+    await tapFarSpot(page, 0.86)
+  }
+
+  /**
+   * Tap A and B, then the check point at `cx` across, from a camera 1 m further along Z. The check point is read from the walked camera,
+   * which is inside the 3 m a tap is read from, and at 0.20 across only just: at tick 300, where the mock is held, that spot is 2.99993 m
+   * away. A different tick or row could put it past the limit, and the card would then say how far it is and not take the point.
+   */
+  async function placeAbAndC(page: Page, cx: number, labels: { a?: string; c?: string } = {}): Promise<void> {
+    await tapPair(page, labels)
     await expect(page.locator('#project-calibration-steps li[data-step=check]')).toHaveAttribute('data-state', 'active')
     // The step has no label field until its marker is down: a field here would name a point that is not there yet.
     await expect(page.locator('#project-calibration-label-field')).toBeHidden()
-    await page.evaluate(() => (window as unknown as Record<string, { jumpAt(n: number): number }>)['XR8'].jumpAt(0))
+    await walkToCheckPoint(page)
     await tapCanvas(page, cx, 0.92)
     // The field then names the check point, the marker placed last: what is typed after a tap names the point just tapped.
     if (labels.c) await page.locator('#project-calibration-label-input').fill(labels.c)
   }
 
-  /** The Place's frame once it carries a check point whose photo the server serves. */
+  /** The Place's frame once the server holds it with a check point that has a photo record (the frame is sent after the commit). */
   async function savedFrameWithCheckPoint(request: APIRequestContext, id: string): Promise<TwoPointFrame> {
     let frame: TwoPointFrame | undefined
     await expect(async () => {
@@ -1204,8 +1371,9 @@ test.describe('check point', () => {
   test('a first calibration can add a check point: the step, its guidance, the stored point with its name, and its photo', async ({ page, request }) => {
     const place = await createPlace(request, 'checkpoint')
     try {
-      await startArWithPlace(page, place.name)
-      await reachLandmarkStage(page)
+      // The default reader (a burst of hits, held still), which the rest of this describe sets aside for one hit: the first calibration with a
+      // check point is the flow a person takes, so one test reads all three of its taps the way they are read.
+      await openAtLandmark(page, place.name, '')
       await placeAbAndC(page, 0.30, { a: 'north door frame', c: 'by the radiator' })
 
       // In review, with three markers: the check point is named, placed and judged by what the fit can do with it.
@@ -1231,12 +1399,16 @@ test.describe('check point', () => {
       // In the Place frame: a point off the line between the pair, at about the height of the landmark.
       expect(Math.abs(point.x)).toBeGreaterThan(0.5)
       expect(Math.abs(point.y)).toBeLessThan(0.1)
-      expect(point.photo!.url).toBe(`/projects/${place.id}/reference-photos/ref-check1.jpg`)
-      expect(point.photo!.localKey).toBe(`${place.id}:check1`)
+      // A frame has an id and keeps its photos with it (WP-08): the record names the frame's own photo path, and the phone keeps the
+      // blob under the frame's id too, so that a copy kept for an earlier generation is never found by the record of a later one.
+      expect(typeof frame.frameId, 'the calibration gave the frame an id').toBe('string')
+      const photoPath = `/projects/${place.id}/frames/${frame.frameId}/ref-check1.jpg`
+      expect(point.photo!.url).toBe(photoPath)
+      expect(point.photo!.localKey).toBe(`${place.id}:${frame.frameId}:check1`)
       expect(frame.pointLabels).toEqual(['north door frame', ''])
       expect(frame.referencePhotos, 'the two markers keep their photos').toBeTruthy()
       await expect(async () => {
-        const served = await request.get(`/projects/${place.id}/reference-photos/ref-check1.jpg`)
+        const served = await request.get(photoPath)
         expect(served.status()).toBe(200)
         expect(served.headers()['content-type']).toContain('image/jpeg')
       }).toPass({ timeout: 30_000 })
@@ -1248,20 +1420,15 @@ test.describe('check point', () => {
   test('a return visit re-taps the check point, reads the residuals in cm, draws the stored points beside the markers, and is verified when they agree', async ({ page, request }) => {
     const place = await createPlace(request, 'checkreturn')
     try {
-      await startArWithPlace(page, place.name)
-      await reachLandmarkStage(page)
+      await openAtLandmark(page, place.name)
       await placeAbAndC(page, 0.30, { c: 'by the radiator' })
       await page.locator('#project-calibration-commit').click()
       await expect(page.locator(CALIB)).toHaveCount(0)
       const stored = await savedFrameWithCheckPoint(request, place.id)
 
       // Visit 2 — the same three points tapped again.
-      await startArWithPlace(page, place.name)
-      await reachLandmarkStage(page)
-      await page.evaluate(() => (window as unknown as Record<string, { freezeAt(n: number): number }>)['XR8'].freezeAt(300))
-      await tapCanvas(page, 0.10, 0.92)
-      await page.locator('#project-calibration-confirm').click()
-      await tapCanvas(page, 0.86, 0.92)
+      await openAtLandmark(page, place.name)
+      await tapPair(page)
 
       // The step asks for last time's point, with its photo and its name in the reference panel.
       await expect(page.locator('#project-calibration-title')).toHaveText('Tap the check point from last time')
@@ -1272,7 +1439,7 @@ test.describe('check point', () => {
       await expect(page.locator('#project-calibration-commit')).toBeHidden()
       await expect(page.locator('#project-calibration-check')).toHaveText('Skip the check point')
 
-      await page.evaluate(() => (window as unknown as Record<string, { jumpAt(n: number): number }>)['XR8'].jumpAt(0))
+      await walkToCheckPoint(page)
       await tapCanvas(page, 0.30, 0.92)
 
       // The residuals, in the verdict's words: how many points, how far off on average and the limit, then the points one by one,
@@ -1294,10 +1461,19 @@ test.describe('check point', () => {
       await commit.click()
       await expect(page.locator(CALIB)).toHaveCount(0)
 
-      // The stored points are drawn where this visit puts them: a ring for each, and the markers are all still there.
+      // What the commit leaves in the scene (dropCommittedOrigin, drawStoredConstellation and drawStoredPair in
+      // src/ar/project-calibration.ts). The stored points are drawn where this visit puts them: a ring for each of the three that were
+      // compared. The landmark and the heading marker are not rings of their own but one origin decal (the crosshair on the
+      // landmark, the arrow to the heading marker), and the stored pair is drawn as a second decal beside it; the check point keeps
+      // a marker of its own.
       const names = await sceneObjectNames(page)
       expect(names.filter((name) => name === 'calibration stored reference')).toHaveLength(3)
-      for (const name of ['calibration anchor landmark', 'calibration anchor heading', 'calibration anchor check']) expect(names).toContain(name)
+      expect(names.filter((name) => name === 'calibration origin')).toHaveLength(1)
+      expect(names.filter((name) => name === 'calibration stored origin')).toHaveLength(1)
+      // Each decal has its arrow to the heading point: the committed one and the stored one beside it.
+      expect(names.filter((name) => name === 'origin heading arrow'), 'an arrow on the committed decal and one on the stored decal').toHaveLength(2)
+      expect(names).toContain('calibration anchor check')
+      for (const name of ['calibration anchor landmark', 'calibration anchor heading']) expect(names, `${name} was replaced by the origin decal`).not.toContain(name)
 
       // A visit that matched leaves the Place's frame as it was: same record, same time.
       const after = twoPointFrame(await readPlace(request, place.id))
@@ -1311,15 +1487,13 @@ test.describe('check point', () => {
   test('a check point tapped a metre and more from where it was is a mismatch the card explains, and "Adjust a point" goes back to fix it', async ({ page, request }) => {
     const place = await createPlace(request, 'checkoff')
     try {
-      await startArWithPlace(page, place.name)
-      await reachLandmarkStage(page)
+      await openAtLandmark(page, place.name)
       await placeAbAndC(page, 0.30)
       await page.locator('#project-calibration-commit').click()
       await expect(page.locator(CALIB)).toHaveCount(0)
       const stored = await savedFrameWithCheckPoint(request, place.id)
 
-      await startArWithPlace(page, place.name)
-      await reachLandmarkStage(page)
+      await openAtLandmark(page, place.name)
       // The check point 0.4 m along the baseline from where it was: the pair is exactly right, so the distance between the two is as
       // stored, and only the third point can say so.
       await placeAbAndC(page, 0.20)
@@ -1336,9 +1510,11 @@ test.describe('check point', () => {
       await expect(live).toContainText(/3 points are \d+\.\d cm off the stored ones on average \(limit 8\.4 cm\)\./)
       await expect(live).toContainText(/The worst point is \d+\.\d cm off/)
       await expect(live).toContainText(/A \d+\.\d cm · B \d+\.\d cm · C \d+\.\d cm/)
-      // The ways out: adjust a point, re-place them, keep them anyway, continue without. "Wrong Place?" is the host's to supply.
-      for (const id of ['adjust', 'replace', 'override', 'skip']) await expect(page.locator(`#project-calibration-${id}`)).toBeVisible()
-      await expect(page.locator('#project-calibration-wrong-place')).toBeHidden()
+      // The ways out: adjust a point, re-place them, replace the Place's reference with them (which asks first: WP-08), continue without,
+      // and, since a mismatch can be a visit to the wrong Place, choose another, which the host supplies (`onWrongPlace`, src/ar/calibration-run.ts).
+      for (const id of ['adjust', 'replace', 'override', 'skip', 'wrong-place']) await expect(page.locator(`#project-calibration-${id}`)).toBeVisible()
+      await expect(page.locator('#project-calibration-override')).toHaveText("Replace this Place's reference")
+      await expect(page.locator('#project-calibration-wrong-place')).toHaveText('Wrong Place? Choose another')
       await expect(page.locator('#project-calibration-commit')).toBeHidden()
 
       // Back to the markers: select the check point by tapping it, tap where it was, and the readout follows.
@@ -1361,19 +1537,14 @@ test.describe('check point', () => {
   test('skipping the check point on a return visit says what is then checked, and commits a visit that is checked by distance', async ({ page, request }) => {
     const place = await createPlace(request, 'checkskip')
     try {
-      await startArWithPlace(page, place.name)
-      await reachLandmarkStage(page)
+      await openAtLandmark(page, place.name)
       await placeAbAndC(page, 0.30)
       await page.locator('#project-calibration-commit').click()
       await expect(page.locator(CALIB)).toHaveCount(0)
       const stored = await savedFrameWithCheckPoint(request, place.id)
 
-      await startArWithPlace(page, place.name)
-      await reachLandmarkStage(page)
-      await page.evaluate(() => (window as unknown as Record<string, { freezeAt(n: number): number }>)['XR8'].freezeAt(300))
-      await tapCanvas(page, 0.10, 0.92)
-      await page.locator('#project-calibration-confirm').click()
-      await tapCanvas(page, 0.86, 0.92)
+      await openAtLandmark(page, place.name)
+      await tapPair(page)
       await expect(page.locator('#project-calibration-title')).toHaveText('Tap the check point from last time')
       await page.locator('#project-calibration-check').click()
 
@@ -1383,7 +1554,11 @@ test.describe('check point', () => {
       await expect(page.locator('#project-calibration-check')).toHaveText('Tap the check point from last time')
       await page.locator('#project-calibration-commit').click()
       await expect(page.locator(CALIB)).toHaveCount(0)
-      expect((await sceneObjectNames(page)).filter((name) => name === 'calibration stored reference'), 'the pair, as it always was').toHaveLength(2)
+      // Compared by distance, the stored pair is drawn as it always was: a ring for each of the two, and the pair as a decal.
+      const names = await sceneObjectNames(page)
+      expect(names.filter((name) => name === 'calibration stored reference'), 'the pair, as it always was').toHaveLength(2)
+      expect(names.filter((name) => name === 'calibration stored origin')).toHaveLength(1)
+      expect(names, 'the visit took no check point').not.toContain('calibration anchor check')
       expect(twoPointFrame(await readPlace(request, place.id))?.checkPoints).toEqual(stored.checkPoints)
     } finally {
       await deletePlace(request, place.id)
@@ -1391,9 +1566,9 @@ test.describe('check point', () => {
   })
 
   /**
-   * How much of the camera view is left above the card at a phone's size, in px: the top edge of the card. The mock cannot be tapped
-   * at a phone's size (its floor is the bottom of the screen, which is where the card sits), so the stage is reached at the desktop
-   * size and the page is then made the phone's: the card's size is its content's and the width it is given, and both are the phone's.
+   * How much of the camera view is left above the card at a phone's size, in px: the top edge of the card. The stage is reached at the
+   * desktop size, where there is room beside the card to tap, and the page is then made the phone's: the card's size is its content's and
+   * the width it is given, and both are the phone's. (At a phone's size the one free strip to tap in is the one under the card, BELOW_CARD.)
    */
   async function uncoveredAt(page: Page, size: { width: number; height: number }): Promise<number> {
     await page.setViewportSize(size)
@@ -1413,12 +1588,8 @@ test.describe('check point', () => {
     const place = await createPlace(request, 'smallphone')
     const desktop = page.viewportSize() ?? { width: 1280, height: 720 }
     try {
-      await startArWithPlace(page, place.name)
-      await reachLandmarkStage(page)
-      await page.evaluate(() => (window as unknown as Record<string, { freezeAt(n: number): number }>)['XR8'].freezeAt(300))
-      await tapCanvas(page, 0.10, 0.92)
-      await page.locator('#project-calibration-confirm').click()
-      await tapCanvas(page, 0.86, 0.92)
+      await openAtLandmark(page, place.name)
+      await tapPair(page)
       await expect(page.locator('#project-calibration-title')).toHaveText('Add a check point (recommended)')
       for (const phone of [...PHONES, { width: 320, height: 568 }]) {
         const top = await uncoveredAt(page, phone)
@@ -1426,7 +1597,7 @@ test.describe('check point', () => {
         if (phone.height >= 640) expect(top, `the check step at ${phone.width}x${phone.height}`).toBeGreaterThanOrEqual(ENOUGH_CAMERA_VIEW_PX)
       }
       await page.setViewportSize(desktop)
-      await page.evaluate(() => (window as unknown as Record<string, { jumpAt(n: number): number }>)['XR8'].jumpAt(0))
+      await walkToCheckPoint(page)
       await tapCanvas(page, 0.30, 0.92)
       await expect(page.locator('#project-calibration-title')).toHaveText('Check the alignment')
       await expect(page.locator('#project-calibration-label-field')).toBeVisible()
@@ -1441,8 +1612,7 @@ test.describe('check point', () => {
       await savedFrameWithCheckPoint(request, place.id)
 
       // The return visit with the check point a long way off: the mismatch screen, which has the most words on it.
-      await startArWithPlace(page, place.name)
-      await reachLandmarkStage(page)
+      await openAtLandmark(page, place.name)
       await placeAbAndC(page, 0.20)
       const live = page.locator('#project-calibration-fit')
       await expect(live).toHaveAttribute('data-state', 'mismatch')
@@ -1469,13 +1639,9 @@ test.describe('check point', () => {
     const place = await createPlace(request, 'nocheck')
     try {
       await storeFrame(request, place.id, { headingMarker: { x: 0, y: 0, z: 3.04 }, separationM: 3.04, toleranceM: 25 })
-      await startArWithPlace(page, place.name)
-      await reachLandmarkStage(page)
+      await openAtLandmark(page, place.name)
       await expect(page.locator('#project-calibration-steps li[data-step=check]')).toBeHidden()
-      await page.evaluate(() => (window as unknown as Record<string, { freezeAt(n: number): number }>)['XR8'].freezeAt(300))
-      await tapCanvas(page, 0.10, 0.92)
-      await page.locator('#project-calibration-confirm').click()
-      await tapCanvas(page, 0.86, 0.92)
+      await tapPair(page)
       // Straight to review: nothing is added to an existing frame, because a check point would be taken through this visit's own pair.
       await expect(page.locator('#project-calibration-title')).toHaveText('Check the alignment')
       await expect(page.locator('#project-calibration-check')).toBeHidden()

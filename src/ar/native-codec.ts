@@ -5,6 +5,7 @@
  */
 import type { Pose } from './provider.ts'
 import type { TrackingStatus } from './tracking-quality.ts'
+import { REASON_RELOCALIZING } from './frame-epoch.ts'
 
 export function base64ToBytes(base64: string): Uint8Array {
   const binary = atob(base64)
@@ -117,5 +118,30 @@ export function trackingStatusFromNative(state: string): TrackingStatus {
       return 'LIMITED'
     default:
       return 'UNKNOWN'
+  }
+}
+
+/**
+ * The reason a native tracking state gives for being limited, in the words the tracking code reads (src/ar/frame-epoch.ts,
+ * src/ar/tracking-quality.ts), or undefined for a state that names none. The status alone ("LIMITED") says tracking is poor;
+ * the reason is what says a relocalization is under way, which is a discontinuity by itself however short it is.
+ *
+ * Only the reasons the two native layers send are named, each as that layer spells it (ScanARPlugin.swift `describe()`,
+ * ScanARRenderer.java `trackingName()`). `relocalizing` is ARKit's alone: ARCore has no relocalization state, so a session on
+ * Android never reports one, and nothing here makes one up. A `limited.` state this build does not know reads as no reason, as
+ * trackingStatusFromNative() reads it as UNKNOWN: a layer that adds a state cannot make the app believe more than it said.
+ */
+export function trackingReasonFromNative(state: string): string | undefined {
+  switch (state) {
+    case 'limited.relocalizing':
+      return REASON_RELOCALIZING
+    case 'limited.initializing':
+      return 'INITIALIZING'
+    case 'limited.excessiveMotion':
+      return 'EXCESSIVE_MOTION'
+    case 'limited.insufficientFeatures':
+      return 'INSUFFICIENT_FEATURES'
+    default:
+      return undefined
   }
 }

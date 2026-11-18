@@ -75,9 +75,14 @@ is not an object with a frame id (or null) and a known reason is a `400`.
 **3. An unknown generation is neutral.** Every frame and scan written before ids has none. That reads as "frame not
 recorded", never as a different frame: only two known ids that differ read as "previous reference". The one tier that has
 no generation at all is the one-point frame (`ground-tap-compass`): a one-point scan is "not in Place frame", as is a
-scan that was never calibrated and a known-distance one (its matrix carries the camera solve's own coordinates). That is
-`isInPlaceFrame` in the shared file: the one predicate the counts and Thing matching (D6) use here, and the one the client's
-chip is to use (WP-08c; there is no chip in this slice). A Thing-matching job leaves those scans out until they are calibrated
+scan that was never calibrated, a known-distance one (its matrix carries the camera solve's own coordinates), and a two-point
+scan whose commit wrote no Place frame and matched none: a commit whose floor check was bypassed, on a first visit, over a mismatch
+(the button then reads "Record as unverified" and replaces nothing) or in an improve run (`mayWritePlaceFrame` never lets a
+bypassed commit write the frame, and `leavesScanOutsidePlaceFrame`, `src/ar/ground-gate.ts`, says what such a commit then is). Its
+record says so itself, only when it is true: `ScanCalibration.outsidePlaceFrame` in the nested record, and
+`ScanManifest.calibrationOutsidePlaceFrame` in the manifest. That is `isInPlaceFrame` in the shared file, which reads it: the one
+predicate the counts and Thing matching (D6) use, and the one the client's chip uses (`frameChipFor`, `src/viewer/frame-banner.ts`,
+asks it, and the chip reads "not in Place frame"), so the counts, Thing matching and the chip are one rule. A Thing-matching job leaves those scans out until they are calibrated
 and says how many in its result (`scansLeftOutNote`, `server/thing_match.ts`), so a Place whose scans are all out of frame is not
 mistaken for one where nothing was found. Things already made from such scans stay.
 
@@ -92,7 +97,12 @@ a view of the scans, and one the Place's editor may never have opened. One known
 frame id is read from the nested record when no flat `calibrationFrameId` key is there, so such a scan counts as "frame not
 recorded" and not under the generation it was measured against. The reader prefers the flat key, so a scan whose sidecar
 carries it (the client slice writes it at upload) keeps its generation through that job; scans uploaded before it do not, and
-`splat-align` has no UI.
+`splat-align` has no UI. The statement that a scan is in no Place frame (decision 3) does not share the limit: the exporter writes
+`calibrationFrameId` beside the nested record and no `calibrationOutsidePlaceFrame` (`src/export/gltf.ts`), but
+`withReplacedCalibration` (`server/calibration_fields.ts`) writes the flat `calibrationOutsidePlaceFrame` when a `splat-align` job
+replaces a record that said it, and `asOutsidePlaceFrame` reads the flat key first, so a count read from the sidecar
+(`tallyScansByFrame`) and the world row, which keeps a value the sidecar no longer gives (`refreshWorldScans`, as it must for a value
+that can only be true), agree after the job.
 
 **6. A merge or a moved scan must be in the frame it joins, or say it knows.** `POST /projects/:id/merge` and
 `PATCH /projects/:id/scans/:scanId` are `409 frame-mismatch` when the scans would join a Place whose frame is not the one
@@ -135,9 +145,20 @@ says how many were kept (`handOver.placementsKept`) so the editor can tell the p
 travel. "Manual alignment lost on reassign = 0" holds as: nothing a person did is destroyed; a placement that cannot mean the
 same thing in the new Place is not applied there, and is counted.
 
+**A merge does not keep them.** It deletes the merged-away Place, and the world they were kept in goes with the Place once
+everything in it has been handed over (Consequences, "A merged-away Place's world is removed"): a scan cannot be filed under a
+Place the registry does not have, so it cannot come back, and that world holds the Place's name, location and Things. For a
+merge, then, the count is of placements that went, and not of placements kept. The answer says `sourceWorldRemoved`, and
+`placementsRemoved` when the world held any, counted from the world's own file as it was removed (a repeat of the merge counts
+them too), and it does not say `placementsKept` of a world that is gone. "Manual alignment lost on reassign = 0" is a claim about
+a reassign, which is not a deletion. A merge says what it removed: what means the same in the target's world comes with the
+scan, and what does not goes with the Place's world and is counted as removed. `DELETE /projects/:id` removes a Place's world in
+the same way, with the placements it kept for scans that were moved out of the Place earlier, and does not count them.
+
 Queued and running jobs are dropped, not carried: the pump finds a job by the slug of the world it was queued in, so a job
 moved to another world could never run. A scan filed under no Place, or under one the registry does not have, has nowhere to go
-and its records are dropped, as they always were. The merge no longer relabels the source's world as the target's.
+and its records are dropped, as they always were. The merge no longer relabels the source's world as the target's: it removes
+it, once nothing in it is waiting for the hand-over below.
 
 The hand-over never waits for the other world's lock (the caller holds one, and two callers that each want the other's would
 wait for good), so it can be put off, and the module that runs it (`server/world/world_hand_over.ts`) sees to the rest. It is a
@@ -151,7 +172,8 @@ times in the first moments, and answers `handOver: { pending: n }` for scans sti
 1 s and twice as long each time, six times, which finishes the job without anybody reading the old world; and so does anybody's
 next read of it. A hand-over still waiting when the server stops is done by the next read of the old world, and until then
 the scan and its records are there, where nothing has been taken from them. So the move is complete when the routes answer
-unless they say `pending`; they never say it was complete when it was not.
+unless they say `pending`; they never say it was complete when it was not. A merge removes the merged-away Place's world only
+when nothing is waiting in it, so a hand-over that is `pending` still has the world it is read from.
 
 **8. Photos belong to their frame.** `POST /projects/:id/frames/:frameId/reference-photos` and
 `GET /projects/:id/frames/:frameId/ref-<role>.jpg` keep a frame's photos in `<Place>/frames/<frameId>/`. The roles are
@@ -176,7 +198,9 @@ and every Place already saved keeps its type.
 
 Nothing parallel is added (ADR 0001). The schema is S0's and is not edited here: `ProjectSpatialFrame.frameId`,
 `ScanCalibration.frameId`, `ScanManifest.calibrationFrameId`, `Project.frameHistory`, `FrameHistoryEntry` and
-`FrameReplaceReason`, with `isFrameId`, `FRAME_PHOTO_ROLES` and `framePhotoPath` from `src/world/spatial-frame.ts`. The
+`FrameReplaceReason`, with `isFrameId`, `FRAME_PHOTO_ROLES` and `framePhotoPath` from `src/world/spatial-frame.ts`. One optional
+flag was added to it afterwards, for decision 3: `ScanCalibration.outsidePlaceFrame` and its manifest projection
+`ScanManifest.calibrationOutsidePlaceFrame` (`src/world/types.ts`), written only when true. The
 write is WP-03a's `applySpatialFrameWrite`, extended; the counts extend `countScansForProject` and read
 `calibrationFromMeta`; the move extends `rewriteScanProject`, `rewriteProjectReferences` and `refreshWorldScans` and uses
 `mutateProjects`, `mutateWorldFiles` and `withWorldLock`; the photos extend `server/project_media.ts`; the id is
@@ -204,7 +228,7 @@ beside it; there is no world role on them.
 - `GET /projects/:id/frame-status` answers `FrameStatus` (`src/world/frame-generations.ts`): `projectId`, `frame` (or
   null), `frameId` (or null), `revision`, `scanCount`, `scansByFrame` (frame id to count, two-point scans that name their
   frame), `unrecordedScans` (two-point scans that name none), `notInFrameScans` (never calibrated, one-point,
-  known-distance), `scansOnCurrentFrame` (what a replacement would leave in a previous reference: the count of the current
+  known-distance, and two-point scans whose commit wrote no Place frame and matched none), `scansOnCurrentFrame` (what a replacement would leave in a previous reference: the count of the current
   frame's id, or `unrecordedScans` while the current frame has no id) and `history`. `404 { error: 'Not found' }`.
 - `POST /projects/:id/merge`, body `{ sourceProjectId, acceptFrameMismatch? }`, and `PATCH /projects/:id/scans/:scanId`,
   body `{ floorId?, roomId?, areaId?, acceptFrameMismatch? }`: `409 FrameMismatchBody` =
@@ -212,11 +236,19 @@ beside it; there is no world role on them.
   or null and `error` is a sentence for a person. A client that cannot render the code can show `error`. The sentence says what was
   compared: that the frames differ when both are known, and, for a scan that does not say which frame it was aligned in (it predates
   ids and its Place holds none to compare it with, so `source` is null), that nothing says it is the same. The success answers
-  are `{ ok: true }` and `{ ok: true, project, alreadyMerged }` as before, with one optional field, `handOver`
-  (`HandOverReport`, `src/world/frame-generations.ts`), present only when it has something to say: `pending` (scans whose records
-  have not reached the new Place's world yet; they will) and `placementsKept` (hand-set placements that stay in the old world,
-  because they are positions in it). A client that does not know `handOver` reads the answers it always did; one that does can
-  tell the person.
+  are `{ ok: true }` for a reassign and `{ ok: true, project, alreadyMerged, sourceWorldRemoved }` for a merge, with one
+  optional field, `handOver` (`HandOverReport`, `src/world/frame-generations.ts`), present only when it has something to say:
+  `pending` (scans whose records have not reached the new Place's world yet; they will) and `placementsKept` (hand-set
+  placements that stay in the old world, because they are positions in it; a merge says it only of a world it keeps). The
+  merge's answer also says what became of the merged-away Place's world. `sourceWorldRemoved` is `true` when the Place is
+  gone and no world of it is left. It is `false` when a world of it was kept: a scan is still listed in it (its hand-over is
+  `pending`, or it is an upload with no GLB, which a merge does not move), or a job is queued or running in it; or when the
+  Place is not shown to be gone: a scan's record still names it, or the registry cannot be read. Asking for the same merge
+  again, or `DELETE /projects/:id`, removes a world that was kept once nothing is in the way. `placementsRemoved` is present
+  only when it is above zero: how many hand-set placements went with the world that was removed (the ones `placementsKept`
+  counts while their world stays), counted from the world's own file, so that a repeat of the merge counts them too. When a
+  world was removed, the answer carries no `placementsKept`. A client that does not know these fields reads the answers it
+  always did; one that does can tell the person.
 - Photos: `POST /projects/:id/frames/:frameId/reference-photos` (multipart `image`, `meta` with the same fields as the
   legacy route and `role` from `FRAME_PHOTO_ROLES`) answers `{ ok, role, url }`; `GET /projects/:id/frames/:frameId/ref-<role>.jpg`
   answers `image/jpeg`, `404` when there is no such photo. A photo is uploaded after the server holds the frame. A frame that
@@ -233,8 +265,9 @@ beside it; there is no world role on them.
 **Easier.** A scan can be told to be of the current reference or of an earlier one, so "scans silently left in a
 superseded frame" is a list and not a surprise; each is counted by `frame-status` and carries `calibrationFrameId`. The
 server never writes one reference's photos over another's, and a frame record is never edited in place. A merge or a
-reassign across frames cannot happen by accident, and one that is chosen loses nothing a person did: what means the same in the
-new Place comes with the scan, and what cannot stays where it was made and is counted.
+reassign across frames cannot happen by accident, and one that is chosen loses nothing a person did without saying so: what
+means the same in the new Place comes with the scan, and what cannot stays where it was made and is counted, or, for a merge,
+which deletes the merged-away Place's world, goes with that world and is counted as removed (decision 7).
 
 **Harder.** A client that predates ids cannot replace a Place's frame once the Place has an id. Its override is told it lost,
 and it adopts the frame the Place holds. That is the intended degradation, and it is what the phone's existing code does for
@@ -244,10 +277,25 @@ takes no photo from the legacy upload route, so an old app that finds one it can
 record, not a repair: the scans of a previous reference are listed, not re-registered (that is WP-15's proposals, and D16
 gates them).
 
-**A merged-away Place's world is emptied, not relabelled.** The merge used to relabel the source's world file as the target's;
-it no longer does, because that made a second world for the target that nothing opens. A share link, or an editor tab, still
-open on the source's world shows it with no scans from the next read of it (they are in the target's world), where it showed the
-scans before. `GET /worlds` lists that emptied world (`scanCount` 0), as it lists every world file.
+**A merged-away Place's world is removed, not relabelled and not left.** The merge used to relabel the source's world file as
+the target's; it no longer does, because that made a second world for the target that nothing opens. It does not leave the
+world as it was either, emptied of its scans and still the Place's: nothing opens the world of a Place that is out of the
+registry, and it holds that Place's name, location, Things and comments, which `GET /worlds/:slug` answers to a request that
+carries no token (docs/operations/PRIVACY.md, section 5), and its share tokens, which that route holds back from such a
+request. Once the scans are filed under the target and their notes are handed over, the merge removes the world with its
+export (`removeMergedAwayWorld`, `server/main.ts`), unless something in it is waiting: a scan row, a job queued or running, a
+scan record that still names the Place, or a registry that cannot be read. A world that cannot be removed is a 500 with a
+fixed message, the Places stay merged, and the same request finishes it. What was the world's own goes with it: its name,
+location, Things, share tokens, the notes on the whole Place, and the hand-set placements it kept (decision 7), which the
+answer counts as `placementsRemoved`. A share link, or an editor tab, still open on the source's world is answered as any
+address with no world is: `GET /worlds/:slug` builds a world with no Place (`readWorldUnlocked` and `synthesizeWorld`,
+`server/main.ts`), named from the address, which holds none of what the Place's world held (its name, address, Things or
+share tokens). It lists up to 24 of the stored scans that no Place holds (the ones that pass `shouldIncludeInWorld`) or, when
+there are none, up to eight of the stored scans of any Place (the default world's fallback), which carry their own locations
+as they do in any world, and it is saved: `GET /worlds` lists it, with `projectId` null and the scans it lists, as it lists
+every world file, and not as an emptied world with no scans. That is how the server answers an address that has no world, so
+it is not new to a merge, and it is not decided here: the owner may want such an address to be a 404. No route removes a
+world that says it is no Place's.
 
 **The editor's Places panel does not read the new answers yet.** `src/viewer/places.ts` calls merge and assign without looking at
 the status, so a refused move is silently nothing there; it is behind `VITE_ENABLE_PLACE_COMPOSER`, which is off. WP-08c reads the

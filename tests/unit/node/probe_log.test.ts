@@ -1339,7 +1339,7 @@ test("source shape: the call hands the probe the scanner's own hit test and cali
   assert.match(call, /^installProbeLog\(\{\n    canvas,\n    provider,\n/, "the scanner's own canvas, which the calibration is also given, and the scanner's provider")
   assert.match(main.slice(main.indexOf('await runProjectCalibration({')), /\n      canvas,\n/, 'the calibration is handed the same `canvas`, so a probe tap lands where a calibration tap does')
   assert.match(call, /calibration: \(\) => sessionCalibration/)
-  assert.match(call, /runtime: use8thWall \? '8thwall' : 'webxr'/)
+  assert.match(call, /runtime: probeRuntimeLabel\(provider, use8thWall\)/, 'the runtime is named by the one function that knows the native layer as well as the two web runtimes (it read the two-word expression, and called every native run webxr)')
   assert.match(call, /firstPose: \(\) => poseHistory\[0\]/)
 })
 

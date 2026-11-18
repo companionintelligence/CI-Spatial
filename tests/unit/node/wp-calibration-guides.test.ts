@@ -1,7 +1,8 @@
 /**
- * The marks the calibration flow draws on the floor besides its markers (WP-07): the ring at a stored point's distance and
- * the floor grid that outlives the flow. src/ar/calibration-guides.ts, and the ring arithmetic it shares with the anchor
- * decal, `ringVertices` in src/world/anchor-marker.ts.
+ * The ring the calibration flow draws on the floor besides its markers (WP-07): the ring at a stored point's distance.
+ * src/ar/calibration-guides.ts, and the ring arithmetic it shares with the anchor decal, `ringVertices` in
+ * src/world/anchor-marker.ts. (The floor grid that outlives the flow is `keepFloorPlane` in src/ar/project-calibration.ts,
+ * from the origin decal's wave: it is held by origin_lifecycle.test.ts, not here.)
  *
  * The ring arithmetic was inline in `buildAnchorMarker` and is now a function both rings call, so the one thing to hold
  * is that the decal's ring did not change: its vertices are compared, bit for bit, with the loop it was extracted from,

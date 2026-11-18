@@ -8,8 +8,8 @@
  * which way it draws the AR north tick, what the one-point tier builds and when it refuses, and what lands on
  * the records it returns.
  *
- *  - The north tick is read off the real `calibration anchor landmark` group the flow adds to the scene, and
- *    must point at true north.
+ *  - The north tick is read off the real `origin north tick` of the `calibration origin` decal the flow adds to the
+ *    scene (src/world/origin-decal.ts), and must point at true north.
  *  - The two-point records carry `anchorBearingDeg` (true bearing of session +Z), `projectBearingDeg` (true
  *    bearing of the landmark-to-marker baseline) and `bearingConvention: 2`.
  *  - The one-point frame has project +Z at true north, and without a compass reading it does not commit: it
@@ -153,6 +153,14 @@ interface Setup {
   compass?: (perfect: number) => number | null
   project?: Partial<Project>
 }
+
+/**
+ * What a flow has left in the scene besides its own group. A commit draws its origin, its kept floor grid and its markers as
+ * direct children of the scene, outside the `calibration placement` group that goes with the flow, so this is what a commit
+ * left. It names nothing a commit draws, so it cannot be emptied by renaming a drawing: it was `getObjectByName` of the two
+ * markers the origin decal replaced that kept two of the "nothing was committed" assertions true of every scene.
+ */
+const leftBehind = (scene: THREE.Scene): string[] => scene.children.filter((child) => child.name !== 'calibration placement').map((child) => child.name)
 
 async function startFlow(t: TestContext, setup: Setup) {
   const card = new FakeElement()
@@ -352,7 +360,7 @@ test('one point with no compass reading: it does not commit, says why, and drops
     flow.status(),
     'No usable compass bearing, so one point cannot set the heading. Point the camera ahead, not down, and try again, or use two points.',
   )
-  assert.equal(flow.scene.getObjectByName('calibration anchor landmark'), undefined, 'no anchor was committed to the scene')
+  assert.deepEqual(leftBehind(flow.scene), [], 'nothing was committed to the scene')
   // Two points is still on offer: the compass was never needed for it.
   flow.press('project-calibration-confirm')
   assert.equal(flow.part('project-calibration-title').textContent, 'Place the heading marker')
@@ -426,7 +434,7 @@ test('one point with the camera looking at the floor: the compass has a reading 
   await settle()
   assert.equal(flow.isClosed(), false, 'the flow is still open: a bearing that may be a quarter turn out is not stored')
   assert.match(flow.status(), /^No usable compass bearing, so one point cannot set the heading\. Point the camera ahead, not down/)
-  assert.equal(flow.scene.getObjectByName('calibration anchor landmark'), undefined, 'nothing was committed to the scene')
+  assert.deepEqual(leftBehind(flow.scene), [], 'nothing was committed to the scene')
 })
 
 test('two points with the camera looking at the floor: the frame stands and the bearings are null, as with no compass', { timeout: 20_000 }, async (t) => {

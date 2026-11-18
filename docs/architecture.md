@@ -321,7 +321,7 @@ Routes are registered at the top level of `server/main.ts`. (Server-side Deno mo
 | `/process-scan` | POST | JSON `{ filename, action, sessionId }` | `{"action":"...","result":"..."}` | **Synchronous** scan-analysis actions: `object-count`, `scene-description`, `floor-plan`. Distinct from the async world job queue. |
 | `/upload-scan` | POST | Multipart `{ file: File(.glb), metadata?: JSON }` | `{"filename":"...","size":N}` | Saves `.glb` to `./scans/` and persists a `.json` metadata sidecar. |
 | `/scans` | GET | None | `[{ filename, size, uploadedAt }]` | Lists uploaded files, newest first. |
-| `/scans/:filename` | GET | Filename param | Binary stream (`model/gltf-binary`) | Serves GLB with `public, max-age=3600`. |
+| `/scans/:filename` | GET | Filename param | Binary stream (`model/gltf-binary`) | Serves the GLB as an attachment with `private, no-store`: the route is behind the session guard once sign-in is on, so no shared cache may keep it. |
 | `/scans/:filename/manifest` | GET | Filename param | `ScanManifest` JSON | Optimization artifact index (optimized + LODs + stage log). 404 until the job runs. |
 | `/scans/:filename/optimize` | POST | Filename param | `WorldJob` (202) | Manually (re-)enqueue the optimization job (dedupes against an in-flight one). |
 | `/scan-locations` | GET | None | `[{ filename, geoLat, geoLng, geoBearing, … }]` | Geo metadata for all scans (map view). |
@@ -555,7 +555,9 @@ surface.
 
 **8th Wall** is the primary runtime because one API covers Android, iOS, and
 headsets. **WebXR `immersive-ar`** is the secondary path for devices where 8th
-Wall is unavailable (Quest browser, Android XR). A thin `ARProvider` abstraction
+Wall is unavailable (Quest browser, Android XR). That is the order in a browser. In the Scan shells (the iOS and Android apps)
+the phone's own ARKit or ARCore session comes first, through the `ScanAR` plugin (`src/ar/native.ts`, ADR 0009), and 8th Wall,
+then WebXR, take over when it cannot start. A thin `ARProvider` abstraction
 (`src/ar/provider.ts`) means the capture layer never learns which runtime is
 active — it just consumes pose, intrinsics, and world points.
 

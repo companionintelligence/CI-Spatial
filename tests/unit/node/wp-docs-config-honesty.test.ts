@@ -1,7 +1,7 @@
 /**
  * Docs and config that state what the code owns: the origins the server admits, the job deadlines,
- * the torch devices, what Vite does with a .env file, the ARCore terms and disclosure, and the device
- * kit's contract with the shell builds.
+ * the torch devices, what Vite does with a .env file, the ARCore terms and disclosure, the device
+ * kit's contract with the shell builds, and which native plugin the shells run.
  *
  * Three lines of work were merged by hand, and the prose they each wrote was true for its own tree.
  * In the combined tree it named two shell origins where the server admits five, said a Place export
@@ -316,6 +316,25 @@ test('the device kit has one Android emulator section, and no branch name', () =
 
 // ── Sentences that stopped being true ───────────────────────────────────────
 
+/** The plugin classes the shells register, from the shells' own sources: Android's `registerPlugin(X.class)`, and iOS's `registerPluginInstance(X())`. */
+const registeredNativePlugins = [
+  ...read('mobile/android/app/src/main/java/com/companionintelligence/scan/MainActivity.java').matchAll(/registerPlugin\(\s*(\w+)\.class\s*\)/g),
+  ...read('mobile/ios/App/App/ScanBridgeViewController.swift').matchAll(/registerPluginInstance\(\s*(\w+)\(\)\s*\)/g),
+].map((match) => match[1])
+/** `ArSessionPlugin` is in the tree, and in the Android build, and neither shell puts it on the bridge. */
+const arSessionIsRegistered = registeredNativePlugins.includes('ArSessionPlugin')
+/** The scanner starts on the native runtime when `ScanAR.capabilities()` says it can, and hands the canvas to 8th Wall, then WebXR, when it cannot. */
+const scannerStartsNativeFirst = /createNativeARProvider\(\{\s*fallback:\s*createWebRuntimeProvider\s*\}\)/.test(read('src/main.ts'))
+/** The registered iOS plugin has the camera and hit-test bridge: a frame and an exact hit, which the unregistered one does not. */
+const scanArHasCameraBridge = /@objc func captureFrame/.test(read('mobile/ios/App/App/ScanARPlugin.swift')) && /@objc func hitTest/.test(read('mobile/ios/App/App/ScanARPlugin.swift'))
+/** The registered provider numbers the stretches of tracking itself (src/ar/frame-epoch.ts), from the poses and tracking states its plugins send. */
+const nativeProviderFeedsEpochs = /FrameEpochTracker/.test(read('src/ar/native.ts'))
+/** Whether any file of src imports the `ArSession` provider: if none does, it is not the route the app takes. */
+const arSessionProviderIsImported = tsFiles('src').some((file) => /from '\.{1,2}\/(?:ar\/)?native-provider(?:\.ts)?'/.test(read(file)))
+/** Only `ArSessionPlugin.java` asks Google Play to install ARCore (`requestInstall`); the plugin the app registers only asks whether it is installed. */
+const registeredAndroidPluginInstallsArcore = /requestInstall/.test(read('mobile/android/app/src/main/java/com/companionintelligence/scan/ScanARPlugin.java'))
+/** The generated notices carry the ARCore Additional Terms' text after Google's disclosure, so the terms are reproduced and not only linked. */
+const noticesReproduceArcoreTerms = /arcore-additional-terms\.txt/.test(read('scripts/native/third-party-notices.mjs'))
 const exportWorldHasARunner = /job\.type === 'export-world'\)\s*\{\s*await _runExportWorldJob/.test(read('server/main.ts'))
 const envFileIsPassed = /--env-file/.test(JSON.parse(read('package.json')).scripts.server) && /--env-file/.test(read('deno.json'))
 const capabilitiesIsServed = /app\.get\('\/capabilities'/.test(read('server/main.ts'))
@@ -326,7 +345,21 @@ const xpuStaysFp32 = /fp16_ok=False/.test(read('scripts/_torch_device.py').match
 /** Each claim was true of some tree and is not true of this one. `holds` says what makes it untrue here. */
 const retired: Array<{ file: string; says: RegExp; holds: boolean; because: string }> = [
   { file: 'docs/testing/DEVICE_TEST_KIT.md', says: /feat\/goal-integration|this branch|Confirm before merge/, holds: true, because: 'the kit is for the one merged tree, and names no branch or merge gate' },
-  { file: 'docs/testing/DEVICE_TEST_KIT.md', says: /ARKit session is not implemented|AR scanning in the shell is not available/, holds: /ARWorldTrackingConfiguration/.test(read('mobile/ios/App/App/ArSessionPlugin.swift')), because: 'the iOS plugin runs an ARKit session, and the shells run the 8th Wall path, which README.md calls untried, not unavailable' },
+  { file: 'docs/testing/DEVICE_TEST_KIT.md', says: /ARKit session is not implemented|AR scanning in the shell is not available/, holds: /ARWorldTrackingConfiguration/.test(read('mobile/ios/App/App/ScanARPlugin.swift')), because: 'the iOS shell registers ScanARPlugin, which runs an ARKit session, and mobile/README.md calls AR capture in the shells untried on a phone, not unavailable' },
+  { file: 'docs/testing/DEVICE_TEST_KIT.md', says: /ArSession plugin registered in the project|The ArSession plugin registers at startup|Check `ArSession\.isSupported` reports true/, holds: !arSessionIsRegistered, because: 'the shells register ScanARPlugin only (MainActivity.java, ScanBridgeViewController.swift), and the iOS target does not compile ArSessionPlugin.swift (ADR 0009)' },
+  { file: 'docs/testing/DEVICE_TEST_KIT.md', says: /Both shells start the scanner the way a phone browser does|`src\/main\.ts` picks the 8th Wall provider or the WebXR one|The scanner does not use the plugin\.|the 8th Wall engine should start tracking|the 8th Wall start in the shells/, holds: scannerStartsNativeFirst, because: 'src/main.ts probes ScanAR and starts the native runtime first, with 8th Wall and then WebXR as its fallback (ADR 0009, mobile/README.md)' },
+  { file: 'docs/operations/AR_DEVICE_SUPPORT.md', says: /Capacitor `ArSession` plugin \||behind\s+the existing `ArSession` plugin/, holds: !arSessionIsRegistered, because: 'the shells register ScanAR, and ArSession is the other design, unregistered pending the owner (ADR 0009)' },
+  { file: 'docs/operations/AR_DEVICE_SUPPORT.md', says: /That plugin is unbuilt for this: it is pose-only|It needs the camera and hit-test bridge first/, holds: scanArHasCameraBridge, because: 'ScanAR, the plugin the shells register, has captureFrame and hitTest, and the iOS one saves and restores a world map (ADR 0010)' },
+  { file: 'docs/operations/AR_DEVICE_SUPPORT.md', says: /8th Wall, this app's default pose source on iPhone and Android|8th Wall stays the pose source on the default path/, holds: scannerStartsNativeFirst, because: 'in the shells the default pose source is the native runtime, and 8th Wall is the default in a browser' },
+  { file: 'docs/operations/AR_DEVICE_SUPPORT.md', says: /ahead\s+of\s+the\s+natives,\s+which\s+send\s+neither\s+yet/, holds: nativeProviderFeedsEpochs, because: 'the registered provider feeds frame epochs from its poses and tracking states (src/ar/native.ts)' },
+  { file: 'src/ar/anchors.ts', says: /\(src\/ar\/native-provider\.ts\)/, holds: !arSessionProviderIsImported, because: 'nothing in src imports native-provider.ts: the native route is src/ar/native.ts and the ScanAR plugin' },
+  { file: 'NOTICE.md', says: /its `ArSession` plugin calls|The iOS app's `ArSession` plugin uses Apple's ARKit/, holds: !arSessionIsRegistered, because: 'the shells register ScanAR, which is what calls ARCore and ARKit; ArSession is not in the iOS target at all' },
+  { file: 'NOTICE.md', says: /Google\s+Play\s+installs\s+or\s+updates\s+when\s+an\s+AR\s+session\s+starts/, holds: !registeredAndroidPluginInstallsArcore, because: 'only the unregistered ArSessionPlugin.java calls requestInstall; ScanARPlugin.java reports ARCore unsupported until Google Play Services for AR is installed, and the scanner then runs the web runtimes' },
+  { file: 'mobile/README.md', says: /and a link to the terms\)/, holds: noticesReproduceArcoreTerms, because: "the generated notices carry the disclosure and then the Additional Terms' text (scripts/native/third-party-notices.mjs)" },
+  { file: 'mobile/README.md', says: /passed on the current commit/, holds: true, because: 'a build result names the commit it was observed on: this one was observed on main before the branches were merged, and no build of the merged tree has run' },
+  { file: 'src/ui/legal-notices.ts', says: /linked and not reproduced/, holds: noticesReproduceArcoreTerms, because: "the generated notices reproduce the Additional Terms' text after the disclosure, so only the XR Engine's Agreement is linked and not reproduced" },
+  { file: 'README.md', says: /AR capture \(the 8th Wall engine in the app's WebView\)/, holds: scannerStartsNativeFirst, because: "the Android app's capture path is its own ARCore session, with 8th Wall and then WebXR in the WebView as the fallback (mobile/README.md)" },
+  { file: '.github/native-release-notes.md', says: /\(the 8th Wall engine in the app's WebView\)/, holds: scannerStartsNativeFirst, because: "the Android app's capture path is its own ARCore session, with 8th Wall and then WebXR in the WebView as the fallback (mobile/README.md)" },
   { file: 'docs/testing/DEVICE_TEST_KIT.md', says: /Both shells need an `https` origin|The build refuses anything else/, holds: apiBaseProblem(undefined) === null, because: 'an unset VITE_API_BASE is a supported build (mobile/scripts/check-api-base.mjs)' },
   { file: 'docs/testing/DEVICE_TEST_KIT.md', says: /like the scan geometry it contains/, holds: true, because: 'the scan geometry sits behind the session guard once sign-in is on, and the export route does not borrow its rule from it' },
   { file: 'docs/architecture.md', says: /combined GLB \+ semantic JSON/, holds: exportWorldHasARunner, because: 'export-world writes one .world.glb with the tags in extras (server/world_export.ts), and no JSON beside it' },

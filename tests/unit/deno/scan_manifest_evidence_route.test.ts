@@ -361,3 +361,48 @@ Deno.test({
     }
   },
 })
+
+Deno.test({
+  name: 'real server: the origin\'s floor height reaches the editor from the nested record, and from the flat key the splat-align job keeps once it has replaced that record',
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const server = await startServer()
+    try {
+      // The capture writes the floor height only inside the nested record (`groundY`, wave 12). -1.2 m is the session height the
+      // landmark was tapped at in this fixture, so the editor can draw the origin decal on the floor.
+      await upload(server, 'kept', sidecar('kept', twoPointRecord({ groundY: LANDMARK.y })))
+      await upload(server, 'unkept', sidecar('unkept', twoPointRecord({ groundY: LANDMARK.y })))
+      await upload(server, 'untouched', sidecar('untouched', twoPointRecord({ groundY: LANDMARK.y })))
+      await upload(server, 'legacy', sidecar('legacy', twoPointRecord()))
+      await idle(server)
+
+      const first = await readWorld(server)
+      for (const name of ['kept', 'unkept', 'untouched']) assertEquals(byName(first, name).calibrationGroundY, LANDMARK.y, `${name}: the record's floor height`)
+      assertEquals(byName(first, 'legacy').calibrationGroundY, null, 'a record from before the field says none, and none is made up')
+
+      // The job replaces the nested record with its known-distance one. `kept` is what the job leaves now: the floor height beside
+      // the record it replaced (server/calibration_fields.ts withReplacedCalibration). `unkept` is a sidecar an earlier build's job
+      // replaced the record of, which kept nothing. `untouched` is a scan the job never ran on.
+      await idle(server)
+      await rewriteLikeSplatAlign(server, byName(first, 'kept'), { calibrationGroundY: LANDMARK.y })
+      await rewriteLikeSplatAlign(server, byName(first, 'unkept'))
+      const after = await readWorld(server)
+      assertEquals(byName(after, 'kept').calibrationGroundY, LANDMARK.y, 'the floor height survives the job, as the frame generation does through its flat key')
+      assertEquals(byName(after, 'kept').calibrationMethod, 'two-point-ground', 'the scan is still placed by the two-point matrix')
+      assertEquals(byName(after, 'kept').calibrationResidualM, null, 'and the other record\'s measurements are still not printed under that name')
+      assertEquals(byName(after, 'unkept').calibrationGroundY, null, 'a record replaced without the floor height kept says none: the row does not go on saying what the sidecar does not')
+      assertEquals(byName(after, 'untouched').calibrationGroundY, LANDMARK.y)
+
+      // The world file keeps it once something writes it, so a read that does not rewrite the file serves it too.
+      await idle(server)
+      const queued = await server.post('/worlds/default/jobs', JSON.stringify({ type: 'extract-layers', scanId: byName(first, 'kept').scanId }), { 'Content-Type': 'application/json' })
+      assertEquals(queued.status, 202, queued.text)
+      const file = await worldFileOnceDone(server, (JSON.parse(queued.text) as WorldJob).jobId)
+      assertEquals(byName(file, 'kept').calibrationGroundY, LANDMARK.y)
+      assertEquals(byName(file, 'unkept').calibrationGroundY, null)
+    } finally {
+      await server.stop()
+    }
+  },
+})

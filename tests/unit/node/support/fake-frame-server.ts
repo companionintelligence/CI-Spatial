@@ -135,6 +135,8 @@ export interface ScanFacts {
   calibrationStatus?: string
   /** `ScanManifest.calibrationFrameId`: absent for an unknown generation. */
   calibrationFrameId?: string
+  /** `true` for a two-point scan whose commit wrote no Place frame and matched none (a bypassed floor check): it is in no frame. Absent otherwise. */
+  calibrationOutsidePlaceFrame?: true
 }
 
 /** A scan the way a two-point calibration leaves it, with the generation it names or none. */
@@ -145,7 +147,8 @@ export const twoPointScan = (calibrationFrameId?: string): ScanFacts => ({
 })
 
 /** The server's predicate for a scan that is in a Place frame (src/world/frame-generations.ts, `isInPlaceFrame`): the chips and the counts are one rule. */
-export const isInPlaceFrame = (scan: ScanFacts): boolean => scan.calibrationMethod === 'two-point-ground' && scan.calibrationStatus !== 'uncalibrated'
+export const isInPlaceFrame = (scan: ScanFacts): boolean =>
+  scan.calibrationMethod === 'two-point-ground' && scan.calibrationStatus !== 'uncalibrated' && scan.calibrationOutsidePlaceFrame !== true
 
 // ── The server ───────────────────────────────────────────────────────────────────────────────────────
 

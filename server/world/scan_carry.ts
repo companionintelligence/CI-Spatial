@@ -33,7 +33,9 @@
  * meant it to line up with (a world that holds calibrated and GPS-placed scans mixes two frames), so it is not
  * converted. The scan's row is built again from its record in the world it joins, as it always was, and its placement
  * patches are **kept** in the world they were made in: not destroyed, and found again if the scan comes back. The
- * routes tell the caller how many (`HandOverReport.placementsKept`). Its notes, comments and finished jobs travel.
+ * routes tell the caller how many (`HandOverReport.placementsKept`). Its notes, comments and finished jobs travel. A merge
+ * deletes the world they were kept in, once everything else in it has been handed over, and then says how many went with it
+ * instead (`placementsRemoved`, counted by `placementsInWorld`, server/place_deletion.ts).
  *
  * Deno-API-free and importing no server module that is not, so a test can import it.
  */
@@ -68,7 +70,7 @@ function patchNamesScan(patch: EditPatch, keys: Keys): boolean {
 }
 
 /** Whether a patch moves a whole scan by a matrix: the one kind that is a position in its world. */
-function movesScanByMatrix(patch: EditPatch): boolean {
+export function movesScanByMatrix(patch: EditPatch): boolean {
   return patch.scope === 'scan' && Array.isArray(patch.transform?.matrix)
 }
 

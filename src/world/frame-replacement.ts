@@ -15,7 +15,9 @@
  * `src/world/frame-generations.ts` is the server slice's, and holds the rules both halves share: which write is a new
  * generation, how the history is kept, which scans are in a Place frame. This file is what only the phone does: it stamps a
  * finished calibration, offers the upgrade, and reads the two answers it asks for (`GET /projects/:id/frame-status` and the
- * refusal of a merge). It does not import that file, because the two slices are built apart. Three names are in both:
+ * refusal of a merge). It imports one thing from that file, `outsidePlaceFrameOf`, the statement a record makes that its scan is
+ * in no frame, because the stamp and the server's counts must read it as one rule. The rest it does not import, because the two
+ * slices were built apart. Three names are in both:
  * `newFrameId` and `frameIdOf` are the same function in each, and `FrameReplaces` the same shape. Where the two slices are put
  * together, the copies below are deleted and re-exported from there. `ReferenceStatus` is not that file's `FrameStatus`: that
  * is the body the server answers, and this is what the phone keeps of it.
@@ -33,6 +35,7 @@
  * null, or "not known", for anything it cannot read. A caller treats that as the cautious case and never as "none".
  */
 import { newArRunId, type RunIdRandomSource } from '../shared/ar-run-id.ts'
+import { outsidePlaceFrameOf } from './frame-generations.ts'
 import { isFrameId, isFrameRevision } from './spatial-frame.ts'
 import type { FrameReplaceReason, ProjectSpatialFrame, ScanCalibration } from './types.ts'
 
@@ -124,10 +127,24 @@ function naming(calibration: ScanCalibration, frameId: string | null): ScanCalib
 }
 
 /**
+ * Whether a calibration that came with no frame was measured against the frame the Place holds: the visit was compared with it and
+ * matched. "No frame came back" is not that by itself. A commit whose floor check was bypassed writes none whatever else it is
+ * (`mayWritePlaceFrame`, src/ar/ground-gate.ts), and then it may be a pair kept over a mismatch or "Improve this Place's
+ * reference", which are in no frame: the commit says so on the record (`outsidePlaceFrame`). An improve run compares nothing with
+ * the held frame (the modal runs it as a first calibration), so one that wrote no frame was not measured against it, record or no.
+ */
+function matchedHeldFrame(input: GenerationInput): boolean {
+  return input.mode !== 'upgrade' && !outsidePlaceFrameOf(input.calibration)
+}
+
+/**
  * Stamps a finished calibration with the generation it belongs to, and works out what a changed frame replaces.
  *
  *  - The Place's frame stands (a return visit that matched): the calibration names the held frame's id, when it
  *    has one. A held frame with no id leaves it unnamed: an unknown generation.
+ *  - No frame was written and the visit did not match the held one (the floor check was bypassed, so none could be written, and the
+ *    pair was kept over a mismatch, or the person was improving the reference, or the Place held none): the scan is in no frame and
+ *    claims none. Its calibration is returned as it is, unnamed, and says so itself (`outsidePlaceFrame`).
  *  - The flow made a two-point frame: it gets a new id, and the calibration names it. When the Place held a frame,
  *    the write replaces it, and the reason is `'upgrade'` when the person improved the reference or the held
  *    frame was a one-point one, and `'override'` otherwise: a pair kept over a mismatch.
@@ -141,7 +158,7 @@ function naming(calibration: ScanCalibration, frameId: string | null): ScanCalib
  */
 export function planFrameGeneration(input: GenerationInput): GenerationPlan {
   const { held, calibration, spatialFrame } = input
-  if (!spatialFrame) return { calibration: naming(calibration, frameIdOf(held)) }
+  if (!spatialFrame) return { calibration: matchedHeldFrame(input) ? naming(calibration, frameIdOf(held)) : calibration }
 
   const frame: ProjectSpatialFrame = spatialFrame.method === 'two-point-ground'
     ? { ...spatialFrame, frameId: (input.mint ?? newFrameId)() }

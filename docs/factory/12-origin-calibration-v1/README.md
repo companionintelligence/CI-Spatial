@@ -41,7 +41,7 @@ left open, and what this wave closes, is below.
 
 The mock suite proves the decal's parts are in the scene. Whether it sits on the floor, whether the
 grid reads at room scale, and whether the north tick agrees with a compass are device questions. They
-are DEVICE_TESTING Checklist A § A-origin (O1 to O10), with the same checks on B2 for WebXR.
+are DEVICE_TESTING Checklist A § A-origin (O1 to O13), with the same checks on B2 for WebXR.
 
 ## Atlas
 

@@ -22,10 +22,12 @@ import {
   MIN_POINT_SEPARATION_M,
   originDecalPlan,
   originHeadingBearingDeg,
+  transformPoint,
 } from '../world/geo'
 import { buildAnchorMarker, ANCHOR_RADIUS_M } from '../world/anchor-marker'
-import { buildOriginDecal } from '../world/origin-decal'
-import { twoPointToleranceM } from '../world/frame-fit'
+import { invertAffine } from '../world/anchor-placement'
+import { buildOriginDecal, COMMITTED_ORIGIN_NAME, STORED_ORIGIN_NAME } from '../world/origin-decal'
+import { twoPointToleranceM, type FrameFit } from '../world/frame-fit'
 import {
   baselineGuidance,
   checkPointGuidance,
@@ -41,8 +43,8 @@ import {
   readTap,
   resolveCommitOptions,
 } from './calibration-commit'
-import { isSameHeightRetry, isTapOnGround, tapHeightAboveGroundCm } from './ground-gate'
-import { IMPROVE_REFERENCE_LABEL, KEEP_REFERENCE_LABEL, REPLACE_REFERENCE_LABEL } from './replace-copy'
+import { isSameHeightRetry, isTapOnGround, mayWritePlaceFrame, tapHeightAboveGroundCm } from './ground-gate'
+import { IMPROVE_REFERENCE_LABEL, KEEP_REFERENCE_LABEL, RECORD_UNVERIFIED_LABEL, REPLACE_REFERENCE_LABEL } from './replace-copy'
 import { generationActions, improveShown, isUpgrade, keepShown, type GenerationHooks } from './replace-reference'
 import { ONE_POINT_LABEL, onePointOffered } from './one-point-offer'
 import { describeTracking } from './frame-epoch'
@@ -77,7 +79,7 @@ import {
   reviewCopy,
   uncomparedReadout,
 } from './constellation-copy'
-import { createGhostLayer, drawStoredConstellation } from './constellation-ghosts'
+import { createGhostLayer, drawStoredConstellation, GHOST_GAP_NAME, GHOST_NAME } from './constellation-ghosts'
 import { createReferencePhotoFlow, lensOfProvider } from './reference-photo-flow'
 import { createReturnVisitAids, returnAidsEnabled, returnVisitMarkup } from './return-visit-aids'
 
@@ -96,6 +98,11 @@ export interface CalibrationResult {
    * Returned whenever the Place's durable frame **changed** and should be
    * persisted — a first calibration, an upgrade from the one-point fallback
    * tier, or a deliberate override that re-establishes the reference.
+   *
+   * Never returned by a commit whose floor check was bypassed (`mayWritePlaceFrame`,
+   * ./ground-gate.ts), a first calibration or an override included: such a commit
+   * is provisional and does not set the Place's frame, and a scan that matched no
+   * stored frame says so on its own record (`outsidePlaceFrame`).
    *
    * Deliberately absent when a stored two-point frame was merely *verified*:
    * that frame is the reference the measurement was taken against, and
@@ -125,12 +132,22 @@ export interface CalibrationResult {
    */
   calibrationEpoch?: number
   /**
-   * True-north bearing of the committed origin's heading arrow, for the HUD's
-   * frame-heading needle (wave 12, ticket 0001). Present only when this visit
-   * committed a two-point origin with a compass fix. A return-visit commit carries
-   * it too, since that commit draws its own origin with a tick; the stored origin
-   * drawn beside it has no tick. Absent on the one-point tier, which draws no
-   * arrow, and when there is no compass fix.
+   * Compass bearing, clockwise from the compass's (magnetic) north, of the committed origin's heading
+   * arrow, for the HUD's frame-heading needle (wave 12, ticket 0001): `originHeadingBearingDeg`
+   * (../world/geo.ts), under the sign rule the flow ran under. It is the arrow as drawn, which lies
+   * along the baseline that was tapped. On a first calibration, and on a return visit compared by
+   * distance, that is the baseline the record's `projectBearingDeg` is the bearing of, so the needle
+   * and the record say one number. On a return visit that fitted three points they do not: the record's
+   * bearing follows the fit's heading, which is the tapped baseline's turned by the fit's
+   * `headingResidualDeg` (on the same record), so there, under the current sign rule, the record's
+   * bearing is the needle's plus that residual, and the needle stays with the arrow on the floor
+   * (tests/unit/node/origin_heading_bearing.test.ts, "three points fitted"). Under `?bearing=1` a
+   * fitted record is not written under the rule the needle follows (`projectBearingDeg` in ../world/geo.ts
+   * says how), so that relation does not hold there. Present only when this visit committed a two-point origin with
+   * a compass fix. A return-visit commit carries it too, since that commit draws its own origin with a
+   * tick; the stored origin drawn beside it has no tick. Absent on the one-point tier, which draws no
+   * arrow, and when there is no compass fix. A page that drops the calibration this came with
+   * hides the needle again (`dropCalibrationDrawings` in src/main.ts).
    */
   originBearingDeg?: number
 }
@@ -251,6 +268,76 @@ const SCAN_FLOOR_OPACITY = 0.12
 const FLOOR_GRID_SIZE_M = 10
 const FLOOR_GRID_DIVISIONS = 20
 
+/** Scene name of the marker a commit leaves where its check point was tapped. */
+const CHECK_MARKER_NAME = 'calibration anchor check'
+
+/** Scene name of the floor grid: the flow's own while the points are placed, and the dimmed one a commit keeps for the scan. */
+const FLOOR_PLANE_NAME = 'calibration floor plane'
+
+/**
+ * Everything a commit adds to the scene itself and leaves there, except the floor grid: the origin decal, the stored
+ * origin a return visit draws beside it, the check point's marker, and the rings and gap lines where the Place's
+ * stored points land (./constellation-ghosts.ts).
+ *
+ * Each of these is a claim about the calibration that drew it, and goes with it. The floor grid is not a claim about
+ * a calibration: it is the ground, which the ticket keeps for the scan (owner R10, wave 12 ticket 0001), and the next
+ * commit replaces it by name. So it is not in this set, and goes only with the scan it was kept for
+ * (`WithdrawOptions.floor`).
+ */
+const CALIBRATION_DRAWINGS: ReadonlySet<string> = new Set([
+  COMMITTED_ORIGIN_NAME,
+  STORED_ORIGIN_NAME,
+  CHECK_MARKER_NAME,
+  GHOST_NAME,
+  GHOST_GAP_NAME,
+])
+
+function disposeObject(root: THREE.Object3D): void {
+  root.traverse((child) => {
+    const drawable = child as Partial<THREE.Mesh>
+    drawable.geometry?.dispose()
+    const material = drawable.material
+    if (Array.isArray(material)) material.forEach((m) => m.dispose())
+    else material?.dispose()
+  })
+}
+
+export interface WithdrawOptions {
+  /**
+   * Take the kept floor grid down too. It is the ground the scan keeps (owner R10), so a calibration that is dropped
+   * with the scan still going, a Place frame that lost a conflict, leaves it where it is. It goes when the scan has no
+   * calibration for it to be kept for: a re-anchor begins a scan in another frame, and the grid stands at the old
+   * frame's coordinates, which the shift moved; and a flow that ends with no calibration is a skip, which leaves no
+   * floor plane (wave 12 ticket 0001, acceptance criteria and definition of done; DEVICE_TESTING O9).
+   */
+  floor?: boolean
+}
+
+/**
+ * Takes down what a commit drew into `scene`, and keeps the floor grid unless `options.floor` says it goes too.
+ *
+ * A commit leaves its drawings in the scene itself, outside the flow's own `placement` group, so that they outlive the
+ * flow. That is also why nothing took them down. It is called when a later commit is about to draw its own (a second
+ * run of the modal, as a re-anchor makes, replaces everything the first drew and not only what it happens to draw
+ * again: a check marker, a stored origin and a set of ghost rings are not drawn by every commit, and the rings are
+ * not one object), which leaves the grid for that commit to replace by name, and by the page when the calibration
+ * they describe no longer holds: a re-anchor begins a scan that has none, a Place frame lost a conflict, a flow ended
+ * with no calibration (src/main.ts, `dropCalibrationDrawings`, which says which of these take the grid with them).
+ *
+ * Only the scene's direct children are looked at, which is where a commit adds them. A flow that is running keeps
+ * its own copies of the ghost rings and the grid under its `placement` group, and they are not touched, whatever
+ * `options` says. Safe to call with no scene (the provider's does not exist until its first frame) and when nothing
+ * is there.
+ */
+export function withdrawCalibrationDrawings(scene: THREE.Object3D | null | undefined, options: WithdrawOptions = {}): void {
+  if (!scene) return
+  for (const child of [...scene.children]) {
+    if (!CALIBRATION_DRAWINGS.has(child.name) && !(options.floor === true && child.name === FLOOR_PLANE_NAME)) continue
+    scene.remove(child)
+    disposeObject(child)
+  }
+}
+
 /**
  * Staged two-point ground calibration (wave 09 ticket 0004).
  *
@@ -310,15 +397,10 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
   /** Set when the user chooses to place without a settled floor estimate. */
   let groundWaitOverridden = false
   /**
-   * True once this flow has bypassed a floor check: the skip-ground button, or an
-   * off-floor tap accepted by a same-height retry. It is recorded on the commit,
-   * and a bypassed commit never writes the Place frame (`mayWritePlaceFrame`).
-   */
-  let floorCheckBypassed = false
-  /**
    * Height of the most recent tap rejected as off-floor, or null. A retry at
    * this height is the confirmation the override asks for; a tap anywhere else
-   * is a fresh attempt and is gated normally.
+   * is a fresh attempt and is gated normally. Re-place points forgets it: the
+   * gate then begins again, and the same height is turned away again.
    */
   let offGroundTapY: number | null = null
 
@@ -329,6 +411,29 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
    * the landmark's height, so that the baseline is level; a fit compares heights, so it is given these (./constellation-flow.ts).
    */
   const tappedAt: Partial<Record<MarkerId, Vec3>> = {}
+  /**
+   * The markers whose placing tap was accepted off the floor by a same-height retry, kept beside the tap each describes (`tappedAt`):
+   * set where a tap is applied to a marker (`applyTap`), and gone when that tap is: the marker placed again or moved by a tap that
+   * was on the floor, taken away, or Re-place points. A tap that only selected a marker changes nothing here.
+   */
+  const offFloorMarkers: Partial<Record<MarkerId, true>> = {}
+  /**
+   * Whether this commit bypassed a floor check. It is recorded on the commit, and a bypassed commit never writes the Place frame
+   * (`mayWritePlaceFrame`), so it is about the points the commit holds. "Place anchor without floor check" bypasses it for the whole
+   * flow, because no tap after it was judged against a floor that had locked. Otherwise it is a point that is still placed, whose tap
+   * was accepted off the floor by a same-height retry. A marker that was on a table, was seen to be wrong and was put on the floor, or
+   * was taken away, no longer counts: the pair that is committed was floor-checked.
+   */
+  const floorCheckBypassed = (): boolean =>
+    groundWaitOverridden || MARKER_IDS.some((id) => points[id] !== null && offFloorMarkers[id] === true)
+  /**
+   * Whether keeping the pair over a mismatch writes the Place's frame, and so replaces the reference the pair was compared with: it does
+   * unless the floor check was bypassed (`mayWritePlaceFrame`, the rule `assessTwoPoint` applies to this very press). Then it records the
+   * scan and replaces nothing, so the button must not say it replaces and the question that goes before a replacement is not asked.
+   * Read when the card is drawn and when the button is pressed, because the flag changes while the card is up.
+   */
+  const keepingPairReplacesReference = (): boolean =>
+    mayWritePlaceFrame({ floorCheckBypassed: floorCheckBypassed(), hasStoredFrame: storedTwoPoint !== null, override: true })
   let selected: MarkerId | null = null
   /** Residual that triggered the mismatch stage, in metres. */
   let mismatchResidualM = 0
@@ -378,6 +483,11 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
    * running, so without this a second tap would commit the same frame twice —
    * the second one resolving an already-resolved promise and dropping a
    * duplicate anchor into the scene.
+   *
+   * Nothing that changes the points the commit holds is live while it is true: a tap on the canvas
+   * (`placeAt`) and the check-point button, which adds or takes away a point, are inert. The buttons that
+   * end the flow or begin it again (Re-place points, Continue uncalibrated) are not, and what the person
+   * does with them stands (see `commitTwoPoint`).
    */
   let commitInFlight = false
   /**
@@ -525,16 +635,6 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
   /** Last height the grid was drawn at, so it is only moved when it changes. */
   let floorGridY: number | null = null
 
-  function disposeObject(root: THREE.Object3D): void {
-    root.traverse((child) => {
-      const drawable = child as Partial<THREE.Mesh>
-      drawable.geometry?.dispose()
-      const material = drawable.material
-      if (Array.isArray(material)) material.forEach((m) => m.dispose())
-      else material?.dispose()
-    })
-  }
-
   function detach(object: THREE.Object3D | null): void {
     if (!object) return
     placement.remove(object)
@@ -643,7 +743,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
       // THREE's own helper rather than hand-rolled geometry — same line-based
       // visual language as the anchor decals, no new mark to maintain.
       floorGrid = new THREE.GridHelper(FLOOR_GRID_SIZE_M, FLOOR_GRID_DIVISIONS, 0x72ddd4, 0x72ddd4)
-      floorGrid.name = 'calibration floor plane'
+      floorGrid.name = FLOOR_PLANE_NAME
       const material = floorGrid.material as THREE.Material
       material.transparent = true
       material.depthWrite = false
@@ -702,19 +802,35 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
   }
 
   /**
-   * Keeps the floor grid for the rest of the scan, at the committed height.
+   * Keeps the floor grid for the rest of the scan, at the committed floor height `floorY`.
    *
    * The grid was the only drawing of the ground the flow made, and it lived in
    * `placement`, so `clearPlacement()` removed it the moment the origin was
    * committed. The origin was left floating with no floor under it, and the
    * ground plane the scan depends on disappeared with the flow. It is moved out
    * of `placement` here and dimmed: a reference to glance at, not a surface to
-   * read.
+   * read. It is kept for the scan. It stays when the calibration that made it is
+   * dropped with the scan still going, since it is the ground and not a claim about
+   * the calibration, and it goes with a scan that has no calibration to be kept for:
+   * a re-anchor, a skip (`withdrawCalibrationDrawings`, `floor`).
+   *
+   * `floorY` is the frame's floor DATUM, the height the commit took from the landmark
+   * (`landmarkDatum()`, ./ground-gate.ts: the mean of the landmark's tap and the fitted
+   * floor when they agree to 5 cm, else the tap). It is the `groundY` the record keeps and
+   * the height the origin decal stands at, and it is not the height this grid was drawn at
+   * while the points were placed, which is the landmark's own tap (`refreshFloorGrid`) and
+   * can be up to 2.5 cm from it (ADR 0005, decision 2: project y = 0 is the room's floor, not
+   * wherever the first tap landed). The grid is moved to the datum here so that the ground the
+   * scan keeps and the origin on it are one height. On a visit that fitted three points the
+   * matrix's own floor is the mean height of all three taps, which is the datum less the
+   * landmark's height residual (`fit.perPoint[0].dy`, on the same record). The datum is the
+   * landmark's height and does not claim to be that floor.
    */
-  function keepFloorPlane(): void {
+  function keepFloorPlane(floorY: number): void {
     if (!floorGrid || !ensureScene()) return
     placement.remove(floorGrid)
-    floorGrid.name = 'calibration floor plane'
+    floorGrid.name = FLOOR_PLANE_NAME
+    floorGrid.position.y = floorY
     ;(floorGrid.material as THREE.Material).opacity = SCAN_FLOOR_OPACITY
     replacePersistent(floorGrid)
     floorGrid = null
@@ -737,23 +853,30 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
    *
    * A check point is not on the arrow: it keeps a marker of its own, so the person can see where it went.
    *
-   * Returns the arrow's true-north bearing for the HUD (`originHeadingBearingDeg`),
-   * or null when there is no arrow or no compass fix.
+   * `landmark.y` is the frame's floor datum (see `keepFloorPlane`): the decal stands on it, and so does the kept grid.
+   * A later commit replaces everything an earlier one drew, so the earlier drawings go first
+   * (`withdrawCalibrationDrawings`): a commit with no check point must not keep the marker of one, and a commit that is
+   * not a return visit must not keep the stored origin and the ghost rings of one.
+   *
+   * Returns the arrow's compass bearing for the HUD (`originHeadingBearingDeg`, under the sign rule this flow runs
+   * under), or null when there is no arrow or no compass fix.
    */
   function dropCommittedOrigin(landmark: Vec3, headingPoint: Vec3 | null, checkPoint: Vec3 | null = null): number | null {
     const plan = originDecalPlan(landmark, headingPoint, northYawInSession())
-    if (ensureScene()) {
-      keepFloorPlane()
+    const target = ensureScene()
+    if (target) {
+      withdrawCalibrationDrawings(target)
+      keepFloorPlane(landmark.y)
       replacePersistent(buildOriginDecal(plan, 'committed'))
       // The check point (WP-04b) is not part of the origin: it keeps a marker of its own, so the person can see where it went.
       if (checkPoint) {
         const marker = buildAnchorMarker(null)
-        marker.name = 'calibration anchor check'
+        marker.name = CHECK_MARKER_NAME
         marker.position.set(checkPoint.x, checkPoint.y, checkPoint.z)
         replacePersistent(marker)
       }
     }
-    return originHeadingBearingDeg(plan)
+    return originHeadingBearingDeg(plan, bearingConvention)
   }
 
   /**
@@ -766,28 +889,52 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
    * before this point the overlay would be circular — which is exactly why the
    * flow shows *photos* beforehand and geometry only afterwards.
    *
-   * Here the transform exists, and its inverse is available without matrix
-   * work: the stored landmark maps to the landmark the user just placed, and
-   * the stored heading marker maps to `storedSeparationM` along the baseline
-   * they just defined. Any visible gap between this and the marker they placed
-   * is the residual, shown at room scale instead of as a number.
+   * Here the transform exists, and where the stored pair lands depends on which
+   * transform it is. It is the same place the ghost rings put the stored landmark
+   * and heading point (./constellation-flow.ts, `ghostPlan`), so the two never
+   * contradict each other:
+   *
+   *  - A pair compared by its distance is its own frame (`fit` null): the stored
+   *    landmark maps to the landmark the user just placed, and the stored heading
+   *    marker to `storedSeparationM` along the baseline they just defined.
+   *  - Three points fitted to the stored ones (`fit`) are not: the fit's matrix is
+   *    aligned on the mean position of the three taps, not on the landmark, so the
+   *    stored landmark lands where the fit puts it, which is the landmark's own
+   *    residual away from the landmark tapped, and the stored heading point on the
+   *    fit's +Z axis at the stored distance. Reading it off the tapped pair, as the
+   *    first case does, would draw the stored landmark twice, in two places.
+   *
+   * Either way any visible gap between this and the marker they placed is the
+   * residual, shown at room scale instead of as a number. Both stand at the
+   * landmark's height, the frame's floor datum (see `keepFloorPlane`).
    */
-  function drawStoredPair(landmark: Vec3, headingMarker: Vec3, storedSeparationM: number): void {
-    const dx = headingMarker.x - landmark.x
-    const dz = headingMarker.z - landmark.z
-    const measured = Math.hypot(dx, dz)
-    if (!Number.isFinite(measured) || measured <= 0) return
+  function drawStoredPair(landmark: Vec3, headingMarker: Vec3, storedSeparationM: number, fit: FrameFit | null): void {
     if (!ensureScene()) return
-    // The stored heading point: the stored distance along the baseline the user
-    // just defined. Any gap between it and the point they placed is the residual.
-    const storedHeading: Vec3 = {
-      x: landmark.x + (dx / measured) * storedSeparationM,
-      y: landmark.y,
-      z: landmark.z + (dz / measured) * storedSeparationM,
+    const inverse = fit ? invertAffine(fit.matrix) : null
+    let origin: Vec3 = landmark
+    let storedHeading: Vec3
+    if (inverse) {
+      // The stored origin and its +Z axis, carried back into this session through the fit.
+      const placed = transformPoint(inverse, { x: 0, y: 0, z: 0 })
+      const ahead = transformPoint(inverse, { x: 0, y: 0, z: storedSeparationM })
+      origin = { x: placed.x, y: landmark.y, z: placed.z }
+      storedHeading = { x: ahead.x, y: landmark.y, z: ahead.z }
+    } else {
+      const dx = headingMarker.x - landmark.x
+      const dz = headingMarker.z - landmark.z
+      const measured = Math.hypot(dx, dz)
+      if (!Number.isFinite(measured) || measured <= 0) return
+      // The stored heading point: the stored distance along the baseline the user
+      // just defined. Any gap between it and the point they placed is the residual.
+      storedHeading = {
+        x: landmark.x + (dx / measured) * storedSeparationM,
+        y: landmark.y,
+        z: landmark.z + (dz / measured) * storedSeparationM,
+      }
     }
     // No north tick on the stored decal. The committed origin carries the
     // frame's one compass fix, and a second tick would read as a second reading.
-    replacePersistent(buildOriginDecal(originDecalPlan(landmark, storedHeading, null), 'stored'))
+    replacePersistent(buildOriginDecal(originDecalPlan(origin, storedHeading, null), 'stored'))
   }
 
   // ── Geometry helpers ────────────────────────────────────────────────────
@@ -1166,6 +1313,8 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
     if (readout !== null && separationEl.dataset['state'] !== 'short') show(separationEl, false)
     const action = checkAction({ stage, plan: checkPlan, hasCheck: check !== null, pairUsable: (separation() ?? 0) >= MIN_POINT_SEPARATION_M })
     show(checkBtn, action !== null)
+    // The commit that waits for its photos holds the points as they were when Commit was pressed: this button changes them.
+    checkBtn.disabled = commitInFlight
     if (action) checkBtn.textContent = action.label
     show(adjustBtn, stage === 'mismatch')
   }
@@ -1188,6 +1337,10 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
     show(commitBtn, stage === 'review')
     show(replaceBtn, stage === 'review' || stage === 'mismatch')
     show(overrideBtn, stage === 'mismatch')
+    // One button for the whole flow, so its words follow the floor check on every draw, in both directions: a tap that was off the floor
+    // and is moved onto it, or Re-place points, gives the replacement back.
+    const keepLabel = keepingPairReplacesReference() ? REPLACE_REFERENCE_LABEL : RECORD_UNVERIFIED_LABEL
+    if (overrideBtn.textContent !== keepLabel) overrideBtn.textContent = keepLabel
     show(wrongPlaceBtn, stage === 'mismatch' && !!options.onWrongPlace)
     show(
       skipGround,
@@ -1353,8 +1506,8 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
     /**
      * The frame the landmark was placed in has moved, or the landmark has waited too long since it was confirmed (./calibration-taps.ts):
      * sends the person back to the landmark and says why. It is "Re-place points" pressed for them, so what that
-     * clears (both markers and their photos) stays defined in one place. The stored reference photos show again for
-     * the landmark, as they do on any return to that stage.
+     * clears (the markers, their photos, and the floor check a tap of theirs bypassed) stays defined in one place. The stored
+     * reference photos show again for the landmark, as they do on any return to that stage.
      */
     function restartAfterDisturbance(): void {
       replaceBtn.click()
@@ -1397,6 +1550,8 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
         return
       }
 
+      // Whether the points this commit holds bypassed a floor check, read once: the verdict and the record say the same thing.
+      const bypassed = floorCheckBypassed()
       // The points as they were tapped (their own heights, which a fit compares), and the units the phone says it is in.
       const verdict = assessTwoPoint(
         {
@@ -1406,7 +1561,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
           stored: storedTwoPoint,
           override,
           unitsMode: options.provider.scaleKind?.(),
-          floorCheckBypassed,
+          floorCheckBypassed: bypassed,
         },
         commitOptions,
       )
@@ -1473,7 +1628,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
         checkPointLabel: labels.check,
         calibratedAt: new Date().toISOString(),
         tap,
-        floorCheckBypassed,
+        floorCheckBypassed: bypassed,
       })
 
       // One origin decal: the crosshair on the landmark, the arrow to the heading
@@ -1492,8 +1647,9 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
           }))
         }
         // The stored origin, drawn like the committed one and beside it: the gap between the two decals is the residual,
-        // shown at room scale (wave 12). The ghosts above carry the stored points one by one, with their residuals.
-        drawStoredPair(landmark, headingMarker, storedTwoPoint.separationM)
+        // shown at room scale (wave 12). It is carried through the same transform as the rings above, so its gap at the origin
+        // and at the arrowhead are those two points' residuals; the rings carry the stored points one by one, with theirs.
+        drawStoredPair(landmark, headingMarker, storedTwoPoint.separationM, verdict.comparison.fit)
       }
 
       close({
@@ -1519,7 +1675,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
           bearingConvention,
           existingFrame,
           calibratedAt: new Date().toISOString(),
-          floorCheckBypassed,
+          floorCheckBypassed: floorCheckBypassed(),
         },
         onePointOptions,
       )
@@ -1557,7 +1713,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
      * statistic. The estimator keeps its proper job: sanity-checking taps in
      * `isTapOnGround()`, where being roughly right is enough.
      */
-    function applyTap(position: Vec3, tapPoint: { x: number; y: number }): void {
+    function applyTap(position: Vec3, tapPoint: { x: number; y: number }, acceptedOffFloor: boolean): void {
       // Select-then-retap, per ticket 0004: a selected marker moves to the next
       // tap wherever it lands; otherwise a tap within ANCHOR_RADIUS_M of an
       // existing marker selects it rather than placing something new.
@@ -1590,6 +1746,9 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
       photoTasks[target] = null
       // The height it was tapped at, before it is drawn at the landmark's: a fit compares heights (./constellation-flow.ts).
       tappedAt[target] = position
+      // And whether that tap was accepted off the floor, which is a bypass of the floor check for as long as this tap is the marker's.
+      if (acceptedOffFloor) offFloorMarkers[target] = true
+      else delete offFloorMarkers[target]
 
       if (target === 'landmark') {
         setMarker('landmark', position)
@@ -1681,8 +1840,9 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
           const groundY = options.ground()?.y ?? null
           // How high the tap measured, which is not its position's height when the floor ray placed it.
           const tapY = hit.surfaceY ?? hit.position.y
+          const offFloor = !isTapOnGround(tapY, groundY)
           const confirmingRejectedHeight = isSameHeightRetry(tapY, offGroundTapY)
-          if (!confirmingRejectedHeight && !isTapOnGround(tapY, groundY)) {
+          if (!confirmingRejectedHeight && offFloor) {
             offGroundTapY = tapY
             const delta = tapHeightAboveGroundCm(tapY, groundY as number)
             const side = delta >= 0 ? 'above' : 'below'
@@ -1690,15 +1850,16 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
               `That looked about ${Math.abs(delta)} cm ${side} the floor. Aim at the floor, or tap the same height again to use it anyway.`
             return
           }
-          // A tap accepted off the floor by a same-height retry is a bypass.
-          if (confirmingRejectedHeight && !isTapOnGround(hit.position.y, groundY)) floorCheckBypassed = true
+          // A tap accepted off the floor by a same-height retry is a bypass, for the marker it places (`applyTap`). It is judged by the
+          // height the gate judged (`tapY`), which under the floor ray is not the position's: that is the fitted floor's by construction.
+          const acceptedOffFloor = confirmingRejectedHeight && offFloor
           offGroundTapY = null
 
           // Pass the raw hit through. applyTap() decides the height, because
           // only it knows which marker this tap is for — and the landmark's own
           // measured height is what defines the floor.
           transientStatus = null
-          applyTap({ x: hit.position.x, y: hit.position.y, z: hit.position.z }, tapPoint)
+          applyTap({ x: hit.position.x, y: hit.position.y, z: hit.position.z }, tapPoint, acceptedOffFloor)
           // A tap after the landmark was confirmed is where a shift since then shows: say so now, not at the commit.
           if (taps.isDisturbed()) restartAfterDisturbance()
         } finally {
@@ -1714,8 +1875,8 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
 
     skip.addEventListener('click', () => close(null))
     skipGround.addEventListener('click', () => {
+      // The floor check is bypassed for the whole flow from here (`floorCheckBypassed()`).
       groundWaitOverridden = true
-      floorCheckBypassed = true
       update()
     })
     confirmBtn.addEventListener('click', () => {
@@ -1745,7 +1906,10 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
         tapPoints[id] = null
         photoTasks[id] = null
         delete tappedAt[id]
+        // And so does a tap that was accepted off the floor, and the height the gate last turned away: the gate begins again.
+        delete offFloorMarkers[id]
       })
+      offGroundTapY = null
       refreshBaseline()
       selected = null
       transientStatus = null
@@ -1761,9 +1925,13 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
       tapPoints.check = null
       photoTasks.check = null
       delete tappedAt.check
+      delete offFloorMarkers.check
       if (selected === 'check') selected = null
     }
     checkBtn.addEventListener('click', () => {
+      // A hidden or disabled button is the guard a person meets; this is the one a script meets. A commit that waits for its photos holds
+      // the points as they were: adding or taking one away now would be saved as something else, or would abandon the commit.
+      if (commitInFlight) return
       const action = checkAction({ stage, plan: checkPlan, hasCheck: points.check !== null, pairUsable: (separation() ?? 0) >= MIN_POINT_SEPARATION_M })
       if (!action) return
       if (action.kind === 'add') {
@@ -1792,6 +1960,7 @@ export function runProjectCalibration(options: CalibrationOptions): Promise<Cali
       stage: () => stage,
       hasLandmark: () => !!points.landmark,
       residualM: () => mismatchResidualM,
+      replacesReference: keepingPairReplacesReference,
       keepPair: () => commitTwoPoint(true),
       close: () => close(null),
     })

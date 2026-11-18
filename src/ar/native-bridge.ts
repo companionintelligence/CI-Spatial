@@ -71,6 +71,7 @@ export interface NativeDepthPayload {
 }
 
 export interface NativeFrame {
+  /** When the camera image was captured: seconds on the native layer's monotonic clock, the same clock as the events' `timestamp`. */
   timestamp: number
   width: number
   height: number
@@ -84,6 +85,12 @@ export interface NativeFrame {
 }
 
 export interface NativePoseEvent {
+  /**
+   * When the camera frame behind this pose was captured: seconds on the native layer's monotonic clock (iOS: ARFrame.timestamp;
+   * Android: Frame.getTimestamp(), in nanoseconds, divided by 1e9). Not a time on the page's clock, and not when the event reached
+   * the page: the bridge can hold events back, and the frame time is what says how long a pause really was. The same clock stamps
+   * `points`, `hits` and a captured frame. tests/unit/node/wp-09b-native-provider.test.ts reads both sources to keep this true.
+   */
   timestamp: number
   /** Camera-to-world, 16 numbers, column-major. */
   transform: number[]
@@ -114,6 +121,11 @@ export interface NativeHitsEvent {
   samples: NativeHitSample[]
 }
 
+/**
+ * A change of tracking state that is not a pose: the session has stopped giving poses (ARKit interrupted, ARCore paused with the
+ * app), which is the one thing a pose event cannot say. It carries no `timestamp`, so the page dates it by the last pose it saw.
+ * Every other state arrives inside the next pose event's `tracking`.
+ */
 export interface NativeTrackingEvent {
   state: string
 }

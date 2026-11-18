@@ -218,6 +218,13 @@ export interface ShellSeam {
   hasLandmark: () => boolean
   /** The recorded pair's spacing subtracted from the placed pair's, for the reason line. */
   residualM: () => number
+  /**
+   * Whether keeping the placed pair replaces the Place's reference. It does unless the commit cannot write one: the floor check was
+   * bypassed (`mayWritePlaceFrame`, ./ground-gate.ts). Read when "Replace" is pressed, so it is the rule the button's own label is
+   * drawn by. When it does not, the pair is kept and nothing is asked: the question promises what becomes of the scans made against a
+   * reference that is being replaced. Absent: it replaces, as it did before there was a bypass.
+   */
+  replacesReference?: () => boolean
   /** Keeps the placed pair over the mismatch, as the modal always did. */
   keepPair: () => Promise<void>
   /** Closes the modal without a result. */
@@ -234,8 +241,9 @@ export interface GenerationActions {
  * The three clicks, in the order their questions are asked. Each is guarded by the rule that shows its button, so a click that
  * reaches a hidden button (a script, or a later caller) is refused by the rule and not only by the paint.
  *
- *  - Replace: asks first, when the Place has a reference to replace and the page supplies the question, then keeps the
- *    pair. With no question it keeps the pair, as before.
+ *  - Replace: asks first, when the Place has a reference to replace, keeping the pair replaces it, and the page supplies the
+ *    question, then keeps the pair. With no question it keeps the pair, as before. A pair kept with the floor check bypassed
+ *    replaces nothing (`replacesReference`), so it is kept with no question.
  *  - Improve: asks, and only on a yes tells the page and closes. The page runs the modal again as an upgrade.
  *  - Keep: inside an upgrade, tells the page and closes. The page runs the modal again as an ordinary visit.
  */
@@ -255,7 +263,9 @@ export function generationActions(hooks: GenerationHooks | undefined, shell: She
   return {
     replace: () => once(async () => {
       const ask = hooks?.confirmReplace
-      if (ask && shell.stored && !(await ask(shell.overlay, { reason: 'override', residualM: shell.residualM() }))) return
+      // The question is about replacing the reference. A pair kept without writing a frame replaces nothing, and asking would promise
+      // that the scans made against the reference "stay in the Place, listed as previous reference" when no reference was replaced.
+      if (ask && shell.stored && (shell.replacesReference?.() ?? true) && !(await ask(shell.overlay, { reason: 'override', residualM: shell.residualM() }))) return
       await shell.keepPair()
     }),
     improve: () => once(async () => {

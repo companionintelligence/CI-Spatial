@@ -16,7 +16,9 @@
  *    (a scan carried in from another Place) it says that the reference is not the current one and that the record does not
  *    say it was ever the Place's own.
  *  - "not in Place frame" (owner decision D6): the scan was not aligned to a Place reference at all (uncalibrated), or
- *    only from one point and the compass, or from a measured distance. Mixed scans are allowed; they are labelled.
+ *    only from one point and the compass, or from a measured distance, or from its own two points with no reference written
+ *    or matched (a commit whose floor check was bypassed: `calibrationOutsidePlaceFrame`). Mixed scans are allowed; they are
+ *    labelled. It is the server's `isInPlaceFrame` (../world/frame-generations.ts), which its counts and Thing matching ask too.
  *  - "frame not recorded": a two-point scan with no id, in a Place whose reference has one. It was made before ids
  *    existed, so the editor cannot tell which reference it was measured against, and does not guess. Neutral.
  *  - nothing: a scan of the current reference, and every scan of a Place that has no reference (there is nothing to be
@@ -32,6 +34,7 @@
  * for (viewer.html) and takes what it needs from the editor through `FrameReferenceHost`.
  */
 import type * as THREE from 'three'
+import { isInPlaceFrame } from '../world/frame-generations.ts'
 import { frameIdOf } from '../world/frame-replacement.ts'
 import { isFrameId } from '../world/spatial-frame.ts'
 import type { FrameHistoryEntry, FrameReplaceReason, ProjectSpatialFrame, ScanManifest } from '../world/types'
@@ -56,7 +59,7 @@ export interface FramePlace {
 }
 
 /** The calibration fields of a `ScanManifest` the chip reads. */
-export type FrameScan = Pick<ScanManifest, 'calibrationMethod' | 'calibrationStatus' | 'calibrationFrameId' | 'calibratedAt'>
+export type FrameScan = Pick<ScanManifest, 'calibrationMethod' | 'calibrationStatus' | 'calibrationFrameId' | 'calibrationOutsidePlaceFrame' | 'calibratedAt'>
 
 export const PREVIOUS_REFERENCE_TEXT = 'previous reference'
 export const NOT_IN_FRAME_TEXT = 'not in Place frame'
@@ -132,6 +135,16 @@ export function frameChipFor(scan: FrameScan, place: FramePlace | null | undefin
       title: method === 'known-distance'
         ? 'This scan was sized from a measured distance, so it is not in the Place frame.'
         : "This scan was aligned another way than with the Place's two points, so it is not in the Place frame.",
+    }
+  }
+
+  // A two-point scan that is in no frame (its commit wrote none and matched none) names no generation, and the history cannot say it was
+  // replaced: it was never measured against a reference. The rest of this function is about scans that are in one.
+  if (!isInPlaceFrame(scan)) {
+    return {
+      kind: 'not-in-frame',
+      text: NOT_IN_FRAME_TEXT,
+      title: "This scan was placed by its own two points and was not matched to this Place's reference, so it is not in the Place frame.",
     }
   }
 

@@ -188,6 +188,12 @@ function aspectOf(canvas: HTMLCanvasElement): number {
   return clientWidth > 0 && clientHeight > 0 ? clientWidth / clientHeight : Number.NaN
 }
 
+/**
+ * The provider of the `ArSession` plugin, which the shells do not register: NOT the one the app runs. The shells run the
+ * provider of the `ScanAR` plugin, which is also called `NativeARProvider` and lives in ./native.ts; src/main.ts imports that one,
+ * and an import of this name from here is the unregistered design's. Both keep the name until the owner decides whether the two
+ * native designs both stay (tests import this one from here), and nothing in src imports this file.
+ */
 export class NativeARProvider implements ARProvider {
   private readonly plugin: () => ArSessionPlugin | undefined
   /** The start in flight, or the one that succeeded. Null after stop(), and after a start that failed. */

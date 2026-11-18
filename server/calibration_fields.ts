@@ -8,9 +8,10 @@
  * fields with `calibrationFromMeta` below, which is built from the readers above it, and, for a
  * two-point scan whose record carries them, the frame generation (`calibrationFrameId`), the check
  * its status rests on (`calibrationCheckedBy`) and the fit's size and disagreement
- * (`calibrationFitPointsUsed`, `calibrationFitRmsM`, `calibrationFitMaxM`). Those five are left off
+ * (`calibrationFitPointsUsed`, `calibrationFitRmsM`, `calibrationFitMaxM`), and, for a two-point scan that is in no Place frame, the
+ * statement that it is (`calibrationOutsidePlaceFrame`: see `asOutsidePlaceFrame`). Those six are left off
  * `calibrationFromMeta`'s answer, not nulled, when the record does not have them, so what it says about a
- * sidecar written before they existed is exactly what it said. `calibrationEvidenceFromMeta` is the same
+ * sidecar written before they existed is exactly what it said. `calibrationEvidenceFromMeta` is the first
  * five with every one of them a key, `undefined` when absent, for the manifest a world refresh lays over a
  * stored row: see there.
  * Two things read those fields back out of the manifest:
@@ -42,8 +43,10 @@ import type { ScanManifest } from '../src/world/types.ts'
 import type { CheckedBy } from '../src/world/calibration-evidence.ts'
 import { isIsoDateTime } from '../src/shared/iso-time.ts'
 import { MAX_FIT_POINTS, MIN_FIT_POINTS } from '../src/world/calibration-evidence.ts'
+import { readCalibrationGroundY } from '../src/world/geo.ts'
 import { asScaleKind, asScaleMode } from '../src/world/scale-mode.ts'
 import { isFrameId } from '../src/world/spatial-frame.ts'
+import { outsidePlaceFrameOf } from '../src/world/frame-generations.ts'
 
 /** A number the record holds under `key`, when it is a finite one. */
 function finiteField(record: unknown, key: string): number | null {
@@ -136,6 +139,18 @@ export function asCalibrationCheckedBy(value: unknown): CheckedBy | undefined {
 }
 
 /**
+ * Whether a stored two-point calibration says its scan is in no Place frame: `outsidePlaceFrame: true`, written by a commit that wrote
+ * no Place frame and matched none (a bypassed floor check: `leavesScanOutsidePlaceFrame`, src/ar/ground-gate.ts). `true` or
+ * `undefined`, never `false`: a record that does not say it is in none says nothing, and a value that is anything but the boolean
+ * `true` ("true", 1) is not the statement. `flat` is the sidecar's own `calibrationOutsidePlaceFrame` key, read first as the
+ * frame id's is: `withReplacedCalibration` writes it when the `splat-align` job replaces the nested record that said it, so the
+ * statement outlives that job.
+ */
+export function asOutsidePlaceFrame(record: unknown, flat?: unknown): true | undefined {
+  return flat === true || outsidePlaceFrameOf(record) ? true : undefined
+}
+
+/**
  * The calibration tier a sidecar names, when it names one of the tiers there are.
  *
  * Every member of `ScanCalibration['method']` passes through: `'two-point-ground'`,
@@ -170,7 +185,7 @@ export function asCalibrationStatus(value: unknown): ScanManifest['calibrationSt
 
 /**
  * The `ScanManifest` fields `calibrationFromMeta` fills. The first six are always there; the last five are there
- * only when the record has them.
+ * only when the record has them. (A twelfth, `OutsidePlaceFrameField`, is there only when the record says its scan is in no frame.)
  */
 export type ManifestCalibrationFields = Pick<
   ScanManifest,
@@ -186,6 +201,16 @@ export type ManifestCalibrationFields = Pick<
   | 'calibrationFitRmsM'
   | 'calibrationFitMaxM'
 >
+
+/**
+ * One more manifest field, beside those eleven: `true` when a two-point scan's calibration says it is in no Place frame, absent
+ * otherwise (never `false`). It is `ScanManifest.calibrationOutsidePlaceFrame` (src/world/types.ts), which tells a scan that is in no
+ * frame from one that is in a frame it cannot name (no `calibrationFrameId`). It is added beside `ManifestCalibrationFields` and not
+ * into it, because that list is the eleven keys the S0 schema step added and tests/unit/deno/frame_schema_s0.test.ts pins it at
+ * those. A manifest row that carries it is read by the one predicate every reader asks, `isInPlaceFrame`
+ * (src/world/frame-generations.ts): the server's counts, Thing matching and the editor's chip.
+ */
+export type OutsidePlaceFrameField = Pick<ScanManifest, 'calibrationOutsidePlaceFrame'>
 
 /**
  * The nested `calibration` record, when it is the record the flat summaries describe.
@@ -241,7 +266,7 @@ function recordBackingTier(record: unknown, tier: ScanManifest['calibrationMetho
  * type says. That is why a sidecar written before this function existed keeps loading: it
  * carries all of this already, in the record it has always carried.
  */
-export function calibrationFromMeta(meta: Record<string, unknown>): ManifestCalibrationFields {
+export function calibrationFromMeta(meta: Record<string, unknown>): ManifestCalibrationFields & OutsidePlaceFrameField {
   const method = asCalibrationMethod(meta['calibrationMethod'])
   const record = recordBackingTier(meta['calibration'], method)
   return {
@@ -296,22 +321,67 @@ export function calibrationEvidenceFromMeta(meta: Record<string, unknown>): Cali
 }
 
 /**
+ * The session-space floor height the scan's origin sat on (`ScanManifest.calibrationGroundY`), or null when the sidecar does not
+ * say. Read from the flat `calibrationGroundY` key first and from the nested record second, which is read as the measurements
+ * are, through `recordBackingTier`: a record that names another tier than the flat summary does is not the one the scan's
+ * placement came from. The flat key is what survives the `splat-align` job, which replaces the nested record
+ * (`withReplacedCalibration`), as the flat `calibrationFrameId` is what keeps the frame generation. No client writes the flat
+ * key (the nested record is the one the capture writes, wave 12), so on a scan the job has not run on the record answers.
+ */
+export function calibrationGroundYFromMeta(meta: Record<string, unknown>): number | null {
+  const flat = finiteField(meta, 'calibrationGroundY')
+  if (flat !== null) return flat
+  return readCalibrationGroundY(recordBackingTier(meta['calibration'], asCalibrationMethod(meta['calibrationMethod'])))
+}
+
+/**
+ * The sidecar the `splat-align` job writes when it replaces the nested `calibration` record with its own known-distance one
+ * (`_runSplatAlignJob` in server/main.ts), and leaves the flat summaries and `projectTransform` as they are. The scan is
+ * still placed by that transform, so what the replaced record said of where the origin sat is still true of the placement,
+ * and nothing else will say it once the record is gone: the floor height is kept as the flat `calibrationGroundY` first.
+ * A flat value that is already there stays (a second run finds a record that has none), and a record with no finite floor
+ * height keeps none. The same goes for the statement that the scan is in no Place frame (`outsidePlaceFrame`, true or absent):
+ * the job does not put the scan in a frame it was not measured in, so the statement is kept as the flat
+ * `calibrationOutsidePlaceFrame`, and a count read from the sidecar (`tallyScansByFrame`) still agrees with the world row after it.
+ * Does not change `meta`.
+ */
+export function withReplacedCalibration(meta: Record<string, unknown>, record: unknown): Record<string, unknown> {
+  const kept = finiteField(meta, 'calibrationGroundY') ?? readCalibrationGroundY(meta['calibration'])
+  const outside = asOutsidePlaceFrame(meta['calibration'], meta['calibrationOutsidePlaceFrame'])
+  return {
+    ...meta,
+    ...(kept === null ? {} : { calibrationGroundY: kept }),
+    ...(outside === undefined ? {} : { calibrationOutsidePlaceFrame: outside }),
+    calibration: record,
+  }
+}
+
+/**
  * The manifest fields only a two-point record has, each present only when the sidecar holds it. `record` is
  * the nested calibration `recordBackingTier` let through.
+ *
+ * The statement that the scan is in no Place frame is not one of the five `calibrationEvidenceFromMeta` keeps as keys, so a world
+ * row that has it keeps it: `refreshWorldScans` lays a manifest that lacks the key over the row and leaves its value standing. That is
+ * the cautious way for a value that can only ever be true, and it is not the contract the five have (a value the sidecar no longer
+ * gives is cleared). A `splat-align` job, which replaces the nested record, keeps the statement as the flat key
+ * `calibrationOutsidePlaceFrame` (`withReplacedCalibration`, read first by `asOutsidePlaceFrame`), so the row and a count read from
+ * the sidecar (`tallyScansByFrame`) agree after it.
  */
-function twoPointEvidenceFromMeta(meta: Record<string, unknown>, record: unknown): Partial<CalibrationEvidenceFields> {
+function twoPointEvidenceFromMeta(meta: Record<string, unknown>, record: unknown): Partial<CalibrationEvidenceFields> & OutsidePlaceFrameField {
   const flatFrameId = isFrameId(meta['calibrationFrameId']) ? meta['calibrationFrameId'] : undefined
   const frameId = flatFrameId ?? asCalibrationFrameId(record)
   const checkedBy = asCalibrationCheckedBy(record)
   const pointsUsed = asCalibrationFitPointsUsed(record)
   const rmsM = asCalibrationFitRmsM(record)
   const maxM = asCalibrationFitMaxM(record)
+  const outside = asOutsidePlaceFrame(record, meta['calibrationOutsidePlaceFrame'])
   return {
     ...(frameId === undefined ? {} : { calibrationFrameId: frameId }),
     ...(checkedBy === undefined ? {} : { calibrationCheckedBy: checkedBy }),
     ...(pointsUsed === undefined ? {} : { calibrationFitPointsUsed: pointsUsed }),
     ...(rmsM === undefined ? {} : { calibrationFitRmsM: rmsM }),
     ...(maxM === undefined ? {} : { calibrationFitMaxM: maxM }),
+    ...(outside === undefined ? {} : { calibrationOutsidePlaceFrame: outside }),
   }
 }
 

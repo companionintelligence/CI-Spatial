@@ -26,8 +26,16 @@
  */
 import type { AffectedScans } from '../world/frame-replacement.ts'
 
-/** The mismatch screen's way to keep the pair the person placed: it replaces the Place's reference. */
+/** The mismatch screen's way to keep the pair the person placed: it replaces the Place's reference, unless the floor check was bypassed. */
 export const REPLACE_REFERENCE_LABEL = "Replace this Place's reference"
+
+/**
+ * The same button when keeping the pair replaces nothing: the floor check was bypassed, so no frame is written (`mayWritePlaceFrame`,
+ * ./ground-gate.ts) and the Place keeps the reference it has. The pair is kept with the scan, provisional, and the scan is in no Place
+ * frame. The words are the mismatch card's own ("record this pair as unverified": `mismatchCopy`, `MISMATCH_COPY_POINTS`), and they name
+ * neither a reference nor a replacement, which is what the question that goes with {@link REPLACE_REFERENCE_LABEL} is about.
+ */
+export const RECORD_UNVERIFIED_LABEL = 'Record as unverified'
 
 /** The way to start a new reference for a Place whose two-point reference has no check point. */
 export const IMPROVE_REFERENCE_LABEL = "Improve this Place's reference"

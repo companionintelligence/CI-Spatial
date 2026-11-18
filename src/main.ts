@@ -25,6 +25,7 @@ import type { ARProvider, Pose } from './ar/provider'
 import { trackingIsUsable } from './ar/tracking-quality'
 import { RoomScanner } from './ar/scanner'
 import { runProjectCalibration } from './ar/calibration-run'
+import { withdrawCalibrationDrawings } from './ar/project-calibration'
 import { openPlacePickerAndWait } from './ar/calibration-exits'
 import { calibrationTapSampler, probeTapReader } from './ar/calibration-taps'
 import { stampScale } from './ar/engine-config'
@@ -555,6 +556,9 @@ async function main() {
         void projectStore.updateScan(sessionScanEntry).catch(() => {})
       }
       overlay.setStatus(FRAME_CONFLICT_TEXT, 'sticky')
+      // What the calibration drew is a claim about a frame this Place no longer has: the needle and the scene's drawings go too.
+      // The scan is the same one, in the session frame it was, so the floor grid it keeps stays.
+      dropCalibrationDrawings({ floor: false })
     })
   }
   const qualityMonitor = new ScanQualityMonitor()
@@ -688,6 +692,8 @@ async function main() {
     clearCalibration: () => {
       sessionCalibration = undefined
       scanFrameEpochs.forgetCalibration()
+      // The next scan is in another frame and has no calibration yet: nothing drawn for the old one is its own, the floor grid included.
+      dropCalibrationDrawings({ floor: true })
     },
     get keyframes() { return keyframes },
     calibrate: calibrateScan,
@@ -2042,6 +2048,23 @@ async function main() {
 
   overlay.setStatus('Calibrate the project frame…')
 
+  /**
+   * A calibration the page no longer holds takes down what it showed: the frame-heading needle and label, and what the
+   * modal drew into the scene for it (the origin, the stored origin, the check point's marker, the stored points' rings).
+   * Called wherever `sessionCalibration` is dropped (a Place frame that lost a conflict, a re-anchor beginning a scan
+   * that has none) and by a calibration flow that ends with none.
+   *
+   * The floor grid is the ground the scan keeps (owner R10), and a commit replaces it by name, so it goes with the scan
+   * and not with the calibration. `floor: true` where there is no scan for it to be kept for: a re-anchor begins one in
+   * another frame, and the old grid stands at coordinates the shift moved; a flow that ends with no calibration is a skip,
+   * and ticket 0001 says a skip leaves no floor plane (DEVICE_TESTING O9). `floor: false` where the scan is the same one,
+   * in the frame it was: a Place frame that lost a conflict.
+   */
+  function dropCalibrationDrawings(options: { floor: boolean }): void {
+    setFrameHeadingNeedle(null)
+    withdrawCalibrationDrawings(provider.getScene?.() ?? null, options)
+  }
+
   // The Place calibration: for this scan now, and for the one a re-anchor begins after a frame shift
   // (src/ar/reanchor-flow.ts). Resolves true when it made a calibration.
   async function calibrateScan(): Promise<boolean> {
@@ -2117,7 +2140,8 @@ async function main() {
       // persisted" — a first calibration, an upgrade from the one-point tier,
       // or a deliberate override after a mismatch. Ticket 0004 widened this
       // from #141's narrower "first calibration ever", so do not read its
-      // presence as a first-visit signal.
+      // presence as a first-visit signal. A commit whose floor check was
+      // bypassed returns none, whichever of those it is (`mayWritePlaceFrame`).
       //
       // It is deliberately absent when a stored two-point frame was merely
       // *verified*: that frame is the reference the measurement was taken
@@ -2144,8 +2168,10 @@ async function main() {
       overlay.setStatus(alignmentStatusText(sessionCalibration), 'sticky')
       showFrameSyncNote(statusNode, frameSync)
     } else {
-      // Continued without a frame: the same reason to hold it.
+      // Continued without a frame: the same reason to hold it. And no frame, so nothing drawn for one: what an earlier
+      // calibration of this page left in the scene and on the HUD is not this scan's, the floor grid included.
       overlay.setStatus(alignmentStatusText(null), 'sticky')
+      dropCalibrationDrawings({ floor: true })
     }
     return !!calibration
   }
@@ -2157,7 +2183,7 @@ async function main() {
   installProbeLog({
     canvas,
     provider,
-    runtime: use8thWall ? '8thwall' : 'webxr',
+    runtime: probeRuntimeLabel(provider, use8thWall),
     hitTest: async (x, y) => asyncHitTest ? await asyncHitTest(x, y) : provider.hitTest(x, y),
     calibration: () => sessionCalibration,
     bearing: () => geoTracker.pairedCompass(provider.getPose().rotation)?.bearingDeg ?? null,
@@ -4632,19 +4658,16 @@ function waitForXR8(timeoutMs: number): Promise<XR8Load> {
 }
 
 /**
- * Points the runtime-switch nav button at the other AR engine. 8th Wall is
- * the default; the WebXR toggle is only shown when this browser can actually
- * run an `immersive-ar` session (`webxrSupported`) — otherwise it's hidden
- * rather than sending the user to a dead-end landing page. A WebXR session
- * always links back to the 8th Wall scanner.
- */
-/**
  * The web runtime a native session falls back to: 8th Wall when its engine loads, otherwise
  * WebXR. The same order the scanner uses when there is no native layer. The 8th Wall configuration
  * (xr.js, its load timeout, its provider) is unchanged; native only chooses to wait for it later.
+ *
+ * "Loads" is `ready` and nothing else: waitForXR8 answers a state, and `failed` and `timeout` are strings, so a test for
+ * truth lets them through. createEighthWallProvider waits for the engine's `xrloaded` with no bound of its own, so asked
+ * for an engine that is not coming it never settles, and neither does the start that is waiting for this.
  */
 async function createWebRuntimeProvider(): Promise<ARProvider> {
-  if (await waitForXR8(XR8_LOAD_TIMEOUT_MS)) {
+  if ((await waitForXR8(XR8_LOAD_TIMEOUT_MS)) === 'ready') {
     try {
       return await createEighthWallProvider()
     } catch (e) {
@@ -4654,6 +4677,29 @@ async function createWebRuntimeProvider(): Promise<ARProvider> {
   return createWebXRProvider()
 }
 
+/**
+ * The runtime that is giving a session its poses and hits, in the words the `?debug=probe` line records as `rt`
+ * (src/capture/probe-log.ts): `native` while the ARKit / ARCore session runs, and the web runtime that took over after a native
+ * session failed to start, which createWebRuntimeProvider chooses between: `webxr` or `8thwall`. A page with no native layer is
+ * whichever web runtime it chose at the start. `use8thWall` is set where 8th Wall is chosen at the start, so it says nothing about
+ * a hand-over, and it used to be all this line asked, which called every native run `webxr`.
+ */
+function probeRuntimeLabel(provider: ARProvider, use8thWall: boolean): 'native' | '8thwall' | 'webxr' {
+  if (provider instanceof NativeARProvider) {
+    const web = provider.webRuntime()
+    if (!web) return 'native'
+    return web instanceof WebXRProvider ? 'webxr' : '8thwall'
+  }
+  return use8thWall ? '8thwall' : 'webxr'
+}
+
+/**
+ * Points the runtime-switch nav button at the other AR engine. 8th Wall is
+ * the default; the WebXR toggle is only shown when this browser can actually
+ * run an `immersive-ar` session (`webxrSupported`) — otherwise it's hidden
+ * rather than sending the user to a dead-end landing page. A WebXR session
+ * always links back to the 8th Wall scanner.
+ */
 function updateXrModeLink(use8thWall: boolean, webxrSupported: boolean): void {
   const link = document.getElementById('xr-mode-link') as HTMLAnchorElement | null
   if (!link) return
@@ -4846,10 +4892,11 @@ function updateGeoIndicator(fix: GeoFix): void {
 }
 
 /**
- * The origin's heading as a true-north bearing (wave 12, ticket 0001): a second,
+ * The origin's heading as a compass bearing (wave 12, ticket 0001): a second,
  * hollow needle beside the device's, so the two readings can be told apart. It
  * shows only after this scan commits an origin with a compass fix, and is hidden
- * otherwise. The device needle in `updateGeoIndicator` is untouched.
+ * otherwise, including when the calibration it describes is dropped
+ * (`dropCalibrationDrawings`). The device needle in `updateGeoIndicator` is untouched.
  */
 function setFrameHeadingNeedle(bearingDeg: number | null): void {
   const needle = document.getElementById('compass-frame-needle') as SVGGElement | null
@@ -4865,7 +4912,8 @@ function setFrameHeadingNeedle(bearingDeg: number | null): void {
   }
   if (label) {
     label.style.display = ''
-    label.textContent = `frame heading ${Math.round(bearingDeg)}°`
+    // A bearing that rounds up to 360 reads 0, as the compass readout does (`formatCompassSpin`).
+    label.textContent = `frame heading ${Math.round(bearingDeg) % 360}°`
   }
 }
 

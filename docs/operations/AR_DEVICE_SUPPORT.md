@@ -209,8 +209,9 @@ something measured.
 | Samsung Internet, Wolvic | not independently evidenced (Samsung's entries are derived from Chrome's) | not independently evidenced | not independently evidenced | unverified: nothing is assumed |
 | Android WebView, which is the Capacitor Android shell | no | `XRAnchor` is false there (Chromium issue 40652382, via MDN browser-compat-data) | no | **inert**: the capability is undefined |
 | iPhone Safari, and the Capacitor iOS shell (WKWebView) | no: Safari has no WebXR AR | no | no | **inert**: the capability is undefined |
-| 8th Wall, this app's default pose source on iPhone and Android | not WebXR: its own tracking | none is asked of it: `src/ar/eighthwall.ts` has no `anchors` member, and its VPS path is documented as excluded from the self-hosted binary | no | **inert**: the capability is undefined |
-| Native ARKit and ARCore through the Capacitor `ArSession` plugin | not WebXR | ARKit has `ARAnchor` and `ARWorldMap` (iOS 12 and later); ARCore has anchors | ARKit `ARWorldMap` save and restore, native only | **not built**: the plugin is pose-only (below) |
+| 8th Wall, this app's default pose source in a browser, and the fallback in the shells when a native session cannot start | not WebXR: its own tracking | none is asked of it: `src/ar/eighthwall.ts` has no `anchors` member, and its VPS path is documented as excluded from the self-hosted binary | no | **inert**: the capability is undefined |
+| Native ARKit and ARCore through the Capacitor `ScanAR` plugin, which both shells register (`src/ar/native.ts`) | not WebXR | ARKit has `ARAnchor` and `ARWorldMap` (iOS 12 and later); ARCore has anchors. The plugin gives the page no runtime anchor: the iOS plugin has no anchor method, and the Android one has a single origin anchor (`setOriginAnchor` and `getOriginAnchor`) that a new placement replaces and that the page never calls | ARKit `ARWorldMap` save and restore, native only: the iOS plugin saves a map for a named Place and starts a session from it (ADR 0010), and the map is not linked to the Place frame. None on Android, whose origin anchor is written to a file that nothing reads back | **built, but not exposed as anchors**: the camera and hit-test bridge, the iOS world map and the Android origin anchor are in the plugin, and `src/ar/native.ts` feeds the epoch tracker from the poses and tracking states it sends, but its `anchors` is undefined while a native session runs (after a hand-over to WebXR it is that runtime's). Read from the code, not run on a device |
+| Native ARKit and ARCore through the Capacitor `ArSession` plugin, which no shell registers (`src/ar/native-provider.ts`) | not WebXR | as above | none | **unregistered**: pose-only (below), kept in the tree until the owner decides whether both native designs stay (ADR 0009) |
 | visionOS Safari | immersive-vr only (Apple staff) | no | no | not a target |
 
 Sources, each read on 2026-11-16: the Anchors Module Editor's Draft of 27 April 2026
@@ -340,23 +341,32 @@ count of `reset` events and whether each carried a transform, the visibility sta
   page in WKWebView and Android WebView, where WebXR anchors are absent, and iPhone Safari has no
   WebXR AR. "WebXR first" is not an exit for store users. The route that gives them a real anchor
   or a saved map is the native one: ARKit `ARAnchor` and `ARWorldMap`, and ARCore anchors, behind
-  the existing `ArSession` plugin. That plugin is unbuilt for this: it is pose-only, `hitTest`
-  returns null, `captureFrame` rejects, and the Android side creates and resumes a session and
-  never calls `update()`. It needs the camera and hit-test bridge first, then the anchor and
-  world-map methods; it needs a Mac with Xcode and the Android SDK, and named devices. The other
-  candidate is a Chrome-based Android shell, which is unverified. Which of the two to fund is the
-  owner's decision (D11, with the cost of a Mac and devices).
+  the `ScanAR` plugin the shells register. That plugin already has the camera and hit-test bridge,
+  an iOS world map that is saved and restored but not linked to the Place frame, and an Android
+  origin anchor that the page never calls. What it lacks for this is anything that gives the page
+  runtime anchors (`provider.anchors`), a transform from a map to the Place frame, and an origin
+  restored across sessions; and none of it has run on a device, which needs a Mac with Xcode and
+  the Android SDK, and named devices. The unregistered `ArSession` plugin is the other native
+  design: pose-only, `hitTest` returns null, `captureFrame` rejects, and the Android side creates
+  and resumes a session and never calls `update()`. Whether it stays is part of the same decision.
+  The other candidate is a Chrome-based Android shell, which is unverified. Which of the two to
+  fund is the owner's decision (D11, with the cost of a Mac and devices).
 - **On the web, WebXR anchors are for three runtimes only:** Chrome on Android, Quest Browser and
   Chrome on Android XR. Everywhere else the capability is undefined, which is a supported state and
   the one iPhone is in.
-- **What does not change:** 8th Wall stays the pose source on the default path (D11); the Place
+- **What does not change:** 8th Wall stays the pose source in browsers (D11), and the fallback in the shells, which start on the native runtime when it can run; the Place
   frame is built from taps; a printed fiducial and server registration are the tiers that do not
   need a runtime anchor. ARCore Cloud Anchors, Geospatial and a cloud VPS are only ever an opt-in
   connector with its own consent, because camera-derived data leaves the device.
-- `src/ar/native-provider.ts` carries the contract a native bridge has to meet for epochs (a
-  tracking reason and an epoch on every pose push, an interruption flag on state pushes), ahead of
-  the natives, which send neither yet. `tests/unit/node/native_provider.test.ts` reads both native
-  sources and fails when a name drifts.
+- The epoch contract is met two ways. The registered provider, `src/ar/native.ts`, feeds the one
+  detector the web runtimes use (`FrameEpochTracker`, `src/ar/frame-epoch.ts`) from the pose and
+  tracking events `ScanAR` sends, dated by the native frame time. It implements `getFrameEpoch`,
+  `onFrameDiscontinuity` and `getTrackingDiagnostics`, reports the scale mode `native-metric`, and
+  leaves `anchors` undefined while the native session runs; `tests/unit/node/wp-09b-native-provider.test.ts` runs it against a fake
+  plugin. The unregistered `src/ar/native-provider.ts` carries another contract for the `ArSession`
+  plugin (a tracking reason and an epoch on every pose push, an interruption flag on state pushes),
+  ahead of a plugin that sends neither yet; `tests/unit/node/native_provider.test.ts` reads both
+  native sources of that plugin and fails when a name drifts.
 
 ## Related
 

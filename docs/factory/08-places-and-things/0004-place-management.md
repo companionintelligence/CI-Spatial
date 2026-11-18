@@ -197,7 +197,9 @@ plain display strings.
   now leaves it. The next read of the source's world hands each moved scan to the target's
   world with its patches, comments and finished jobs (a hand-set placement included, when
   it still means the same there), and the merge no longer relabels the source's world file
-  as the target's.*
+  as the target's. It removes that world, with its export, once nothing in it is waiting for
+  the hand-over, and a hand-set placement that cannot mean the same in the target's world goes
+  with it (the answer counts it as `placementsRemoved`).*
 - Q: Should merge offer an undo? — A: **OPEN.** Out of scope as pinned, but the response's
   `remappedIds` is deliberately shaped so a future inverse operation is possible. Decide
   whether to keep that field before merging, since removing it later is a breaking change.
