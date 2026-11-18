@@ -41,6 +41,7 @@ import {
   type ProbeReading,
 } from '../../../src/capture/probe-log.ts'
 import { EighthWallProvider } from '../../../src/ar/eighthwall.ts'
+import { NativeARProvider } from '../../../src/ar/native.ts'
 import { WebXRProvider } from '../../../src/ar/webxr.ts'
 import { FrameEpochTracker, describeTracking } from '../../../src/ar/frame-epoch.ts'
 import { asScaleMode } from '../../../src/world/scale-mode.ts'
@@ -65,6 +66,7 @@ import {
   twoPointToProjectTransform,
 } from '../../../src/world/geo.ts'
 import type { ScanCalibration } from '../../../src/world/types.ts'
+import { fakePlugin, providerOptions } from './support/fake-scan-ar.ts'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const DOC = readFileSync(join(ROOT, 'docs/testing/DEVICE_TESTING.md'), 'utf8')
@@ -524,12 +526,24 @@ test('`px`, `py`, `pz` mean what the table says: the origin is the landmark, +Z 
   assert.equal(at({ ...landmark, y: landmark.y + 1 }).py, 1, '+Y is up')
 })
 
-test("`rt` names the two runtimes the scanner passes, and `B + yaw` is what sessionFrameBearingDeg computes (`B - yaw` is the earlier rule)", () => {
+test("`rt` names every runtime the scanner passes, and `B + yaw` is what sessionFrameBearingDeg computes (`B - yaw` is the earlier rule)", () => {
   const main = readFileSync(join(ROOT, 'src/main.ts'), 'utf8')
   const call = main.slice(main.indexOf('installProbeLog({'), main.indexOf('})', main.indexOf('installProbeLog({')))
-  const runtimes = [...(/runtime: use8thWall \? '([a-z0-9]+)' : '([a-z0-9]+)'/.exec(call) ?? []).slice(1)]
-  assert.equal(runtimes.length, 2, 'main.ts passes one of two runtime words')
+  assert.match(call, /runtime: probeRuntimeLabel\(provider, use8thWall\)/, 'main.ts names the runtime with probeRuntimeLabel')
+  // The words are the ones that function can answer: native while the ARKit / ARCore session runs, and the web runtime otherwise.
+  const from = main.indexOf('function probeRuntimeLabel(')
+  const label = main.slice(from, main.indexOf('\n}\n', from))
+  const runtimes = [...new Set([...label.matchAll(/'([a-z0-9]+)'/g)].map((m) => m[1]!))].sort()
+  assert.deepEqual(runtimes, ['8thwall', 'native', 'webxr'], 'main.ts passes one of three runtime words')
   for (const runtime of runtimes) assert.ok(fieldRow('rt').includes(`\`${runtime}\``), `the table's rt row does not name \`${runtime}\``)
+  // The line's own code documents the field in two places, the record's `rt` and the `runtime` the host hands the probe, and both
+  // said "`8thwall` or `webxr`" while the scanner could pass a third word.
+  const probeLog = readFileSync(join(ROOT, 'src/capture/probe-log.ts'), 'utf8')
+  const documented = [...probeLog.matchAll(/(\/\*\*(?:(?!\*\/)[^])*\*\/)\n {2}(rt|runtime): string\n/g)]
+  assert.deepEqual(documented.map((m) => m[2]), ['rt', 'runtime'], "probe-log.ts documents the record's rt and the runtime the host passes")
+  for (const [, doc, field] of documented) {
+    for (const runtime of runtimes) assert.ok(doc!.includes(`\`${runtime}\``), `probe-log.ts documents ${field} without naming \`${runtime}\``)
+  }
   // Bplus is the compass bearing plus the camera yaw, which is what geo.ts's sessionFrameBearingDeg returns under the
   // current rule; Bminus is what it returned under the earlier one, which ?bearing=1 still selects.
   assert.match(fieldRow('Bplus'), /`sessionFrameBearingDeg`/)
@@ -572,7 +586,7 @@ async function lineFrom(real: object, runtime: string): Promise<Record<string, u
   return JSON.parse(lines[0]!.slice(PROBE_LINE_PREFIX.length)) as Record<string, unknown>
 }
 
-test('both runtimes the line is written for count frame shifts and name a scale mode, so neither field is null on either, as the document says; a provider with neither logs null', async () => {
+test('every runtime the line is written for counts frame shifts and names a scale mode, so neither field is null on any of them, as the document says; a provider with neither logs null', async () => {
   const globals = globalThis as Record<string, unknown>
   const before = { document: globals['document'], window: globals['window'], self: globals['self'] }
   globals['document'] = { body: {}, visibilityState: 'visible', addEventListener() {}, removeEventListener() {}, createElement: () => ({}), querySelector: () => null }
@@ -581,26 +595,36 @@ test('both runtimes the line is written for count frame shifts and name a scale 
   try {
     const webxr = await lineFrom(new WebXRProvider(), 'webxr')
     const eighthwall = await lineFrom(new EighthWallProvider(), '8thwall')
+    // The provider both shells run, over a fake plugin and before its session: what it says of itself is its own.
+    const native = await lineFrom(new NativeARProvider(providerOptions(fakePlugin())), 'native')
     const bare = await lineFrom({ trackingStatus: () => 'NORMAL' }, 'webxr')
     assert.equal(webxr['jumps'], 0, 'the WebXR provider keeps a count: a number, not the null the document used to promise')
     assert.equal(eighthwall['jumps'], 0)
+    assert.equal(native['jumps'], 0, 'the native provider keeps one too, so a 0 on a native line is "none counted"')
     assert.equal(webxr['scale'], 'webxr-metric')
     assert.equal(eighthwall['scale'], 'responsive-unconfigured', 'what a page that names no scale gets')
+    assert.equal(native['scale'], 'native-metric', 'the native provider names its mode: it was null for it, and the document did not know the word')
     assert.deepEqual([bare['jumps'], bare['scale']], [null, null], 'a provider with no count and no scale mode is the only one with a null')
-    // What the document shows and says is what those two lines are.
+    // What the document shows and says is what those lines are.
     const probe = section('### The probe line')
     const example = JSON.parse(probe.match(/^\[probe\] (\{.*\})$/m)![1]!) as Record<string, unknown>
     assert.equal(example['rt'], '8thwall')
     assert.deepEqual([example['scale'], example['jumps']], [eighthwall['scale'], eighthwall['jumps']], 'the example line is what the real 8th Wall provider writes before any tap')
     const flat = probe.replace(/\s+/g, ' ')
-    assert.ok(flat.includes('`line.scale` is `null` only for a provider that names no scale mode, and `line.jumps` only for one that keeps no count of frame shifts. Both runtimes the line is written for (8th Wall and WebXR) name a scale mode and keep a count, so on either a `line.jumps` of 0 means none counted.'))
-    assert.match(fieldRow('jumps'), /Both runtimes count, so 0 is "none counted"\. `null` only for a provider that keeps no count/)
+    assert.ok(flat.includes('`line.scale` is `null` only for a provider that names no scale mode, and `line.jumps` only for one that keeps no count of frame shifts. All three runtimes the line is written for (native, 8th Wall and WebXR) name a scale mode and keep a count, so on any of them a `line.jumps` of 0 means none counted.'))
+    assert.match(fieldRow('jumps'), /Every runtime the line is written for counts, so 0 is "none counted"\. `null` only for a provider that keeps no count/)
     assert.doesNotMatch(probe, /null` on (?:the )?WebXR|keeps no count of frame shifts, and `line\.px`|until the build can say which scale mode/)
-    // The scale strings the table names are modes the build writes, and it names the two runtimes' own.
+    // The scale strings the table names are modes the build writes, it names every runtime's own, and it names every mode there is:
+    // the modes are the ones the ScaleMode type declares (a fixed string each, and the origin height spelled with a number).
     const named = [...fieldRow('scale').matchAll(/`((?:responsive|absolute|webxr|native)-[A-Za-z]+(?::[0-9.]+|:<n>)?)`/g)].map((m) => m[1]!.replace(':<n>', ':1.5'))
     assert.deepEqual(named.map((mode) => asScaleMode(mode)), named, 'every string in the scale row is a scale mode')
-    assert.ok(named.includes(webxr['scale'] as string) && named.includes(eighthwall['scale'] as string))
-    assert.equal(named.length, 6)
+    for (const line of [webxr, eighthwall, native]) assert.ok(named.includes(line['scale'] as string), `the scale row does not name ${String(line['scale'])}`)
+    const modes = readFileSync(join(ROOT, 'src/world/scale-mode.ts'), 'utf8')
+    const union = modes.slice(modes.indexOf('export type ScaleMode ='), modes.indexOf('\n\n', modes.indexOf('export type ScaleMode =')))
+    assert.match(union, /\| OriginYMode\b/, 'the union still has the origin height mode, which the row spells responsive-originY:<n>')
+    const declared = [...[...union.matchAll(/\| '([A-Za-z-]+)'/g)].map((m) => m[1]!), 'responsive-originY:1.5']
+    assert.equal(declared.length, 7, 'the ScaleMode type declares six fixed modes and the origin height one')
+    assert.deepEqual([...named].sort(), [...declared].sort(), 'the scale row names every scale mode the build can write, and no other')
   } finally {
     for (const [name, value] of Object.entries(before)) {
       if (value === undefined) delete globals[name]

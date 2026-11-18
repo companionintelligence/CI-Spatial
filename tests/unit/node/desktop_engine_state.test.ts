@@ -33,6 +33,9 @@ import { stripTypeScriptTypes } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { engineExpected } from '../../../src/ar/engine-state.ts'
+import { NativeARProvider } from '../../../src/ar/native.ts'
+import { startFailureVerdict } from '../../../src/ar/preflight.ts'
+import { fakeCanvas, fakePlugin, providerOptions } from './support/fake-scan-ar.ts'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const read = (path: string) => readFileSync(join(ROOT, path), 'utf8')
@@ -65,9 +68,9 @@ function between(source: string, from: string, to: string): string {
   return source.slice(start, end)
 }
 
-/** A top-level function of `source`, from its `function` line to the closing brace at column 0. */
+/** A top-level function of `source` (async or not), from its `function` line to the closing brace at column 0. */
 function topLevelFunction(source: string, name: string): string {
-  const from = source.indexOf(`\nfunction ${name}(`)
+  const from = [`\nfunction ${name}(`, `\nasync function ${name}(`].map((head) => source.indexOf(head)).find((at) => at !== -1) ?? -1
   assert.notEqual(from, -1, `main.ts declares ${name}`)
   const to = source.indexOf('\n}\n', from)
   assert.notEqual(to, -1, `main.ts ends ${name}`)
@@ -315,4 +318,148 @@ test('source shape: engineExpected is the decision index.html makes when it requ
     /\} else if \(params\.get\('ar'\) !== 'webxr' && !\('__TAURI_INTERNALS__' in window\)\) \{\n\s+const xrScript = document\.createElement\('script'\)/,
     'index.html requests xr.js unless the page is forced into WebXR or is the desktop app: change engineExpected with it',
   )
+})
+
+// ── The runtime a failed native start hands over to ───────────────────────────────────────────────────
+//
+// createWebRuntimeProvider is main.ts's own text, run here against stand-ins for what it calls (the wait, and the two
+// providers' factories). Its doc comment is the spec: "8th Wall when its engine loads, otherwise WebXR". The wait answers
+// ready, failed or timeout, and failed and timeout are strings that are true, which is what the function once tested.
+
+/** Read when a test runs, so a function main.ts lacks fails that test and not the whole file. */
+const webRuntimeSource = () => stripTypeScriptTypes(topLevelFunction(main, 'createWebRuntimeProvider'))
+
+interface WebRuntimeRun {
+  /** What it returned, or the error it threw. */
+  outcome: unknown
+  /** Which factories it called, in order. */
+  made: string[]
+  waits: number[]
+}
+
+const EIGHTH_WALL = { runtime: '8th Wall provider' }
+const WEBXR = { runtime: 'WebXR provider' }
+
+async function webRuntime(waited: Waited, factories: { eighthWall?: () => Promise<unknown> } = {}): Promise<WebRuntimeRun> {
+  const made: string[] = []
+  const waits: number[] = []
+  const build = new Function(
+    'waitForXR8', 'XR8_LOAD_TIMEOUT_MS', 'createEighthWallProvider', 'createWebXRProvider',
+    `${webRuntimeSource()}\nreturn createWebRuntimeProvider`,
+  )
+  const createWebRuntimeProvider = build(
+    async (timeoutMs: number) => { waits.push(timeoutMs); return waited },
+    90_000,
+    async () => {
+      made.push('8thwall')
+      return factories.eighthWall ? factories.eighthWall() : EIGHTH_WALL
+    },
+    async () => {
+      made.push('webxr')
+      return WEBXR
+    },
+  ) as () => Promise<unknown>
+  const quiet = console.warn
+  console.warn = () => undefined
+  try {
+    return { outcome: await createWebRuntimeProvider(), made, waits }
+  } finally {
+    console.warn = quiet
+  }
+}
+
+test('the web runtime a native session falls back to: 8th Wall when its engine loaded', async () => {
+  const run = await webRuntime('ready')
+  assert.equal(run.outcome, EIGHTH_WALL)
+  assert.deepEqual(run.made, ['8thwall'])
+  assert.deepEqual(run.waits, [90_000], 'the wait is the one the boot uses, with the same bound')
+})
+
+test('the web runtime a native session falls back to: WebXR when the engine failed or timed out, and 8th Wall is not even tried', async () => {
+  for (const waited of ['failed', 'timeout'] as const) {
+    const run = await webRuntime(waited)
+    assert.equal(run.outcome, WEBXR, `the wait says ${waited}`)
+    assert.deepEqual(run.made, ['webxr'], `the wait says ${waited}: createEighthWallProvider waits for an engine that is not coming, with no bound`)
+  }
+})
+
+test('the web runtime a native session falls back to: an engine that loaded and then would not start still ends in WebXR', async () => {
+  const run = await webRuntime('ready', { eighthWall: async () => { throw new Error('8th Wall init failed') } })
+  assert.equal(run.outcome, WEBXR)
+  assert.deepEqual(run.made, ['8thwall', 'webxr'])
+})
+
+test('a native session that cannot start on a page whose engine did not load reaches the error ladder: the real 8th Wall factory would wait for ever, and the start must not', async () => {
+  // The real createEighthWallProvider, with the engine absent: it waits for an `xrloaded` that no failed or stalled load sends,
+  // and has no bound of its own (src/ar/eighthwall.ts). A stand-in for a window that never fires it.
+  const scope = globalThis as { window?: unknown }
+  const had = scope.window
+  scope.window = { addEventListener() {}, removeEventListener() {}, location: { search: '' } }
+  try {
+    const { createEighthWallProvider } = await import('../../../src/ar/eighthwall.ts')
+    for (const waited of ['failed', 'timeout'] as const) {
+      const plugin = fakePlugin()
+      const nativeRefused = 'Camera permission was not granted, so AR cannot start.'
+      plugin.startFails = nativeRefused
+      const noWebXr = new Error('WebXR not supported on this device')
+      const build = new Function(
+        'waitForXR8', 'XR8_LOAD_TIMEOUT_MS', 'createEighthWallProvider', 'createWebXRProvider',
+        `${webRuntimeSource()}\nreturn createWebRuntimeProvider`,
+      )
+      const fallback = build(async () => waited, 90_000, createEighthWallProvider, async () => { throw noWebXr }) as () => Promise<never>
+      const provider = new NativeARProvider(providerOptions(plugin, { fallback }))
+      const quiet = console.warn
+      console.warn = () => undefined
+      let outcome: unknown
+      try {
+        outcome = await Promise.race([
+          provider.start(fakeCanvas()).then(() => 'started', (e: unknown) => e),
+          new Promise((resolve) => setTimeout(() => resolve('still pending after 400 ms'), 400)),
+        ])
+      } finally {
+        console.warn = quiet
+      }
+      assert.ok(outcome instanceof Error, `the wait says ${waited}: the start ${String(outcome)}, and the Start button sits on "Starting AR…" with nothing said`)
+      assert.equal(startFailureVerdict(outcome).headline, startFailureVerdict(new Error(nativeRefused)).headline, 'and what it says is the camera, which is what failed first')
+    }
+  } finally {
+    scope.window = had
+  }
+})
+
+// ── The runtime named on the ?debug=probe line ────────────────────────────────────────────────────────
+
+const probeLabelSource = () => stripTypeScriptTypes(topLevelFunction(main, 'probeRuntimeLabel'))
+/** Stands in for WebXRProvider, which main.ts tells the two web runtimes apart by. */
+class StandInWebXRProvider {}
+
+function probeLabel(provider: unknown, use8thWall: boolean): string {
+  const build = new Function('NativeARProvider', 'WebXRProvider', `${probeLabelSource()}\nreturn probeRuntimeLabel`)
+  return (build(NativeARProvider, StandInWebXRProvider) as (p: unknown, u: boolean) => string)(provider, use8thWall)
+}
+
+async function nativeProvider(handOverTo: object | null): Promise<NativeARProvider> {
+  const plugin = fakePlugin()
+  if (handOverTo) plugin.startFails = 'no native session'
+  const quiet = console.warn
+  console.warn = () => undefined
+  try {
+    const provider = new NativeARProvider(providerOptions(plugin, handOverTo ? { fallback: async () => Object.assign(handOverTo, { start: async () => undefined }) } : {}))
+    await provider.start(fakeCanvas())
+    return provider
+  } finally {
+    console.warn = quiet
+  }
+}
+
+test('the probe line names the runtime that gives the taps: native while the native session runs, and the web runtime that took over after a hand-over', async () => {
+  assert.equal(probeLabel(await nativeProvider(null), false), 'native', 'it was webxr, for every native run')
+  assert.equal(probeLabel(await nativeProvider(new StandInWebXRProvider()), false), 'webxr')
+  // A hand-over to 8th Wall: main.ts leaves use8thWall false for it (it is set where 8th Wall is chosen at the start), so the label must come from the runtime.
+  assert.equal(probeLabel(await nativeProvider({ runtime: 'something that is not WebXR' }), false), '8thwall')
+})
+
+test('the probe line for a page with no native layer is as it always was: 8thwall or webxr by the runtime chosen at the start', () => {
+  assert.equal(probeLabel({}, true), '8thwall')
+  assert.equal(probeLabel({}, false), 'webxr')
 })

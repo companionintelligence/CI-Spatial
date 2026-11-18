@@ -1,9 +1,13 @@
 /**
- * Which SLAM points a scan keeps, and when a camera move is read as a frame shift.
+ * Which SLAM points a scan keeps.
  *
  * Shared by the 8th Wall provider (eighthwall.ts) and the native ARKit / ARCore provider
  * (native.ts), so every runtime applies one distance rule. Moved here unchanged from
  * eighthwall.ts: the reasoning in the comments below is the 8th Wall reasoning.
+ *
+ * It does not decide when the camera has moved too far between two frames: that is FrameEpochTracker's (./frame-epoch.ts),
+ * for every runtime. The flat 0.30 m rule that was kept here (`POSE_JUMP_THRESHOLD_M`) is gone: only the native provider read it,
+ * and it uses that tracker now.
  */
 import type { Pose } from './provider'
 
@@ -43,28 +47,6 @@ export const MIN_POINT_DISTANCE_M = 0.08
  * to translate between stations.
  */
 export const MAX_POINT_DISTANCE_M = 12
-
-/**
- * Camera translation between consecutive frames above which the pose is read
- * as a **frame shift**, not as motion, in metres.
- *
- * SLAM refines its map as it goes and can redefine its own origin — on
- * recovery from lost tracking, or when a loop closes. Every world-locked
- * object then appears to jump together, and any points already harvested are
- * expressed in a frame that no longer exists. That is invisible from inside
- * the app: the pose keeps updating and tracking still reports NORMAL.
- *
- * 0.30 m at roughly 30 fps is ~9 m/s. Nobody walks a survey at that speed
- * while holding a tablet, so anything over it is the map moving rather than
- * the operator.
- *
- * **Adopted by decision, not by measurement.** Ticket 0006 closed unrun.
- *
- * **Revisit when:** a genuinely fast pan is counted as a shift (lower the
- * frame rate assumption, or gate on tracking status too), or a shift small
- * enough to matter slips under it.
- */
-export const POSE_JUMP_THRESHOLD_M = 0.30
 
 function finitePoint(p: Point3): boolean {
   return Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z)

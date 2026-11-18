@@ -1142,39 +1142,52 @@ function parsePlist(xml: string): Record<string, unknown> {
   return value() as Record<string, unknown>
 }
 
-// Skipped while the shells are main's (ADR 0009, the ScanAR plugin): they register no ArSessionPlugin. The goal-integration
-// plugin's sources and this provider stay in the tree, unregistered, until the owner decides whether the two native designs both
-// stay. If they do, the shells register both and this test is the check that they do. If not, it goes with the plugin.
-test('both native plugins are registered on their bridge and compiled into the app', { skip: "the shells carry main's ScanAR plugin only (ADR 0009); this one is for goal-integration's ArSession plugin, which is not registered until the owner decides" }, () => {
-  const bridgeController = read('mobile/ios/App/App/ScanBridgeViewController.swift')
-  const storyboard = read('mobile/ios/App/App/Base.lproj/Main.storyboard')
-  const pbxproj = read('mobile/ios/App/App.xcodeproj/project.pbxproj')
-  assert.match(bridgeController, /bridge\?\.registerPluginInstance\(ArSessionPlugin\(\)\)/)
-  assert.match(storyboard, /customClass="ScanBridgeViewController" customModule="App"/)
-  assert.match(pbxproj, /ArSessionPlugin\.swift in Sources \*\//)
-  assert.match(pbxproj, /ScanBridgeViewController\.swift in Sources \*\//)
-
-  // The registration only counts on the bridge the person sees, which is the one SceneDelegate puts in the window. So it
-  // must build the app's own controller: a stock CAPBridgeViewController registers no ArSessionPlugin, and the web side's
-  // isSupported() would read false on a phone that has ARKit. And nothing else may build a bridge. That includes a scene
-  // storyboard: UIKit makes a window and an initial controller from the storyboard a scene configuration names (Main, which
-  // names ScanBridgeViewController), beside the one SceneDelegate makes. With none named, SceneDelegate is the one place.
+/**
+ * What a shell has to do for a plugin written in the app target to be on the bridge the person sees, and what is wrong with
+ * it when it does not: the plugin is registered on its bridge (iOS: `registerPluginInstance` in ScanBridgeViewController,
+ * Android: `registerPlugin` before the bridge is created in MainActivity), the files are compiled into the app, and the bridge
+ * that is registered on is the one SceneDelegate puts in the window. It reads through `readSource` and `swiftSources`, so a
+ * test can hand it a shell that has been broken one way and check that it says so.
+ *
+ * The registration only counts on the bridge the person sees, which is the one SceneDelegate puts in the window. So it must
+ * build the app's own controller: a stock CAPBridgeViewController registers no plugin, and the web side's capabilities() would
+ * read false on a phone that has ARKit. And nothing else may build a bridge. That includes a scene storyboard: UIKit makes a
+ * window and an initial controller from the storyboard a scene configuration names (Main, which names ScanBridgeViewController),
+ * beside the one SceneDelegate makes. With none named, SceneDelegate is the one place.
+ */
+function registrationProblems(
+  plugin: string,
+  readSource: (path: string) => string = read,
+  swiftSources: () => Array<[string, string]> = iosSwiftSources,
+): string[] {
   const problems: string[] = []
-  const sceneDelegate = swiftCode(read('mobile/ios/App/App/SceneDelegate.swift'))
+  const bridgeController = readSource('mobile/ios/App/App/ScanBridgeViewController.swift')
+  const storyboard = readSource('mobile/ios/App/App/Base.lproj/Main.storyboard')
+  const pbxproj = readSource('mobile/ios/App/App.xcodeproj/project.pbxproj')
+  if (!new RegExp(`bridge\\?\\.registerPluginInstance\\(${plugin}\\(\\)\\)`).test(bridgeController)) {
+    problems.push(`ScanBridgeViewController.swift does not register ${plugin} on its bridge`)
+  }
+  if (!/customClass="ScanBridgeViewController" customModule="App"/.test(storyboard)) {
+    problems.push('Main.storyboard does not make ScanBridgeViewController the controller')
+  }
+  if (!new RegExp(`${plugin}\\.swift in Sources \\*/`).test(pbxproj)) problems.push(`project.pbxproj does not compile ${plugin}.swift into the app`)
+  if (!/ScanBridgeViewController\.swift in Sources \*\//.test(pbxproj)) problems.push('project.pbxproj does not compile ScanBridgeViewController.swift into the app')
+
+  const sceneDelegate = swiftCode(readSource('mobile/ios/App/App/SceneDelegate.swift'))
   if (!/\bclass SceneDelegate\b/.test(sceneDelegate)) problems.push('SceneDelegate.swift no longer declares SceneDelegate')
   if (!/\brootViewController\s*=\s*ScanBridgeViewController\(\)/.test(sceneDelegate)) {
     problems.push('SceneDelegate.swift does not make ScanBridgeViewController() the window root')
   }
-  for (const [path, code] of iosSwiftSources()) {
+  for (const [path, code] of swiftSources()) {
     if (/\bCAPBridgeViewController\s*(?:\.init\s*)?\(/.test(code)) {
-      problems.push(`${path} makes a stock CAPBridgeViewController, which registers no ArSessionPlugin`)
+      problems.push(`${path} makes a stock CAPBridgeViewController, which registers no ${plugin}`)
     }
   }
-  const manifest = parsePlist(read('mobile/ios/App/App/Info.plist')).UIApplicationSceneManifest as {
+  const manifest = parsePlist(readSource('mobile/ios/App/App/Info.plist')).UIApplicationSceneManifest as {
     UISceneConfigurations: Record<string, Array<Record<string, string>>>
   }
   const scenes = Object.values(manifest.UISceneConfigurations).flat()
-  assert.ok(scenes.length > 0, 'Info.plist configures a scene')
+  if (scenes.length === 0) problems.push('Info.plist configures no scene')
   for (const scene of scenes) {
     if (scene.UISceneDelegateClassName !== '$(PRODUCT_MODULE_NAME).SceneDelegate') {
       problems.push(`Info.plist: scene "${scene.UISceneConfigurationName}" runs ${scene.UISceneDelegateClassName}, not SceneDelegate`)
@@ -1183,12 +1196,83 @@ test('both native plugins are registered on their bridge and compiled into the a
       problems.push(`Info.plist: scene "${scene.UISceneConfigurationName}" names the storyboard ${scene.UISceneStoryboardFile}, so UIKit builds a controller from it beside the one SceneDelegate makes`)
     }
   }
-  assert.deepEqual(problems, [])
 
-  const activity = read('mobile/android/app/src/main/java/com/companionintelligence/scan/MainActivity.java')
-  const registerAt = activity.indexOf('registerPlugin(ArSessionPlugin.class)')
-  assert.ok(registerAt > 0, 'MainActivity registers the plugin')
-  assert.ok(registerAt < activity.indexOf('super.onCreate(savedInstanceState)'), 'registered before the bridge is created')
+  const activity = readSource('mobile/android/app/src/main/java/com/companionintelligence/scan/MainActivity.java')
+  const registerAt = activity.indexOf(`registerPlugin(${plugin}.class)`)
+  if (registerAt < 0) problems.push(`MainActivity.java does not register ${plugin}`)
+  else if (!(registerAt < activity.indexOf('super.onCreate(savedInstanceState)'))) {
+    problems.push(`MainActivity.java registers ${plugin} after the bridge is created, so the web app cannot reach it`)
+  }
+  return problems
+}
+
+test('the shells register the ScanAR plugin on the bridge the person sees, and compile it into the app', () => {
+  assert.deepEqual(registrationProblems('ScanARPlugin'), [])
+})
+
+/** A reader of the shell's sources that answers `path` with `edit(its text)`, and every other file as it is. */
+function withEdit(path: string, edit: (text: string) => string): (requested: string) => string {
+  return (requested) => (requested === path ? edit(read(path)) : read(requested))
+}
+
+test('the registration check fails for a shell that no longer registers ScanAR, so a green result means something', () => {
+  const swift = 'mobile/ios/App/App/ScanBridgeViewController.swift'
+  const activity = 'mobile/android/app/src/main/java/com/companionintelligence/scan/MainActivity.java'
+  const pbxproj = 'mobile/ios/App/App.xcodeproj/project.pbxproj'
+  const plist = 'mobile/ios/App/App/Info.plist'
+
+  const noIos = registrationProblems('ScanARPlugin', withEdit(swift, (t) => t.replace('registerPluginInstance(ScanARPlugin())', '')))
+  assert.deepEqual(noIos, ['ScanBridgeViewController.swift does not register ScanARPlugin on its bridge'])
+
+  const noAndroid = registrationProblems('ScanARPlugin', withEdit(activity, (t) => t.replace('registerPlugin(ScanARPlugin.class);', '')))
+  assert.deepEqual(noAndroid, ['MainActivity.java does not register ScanARPlugin'])
+
+  const late = registrationProblems('ScanARPlugin', withEdit(activity, (t) => t.replace('registerPlugin(ScanARPlugin.class);\n        super.onCreate(savedInstanceState);', 'super.onCreate(savedInstanceState);\n        registerPlugin(ScanARPlugin.class);')))
+  assert.deepEqual(late, ['MainActivity.java registers ScanARPlugin after the bridge is created, so the web app cannot reach it'])
+
+  const notCompiled = registrationProblems('ScanARPlugin', withEdit(pbxproj, (t) => t.replace(/.*ScanARPlugin\.swift in Sources \*\/.*\n/g, '')))
+  assert.deepEqual(notCompiled, ['project.pbxproj does not compile ScanARPlugin.swift into the app'])
+
+  const storyboard = registrationProblems('ScanARPlugin', withEdit(plist, (t) => t.replace('<key>UISceneDelegateClassName</key>', '<key>UISceneStoryboardFile</key>\n            <string>Main</string>\n            <key>UISceneDelegateClassName</key>')))
+  assert.equal(storyboard.length, 1)
+  assert.match(storyboard[0]!, /names the storyboard Main, so UIKit builds a controller from it/)
+
+  const stock = registrationProblems('ScanARPlugin', read, () => [...iosSwiftSources(), ['mobile/ios/App/App/Other.swift', 'let controller = CAPBridgeViewController()']])
+  assert.deepEqual(stock, ['mobile/ios/App/App/Other.swift makes a stock CAPBridgeViewController, which registers no ScanARPlugin'])
+})
+
+test('the plugin is registered under the name the web side looks it up by, and answers the methods and events the provider uses', () => {
+  const bridge = read('src/ar/native-bridge.ts')
+  const swift = read('mobile/ios/App/App/ScanARPlugin.swift')
+  const java = read('mobile/android/app/src/main/java/com/companionintelligence/scan/ScanARPlugin.java')
+  assert.match(bridge, /Plugins\?: \{ ScanAR\?: ScanARPlugin \}/, 'the web side reads Capacitor.Plugins.ScanAR')
+  assert.match(swift, /jsName = "ScanAR"/)
+  assert.match(java, /@CapacitorPlugin\(\s*name = "ScanAR"/)
+  const provider = read('src/ar/native.ts')
+  const calls = [...provider.matchAll(/plugin\.(capabilities|start|stop|captureFrame|hitTest)\(/g)].map((m) => m[1]!)
+  const methods = [...new Set(calls)].sort()
+  assert.deepEqual(methods, ['capabilities', 'captureFrame', 'hitTest', 'start', 'stop'], 'the provider calls these five')
+  for (const method of methods) {
+    assert.match(swift, new RegExp(`CAPPluginMethod\\(name: "${method}"`), `iOS declares ${method}`)
+    assert.match(java, new RegExp(`@PluginMethod\\s+public void ${method}\\(PluginCall call\\)`), `Android implements ${method}`)
+  }
+  const listened = [...new Set([...provider.matchAll(/plugin\.addListener\('(\w+)'/g)].map((m) => m[1]!))].sort()
+  assert.deepEqual(listened, ['error', 'hits', 'points', 'pose', 'tracking'])
+  const iosEvents = new Set([...swift.matchAll(/notifyListeners\("(\w+)"/g)].map((m) => m[1]!))
+  const androidEvents = new Set([...read('mobile/android/app/src/main/java/com/companionintelligence/scan/ScanARRenderer.java').matchAll(/plugin\.emit\("(\w+)"/g)].map((m) => m[1]!))
+  for (const event of listened) {
+    assert.ok(iosEvents.has(event), `iOS sends ${event}`)
+    // Android reports a failure through ScanARPlugin.fail(), which emits `error`; every other event the renderer emits itself.
+    assert.ok(androidEvents.has(event) || (event === 'error' && /void fail\(String message\)[\s\S]*?emit\("error"/.test(java)), `Android sends ${event}`)
+  }
+})
+
+// Skipped while the shells are main's (ADR 0009, the ScanAR plugin): they register no ArSessionPlugin. The goal-integration
+// plugin's sources and this provider stay in the tree, unregistered, until the owner decides whether the two native designs both
+// stay. If they do, the shells register both and this test is the check that they do (it runs the same checks the ScanAR test
+// above runs, for the other plugin). If not, it goes with the plugin.
+test('the ArSession plugin is registered on its bridge and compiled into the app', { skip: "the shells carry main's ScanAR plugin only (ADR 0009); this one is for goal-integration's ArSession plugin, which is not registered until the owner decides" }, () => {
+  assert.deepEqual(registrationProblems('ArSessionPlugin'), [])
 })
 
 test('the Android build takes ARCore from its pinned version, and the manifest keeps AR optional', () => {
@@ -1197,6 +1281,10 @@ test('the Android build takes ARCore from its pinned version, and the manifest k
   const manifest = read('mobile/android/app/src/main/AndroidManifest.xml')
   assert.match(variables, /arcoreVersion = '\d+\.\d+\.\d+'/)
   assert.match(app, /implementation "com\.google\.ar:core:\$arcoreVersion"/)
+  // One declaration, and its version is variables.gradle's (NOTICE.md names `arcoreVersion` there as the source): a literal beside
+  // it is a second place the version is written, which a bump of the first leaves behind. Both plugins (ScanAR, which the shells
+  // register, and ArSession, which they do not) compile against this one dependency.
+  assert.equal([...withoutComments(app).matchAll(/com\.google\.ar:core/g)].length, 1, 'build.gradle declares ARCore once')
   // Optional, so the app installs on a device without ARCore. ArCoreApk.requestInstall installs it when the session starts.
   assert.match(manifest, /<meta-data\s+android:name="com\.google\.ar\.core"\s+android:value="optional"\s*\/>/)
   assert.match(manifest, /<uses-feature\s+android:name="android\.hardware\.camera\.ar"\s+android:required="false"\s*\/>/)

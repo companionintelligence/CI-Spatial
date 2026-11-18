@@ -15,12 +15,47 @@
  *
  * Fallback: when the native session cannot start, start() gives the same canvas to the
  * `fallback` provider (8th Wall, then WebXR), and every later call is forwarded to it.
+ *
+ * The optional members of ARProvider (src/ar/provider.ts) are what the alignment flows read, and a provider that omits one
+ * says "no signal": the flow works without it. What this provider says, for each, while the native session runs, and after a
+ * hand-over (every one of them is the web runtime's, as it is, or absent when the web runtime has none):
+ *
+ *   getFrameEpoch, onFrameDiscontinuity, getTrackingDiagnostics
+ *       Frame epochs, from the one detector the web runtimes use (src/ar/frame-epoch.ts, FrameEpochTracker), fed the pose
+ *       events and the one tracking state a pose cannot carry (no more poses are coming). The jump rule and its threshold are
+ *       that file's, and nothing is repeated here. What it sees is what the plugin reports: a pose that steps by more than a
+ *       hand can, tracking that is missing for RECOVERY_SUSPECT_MS and comes back, and, on iOS only, ARKit's own
+ *       `limited.relocalizing`. ARCore reports no relocalization, so on Android a relocalization that does not pass through a
+ *       long enough loss or a jump is not seen, and nothing stands in for the signal it does not give. The native layer sends
+ *       no epoch of its own and no reset, and none is made up.
+ *   scaleKind, scaleMode, scaleReady
+ *       'metric', 'native-metric' and true: the unit is the metre on the platform SDKs' contract, which is adopted, not
+ *       measured (ADR 0005 rule 5). ARCore documents its Pose translation in metres; the ARKit pages read for this name no unit.
+ *   imagePointToHitTestPoint
+ *       The point itself: the native layer fits the whole camera image in the overlay rect and takes a hit test in the rect's
+ *       normalised coordinates, so an image point and a hit-test point are one point.
+ *   hitTestBurstAsync
+ *       Absent. A hit test over the bridge comes back with no frame to pair it with (its pose, status and time), so a native
+ *       tap is read with one hit (`source: 'single-hit'`, scatter not measured).
+ *   anchors
+ *       Absent. This member is the runtime anchors of src/ar/anchors.ts (AnchorCapability, the WebXR Anchors Module's shape: any
+ *       number of handles, moved and lost events, release), and neither plugin offers that. The iOS plugin has no anchor method.
+ *       The Android plugin has one origin anchor, `setOriginAnchor()` and `getOriginAnchor()` (native-bridge.ts): a single ARCore
+ *       anchor that a new placement replaces, read back on request, with no events. This provider does not call them, and they
+ *       are not the capability this member would be.
+ *
+ * NONE OF THIS HAS RUN ON A DEVICE (ADR 0009): the plugin's behaviour is what native-bridge.ts documents and the two native
+ * sources show, and tests/unit/node/wp-09b-native-provider.test.ts runs it against a fake plugin.
  */
 import * as THREE from 'three'
 import type { ARProvider, HitResult, Pose, RawFrame } from './provider'
+import type { AnchorCapability } from './anchors'
 import type { TrackingStatus } from './tracking-quality'
-import { FIRST_POSE_TIMEOUT_MS, firstFrameVerdict, type PreflightVerdict } from './preflight.ts'
-import { POSE_JUMP_THRESHOLD_M, poseDistance, usefulWorldPoint } from './point-filter.ts'
+import { FrameEpochTracker, type FrameDiscontinuity, type FrameDiscontinuityListener, type TrackingDiagnostics } from './frame-epoch.ts'
+import { FIRST_POSE_TIMEOUT_MS, firstFrameVerdict, startFailureVerdict, type PreflightVerdict } from './preflight.ts'
+import { poseDistance, usefulWorldPoint } from './point-filter.ts'
+import { imagePointToViewportPoint, type ImageHitTestContract, type ViewSize } from '../spatial/resolver.ts'
+import type { ScaleKind, ScaleMode } from '../world/scale-mode.ts'
 import {
   aspectFromProjection,
   base64ToBytes,
@@ -28,6 +63,7 @@ import {
   fovYDegFromProjection,
   isMatrix16,
   poseFromTransform,
+  trackingReasonFromNative,
   trackingStatusFromNative,
 } from './native-codec.ts'
 import {
@@ -131,6 +167,34 @@ function leaveTransparentPage(): void {
   document.documentElement.classList.remove(NATIVE_CLASS)
 }
 
+/** A native frame time (seconds on the native layer's clock) as the tracker's milliseconds, or null for an event that carries none. */
+function frameClockMs(timestamp: unknown): number | null {
+  return typeof timestamp === 'number' && Number.isFinite(timestamp) ? timestamp * 1000 : null
+}
+
+/** What `startFailureVerdict()` says of a refused camera, which is the one failure here that a person can do something about. */
+const CAMERA_REFUSED = new Error('camera permission denied')
+
+/** Whether the page would tell the person their camera is refused for this failure (`startFailureVerdict`, src/ar/preflight.ts). */
+function refusedCamera(failure: unknown): boolean {
+  return startFailureVerdict(failure).headline === startFailureVerdict(CAMERA_REFUSED).headline
+}
+
+/**
+ * The failure the page is handed when the native session cannot start and the web runtime that took over cannot either (the page
+ * classifies it with startFailureVerdict, and the web runtimes in a WebView mostly say "WebXR not supported", which is true and
+ * is not why the person is stuck). The native runtime's failure is the one the shell is built around, so it is reported, unless
+ * the web runtime was refused the camera and the native session was not: a refused camera is what the person can fix, so it is
+ * never hidden behind the other. The failure not reported is the new error's `cause`, and the page's log has both.
+ */
+function reportedStartFailure(native: unknown, web: unknown): Error {
+  const chosen = refusedCamera(web) && !refusedCamera(native) ? web : native
+  const other = chosen === native ? web : native
+  const error = new Error(chosen instanceof Error ? chosen.message : String(chosen), { cause: other })
+  if (chosen instanceof Error) error.name = chosen.name
+  return error
+}
+
 function withTimeout<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<never>((_, reject) => {
@@ -185,7 +249,14 @@ function worldMapNameFromPage(): string | undefined {
 /** What a requested world map came to: the native start's state, or 'unsupported' where the platform keeps none. */
 export type WorldMapState = NativeWorldMapStart | 'unsupported'
 
-export class NativeARProvider implements ARProvider {
+/** A listener of discontinuities, and where it is subscribed: to this provider's own tracker, and to the web runtime once one has taken over. */
+interface DiscontinuitySubscription {
+  listener: FrameDiscontinuityListener
+  offNative: () => void
+  offWeb: (() => void) | null
+}
+
+export class NativeARProvider implements ARProvider, ImageHitTestContract {
   private readonly plugin: ScanARPlugin | null
   private readonly fallback: (() => Promise<ARProvider>) | null
   private readonly decodeJpeg: JpegDecoder
@@ -219,9 +290,18 @@ export class NativeARProvider implements ARProvider {
   private aspect = 1
   private pendingPoints: Point3[] = []
   private hitGrid: { cols: number; rows: number; samples: NativeHitSample[] } | null = null
-  private poseJumps = 0
-  private lastJumpM = 0
-  private lastTranslation: Point3 | null = null
+  /**
+   * Frame epochs of the native session: the same detector the web runtimes use, fed here and nowhere else. Held-back events are
+   * told to listeners once a pose has been read to the end (`flush()`), so a listener that asks the provider finds its epoch, its
+   * pose and the points it has not been handed all of one frame.
+   */
+  private readonly epochs = new FrameEpochTracker({}, { deferNotify: true })
+  /** The native frame time, in milliseconds, of the last pose the tracker was given. Null before one, and after the session ends. */
+  private lastFrameMs: number | null = null
+  private warnedNoFrameTime = false
+  /** The last tracking line written to the console, so a status is logged when it changes and not at every pose. */
+  private loggedTracking: string | null = null
+  private readonly subscriptions = new Set<DiscontinuitySubscription>()
   /** The world map state the last native start reported. Null when no map was asked for. */
   /** Whether the platform keeps world maps, from the plugin's capabilities. False until the native session starts. */
   private worldMapSupported = false
@@ -250,6 +330,15 @@ export class NativeARProvider implements ARProvider {
   activeRuntime(): 'native' | 'fallback' | 'idle' {
     if (this.delegate) return 'fallback'
     return this.nativeRunning ? 'native' : 'idle'
+  }
+
+  /**
+   * The web runtime (8th Wall or WebXR) that took over after the native session failed to start, or null while the native session
+   * runs. For a screen or a log that has to say which runtime the numbers come from: every call the scanner makes is forwarded to
+   * it already.
+   */
+  webRuntime(): ARProvider | null {
+    return this.delegate
   }
 
   /**
@@ -288,10 +377,18 @@ export class NativeARProvider implements ARProvider {
       if (!this.fallback) throw err
       this.failure = err instanceof Error ? err.message : String(err)
       console.warn('[native-ar] the native session did not start; using the web runtime:', this.failure)
-      const delegate = await this.fallback()
-      this.delegate = delegate
-      if (this.verdictCallback) delegate.onPreflightVerdict?.(this.verdictCallback)
-      await delegate.start(canvas)
+      try {
+        const delegate = await this.fallback()
+        this.delegate = delegate
+        if (this.verdictCallback) delegate.onPreflightVerdict?.(this.verdictCallback)
+        // Listeners were attached before this start, as src/main.ts attaches the epoch log and the re-anchor flow; the web runtime
+        // is the one whose frames they have to hear now.
+        for (const subscription of this.subscriptions) this.subscribeToWeb(subscription)
+        await delegate.start(canvas)
+      } catch (webFailure) {
+        console.warn('[native-ar] the web runtime did not start either:', webFailure instanceof Error ? webFailure.message : String(webFailure))
+        throw reportedStartFailure(err, webFailure)
+      }
     }
   }
 
@@ -358,6 +455,11 @@ export class NativeARProvider implements ARProvider {
     if (this.nativeRunning && this.plugin) await this.plugin.stop().catch(() => undefined)
     this.nativeRunning = false
     this.worldMapResult = null
+    // A later start is a new map: its first trustworthy frame begins a new epoch instead of being compared with this session's.
+    this.epochs.noteSessionEnd()
+    this.lastFrameMs = null
+    this.warnedNoFrameTime = false
+    this.loggedTracking = null
     this.renderer?.dispose()
     this.renderer = null
     this.scene = null
@@ -391,30 +493,84 @@ export class NativeARProvider implements ARProvider {
       return
     }
     const pose = poseFromTransform(event.transform)
-    this.trackJump(pose.position)
-    this.pose = pose
-    this.transform = event.transform.slice()
-    this.tracking = trackingStatusFromNative(event.tracking)
-    if (isMatrix16(event.projection)) {
-      this.projection = event.projection.slice()
-      this.fovYDeg = fovYDegFromProjection(event.projection)
-      this.aspect = aspectFromProjection(event.projection)
-    }
-    if (this.firstPoseAt === null) {
-      this.firstPoseAt = this.now()
-      this.emitVerdict()
+    const status = trackingStatusFromNative(event.tracking)
+    const reason = trackingReasonFromNative(event.tracking)
+    this.logTracking(status, reason)
+    try {
+      this.watchFrame(event.timestamp, pose, status, reason)
+      this.pose = pose
+      this.transform = event.transform.slice()
+      this.tracking = status
+      if (isMatrix16(event.projection)) {
+        this.projection = event.projection.slice()
+        this.fovYDeg = fovYDegFromProjection(event.projection)
+        this.aspect = aspectFromProjection(event.projection)
+      }
+      if (this.firstPoseAt === null) {
+        this.firstPoseAt = this.now()
+        this.emitVerdict()
+      }
+    } finally {
+      this.epochs.flush()
     }
   }
 
-  private trackJump(position: Point3): void {
-    const previous = this.lastTranslation
-    this.lastTranslation = { ...position }
-    if (!previous) return
-    const moved = poseDistance(position, previous)
-    if (Number.isFinite(moved) && moved > POSE_JUMP_THRESHOLD_M) {
-      this.poseJumps += 1
-      this.lastJumpM = moved
+  /**
+   * Gives the frame to the epoch tracker, before the pose cache is overwritten, as the web providers do. The clock is the native
+   * frame time and not the page's: events can be held back by the bridge (the WebView is paused with the app), and a pause is as
+   * long as the frame times either side of it say, not as the time the page took to hear. A pose with no frame time cannot be
+   * watched, and the page says so once instead of going without.
+   */
+  private watchFrame(timestamp: unknown, pose: Pose, status: TrackingStatus, reason: string | undefined): void {
+    const tMs = frameClockMs(timestamp)
+    if (tMs === null) {
+      if (!this.warnedNoFrameTime) {
+        this.warnedNoFrameTime = true
+        console.warn('[native-ar] pose events carry no frame time, so frame shifts cannot be watched in this session')
+      }
+      return
     }
+    // The same frame again, or a clock that went back, is not a new observation, and the tracker must not be fed one (see `observe`).
+    if (this.lastFrameMs !== null && tMs <= this.lastFrameMs) return
+    this.lastFrameMs = tMs
+    const shift = this.epochs.observe({ tMs, pose, status, reason })
+    if (shift) this.noteFrameShift(shift)
+  }
+
+  /**
+   * The status and reason are written to the console on every change, and each discontinuity as it begins, in the form the web
+   * providers use (`[8thwall] trackingStatus:`, `[webxr] frame discontinuity`): a device run reads them from there over the
+   * ?debug=remote relay, and it is what sizes the thresholds in ./frame-epoch.ts (device experiment DX4).
+   */
+  private logTracking(status: TrackingStatus, reason: string | undefined): void {
+    const line = reason && reason !== status ? `${status} (${reason})` : status
+    if (line === this.loggedTracking) return
+    this.loggedTracking = line
+    console.log('[native-ar] trackingStatus:', line)
+  }
+
+  /**
+   * A discontinuity began a new epoch. What was gathered from the frame before it is not handed over in the new one: the points
+   * not yet drained and the hit grid were read in the old frame, and a drain or a hit test stamps whatever epoch is current. The
+   * frame that carried the discontinuity is read after this, in the new epoch.
+   */
+  private noteFrameShift(shift: FrameDiscontinuity): void {
+    this.pendingPoints = []
+    this.hitGrid = null
+    console.warn(`[native-ar] frame discontinuity ${shift.epoch}: ${shift.cause}`, JSON.stringify(shift))
+  }
+
+  /**
+   * The epoch the frame captured at native time `tMs` was recorded in: the epoch of the last discontinuity at or before it. A frame
+   * the provider has not seen the end of (newer than every pose it has been given) is in the epoch it is in.
+   */
+  private epochAt(tMs: number | null): number {
+    if (tMs === null) return this.epochs.epoch
+    const log = this.epochs.log
+    for (let i = log.length - 1; i >= 0; i--) {
+      if (log[i]!.atMs <= tMs) return log[i]!.epoch
+    }
+    return log.length > 0 ? log[0]!.epoch - 1 : this.epochs.epoch
   }
 
   private onPoints(event: NativePointsEvent): void {
@@ -434,7 +590,19 @@ export class NativeARProvider implements ARProvider {
   }
 
   private onTracking(state: string): void {
-    this.tracking = trackingStatusFromNative(state)
+    const status = trackingStatusFromNative(state)
+    this.tracking = status
+    this.logTracking(status, trackingReasonFromNative(state))
+    // The one state a pose cannot carry: no more poses are coming (ARKit interrupted, ARCore paused with the app). Every other
+    // state arrives inside the next pose, whose frame time dates it. This event has no frame time, so it is dated by the last pose:
+    // the loss began no earlier than that, and how long it lasted is read from the frame times either side, not from when the
+    // page happened to hear of it (a page that was paused too hears it late).
+    if (status !== 'NOT_AVAILABLE' || this.lastFrameMs === null) return
+    try {
+      this.epochs.observe({ tMs: this.lastFrameMs, pose: null, status })
+    } finally {
+      this.epochs.flush()
+    }
   }
 
   // ── Preflight ─────────────────────────────────────────────────────────────
@@ -470,10 +638,11 @@ export class NativeARProvider implements ARProvider {
     return this.scene
   }
 
-  getTrackingDiagnostics(): { status: string; poseJumps: number; lastJumpM: number } {
+  getTrackingDiagnostics(): TrackingDiagnostics {
     if (this.delegate?.getTrackingDiagnostics) return this.delegate.getTrackingDiagnostics()
     if (this.delegate) return { status: this.delegate.trackingStatus(), poseJumps: 0, lastJumpM: 0 }
-    return { status: this.tracking, poseJumps: this.poseJumps, lastJumpM: this.lastJumpM }
+    // The status is the one trackingStatus() answers, which a tracking event updates between two poses.
+    return { ...this.epochs.diagnostics(), status: this.tracking }
   }
 
   async captureFrame(timeoutMs = 4000): Promise<RawFrame> {
@@ -487,6 +656,9 @@ export class NativeARProvider implements ARProvider {
         timeoutMs,
         'Timed out waiting for camera frame',
       )
+      // The epoch the frame was captured in, read before the decode, which can take a while: a discontinuity in between must not
+      // label a frame of the old coordinate frame with the new one (RawFrame.epoch).
+      const epoch = this.epochAt(frameClockMs(frame.timestamp))
       const pixels = await this.decodeJpeg(base64ToBytes(frame.jpegBase64), frame.width, frame.height)
       return {
         pixels,
@@ -494,6 +666,7 @@ export class NativeARProvider implements ARProvider {
         height: frame.height,
         pose: poseFromTransform(frame.transform),
         timestamp: frame.timestamp,
+        epoch,
       }
     } finally {
       this.captureInFlight = false
@@ -598,6 +771,111 @@ export class NativeARProvider implements ARProvider {
   getCameraAspect(): number {
     if (this.delegate) return this.delegate.getCameraAspect()
     return this.aspect
+  }
+
+  // ── The optional members the alignment flows read ─────────────────────────────────────────────────
+  //
+  // Where a web runtime has taken over, each of these is that runtime's, and a member it does not have reads as absent here too:
+  // the flows decide by presence (calibrationEpochField, calibrationTapSampler, stampScale), and a wrapper that answered for a
+  // runtime that does not would claim an epoch, a unit or a burst nothing measured. That is why they are accessors that give the
+  // function, or undefined, and not methods that always answer. The function is bound to the runtime, so a caller that keeps it
+  // keeps the right `this`. The page reads them after start() except the discontinuity listeners, which it attaches before.
+
+  /**
+   * Calls `listener` at each discontinuity: the native session's while it runs, and the web runtime's once one has taken over,
+   * whichever was the case when the listener was attached. The returned function ends the subscription in both.
+   */
+  onFrameDiscontinuity(listener: FrameDiscontinuityListener): () => void {
+    const subscription: DiscontinuitySubscription = { listener, offNative: this.epochs.subscribe(listener), offWeb: null }
+    this.subscriptions.add(subscription)
+    this.subscribeToWeb(subscription)
+    return () => {
+      this.subscriptions.delete(subscription)
+      subscription.offNative()
+      subscription.offWeb?.()
+      subscription.offWeb = null
+    }
+  }
+
+  private subscribeToWeb(subscription: DiscontinuitySubscription): void {
+    if (this.delegate && !subscription.offWeb) subscription.offWeb = this.delegate.onFrameDiscontinuity?.(subscription.listener) ?? null
+  }
+
+  /** The epoch the runtime is in: the native session's own tracker's, or the web runtime's. Absent when the web runtime keeps none. */
+  get getFrameEpoch(): ARProvider['getFrameEpoch'] {
+    const web = this.delegate
+    if (!web) return () => this.epochs.epoch
+    const forwarded = web.getFrameEpoch
+    return forwarded ? () => forwarded.call(web) : undefined
+  }
+
+  /**
+   * Absent while the native session runs: a hit test over the bridge answers with no frame to pair it with (its pose, its status,
+   * its time), so there is nothing a burst could say of each frame, and a native tap is read with one hit, as `sampleTap()` does
+   * for a provider without a burst (`TapSample.source` says `single-hit` and its scatter is null). The web runtime's, after a hand-over.
+   *
+   * `calibrationTapSampler()` decides whether to tell a person to hold still when the page builds it, before the session starts,
+   * and there is no burst then, so it never does here. After a hand-over to a runtime that has a burst the burst runs, and the
+   * person is still not told to hold still: the tap is refused for scatter if the phone moved, which says so.
+   */
+  get hitTestBurstAsync(): ARProvider['hitTestBurstAsync'] {
+    const web = this.delegate
+    const forwarded = web?.hitTestBurstAsync
+    return forwarded ? forwarded.bind(web) : undefined
+  }
+
+  /**
+   * `'metric'` while the native session runs, on the platform SDKs' contract: ARCore documents its `Pose` translation in metres
+   * (https://developers.google.com/ar/reference/java/com/google/ar/core/Pose), and the ARKit pages read for this
+   * (`ARCamera.transform`, `ARPlaneAnchor.extent`) name no unit, so the iOS half rests on the same contract and is adopted, not
+   * measured (ADR 0005 rule 5). The web runtime's after a hand-over, which for 8th Wall in its default scale is `'arbitrary'`: a
+   * scan made there is not stamped metric because the shell is native.
+   */
+  get scaleKind(): ARProvider['scaleKind'] {
+    const web = this.delegate
+    if (!web) return (): ScaleKind => 'metric'
+    const forwarded = web.scaleKind
+    return forwarded ? (since) => forwarded.call(web, since) : undefined
+  }
+
+  /** True while the native session runs: there is no estimate to wait for. The web runtime's after a hand-over. */
+  get scaleReady(): ARProvider['scaleReady'] {
+    const web = this.delegate
+    if (!web) return () => true
+    const forwarded = web.scaleReady
+    return forwarded ? () => forwarded.call(web) : undefined
+  }
+
+  /** `'native-metric'` while the native session runs (src/world/scale-mode.ts). The web runtime's after a hand-over. */
+  get scaleMode(): ARProvider['scaleMode'] {
+    const web = this.delegate
+    if (!web) return (): ScaleMode => 'native-metric'
+    const forwarded = web.scaleMode
+    return forwarded ? (since) => forwarded.call(web, since) : undefined
+  }
+
+  /** Runtime anchors: the web runtime's when it has them (WebXR, where the browser grants the feature), otherwise none. */
+  get anchors(): AnchorCapability | undefined {
+    return this.delegate?.anchors
+  }
+
+  /**
+   * Where a point on the captured camera frame is, in the coordinates `hitTestAsync()` takes. The native layer shows the whole
+   * camera image in the overlay rect and takes a hit test in that rect's normalised coordinates, and the captured frame is the
+   * whole image, so the point is its own: no crop, whatever window surrounds the rect. After a hand-over it is the web runtime's
+   * own mapping, or, for one with none, the window cover-crop the resolver gives any provider.
+   */
+  imagePointToHitTestPoint(
+    x: number,
+    y: number,
+    imageSize: ViewSize | undefined,
+    viewportSize: ViewSize | undefined,
+  ): { x: number; y: number } {
+    const web = this.delegate as (ARProvider & Partial<ImageHitTestContract>) | null
+    if (!web) return { x, y }
+    return typeof web.imagePointToHitTestPoint === 'function'
+      ? web.imagePointToHitTestPoint(x, y, imageSize, viewportSize)
+      : imagePointToViewportPoint(x, y, imageSize, viewportSize)
   }
 }
 

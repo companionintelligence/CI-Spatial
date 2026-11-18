@@ -44,9 +44,9 @@
  * coordinates, because the miss rate is a measurement too.
  *
  * `null` means "not available" and is never a stand-in for zero: a provider with no frame-shift
- * counter logs `jumps: null`, not a `jumps: 0` that reads as "no frame shifts". Both providers the line
- * is written for (8th Wall and WebXR) keep one (`getTrackingDiagnostics().poseJumps`, src/ar/frame-epoch.ts),
- * so on either a 0 means none counted.
+ * counter logs `jumps: null`, not a `jumps: 0` that reads as "no frame shifts". All three providers the line
+ * is written for (the native ARKit / ARCore session, 8th Wall and WebXR) keep one
+ * (`getTrackingDiagnostics().poseJumps`, src/ar/frame-epoch.ts), so on any of them a 0 means none counted.
  * A number the line cannot carry (not finite, or beyond {@link MAX_ABS_VALUE} or {@link MAX_COUNT}) is null
  * too, which is what keeps the longest possible line inside the relay's cap below.
  *
@@ -79,7 +79,7 @@
  *
  * `provider.scaleMode?.()`, and failing that `provider.scaleKind?.()`, is read by duck typing, so this
  * compiles and behaves with a provider that has neither, and logs `scale: null`, meaning not known.
- * Both providers the line is written for have `scaleMode()` (see `scaleModeOf`).
+ * All three providers the line is written for have `scaleMode()` (see `scaleModeOf`).
  */
 import { hasDebugFlag } from '../shared/debug-flags.ts'
 import { cameraYawInSessionDeg, normaliseBearingDeg, transformPoint } from '../world/geo.ts'
@@ -151,7 +151,7 @@ export interface ProbeRecord {
   v: 1
   /** Which tap this is since the page loaded, from 1. */
   n: number
-  /** The AR runtime: `8thwall` or `webxr`. */
+  /** The AR runtime: `native` (the ARKit / ARCore session of the mobile shell), `8thwall` or `webxr`. */
   rt: string
   /** The provider's scale mode (`scaleMode()`, else `scaleKind()`), or null when it does not name one. */
   scale: string | null
@@ -539,7 +539,7 @@ export type ProbeCanvas = Pick<HTMLElement, 'addEventListener' | 'removeEventLis
 export interface ProbeLogDeps {
   canvas: ProbeCanvas
   provider: ProbeProvider
-  /** `8thwall` or `webxr`. */
+  /** `native` (the ARKit / ARCore session of the mobile shell), `8thwall` or `webxr`: the runtime that gives the taps their hits. */
   runtime: string
   /** The same hit test the calibration used, so a probe is judged by the tap that built the frame. */
   hitTest: (x: number, y: number) => Promise<HitResult | null> | HitResult | null

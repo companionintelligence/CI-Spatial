@@ -70,8 +70,15 @@ export interface HitBurst {
 export type BurstFrameListener = (frame: HitBurstFrame, elapsedMs: number) => void
 
 /**
- * Thin abstraction over 8th Wall and WebXR so the rest of the app
+ * Thin abstraction over 8th Wall, WebXR and the native ARKit / ARCore session so the rest of the app
  * doesn't care which AR runtime is active.
+ *
+ * The optional members are what the alignment flows read, and a flow decides by whether one is there: a provider that omits
+ * a member says "no signal", and `epochOf()`, `calibrationEpochField()`, `calibrationTapSampler()` and `stampScale()` each work
+ * without it. A provider that wraps another (`NativeARProvider` hands over to a web runtime when its native session cannot
+ * start) forwards each optional member as the runtime it runs has it, and has none the runtime has not, so that what a flow
+ * sees through the wrapper is what the runtime said. What each runtime gives is listed in the header of its file:
+ * src/ar/eighthwall.ts, src/ar/webxr.ts and src/ar/native.ts.
  */
 export interface ARProvider {
   /** Boot the AR session and attach it to the given canvas */
@@ -95,11 +102,14 @@ export interface ARProvider {
    * Hit-test the same screen point once per new runtime frame for `windowMs`, and report every frame it saw, so
    * a tap can be a median of many hits instead of one snapped sample.
    *
-   * Optional. A provider without it is read with one hit by `sampleTap()`. Resolves with whatever frames it got,
-   * and never later than `windowMs` plus a bounded grace; resolves with no frames when the session cannot run
-   * a burst, or when the runtime delivers none. Whatever it holds open (a hit-test source, a pipeline module) is
-   * released before it resolves: when the window closes, when the runtime stops delivering frames (every
-   * provider has a watchdog for that), and, where the runtime says so, when the session ends (WebXR's `end`
+   * Optional. A provider without it is read with one hit by `sampleTap()`: the tap's `source` says `single-hit` and its scatter
+   * is not measured. The native provider has none while its session runs, because a hit test over the bridge answers with no
+   * frame to pair it with (its pose, status and time).
+   *
+   * Resolves with whatever frames it got, and never later than `windowMs` plus a bounded grace; resolves with no frames
+   * when the session cannot run a burst, or when the runtime delivers none. Whatever it holds open (a hit-test source, a
+   * pipeline module) is released before it resolves: when the window closes, when the runtime stops delivering frames
+   * (every provider has a watchdog for that), and, where the runtime says so, when the session ends (WebXR's `end`
    * event; 8th Wall has no such hook and relies on the watchdog).
    */
   hitTestBurstAsync?(x: number, y: number, windowMs: number, onFrame?: BurstFrameListener): Promise<HitBurst>
@@ -283,7 +293,9 @@ export interface ARProvider {
    * epochs are not in one frame.
    *
    * Optional: a provider with no signal omits it and reads as epoch 0 for the
-   * whole session. Read it with `epochOf()`, not by calling this directly.
+   * whole session. Read it with `epochOf()`, not by calling this directly. A
+   * calibration records the epoch it was made in only for a provider that has
+   * this (`calibrationEpochField()`): absent is "no signal", and 0 is an epoch.
    */
   getFrameEpoch?(): number
 
@@ -293,6 +305,9 @@ export interface ARProvider {
    * that throws is logged and does not stop the others.
    *
    * Optional, like `getFrameEpoch()`: a provider with no signal never fires.
+   *
+   * Attached before `start()` (src/main.ts), so a provider that can hand over to another runtime keeps its listeners and
+   * subscribes them to the one that takes over.
    */
   onFrameDiscontinuity?(cb: (event: FrameDiscontinuity) => void): () => void
 }

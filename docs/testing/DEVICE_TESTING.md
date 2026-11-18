@@ -466,8 +466,9 @@ remote log.
 `null` means "not available", never zero: `line.B` is `null` without a compass reading, and
 `line.px`, `line.py` and `line.pz` are `null` when you continued without a calibration.
 `line.scale` is `null` only for a provider that names no scale mode, and `line.jumps` only for
-one that keeps no count of frame shifts. Both runtimes the line is written for (8th Wall and
-WebXR) name a scale mode and keep a count, so on either a `line.jumps` of 0 means none counted.
+one that keeps no count of frame shifts. All three runtimes the line is written for (native, 8th
+Wall and WebXR) name a scale mode and keep a count, so on any of them a `line.jumps` of 0 means
+none counted.
 `line.chk` is `null` on a Place's first calibration, which compared nothing, and `line.fitN`,
 `line.fitRms` and `line.fitRes` are `null` there and on any visit with no fit: one that tapped two
 points (`chk` is then `separation`) and one whose points could not be fitted at all (a check point
@@ -486,8 +487,8 @@ the sampler (see the table).
 |---|---|---|
 | `v` | | Line format. Always 1. |
 | `n` | | Which tap this is since the page loaded. The first tap after calibration is 1. It counts the taps that were measured, so a gap in the numbers is a line that is missing. |
-| `rt` | | The AR runtime: `8thwall` or `webxr`. |
-| `scale` | | The scale mode the provider reports. On 8th Wall `responsive-unconfigured`, `responsive-originY:<n>`, `absolute-ready`, `absolute-notready` or `absolute-notapplied` (the arms of Procedure 3 are told apart by it), on WebXR `webxr-metric`. `null` is "not reported", **not** "metres". |
+| `rt` | | The AR runtime: `native` (the ARKit or ARCore session of the mobile shell), `8thwall` or `webxr`. A shell whose native session did not start reads the web runtime that took over, `8thwall` or `webxr`. |
+| `scale` | | The scale mode the provider reports. On 8th Wall `responsive-unconfigured`, `responsive-originY:<n>`, `absolute-ready`, `absolute-notready` or `absolute-notapplied` (the arms of Procedure 3 are told apart by it), on WebXR `webxr-metric`, in the shell's native session `native-metric` (the metre by the platform SDKs' contract: adopted, not measured). `null` is "not reported", **not** "metres". |
 | `method`, `status` | | The calibration this session used: `two-point-ground`, `ground-tap-compass` or `known-distance`; `provisional` or `verified`. `null` when you continued without one. |
 | `sepM` | m | `separationM`: the distance between this session's two calibration taps. `null` on the one-point tier. |
 | `resM` | m | `residualM`: that distance minus the stored pair's. 0 on a Place's first calibration, because nothing was compared. |
@@ -504,7 +505,7 @@ the sampler (see the table).
 | `tx`, `ty` | 0 to 1 | Where on the camera view the tap landed, from the left and from the top. |
 | `trk` | | The tracking status the runtime reported at the tap (`NORMAL`, `LIMITED`, ...). |
 | `why` | | The runtime's tracking reason, when it gives one. 8th Wall documents `INITIALIZING` and `UNSPECIFIED`; the line writes whatever name the runtime reports. Which names a phone does report is for the walks of device experiment DX4 to list, from the `[8thwall] trackingStatus:` lines (not yet written up in this file). |
-| `jumps` | | Frame shifts the provider has counted so far: measured pose jumps and the resets the runtime reports (the same count as the calibration card's "frame shifts"). A recovery or a resume that came with no measured step is not in it: the card shows those as "tracking interrupted", and the line does not carry them. Both runtimes count, so 0 is "none counted". `null` only for a provider that keeps no count: that is not "no shifts". |
+| `jumps` | | Frame shifts the provider has counted so far: measured pose jumps and the resets the runtime reports (the same count as the calibration card's "frame shifts"). A recovery or a resume that came with no measured step is not in it: the card shows those as "tracking interrupted", and the line does not carry them. Every runtime the line is written for counts, so 0 is "none counted". `null` only for a provider that keeps no count: that is not "no shifts". |
 | `B` | deg | The compass bearing the calibration is given (0 north, 90 east), clockwise from **magnetic** north: no declination is applied, so it is not a bearing from true north. It is the direction the camera faces, paired with this tap's pose (`GeoTracker.pairedCompass`): `webkitCompassHeading` on iOS, whose axis is not known, and on Android the direction the back camera points, worked out from `alpha`, `beta` and `gamma`. While the camera points more than 60° up or down the reading is the phone's top edge's, and `line.B` is the camera's bearing worked out from it through the AR pose, or `null` when that cannot be done (the camera looks within about 17° of straight up or down, or the browser and the AR runtime disagree about how the phone is tipped or turned). `line.ax` says which axis the reading follows. It does not wait for a GPS fix. |
 | `yaw` | deg | Which way the camera faces in the session frame: 0 is session +Z, 90 is session +X. |
 | `Bplus` | deg | `B + yaw`, folded into 0 to 360. This is what `sessionFrameBearingDeg` in `src/world/geo.ts` computes under the current sign rule (`bearingConvention` 2). |

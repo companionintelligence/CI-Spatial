@@ -2157,7 +2157,7 @@ async function main() {
   installProbeLog({
     canvas,
     provider,
-    runtime: use8thWall ? '8thwall' : 'webxr',
+    runtime: probeRuntimeLabel(provider, use8thWall),
     hitTest: async (x, y) => asyncHitTest ? await asyncHitTest(x, y) : provider.hitTest(x, y),
     calibration: () => sessionCalibration,
     bearing: () => geoTracker.pairedCompass(provider.getPose().rotation)?.bearingDeg ?? null,
@@ -4632,19 +4632,16 @@ function waitForXR8(timeoutMs: number): Promise<XR8Load> {
 }
 
 /**
- * Points the runtime-switch nav button at the other AR engine. 8th Wall is
- * the default; the WebXR toggle is only shown when this browser can actually
- * run an `immersive-ar` session (`webxrSupported`) — otherwise it's hidden
- * rather than sending the user to a dead-end landing page. A WebXR session
- * always links back to the 8th Wall scanner.
- */
-/**
  * The web runtime a native session falls back to: 8th Wall when its engine loads, otherwise
  * WebXR. The same order the scanner uses when there is no native layer. The 8th Wall configuration
  * (xr.js, its load timeout, its provider) is unchanged; native only chooses to wait for it later.
+ *
+ * "Loads" is `ready` and nothing else: waitForXR8 answers a state, and `failed` and `timeout` are strings, so a test for
+ * truth lets them through. createEighthWallProvider waits for the engine's `xrloaded` with no bound of its own, so asked
+ * for an engine that is not coming it never settles, and neither does the start that is waiting for this.
  */
 async function createWebRuntimeProvider(): Promise<ARProvider> {
-  if (await waitForXR8(XR8_LOAD_TIMEOUT_MS)) {
+  if ((await waitForXR8(XR8_LOAD_TIMEOUT_MS)) === 'ready') {
     try {
       return await createEighthWallProvider()
     } catch (e) {
@@ -4654,6 +4651,29 @@ async function createWebRuntimeProvider(): Promise<ARProvider> {
   return createWebXRProvider()
 }
 
+/**
+ * The runtime that is giving a session its poses and hits, in the words the `?debug=probe` line records as `rt`
+ * (src/capture/probe-log.ts): `native` while the ARKit / ARCore session runs, and the web runtime that took over after a native
+ * session failed to start, which createWebRuntimeProvider chooses between: `webxr` or `8thwall`. A page with no native layer is
+ * whichever web runtime it chose at the start. `use8thWall` is set where 8th Wall is chosen at the start, so it says nothing about
+ * a hand-over, and it used to be all this line asked, which called every native run `webxr`.
+ */
+function probeRuntimeLabel(provider: ARProvider, use8thWall: boolean): 'native' | '8thwall' | 'webxr' {
+  if (provider instanceof NativeARProvider) {
+    const web = provider.webRuntime()
+    if (!web) return 'native'
+    return web instanceof WebXRProvider ? 'webxr' : '8thwall'
+  }
+  return use8thWall ? '8thwall' : 'webxr'
+}
+
+/**
+ * Points the runtime-switch nav button at the other AR engine. 8th Wall is
+ * the default; the WebXR toggle is only shown when this browser can actually
+ * run an `immersive-ar` session (`webxrSupported`) — otherwise it's hidden
+ * rather than sending the user to a dead-end landing page. A WebXR session
+ * always links back to the 8th Wall scanner.
+ */
 function updateXrModeLink(use8thWall: boolean, webxrSupported: boolean): void {
   const link = document.getElementById('xr-mode-link') as HTMLAnchorElement | null
   if (!link) return

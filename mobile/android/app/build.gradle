@@ -90,11 +90,11 @@ dependencies {
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
-    // ARCore for ArSessionPlugin (src/ar/native-provider.ts). Resolves from Google Maven (see the allprojects repositories).
+    // ARCore, for the ScanAR plugin the shells register (src/ar/native.ts) and for the ArSessionPlugin that they do not
+    // (src/ar/native-provider.ts): one declaration, with its version in variables.gradle (arcoreVersion), which NOTICE.md names
+    // as the source. Optional at install time: see the manifest. Resolves from Google Maven (see the allprojects repositories).
     implementation "com.google.ar:core:$arcoreVersion"
     implementation project(':capacitor-android')
-    // ARCore, for the ScanAR plugin (src/ar/native.ts). Optional at install time: see the manifest.
-    implementation "com.google.ar:core:1.57.0"
     testImplementation "junit:junit:$junitVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
