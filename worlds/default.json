@@ -8581,6 +8581,334 @@
         "capturedAt": "2026-06-11T16:26:45.336Z"
       },
       "status": "needs-rescan"
+    },
+    {
+      "scanId": "scan-session-1783007636689",
+      "sessionId": "session-1783007636689",
+      "filename": "1783007675744_autosave-room-scan-2026-07-02T15-54-35.glb",
+      "name": "autosave-room-scan-2026-07-02T15-54-35",
+      "glbUrl": "/scans/1783007675744_autosave-room-scan-2026-07-02T15-54-35.glb",
+      "metadataUrl": "/scans/1783007675744_autosave-room-scan-2026-07-02T15-54-35.json",
+      "geoPose": {
+        "lat": 33.51468447391422,
+        "lng": -117.72172766574118,
+        "altitudeM": null,
+        "bearing": 81.5537338256836,
+        "accuracyM": null,
+        "fixedAt": "2026-07-02T15:53:54.989Z",
+        "address": "30872 Calle Moraga, Laguna Niguel, California 92677",
+        "displayAddress": "30872, Calle Moraga, Laguna Niguel, Orange County, California, 92677, United States"
+      },
+      "localToWorld": [
+        0.14688181536314837,
+        0,
+        -0.9891540488294156,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0.9891540488294156,
+        0,
+        0.14688181536314837,
+        0,
+        15,
+        0,
+        27,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-07-02T15:54:35.661Z",
+      "pointCount": 1303,
+      "detectionCount": 0,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 1303
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 0
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 0
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 44
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": 44
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": 44
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-session-1783007636689",
+      "qualitySummary": {
+        "coverageScore": 0.005327598111302576,
+        "coverageText": "Low — keep scanning",
+        "pointCount": 1303,
+        "detectionCount": 0,
+        "poseCount": 44,
+        "keyframeCount": 0,
+        "lowLightFrames": 0,
+        "driftEvents": 0,
+        "reflectiveWarnings": 1,
+        "missingAreas": 13,
+        "trackingLost": false,
+        "status": "needs-rescan",
+        "recommendations": [
+          "Sweep the room more slowly to improve surface coverage.",
+          "Rescan sparse floor-grid areas from another angle.",
+          "Review reflective surfaces for false geometry.",
+          "Stream RGB keyframes for reconstruction and splat processing."
+        ],
+        "capturedAt": "2026-07-02T15:54:35.605Z"
+      },
+      "status": "needs-rescan"
+    },
+    {
+      "scanId": "scan-session-1783007398258",
+      "sessionId": "session-1783007398258",
+      "filename": "1783007446984_autosave-room-scan-2026-07-02T15-50-46.glb",
+      "name": "autosave-room-scan-2026-07-02T15-50-46",
+      "glbUrl": "/scans/1783007446984_autosave-room-scan-2026-07-02T15-50-46.glb",
+      "metadataUrl": "/scans/1783007446984_autosave-room-scan-2026-07-02T15-50-46.json",
+      "geoPose": {
+        "lat": 33.51472471339491,
+        "lng": -117.72174706970098,
+        "altitudeM": null,
+        "bearing": 117.75189971923828,
+        "accuracyM": null,
+        "fixedAt": "2026-07-02T15:49:56.881Z",
+        "address": "30872 Calle Moraga, Laguna Niguel, California 92677",
+        "displayAddress": "30872, Calle Moraga, Laguna Niguel, Orange County, California, 92677, United States"
+      },
+      "localToWorld": [
+        -0.4656438630339547,
+        0,
+        -0.8849721988959968,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0.8849721988959968,
+        0,
+        -0.4656438630339547,
+        0,
+        0,
+        0,
+        30,
+        1
+      ],
+      "accuracyM": null,
+      "capturedAt": "2026-07-02T15:50:46.898Z",
+      "pointCount": 1505,
+      "detectionCount": 0,
+      "layerIndex": [
+        {
+          "id": "layer-points",
+          "type": "points",
+          "label": "Point cloud",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 1505
+        },
+        {
+          "id": "layer-mesh",
+          "type": "mesh",
+          "label": "Meshes",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-floor",
+          "type": "floor",
+          "label": "Floors",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": null
+        },
+        {
+          "id": "layer-detections",
+          "type": "detections",
+          "label": "Detections",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 0
+        },
+        {
+          "id": "layer-labels",
+          "type": "labels",
+          "label": "Labels",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 0
+        },
+        {
+          "id": "layer-cameraPath",
+          "type": "cameraPath",
+          "label": "Camera path",
+          "visibleByDefault": true,
+          "encodedInGlb": true,
+          "source": "glb",
+          "count": 49
+        },
+        {
+          "id": "layer-cameraFrustums",
+          "type": "cameraFrustums",
+          "label": "Camera frustums",
+          "visibleByDefault": true,
+          "encodedInGlb": false,
+          "source": "derived",
+          "count": 49
+        },
+        {
+          "id": "layer-rgbFrames",
+          "type": "rgbFrames",
+          "label": "RGB frames",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": 49
+        },
+        {
+          "id": "layer-depth",
+          "type": "depth",
+          "label": "Depth",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-semanticMasks",
+          "type": "semanticMasks",
+          "label": "Semantic masks",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        },
+        {
+          "id": "layer-splat",
+          "type": "splat",
+          "label": "Gaussian splat",
+          "visibleByDefault": false,
+          "encodedInGlb": false,
+          "source": "future",
+          "count": null
+        }
+      ],
+      "frameSetUrl": "/worlds/default/frames/scan-session-1783007398258",
+      "qualitySummary": {
+        "coverageScore": 0.0024770568344417926,
+        "coverageText": "Low — keep scanning",
+        "pointCount": 1505,
+        "detectionCount": 0,
+        "poseCount": 49,
+        "keyframeCount": 0,
+        "lowLightFrames": 0,
+        "driftEvents": 0,
+        "reflectiveWarnings": 1,
+        "missingAreas": 14,
+        "trackingLost": false,
+        "status": "needs-rescan",
+        "recommendations": [
+          "Sweep the room more slowly to improve surface coverage.",
+          "Rescan sparse floor-grid areas from another angle.",
+          "Review reflective surfaces for false geometry.",
+          "Stream RGB keyframes for reconstruction and splat processing."
+        ],
+        "capturedAt": "2026-07-02T15:50:46.843Z"
+      },
+      "status": "needs-rescan"
     }
   ],
   "members": [
@@ -8614,6 +8942,55 @@
     }
   ],
   "jobs": [
+    {
+      "jobId": "job-1783038058997-bee84f2e",
+      "worldId": "world-default",
+      "type": "align-scan",
+      "status": "completed",
+      "scanId": "scan-session-1783007398258",
+      "capabilities": [
+        "cpu",
+        "onnx",
+        "ollama",
+        "open3d",
+        "splat",
+        "vggt",
+        "lingbot-map"
+      ],
+      "progress": 1,
+      "createdAt": "2026-07-03T00:20:58.997Z",
+      "updatedAt": "2026-07-03T00:20:59.682Z",
+      "workerId": "local-coordinator",
+      "result": "Alignment recorded from current world transform. A GPU/Open3D worker can refine this with registration artifacts.",
+      "artifacts": [
+        {
+          "type": "alignment-report",
+          "label": "autosave-room-scan-2026-07-02T15-50-46 alignment report",
+          "metadata": {
+            "seed": "gps-compass",
+            "method": "local-placeholder-open3d-ready",
+            "matrix": [
+              -0.4656438630339547,
+              0,
+              -0.8849721988959968,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0.8849721988959968,
+              0,
+              -0.4656438630339547,
+              0,
+              0,
+              0,
+              30,
+              1
+            ]
+          }
+        }
+      ]
+    },
     {
       "jobId": "job-1781194769525-956ceae9",
       "worldId": "world-default",
@@ -8928,5 +9305,5 @@
     }
   ],
   "createdAt": "2026-06-11T02:23:56.600Z",
-  "updatedAt": "2026-06-11T16:27:14.907Z"
+  "updatedAt": "2026-07-05T01:06:32.867Z"
 }
